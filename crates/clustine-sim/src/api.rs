@@ -158,6 +158,11 @@ pub enum PlayerInput {
 }
 
 /// Everything that happened since the previous tick.
+///
+/// A tick applies all of `player_changes` and then all of `inputs`. What players did
+/// and what became of them arrives as one sequence, though, and its order is lost when
+/// it is sorted into the two. [`TickInputs::change`] and [`TickInputs::input`] sort it
+/// so that nothing a player did before a change is applied after it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickInputs {
     /// Players entering and leaving, in the order it happened. The order matters: a
@@ -167,6 +172,9 @@ pub struct TickInputs {
     /// ascending order. An input whose number is not above that of the player's last
     /// applied input is ignored, so that inputs can be sent again to the region a player
     /// has moved to without any being applied twice.
+    ///
+    /// Only what a player did after the last of their changes in `player_changes`
+    /// belongs here; see [`TickInputs::change`].
     pub inputs: Vec<(PlayerId, u64, PlayerInput)>,
     /// Chunks someone started to need. A chunk stays loaded while it has tickets.
     pub tickets_added: Vec<ChunkPos>,
@@ -174,6 +182,38 @@ pub struct TickInputs {
     pub tickets_removed: Vec<ChunkPos>,
     /// Chunks that storage delivered in answer to earlier [`TickOutput::chunk_requests`].
     pub chunks_loaded: Vec<(ChunkPos, Chunk)>,
+}
+
+impl TickInputs {
+    /// Adds what became of a player, which came after everything added so far.
+    ///
+    /// What that player did before, as far as it waits here for the coming tick, is
+    /// dropped. It was meant for a player who was not in the region or no longer is:
+    ///
+    /// - Before a join or an arrival the player was not there, so the region would have
+    ///   ignored it. Applied after the arrival instead, it would be taken for what the
+    ///   player did since, and an input sent to the region while the player was away
+    ///   would be applied ahead of earlier ones that are sent again with the arrival,
+    ///   which then count as applied already and are lost.
+    /// - Before leaving, it was the last a player did. If they are back within the
+    ///   tick, it must not be the first thing their new self does, and its number must
+    ///   not make the region ignore what they really do.
+    pub fn change(&mut self, change: PlayerChange) {
+        let player = match &change {
+            PlayerChange::Join(join) => Some(join.player),
+            PlayerChange::Leave(player) | PlayerChange::Arrive(player, _) => Some(*player),
+            PlayerChange::Discard { .. } => None,
+        };
+        if let Some(player) = player {
+            self.inputs.retain(|(actor, ..)| *actor != player);
+        }
+        self.player_changes.push(change);
+    }
+
+    /// Adds something a player did, which came after everything added so far.
+    pub fn input(&mut self, player: PlayerId, number: u64, input: PlayerInput) {
+        self.inputs.push((player, number, input));
+    }
 }
 
 /// Something that concerns a single player.

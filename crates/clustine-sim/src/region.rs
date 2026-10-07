@@ -1727,9 +1727,9 @@ mod tests {
             self.kept
                 .retain(|(_, number, _)| *number > transfer.last_input);
             let inputs = &mut waiting[self.region];
-            inputs
-                .player_changes
-                .push(PlayerChange::Arrive(id, transfer));
+            // In the order the region gets them: whatever was sent to it while the
+            // player was away came before.
+            inputs.change(PlayerChange::Arrive(id, transfer));
             inputs.inputs.extend(self.kept.iter().cloned());
             self.kept.len()
         }
@@ -1920,24 +1920,22 @@ mod tests {
         two_regions_match_one(false);
     }
 
-    /// Fails for the reason that the test below shows on its own.
+    /// The harder schedule: the test below shows on its own what it adds.
     #[test]
-    #[ignore = "an input is lost when a player returns to a region that has inputs waiting"]
     fn two_regions_and_a_router_that_acts_at_any_time_treat_players_as_one_region_does() {
         two_regions_match_one(true);
     }
 
-    /// The shortest run in which a handover loses an input. It fails, and is ignored
-    /// until it is decided where that is to be mended.
+    /// The shortest run in which a handover would lose an input if what a region is sent
+    /// were sorted into changes and inputs without regard to its order.
     ///
     /// A region applies the changes of a tick before its inputs, so a player who arrives
     /// is there for inputs that were sent to the region ahead of them: those the edge
     /// sent while it had not heard that the region had let the player go. If the player
-    /// went away and came back between two ticks of the region, such an input is applied
-    /// before the earlier ones that the edge sends again, and those then count as
-    /// applied already.
+    /// went away and came back between two ticks of the region, such an input would be
+    /// applied before the earlier ones that the edge sends again, and those would then
+    /// count as applied already. [`TickInputs::change`] drops it instead.
     #[test]
-    #[ignore = "an input is lost when a player returns to a region that has inputs waiting"]
     fn inputs_waiting_where_a_player_returns_to_do_not_overtake_those_sent_again() {
         let made = [
             with_number(1, walk(1, -0.5, 0.5)),
@@ -1965,19 +1963,24 @@ mod tests {
         // The edge has not heard of that when the fourth input comes and sends it east
         // as well. Then it hears, and passes the player on with all that the eastern
         // region did not apply. In the west the player turns round at once.
-        let second = handed_over(west.tick(&TickInputs {
-            player_changes: vec![arrive(1, &first)],
-            inputs: made[1..].to_vec(),
-            ..TickInputs::default()
-        }));
+        let mut for_west = TickInputs::default();
+        for_west.change(arrive(1, &first));
+        for (player, number, input) in made[1..].iter().cloned() {
+            for_west.input(player, number, input);
+        }
+        let second = handed_over(west.tick(&for_west));
         assert_eq!(second.last_input, 2);
         // The eastern region has not ticked in the meantime, so the fourth input is
         // still waiting there when the third and the fourth are sent to it again.
-        east.tick(&TickInputs {
-            player_changes: vec![arrive(1, &second)],
-            inputs: [&made[3..], &made[2..]].concat(),
-            ..TickInputs::default()
-        });
+        let mut for_east = TickInputs::default();
+        let (player_4, number_4, input_4) = made[3].clone();
+        for_east.input(player_4, number_4, input_4);
+        for_east.change(arrive(1, &second));
+        for (player, number, input) in made[2..].iter().cloned() {
+            for_east.input(player, number, input);
+        }
+        assert_eq!(for_east.inputs, made[2..]);
+        east.tick(&for_east);
         assert_eq!(carried(&east, player(1)), carried(&reference, player(1)));
     }
 

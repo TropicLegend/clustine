@@ -351,7 +351,7 @@ impl RegionRunner {
                 if previous.is_some_and(|previous| previous != id) {
                     self.leave(join.player);
                 }
-                self.inputs.player_changes.push(PlayerChange::Join(join));
+                self.inputs.change(PlayerChange::Join(join));
             }
             EdgeToWorker::PlayerLeave { player } => {
                 // What another link has to say is about a connection the player had
@@ -373,12 +373,10 @@ impl RegionRunner {
                         "player arrived from another region"
                     );
                 }
-                let arrive = PlayerChange::Arrive(player, transfer);
-                self.inputs.player_changes.push(arrive);
+                self.inputs.change(PlayerChange::Arrive(player, transfer));
             }
             EdgeToWorker::Discard { entity, chunk } => {
-                let discard = PlayerChange::Discard { entity, chunk };
-                self.inputs.player_changes.push(discard);
+                self.inputs.change(PlayerChange::Discard { entity, chunk });
             }
             EdgeToWorker::Input {
                 player,
@@ -387,7 +385,7 @@ impl RegionRunner {
             } => {
                 // As with leaving: only the link a player belongs to acts for them.
                 if self.players.get(&player) == Some(&id) {
-                    self.inputs.inputs.push((player, number, input));
+                    self.inputs.input(player, number, input);
                 }
             }
             EdgeToWorker::Subscribe { chunks } => {
@@ -411,13 +409,10 @@ impl RegionRunner {
         }
     }
 
-    /// Queues that `player` leaves the region and drops what they did earlier in this
-    /// step. The region handles inputs only after all joins, so a player who comes back
-    /// within the tick would begin by doing what they did before they left, and what
-    /// they do from then on would be ignored until its numbers have caught up.
+    /// Queues that `player` leaves the region. See [`TickInputs::change`] for what
+    /// becomes of what they did earlier in this step.
     fn leave(&mut self, player: PlayerId) {
-        self.inputs.inputs.retain(|(actor, ..)| *actor != player);
-        self.inputs.player_changes.push(PlayerChange::Leave(player));
+        self.inputs.change(PlayerChange::Leave(player));
     }
 
     /// Gives back the ticket of a link that no longer needs the chunk at `position`.
