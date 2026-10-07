@@ -17,7 +17,7 @@ use clustine_rpc::link;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_sim::{Region, RegionConfig};
 use clustine_worker::{RegionRunner, Worker};
-use clustine_world::{EntityId, Vec3};
+use clustine_world::{ChunkArea, EntityIds, Vec3};
 use clustine_worldgen::FlatGenerator;
 use tokio::task::JoinHandle;
 
@@ -98,8 +98,8 @@ impl Server {
         };
         let region = Region::new(RegionConfig {
             spawn,
-            // Clients reject entity id 0.
-            first_entity_id: EntityId(1),
+            area: ChunkArea::EVERYWHERE,
+            entity_ids: EntityIds::block(0).expect("there is a first block of entity ids"),
             starting_hotbar: STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 })),
         });
 

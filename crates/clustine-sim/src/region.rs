@@ -3,11 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_data::{BlockState, ITEMS, blocks};
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkPos, EntityId, EntityIds, PlayerId, Vec3};
 
 use crate::api::{
-    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerChange, PlayerEvent, PlayerInput, Pose,
-    RegionEvent, TickInputs, TickOutput,
+    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerChange, PlayerEvent, PlayerInput,
+    PlayerTransfer, Pose, RegionEvent, TickInputs, TickOutput,
 };
 
 /// What a region is created with.
@@ -15,9 +15,12 @@ use crate::api::{
 pub struct RegionConfig {
     /// Where players enter the world.
     pub spawn: Vec3,
-    /// The first entity id the region hands out. Ids must be unique within a world, so
-    /// each region gets its own block of them. Clients reject id 0.
-    pub first_entity_id: EntityId,
+    /// The part of the world the region simulates. Chunks outside it are never loaded,
+    /// and a player who steps out of it is let go; see [`PlayerEvent::Departed`].
+    pub area: ChunkArea,
+    /// The entity ids the region gives to players who enter the world in it. Ids must be
+    /// unique within a world, so each region gets its own block of them.
+    pub entity_ids: EntityIds,
     /// What players have in their hotbar when they enter the world.
     pub starting_hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
 }
@@ -50,6 +53,8 @@ struct Player {
     hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
     /// The hotbar slot whose item the player holds.
     selected_slot: u8,
+    /// The number of the last input that was applied.
+    last_input: u64,
 }
 
 /// A part of the world that is simulated as one unit.
@@ -69,7 +74,7 @@ pub struct Region {
 impl Region {
     pub fn new(config: RegionConfig) -> Self {
         Self {
-            next_entity_id: config.first_entity_id,
+            next_entity_id: config.entity_ids.first,
             config,
             tick: 0,
             chunks: BTreeMap::new(),
@@ -77,6 +82,11 @@ impl Region {
             requested: BTreeSet::new(),
             players: BTreeMap::new(),
         }
+    }
+
+    /// The part of the world the region simulates.
+    pub fn area(&self) -> ChunkArea {
+        self.config.area
     }
 
     /// The number of ticks the region has run.
@@ -134,6 +144,12 @@ impl Region {
                         continue;
                     }
                     let entity_id = self.next_entity_id;
+                    if !self.config.entity_ids.contains(entity_id) {
+                        output
+                            .player_events
+                            .push((join.player, PlayerEvent::Refused));
+                        continue;
+                    }
                     self.next_entity_id = EntityId(entity_id.0 + 1);
                     let player = Player {
                         entity_id,
@@ -143,6 +159,7 @@ impl Region {
                         handled_sequence: None,
                         hotbar: self.config.starting_hotbar,
                         selected_slot: 0,
+                        last_input: 0,
                     };
                     output.player_events.push((
                         join.player,
@@ -162,16 +179,59 @@ impl Region {
                     if let Some(player) = self.players.remove(id) {
                         output.events.push(RegionEvent::EntityRemoved {
                             entity: player.entity_id,
-                            chunk: player.entity_state(*id).chunk(),
+                            chunk: player.chunk(),
                         });
                     }
+                }
+                PlayerChange::Arrive(id, transfer) => {
+                    if let Some(present) = self.players.get(id) {
+                        // The player is here already. If that is with another entity,
+                        // the one that was on its way has nowhere to go.
+                        if present.entity_id != transfer.entity_id {
+                            let position = transfer.pose.position;
+                            output.events.push(RegionEvent::EntityRemoved {
+                                entity: transfer.entity_id,
+                                chunk: ChunkPos::containing(position.x, position.z),
+                            });
+                        }
+                        continue;
+                    }
+                    let player = Player {
+                        entity_id: transfer.entity_id,
+                        name: transfer.name.clone(),
+                        pose: transfer.pose,
+                        moved_from: None,
+                        handled_sequence: None,
+                        hotbar: transfer.hotbar,
+                        selected_slot: transfer.selected_slot,
+                        last_input: transfer.last_input,
+                    };
+                    // Those watching already show the entity if they saw it cross over;
+                    // to them this is nothing new.
+                    output
+                        .events
+                        .push(RegionEvent::EntitySpawned(player.entity_state(*id)));
+                    self.players.insert(*id, player);
+                }
+                PlayerChange::Discard { entity, chunk } => {
+                    output.events.push(RegionEvent::EntityRemoved {
+                        entity: *entity,
+                        chunk: *chunk,
+                    });
                 }
             }
         }
 
-        for (id, input) in &inputs.inputs {
-            self.apply_input(*id, input, &mut output);
+        for (id, number, input) in &inputs.inputs {
+            self.apply_input(*id, *number, input, &mut output);
         }
+        let area = self.config.area;
+        let departing: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, player)| !area.contains(player.chunk()))
+            .map(|(id, _)| *id)
+            .collect();
         for (id, player) in &mut self.players {
             if let Some(previous_chunk) = player.moved_from.take() {
                 output.events.push(RegionEvent::EntityMoved {
@@ -186,15 +246,43 @@ impl Region {
                     .push((*id, PlayerEvent::Acknowledged { sequence }));
             }
         }
+        // Last, so that a player is told what became of their actions before they are
+        // told that they are someone else's from now on. Nothing says that the entity
+        // is gone: it lives on in the region it walked into.
+        for id in departing {
+            if let Some(player) = self.players.remove(&id) {
+                output
+                    .player_events
+                    .push((id, PlayerEvent::Departed(player.into_transfer())));
+            }
+        }
 
         output
     }
 
-    fn apply_input(&mut self, id: PlayerId, input: &PlayerInput, output: &mut TickOutput) {
+    fn apply_input(
+        &mut self,
+        id: PlayerId,
+        number: u64,
+        input: &PlayerInput,
+        output: &mut TickOutput,
+    ) {
         // Input can arrive for a player who has just left.
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
+        // Applied before: it was sent again in case the region the player came from had
+        // not got to it.
+        if number <= player.last_input {
+            return;
+        }
+        // The player has stepped out and is let go at the end of the tick. What they did
+        // after that step is for the region they are in now to judge, which is sent
+        // everything this region has not counted as applied.
+        if !self.config.area.contains(player.chunk()) {
+            return;
+        }
+        player.last_input = number;
         match input {
             PlayerInput::Move {
                 position,
@@ -276,7 +364,10 @@ impl Region {
         // Additions come first so that a ticket released and taken again within one tick
         // keeps the chunk loaded.
         for position in &inputs.tickets_added {
-            *self.tickets.entry(*position).or_default() += 1;
+            // Chunks elsewhere are another region's to load.
+            if self.config.area.contains(*position) {
+                *self.tickets.entry(*position).or_default() += 1;
+            }
         }
         for position in &inputs.tickets_removed {
             if let Some(count) = self.tickets.get_mut(position) {
@@ -303,6 +394,23 @@ impl Region {
 }
 
 impl Player {
+    /// The chunk the player stands in.
+    fn chunk(&self) -> ChunkPos {
+        ChunkPos::containing(self.pose.position.x, self.pose.position.z)
+    }
+
+    /// What another region needs to carry on with the player.
+    fn into_transfer(self) -> PlayerTransfer {
+        PlayerTransfer {
+            entity_id: self.entity_id,
+            name: self.name,
+            pose: self.pose,
+            hotbar: self.hotbar,
+            selected_slot: self.selected_slot,
+            last_input: self.last_input,
+        }
+    }
+
     fn entity_state(&self, id: PlayerId) -> EntityState {
         EntityState {
             entity: self.entity_id,
@@ -398,6 +506,8 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use clustine_world::Biome;
 
     use super::*;
@@ -433,9 +543,18 @@ mod tests {
     fn region() -> Region {
         Region::new(RegionConfig {
             spawn: SPAWN,
-            first_entity_id: EntityId(1),
+            area: ChunkArea::EVERYWHERE,
+            entity_ids: EntityIds::block(0).unwrap(),
             starting_hotbar: hotbar(),
         })
+    }
+
+    /// An input as the edge passes it on: numbered in the order the inputs are made.
+    type Input = (PlayerId, u64, PlayerInput);
+
+    fn numbered(player: PlayerId, input: PlayerInput) -> Input {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        (player, NEXT.fetch_add(1, Ordering::Relaxed), input)
     }
 
     fn player(number: u128) -> PlayerId {
@@ -460,16 +579,16 @@ mod tests {
         }
     }
 
-    fn walk(number: u128, x: f64, z: f64) -> (PlayerId, PlayerInput) {
+    fn walk(number: u128, x: f64, z: f64) -> Input {
         let input = PlayerInput::Move {
             position: Some(Vec3::new(x, -60.0, z)),
             rotation: None,
             on_ground: true,
         };
-        (player(number), input)
+        numbered(player(number), input)
     }
 
-    fn moves(inputs: Vec<(PlayerId, PlayerInput)>) -> TickInputs {
+    fn moves(inputs: Vec<Input>) -> TickInputs {
         TickInputs {
             inputs,
             ..TickInputs::default()
@@ -734,14 +853,14 @@ mod tests {
             rotation: Some((90.0, -30.0)),
             on_ground: true,
         };
-        let output = region.tick(&moves(vec![(player(1), turn.clone())]));
+        let output = region.tick(&moves(vec![numbered(player(1), turn.clone())]));
         let (_, pose) = region.player(player(1)).unwrap();
         assert_eq!(pose.position, SPAWN);
         assert_eq!((pose.yaw, pose.pitch, pose.on_ground), (90.0, -30.0, true));
         assert_eq!(output.events.len(), 1);
 
         // Repeating the same input changes nothing, so nothing is reported.
-        let output = region.tick(&moves(vec![(player(1), turn)]));
+        let output = region.tick(&moves(vec![numbered(player(1), turn)]));
         assert!(output.events.is_empty());
     }
 
@@ -781,7 +900,7 @@ mod tests {
             rotation: Some((f32::NAN, 0.0)),
             on_ground: false,
         };
-        region.tick(&moves(vec![(player(1), spin)]));
+        region.tick(&moves(vec![numbered(player(1), spin)]));
         assert_eq!(region.player(player(1)), before);
     }
 
@@ -801,12 +920,12 @@ mod tests {
         );
     }
 
-    fn dig(number: u128, x: i32, y: i32, z: i32, sequence: i32) -> (PlayerId, PlayerInput) {
+    fn dig(number: u128, x: i32, y: i32, z: i32, sequence: i32) -> Input {
         let input = PlayerInput::Dig {
             position: BlockPos::new(x, y, z),
             sequence,
         };
-        (player(number), input)
+        numbered(player(number), input)
     }
 
     /// A chunk with a floor of stone right below where players stand.
@@ -870,7 +989,7 @@ mod tests {
             dig(1, -1, -61, 0, 5),
         ];
         for attempt in attempts {
-            let PlayerInput::Dig { sequence, .. } = attempt.1 else {
+            let PlayerInput::Dig { sequence, .. } = attempt.2 else {
                 unreachable!();
             };
             let output = region.tick(&moves(vec![attempt]));
@@ -921,17 +1040,17 @@ mod tests {
         assert_eq!(output.player_events.len(), 2);
     }
 
-    fn place(number: u128, x: i32, y: i32, z: i32, face: Face) -> (PlayerId, PlayerInput) {
+    fn place(number: u128, x: i32, y: i32, z: i32, face: Face) -> Input {
         let input = PlayerInput::UseItemOn {
             position: BlockPos::new(x, y, z),
             face,
             sequence: 1,
         };
-        (player(number), input)
+        numbered(player(number), input)
     }
 
-    fn select(number: u128, slot: u8) -> (PlayerId, PlayerInput) {
-        (player(number), PlayerInput::SelectSlot { slot })
+    fn select(number: u128, slot: u8) -> Input {
+        numbered(player(number), PlayerInput::SelectSlot { slot })
     }
 
     fn changed(x: i32, y: i32, z: i32, state: BlockState) -> RegionEvent {
@@ -1030,7 +1149,7 @@ mod tests {
     #[test]
     fn creative_players_fill_their_own_hotbar() {
         let mut region = on_floor(&[1]);
-        let set = |slot, stack| (player(1), PlayerInput::SetHotbarSlot { slot, stack });
+        let set = |slot, stack| numbered(player(1), PlayerInput::SetHotbarSlot { slot, stack });
         let glass = ItemStack {
             item: items::GLASS,
             count: 1,

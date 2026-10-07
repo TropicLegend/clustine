@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clustine-region.workspace = true
 clustine-rpc.workspace = true
 clustine-sim.workspace = true
 clustine-world.workspace = true

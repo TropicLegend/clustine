@@ -290,6 +290,23 @@ impl Fanout {
                 let packet = encoded(&AcknowledgeBlockChange { sequence });
                 self.send_to_player(player, [packet]).await;
             }
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Refused,
+            } => {
+                if let Some(view) = self.players.get(&player) {
+                    refuse(&view.outbound, "The world cannot take another player.");
+                }
+                self.remove_player(player).await;
+            }
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Departed(_),
+            } => {
+                // There is one region, which covers the whole world.
+                warn!("a player left the only region there is");
+                self.remove_player(player).await;
+            }
             WorkerToEdge::ChunkSnapshot {
                 position,
                 chunk,

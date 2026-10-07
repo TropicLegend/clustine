@@ -219,7 +219,21 @@ impl RegionRunner {
             EdgeToWorker::PlayerLeave { player } => {
                 inputs.player_changes.push(PlayerChange::Leave(player));
             }
-            EdgeToWorker::Input { player, input } => inputs.inputs.push((player, input)),
+            EdgeToWorker::PlayerArrive { player, transfer } => {
+                inputs
+                    .player_changes
+                    .push(PlayerChange::Arrive(player, transfer));
+            }
+            EdgeToWorker::Discard { entity, chunk } => {
+                inputs
+                    .player_changes
+                    .push(PlayerChange::Discard { entity, chunk });
+            }
+            EdgeToWorker::Input {
+                player,
+                number,
+                input,
+            } => inputs.inputs.push((player, number, input)),
             EdgeToWorker::Subscribe { chunks } => {
                 for position in chunks {
                     if self.subscriptions.insert(position) {
@@ -289,6 +303,7 @@ impl Worker {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
     use std::time::Duration;
 
     use clustine_rpc::link::{self, EdgeEnd};
@@ -296,7 +311,7 @@ mod tests {
     use clustine_sim::api::{
         EntityKind, HOTBAR_SLOTS, PlayerEvent, PlayerInput, PlayerJoin, RegionEvent,
     };
-    use clustine_world::{BlockPos, EntityId, PlayerId, Vec3};
+    use clustine_world::{BlockPos, ChunkArea, EntityId, EntityIds, PlayerId, Vec3};
     use clustine_worldgen::FlatGenerator;
     use tokio::time::timeout;
     use uuid::Uuid;
@@ -307,7 +322,8 @@ mod tests {
         let generator = FlatGenerator::classic();
         let region = Region::new(RegionConfig {
             spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
-            first_entity_id: EntityId(1),
+            area: ChunkArea::EVERYWHERE,
+            entity_ids: EntityIds::block(0).unwrap(),
             starting_hotbar: [None; HOTBAR_SLOTS],
         });
         RegionRunner::new(
@@ -319,6 +335,12 @@ mod tests {
 
     fn player() -> PlayerId {
         PlayerId(Uuid::from_u128(1))
+    }
+
+    /// Numbers inputs the way an edge does: in the order they are made.
+    fn next_number() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
     }
 
     fn square(radius: i32) -> Vec<ChunkPos> {
@@ -414,6 +436,7 @@ mod tests {
         let mut runner = runner(worker_end);
         let walk_to = |x: f64| EdgeToWorker::Input {
             player: player(),
+            number: next_number(),
             input: PlayerInput::Move {
                 position: Some(Vec3::new(x, -60.0, 0.5)),
                 rotation: None,
@@ -465,6 +488,7 @@ mod tests {
         let mut runner = runner(worker_end);
         let walk_to = |x: f64| EdgeToWorker::Input {
             player: player(),
+            number: next_number(),
             input: PlayerInput::Move {
                 position: Some(Vec3::new(x, -60.0, 0.5)),
                 rotation: None,
@@ -548,6 +572,7 @@ mod tests {
     fn dig(x: i32) -> EdgeToWorker {
         EdgeToWorker::Input {
             player: player(),
+            number: next_number(),
             input: PlayerInput::Dig {
                 position: BlockPos::new(x, -61, 0),
                 sequence: 1,
@@ -596,7 +621,8 @@ mod tests {
             let generator = FlatGenerator::classic();
             let region = Region::new(RegionConfig {
                 spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
-                first_entity_id: EntityId(1),
+                area: ChunkArea::EVERYWHERE,
+                entity_ids: EntityIds::block(0).unwrap(),
                 starting_hotbar: [None; HOTBAR_SLOTS],
             });
             let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));
@@ -630,7 +656,8 @@ mod tests {
         let generator = FlatGenerator::classic();
         let region = Region::new(RegionConfig {
             spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
-            first_entity_id: EntityId(1),
+            area: ChunkArea::EVERYWHERE,
+            entity_ids: EntityIds::block(0).unwrap(),
             starting_hotbar: [None; HOTBAR_SLOTS],
         });
         let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));

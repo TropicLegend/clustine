@@ -8,4 +8,7 @@
 pub mod link;
 mod messages;
 
-pub use messages::{EdgeToWorker, StoreReply, StoreRequest, WorkerToEdge};
+pub use messages::{
+    Assignment, EdgeToWorker, FromCoordinator, RegionHello, RegionWelcome, StoreReply,
+    StoreRequest, ToCoordinator, WorkerToEdge,
+};

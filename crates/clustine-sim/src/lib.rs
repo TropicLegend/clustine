@@ -11,5 +11,5 @@
 pub mod api;
 mod region;
 
-pub use api::{PlayerChange, PlayerEvent, PlayerJoin, TickInputs, TickOutput};
+pub use api::{PlayerChange, PlayerEvent, PlayerJoin, PlayerTransfer, TickInputs, TickOutput};
 pub use region::{Region, RegionConfig};

@@ -12,10 +12,12 @@ publish = false
 [workspace.dependencies]
 clustine = { path = "bin/clustine" }
 clustine-botswarm = { path = "tools/botswarm" }
+clustine-coordinator = { path = "services/coordinator" }
 clustine-data = { path = "crates/clustine-data" }
 clustine-edge = { path = "services/edge" }
 clustine-format = { path = "crates/clustine-format" }
 clustine-protocol = { path = "crates/clustine-protocol" }
+clustine-region = { path = "crates/clustine-region" }
 clustine-rpc = { path = "crates/clustine-rpc" }
 clustine-sim = { path = "crates/clustine-sim" }
 clustine-worker = { path = "services/worker" }

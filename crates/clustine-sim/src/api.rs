@@ -80,11 +80,33 @@ pub struct PlayerJoin {
     pub name: String,
 }
 
+/// A player as one region hands them to another: everything a region knows about them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlayerTransfer {
+    /// The player keeps their entity, so that nobody watching sees them vanish.
+    pub entity_id: EntityId,
+    pub name: String,
+    pub pose: Pose,
+    pub hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    pub selected_slot: u8,
+    /// The number of the last input the region applied; see [`TickInputs::inputs`].
+    pub last_input: u64,
+}
+
 /// A player entering or leaving the region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlayerChange {
+    /// A player enters the world.
     Join(PlayerJoin),
+    /// A player's connection has ended.
     Leave(PlayerId),
+    /// A player comes in from another region, as that region let them go with
+    /// [`PlayerEvent::Departed`].
+    Arrive(PlayerId, PlayerTransfer),
+    /// An entity that another region let go will not arrive anywhere, because its player
+    /// left in the meantime. It is reported as removed to those watching `chunk`, where
+    /// it was seen last.
+    Discard { entity: EntityId, chunk: ChunkPos },
 }
 
 /// What kind of thing an entity is.
@@ -141,8 +163,11 @@ pub struct TickInputs {
     /// Players entering and leaving, in the order it happened. The order matters: a
     /// player can leave and come back, or join and leave, within one tick.
     pub player_changes: Vec<PlayerChange>,
-    /// What players did, in the order it arrived.
-    pub inputs: Vec<(PlayerId, PlayerInput)>,
+    /// What players did, in the order it arrived. The inputs of a player are numbered in
+    /// ascending order. An input whose number is not above that of the player's last
+    /// applied input is ignored, so that inputs can be sent again to the region a player
+    /// has moved to without any being applied twice.
+    pub inputs: Vec<(PlayerId, u64, PlayerInput)>,
     /// Chunks someone started to need. A chunk stays loaded while it has tickets.
     pub tickets_added: Vec<ChunkPos>,
     /// Chunks someone stopped needing; one entry releases one ticket.
@@ -165,6 +190,14 @@ pub enum PlayerEvent {
     /// handled, whether it took effect or not. The client then stops showing its own
     /// guess of the outcome and shows what the region reported.
     Acknowledged { sequence: i32 },
+    /// The player has stepped out of the region's part of the world and is no longer in
+    /// the region. Whoever routes the player passes this on to the region they are in
+    /// now as [`PlayerChange::Arrive`], together with every input numbered above
+    /// [`PlayerTransfer::last_input`].
+    Departed(PlayerTransfer),
+    /// The player could not enter the world, because the region has no entity id left
+    /// for them.
+    Refused,
 }
 
 /// Something that happened in the region and concerns everyone who can see it.

@@ -251,6 +251,14 @@ dependencies = [
 [[package]]
 name = "clustine-coordinator"
 version = "0.0.0"
+dependencies = [
+ "clustine-region",
+ "clustine-rpc",
+ "clustine-world",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "clustine-data"
@@ -325,12 +333,18 @@ dependencies = [
 [[package]]
 name = "clustine-region"
 version = "0.0.0"
+dependencies = [
+ "clustine-world",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "clustine-rpc"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "clustine-region",
  "clustine-sim",
  "clustine-world",
  "postcard",
@@ -355,6 +369,7 @@ name = "clustine-worker"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "clustine-region",
  "clustine-rpc",
  "clustine-sim",
  "clustine-world",
@@ -389,6 +404,7 @@ version = "0.0.0"
 dependencies = [
  "clustine-data",
  "clustine-format",
+ "clustine-region",
  "clustine-rpc",
  "clustine-world",
  "clustine-worldgen",

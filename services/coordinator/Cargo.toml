@@ -6,3 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+clustine-region.workspace = true
+clustine-rpc.workspace = true
+clustine-world.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

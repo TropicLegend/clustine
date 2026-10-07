@@ -5,7 +5,7 @@
 //! sends, and it checks with keep-alives that the client is still there.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use bytes::Bytes;
 use clustine_protocol::nbt::Nbt;
@@ -58,6 +58,7 @@ pub(crate) async fn serve(
         session,
         player,
         awaiting_teleport,
+        inputs_sent: AtomicU64::new(0),
     };
     let result = pump(connection, shared, &client, &mut packets).await;
     // Whatever ended the connection, the fan-out task has to forget the player.
@@ -72,6 +73,8 @@ struct Client {
     player: PlayerId,
     /// Set by the fan-out task; see [`NO_TELEPORT`].
     awaiting_teleport: Arc<AtomicI32>,
+    /// How many inputs of the player have been passed on. Inputs are numbered from 1.
+    inputs_sent: AtomicU64,
 }
 
 /// Moves packets in both directions until the connection ends.
@@ -265,6 +268,7 @@ async fn send_input(
 ) -> Result<(), ConnectionError> {
     let message = EdgeToWorker::Input {
         player: client.player,
+        number: client.inputs_sent.fetch_add(1, Ordering::Relaxed) + 1,
         input,
     };
     // Waiting here when the worker is busy slows down reading from this client only.

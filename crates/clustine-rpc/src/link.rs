@@ -188,7 +188,7 @@ mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
     use clustine_sim::api::{
         EntityKind, EntityState, Face, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
-        PlayerJoin, Pose, RegionEvent,
+        PlayerJoin, PlayerTransfer, Pose, RegionEvent,
     };
     use clustine_world::{Biome, BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
     use uuid::Uuid;
@@ -201,6 +201,17 @@ mod tests {
 
     fn player() -> PlayerId {
         PlayerId(Uuid::from_u128(7))
+    }
+
+    fn transfer() -> PlayerTransfer {
+        PlayerTransfer {
+            entity_id: EntityId(5),
+            name: "Notch".to_owned(),
+            pose: Pose::at(Vec3::new(-0.5, -60.0, 2.5)),
+            hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
+            selected_slot: 8,
+            last_input: 77,
+        }
     }
 
     fn chunk() -> Chunk {
@@ -229,6 +240,7 @@ mod tests {
             },
             EdgeToWorker::Input {
                 player: player(),
+                number: 1,
                 input: PlayerInput::Move {
                     position: Some(Vec3::new(1.5, -60.0, 2.5)),
                     rotation: Some((90.0, 10.0)),
@@ -237,6 +249,7 @@ mod tests {
             },
             EdgeToWorker::Input {
                 player: player(),
+                number: 2,
                 input: PlayerInput::UseItemOn {
                     position: BlockPos::new(1, -61, 2),
                     face: Face::Top,
@@ -245,12 +258,21 @@ mod tests {
             },
             EdgeToWorker::Input {
                 player: player(),
+                number: u64::MAX,
                 input: PlayerInput::SetHotbarSlot {
                     slot: 8,
                     stack: None,
                 },
             },
             EdgeToWorker::PlayerLeave { player: player() },
+            EdgeToWorker::PlayerArrive {
+                player: player(),
+                transfer: transfer(),
+            },
+            EdgeToWorker::Discard {
+                entity: EntityId(9),
+                chunk: ChunkPos::new(-3, 4),
+            },
         ];
         let to_edge = vec![
             WorkerToEdge::TickDelta {
@@ -274,6 +296,14 @@ mod tests {
                 player: player(),
                 event: PlayerEvent::Acknowledged { sequence: 12 },
             },
+            WorkerToEdge::ToPlayer {
+                player: player(),
+                event: PlayerEvent::Departed(transfer()),
+            },
+            WorkerToEdge::ToPlayer {
+                player: player(),
+                event: PlayerEvent::Refused,
+            },
             WorkerToEdge::ChunkSnapshot {
                 position: ChunkPos::new(3, -4),
                 tick: 99,
@@ -296,7 +326,9 @@ mod tests {
             },
         ];
 
-        for (mut edge, mut worker) in links() {
+        // Everything is sent before anything is received, so the queues have to hold it.
+        let links: [(EdgeEnd, WorkerEnd); 2] = [in_process(16), framed(16)];
+        for (mut edge, mut worker) in links {
             for message in &to_worker {
                 edge.send(message.clone()).await.unwrap();
             }
