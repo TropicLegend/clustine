@@ -5,22 +5,24 @@
 //! end notices.
 //!
 //! [`in_process`] connects two ends directly. [`framed`] sends every message through
-//! serialisation and a byte stream first, as a link between two processes does.
+//! serialisation and a byte stream first, as a link between two processes does; such
+//! links are made by [`crate::tcp`].
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::{EdgeToWorker, WorkerToEdge};
+use crate::{EdgeToWorker, WorkerToEdge, wire};
 
 /// The edge's end of its link to a worker.
 pub type EdgeEnd = End<EdgeToWorker, WorkerToEdge>;
 /// The worker's end of its link to an edge.
 pub type WorkerEnd = End<WorkerToEdge, EdgeToWorker>;
 
-/// Messages larger than this are not accepted from a byte stream.
-const MAX_MESSAGE_LENGTH: u32 = 16 * 1024 * 1024;
+/// Messages that are waiting to be written are written together, up to about this many
+/// bytes at a time.
+const WRITE_BATCH: usize = 64 * 1024;
 
 /// Why a message could not be sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -64,10 +66,26 @@ impl<Out> Sender<Out> {
     }
 }
 
+/// The receiving half of an [`End`].
+#[derive(Debug)]
+pub struct Receiver<In>(mpsc::Receiver<In>);
+
+impl<In> Receiver<In> {
+    /// See [`End::recv`].
+    pub async fn recv(&mut self) -> Option<In> {
+        self.0.recv().await
+    }
+}
+
 impl<Out, In> End<Out, In> {
     /// A handle for sending that can be cloned.
     pub fn sender(&self) -> Sender<Out> {
         self.sender.clone()
+    }
+
+    /// Takes the end apart, so that one task can send while another receives.
+    pub fn split(self) -> (Sender<Out>, Receiver<In>) {
+        (self.sender, Receiver(self.receiver))
     }
 
     /// See [`Sender::send`].
@@ -123,8 +141,9 @@ where
     (over_stream(near, capacity), over_stream(far, capacity))
 }
 
-/// An end that exchanges its messages over `stream`.
-fn over_stream<Out, In>(
+/// An end that exchanges its messages over `stream`. Must be called within a tokio
+/// runtime.
+pub(crate) fn over_stream<Out, In>(
     stream: impl AsyncRead + AsyncWrite + Send + 'static,
     capacity: usize,
 ) -> End<Out, In>
@@ -143,16 +162,24 @@ where
     }
 }
 
-/// Writes each message as a 32-bit length followed by its serialised form, until the
-/// sending side or the stream is closed.
+/// Writes the messages in the format of [`wire`] until the sending side or the stream is
+/// closed.
 async fn write_messages<T: Serialize>(
     mut messages: mpsc::Receiver<T>,
     mut writer: impl AsyncWrite + Unpin,
 ) {
+    let mut bytes = Vec::new();
     while let Some(message) = messages.recv().await {
-        let bytes = postcard::to_allocvec(&message).expect("link messages are serialisable");
-        let length = u32::try_from(bytes.len()).expect("link message fits a 32-bit length");
-        if writer.write_u32(length).await.is_err() || writer.write_all(&bytes).await.is_err() {
+        // A tick ends in a burst of messages; they go out in as few writes as possible.
+        bytes.clear();
+        wire::encode_into(&mut bytes, &message);
+        while bytes.len() < WRITE_BATCH {
+            match messages.try_recv() {
+                Ok(message) => wire::encode_into(&mut bytes, &message),
+                Err(_) => break,
+            }
+        }
+        if writer.write_all(&bytes).await.is_err() || writer.flush().await.is_err() {
             break;
         }
     }
@@ -166,17 +193,7 @@ async fn read_messages<T: DeserializeOwned>(
     mut reader: impl AsyncRead + Unpin,
     messages: mpsc::Sender<T>,
 ) {
-    while let Ok(length) = reader.read_u32().await {
-        if length > MAX_MESSAGE_LENGTH {
-            break;
-        }
-        let mut bytes = vec![0; length as usize];
-        if reader.read_exact(&mut bytes).await.is_err() {
-            break;
-        }
-        let Ok(message) = postcard::from_bytes(&bytes) else {
-            break;
-        };
+    while let Ok(Some(message)) = wire::read(&mut reader).await {
         if messages.send(message).await.is_err() {
             break;
         }
@@ -341,6 +358,32 @@ mod tests {
             for message in &to_edge {
                 assert_eq!(edge.recv().await.as_ref(), Some(message));
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_split_end_still_sends_and_receives() {
+        for (edge, mut worker) in links() {
+            let (sender, mut receiver) = edge.split();
+            sender
+                .send(EdgeToWorker::PlayerLeave { player: player() })
+                .await
+                .unwrap();
+            assert!(worker.recv().await.is_some());
+            worker
+                .send(WorkerToEdge::TickDelta {
+                    tick: 1,
+                    events: Vec::new(),
+                })
+                .await
+                .unwrap();
+            assert!(receiver.recv().await.is_some());
+
+            // The other end only notices once both halves are gone.
+            drop(receiver);
+            assert_eq!(worker.try_recv(), Ok(None));
+            drop(sender);
+            assert_eq!(worker.recv().await, None);
         }
     }
 

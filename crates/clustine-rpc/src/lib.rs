@@ -7,6 +7,8 @@
 
 pub mod link;
 mod messages;
+pub mod tcp;
+pub mod wire;
 
 pub use messages::{
     Assignment, EdgeToWorker, FromCoordinator, RegionHello, RegionWelcome, StoreReply,
