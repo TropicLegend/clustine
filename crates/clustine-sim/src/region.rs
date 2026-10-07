@@ -1759,7 +1759,10 @@ mod tests {
     /// after the tick; `at_any_time` lets it do so before the tick as well, when the
     /// inputs of the step have been sent.
     fn two_regions_match_one(at_any_time: bool) {
+        // The players do something for so many steps and are then given time to come to
+        // rest in the region their last input took them to.
         const STEPS: u64 = 3000;
+        const SETTLING: u64 = 100;
         let numbers = [1, 2, 3];
 
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
@@ -1796,7 +1799,7 @@ mod tests {
             .collect();
         let (mut compared, mut handovers, mut sent_again, mut ticked_without) = (0, 0, 0, 0);
 
-        for step in 0.. {
+        for step in 0..STEPS + SETTLING {
             if step < STEPS {
                 let mut made = TickInputs::default();
                 for _ in 0..random(6) {
@@ -1845,13 +1848,6 @@ mod tests {
                     route.kept.push(input);
                 }
                 reference.tick(&made);
-            } else if waiting.iter().all(|inputs| inputs.inputs.is_empty())
-                && routes
-                    .iter()
-                    .all(|(id, route)| !route.under_way(*id, &waiting))
-            {
-                // Everything the players did has reached the region they are in.
-                break;
             }
 
             if at_any_time {
@@ -1903,8 +1899,16 @@ mod tests {
             }
         }
 
-        // The loop ended with every player caught up, and the run did something worth
-        // comparing.
+        // By now everything has arrived: the players have come to rest where their last
+        // input took them, and are what the single region made of them.
+        assert_eq!(waiting, [TickInputs::default(), TickInputs::default()]);
+        for (id, route) in &routes {
+            assert_eq!(route.departed, None);
+            let here = carried(&regions[route.region], *id);
+            assert!(here.is_some());
+            assert_eq!(here, carried(&reference, *id));
+        }
+        // The run did something worth comparing.
         assert!(compared > 3000, "{compared} comparisons");
         assert!(handovers > 500, "{handovers} handovers");
         assert!(sent_again > 500, "{sent_again} inputs sent again");
