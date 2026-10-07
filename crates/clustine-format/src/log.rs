@@ -41,8 +41,8 @@ const MAX_PAYLOAD_LENGTH: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockChanges {
     pub tick: u64,
-    /// The ownership epoch of the region that made the changes. Always 1 until regions
-    /// change owners.
+    /// The epoch of the owner of the region that made the changes: the one it opened the
+    /// region at the world store with.
     pub epoch: u64,
     pub changes: Vec<(BlockPos, BlockState)>,
 }
