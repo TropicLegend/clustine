@@ -17,6 +17,7 @@ use clustine_data::GAME_VERSION;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
+use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::timeout;
 
 /// Setting this environment variable to `true` states that the person running the
@@ -41,10 +42,15 @@ enforce-secure-profile=false
 motd=oracle
 "#;
 
+/// All oracles of a process use the same directory, so only one may run at a time.
+static EXCLUSIVE: Mutex<()> = Mutex::const_new(());
+
 /// A running official server. It is killed when this value is dropped.
 pub struct Oracle {
     address: String,
     _server: Child,
+    /// Held until the server has been killed; declared last so it is released last.
+    _exclusive: MutexGuard<'static, ()>,
 }
 
 impl Oracle {
@@ -53,6 +59,8 @@ impl Oracle {
     /// `accept_eula` states that the person running this agrees to the Minecraft EULA;
     /// it is also taken from the environment variable [`EULA_VARIABLE`].
     pub async fn start(accept_eula: bool) -> Result<Self> {
+        // Tests run in parallel; a second oracle waits until the first is gone.
+        let exclusive = EXCLUSIVE.lock().await;
         let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
         let jar = target
             .join("datagen")
@@ -107,6 +115,7 @@ impl Oracle {
         Ok(Self {
             address: format!("127.0.0.1:{port}"),
             _server: server,
+            _exclusive: exclusive,
         })
     }
 

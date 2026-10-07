@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use clustine_botswarm::{Bot, Oracle};
 
-use common::start;
+use clustine::Config;
+
+use common::{config, start, start_with, view_area};
 
 /// What a joining client is told must agree with the official server, apart from the
 /// numeric ids, which each server assigns through the order of its registry entries.
@@ -84,6 +86,56 @@ async fn join_matches_the_official_server() {
     // Both keep a well-behaved client connected.
     vanilla.idle(Duration::from_secs(2)).await.unwrap();
     clustine.idle(Duration::from_secs(2)).await.unwrap();
+
+    server.stop().await;
+}
+
+/// Walking moves the view the same way on both servers: the same centre chunk and the
+/// same set of chunks around it, with the ones left behind unloaded.
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn walking_matches_the_official_server() {
+    // The bots ask for a view distance of 8, which both servers have to grant.
+    const VIEW_DISTANCE: i32 = 8;
+    let oracle = Oracle::start(false).await.unwrap();
+    let (server, address) = start_with(Config {
+        view_distance: VIEW_DISTANCE,
+        ..config()
+    })
+    .await;
+
+    for address in [oracle.address(), address.as_str()] {
+        let mut bot = Bot::join(address, "Walker").await.unwrap();
+        let (x, _, z) = bot.location;
+        let chunk_of = |x: f64, z: f64| ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4);
+
+        let start = chunk_of(x, z);
+        let expected = view_area(start, VIEW_DISTANCE);
+        bot.wait_until(Duration::from_secs(60), |bot| {
+            bot.chunks.keys().copied().eq(expected.iter().copied())
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{address} at the start: {error}"));
+        assert_eq!(bot.center, Some(start), "{address}");
+
+        // One block per tick: fast, but within what the official server accepts.
+        bot.walk_to(x + 100.0, z - 60.0, 1.0).await.unwrap();
+        let end = chunk_of(x + 100.0, z - 60.0);
+        let expected = view_area(end, VIEW_DISTANCE);
+        bot.wait_until(Duration::from_secs(60), |bot| {
+            bot.center == Some(end) && bot.chunks.keys().copied().eq(expected.iter().copied())
+        })
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "{address} after walking: {error}: centre {:?}, {} chunks",
+                bot.center,
+                bot.chunks.len()
+            )
+        });
+        // Neither server had to put the bot back.
+        assert_eq!(bot.stats.teleports_confirmed, 1, "{address}");
+    }
 
     server.stop().await;
 }

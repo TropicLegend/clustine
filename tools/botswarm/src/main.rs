@@ -47,6 +47,21 @@ enum Scenario {
         #[arg(long, default_value_t = 30)]
         seconds: u64,
     },
+    /// Join the game and walk east in a straight line.
+    Walk {
+        /// Server address as host:port.
+        #[arg(default_value = "127.0.0.1:25565")]
+        address: String,
+        /// Player name of the bot.
+        #[arg(long, default_value = "Bot")]
+        name: String,
+        /// How far to walk, in blocks.
+        #[arg(long, default_value_t = 200.0)]
+        distance: f64,
+        /// Blocks per tick; a walking player covers about 0.22.
+        #[arg(long, default_value_t = 0.22)]
+        speed: f64,
+    },
     /// Join the game and describe the chunk the bot is placed in.
     Chunks {
         /// Server address as host:port.
@@ -96,6 +111,33 @@ async fn main() -> Result<()> {
             for (name, count) in &bot.stats.received {
                 println!("{count:>6} {name}");
             }
+        }
+        Scenario::Walk {
+            address,
+            name,
+            distance,
+            speed,
+        } => {
+            let mut bot = Bot::join(&target(address), &name).await?;
+            let (x, _, z) = bot.location;
+            println!(
+                "starting at x = {x}, z = {z} with {} chunks",
+                bot.chunks.len()
+            );
+            bot.walk_to(x + distance, z, speed).await?;
+            // Let the last chunks around the destination arrive.
+            bot.idle(Duration::from_secs(2)).await?;
+            println!(
+                "arrived at x = {:.1}, z = {:.1}; view centred on chunk {:?}, {} chunks held",
+                bot.location.0,
+                bot.location.2,
+                bot.center,
+                bot.chunks.len()
+            );
+            println!(
+                "{} teleports confirmed, {} keep-alives answered",
+                bot.stats.teleports_confirmed, bot.stats.keep_alives_answered
+            );
         }
         Scenario::Chunks {
             address,

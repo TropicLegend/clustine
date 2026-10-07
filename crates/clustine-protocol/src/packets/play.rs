@@ -327,6 +327,13 @@ empty_packet!(
     serverbound::CLIENT_TICK_END
 );
 
+empty_packet!(
+    /// Sent by the client once it has left the loading screen after joining or
+    /// respawning. Until then the official server does not accept its movement.
+    PlayerLoaded,
+    serverbound::PLAYER_LOADED
+);
+
 /// Ends the connection with a message shown to the player.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Disconnect {
@@ -553,6 +560,169 @@ impl Decode for ChunkBatchReceived {
     }
 }
 
+/// Bits of the flags byte that ends every movement packet.
+pub mod movement_flags {
+    /// The player stands on something.
+    pub const ON_GROUND: u8 = 0x01;
+    /// The player is pushing against a wall.
+    pub const HORIZONTAL_COLLISION: u8 = 0x02;
+}
+
+/// The player moved without turning. `y` is the height of the feet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPlayerPosition {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    /// A combination of [`movement_flags`].
+    pub flags: u8,
+}
+
+impl Packet for SetPlayerPosition {
+    const ID: i32 = serverbound::MOVE_PLAYER_POS;
+}
+
+impl Encode for SetPlayerPosition {
+    fn encode(&self, w: &mut Writer) {
+        for value in [self.x, self.y, self.z] {
+            w.put_f64(value);
+        }
+        w.put_u8(self.flags);
+    }
+}
+
+impl Decode for SetPlayerPosition {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            x: r.f64()?,
+            y: r.f64()?,
+            z: r.f64()?,
+            flags: r.u8()?,
+        })
+    }
+}
+
+/// The player moved and turned. `y` is the height of the feet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPlayerPositionAndRotation {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    /// A combination of [`movement_flags`].
+    pub flags: u8,
+}
+
+impl Packet for SetPlayerPositionAndRotation {
+    const ID: i32 = serverbound::MOVE_PLAYER_POS_ROT;
+}
+
+impl Encode for SetPlayerPositionAndRotation {
+    fn encode(&self, w: &mut Writer) {
+        for value in [self.x, self.y, self.z] {
+            w.put_f64(value);
+        }
+        w.put_f32(self.yaw);
+        w.put_f32(self.pitch);
+        w.put_u8(self.flags);
+    }
+}
+
+impl Decode for SetPlayerPositionAndRotation {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            x: r.f64()?,
+            y: r.f64()?,
+            z: r.f64()?,
+            yaw: r.f32()?,
+            pitch: r.f32()?,
+            flags: r.u8()?,
+        })
+    }
+}
+
+/// The player turned without moving.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPlayerRotation {
+    pub yaw: f32,
+    pub pitch: f32,
+    /// A combination of [`movement_flags`].
+    pub flags: u8,
+}
+
+impl Packet for SetPlayerRotation {
+    const ID: i32 = serverbound::MOVE_PLAYER_ROT;
+}
+
+impl Encode for SetPlayerRotation {
+    fn encode(&self, w: &mut Writer) {
+        w.put_f32(self.yaw);
+        w.put_f32(self.pitch);
+        w.put_u8(self.flags);
+    }
+}
+
+impl Decode for SetPlayerRotation {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            yaw: r.f32()?,
+            pitch: r.f32()?,
+            flags: r.u8()?,
+        })
+    }
+}
+
+/// Only the player's movement flags changed. Also sent regularly while standing still.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPlayerMovementFlags {
+    /// A combination of [`movement_flags`].
+    pub flags: u8,
+}
+
+impl Packet for SetPlayerMovementFlags {
+    const ID: i32 = serverbound::MOVE_PLAYER_STATUS_ONLY;
+}
+
+impl Encode for SetPlayerMovementFlags {
+    fn encode(&self, w: &mut Writer) {
+        w.put_u8(self.flags);
+    }
+}
+
+impl Decode for SetPlayerMovementFlags {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { flags: r.u8()? })
+    }
+}
+
+/// Tells the client to forget a chunk that left its view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnloadChunk {
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+}
+
+impl Packet for UnloadChunk {
+    const ID: i32 = clientbound::FORGET_LEVEL_CHUNK;
+}
+
+impl Encode for UnloadChunk {
+    fn encode(&self, w: &mut Writer) {
+        // Unlike everywhere else, z comes first.
+        w.put_i32(self.chunk_z);
+        w.put_i32(self.chunk_x);
+    }
+}
+
+impl Decode for UnloadChunk {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let chunk_z = r.i32()?;
+        let chunk_x = r.i32()?;
+        Ok(Self { chunk_x, chunk_z })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -560,6 +730,11 @@ packet_set! {
         ServerboundKeepAlive,
         ClientTickEnd,
         ChunkBatchReceived,
+        SetPlayerPosition,
+        SetPlayerPositionAndRotation,
+        SetPlayerRotation,
+        SetPlayerMovementFlags,
+        PlayerLoaded,
     }
 }
 
@@ -576,6 +751,7 @@ packet_set! {
         LevelChunkWithLight,
         ChunkBatchStart,
         ChunkBatchFinished,
+        UnloadChunk,
     }
 }
 
@@ -704,6 +880,7 @@ mod tests {
             Set::ServerboundKeepAlive,
         );
         assert_round_trip(ClientTickEnd, Set::decode, Set::ClientTickEnd);
+        assert_round_trip(PlayerLoaded, Set::decode, Set::PlayerLoaded);
     }
 
     #[test]
@@ -756,6 +933,63 @@ mod tests {
             },
             ServerboundPlay::decode,
             ServerboundPlay::ChunkBatchReceived,
+        );
+    }
+
+    #[test]
+    fn movement_packets_round_trip() {
+        use ServerboundPlay as Set;
+        let flags = movement_flags::ON_GROUND | movement_flags::HORIZONTAL_COLLISION;
+        assert_round_trip(
+            SetPlayerPosition {
+                x: 1.5,
+                y: -60.0,
+                z: -2.25,
+                flags,
+            },
+            Set::decode,
+            Set::SetPlayerPosition,
+        );
+        assert_round_trip(
+            SetPlayerPositionAndRotation {
+                x: 1.5,
+                y: -60.0,
+                z: -2.25,
+                yaw: 180.0,
+                pitch: -45.0,
+                flags,
+            },
+            Set::decode,
+            Set::SetPlayerPositionAndRotation,
+        );
+        assert_round_trip(
+            SetPlayerRotation {
+                yaw: 180.0,
+                pitch: -45.0,
+                flags: 0,
+            },
+            Set::decode,
+            Set::SetPlayerRotation,
+        );
+        assert_round_trip(
+            SetPlayerMovementFlags { flags },
+            Set::decode,
+            Set::SetPlayerMovementFlags,
+        );
+    }
+
+    #[test]
+    fn unload_chunk_puts_z_first() {
+        let packet = UnloadChunk {
+            chunk_x: 1,
+            chunk_z: 2,
+        };
+        let bytes = crate::packets::encode(&packet);
+        assert_eq!(bytes[1..], [0, 0, 0, 2, 0, 0, 0, 1]);
+        assert_round_trip(
+            packet,
+            ClientboundPlay::decode,
+            ClientboundPlay::UnloadChunk,
         );
     }
 

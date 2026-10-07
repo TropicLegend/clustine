@@ -30,12 +30,12 @@ check with an unmodified 26.3 client.
 | 0 | Licence, decision records, protocol notes | CI | done |
 | 1 | `tools/datagen` and the generated id tables | `datagen --check`, tests on known ids | done |
 | 2 | Codec primitives and framing | Known-answer vectors, property tests | done |
-| 3 | Listener, handshake, status | Bot `ping`; real client lists the server | done; real client check pending |
+| 3 | Listener, handshake, status | Bot `ping`; real client lists the server | done |
 | 4 | Offline login, configuration, entering play, keep-alive | Bot idles 30 s; oracle | done |
 | 5 | Sections, palettes, flat generator, chunk packet | Property tests; chunk compared with the oracle's | done |
 | 6 | Region, edge/worker messages and links, tick runner | Simulation tests over both link kinds | done |
-| 7 | Edge fan-out, chunk replica, chunk batches | Bot receives the expected chunks; real client sees the world | done; real client check pending |
-| 8 | Movement, view updates, chunk loading and unloading | Bot walks 200 blocks; replay test | |
+| 7 | Edge fan-out, chunk replica, chunk batches | Bot receives the expected chunks; real client sees the world | done |
+| 8 | Movement, view updates, chunk loading and unloading | Bot walks 200 blocks; replay test | done |
 | 9 | Other players: spawn, move, remove | Two bots see each other | |
 | 10 | Breaking blocks | Bot A breaks, bot B observes; real client | |
 | 11 | Placing blocks from a fixed hotbar | Bot `place`; real client | |

@@ -91,6 +91,26 @@ impl RegionRunner {
                 return false;
             }
         }
+        // The edge only hears about what happens in chunks it subscribed to.
+        let events: Vec<_> = output
+            .events
+            .into_iter()
+            .filter(|event| {
+                event
+                    .chunks()
+                    .iter()
+                    .any(|chunk| self.subscriptions.contains(chunk))
+            })
+            .collect();
+        if !events.is_empty() {
+            let delta = WorkerToEdge::TickDelta {
+                tick: output.tick,
+                events,
+            };
+            if !self.publish(delta) {
+                return false;
+            }
+        }
         true
     }
 
@@ -112,6 +132,7 @@ impl RegionRunner {
         match message {
             EdgeToWorker::PlayerJoin(join) => inputs.joins.push(join),
             EdgeToWorker::PlayerLeave { player } => inputs.leaves.push(player),
+            EdgeToWorker::Input { player, input } => inputs.inputs.push((player, input)),
             EdgeToWorker::Subscribe { chunks } => {
                 for position in chunks {
                     if self.subscriptions.insert(position) {
@@ -182,7 +203,7 @@ mod tests {
 
     use clustine_rpc::link::{self, EdgeEnd};
     use clustine_sim::RegionConfig;
-    use clustine_sim::api::{PlayerEvent, PlayerJoin};
+    use clustine_sim::api::{PlayerEvent, PlayerInput, PlayerJoin, RegionEvent};
     use clustine_world::{EntityId, PlayerId, Vec3};
     use clustine_worldgen::FlatGenerator;
     use tokio::time::timeout;
@@ -262,6 +283,7 @@ mod tests {
                         assert_eq!(chunk.surface_heights(), [4; 256]);
                         assert!(snapshots.insert(position), "{position:?} sent twice");
                     }
+                    WorkerToEdge::TickDelta { .. } => panic!("nothing moved"),
                 }
             }
             assert_eq!(
@@ -275,6 +297,55 @@ mod tests {
 
             worker.stop();
         }
+    }
+
+    #[tokio::test]
+    async fn movement_is_published_only_for_subscribed_chunks() {
+        let (mut edge, worker_end) = link::in_process(256);
+        let mut runner = runner(worker_end);
+        let walk_to = |x: f64| EdgeToWorker::Input {
+            player: player(),
+            input: PlayerInput::Move {
+                position: Some(Vec3::new(x, -60.0, 0.5)),
+                rotation: None,
+                on_ground: true,
+            },
+        };
+
+        edge.send(EdgeToWorker::PlayerJoin(PlayerJoin {
+            player: player(),
+            name: "Notch".to_owned(),
+        }))
+        .await
+        .unwrap();
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![ChunkPos::new(0, 0)],
+        })
+        .await
+        .unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 1
+        });
+        assert!(runner.step());
+        while let Ok(Some(_)) = edge.try_recv() {}
+
+        // Within the subscribed chunk, then out of it: both can be seen from it.
+        for x in [5.0, 20.0] {
+            edge.send(walk_to(x)).await.unwrap();
+            assert!(runner.step());
+            let Ok(Some(WorkerToEdge::TickDelta { events, .. })) = edge.try_recv() else {
+                panic!("expected a delta for the move to x = {x}");
+            };
+            assert!(matches!(
+                events[..],
+                [RegionEvent::EntityMoved { pose, .. }] if pose.position.x == x
+            ));
+        }
+
+        // From one chunk nobody subscribed to into another: nobody is told.
+        edge.send(walk_to(40.0)).await.unwrap();
+        assert!(runner.step());
+        assert_eq!(edge.try_recv(), Ok(None));
     }
 
     #[tokio::test]

@@ -18,13 +18,17 @@ use clustine_protocol::packets::login::{
     ClientboundLogin, LoginAcknowledged, LoginStart, LoginSuccess,
 };
 use clustine_protocol::packets::play::{
-    ChunkBatchReceived, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight, Login,
-    ServerboundKeepAlive, SynchronizePlayerPosition,
+    ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
+    Login, PlayerLoaded, ServerboundKeepAlive, SetPlayerPosition, SynchronizePlayerPosition,
+    movement_flags,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
 
 use crate::{Connection, intention};
+
+/// The length of a client tick.
+const TICK: Duration = Duration::from_millis(50);
 
 /// What a server told a bot while it joined.
 #[derive(Debug)]
@@ -106,21 +110,50 @@ pub struct PlayStats {
     pub received: BTreeMap<&'static str, u32>,
 }
 
+/// How a bot behaves where tests need it to differ from a vanilla client.
+#[derive(Debug, Clone)]
+pub struct Behaviour {
+    /// Whether the bot confirms being moved by the server, as every client does.
+    pub confirm_teleports: bool,
+}
+
+impl Default for Behaviour {
+    fn default() -> Self {
+        Self {
+            confirm_teleports: true,
+        }
+    }
+}
+
 /// A bot in the play state.
 pub struct Bot {
     connection: Connection,
+    behaviour: Behaviour,
     pub info: JoinInfo,
     pub stats: PlayStats,
     /// Where the server last put the bot.
     pub position: Option<SynchronizePlayerPosition>,
-    /// The chunks the server has sent, by chunk x and z.
+    /// The chunks the client currently holds, by chunk x and z: those the server sent
+    /// and has not told the client to forget.
     pub chunks: BTreeMap<(i32, i32), LevelChunkWithLight>,
+    /// Whether the bot has told the server that it left the loading screen.
+    loaded: bool,
+    /// The chunk the server last centred the bot's view on.
+    pub center: Option<(i32, i32)>,
+    /// Where the bot is, as x, y and z. Starts where the server put it and changes when
+    /// the bot moves or the server moves it.
+    pub location: (f64, f64, f64),
 }
 
 impl Bot {
     /// Connects to `address` (`host:port`) and goes through login and configuration
     /// until the server has put the bot into the world.
     pub async fn join(address: &str, name: &str) -> Result<Self> {
+        Self::join_with(address, name, Behaviour::default()).await
+    }
+
+    /// Like [`Bot::join`], for a bot that deviates from what a vanilla client does.
+    pub async fn join_with(address: &str, name: &str, behaviour: Behaviour) -> Result<Self> {
         let mut connection = Connection::connect(address).await?;
         connection
             .write(&intention(address, Intent::Login)?)
@@ -247,6 +280,7 @@ impl Bot {
 
         let mut bot = Self {
             connection,
+            behaviour,
             info: JoinInfo {
                 profile,
                 compression,
@@ -260,6 +294,9 @@ impl Bot {
             stats: PlayStats::default(),
             position: None,
             chunks: BTreeMap::new(),
+            loaded: false,
+            center: None,
+            location: (0.0, 0.0, 0.0),
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -272,6 +309,23 @@ impl Bot {
         Ok(bot)
     }
 
+    /// Confirms that the bot has been moved by `teleport`, as a client does on its own
+    /// unless [`Behaviour::confirm_teleports`] is off.
+    pub async fn confirm_teleport(&mut self, teleport: &SynchronizePlayerPosition) -> Result<()> {
+        self.connection
+            .write(&ConfirmTeleportation {
+                teleport_id: teleport.teleport_id,
+                x: teleport.x,
+                y: teleport.y,
+                z: teleport.z,
+                yaw: teleport.yaw,
+                pitch: teleport.pitch,
+            })
+            .await?;
+        self.stats.teleports_confirmed += 1;
+        Ok(())
+    }
+
     /// Gives up the bot's behaviour and returns the raw connection, for tests that need
     /// a client that misbehaves.
     pub fn into_connection(self) -> Connection {
@@ -282,6 +336,52 @@ impl Bot {
     pub async fn idle(&mut self, duration: Duration) -> Result<()> {
         let deadline = Instant::now() + duration;
         while self.step(deadline).await? {}
+        Ok(())
+    }
+
+    /// Walks in a straight line to `x` and `z` at the current height, moving
+    /// `blocks_per_tick` every twentieth of a second like a client does. For comparison:
+    /// walking covers about 0.22 blocks per tick and sprinting about 0.28.
+    pub async fn walk_to(&mut self, x: f64, z: f64, blocks_per_tick: f64) -> Result<()> {
+        loop {
+            let (dx, dz) = (x - self.location.0, z - self.location.2);
+            let distance = dx.hypot(dz);
+            if distance < 1e-9 {
+                return Ok(());
+            }
+            let fraction = (blocks_per_tick / distance).min(1.0);
+            self.location.0 += dx * fraction;
+            self.location.2 += dz * fraction;
+            self.connection
+                .write(&SetPlayerPosition {
+                    x: self.location.0,
+                    y: self.location.1,
+                    z: self.location.2,
+                    flags: movement_flags::ON_GROUND,
+                })
+                .await?;
+            // The official server disconnects a client that sends a second position
+            // before ending its tick.
+            self.connection.write(&ClientTickEnd).await?;
+            // Handle what the server sends until the next tick is due.
+            let next_tick = Instant::now() + TICK;
+            while self.step(next_tick).await? {}
+        }
+    }
+
+    /// Stays connected until `done` holds, or fails once `patience` has run out.
+    pub async fn wait_until(
+        &mut self,
+        patience: Duration,
+        mut done: impl FnMut(&Self) -> bool,
+    ) -> Result<()> {
+        let deadline = Instant::now() + patience;
+        while !done(self) {
+            ensure!(
+                self.step(deadline).await?,
+                "the expected state was not reached in time"
+            );
+        }
         Ok(())
     }
 
@@ -338,24 +438,33 @@ impl Bot {
                 self.stats.keep_alives_answered += 1;
             }
             ClientboundPlay::SynchronizePlayerPosition(packet) => {
-                self.connection
-                    .write(&ConfirmTeleportation {
-                        teleport_id: packet.teleport_id,
-                        x: packet.x,
-                        y: packet.y,
-                        z: packet.z,
-                        yaw: packet.yaw,
-                        pitch: packet.pitch,
-                    })
-                    .await?;
-                self.stats.teleports_confirmed += 1;
+                if self.behaviour.confirm_teleports {
+                    self.confirm_teleport(&packet).await?;
+                }
+                self.location = (packet.x, packet.y, packet.z);
                 self.position = Some(packet);
+            }
+            ClientboundPlay::SetCenterChunk(packet) => {
+                self.center = Some((packet.chunk_x, packet.chunk_z));
+            }
+            ClientboundPlay::UnloadChunk(packet) => {
+                self.chunks.remove(&(packet.chunk_x, packet.chunk_z));
             }
             ClientboundPlay::Disconnect(packet) => {
                 bail!("disconnected: {}", packet.reason)
             }
             ClientboundPlay::LevelChunkWithLight(packet) => {
                 self.chunks.insert((packet.chunk_x, packet.chunk_z), packet);
+                // A client leaves the loading screen once the chunk it is in has
+                // arrived, and tells the server.
+                let own_chunk = (
+                    (self.location.0.floor() as i32) >> 4,
+                    (self.location.2.floor() as i32) >> 4,
+                );
+                if !self.loaded && self.position.is_some() && self.chunks.contains_key(&own_chunk) {
+                    self.loaded = true;
+                    self.connection.write(&PlayerLoaded).await?;
+                }
             }
             ClientboundPlay::ChunkBatchFinished(_) => {
                 // The server waits for this before it sends the next batch.
@@ -369,7 +478,6 @@ impl Bot {
             ClientboundPlay::ChunkBatchStart(_)
             | ClientboundPlay::PlayerAbilities(_)
             | ClientboundPlay::GameEvent(_)
-            | ClientboundPlay::SetCenterChunk(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)

@@ -4,19 +4,24 @@
 //! it writes the packets the fan-out task queues for it, it passes on what the client
 //! sends, and it checks with keep-alives that the client is still there.
 
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use bytes::Bytes;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::configuration::ClientInformation;
-use clustine_protocol::packets::play::{ClientboundKeepAlive, Disconnect, ServerboundPlay};
-use clustine_world::PlayerId;
+use clustine_protocol::packets::play::{
+    ClientboundKeepAlive, Disconnect, ServerboundPlay, movement_flags,
+};
+use clustine_rpc::EdgeToWorker;
+use clustine_sim::api::PlayerInput;
+use clustine_world::{PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
-use crate::fanout::{Command, SessionId};
+use crate::fanout::{Command, NO_TELEPORT, SessionId};
 use crate::login::Profile;
 
 /// Packets that may wait for a client before it is considered too slow and dropped.
@@ -31,29 +36,44 @@ pub(crate) async fn serve(
     let session = SessionId(shared.next_session.fetch_add(1, Ordering::Relaxed));
     let player = PlayerId(profile.uuid);
     let (outbound, mut packets) = mpsc::channel(OUTBOUND_CAPACITY);
+    let awaiting_teleport = Arc::new(AtomicI32::new(NO_TELEPORT));
     let join = Command::Join {
         session,
         profile,
         requested_view_distance: client_information
             .map(|information| i32::from(information.view_distance)),
         outbound,
+        awaiting_teleport: Arc::clone(&awaiting_teleport),
     };
     if shared.fanout.send(join).await.is_err() {
         return Err(ConnectionError::ShuttingDown);
     }
 
-    let result = pump(connection, shared, session, player, &mut packets).await;
+    let client = Client {
+        session,
+        player,
+        awaiting_teleport,
+    };
+    let result = pump(connection, shared, &client, &mut packets).await;
     // Whatever ended the connection, the fan-out task has to forget the player.
-    let _ = shared.fanout.send(Command::Leave { session, player }).await;
+    let leave = Command::Leave { session, player };
+    let _ = shared.fanout.send(leave).await;
     result
+}
+
+/// What the connection knows about its player while in the play state.
+struct Client {
+    session: SessionId,
+    player: PlayerId,
+    /// Set by the fan-out task; see [`NO_TELEPORT`].
+    awaiting_teleport: Arc<AtomicI32>,
 }
 
 /// Moves packets in both directions until the connection ends.
 async fn pump(
     connection: &mut Connection,
     shared: &Shared,
-    session: SessionId,
-    player: PlayerId,
+    client: &Client,
     packets: &mut mpsc::Receiver<Bytes>,
 ) -> Result<(), ConnectionError> {
     let interval = shared.config.keep_alive_interval;
@@ -79,16 +99,41 @@ async fn pump(
                     }
                     ServerboundPlay::ChunkBatchReceived(received) => {
                         let command = Command::ChunkBatchReceived {
-                            session,
-                            player,
+                            session: client.session,
+                            player: client.player,
                             chunks_per_tick: received.chunks_per_tick,
                         };
                         if shared.fanout.send(command).await.is_err() {
                             return Err(ConnectionError::ShuttingDown);
                         }
                     }
-                    ServerboundPlay::ConfirmTeleportation(_)
-                    | ServerboundPlay::ClientTickEnd(_)
+                    ServerboundPlay::ConfirmTeleportation(confirmation) => {
+                        // Only the teleport sent last counts; an older id changes nothing.
+                        let _ = client.awaiting_teleport.compare_exchange(
+                            confirmation.teleport_id,
+                            NO_TELEPORT,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        );
+                    }
+                    ServerboundPlay::SetPlayerPosition(packet) => {
+                        let position = Vec3::new(packet.x, packet.y, packet.z);
+                        moved(shared, client, Some(position), None, packet.flags).await?;
+                    }
+                    ServerboundPlay::SetPlayerPositionAndRotation(packet) => {
+                        let position = Vec3::new(packet.x, packet.y, packet.z);
+                        let rotation = (packet.yaw, packet.pitch);
+                        moved(shared, client, Some(position), Some(rotation), packet.flags).await?;
+                    }
+                    ServerboundPlay::SetPlayerRotation(packet) => {
+                        let rotation = (packet.yaw, packet.pitch);
+                        moved(shared, client, None, Some(rotation), packet.flags).await?;
+                    }
+                    ServerboundPlay::SetPlayerMovementFlags(packet) => {
+                        moved(shared, client, None, None, packet.flags).await?;
+                    }
+                    ServerboundPlay::ClientTickEnd(_)
+                    | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}
                 }
             }
@@ -120,4 +165,45 @@ async fn pump(
             }
         }
     }
+}
+
+/// Passes a movement of the player on to the worker.
+async fn moved(
+    shared: &Shared,
+    client: &Client,
+    position: Option<Vec3>,
+    rotation: Option<(f32, f32)>,
+    flags: u8,
+) -> Result<(), ConnectionError> {
+    // Like vanilla, a client that sends something that is not a number is cut off.
+    let numbers = position
+        .iter()
+        .flat_map(|position| [position.x, position.y, position.z])
+        .chain(
+            rotation
+                .iter()
+                .flat_map(|(yaw, pitch)| [f64::from(*yaw), f64::from(*pitch)]),
+        );
+    if !numbers.into_iter().all(f64::is_finite) {
+        return Err(ConnectionError::Protocol("movement that is not a number"));
+    }
+    // Positions from before a teleport the client has not confirmed are out of date.
+    if client.awaiting_teleport.load(Ordering::Relaxed) != NO_TELEPORT {
+        return Ok(());
+    }
+    let input = PlayerInput::Move {
+        position,
+        rotation,
+        on_ground: flags & movement_flags::ON_GROUND != 0,
+    };
+    let message = EdgeToWorker::Input {
+        player: client.player,
+        input,
+    };
+    // Waiting here when the worker is busy slows down reading from this client only.
+    shared
+        .worker
+        .send(message)
+        .await
+        .map_err(|_| ConnectionError::ShuttingDown)
 }

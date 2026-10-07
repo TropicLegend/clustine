@@ -13,7 +13,7 @@ use clustine_protocol::packets::login::{ClientboundLogin, LoginStart};
 use clustine_protocol::packets::play::{ClientboundPlay, game_mode};
 use uuid::Uuid;
 
-use common::{SHORT_KEEP_ALIVE, VIEW_DISTANCE, config, start, start_with};
+use common::{SHORT_KEEP_ALIVE, VIEW_DISTANCE, config, start, start_with, view_area};
 
 #[tokio::test]
 async fn bot_joins_and_is_placed_in_the_world() {
@@ -63,20 +63,17 @@ async fn bot_receives_the_chunks_around_it() {
         .await;
 
         let mut bot = Bot::join(&address, "Surveyor").await.unwrap();
-        let side = (2 * VIEW_DISTANCE + 1) as usize;
-        bot.wait_for_chunks(side * side, Duration::from_secs(30))
+        let expected = view_area((0, 0), VIEW_DISTANCE);
+        bot.wait_for_chunks(expected.len(), Duration::from_secs(30))
             .await
             .unwrap();
-        // Nothing beyond the view distance follows.
+        // Nothing beyond the view follows.
         bot.idle(Duration::from_millis(300)).await.unwrap();
-
-        let expected: Vec<_> = (-VIEW_DISTANCE..=VIEW_DISTANCE)
-            .flat_map(|x| (-VIEW_DISTANCE..=VIEW_DISTANCE).map(move |z| (x, z)))
-            .collect();
         assert_eq!(bot.chunks.keys().copied().collect::<Vec<_>>(), expected);
+        assert_eq!(bot.center, Some((0, 0)));
 
         // The classic flat world: bedrock, two layers of dirt, grass blocks, then air.
-        for position in [(0, 0), (-VIEW_DISTANCE, VIEW_DISTANCE)] {
+        for position in [(0, 0), (-VIEW_DISTANCE - 1, VIEW_DISTANCE + 1)] {
             let sections = bot.sections(position).unwrap().unwrap();
             assert_eq!(sections.len(), 24);
             assert_eq!(sections[0].block_count, 4 * 256);
@@ -226,9 +223,8 @@ async fn many_bots_join_at_once() {
         let address = address.clone();
         tokio::spawn(async move {
             let mut bot = Bot::join(&address, &format!("Bot{index}")).await?;
-            let side = (2 * VIEW_DISTANCE + 1) as usize;
-            bot.wait_for_chunks(side * side, Duration::from_secs(30))
-                .await?;
+            let count = view_area((0, 0), VIEW_DISTANCE).len();
+            bot.wait_for_chunks(count, Duration::from_secs(30)).await?;
             anyhow::Ok(bot.info.login.entity_id)
         })
     });

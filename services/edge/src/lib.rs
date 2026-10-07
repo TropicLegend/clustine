@@ -18,7 +18,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use clustine_rpc::link::EdgeEnd;
+use clustine_rpc::EdgeToWorker;
+use clustine_rpc::link::{self, EdgeEnd};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -61,6 +62,8 @@ struct Shared {
     registry_packets: Vec<Vec<u8>>,
     /// Where connections in the play state register and report.
     fanout: mpsc::Sender<Command>,
+    /// Where connections send what their players do.
+    worker: link::Sender<EdgeToWorker>,
     next_session: AtomicU64,
 }
 
@@ -91,6 +94,7 @@ impl Edge {
                 opening_packets: configuration::opening_packets(),
                 registry_packets: configuration::registry_packets(),
                 fanout: commands,
+                worker: worker.sender(),
                 next_session: AtomicU64::new(0),
             }),
             fanout: Fanout::new(fanout_config, worker, command_receiver),

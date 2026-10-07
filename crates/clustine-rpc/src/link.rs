@@ -186,7 +186,7 @@ async fn read_messages<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
-    use clustine_sim::api::{PlayerEvent, PlayerJoin};
+    use clustine_sim::api::{PlayerEvent, PlayerInput, PlayerJoin, Pose, RegionEvent};
     use clustine_world::{Biome, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
     use uuid::Uuid;
 
@@ -224,9 +224,25 @@ mod tests {
             EdgeToWorker::Unsubscribe {
                 chunks: vec![ChunkPos::new(-1, 2)],
             },
+            EdgeToWorker::Input {
+                player: player(),
+                input: PlayerInput::Move {
+                    position: Some(Vec3::new(1.5, -60.0, 2.5)),
+                    rotation: Some((90.0, 10.0)),
+                    on_ground: true,
+                },
+            },
             EdgeToWorker::PlayerLeave { player: player() },
         ];
         let to_edge = vec![
+            WorkerToEdge::TickDelta {
+                tick: 3,
+                events: vec![RegionEvent::EntityMoved {
+                    entity: EntityId(5),
+                    pose: Pose::at(Vec3::new(1.5, -60.0, 2.5)),
+                    previous_chunk: ChunkPos::new(0, 0),
+                }],
+            },
             WorkerToEdge::ToPlayer {
                 player: player(),
                 event: PlayerEvent::Spawned {

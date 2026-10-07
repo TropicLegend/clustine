@@ -238,6 +238,19 @@ Serverbound, all ending in a flags byte (0x01 on ground, 0x02 horizontal collisi
 
 Vanilla kicks for NaN or infinite coordinates.
 
+Since 26.3 the official server also accepts at most one packet with a position per client
+tick: a second one before the next Client Tick End is answered with the disconnect
+"invalid player movement". A client therefore has to end each tick in which it moved with
+Client Tick End. (Read from the server's movement handler; the wiki does not mention it.)
+
+The official server also puts a client back where it was if it moves before it has sent
+Player Loaded, which a client sends when it leaves the loading screen. (Observed: a bot
+that walked without sending it was teleported back once; with it, never.)
+
+The chunks a client is sent are not a square. With view distance `d`, a chunk at offset
+`(dx, dz)` from the client's chunk is in view if
+`max(0, |dx| - 2)² + max(0, |dz| - 2)² < d²`, which gives 329 chunks for `d = 8`.
+
 Synchronize Player Position (`player_position`): VarInt teleport id, position (3 Double),
 velocity (3 Double), yaw, pitch (Float), Int flags marking relative components (X 0x01,
 Y 0x02, Z 0x04, yaw 0x08, pitch 0x10, velocity 0x20/0x40/0x80, rotate delta 0x100).

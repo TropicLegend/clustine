@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_world::{Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 
-use crate::api::{PlayerEvent, TickInputs, TickOutput};
+use crate::api::{PlayerEvent, PlayerInput, Pose, RegionEvent, TickInputs, TickOutput};
 
 /// What a region is created with.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,10 +16,17 @@ pub struct RegionConfig {
     pub first_entity_id: EntityId,
 }
 
+/// Positions beyond these are pulled back, as in vanilla.
+const MAX_HORIZONTAL_COORDINATE: f64 = 3.0e7;
+const MAX_VERTICAL_COORDINATE: f64 = 2.0e7;
+
 #[derive(Debug, Clone, PartialEq)]
 struct Player {
     entity_id: EntityId,
-    position: Vec3,
+    pose: Pose,
+    /// The chunk the player was in at the end of the previous tick, if the pose has
+    /// changed since then.
+    moved_from: Option<ChunkPos>,
 }
 
 /// A part of the world that is simulated as one unit.
@@ -69,10 +76,10 @@ impl Region {
         self.players.len()
     }
 
-    /// The entity id and position of `player`, if they are in the region.
-    pub fn player(&self, player: PlayerId) -> Option<(EntityId, Vec3)> {
+    /// The entity id and pose of `player`, if they are in the region.
+    pub fn player(&self, player: PlayerId) -> Option<(EntityId, Pose)> {
         let player = self.players.get(&player)?;
-        Some((player.entity_id, player.position))
+        Some((player.entity_id, player.pose))
     }
 
     /// Advances the region by one tick.
@@ -125,7 +132,8 @@ impl Region {
                 join.player,
                 Player {
                     entity_id,
-                    position,
+                    pose: Pose::at(position),
+                    moved_from: None,
                 },
             );
             output.player_events.push((
@@ -137,7 +145,76 @@ impl Region {
             ));
         }
 
+        for (player, input) in &inputs.inputs {
+            // Input can arrive for a player who has just left.
+            if let Some(player) = self.players.get_mut(player) {
+                player.apply(input);
+            }
+        }
+        for player in self.players.values_mut() {
+            if let Some(previous_chunk) = player.moved_from.take() {
+                output.events.push(RegionEvent::EntityMoved {
+                    entity: player.entity_id,
+                    pose: player.pose,
+                    previous_chunk,
+                });
+            }
+        }
+
         output
+    }
+}
+
+impl Player {
+    fn apply(&mut self, input: &PlayerInput) {
+        match input {
+            PlayerInput::Move {
+                position,
+                rotation,
+                on_ground,
+            } => {
+                // Input that is not a number is dropped as a whole: nothing sensible can
+                // be done with it and it must never enter the state.
+                let numbers = position
+                    .iter()
+                    .flat_map(|position| [position.x, position.y, position.z])
+                    .chain(
+                        rotation
+                            .iter()
+                            .flat_map(|(yaw, pitch)| [f64::from(*yaw), f64::from(*pitch)]),
+                    );
+                if !numbers.into_iter().all(f64::is_finite) {
+                    return;
+                }
+
+                let mut pose = self.pose;
+                if let Some(position) = position {
+                    pose.position = Vec3::new(
+                        position
+                            .x
+                            .clamp(-MAX_HORIZONTAL_COORDINATE, MAX_HORIZONTAL_COORDINATE),
+                        position
+                            .y
+                            .clamp(-MAX_VERTICAL_COORDINATE, MAX_VERTICAL_COORDINATE),
+                        position
+                            .z
+                            .clamp(-MAX_HORIZONTAL_COORDINATE, MAX_HORIZONTAL_COORDINATE),
+                    );
+                }
+                if let Some((yaw, pitch)) = rotation {
+                    pose.yaw = *yaw;
+                    pose.pitch = *pitch;
+                }
+                pose.on_ground = *on_ground;
+
+                if pose != self.pose {
+                    let current = self.pose.position;
+                    self.moved_from
+                        .get_or_insert(ChunkPos::containing(current.x, current.z));
+                    self.pose = pose;
+                }
+            }
+        }
     }
 }
 
@@ -209,7 +286,10 @@ mod tests {
             ]
         );
         assert_eq!(region.player_count(), 2);
-        assert_eq!(region.player(player(2)), Some((EntityId(2), spawn)));
+        assert_eq!(
+            region.player(player(2)),
+            Some((EntityId(2), Pose::at(spawn)))
+        );
         assert_eq!(region.player(player(3)), None);
     }
 
@@ -368,6 +448,199 @@ mod tests {
             ..TickInputs::default()
         });
         assert_eq!(region.loaded_chunk_count(), 0);
+    }
+
+    fn walk(number: u128, x: f64, z: f64) -> (PlayerId, PlayerInput) {
+        let input = PlayerInput::Move {
+            position: Some(Vec3::new(x, -60.0, z)),
+            rotation: None,
+            on_ground: true,
+        };
+        (player(number), input)
+    }
+
+    fn joined(numbers: &[u128]) -> Region {
+        let mut region = region();
+        region.tick(&TickInputs {
+            joins: numbers.iter().map(|number| join(*number)).collect(),
+            ..TickInputs::default()
+        });
+        region
+    }
+
+    #[test]
+    fn moves_within_a_tick_are_reported_once_with_the_final_pose() {
+        let mut region = joined(&[1]);
+        let output = region.tick(&TickInputs {
+            inputs: vec![walk(1, 1.0, 0.5), walk(1, 2.0, 0.5), walk(1, 17.0, 0.5)],
+            ..TickInputs::default()
+        });
+        let pose = Pose {
+            position: Vec3::new(17.0, -60.0, 0.5),
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        assert_eq!(
+            output.events,
+            [RegionEvent::EntityMoved {
+                entity: EntityId(1),
+                pose,
+                previous_chunk: ChunkPos::new(0, 0),
+            }]
+        );
+        assert_eq!(
+            output.events[0].chunks(),
+            [ChunkPos::new(1, 0), ChunkPos::new(0, 0)]
+        );
+        assert_eq!(region.player(player(1)), Some((EntityId(1), pose)));
+
+        // Nothing is reported for a tick without movement.
+        assert!(region.tick(&TickInputs::default()).events.is_empty());
+    }
+
+    #[test]
+    fn rotation_and_ground_contact_change_independently_of_the_position() {
+        let mut region = joined(&[1]);
+        let turn = PlayerInput::Move {
+            position: None,
+            rotation: Some((90.0, -30.0)),
+            on_ground: true,
+        };
+        let output = region.tick(&TickInputs {
+            inputs: vec![(player(1), turn.clone())],
+            ..TickInputs::default()
+        });
+        let (_, pose) = region.player(player(1)).unwrap();
+        assert_eq!(pose.position, Vec3::new(0.5, -60.0, 0.5));
+        assert_eq!((pose.yaw, pose.pitch, pose.on_ground), (90.0, -30.0, true));
+        assert_eq!(output.events.len(), 1);
+
+        // Repeating the same input changes nothing, so nothing is reported.
+        let output = region.tick(&TickInputs {
+            inputs: vec![(player(1), turn)],
+            ..TickInputs::default()
+        });
+        assert!(output.events.is_empty());
+    }
+
+    #[test]
+    fn moves_are_reported_in_a_fixed_order() {
+        let mut region = joined(&[1, 2]);
+        let output = region.tick(&TickInputs {
+            inputs: vec![walk(2, 5.0, 5.0), walk(1, 3.0, 3.0)],
+            ..TickInputs::default()
+        });
+        let entities: Vec<_> = output
+            .events
+            .iter()
+            .map(|event| match event {
+                RegionEvent::EntityMoved { entity, .. } => *entity,
+            })
+            .collect();
+        assert_eq!(entities, [EntityId(1), EntityId(2)]);
+    }
+
+    #[test]
+    fn positions_outside_the_world_are_pulled_back() {
+        let mut region = joined(&[1]);
+        region.tick(&TickInputs {
+            inputs: vec![walk(1, 1e9, -1e9)],
+            ..TickInputs::default()
+        });
+        let (_, pose) = region.player(player(1)).unwrap();
+        assert_eq!(pose.position, Vec3::new(3.0e7, -60.0, -3.0e7));
+    }
+
+    #[test]
+    fn input_that_is_not_a_number_is_dropped() {
+        let mut region = joined(&[1]);
+        let before = region.player(player(1));
+        for bad in [f64::NAN, f64::INFINITY] {
+            let output = region.tick(&TickInputs {
+                inputs: vec![walk(1, bad, 0.0), walk(1, 0.0, bad)],
+                ..TickInputs::default()
+            });
+            assert!(output.events.is_empty());
+        }
+        let spin = PlayerInput::Move {
+            position: None,
+            rotation: Some((f32::NAN, 0.0)),
+            on_ground: false,
+        };
+        region.tick(&TickInputs {
+            inputs: vec![(player(1), spin)],
+            ..TickInputs::default()
+        });
+        assert_eq!(region.player(player(1)), before);
+    }
+
+    #[test]
+    fn input_for_an_absent_player_is_ignored() {
+        let mut region = joined(&[1]);
+        let output = region.tick(&TickInputs {
+            leaves: vec![player(1)],
+            inputs: vec![walk(1, 9.0, 9.0), walk(7, 1.0, 1.0)],
+            ..TickInputs::default()
+        });
+        assert!(output.events.is_empty());
+    }
+
+    /// The same inputs always lead to the same region and the same outputs: a recorded
+    /// run can be replayed.
+    #[test]
+    fn a_recorded_run_replays_identically() {
+        // A fixed pseudo-random sequence; any generator with a fixed seed would do.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+
+        let mut recorded = Vec::new();
+        for _ in 0..300 {
+            let mut inputs = TickInputs::default();
+            for _ in 0..random(4) {
+                let number = u128::from(random(6));
+                match random(6) {
+                    0 => inputs.joins.push(join(number)),
+                    1 => inputs.leaves.push(player(number)),
+                    2 => inputs
+                        .tickets_added
+                        .push(ChunkPos::new(random(4) as i32, 0)),
+                    3 => inputs
+                        .tickets_removed
+                        .push(ChunkPos::new(random(4) as i32, 0)),
+                    4 => inputs
+                        .chunks_loaded
+                        .push((ChunkPos::new(random(4) as i32, 0), chunk())),
+                    _ => inputs.inputs.push(walk(
+                        number,
+                        random(2000) as f64 / 10.0 - 100.0,
+                        random(2000) as f64 / 10.0 - 100.0,
+                    )),
+                }
+            }
+            recorded.push(inputs);
+        }
+
+        let replay = || {
+            let mut region = region();
+            let outputs: Vec<_> = recorded.iter().map(|inputs| region.tick(inputs)).collect();
+            (region, outputs)
+        };
+        let (region, outputs) = replay();
+        assert_eq!(replay(), (region.clone(), outputs.clone()));
+        // The run did something worth comparing.
+        assert!(outputs.iter().any(|output| !output.events.is_empty()));
+        assert!(
+            outputs
+                .iter()
+                .any(|output| !output.chunk_requests.is_empty())
+        );
+        assert!(region.tick_number() == 300);
     }
 
     #[test]
