@@ -34,6 +34,14 @@ impl Connection {
         })
     }
 
+    /// Switches to the compressed packet format, as told by the server during login.
+    pub fn enable_compression(&mut self, threshold: i32) -> Result<()> {
+        let threshold = usize::try_from(threshold).context("negative compression threshold")?;
+        self.encoder.enable_compression(threshold);
+        self.decoder.enable_compression();
+        Ok(())
+    }
+
     pub async fn write<P: Packet>(&mut self, packet: &P) -> Result<()> {
         let mut framed = Vec::new();
         self.encoder.encode(&packets::encode(packet), &mut framed)?;

@@ -55,8 +55,9 @@ cargo test --workspace
 
 ### Running
 
-The server listens on `127.0.0.1:25565` by default. So far it only answers the server
-list ping; joining is refused with a message.
+The server listens on `127.0.0.1:25565` by default and runs in offline mode: names are
+not authenticated, so keep it on localhost. So far a client can log in and stays
+connected, but there is no world to see yet.
 
 ```bash
 cargo run -p clustine
@@ -65,7 +66,22 @@ cargo run -p clustine
 `botswarm` is the scripted test client:
 
 ```bash
-cargo run -p clustine-botswarm -- ping 127.0.0.1:25565
+cargo run -p clustine-botswarm -- idle 127.0.0.1:25565
+```
+
+### Comparing with the official server
+
+The bots and the server share one protocol implementation, so a mistake in it could go
+unnoticed between them. The same scenarios can therefore be run against Mojang's server,
+and some tests compare both. This needs Java 25, the server jar that `cargo datagen`
+downloads, and your agreement to the [Minecraft EULA](https://aka.ms/MinecraftEULA).
+
+```bash
+cargo run -p clustine-botswarm -- --vanilla --accept-eula idle
+```
+
+```bash
+CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test -p clustine --test oracle -- --ignored
 ```
 
 ### Game data

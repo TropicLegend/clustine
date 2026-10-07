@@ -20,3 +20,4 @@ clustine-botswarm.workspace = true
 clustine-data.workspace = true
 clustine-protocol.workspace = true
 serde_json.workspace = true
+uuid.workspace = true

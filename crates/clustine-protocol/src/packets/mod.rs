@@ -4,8 +4,10 @@
 //! is an enum of the packets that can arrive, such as [`status::ServerboundStatus`],
 //! whose `decode` turns an unframed packet into the matching struct.
 
+pub mod configuration;
 pub mod handshake;
 pub mod login;
+pub mod play;
 pub mod status;
 
 use crate::codec::{Decode, Encode, Writer};

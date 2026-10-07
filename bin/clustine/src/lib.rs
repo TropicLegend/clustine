@@ -1,9 +1,11 @@
 //! Single-binary mode: runs every Clustine service in one process.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clustine_edge::{Edge, EdgeConfig};
+use clustine_edge::Edge;
+pub use clustine_edge::EdgeConfig;
 use tokio::task::JoinHandle;
 
 /// Settings of a single-process server.
@@ -15,6 +17,9 @@ pub struct Config {
     pub description: String,
     /// The player limit shown in the server list.
     pub max_players: u32,
+    /// How often clients have to prove they are still there; see
+    /// [`EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL`].
+    pub keep_alive_interval: Duration,
 }
 
 /// A running server. Dropping it without calling [`Server::stop`] leaves it running
@@ -30,6 +35,7 @@ impl Server {
         let edge_config = EdgeConfig {
             description: config.description,
             max_players: config.max_players,
+            keep_alive_interval: config.keep_alive_interval,
         };
         let edge = Edge::bind(config.bind, edge_config)
             .await

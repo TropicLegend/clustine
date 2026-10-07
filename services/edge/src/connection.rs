@@ -38,7 +38,7 @@ pub(crate) struct Connection {
     stream: TcpStream,
     decoder: FrameDecoder,
     encoder: FrameEncoder,
-    /// Reused between writes.
+    /// Framed packets that have been queued but not sent.
     outgoing: Vec<u8>,
 }
 
@@ -72,12 +72,28 @@ impl Connection {
         }
     }
 
-    pub(crate) async fn write<P: Packet>(&mut self, packet: &P) -> Result<(), ConnectionError> {
-        self.outgoing.clear();
-        self.encoder
-            .encode(&packets::encode(packet), &mut self.outgoing)?;
-        self.stream.write_all(&self.outgoing).await?;
+    /// Adds `packet` to the output without sending it yet; see [`Connection::flush`].
+    pub(crate) fn queue<P: Packet>(&mut self, packet: &P) -> Result<(), ConnectionError> {
+        self.queue_encoded(&packets::encode(packet))
+    }
+
+    /// Like [`Connection::queue`], for a packet that is already encoded (id and body).
+    pub(crate) fn queue_encoded(&mut self, packet: &[u8]) -> Result<(), ConnectionError> {
+        self.encoder.encode(packet, &mut self.outgoing)?;
         Ok(())
+    }
+
+    /// Sends everything that was queued.
+    pub(crate) async fn flush(&mut self) -> Result<(), ConnectionError> {
+        let result = self.stream.write_all(&self.outgoing).await;
+        self.outgoing.clear();
+        Ok(result?)
+    }
+
+    /// Queues `packet` and sends it at once.
+    pub(crate) async fn write<P: Packet>(&mut self, packet: &P) -> Result<(), ConnectionError> {
+        self.queue(packet)?;
+        self.flush().await
     }
 
     /// Closes the sending side and waits briefly for the client to close its side.

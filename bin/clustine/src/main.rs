@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use clap::Parser;
-use clustine::{Config, Server};
+use clustine::{Config, EdgeConfig, Server};
 use tracing::info;
 
 /// A Minecraft: Java Edition server, all services in one process.
@@ -33,6 +33,7 @@ async fn main() -> Result<()> {
         bind: args.bind,
         description: args.description,
         max_players: args.max_players,
+        keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
     })
     .await?;
     info!(address = %server.address(), "listening");

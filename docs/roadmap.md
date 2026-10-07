@@ -31,7 +31,7 @@ check with an unmodified 26.3 client.
 | 1 | `tools/datagen` and the generated id tables | `datagen --check`, tests on known ids | done |
 | 2 | Codec primitives and framing | Known-answer vectors, property tests | done |
 | 3 | Listener, handshake, status | Bot `ping`; real client lists the server | done; real client check pending |
-| 4 | Offline login, configuration, entering play, keep-alive | Bot idles 30 s; oracle | |
+| 4 | Offline login, configuration, entering play, keep-alive | Bot idles 30 s; oracle | done |
 | 5 | Sections, palettes, flat generator, chunk packet | Property tests; chunk compared with the oracle's | |
 | 6 | Region, edge/worker messages and links, tick runner | Simulation tests over both link kinds | |
 | 7 | Edge fan-out, chunk replica, chunk batches | Bot receives the expected chunks; real client sees the world | |

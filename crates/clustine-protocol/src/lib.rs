@@ -6,6 +6,7 @@
 
 pub mod codec;
 pub mod frame;
+pub mod nbt;
 pub mod packets;
 
 #[rustfmt::skip]

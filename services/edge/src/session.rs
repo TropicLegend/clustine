@@ -31,6 +31,6 @@ pub(crate) async fn serve(stream: TcpStream, shared: &Shared) -> Result<(), Conn
     };
     match intention.intent {
         Intent::Status => status::serve(&mut connection, shared).await,
-        Intent::Login | Intent::Transfer => login::serve(&mut connection, &intention).await,
+        Intent::Login | Intent::Transfer => login::serve(&mut connection, shared, &intention).await,
     }
 }

@@ -4,7 +4,9 @@
 //! uses. To catch mistakes that both sides would share, the scenarios are also run
 //! against the official server.
 
+pub mod bot;
 pub mod connection;
+pub mod oracle;
 
 use std::time::{Duration, Instant};
 
@@ -13,7 +15,9 @@ use clustine_data::PROTOCOL_VERSION;
 use clustine_protocol::packets::handshake::{Intent, Intention};
 use clustine_protocol::packets::status::{ClientboundStatus, PingRequest, StatusRequest};
 
+pub use bot::{Bot, JoinInfo, PlayStats};
 pub use connection::Connection;
+pub use oracle::Oracle;
 
 /// A server's answer to the server list ping.
 #[derive(Debug)]

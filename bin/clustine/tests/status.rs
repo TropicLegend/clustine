@@ -1,6 +1,7 @@
 //! The server list ping and the pre-login behaviour, end to end over TCP.
 
-use clustine::{Config, Server};
+mod common;
+
 use clustine_botswarm::{Connection, intention};
 use clustine_data::{GAME_VERSION, PROTOCOL_VERSION};
 use clustine_protocol::packets::handshake::Intent;
@@ -9,17 +10,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-async fn start() -> (Server, String) {
-    let server = Server::start(Config {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        description: "integration test".to_owned(),
-        max_players: 7,
-    })
-    .await
-    .unwrap();
-    let address = server.address().to_string();
-    (server, address)
-}
+use common::start;
 
 #[tokio::test]
 async fn ping_reports_version_and_settings() {
@@ -50,24 +41,6 @@ async fn many_pings_in_parallel() {
     for ping in pings.collect::<Vec<_>>() {
         ping.await.unwrap().unwrap();
     }
-
-    server.stop().await;
-}
-
-#[tokio::test]
-async fn login_is_refused_with_a_message() {
-    let (server, address) = start().await;
-
-    let mut connection = Connection::connect(&address).await.unwrap();
-    let handshake = intention(&address, Intent::Login).unwrap();
-    connection.write(&handshake).await.unwrap();
-    let frame = connection.read_frame().await.unwrap();
-    let ClientboundLogin::LoginDisconnect(disconnect) = ClientboundLogin::decode(&frame).unwrap()
-    else {
-        panic!("expected a login disconnect");
-    };
-    let reason: serde_json::Value = serde_json::from_str(&disconnect.reason_json).unwrap();
-    assert!(reason["text"].as_str().unwrap().contains("not accept"));
 
     server.stop().await;
 }

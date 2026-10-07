@@ -3,14 +3,17 @@
 //! The edge owns everything that is specific to the Minecraft protocol; see
 //! `docs/adr/0005-edge-worker-interface.md`.
 
+mod configuration;
 mod connection;
 mod login;
+mod play;
 mod session;
 mod status;
 
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI32;
 use std::time::Duration;
 
 use tokio::net::TcpListener;
@@ -24,11 +27,26 @@ pub struct EdgeConfig {
     pub description: String,
     /// The player limit shown in the server list.
     pub max_players: u32,
+    /// How often a client has to prove it is still there. A client that has not answered
+    /// one keep-alive by the time the next is due is disconnected.
+    pub keep_alive_interval: Duration,
+}
+
+impl EdgeConfig {
+    /// The keep-alive interval of the vanilla server. Clients give up on a server they
+    /// have not heard from for 30 seconds, so the interval must stay well below that.
+    pub const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 }
 
 /// State shared by all connections of one edge.
 struct Shared {
     config: EdgeConfig,
+    /// See [`configuration::opening_packets`].
+    opening_packets: Vec<Vec<u8>>,
+    /// See [`configuration::registry_packets`].
+    registry_packets: Vec<Vec<u8>>,
+    /// Entity ids start at 1 because clients reject 0.
+    next_entity_id: AtomicI32,
 }
 
 /// A listening edge that has not started accepting connections yet.
@@ -42,7 +60,12 @@ impl Edge {
     pub async fn bind(address: SocketAddr, config: EdgeConfig) -> io::Result<Self> {
         Ok(Self {
             listener: TcpListener::bind(address).await?,
-            shared: Arc::new(Shared { config }),
+            shared: Arc::new(Shared {
+                config,
+                opening_packets: configuration::opening_packets(),
+                registry_packets: configuration::registry_packets(),
+                next_entity_id: AtomicI32::new(1),
+            }),
         })
     }
 
