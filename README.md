@@ -81,7 +81,7 @@ cargo run -p clustine-botswarm -- --vanilla --accept-eula idle
 ```
 
 ```bash
-CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test -p clustine --test oracle -- --ignored
+CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace -- --ignored
 ```
 
 ### Game data

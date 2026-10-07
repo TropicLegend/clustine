@@ -354,12 +354,212 @@ impl Decode for Disconnect {
     }
 }
 
+/// Heightmap kinds the client uses, as ids in [`Heightmap`].
+pub mod heightmap {
+    /// Highest block that is not air.
+    pub const WORLD_SURFACE: i32 = 1;
+    /// Highest block that blocks motion or contains a fluid.
+    pub const MOTION_BLOCKING: i32 = 4;
+    /// Like `MOTION_BLOCKING`, ignoring leaves.
+    pub const MOTION_BLOCKING_NO_LEAVES: i32 = 5;
+}
+
+/// One heightmap of a chunk; see [`crate::chunk::pack_heightmap`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Heightmap {
+    /// One of the [`heightmap`] ids.
+    pub kind: i32,
+    pub data: Vec<u64>,
+}
+
+/// A block entity inside a chunk, such as a chest or a sign.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockEntity {
+    /// The position within the chunk: `x << 4 | z`.
+    pub packed_xz: u8,
+    pub y: i16,
+    /// Id in the block entity type registry.
+    pub kind: i32,
+    pub data: Option<Nbt>,
+}
+
+/// Light levels of a chunk column.
+///
+/// Light is stored per section for the sections of the column plus one below and one
+/// above, from bottom to top. Bit `i` of a mask refers to the `i`-th of those. A section
+/// is either listed in a light mask, with a 2048-byte array of 4-bit levels following in
+/// the same order, or in the matching empty mask, meaning all zero, or in neither.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LightData {
+    pub sky_mask: Vec<u64>,
+    pub block_mask: Vec<u64>,
+    pub empty_sky_mask: Vec<u64>,
+    pub empty_block_mask: Vec<u64>,
+    pub sky: Vec<Vec<u8>>,
+    pub block: Vec<Vec<u8>>,
+}
+
+impl LightData {
+    fn encode(&self, w: &mut Writer) {
+        w.put_bit_set(&self.sky_mask);
+        w.put_bit_set(&self.block_mask);
+        w.put_bit_set(&self.empty_sky_mask);
+        w.put_bit_set(&self.empty_block_mask);
+        for arrays in [&self.sky, &self.block] {
+            w.put_array(arrays, |w, array| {
+                w.put_length(array.len());
+                w.put_bytes(array);
+            });
+        }
+    }
+
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        fn arrays(r: &mut Reader<'_>) -> Result<Vec<Vec<u8>>, DecodeError> {
+            r.array(|r| {
+                let length = r.length()?;
+                Ok(r.bytes(length)?.to_vec())
+            })
+        }
+        Ok(Self {
+            sky_mask: r.bit_set()?,
+            block_mask: r.bit_set()?,
+            empty_sky_mask: r.bit_set()?,
+            empty_block_mask: r.bit_set()?,
+            sky: arrays(r)?,
+            block: arrays(r)?,
+        })
+    }
+}
+
+/// A chunk column with its light.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelChunkWithLight {
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+    pub heightmaps: Vec<Heightmap>,
+    /// The sections, bottom to top; see [`crate::chunk::encode_sections`].
+    pub sections: Vec<u8>,
+    pub block_entities: Vec<BlockEntity>,
+    pub light: LightData,
+}
+
+impl Packet for LevelChunkWithLight {
+    const ID: i32 = clientbound::LEVEL_CHUNK_WITH_LIGHT;
+}
+
+impl Encode for LevelChunkWithLight {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i32(self.chunk_x);
+        w.put_i32(self.chunk_z);
+        w.put_array(&self.heightmaps, |w, heightmap| {
+            w.put_var_int(heightmap.kind);
+            w.put_array(&heightmap.data, |w, word| w.put_u64(*word));
+        });
+        w.put_length(self.sections.len());
+        w.put_bytes(&self.sections);
+        w.put_array(&self.block_entities, |w, entity| {
+            w.put_u8(entity.packed_xz);
+            w.put_i16(entity.y);
+            w.put_var_int(entity.kind);
+            match &entity.data {
+                Some(data) => w.put_nbt(data),
+                None => w.put_u8(0),
+            }
+        });
+        self.light.encode(w);
+    }
+}
+
+impl Decode for LevelChunkWithLight {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            chunk_x: r.i32()?,
+            chunk_z: r.i32()?,
+            heightmaps: r.array(|r| {
+                Ok(Heightmap {
+                    kind: r.var_int()?,
+                    data: r.array(Reader::u64)?,
+                })
+            })?,
+            sections: {
+                let length = r.length()?;
+                r.bytes(length)?.to_vec()
+            },
+            block_entities: r.array(|r| {
+                Ok(BlockEntity {
+                    packed_xz: r.u8()?,
+                    y: r.i16()?,
+                    kind: r.var_int()?,
+                    data: r.nbt()?,
+                })
+            })?,
+            light: LightData::decode(r)?,
+        })
+    }
+}
+
+empty_packet!(
+    /// Announces a batch of chunk packets, which ends with [`ChunkBatchFinished`].
+    ChunkBatchStart,
+    clientbound::CHUNK_BATCH_START
+);
+
+/// Ends a batch of chunk packets. The client answers with [`ChunkBatchReceived`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChunkBatchFinished {
+    /// Number of chunks in the batch.
+    pub batch_size: i32,
+}
+
+impl Packet for ChunkBatchFinished {
+    const ID: i32 = clientbound::CHUNK_BATCH_FINISHED;
+}
+
+impl Encode for ChunkBatchFinished {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.batch_size);
+    }
+}
+
+impl Decode for ChunkBatchFinished {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            batch_size: r.var_int()?,
+        })
+    }
+}
+
+/// Confirms a chunk batch and tells the server how fast the client can take chunks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChunkBatchReceived {
+    pub chunks_per_tick: f32,
+}
+
+impl Packet for ChunkBatchReceived {
+    const ID: i32 = serverbound::CHUNK_BATCH_RECEIVED;
+}
+
+impl Encode for ChunkBatchReceived {
+    fn encode(&self, w: &mut Writer) {
+        w.put_f32(self.chunks_per_tick);
+    }
+}
+
+impl Decode for ChunkBatchReceived {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            chunks_per_tick: r.f32()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
         ConfirmTeleportation,
         ServerboundKeepAlive,
         ClientTickEnd,
+        ChunkBatchReceived,
     }
 }
 
@@ -373,6 +573,9 @@ packet_set! {
         SetCenterChunk,
         ClientboundKeepAlive,
         Disconnect,
+        LevelChunkWithLight,
+        ChunkBatchStart,
+        ChunkBatchFinished,
     }
 }
 
@@ -501,6 +704,59 @@ mod tests {
             Set::ServerboundKeepAlive,
         );
         assert_round_trip(ClientTickEnd, Set::decode, Set::ClientTickEnd);
+    }
+
+    #[test]
+    fn chunk_packets_round_trip() {
+        use ClientboundPlay as Set;
+        assert_round_trip(
+            LevelChunkWithLight {
+                chunk_x: -2,
+                chunk_z: 5,
+                heightmaps: vec![Heightmap {
+                    kind: heightmap::MOTION_BLOCKING,
+                    data: vec![1, 2, 3],
+                }],
+                sections: vec![0, 1, 2, 3, 4],
+                block_entities: vec![
+                    BlockEntity {
+                        packed_xz: 0x4A,
+                        y: -60,
+                        kind: 7,
+                        data: Some(Nbt::Compound(vec![("a".to_owned(), Nbt::Int(1))])),
+                    },
+                    BlockEntity {
+                        packed_xz: 0,
+                        y: 0,
+                        kind: 1,
+                        data: None,
+                    },
+                ],
+                light: LightData {
+                    sky_mask: vec![0b110],
+                    block_mask: vec![],
+                    empty_sky_mask: vec![0b001],
+                    empty_block_mask: vec![0b111],
+                    sky: vec![vec![0xFF; 2048], vec![0x0F; 2048]],
+                    block: vec![],
+                },
+            },
+            Set::decode,
+            Set::LevelChunkWithLight,
+        );
+        assert_round_trip(ChunkBatchStart, Set::decode, Set::ChunkBatchStart);
+        assert_round_trip(
+            ChunkBatchFinished { batch_size: 9 },
+            Set::decode,
+            Set::ChunkBatchFinished,
+        );
+        assert_round_trip(
+            ChunkBatchReceived {
+                chunks_per_tick: 20.0,
+            },
+            ServerboundPlay::decode,
+            ServerboundPlay::ChunkBatchReceived,
+        );
     }
 
     #[test]

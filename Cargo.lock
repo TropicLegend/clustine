@@ -229,8 +229,11 @@ name = "clustine-edge"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "clustine-botswarm",
  "clustine-data",
  "clustine-protocol",
+ "clustine-world",
+ "clustine-worldgen",
  "md-5",
  "serde_json",
  "thiserror",
@@ -281,10 +284,17 @@ version = "0.0.0"
 [[package]]
 name = "clustine-world"
 version = "0.0.0"
+dependencies = [
+ "clustine-data",
+]
 
 [[package]]
 name = "clustine-worldgen"
 version = "0.0.0"
+dependencies = [
+ "clustine-data",
+ "clustine-world",
+]
 
 [[package]]
 name = "clustine-worldstore"

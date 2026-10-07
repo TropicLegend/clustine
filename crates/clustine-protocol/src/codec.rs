@@ -196,9 +196,17 @@ impl Writer {
         }
     }
 
-    /// Writes a bit set as a count of 64-bit words followed by the words.
+    /// Writes a bit set, given as 64-bit words with bit 0 of the first word first.
+    ///
+    /// On the wire a bit set is a byte count followed by its bytes, lowest bits first,
+    /// without trailing zero bytes.
     pub fn put_bit_set(&mut self, words: &[u64]) {
-        self.put_array(words, |w, word| w.put_u64(*word));
+        let mut bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        self.put_length(bytes.len());
+        self.put_bytes(&bytes);
     }
 }
 
@@ -391,9 +399,16 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Reads a bit set as a count of 64-bit words followed by the words.
+    /// Reads a bit set into 64-bit words, bit 0 of the first word first; see
+    /// [`Writer::put_bit_set`].
     pub fn bit_set(&mut self) -> Result<Vec<u64>, DecodeError> {
-        self.array(Self::u64)
+        let length = self.length()?;
+        let words = self.bytes(length)?.chunks(8).map(|chunk| {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            u64::from_le_bytes(word)
+        });
+        Ok(words.collect())
     }
 }
 
@@ -535,6 +550,21 @@ mod tests {
         ));
     }
 
+    /// Light masks as sent by the official 26.3 server for a chunk of a normal world.
+    #[test]
+    fn bit_set_known_answers() {
+        // Bits 9 and 10.
+        assert_eq!(written(|w| w.put_bit_set(&[0x600])), [0x02, 0x00, 0x06]);
+        assert_eq!(Reader::new(&[0x02, 0x00, 0x06]).bit_set(), Ok(vec![0x600]));
+        // Bits 1, 2 and 5 to 8.
+        assert_eq!(Reader::new(&[0x02, 0xE6, 0x01]).bit_set(), Ok(vec![0x1E6]));
+        assert_eq!(written(|w| w.put_bit_set(&[])), [0x00]);
+        assert_eq!(
+            written(|w| w.put_bit_set(&[0, 1])),
+            [9, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        );
+    }
+
     #[test]
     fn finish_reports_trailing_bytes() {
         let mut reader = Reader::new(&[1, 2, 3]);
@@ -630,6 +660,11 @@ mod tests {
             });
             let mut reader = Reader::new(&bytes);
             prop_assert_eq!(reader.array(Reader::var_int), Ok(numbers));
+            // Trailing zero words carry no bits and are not transmitted.
+            let mut words = words;
+            while words.last() == Some(&0) {
+                words.pop();
+            }
             prop_assert_eq!(reader.bit_set(), Ok(words));
             prop_assert_eq!(reader.option(Reader::i64), Ok(maybe));
             prop_assert_eq!(reader.finish(), Ok(()));

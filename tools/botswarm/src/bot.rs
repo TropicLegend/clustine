@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use anyhow::{Result, bail, ensure};
-use clustine_data::GAME_VERSION;
+use anyhow::{Context, Result, bail, ensure};
+use clustine_data::{BLOCK_STATE_COUNT, DIMENSION_TYPES, DimensionType, GAME_VERSION};
+use clustine_protocol::chunk::{PaletteKind, SectionData, decode_sections};
 use clustine_protocol::codec::Reader;
 use clustine_protocol::packet_ids;
 use clustine_protocol::packets::configuration::{
@@ -17,7 +18,8 @@ use clustine_protocol::packets::login::{
     ClientboundLogin, LoginAcknowledged, LoginStart, LoginSuccess,
 };
 use clustine_protocol::packets::play::{
-    ClientboundPlay, ConfirmTeleportation, Login, ServerboundKeepAlive, SynchronizePlayerPosition,
+    ChunkBatchReceived, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight, Login,
+    ServerboundKeepAlive, SynchronizePlayerPosition,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -44,6 +46,27 @@ pub struct JoinInfo {
 }
 
 impl JoinInfo {
+    /// The entry names of the synchronised registry called `name`, indexed by id.
+    pub fn registry(&self, name: &str) -> Result<&[String]> {
+        self.registries
+            .iter()
+            .find(|(registry, _)| registry == name)
+            .map(|(_, entries)| entries.as_slice())
+            .with_context(|| format!("the server did not send the registry {name}"))
+    }
+
+    /// The dimension type of the dimension the bot joined.
+    pub fn dimension_type(&self) -> Result<&'static DimensionType> {
+        let types = self.registry("minecraft:dimension_type")?;
+        let name = types
+            .get(self.login.dimension_type as usize)
+            .context("the join packet names a dimension type that was not sent")?;
+        DIMENSION_TYPES
+            .iter()
+            .find(|dimension| dimension.name == name)
+            .with_context(|| format!("{name} is not a vanilla dimension type"))
+    }
+
     /// The tags with members as sets of names, which is independent of the numeric ids a
     /// particular server assigned. Members of registries that were not synchronised,
     /// whose ids are fixed by the game, stay numeric.
@@ -90,6 +113,8 @@ pub struct Bot {
     pub stats: PlayStats,
     /// Where the server last put the bot.
     pub position: Option<SynchronizePlayerPosition>,
+    /// The chunks the server has sent, by chunk x and z.
+    pub chunks: BTreeMap<(i32, i32), LevelChunkWithLight>,
 }
 
 impl Bot {
@@ -232,6 +257,7 @@ impl Bot {
             },
             stats: PlayStats::default(),
             position: None,
+            chunks: BTreeMap::new(),
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -257,16 +283,49 @@ impl Bot {
         Ok(())
     }
 
+    /// Stays connected until at least `count` chunks have arrived.
+    pub async fn wait_for_chunks(&mut self, count: usize, patience: Duration) -> Result<()> {
+        let deadline = Instant::now() + patience;
+        while self.chunks.len() < count {
+            ensure!(
+                self.step(deadline).await?,
+                "only {} of {count} chunks arrived",
+                self.chunks.len()
+            );
+        }
+        Ok(())
+    }
+
+    /// The sections of the chunk at `position`, decoded, if the server has sent it.
+    pub fn sections(&self, position: (i32, i32)) -> Result<Option<Vec<SectionData>>> {
+        let Some(chunk) = self.chunks.get(&position) else {
+            return Ok(None);
+        };
+        let biome_count = self.info.registry("minecraft:worldgen/biome")?.len();
+        let dimension = self.info.dimension_type()?;
+        let sections = decode_sections(
+            &chunk.sections,
+            dimension.height as usize / 16,
+            PaletteKind::blocks(BLOCK_STATE_COUNT as usize),
+            PaletteKind::biomes(biome_count),
+        )?;
+        Ok(Some(sections))
+    }
+
     /// Handles the next packet. Returns false if `deadline` passed first.
     async fn step(&mut self, deadline: Instant) -> Result<bool> {
         let Ok(frame) = timeout_at(deadline, self.connection.read_frame()).await else {
             return Ok(false);
         };
         let frame = frame?;
-        let packet = ClientboundPlay::decode(&frame)?;
-        // Decoding succeeded, so the frame starts with an id that exists in this state.
         let id = Reader::new(&frame).var_int()?;
-        let name = packet_ids::play::clientbound::NAMES[id as usize];
+        let name = usize::try_from(id)
+            .ok()
+            .and_then(|id| packet_ids::play::clientbound::NAMES.get(id))
+            .copied()
+            .unwrap_or("unknown packet");
+        let packet = ClientboundPlay::decode(&frame)
+            .with_context(|| format!("decoding {name} ({} bytes)", frame.len()))?;
         *self.stats.received.entry(name).or_default() += 1;
 
         match packet {
@@ -293,8 +352,20 @@ impl Bot {
             ClientboundPlay::Disconnect(packet) => {
                 bail!("disconnected: {}", packet.reason)
             }
+            ClientboundPlay::LevelChunkWithLight(packet) => {
+                self.chunks.insert((packet.chunk_x, packet.chunk_z), packet);
+            }
+            ClientboundPlay::ChunkBatchFinished(_) => {
+                // The server waits for this before it sends the next batch.
+                self.connection
+                    .write(&ChunkBatchReceived {
+                        chunks_per_tick: 20.0,
+                    })
+                    .await?;
+            }
             ClientboundPlay::Login(_) => bail!("received a second login packet"),
-            ClientboundPlay::PlayerAbilities(_)
+            ClientboundPlay::ChunkBatchStart(_)
+            | ClientboundPlay::PlayerAbilities(_)
             | ClientboundPlay::GameEvent(_)
             | ClientboundPlay::SetCenterChunk(_)
             | ClientboundPlay::Unhandled { .. } => {}

@@ -185,8 +185,12 @@ game event, point of interest type, potion, and the synchronised registries that
 | Heightmaps | Array of (VarInt type, Array of Long) |
 | Data | Byte array holding the sections |
 | Block entities | Array of (packed XZ byte, Short Y, VarInt type, NBT) |
-| Sky light mask, block light mask, empty sky mask, empty block mask | BitSet × 4 |
+| Sky light mask, block light mask, empty sky mask, empty block mask | BitSet × 4, each a byte array (see below) |
 | Sky light arrays, block light arrays | Array of 2048-byte arrays, each |
+
+A bit set is sent as a byte count followed by its bytes, lowest bits first, with trailing
+zero bytes left out; for example bits 9 and 10 are `02 00 06`. This was observed from the
+official 26.3 server and differs from the wiki, which describes an array of 64-bit words.
 
 Heightmap types the client uses: 1 world surface, 4 motion blocking, 5 motion blocking
 without leaves. Each has 256 entries of `ceil(log2(height + 1))` bits, which is 9 bits and
@@ -214,8 +218,10 @@ The direct width is `ceil(log2(number of entries in the registry))`. With 35,723
 states in 26.3 that is **16 bits** for blocks; with 67 biomes it is 7 bits.
 
 The overworld has `min_y = -64` and a height of 384, so 24 sections. Light masks cover
-sections + 2 = 26 bits. Sections left out of both the light mask and the empty mask render
-inconsistently, so sky light is sent explicitly (2048 bytes of `0xFF` for open sky).
+sections + 2 = 26 bits: bit 0 is the section below the world. The official server lists
+dark sections in the empty mask, sends arrays for sections that contain light up to one
+section above the highest block, and lists the fully sky-lit sections above that in
+neither mask. Each light array is prefixed with its length, 2048.
 
 Update Light (`light_update`) is VarInt X, VarInt Z and the same light data.
 

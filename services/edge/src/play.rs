@@ -119,6 +119,7 @@ async fn keep_alive(
                     }
                     ServerboundPlay::ConfirmTeleportation(_)
                     | ServerboundPlay::ClientTickEnd(_)
+                    | ServerboundPlay::ChunkBatchReceived(_)
                     | ServerboundPlay::Unhandled { .. } => {}
                 }
             }

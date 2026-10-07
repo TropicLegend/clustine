@@ -1,10 +1,12 @@
 //! Load-test harness: drives many scripted bot clients against a server.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use clustine_botswarm::{Bot, Oracle};
+use clustine_protocol::chunk::unpack_heightmap;
 
 /// Scripted Minecraft clients for testing a server.
 #[derive(Parser)]
@@ -45,6 +47,18 @@ enum Scenario {
         #[arg(long, default_value_t = 30)]
         seconds: u64,
     },
+    /// Join the game and describe the chunk the bot is placed in.
+    Chunks {
+        /// Server address as host:port.
+        #[arg(default_value = "127.0.0.1:25565")]
+        address: String,
+        /// Player name of the bot.
+        #[arg(long, default_value = "Bot")]
+        name: String,
+        /// How many chunks to wait for.
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+    },
 }
 
 #[tokio::main]
@@ -83,6 +97,75 @@ async fn main() -> Result<()> {
                 println!("{count:>6} {name}");
             }
         }
+        Scenario::Chunks {
+            address,
+            name,
+            count,
+        } => {
+            let mut bot = Bot::join(&target(address), &name).await?;
+            bot.wait_for_chunks(count, Duration::from_secs(30)).await?;
+            println!("{} chunks received", bot.chunks.len());
+            let position = bot.position.as_ref().context("no position")?;
+            let key = (
+                (position.x.floor() as i32) >> 4,
+                (position.z.floor() as i32) >> 4,
+            );
+            describe_chunk(&bot, key)?;
+        }
     }
+    Ok(())
+}
+
+/// Prints what the server sent for the chunk at `key`.
+fn describe_chunk(bot: &Bot, key: (i32, i32)) -> Result<()> {
+    let chunk = bot
+        .chunks
+        .get(&key)
+        .context("the bot's own chunk is missing")?;
+    let sections = bot
+        .sections(key)?
+        .context("the bot's own chunk is missing")?;
+    println!("chunk {key:?}: {} bytes of sections", chunk.sections.len());
+    for heightmap in &chunk.heightmaps {
+        let heights = unpack_heightmap(&heightmap.data, 9).context("short heightmap")?;
+        println!(
+            "  heightmap {}: {} words, heights {}..={}",
+            heightmap.kind,
+            heightmap.data.len(),
+            heights.iter().min().unwrap(),
+            heights.iter().max().unwrap()
+        );
+    }
+    for (index, section) in sections.iter().enumerate() {
+        if section.block_count != 0 || index == 0 {
+            let blocks: BTreeSet<i32> = (0..4096).map(|i| section.blocks.get(i)).collect();
+            let biomes: BTreeSet<i32> = (0..64).map(|i| section.biomes.get(i)).collect();
+            println!(
+                "  section {index}: {} blocks, {} fluids, states {blocks:?}, biomes {biomes:?}",
+                section.block_count, section.fluid_count
+            );
+        }
+    }
+    let light = &chunk.light;
+    println!(
+        "  sky light: mask {:#b}, empty mask {:#b}, {} arrays",
+        light.sky_mask.first().copied().unwrap_or(0),
+        light.empty_sky_mask.first().copied().unwrap_or(0),
+        light.sky.len()
+    );
+    for array in &light.sky {
+        let levels: BTreeSet<u8> = array
+            .iter()
+            .flat_map(|byte| [byte & 15, byte >> 4])
+            .collect();
+        println!("    {} bytes, levels {levels:?}", array.len());
+    }
+    println!(
+        "  block light: mask {:#b}, empty mask {:#b}, {} arrays",
+        light.block_mask.first().copied().unwrap_or(0),
+        light.empty_block_mask.first().copied().unwrap_or(0),
+        light.block.len()
+    );
+    println!("  {} block entities", chunk.block_entities.len());
     Ok(())
 }

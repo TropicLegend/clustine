@@ -4,6 +4,7 @@
 //! defines them, and [`codec`] reads and writes the values inside them. Decoding is safe
 //! on untrusted input.
 
+pub mod chunk;
 pub mod codec;
 pub mod frame;
 pub mod nbt;

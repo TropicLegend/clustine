@@ -15,6 +15,8 @@ clustine-botswarm = { path = "tools/botswarm" }
 clustine-data = { path = "crates/clustine-data" }
 clustine-edge = { path = "services/edge" }
 clustine-protocol = { path = "crates/clustine-protocol" }
+clustine-world = { path = "crates/clustine-world" }
+clustine-worldgen = { path = "services/worldgen" }
 
 anyhow = "1.0.104"
 bytes = "1.12.1"

@@ -5,6 +5,8 @@
 
 mod configuration;
 mod connection;
+#[allow(dead_code)] // Used once chunks come from the worker.
+mod encode;
 mod login;
 mod play;
 mod session;

@@ -4,7 +4,7 @@
 //! agreement to the Minecraft EULA, so they are ignored by default. Run them with:
 //!
 //! ```text
-//! CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test -p clustine --test oracle -- --ignored
+//! CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace -- --ignored
 //! ```
 
 mod common;
