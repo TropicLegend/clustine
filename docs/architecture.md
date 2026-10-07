@@ -1,7 +1,27 @@
 # Architecture
 
-This document describes the intended design. None of it is implemented yet; the
-[roadmap](roadmap.md) says in which order it will be.
+This document describes the intended design. The [roadmap](roadmap.md) says in which
+order it is built, and [What exists so far](#what-exists-so-far) says how far that has
+come.
+
+## What exists so far
+
+After milestone M2 the edge, the worker, the world store and the coordinator exist and
+run either in one process or as processes of their own, on Kubernetes or without. World
+generation is a flat world inside the world store; `playerdata` and the operator do not
+exist yet.
+
+Where the implementation is simpler than the design below:
+
+| Design | So far |
+|---|---|
+| Regions of nearby active chunks that merge, split and migrate | Fixed stripes along the x axis, set when the cluster is started; see [ADR-0006](adr/0006-static-regions-and-handoff.md) |
+| Boundaries only run through inactive gaps | A boundary can run past players, who cannot change blocks on its other side |
+| Coordinator replicated with Raft, leases fenced everywhere | One coordinator with its state in memory; only the world store acts on epochs; see [ADR-0007](adr/0007-coordinator-scope.md) |
+| Losing a worker is recovered from by migration | An edge that loses a region disconnects its players and starts over; the world is recovered from the logs |
+| Several edges | One edge; the workers can serve several, but there is no shared player list yet |
+| Protobuf over gRPC, QUIC | One message format over TCP for everything |
+| Trained zstd dictionaries, object storage | Plain zstd on the local file system |
 
 ## Principles
 

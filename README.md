@@ -4,10 +4,11 @@ A from-scratch Minecraft: Java Edition server that simulates **one world across 
 instances**. Adding instances adds compute and memory to the same world rather than
 creating more separate servers.
 
-> **Status: pre-alpha.** The first milestone is done: one server process in which
-> players walk around a flat creative world, see each other and build. The world is
-> not distributed over several instances yet; that is the next milestone. See the
-> [roadmap](docs/roadmap.md).
+> **Status: pre-alpha.** Two milestones are done. Players walk around a flat creative
+> world, see each other and build; and that world can be simulated by several worker
+> processes, with players handed from one to the next as they walk. The parts of the
+> world each worker has are still fixed, and nothing survives the loss of a process
+> without players being disconnected. See the [roadmap](docs/roadmap.md).
 
 ## Goals
 
@@ -42,6 +43,7 @@ creating more separate servers.
 | `services/` | One crate per service: edge, coordinator, worker, worldstore, worldgen, playerdata, operator |
 | `bin/clustine` | Single-binary mode running every service in one process |
 | `tools/` | Development tools: the `botswarm` load-test harness and the `datagen` table generator |
+| `deploy/` | Kubernetes manifests and the test that runs a cluster in kind |
 | `docs/` | Architecture, roadmap, parity matrix and decision records |
 
 ## Building
@@ -76,6 +78,39 @@ changed from the other side of such a boundary:
 ```bash
 cargo run -p clustine -- --boundaries 4
 ```
+
+### Running a cluster
+
+The same binary is each service of a cluster when given a subcommand. This starts a
+world of two regions on one machine; the processes find each other on their default
+ports and can be started in any order:
+
+```bash
+cargo run -p clustine -- coordinator --boundaries 4
+```
+
+```bash
+cargo run -p clustine -- worldstore --world world
+```
+
+```bash
+cargo run -p clustine -- worker --name worker-0 --listen 127.0.0.1:25601
+```
+
+```bash
+cargo run -p clustine -- worker --name worker-1 --listen 127.0.0.1:25611
+```
+
+```bash
+cargo run -p clustine -- edge
+```
+
+Players connect to the edge on `127.0.0.1:25565` once both workers have a region, which
+takes a moment: a coordinator gives nothing away for the first ten seconds. The services
+do not authenticate each other, so their ports are for a private network only.
+
+[deploy/](deploy/README.md) has the same as Kubernetes manifests, and a test that runs
+it in a local cluster.
 
 `botswarm` is the scripted test client:
 

@@ -23,7 +23,8 @@ other players, breaking and placing blocks, and the world surviving a restart we
 checked by hand with unmodified 26.3 clients.
 
 M1 targets Minecraft: Java Edition 26.3 in offline mode, with the server bound to
-localhost. Online mode and encryption follow directly after M1.
+localhost. Online mode and encryption were planned to follow directly and were then put
+behind M2.
 
 "Oracle" means the same bot scenario is also run against Mojang's official server, which
 guards against a mistake shared by our server and our bot. "Real client" means a manual
@@ -53,3 +54,35 @@ so they are run by hand and not in CI.
 Not in M1: survival mechanics, chat and commands, a lighting engine, neighbour updates,
 server-side collision, entities other than players, more than one dimension, player data
 persistence and real world generation.
+
+## M2 steps
+
+| # | Scope | Verified by | Status |
+|---|---|---|---|
+| 1 | Region layout, areas of regions, numbered inputs, letting players go and taking them in | Simulation tests, among them two regions with a router compared with one region | done |
+| 2 | One world store for several regions, a log per region | Store tests for independent logs, recovery and ownership by epoch | done |
+| 3 | A worker that serves several edge links and survives losing one | Runner tests over both kinds of link | done |
+| 4 | The edge shows one world out of several regions and hands players over; `--boundaries` in the single binary | Bots cross both ways, watched; a crowd crossing; leaving in mid hand-over; restart and kill with two regions; the M1 end-to-end tests once more on a divided world | done |
+| 5 | Links over TCP; the world store as a service | Tests over real sockets | done |
+| 6 | The coordinator: its decisions as a state machine, and the service around it | State machine tests; service tests over real sockets | done |
+| 7 | `clustine coordinator`, `worldstore`, `worker`, `edge` | A test that starts the five processes, has bots cross between the workers, kills everything and finds the world again | done |
+| 8 | Container image, Kubernetes manifests, the cluster test with kind | `deploy/kind/test.sh` | done |
+
+The cluster test first passed on 2026-10-07, on a kind cluster with a coordinator, a
+world store, two workers and an edge: four bots walked back and forth across the
+boundary 24 times and built on both sides, a fifth saw each of them as one entity
+throughout, and each worker took players in and let them go twelve times. A check by
+hand with unmodified clients is still to come.
+
+The design decisions are in [ADR-0006](adr/0006-static-regions-and-handoff.md) and
+[ADR-0007](adr/0007-coordinator-scope.md).
+
+Not in M2, and known to be missing:
+
+- Regions are fixed stripes; a block on the other side of a boundary cannot be changed,
+  and a player standing on a boundary is handed back and forth.
+- Nothing survives the loss of a process without players being disconnected. The world
+  itself does survive.
+- One edge. With several there is no shared player list and nothing stops an account
+  from being on two edges at once.
+- The services trust whoever reaches their ports.
