@@ -1,0 +1,2 @@
+[alias]
+datagen = "run --quiet -p clustine-datagen --"

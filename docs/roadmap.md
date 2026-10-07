@@ -28,7 +28,7 @@ check with an unmodified 26.3 client.
 | # | Scope | Verified by | Status |
 |---|---|---|---|
 | 0 | Licence, decision records, protocol notes | CI | done |
-| 1 | `tools/datagen` and the generated id tables | `datagen --check`, tests on known ids | |
+| 1 | `tools/datagen` and the generated id tables | `datagen --check`, tests on known ids | done |
 | 2 | Codec primitives and framing | Known-answer vectors, property tests | |
 | 3 | Listener, handshake, status | Bot `ping`; real client lists the server | |
 | 4 | Offline login, configuration, entering play, keep-alive | Bot idles 30 s; oracle | |

@@ -38,7 +38,7 @@ creating more separate servers.
 | `crates/` | Shared libraries: protocol, game data, world model, world format, simulation, region graph, RPC |
 | `services/` | One crate per service: edge, coordinator, worker, worldstore, worldgen, playerdata, operator |
 | `bin/clustine` | Single-binary mode running every service in one process |
-| `tools/` | Development tools, starting with the `botswarm` load-test harness |
+| `tools/` | Development tools: the `botswarm` load-test harness and the `datagen` table generator |
 | `docs/` | Architecture, roadmap, parity matrix and decision records |
 
 ## Building
@@ -51,6 +51,17 @@ cargo build --workspace
 
 ```bash
 cargo test --workspace
+```
+
+### Game data
+
+Ids and names of packets, block states, registry entries and tags are committed as
+generated Rust tables, so building needs nothing but cargo. To regenerate them, for
+example after changing the targeted Minecraft version, run the following. It downloads
+the official server jar (about 62 MB) into `target/datagen/` and needs Java 25.
+
+```bash
+cargo datagen
 ```
 
 ## Licence

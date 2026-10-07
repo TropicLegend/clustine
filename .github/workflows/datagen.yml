@@ -1,0 +1,35 @@
+name: Datagen
+
+# Checks that the committed game data tables match what the generator produces.
+# Downloads the official server jar, so it only runs when the tables or the tool change.
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/datagen/**
+      - crates/clustine-data/src/generated/**
+      - crates/clustine-protocol/src/generated/**
+      - .github/workflows/datagen.yml
+  pull_request:
+    paths:
+      - tools/datagen/**
+      - crates/clustine-data/src/generated/**
+      - crates/clustine-protocol/src/generated/**
+      - .github/workflows/datagen.yml
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      - run: cargo run --locked -p clustine-datagen -- --check
