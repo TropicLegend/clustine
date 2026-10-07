@@ -6,14 +6,14 @@ use std::time::Duration;
 
 use clustine::Config;
 use clustine_botswarm::{Bot, Connection, intention};
-use clustine_data::{GAME_VERSION, SYNCED_REGISTRIES, TAGS};
+use clustine_data::{GAME_VERSION, SYNCED_REGISTRIES, TAGS, blocks};
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::handshake::Intent;
 use clustine_protocol::packets::login::{ClientboundLogin, LoginStart};
 use clustine_protocol::packets::play::{ClientboundPlay, game_mode};
 use uuid::Uuid;
 
-use common::{SHORT_KEEP_ALIVE, config, start, start_with};
+use common::{SHORT_KEEP_ALIVE, VIEW_DISTANCE, config, start, start_with};
 
 #[tokio::test]
 async fn bot_joins_and_is_placed_in_the_world() {
@@ -47,6 +47,92 @@ async fn bot_joins_and_is_placed_in_the_world() {
     let position = bot.position.as_ref().unwrap();
     assert_eq!((position.x, position.y, position.z), (0.5, -60.0, 0.5));
     assert_eq!(bot.stats.teleports_confirmed, 1);
+
+    server.stop().await;
+}
+
+/// The chunks within the view distance arrive, over a direct link between edge and
+/// worker and over one that serialises every message.
+#[tokio::test]
+async fn bot_receives_the_chunks_around_it() {
+    for serialise_link in [false, true] {
+        let (server, address) = start_with(Config {
+            serialise_link,
+            ..config()
+        })
+        .await;
+
+        let mut bot = Bot::join(&address, "Surveyor").await.unwrap();
+        let side = (2 * VIEW_DISTANCE + 1) as usize;
+        bot.wait_for_chunks(side * side, Duration::from_secs(30))
+            .await
+            .unwrap();
+        // Nothing beyond the view distance follows.
+        bot.idle(Duration::from_millis(300)).await.unwrap();
+
+        let expected: Vec<_> = (-VIEW_DISTANCE..=VIEW_DISTANCE)
+            .flat_map(|x| (-VIEW_DISTANCE..=VIEW_DISTANCE).map(move |z| (x, z)))
+            .collect();
+        assert_eq!(bot.chunks.keys().copied().collect::<Vec<_>>(), expected);
+
+        // The classic flat world: bedrock, two layers of dirt, grass blocks, then air.
+        for position in [(0, 0), (-VIEW_DISTANCE, VIEW_DISTANCE)] {
+            let sections = bot.sections(position).unwrap().unwrap();
+            assert_eq!(sections.len(), 24);
+            assert_eq!(sections[0].block_count, 4 * 256);
+            let layer = |y: usize| sections[0].blocks.get(y << 8) as u16;
+            assert_eq!(layer(0), blocks::BEDROCK.0);
+            assert_eq!(layer(1), blocks::DIRT.0);
+            assert_eq!(layer(2), blocks::DIRT.0);
+            assert_eq!(layer(3), blocks::GRASS_BLOCK.0);
+            assert_eq!(layer(4), blocks::AIR.0);
+            assert!(sections[1..].iter().all(|section| section.block_count == 0));
+        }
+
+        server.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn second_connection_of_a_player_is_refused() {
+    let (server, address) = start().await;
+
+    let mut first = Bot::join(&address, "Twin").await.unwrap();
+    let Err(error) = Bot::join(&address, "Twin").await else {
+        panic!("the second connection was accepted");
+    };
+    assert!(error.to_string().contains("already connected"), "{error}");
+    // The first connection is not affected.
+    first.idle(Duration::from_millis(300)).await.unwrap();
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn player_can_rejoin_after_leaving() {
+    let (server, address) = start().await;
+
+    let first = Bot::join(&address, "Returner").await.unwrap();
+    let first_entity_id = first.info.login.entity_id;
+    drop(first);
+
+    // The server notices the closed connection a moment later.
+    let mut second = None;
+    for _ in 0..100 {
+        match Bot::join(&address, "Returner").await {
+            Ok(bot) => {
+                second = Some(bot);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let mut second = second.expect("rejoining never succeeded");
+    assert_ne!(second.info.login.entity_id, first_entity_id);
+    second
+        .wait_for_chunks(1, Duration::from_secs(30))
+        .await
+        .unwrap();
 
     server.stop().await;
 }
@@ -140,7 +226,9 @@ async fn many_bots_join_at_once() {
         let address = address.clone();
         tokio::spawn(async move {
             let mut bot = Bot::join(&address, &format!("Bot{index}")).await?;
-            bot.idle(Duration::from_millis(200)).await?;
+            let side = (2 * VIEW_DISTANCE + 1) as usize;
+            bot.wait_for_chunks(side * side, Duration::from_secs(30))
+                .await?;
             anyhow::Ok(bot.info.login.entity_id)
         })
     });

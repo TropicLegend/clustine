@@ -56,8 +56,8 @@ cargo test --workspace
 ### Running
 
 The server listens on `127.0.0.1:25565` by default and runs in offline mode: names are
-not authenticated, so keep it on localhost. So far a client can log in and stays
-connected, but there is no world to see yet.
+not authenticated, so keep it on localhost. So far a client can log in and is put into
+a flat creative world. The server does not react to anything the player does yet.
 
 ```bash
 cargo run -p clustine

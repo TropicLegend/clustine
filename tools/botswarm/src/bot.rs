@@ -232,10 +232,12 @@ impl Bot {
             }
         }
 
-        let ClientboundPlay::Login(login) =
-            ClientboundPlay::decode(&connection.read_frame().await?)?
-        else {
-            bail!("the play state did not start with a login packet");
+        let login = match ClientboundPlay::decode(&connection.read_frame().await?)? {
+            ClientboundPlay::Login(login) => login,
+            ClientboundPlay::Disconnect(packet) => {
+                bail!("disconnected on entering the world: {}", packet.reason)
+            }
+            _ => bail!("the play state did not start with a login packet"),
         };
         ensure!(
             profile.name == name,

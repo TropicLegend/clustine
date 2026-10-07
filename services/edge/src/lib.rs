@@ -5,8 +5,8 @@
 
 mod configuration;
 mod connection;
-#[allow(dead_code)] // Used once chunks come from the worker.
 mod encode;
+mod fanout;
 mod login;
 mod play;
 mod session;
@@ -15,14 +15,21 @@ mod status;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
+use clustine_rpc::link::EdgeEnd;
 use tokio::net::TcpListener;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
-/// Settings of an edge that players can see.
+use crate::fanout::{Command, Fanout, FanoutConfig};
+
+/// Commands from connections that may wait for the fan-out task.
+const COMMAND_CAPACITY: usize = 1024;
+
+/// Settings of an edge.
 #[derive(Debug, Clone)]
 pub struct EdgeConfig {
     /// The text shown below the server's name in the client's server list.
@@ -32,12 +39,17 @@ pub struct EdgeConfig {
     /// How often a client has to prove it is still there. A client that has not answered
     /// one keep-alive by the time the next is due is disconnected.
     pub keep_alive_interval: Duration,
+    /// The largest view distance granted to a client, in chunks. A client is sent the
+    /// chunks within that distance of the one it is in.
+    pub view_distance: i32,
 }
 
 impl EdgeConfig {
     /// The keep-alive interval of the vanilla server. Clients give up on a server they
     /// have not heard from for 30 seconds, so the interval must stay well below that.
     pub const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+
+    pub const DEFAULT_VIEW_DISTANCE: i32 = 8;
 }
 
 /// State shared by all connections of one edge.
@@ -47,27 +59,41 @@ struct Shared {
     opening_packets: Vec<Vec<u8>>,
     /// See [`configuration::registry_packets`].
     registry_packets: Vec<Vec<u8>>,
-    /// Entity ids start at 1 because clients reject 0.
-    next_entity_id: AtomicI32,
+    /// Where connections in the play state register and report.
+    fanout: mpsc::Sender<Command>,
+    next_session: AtomicU64,
 }
 
 /// A listening edge that has not started accepting connections yet.
 pub struct Edge {
     listener: TcpListener,
     shared: Arc<Shared>,
+    fanout: Fanout,
 }
 
 impl Edge {
     /// Starts listening on `address`. Port 0 picks a free port; see [`Edge::local_addr`].
-    pub async fn bind(address: SocketAddr, config: EdgeConfig) -> io::Result<Self> {
+    /// `worker` is the edge's end of its link to the worker that simulates the world.
+    pub async fn bind(
+        address: SocketAddr,
+        config: EdgeConfig,
+        worker: EdgeEnd,
+    ) -> io::Result<Self> {
+        let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let fanout_config = FanoutConfig {
+            max_players: config.max_players,
+            view_distance: config.view_distance,
+        };
         Ok(Self {
             listener: TcpListener::bind(address).await?,
             shared: Arc::new(Shared {
                 config,
                 opening_packets: configuration::opening_packets(),
                 registry_packets: configuration::registry_packets(),
-                next_entity_id: AtomicI32::new(1),
+                fanout: commands,
+                next_session: AtomicU64::new(0),
             }),
+            fanout: Fanout::new(fanout_config, worker, command_receiver),
         })
     }
 
@@ -75,15 +101,27 @@ impl Edge {
         self.listener.local_addr()
     }
 
-    /// Accepts and serves connections until the returned future is dropped, which also
-    /// closes every open connection.
+    /// Accepts and serves connections until the worker is gone or the returned future is
+    /// dropped. Either way every open connection is closed.
     pub async fn run(self) {
+        // Everything runs in this set, so dropping the future stops all of it.
         let mut connections = JoinSet::new();
+        let (fanout_running, mut fanout_stopped) = oneshot::channel::<()>();
+        let fanout = self.fanout;
+        connections.spawn(async move {
+            fanout.run().await;
+            drop(fanout_running);
+        });
         loop {
             // Reap finished connections so the set does not grow without bound.
             while connections.try_join_next().is_some() {}
 
-            let (stream, peer) = match self.listener.accept().await {
+            let accepted = tokio::select! {
+                accepted = self.listener.accept() => accepted,
+                // Without the fan-out task nobody can play.
+                _ = &mut fanout_stopped => return,
+            };
+            let (stream, peer) = match accepted {
                 Ok(accepted) => accepted,
                 Err(error) => {
                     // Typically the process is out of file descriptors; keep serving the

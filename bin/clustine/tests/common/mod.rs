@@ -10,6 +10,9 @@ pub fn config() -> Config {
         description: "integration test".to_owned(),
         max_players: 7,
         keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
+        // Small, so that tests do not wait for hundreds of chunks.
+        view_distance: VIEW_DISTANCE,
+        serialise_link: false,
     }
 }
 
@@ -27,3 +30,7 @@ pub async fn start_with(config: Config) -> (Server, String) {
 /// A keep-alive interval short enough to observe several rounds in a test.
 #[allow(dead_code)] // Not every test binary uses it.
 pub const SHORT_KEEP_ALIVE: Duration = Duration::from_millis(100);
+
+/// The view distance of test servers, in chunks.
+#[allow(dead_code)] // Not every test binary uses it.
+pub const VIEW_DISTANCE: i32 = 3;

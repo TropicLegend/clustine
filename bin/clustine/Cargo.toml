@@ -9,6 +9,12 @@ publish.workspace = true
 
 [dependencies]
 clustine-edge.workspace = true
+clustine-rpc.workspace = true
+clustine-sim.workspace = true
+clustine-worker.workspace = true
+clustine-world.workspace = true
+clustine-worldgen.workspace = true
+clustine-worldstore.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

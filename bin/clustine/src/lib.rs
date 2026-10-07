@@ -1,12 +1,27 @@
 //! Single-binary mode: runs every Clustine service in one process.
+//!
+//! The services are wired together the same way they will be across processes: the edge
+//! and the worker only share a link, and the worker reaches the world store through
+//! messages.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clustine_edge::Edge;
 pub use clustine_edge::EdgeConfig;
+use clustine_rpc::link;
+use clustine_sim::{Region, RegionConfig};
+use clustine_worker::{RegionRunner, Worker};
+use clustine_world::{EntityId, Vec3};
+use clustine_worldgen::FlatGenerator;
 use tokio::task::JoinHandle;
+
+/// Messages that may wait in each direction between the edge and the worker. The worker
+/// never waits for the edge, so this has to cover the chunks of many players joining at
+/// the same moment.
+const LINK_CAPACITY: usize = 16 * 1024;
 
 /// Settings of a single-process server.
 #[derive(Debug, Clone)]
@@ -20,6 +35,11 @@ pub struct Config {
     /// How often clients have to prove they are still there; see
     /// [`EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL`].
     pub keep_alive_interval: Duration,
+    /// The largest view distance granted to a client, in chunks.
+    pub view_distance: i32,
+    /// Serialise every message between the edge and the worker, as a deployment with
+    /// separate processes does. Slower; meant for testing that boundary.
+    pub serialise_link: bool,
 }
 
 /// A running server. Dropping it without calling [`Server::stop`] leaves it running
@@ -27,23 +47,42 @@ pub struct Config {
 pub struct Server {
     address: SocketAddr,
     edge: JoinHandle<()>,
+    worker: Worker,
 }
 
 impl Server {
     /// Starts all services and returns once the server accepts connections.
     pub async fn start(config: Config) -> Result<Self> {
+        let generator = FlatGenerator::classic();
+        // Players enter above the middle of the block at the origin.
+        let spawn = Vec3::new(0.5, f64::from(generator.surface_y()), 0.5);
+        let store = clustine_worldstore::spawn(Arc::new(generator));
+
+        let (edge_end, worker_end) = if config.serialise_link {
+            link::framed(LINK_CAPACITY)
+        } else {
+            link::in_process(LINK_CAPACITY)
+        };
+        let region = Region::new(RegionConfig {
+            spawn,
+            // Clients reject entity id 0.
+            first_entity_id: EntityId(1),
+        });
+
         let edge_config = EdgeConfig {
             description: config.description,
             max_players: config.max_players,
             keep_alive_interval: config.keep_alive_interval,
+            view_distance: config.view_distance,
         };
-        let edge = Edge::bind(config.bind, edge_config)
+        let edge = Edge::bind(config.bind, edge_config, edge_end)
             .await
             .with_context(|| format!("listening on {}", config.bind))?;
         let address = edge.local_addr()?;
         Ok(Self {
             address,
             edge: tokio::spawn(edge.run()),
+            worker: Worker::spawn(RegionRunner::new(region, worker_end, store)),
         })
     }
 
@@ -52,10 +91,18 @@ impl Server {
         self.address
     }
 
-    /// Stops accepting connections and closes the existing ones.
+    /// Waits until the server has stopped by itself, which only happens when one of its
+    /// services fails.
+    pub async fn stopped(&mut self) {
+        let _ = (&mut self.edge).await;
+    }
+
+    /// Stops accepting connections, closes the existing ones and stops the simulation.
     pub async fn stop(self) {
         self.edge.abort();
         // The task was cancelled on purpose, so its result carries no information.
         let _ = self.edge.await;
+        // Waits for the current tick, at most a few milliseconds.
+        self.worker.stop();
     }
 }

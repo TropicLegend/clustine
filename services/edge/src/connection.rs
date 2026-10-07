@@ -32,6 +32,8 @@ pub(crate) enum ConnectionError {
     Decode(#[from] DecodeError),
     #[error("protocol violation: {0}")]
     Protocol(&'static str),
+    #[error("the server is shutting down")]
+    ShuttingDown,
 }
 
 pub(crate) struct Connection {
