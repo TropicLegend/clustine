@@ -4,8 +4,8 @@ A from-scratch Minecraft: Java Edition server that simulates **one world across 
 instances**. Adding instances adds compute and memory to the same world rather than
 creating more separate servers.
 
-> **Status: pre-alpha.** Nothing is playable. The repository currently contains the
-> workspace skeleton and design documents only. See the [roadmap](docs/roadmap.md).
+> **Status: pre-alpha.** Nothing is playable yet. The first milestone, a single-node
+> walking skeleton, is in progress; see the [roadmap](docs/roadmap.md).
 
 ## Goals
 
@@ -51,6 +51,21 @@ cargo build --workspace
 
 ```bash
 cargo test --workspace
+```
+
+### Running
+
+The server listens on `127.0.0.1:25565` by default. So far it only answers the server
+list ping; joining is refused with a message.
+
+```bash
+cargo run -p clustine
+```
+
+`botswarm` is the scripted test client:
+
+```bash
+cargo run -p clustine-botswarm -- ping 127.0.0.1:25565
 ```
 
 ### Game data

@@ -1,11 +1,12 @@
 //! Minecraft: Java Edition wire protocol: packet definitions and codec.
 //!
-//! This crate performs no I/O. [`frame`] splits a byte stream into packets and
-//! [`codec`] reads and writes the values inside them. Both are safe to use on
-//! untrusted input.
+//! This crate performs no I/O. [`frame`] splits a byte stream into packets, [`packets`]
+//! defines them, and [`codec`] reads and writes the values inside them. Decoding is safe
+//! on untrusted input.
 
 pub mod codec;
 pub mod frame;
+pub mod packets;
 
 #[rustfmt::skip]
 mod generated;

@@ -1,9 +1,44 @@
 //! Single-binary mode: runs every Clustine service in one process.
 
-fn main() {
-    eprintln!(
-        "clustine {}: no services are implemented yet",
-        env!("CARGO_PKG_VERSION")
-    );
-    std::process::exit(1);
+use std::net::SocketAddr;
+
+use anyhow::Result;
+use clap::Parser;
+use clustine::{Config, Server};
+use tracing::info;
+
+/// A Minecraft: Java Edition server, all services in one process.
+#[derive(Parser)]
+#[command(version)]
+struct Args {
+    /// Address to listen on. There is no authentication yet, so keep this on localhost.
+    #[arg(long, default_value = "127.0.0.1:25565")]
+    bind: SocketAddr,
+
+    /// Text shown in the client's server list.
+    #[arg(long, default_value = "A Clustine server")]
+    description: String,
+
+    /// Player limit shown in the server list.
+    #[arg(long, default_value_t = 20)]
+    max_players: u32,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+    tracing_subscriber::fmt::init();
+
+    let server = Server::start(Config {
+        bind: args.bind,
+        description: args.description,
+        max_players: args.max_players,
+    })
+    .await?;
+    info!(address = %server.address(), "listening");
+
+    tokio::signal::ctrl_c().await?;
+    info!("shutting down");
+    server.stop().await;
+    Ok(())
 }

@@ -30,6 +30,8 @@ pub enum DecodeError {
     TrailingBytes(usize),
     #[error("{value} is not a valid {what}")]
     InvalidValue { what: &'static str, value: i64 },
+    #[error("packet id {0} does not exist in this protocol state")]
+    UnknownPacket(i32),
 }
 
 /// A value that can be written to the wire.
