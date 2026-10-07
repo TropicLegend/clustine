@@ -144,7 +144,9 @@ impl FrameEncoder {
         let Some(threshold) = self.threshold else {
             return put_frame(&[], packet, out);
         };
-        if packet.len() < threshold {
+        // A declared size of 0 means "not compressed", so an empty packet cannot be sent
+        // compressed even if the threshold is 0.
+        if packet.len() < threshold || packet.is_empty() {
             return put_frame(&[0], packet, out);
         }
         if packet.len() > MAX_UNCOMPRESSED_LENGTH {
@@ -219,6 +221,22 @@ mod tests {
         decoder.enable_compression();
         decoder.queue(&out);
         assert_eq!(decode_all(&mut decoder), [packet]);
+    }
+
+    /// Found by the round-trip property test: with a threshold of 0 an empty packet used
+    /// to be compressed with a declared size of 0, which reads as "not compressed".
+    #[test]
+    fn empty_packet_is_never_compressed() {
+        let mut encoder = FrameEncoder::new();
+        encoder.enable_compression(0);
+        let mut out = Vec::new();
+        encoder.encode(&[], &mut out).unwrap();
+        assert_eq!(out, [0x01, 0x00]);
+
+        let mut decoder = FrameDecoder::new();
+        decoder.enable_compression();
+        decoder.queue(&out);
+        assert_eq!(decode_all(&mut decoder), [Vec::<u8>::new()]);
     }
 
     #[test]
