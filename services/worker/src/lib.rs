@@ -23,7 +23,7 @@ use clustine_sim::api::RegionEvent;
 use clustine_sim::{PlayerChange, PlayerEvent, Region, TickInputs};
 use clustine_world::{ChunkPos, PlayerId};
 use clustine_worldstore::StoreHandle;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// The length of a tick: 20 ticks per second.
 pub const TICK: Duration = Duration::from_millis(50);
@@ -48,6 +48,10 @@ pub struct RegionStatus {
     pub arrivals: AtomicU64,
     /// How many players have been let go to other regions.
     pub departures: AtomicU64,
+    /// Whether the world store no longer does what the region asks of it: it cannot be
+    /// reached, or it has given the region to another owner. The region goes on
+    /// ticking, but nothing it changes is kept, so whoever runs it should stop it.
+    pub store_lost: AtomicBool,
 }
 
 /// Attaches links to a [`RegionRunner`] while it runs, from any thread.
@@ -255,6 +259,9 @@ impl RegionRunner {
             self.send_snapshots(id, output.tick);
         }
 
+        if self.store.is_lost() && !self.status.store_lost.swap(true, Ordering::Relaxed) {
+            error!("the world store is lost; nothing that changes from now on is kept");
+        }
         self.status.tick.store(output.tick, Ordering::Relaxed);
         let players = self.region.player_count() as u64;
         self.status.players.store(players, Ordering::Relaxed);

@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clustine-coordinator.workspace = true
 clustine-data.workspace = true
 clustine-edge.workspace = true
 clustine-region.workspace = true

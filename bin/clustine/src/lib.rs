@@ -1,9 +1,14 @@
-//! Single-binary mode: runs every Clustine service in one process.
+//! The Clustine server: every service in one process, or one service per process.
+//!
+//! [`Server`] is the single process. [`cluster`] has the services as processes of their
+//! own.
 //!
 //! The services are wired together the same way they are across processes: the edge
 //! shares nothing with a region but a link, and a region reaches the world store through
 //! messages. The world can be divided into several regions here too, each ticking on a
 //! thread of its own.
+
+pub mod cluster;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -27,7 +32,7 @@ use tokio::task::JoinHandle;
 /// Messages that may wait in each direction between the edge and a region. A region
 /// never waits for the edge, so this has to cover the chunks of many players joining at
 /// the same moment.
-const LINK_CAPACITY: usize = 16 * 1024;
+pub(crate) const LINK_CAPACITY: usize = 16 * 1024;
 
 /// The blocks a player has at hand when entering the world. In creative mode they can
 /// take any other item from the creative inventory.
@@ -42,6 +47,50 @@ const STARTING_HOTBAR: [i32; HOTBAR_SLOTS] = [
     items::GLASS,
     items::GLOWSTONE,
 ];
+
+/// What players have in their hotbar when they enter the world.
+pub(crate) fn starting_hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
+    STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 }))
+}
+
+/// What makes the chunks nobody has changed. Every service that needs it has to use the
+/// same, or the world would not fit together.
+pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
+    Arc::new(FlatGenerator::classic())
+}
+
+/// Where players enter the world: above the middle of the block at the origin.
+pub(crate) fn spawn_point() -> Vec3 {
+    Vec3::new(0.5, f64::from(FlatGenerator::classic().surface_y()), 0.5)
+}
+
+/// Resolves when the process is asked to stop: by an interrupt from the terminal or,
+/// where there is such a thing, by the signal that asks a process to terminate, which
+/// is what Kubernetes sends.
+pub async fn stop_signal() {
+    let interrupted = async {
+        // If the signal cannot be listened for, only the other one stops the process.
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminated = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                terminate.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminated = std::future::pending::<()>();
+    tokio::select! {
+        _ = interrupted => {}
+        _ = terminated => {}
+    }
+}
 
 /// Settings of a single-process server.
 #[derive(Debug, Clone)]
@@ -90,10 +139,8 @@ pub struct Server {
 impl Server {
     /// Starts all services and returns once the server accepts connections.
     pub async fn start(config: Config) -> Result<Self> {
-        let generator = FlatGenerator::classic();
-        // Players enter above the middle of the block at the origin.
-        let spawn = Vec3::new(0.5, f64::from(generator.surface_y()), 0.5);
-        let generator: Arc<dyn ChunkGenerator> = Arc::new(generator);
+        let spawn = spawn_point();
+        let generator = generator();
         let layout = Layout::new(config.boundaries).context("dividing the world into regions")?;
         // One store for all regions, as in a cluster.
         let store = match &config.world {
@@ -124,7 +171,7 @@ impl Server {
                 spawn,
                 area,
                 entity_ids: EntityIds::block(region.0).context("too many regions")?,
-                starting_hotbar: STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 })),
+                starting_hotbar: starting_hotbar(),
             });
             links.push(edge_end);
             runners.push(

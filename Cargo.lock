@@ -217,6 +217,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clustine-botswarm",
+ "clustine-coordinator",
  "clustine-data",
  "clustine-edge",
  "clustine-protocol",
