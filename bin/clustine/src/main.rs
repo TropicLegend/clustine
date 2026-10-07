@@ -33,6 +33,11 @@ struct Args {
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
     checkpoint_interval: u64,
 
+    /// Packets of at least this many bytes are compressed. A negative number turns
+    /// compression off.
+    #[arg(long, default_value_t = EdgeConfig::DEFAULT_COMPRESSION_THRESHOLD as i64, allow_negative_numbers = true)]
+    compression_threshold: i64,
+
     /// Largest view distance granted to a client, in chunks.
     #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE, value_parser = clap::value_parser!(i32).range(2..=32))]
     view_distance: i32,
@@ -49,6 +54,8 @@ async fn main() -> Result<()> {
         max_players: args.max_players,
         keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
         view_distance: args.view_distance,
+        client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
+        compression_threshold: usize::try_from(args.compression_threshold).ok(),
         world: Some(args.world),
         checkpoint_interval: Duration::from_secs(args.checkpoint_interval),
         serialise_link: false,

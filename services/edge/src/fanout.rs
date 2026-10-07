@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use bytes::Bytes;
 use clustine_data::{BlockState, entity_types, synced_registry};
@@ -90,6 +90,8 @@ pub(crate) struct FanoutConfig {
     pub(crate) max_players: u32,
     /// The largest view distance granted to a client, in chunks.
     pub(crate) view_distance: i32,
+    /// Where the number of players in the world is published.
+    pub(crate) online: Arc<AtomicU32>,
 }
 
 /// A chunk at least one player of this edge can see.
@@ -397,6 +399,7 @@ impl Fanout {
         };
         view.entity = Some(entity_id);
         self.entity_owners.insert(entity_id, player);
+        self.config.online.fetch_add(1, Ordering::Relaxed);
         info!(name = %view.name, entity_id = entity_id.0, "player joined");
 
         // Placing the player is the first teleport the client has to confirm.
@@ -666,6 +669,7 @@ impl Fanout {
         info!(name = %view.name, "player left");
         if let Some(entity) = view.entity {
             self.entity_owners.remove(&entity);
+            self.config.online.fetch_sub(1, Ordering::Relaxed);
         }
         // Their entity disappears when the worker reports it gone; the entry in the
         // player list is this edge's to remove.

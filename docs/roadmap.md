@@ -41,7 +41,10 @@ check with an unmodified 26.3 client.
 | 11 | Placing blocks from a fixed hotbar | Bot `place`; real client | done; real client check pending |
 | 12 | Section format, manifests, local storage, checkpoint on shutdown | Restart test | done |
 | 13 | Write-ahead log, recovery, periodic checkpoint | Torn-write tests; `kill -9` test | done |
-| 14 | Compression, slow-client handling, timeouts, end-to-end CI job | A stalled bot is dropped without affecting tick time | |
+| 14 | Compression, slow-client handling, timeouts, parity matrix | Tests for compression settings, dawdling and non-reading clients | done |
+
+The comparisons with the official server need Java and agreement to the Minecraft EULA,
+so they are run by hand and not in CI.
 
 Not in M1: survival mechanics, chat and commands, a lighting engine, neighbour updates,
 server-side collision, entities other than players, more than one dimension, player data

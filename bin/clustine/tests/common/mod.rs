@@ -12,6 +12,8 @@ pub fn config() -> Config {
         keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
         // Small, so that tests do not wait for hundreds of chunks.
         view_distance: VIEW_DISTANCE,
+        client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
+        compression_threshold: Some(EdgeConfig::DEFAULT_COMPRESSION_THRESHOLD),
         // Nothing is written to disk unless a test asks for it.
         world: None,
         checkpoint_interval: Duration::from_secs(300),

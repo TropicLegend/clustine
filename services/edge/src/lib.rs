@@ -15,7 +15,7 @@ mod status;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::time::Duration;
 
 use clustine_rpc::EdgeToWorker;
@@ -43,6 +43,11 @@ pub struct EdgeConfig {
     /// The largest view distance granted to a client, in chunks. A client is sent the
     /// chunks within that distance of the one it is in.
     pub view_distance: i32,
+    /// How long a client may take: to get from connecting to the play state, to send
+    /// what is waited for before that, and to take what is sent to it.
+    pub client_timeout: Duration,
+    /// Packets of at least this many bytes are compressed. `None` turns compression off.
+    pub compression_threshold: Option<usize>,
 }
 
 impl EdgeConfig {
@@ -51,6 +56,12 @@ impl EdgeConfig {
     pub const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
     pub const DEFAULT_VIEW_DISTANCE: i32 = 8;
+
+    /// The time the vanilla server allows a client that is logging in or silent.
+    pub const DEFAULT_CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// The compression threshold of the vanilla server.
+    pub const DEFAULT_COMPRESSION_THRESHOLD: usize = 256;
 }
 
 /// State shared by all connections of one edge.
@@ -65,6 +76,8 @@ struct Shared {
     /// Where connections send what their players do.
     worker: link::Sender<EdgeToWorker>,
     next_session: AtomicU64,
+    /// The number of players in the world, kept by the fan-out task.
+    online: Arc<AtomicU32>,
 }
 
 /// A listening edge that has not started accepting connections yet.
@@ -83,9 +96,11 @@ impl Edge {
         worker: EdgeEnd,
     ) -> io::Result<Self> {
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let online = Arc::new(AtomicU32::new(0));
         let fanout_config = FanoutConfig {
             max_players: config.max_players,
             view_distance: config.view_distance,
+            online: Arc::clone(&online),
         };
         Ok(Self {
             listener: TcpListener::bind(address).await?,
@@ -96,6 +111,7 @@ impl Edge {
                 fanout: commands,
                 worker: worker.sender(),
                 next_session: AtomicU64::new(0),
+                online,
             }),
             fanout: Fanout::new(fanout_config, worker, command_receiver),
         })

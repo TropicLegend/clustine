@@ -37,6 +37,7 @@ pub(crate) async fn serve(
     profile: Profile,
     client_information: Option<ClientInformation>,
 ) -> Result<(), ConnectionError> {
+    connection.stop_timing_reads();
     let session = SessionId(shared.next_session.fetch_add(1, Ordering::Relaxed));
     let player = PlayerId(profile.uuid);
     let (outbound, mut packets) = mpsc::channel(OUTBOUND_CAPACITY);

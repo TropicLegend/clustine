@@ -26,6 +26,8 @@ async fn bot_joins_and_is_placed_in_the_world() {
         info.profile.uuid.to_string(),
         "b50ad385-829d-3141-a216-7e7d7539ba7f"
     );
+    // Compression is on by default, with the threshold of the vanilla server.
+    assert_eq!(info.compression, Some(256));
     assert_eq!(info.feature_flags, ["minecraft:vanilla"]);
     assert_eq!(info.offered_packs.len(), 1);
     assert_eq!(info.offered_packs[0].version, GAME_VERSION);
@@ -235,6 +237,47 @@ async fn many_bots_join_at_once() {
     entity_ids.sort_unstable();
     entity_ids.dedup();
     assert_eq!(entity_ids.len(), 50);
+
+    server.stop().await;
+}
+
+/// With compression turned off the client is not told to compress, and everything
+/// still arrives, including chunks, which are the packets compression matters for.
+#[tokio::test]
+async fn joining_works_without_compression() {
+    let (server, address) = start_with(Config {
+        compression_threshold: None,
+        ..config()
+    })
+    .await;
+
+    let mut bot = Bot::join(&address, "Plain").await.unwrap();
+    assert_eq!(bot.info.compression, None);
+    let expected = view_area((0, 0), VIEW_DISTANCE);
+    bot.wait_for_chunks(expected.len(), Duration::from_secs(30))
+        .await
+        .unwrap();
+    let sections = bot.sections((0, 0)).unwrap().unwrap();
+    assert_eq!(sections[0].block_count, 4 * 256);
+
+    server.stop().await;
+}
+
+/// A threshold of zero compresses every packet, however small.
+#[tokio::test]
+async fn joining_works_with_everything_compressed() {
+    let (server, address) = start_with(Config {
+        compression_threshold: Some(0),
+        ..config()
+    })
+    .await;
+
+    let mut bot = Bot::join(&address, "Squeezed").await.unwrap();
+    assert_eq!(bot.info.compression, Some(0));
+    bot.wait_for_chunks(1, Duration::from_secs(30))
+        .await
+        .unwrap();
+    bot.walk_to(5.5, 0.5, 0.5).await.unwrap();
 
     server.stop().await;
 }

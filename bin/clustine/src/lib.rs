@@ -54,6 +54,11 @@ pub struct Config {
     pub keep_alive_interval: Duration,
     /// The largest view distance granted to a client, in chunks.
     pub view_distance: i32,
+    /// How long a client may take to log in, to send what is waited for, or to take
+    /// what is sent to it; see [`EdgeConfig::DEFAULT_CLIENT_TIMEOUT`].
+    pub client_timeout: Duration,
+    /// Packets of at least this many bytes are compressed. `None` turns compression off.
+    pub compression_threshold: Option<usize>,
     /// The directory the world is kept in. It is created if it does not exist. With
     /// `None` the world only lasts as long as the server runs.
     pub world: Option<PathBuf>,
@@ -103,6 +108,8 @@ impl Server {
             max_players: config.max_players,
             keep_alive_interval: config.keep_alive_interval,
             view_distance: config.view_distance,
+            client_timeout: config.client_timeout,
+            compression_threshold: config.compression_threshold,
         };
         let edge = Edge::bind(config.bind, edge_config, edge_end)
             .await

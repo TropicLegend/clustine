@@ -4,8 +4,10 @@ A from-scratch Minecraft: Java Edition server that simulates **one world across 
 instances**. Adding instances adds compute and memory to the same world rather than
 creating more separate servers.
 
-> **Status: pre-alpha.** Nothing is playable yet. The first milestone, a single-node
-> walking skeleton, is in progress; see the [roadmap](docs/roadmap.md).
+> **Status: pre-alpha.** The first milestone is done: one server process in which
+> players walk around a flat creative world, see each other and build. The world is
+> not distributed over several instances yet; that is the next milestone. See the
+> [roadmap](docs/roadmap.md).
 
 ## Goals
 

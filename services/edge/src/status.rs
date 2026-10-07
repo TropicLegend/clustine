@@ -1,5 +1,7 @@
 //! The status state: answering the server list ping.
 
+use std::sync::atomic::Ordering;
+
 use clustine_data::{GAME_VERSION, PROTOCOL_VERSION};
 use clustine_protocol::packets::status::{PongResponse, ServerboundStatus, StatusResponse};
 use serde_json::json;
@@ -42,7 +44,10 @@ pub(crate) async fn serve(
 fn status_json(shared: &Shared) -> String {
     json!({
         "version": { "name": GAME_VERSION, "protocol": PROTOCOL_VERSION },
-        "players": { "max": shared.config.max_players, "online": 0 },
+        "players": {
+            "max": shared.config.max_players,
+            "online": shared.online.load(Ordering::Relaxed),
+        },
         "description": { "text": shared.config.description },
         "enforcesSecureChat": false,
     })

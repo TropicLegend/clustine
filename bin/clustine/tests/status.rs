@@ -111,3 +111,95 @@ async fn stopping_closes_open_connections() {
     assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
     assert!(TcpStream::connect(&address).await.is_err());
 }
+
+#[tokio::test]
+async fn ping_counts_the_players_in_the_world() {
+    let (server, address) = start().await;
+    let online = |status: &clustine_botswarm::Status| status.json["players"]["online"].clone();
+
+    let first = clustine_botswarm::Bot::join(&address, "First")
+        .await
+        .unwrap();
+    let _second = clustine_botswarm::Bot::join(&address, "Second")
+        .await
+        .unwrap();
+    let status = clustine_botswarm::ping(&address).await.unwrap();
+    assert_eq!(online(&status), 2);
+
+    drop(first);
+    // The server notices the closed connection a moment later.
+    let mut count = online(&status);
+    for _ in 0..100 {
+        count = online(&clustine_botswarm::ping(&address).await.unwrap());
+        if count == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(count, 1);
+
+    server.stop().await;
+}
+
+/// A connection that does not get on with it is closed: whether it says nothing at
+/// all, stops after the handshake, or keeps sending a little now and then.
+#[tokio::test]
+async fn clients_that_dawdle_before_playing_are_dropped() {
+    use std::time::{Duration, Instant};
+
+    use clustine::Config;
+    use clustine_protocol::packets::login::LoginStart;
+
+    let limit = Duration::from_millis(400);
+    let (server, address) = common::start_with(Config {
+        client_timeout: limit,
+        ..common::config()
+    })
+    .await;
+    let closed_within = |started: Instant| {
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= limit - Duration::from_millis(50) && elapsed < limit * 4,
+            "closed after {elapsed:?}"
+        );
+    };
+
+    // Silence.
+    let started = Instant::now();
+    let mut silent = TcpStream::connect(&address).await.unwrap();
+    let mut received = Vec::new();
+    let _ = silent.read_to_end(&mut received).await;
+    assert!(received.is_empty());
+    closed_within(started);
+
+    // A handshake and then nothing.
+    let started = Instant::now();
+    let mut connection = Connection::connect(&address).await.unwrap();
+    let handshake = intention(&address, Intent::Login).unwrap();
+    connection.write(&handshake).await.unwrap();
+    assert!(connection.read_frame().await.is_err());
+    closed_within(started);
+
+    // Always something just before each wait would run out, but never done.
+    let started = Instant::now();
+    let mut connection = Connection::connect(&address).await.unwrap();
+    tokio::time::sleep(limit / 2).await;
+    connection.write(&handshake).await.unwrap();
+    tokio::time::sleep(limit / 2).await;
+    let login = LoginStart {
+        name: "Dawdler".to_owned(),
+        uuid: uuid::Uuid::nil(),
+    };
+    let _ = connection.write(&login).await;
+    // Whatever the server sent in answer, it then hangs up.
+    while connection.read_frame().await.is_ok() {}
+    closed_within(started);
+
+    // Someone who gets on with it is not affected by the short limit.
+    let mut bot = clustine_botswarm::Bot::join(&address, "Brisk")
+        .await
+        .unwrap();
+    bot.idle(limit * 3).await.unwrap();
+
+    server.stop().await;
+}

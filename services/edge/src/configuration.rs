@@ -14,9 +14,8 @@ use clustine_protocol::packets::configuration::{
     ServerboundConfiguration, Tag, UpdateTags,
 };
 
+use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
-use crate::login::Profile;
-use crate::{Shared, play};
 
 /// The name the client shows for this server software, for example on the debug screen.
 const BRAND: &str = "Clustine";
@@ -88,11 +87,12 @@ pub(crate) fn registry_packets() -> Vec<Vec<u8>> {
     encoded
 }
 
+/// Takes the client through configuration. Returns the settings the client sent, if it
+/// sent any, or `None` if the connection ended here.
 pub(crate) async fn serve(
     connection: &mut Connection,
     shared: &Shared,
-    profile: Profile,
-) -> Result<(), ConnectionError> {
+) -> Result<Option<Option<ClientInformation>>, ConnectionError> {
     for packet in &shared.opening_packets {
         connection.queue_encoded(packet)?;
     }
@@ -103,14 +103,14 @@ pub(crate) async fn serve(
     let known_packs = match next(connection, &mut client_information).await? {
         Some(ServerboundConfiguration::ServerboundKnownPacks(reply)) => reply.packs,
         Some(_) => return Err(ConnectionError::Protocol("expected the known packs")),
-        None => return Ok(()),
+        None => return Ok(None),
     };
     if known_packs != [core_pack()] {
         let reason = format!("This server needs an unmodified Minecraft {GAME_VERSION} client.");
         let reason = Nbt::String(reason);
         connection.write(&Disconnect { reason }).await?;
         connection.close_gracefully().await;
-        return Ok(());
+        return Ok(None);
     }
 
     for packet in &shared.registry_packets {
@@ -118,16 +118,14 @@ pub(crate) async fn serve(
     }
     connection.flush().await?;
     match next(connection, &mut client_information).await? {
-        Some(ServerboundConfiguration::AcknowledgeFinishConfiguration(_)) => {}
-        Some(_) => {
-            return Err(ConnectionError::Protocol(
-                "expected the end of configuration",
-            ));
+        Some(ServerboundConfiguration::AcknowledgeFinishConfiguration(_)) => {
+            Ok(Some(client_information))
         }
-        None => return Ok(()),
+        Some(_) => Err(ConnectionError::Protocol(
+            "expected the end of configuration",
+        )),
+        None => Ok(None),
     }
-
-    play::serve(connection, shared, profile, client_information).await
 }
 
 /// Waits for the next packet that drives configuration forward. Settings are stored in

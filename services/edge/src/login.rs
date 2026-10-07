@@ -6,14 +6,14 @@
 use clustine_data::{GAME_VERSION, PROTOCOL_VERSION};
 use clustine_protocol::packets::handshake::Intention;
 use clustine_protocol::packets::login::{
-    LoginDisconnect, LoginStart, LoginSuccess, MAX_NAME_LENGTH, ServerboundLogin,
+    LoginDisconnect, LoginStart, LoginSuccess, MAX_NAME_LENGTH, ServerboundLogin, SetCompression,
 };
 use md5::{Digest, Md5};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
-use crate::{Shared, configuration};
 
 /// Who a connection belongs to, once login has succeeded.
 #[derive(Debug, Clone)]
@@ -22,31 +22,43 @@ pub(crate) struct Profile {
     pub(crate) name: String,
 }
 
+/// Logs the client in. Returns who the player is, or `None` if the connection ended
+/// here, for example because the client was refused.
 pub(crate) async fn serve(
     connection: &mut Connection,
     shared: &Shared,
     intention: &Intention,
-) -> Result<(), ConnectionError> {
+) -> Result<Option<Profile>, ConnectionError> {
     if intention.protocol_version != PROTOCOL_VERSION {
         let reason = format!("This server runs Minecraft {GAME_VERSION}.");
-        return refuse(connection, &reason).await;
+        refuse(connection, &reason).await?;
+        return Ok(None);
     }
 
     let Some(frame) = connection.read_frame().await? else {
-        return Ok(());
+        return Ok(None);
     };
     let ServerboundLogin::LoginStart(LoginStart { name, .. }) = ServerboundLogin::decode(&frame)?
     else {
         return Err(ConnectionError::Protocol("expected a login start"));
     };
     if !is_valid_name(&name) {
-        return refuse(connection, "Invalid player name.").await;
+        refuse(connection, "Invalid player name.").await?;
+        return Ok(None);
     }
     let profile = Profile {
         uuid: offline_uuid(&name),
         name,
     };
 
+    if let Some(threshold) = shared.config.compression_threshold {
+        // The packet announcing compression is itself still sent in the plain format.
+        let announcement = SetCompression {
+            threshold: i32::try_from(threshold).unwrap_or(i32::MAX),
+        };
+        connection.write(&announcement).await?;
+        connection.enable_compression(threshold);
+    }
     connection
         .write(&LoginSuccess {
             uuid: profile.uuid,
@@ -56,15 +68,14 @@ pub(crate) async fn serve(
         })
         .await?;
     let Some(frame) = connection.read_frame().await? else {
-        return Ok(());
+        return Ok(None);
     };
     let ServerboundLogin::LoginAcknowledged(_) = ServerboundLogin::decode(&frame)? else {
         return Err(ConnectionError::Protocol(
             "expected a login acknowledgement",
         ));
     };
-
-    configuration::serve(connection, shared, profile).await
+    Ok(Some(profile))
 }
 
 async fn refuse(connection: &mut Connection, reason: &str) -> Result<(), ConnectionError> {
