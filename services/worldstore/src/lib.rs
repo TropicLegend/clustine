@@ -1,7 +1,7 @@
 //! World store service: serves and persists chunks, snapshots and write-ahead logs.
 //!
 //! The store runs on its own thread and is spoken to through messages, so that slow
-//! storage can never delay a tick and so that it can later live in another process.
+//! storage can never delay a tick and so that it can live in another process.
 //!
 //! One store serves every region of a world. Whoever runs a region opens it with a hello
 //! and speaks to the store through the [`StoreHandle`] it gets in return. The store sees
@@ -9,14 +9,19 @@
 //!
 //! Only chunks that were changed are stored. Any other chunk is generated again when it
 //! is needed, which is why a world is tied to the generator settings it was created with.
+//!
+//! Whoever runs a region may be in another process than the store: [`serve`] offers a
+//! store over TCP, and [`StoreHandle::connect`] opens a region of a store that is served.
 
 mod local;
+mod tcp;
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -27,6 +32,7 @@ use clustine_world::{Chunk, ChunkGenerator, ChunkPos};
 use tracing::{error, info};
 
 use crate::local::LocalFs;
+pub use crate::tcp::{Server, serve};
 
 /// Why a world could not be opened, read or written, or a region not be opened.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +62,9 @@ pub enum StoreError {
     /// The store's regions are part of another layout than the one in the hello.
     #[error("the store's regions are part of layout {expected:016x}, not of layout {offered:016x}")]
     LayoutMismatch { expected: u64, offered: u64 },
+    /// A store in another process did not accept the hello, for the reason it gave.
+    #[error("the store refused the hello: {0}")]
+    Refused(String),
 }
 
 /// Where chunks are kept.
@@ -111,7 +120,12 @@ struct Session {
 }
 
 /// What a handle is made of besides the way to the store thread.
-type Opened = (Session, Receiver<StoreReply>);
+struct Opened {
+    session: Session,
+    replies: Receiver<StoreReply>,
+    /// Set by the store once another owner has taken the region over.
+    lost: Arc<AtomicBool>,
+}
 
 /// What the store thread is told.
 enum Message {
@@ -161,7 +175,7 @@ impl Store {
     ///
     /// The first hello decides which layout the store's regions are part of; one that
     /// names another layout is refused. A region has one owner at a time. A hello with a
-    /// higher epoch than the owner's replaces the owner, whose handle is dead from then
+    /// higher epoch than the owner's replaces the owner, whose handle is lost from then
     /// on: what it asks for is not done and it is not answered. A hello with the same or
     /// a lower epoch is refused. Once the owner has dropped its handle, the region can be
     /// opened again with the same epoch or a higher one.
@@ -172,46 +186,99 @@ impl Store {
         let (answer, answered) = mpsc::channel();
         // The store runs for as long as there is a `Store`, so it is still there.
         let _ = self.messages.send(Message::Open { hello, answer });
-        let (session, replies) = answered
+        let opened = answered
             .recv()
             .expect("the store thread answers every hello")?;
-        Ok(StoreHandle {
-            session,
-            messages: self.messages.clone(),
-            replies,
-        })
+        Ok(StoreHandle::local(opened, self.messages.clone()))
     }
 }
 
 /// An open region: what its owner speaks to the store through. Dropping it gives the
 /// region up, after everything requested before has been done.
+///
+/// The store is in this process or, for a handle made by [`StoreHandle::connect`], in
+/// another one. A handle is used in the same way and does the same either way.
 pub struct StoreHandle {
-    session: Session,
-    messages: Sender<Message>,
+    link: Link,
     replies: Receiver<StoreReply>,
+    /// Set once nothing asked through the handle will be done any more.
+    lost: Arc<AtomicBool>,
+}
+
+/// How what a handle asks for gets to the store. Dropping it gives the region up.
+enum Link {
+    /// Through the messages of a store in this process.
+    Local {
+        session: Session,
+        messages: Sender<Message>,
+    },
+    /// Through the thread that writes to the connection to a store in another process.
+    /// That thread closes the connection once this is gone.
+    Remote(Sender<StoreRequest>),
+}
+
+impl Link {
+    fn request(&self, request: StoreRequest) {
+        match self {
+            Link::Local { session, messages } => {
+                // The store runs for as long as there is a handle, so it is still there.
+                let _ = messages.send(Message::Request {
+                    session: *session,
+                    request,
+                });
+            }
+            Link::Remote(requests) => {
+                // The thread is gone if the connection has failed. The handle is lost
+                // then, and nothing it asks for is done.
+                let _ = requests.send(request);
+            }
+        }
+    }
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        if let Link::Local { session, messages } = self {
+            let _ = messages.send(Message::Close { session: *session });
+        }
+    }
 }
 
 impl StoreHandle {
+    /// The handle of a region that the store behind `messages` has opened.
+    fn local(opened: Opened, messages: Sender<Message>) -> StoreHandle {
+        let Opened {
+            session,
+            replies,
+            lost,
+        } = opened;
+        StoreHandle {
+            link: Link::Local { session, messages },
+            replies,
+            lost,
+        }
+    }
+
     /// Queues a request. An answer, if the request has one, arrives later through
     /// [`StoreHandle::try_reply`].
     pub fn request(&self, request: StoreRequest) {
-        // The store runs for as long as there is a handle, so it is still there.
-        let _ = self.messages.send(Message::Request {
-            session: self.session,
-            request,
-        });
+        self.link.request(request);
     }
 
-    /// Returns the next answer if one is ready, without blocking.
+    /// Returns the next answer if one is ready, without blocking. A handle that is lost
+    /// has no answers any more.
     pub fn try_reply(&self) -> Option<StoreReply> {
+        if self.is_lost() {
+            return None;
+        }
         self.replies.try_recv().ok()
     }
 
     /// Waits until everything requested so far has been done. Answers to earlier load
     /// requests that are still unread are discarded, so this is for shutting down.
     ///
-    /// If another owner has taken the region over, nothing requested is done any more
-    /// and this returns without waiting.
+    /// If the handle is lost, nothing requested is done any more and this returns
+    /// without waiting.
     pub fn flush(&self) {
         self.request(StoreRequest::Flush);
         while let Ok(reply) = self.replies.recv() {
@@ -220,13 +287,11 @@ impl StoreHandle {
             }
         }
     }
-}
 
-impl Drop for StoreHandle {
-    fn drop(&mut self) {
-        let _ = self.messages.send(Message::Close {
-            session: self.session,
-        });
+    /// Whether nothing asked through this handle will be done any more: the region was
+    /// taken over by another owner, or the store can no longer be reached.
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::Relaxed)
     }
 }
 
@@ -308,6 +373,8 @@ struct Owner {
     number: u64,
     epoch: u64,
     replies: Sender<StoreReply>,
+    /// Tells the handle that another owner has taken the region over.
+    lost: Arc<AtomicBool>,
 }
 
 /// What the store thread works with.
@@ -407,8 +474,10 @@ impl Service {
             Entry::Vacant(entry) => entry.insert(RegionState { epoch, owner: None }),
         };
         // From here on the owner that was there, if any, gets nothing done and hears
-        // nothing: its end of the replies is closed, which also ends a flush it waits in.
-        if state.owner.take().is_some() {
+        // nothing: its handle is lost, and its end of the replies is closed, which also
+        // ends a flush it waits in. In this order, so that the flush finds the handle lost.
+        if let Some(replaced) = state.owner.take() {
+            replaced.lost.store(true, Ordering::Relaxed);
             info!(%region, epoch, "the owner of a region was replaced");
         }
         state.epoch = epoch;
@@ -428,13 +497,19 @@ impl Service {
             region,
             number: self.handles,
         };
-        let (sender, receiver) = mpsc::channel();
+        let (sender, replies) = mpsc::channel();
+        let lost = Arc::new(AtomicBool::new(false));
         state.owner = Some(Owner {
             number: session.number,
             epoch,
             replies: sender,
+            lost: Arc::clone(&lost),
         });
-        Ok((session, receiver))
+        Ok(Opened {
+            session,
+            replies,
+            lost,
+        })
     }
 
     /// Does what the owner of `region` asks for and returns the answer, if there is one.
@@ -512,13 +587,13 @@ mod tests {
 
     use super::*;
 
-    fn generator() -> Arc<dyn ChunkGenerator> {
+    pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
         Arc::new(FlatGenerator::classic())
     }
 
     /// Waits for the next answer to `store`.
-    fn reply(store: &StoreHandle) -> StoreReply {
-        for _ in 0..5000 {
+    pub(crate) fn reply(store: &StoreHandle) -> StoreReply {
+        for _ in 0..30_000 {
             match store.try_reply() {
                 Some(reply) => return reply,
                 None => thread::sleep(Duration::from_millis(1)),
@@ -528,7 +603,7 @@ mod tests {
     }
 
     /// Asks for a chunk and waits for it.
-    fn load(store: &StoreHandle, position: ChunkPos) -> Chunk {
+    pub(crate) fn load(store: &StoreHandle, position: ChunkPos) -> Chunk {
         store.request(StoreRequest::Load { position });
         match reply(store) {
             StoreReply::Loaded {
@@ -542,7 +617,7 @@ mod tests {
         }
     }
 
-    fn save(store: &StoreHandle, position: ChunkPos, chunk: &Chunk) {
+    pub(crate) fn save(store: &StoreHandle, position: ChunkPos, chunk: &Chunk) {
         store.request(StoreRequest::Save {
             position,
             tick: 5,
@@ -550,7 +625,7 @@ mod tests {
         });
     }
 
-    fn edited() -> Chunk {
+    pub(crate) fn edited() -> Chunk {
         let mut chunk = generator().generate(ChunkPos::new(0, 0));
         chunk.set(3, -61, 4, blocks::AIR);
         chunk.set(3, 100, 4, blocks::GLASS);
@@ -558,7 +633,7 @@ mod tests {
     }
 
     /// The hello of an owner of one of two regions: 0 is west of x = 0, 1 east of it.
-    fn hello(region: u32, epoch: u64) -> RegionHello {
+    pub(crate) fn hello(region: u32, epoch: u64) -> RegionHello {
         RegionHello {
             region: RegionId(region),
             epoch,
@@ -567,7 +642,7 @@ mod tests {
     }
 
     /// A store of each kind.
-    fn stores(directory: &Path) -> [Store; 2] {
+    pub(crate) fn stores(directory: &Path) -> [Store; 2] {
         [
             Store::memory(generator()),
             Store::local(directory, generator()).unwrap(),
@@ -653,7 +728,11 @@ mod tests {
         assert_eq!(blobs, 2);
     }
 
-    fn log(store: &StoreHandle, tick: u64, changes: &[(i32, i32, i32, clustine_data::BlockState)]) {
+    pub(crate) fn log(
+        store: &StoreHandle,
+        tick: u64,
+        changes: &[(i32, i32, i32, clustine_data::BlockState)],
+    ) {
         store.request(StoreRequest::Log {
             tick,
             changes: changes
@@ -1005,7 +1084,12 @@ mod tests {
             let old = store.open_region(hello(1, 1)).unwrap();
             // Done, because the region is still its own.
             save(&old, origin, &edited());
+            assert!(!old.is_lost());
+            // Whether or not this is answered before the new owner is there, the answer
+            // is not given out afterwards.
+            old.request(StoreRequest::Load { position: origin });
             let new = store.open_region(hello(1, 2)).unwrap();
+            assert!(old.is_lost() && !new.is_lost());
 
             // Nothing the old owner asks for is done any more, and none of it answered.
             save(&old, origin, &generator().generate(origin));
@@ -1029,9 +1113,9 @@ mod tests {
 
     /// Generates what [`generator`] does, but stops before the chunk at [`HELD`] until
     /// it is let go on. The store is busy meanwhile, and what it is asked for queues up.
-    struct Held(Barrier);
+    pub(crate) struct Held(pub(crate) Barrier);
 
-    const HELD: ChunkPos = ChunkPos::new(1000, 1000);
+    pub(crate) const HELD: ChunkPos = ChunkPos::new(1000, 1000);
 
     impl ChunkGenerator for Held {
         fn generate(&self, position: ChunkPos) -> Chunk {
@@ -1084,12 +1168,8 @@ mod tests {
         store.messages.send(open).unwrap();
         meddle(&old);
         held.0.wait();
-        let (session, replies) = answered.recv().unwrap().unwrap();
-        let new = StoreHandle {
-            session,
-            messages: store.messages.clone(),
-            replies,
-        };
+        let opened = answered.recv().unwrap().unwrap();
+        let new = StoreHandle::local(opened, store.messages.clone());
 
         // The new owner hears nothing that was meant for the old one, finds what the old
         // one logged before the hello, and nothing of what was waiting behind it.
