@@ -1,0 +1,7 @@
+[package]
+name = "clustine-worker"
+description = "Worker service: ticks the regions it owns."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
