@@ -8,6 +8,7 @@ use uuid::Uuid;
 use super::login::{MAX_NAME_LENGTH, ProfileProperty};
 use super::{Packet, packet_set};
 use crate::codec::{Decode, DecodeError, Encode, Position, Reader, Writer};
+use crate::item::ItemStack;
 use crate::nbt::Nbt;
 use crate::packet_ids::play::{clientbound, serverbound};
 
@@ -1221,6 +1222,176 @@ impl Decode for BlockUpdate {
     }
 }
 
+/// The player used the item in their hand on a block, which for a block item means
+/// placing it against that block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UseItemOn {
+    /// 0 for the main hand, 1 for the off hand.
+    pub hand: i32,
+    /// The block that was clicked.
+    pub position: Position,
+    /// One of the [`face`] values: the side of the block that was clicked.
+    pub face: i32,
+    /// Where on the block the click landed, each from 0 to 1.
+    pub cursor: [f32; 3],
+    /// Whether the player's head is inside a block.
+    pub inside_block: bool,
+    pub world_border_hit: bool,
+    /// Numbers the client's predicted block changes; see [`AcknowledgeBlockChange`].
+    pub sequence: i32,
+}
+
+impl Packet for UseItemOn {
+    const ID: i32 = serverbound::USE_ITEM_ON;
+}
+
+impl Encode for UseItemOn {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.hand);
+        w.put_position(self.position);
+        w.put_var_int(self.face);
+        for value in self.cursor {
+            w.put_f32(value);
+        }
+        w.put_bool(self.inside_block);
+        w.put_bool(self.world_border_hit);
+        w.put_var_int(self.sequence);
+    }
+}
+
+impl Decode for UseItemOn {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            hand: r.var_int()?,
+            position: r.position()?,
+            face: r.var_int()?,
+            cursor: [r.f32()?, r.f32()?, r.f32()?],
+            inside_block: r.bool()?,
+            world_border_hit: r.bool()?,
+            sequence: r.var_int()?,
+        })
+    }
+}
+
+/// The player selected another slot of their hotbar, from 0 to 8.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetHeldItem {
+    pub slot: i16,
+}
+
+impl Packet for SetHeldItem {
+    const ID: i32 = serverbound::SET_CARRIED_ITEM;
+}
+
+impl Encode for SetHeldItem {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i16(self.slot);
+    }
+}
+
+impl Decode for SetHeldItem {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { slot: r.i16()? })
+    }
+}
+
+/// Slots of the player's inventory window.
+pub mod inventory {
+    /// The number of slots, including crafting, armour and the off hand.
+    pub const SLOT_COUNT: usize = 46;
+    /// The first of the nine hotbar slots.
+    pub const HOTBAR_START: usize = 36;
+    /// The id of the player's own inventory window.
+    pub const PLAYER_WINDOW: i32 = 0;
+}
+
+/// A creative-mode player put an item into a slot of their inventory, or emptied it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetCreativeModeSlot {
+    /// A slot of the inventory window; see [`inventory`]. -1 drops the item instead.
+    pub slot: i16,
+    pub stack: Option<ItemStack>,
+}
+
+impl Packet for SetCreativeModeSlot {
+    const ID: i32 = serverbound::SET_CREATIVE_MODE_SLOT;
+}
+
+impl Encode for SetCreativeModeSlot {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i16(self.slot);
+        w.put_item_stack(self.stack);
+    }
+}
+
+impl Decode for SetCreativeModeSlot {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            slot: r.i16()?,
+            stack: r.untrusted_item_stack()?,
+        })
+    }
+}
+
+/// The whole contents of a window, such as the player's inventory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetContainerContent {
+    /// [`inventory::PLAYER_WINDOW`] for the player's own inventory.
+    pub window_id: i32,
+    /// Counts the server's changes to the window, so that both sides can tell whether
+    /// they agree on its contents.
+    pub state_id: i32,
+    pub slots: Vec<Option<ItemStack>>,
+    /// The stack the player is dragging with the cursor.
+    pub carried: Option<ItemStack>,
+}
+
+impl Packet for SetContainerContent {
+    const ID: i32 = clientbound::CONTAINER_SET_CONTENT;
+}
+
+impl Encode for SetContainerContent {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+        w.put_var_int(self.state_id);
+        w.put_array(&self.slots, |w, stack| w.put_item_stack(*stack));
+        w.put_item_stack(self.carried);
+    }
+}
+
+impl Decode for SetContainerContent {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+            state_id: r.var_int()?,
+            slots: r.array(Reader::item_stack)?,
+            carried: r.item_stack()?,
+        })
+    }
+}
+
+/// Tells the client which hotbar slot is selected, from 0 to 8.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetHeldSlot {
+    pub slot: i32,
+}
+
+impl Packet for SetHeldSlot {
+    const ID: i32 = clientbound::SET_HELD_SLOT;
+}
+
+impl Encode for SetHeldSlot {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.slot);
+    }
+}
+
+impl Decode for SetHeldSlot {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { slot: r.var_int()? })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -1234,6 +1405,9 @@ packet_set! {
         SetPlayerMovementFlags,
         PlayerLoaded,
         PlayerAction,
+        UseItemOn,
+        SetHeldItem,
+        SetCreativeModeSlot,
     }
 }
 
@@ -1259,6 +1433,8 @@ packet_set! {
         RemoveEntities,
         AcknowledgeBlockChange,
         BlockUpdate,
+        SetContainerContent,
+        SetHeldSlot,
     }
 }
 
@@ -1644,6 +1820,57 @@ mod tests {
             BlockUpdate { position, state: 0 },
             ClientboundPlay::decode,
             ClientboundPlay::BlockUpdate,
+        );
+    }
+
+    #[test]
+    fn item_packets_round_trip() {
+        let stone = Some(ItemStack { item: 1, count: 1 });
+        assert_round_trip(
+            UseItemOn {
+                hand: 0,
+                position: Position {
+                    x: 3,
+                    y: -61,
+                    z: -4,
+                },
+                face: i32::from(face::TOP),
+                cursor: [0.5, 1.0, 0.25],
+                inside_block: false,
+                world_border_hit: false,
+                sequence: 12,
+            },
+            ServerboundPlay::decode,
+            ServerboundPlay::UseItemOn,
+        );
+        assert_round_trip(
+            SetHeldItem { slot: 8 },
+            ServerboundPlay::decode,
+            ServerboundPlay::SetHeldItem,
+        );
+        for stack in [stone, None] {
+            assert_round_trip(
+                SetCreativeModeSlot { slot: 36, stack },
+                ServerboundPlay::decode,
+                ServerboundPlay::SetCreativeModeSlot,
+            );
+        }
+        let mut slots = vec![None; inventory::SLOT_COUNT];
+        slots[inventory::HOTBAR_START] = stone;
+        assert_round_trip(
+            SetContainerContent {
+                window_id: inventory::PLAYER_WINDOW,
+                state_id: 3,
+                slots,
+                carried: None,
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::SetContainerContent,
+        );
+        assert_round_trip(
+            SetHeldSlot { slot: 4 },
+            ClientboundPlay::decode,
+            ClientboundPlay::SetHeldSlot,
         );
     }
 

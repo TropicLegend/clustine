@@ -292,8 +292,13 @@ Update Section Blocks (`section_blocks_update`): Long section position
 Set Held Item: serverbound (`set_carried_item`) is a Short, clientbound (`set_held_slot`)
 a VarInt.
 
-Set Creative Mode Slot (`set_creative_mode_slot`): Short slot and an item stack. A plain
-block without component changes reads as VarInt count, VarInt item id, VarInt 0, VarInt 0.
+Set Creative Mode Slot (`set_creative_mode_slot`): Short slot and an item stack.
+
+An item stack is a VarInt count, and unless that is 0: a VarInt item id, the number of
+added components, the number of removed components, the added components (VarInt type
+and value) and the removed ones (VarInt type). Servers write component values bare.
+Clients prefix each value with its length, so a server can skip components it does not
+know. A plain block is count, item id, 0, 0.
 
 In 26.3 the serverbound Swing Arm packet is gone. The client sends Punch (`punch`, no
 fields) and the server broadcasts Swing Animation (`swing_animation`): VarInt entity id,

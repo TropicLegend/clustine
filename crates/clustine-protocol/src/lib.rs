@@ -7,6 +7,7 @@
 pub mod chunk;
 pub mod codec;
 pub mod frame;
+pub mod item;
 pub mod nbt;
 pub mod packets;
 

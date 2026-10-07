@@ -245,3 +245,65 @@ async fn breaking_a_block_matches_the_official_server() {
 
     server.stop().await;
 }
+
+/// Placing a block in creative mode has the same visible effect on both servers. The
+/// bot takes the block from the creative inventory, since a player's starting items
+/// are each server's own choice.
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn placing_a_block_matches_the_official_server() {
+    use clustine_data::{blocks, items};
+    use clustine_protocol::packets::play::face;
+
+    let oracle = Oracle::start(false).await.unwrap();
+    let (server, address) = start().await;
+    let patience = Duration::from_secs(30);
+    let air = Some(i32::from(blocks::AIR.0));
+    let bricks = Some(i32::from(blocks::BRICKS.0));
+
+    for address in [oracle.address(), address.as_str()] {
+        let mut builder = Bot::join(address, "Builder").await.unwrap();
+        let mut bystander = Bot::join(address, "Bystander").await.unwrap();
+        // The ground block two steps east of the builder, and the space above it.
+        let (x, ground, z) = (
+            builder.location.0.floor() as i32 + 2,
+            builder.location.1.floor() as i32 - 1,
+            builder.location.2.floor() as i32,
+        );
+        for bot in [&mut builder, &mut bystander] {
+            bot.wait_until(patience, |bot| {
+                bot.block_at(x, ground + 1, z).unwrap() == air
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{address}: no chunk at the start: {error}"));
+        }
+
+        builder
+            .take_from_creative_inventory(4, items::BRICKS)
+            .await
+            .unwrap();
+        builder.select_slot(4).await.unwrap();
+        let sequence = builder.use_item_on(x, ground, z, face::TOP).await.unwrap();
+        builder
+            .wait_until(patience, |bot| bot.acknowledged_sequence == sequence)
+            .await
+            .unwrap_or_else(|error| panic!("{address}: not acknowledged: {error}"));
+        for bot in [&mut builder, &mut bystander] {
+            bot.wait_until(patience, |bot| {
+                bot.block_at(x, ground + 1, z).unwrap() == bricks
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{address}: no bricks appeared: {error}"));
+        }
+
+        let mut latecomer = Bot::join(address, "Latecomer").await.unwrap();
+        latecomer
+            .wait_until(patience, |bot| {
+                bot.block_at(x, ground + 1, z).unwrap() == bricks
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{address}: the latecomer sees no bricks: {error}"));
+    }
+
+    server.stop().await;
+}

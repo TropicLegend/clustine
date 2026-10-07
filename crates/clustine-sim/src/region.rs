@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use clustine_data::blocks;
+use clustine_data::{BlockState, ITEMS, blocks};
 use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 
 use crate::api::{
-    EntityKind, EntityState, PlayerChange, PlayerEvent, PlayerInput, Pose, RegionEvent, TickInputs,
-    TickOutput,
+    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerChange, PlayerEvent, PlayerInput, Pose,
+    RegionEvent, TickInputs, TickOutput,
 };
 
 /// What a region is created with.
@@ -18,6 +18,8 @@ pub struct RegionConfig {
     /// The first entity id the region hands out. Ids must be unique within a world, so
     /// each region gets its own block of them. Clients reject id 0.
     pub first_entity_id: EntityId,
+    /// What players have in their hotbar when they enter the world.
+    pub starting_hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
 }
 
 /// How far above a player's feet their eyes are.
@@ -26,6 +28,10 @@ const EYE_HEIGHT: f64 = 1.62;
 /// How far from their eyes a creative-mode player can reach a block, with the block of
 /// tolerance vanilla allows for the client being slightly ahead of the server.
 const BLOCK_REACH: f64 = 6.0;
+
+/// The width and the height of a standing player.
+const PLAYER_WIDTH: f64 = 0.6;
+const PLAYER_HEIGHT: f64 = 1.8;
 
 /// Positions beyond these are pulled back, as in vanilla.
 const MAX_HORIZONTAL_COORDINATE: f64 = 3.0e7;
@@ -41,6 +47,9 @@ struct Player {
     moved_from: Option<ChunkPos>,
     /// The highest sequence number handled in this tick, to be acknowledged.
     handled_sequence: Option<i32>,
+    hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    /// The hotbar slot whose item the player holds.
+    selected_slot: u8,
 }
 
 /// A part of the world that is simulated as one unit.
@@ -132,12 +141,16 @@ impl Region {
                         pose: Pose::at(self.config.spawn),
                         moved_from: None,
                         handled_sequence: None,
+                        hotbar: self.config.starting_hotbar,
+                        selected_slot: 0,
                     };
                     output.player_events.push((
                         join.player,
                         PlayerEvent::Spawned {
                             entity_id,
                             position: player.pose.position,
+                            hotbar: player.hotbar,
+                            selected_slot: player.selected_slot,
                         },
                     ));
                     output
@@ -157,34 +170,7 @@ impl Region {
         }
 
         for (id, input) in &inputs.inputs {
-            // Input can arrive for a player who has just left.
-            let Some(player) = self.players.get_mut(id) else {
-                continue;
-            };
-            match input {
-                PlayerInput::Move {
-                    position,
-                    rotation,
-                    on_ground,
-                } => player.move_to(*position, *rotation, *on_ground),
-                PlayerInput::Dig { position, sequence } => {
-                    // Acknowledged whatever comes of it, so the client stops guessing.
-                    player.handled_sequence = player.handled_sequence.max(Some(*sequence));
-                    let (x, z) = position.in_chunk();
-                    let chunk = self.chunks.get_mut(&position.chunk());
-                    if let Some(chunk) = chunk.filter(|_| player.can_reach(*position))
-                        && chunk
-                            .get(x, position.y, z)
-                            .is_some_and(|state| state != blocks::AIR)
-                    {
-                        chunk.set(x, position.y, z, blocks::AIR);
-                        output.events.push(RegionEvent::BlockChanged {
-                            position: *position,
-                            state: blocks::AIR,
-                        });
-                    }
-                }
-            }
+            self.apply_input(*id, input, &mut output);
         }
         for (id, player) in &mut self.players {
             if let Some(previous_chunk) = player.moved_from.take() {
@@ -202,6 +188,88 @@ impl Region {
         }
 
         output
+    }
+
+    fn apply_input(&mut self, id: PlayerId, input: &PlayerInput, output: &mut TickOutput) {
+        // Input can arrive for a player who has just left.
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        match input {
+            PlayerInput::Move {
+                position,
+                rotation,
+                on_ground,
+            } => player.move_to(*position, *rotation, *on_ground),
+            PlayerInput::SelectSlot { slot } => {
+                if usize::from(*slot) < HOTBAR_SLOTS {
+                    player.selected_slot = *slot;
+                }
+            }
+            PlayerInput::SetHotbarSlot { slot, stack } => {
+                // Only stacks of items that exist are kept.
+                let known = stack.is_none_or(|stack| {
+                    stack.count > 0
+                        && usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
+                });
+                if let Some(held) = player.hotbar.get_mut(usize::from(*slot))
+                    && known
+                {
+                    *held = *stack;
+                }
+            }
+            PlayerInput::Dig { position, sequence } => {
+                // Acknowledged whatever comes of it, so the client stops guessing.
+                player.acknowledge(*sequence);
+                let reachable = player.can_reach(*position);
+                if reachable
+                    && self
+                        .block(*position)
+                        .is_some_and(|state| state != blocks::AIR)
+                {
+                    self.set_block(*position, blocks::AIR, output);
+                }
+            }
+            PlayerInput::UseItemOn {
+                position,
+                face,
+                sequence,
+            } => {
+                player.acknowledge(*sequence);
+                let reachable = player.can_reach(*position);
+                // In creative mode placing does not use the item up.
+                let block = player.hotbar[usize::from(player.selected_slot)]
+                    .and_then(|stack| ITEMS.get(usize::try_from(stack.item).ok()?)?.block);
+                let target = face.neighbour(*position);
+                if let Some(block) = block
+                    && reachable
+                    // Placed against a block, into a free spot nobody stands in.
+                    && self.block(*position).is_some_and(|state| state != blocks::AIR)
+                    && self.block(target) == Some(blocks::AIR)
+                    && !self.players.values().any(|player| player.occupies(target))
+                {
+                    self.set_block(target, block, output);
+                }
+            }
+        }
+    }
+
+    /// The block at `position`, if its chunk is loaded and it is within the world.
+    fn block(&self, position: BlockPos) -> Option<BlockState> {
+        let (x, z) = position.in_chunk();
+        self.chunks.get(&position.chunk())?.get(x, position.y, z)
+    }
+
+    /// Changes a block of a loaded chunk and reports it.
+    fn set_block(&mut self, position: BlockPos, state: BlockState, output: &mut TickOutput) {
+        let (x, z) = position.in_chunk();
+        if let Some(chunk) = self.chunks.get_mut(&position.chunk())
+            && chunk.set(x, position.y, z, state).is_some()
+        {
+            output
+                .events
+                .push(RegionEvent::BlockChanged { position, state });
+        }
     }
 
     fn update_chunks(&mut self, inputs: &TickInputs, output: &mut TickOutput) {
@@ -244,6 +312,23 @@ impl Player {
             },
             pose: self.pose,
         }
+    }
+
+    /// Notes that everything up to `sequence` has been handled.
+    fn acknowledge(&mut self, sequence: i32) {
+        self.handled_sequence = self.handled_sequence.max(Some(sequence));
+    }
+
+    /// Whether the player's body overlaps the block at `position`.
+    fn occupies(&self, position: BlockPos) -> bool {
+        let feet = self.pose.position;
+        let half = PLAYER_WIDTH / 2.0;
+        let overlaps = |low: f64, high: f64, block: i32| {
+            low < f64::from(block) + 1.0 && high > f64::from(block)
+        };
+        overlaps(feet.x - half, feet.x + half, position.x)
+            && overlaps(feet.y, feet.y + PLAYER_HEIGHT, position.y)
+            && overlaps(feet.z - half, feet.z + half, position.z)
     }
 
     /// Whether the player's eyes are close enough to the block at `position` to work on it.
@@ -316,14 +401,40 @@ mod tests {
     use clustine_world::Biome;
 
     use super::*;
-    use crate::api::PlayerJoin;
+    use clustine_data::items;
+
+    use crate::api::{Face, PlayerJoin};
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
+
+    const STONE: ItemStack = ItemStack {
+        item: items::STONE,
+        count: 1,
+    };
+    const DIRT: ItemStack = ItemStack {
+        item: items::DIRT,
+        count: 1,
+    };
+    /// An item that is not a block.
+    const STICK: ItemStack = ItemStack {
+        item: items::STICK,
+        count: 1,
+    };
+
+    /// Stone, dirt and a stick in the first three slots.
+    fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
+        let mut hotbar = [None; HOTBAR_SLOTS];
+        hotbar[0] = Some(STONE);
+        hotbar[1] = Some(DIRT);
+        hotbar[2] = Some(STICK);
+        hotbar
+    }
 
     fn region() -> Region {
         Region::new(RegionConfig {
             spawn: SPAWN,
             first_entity_id: EntityId(1),
+            starting_hotbar: hotbar(),
         })
     }
 
@@ -422,6 +533,8 @@ mod tests {
         let spawned = |entity| PlayerEvent::Spawned {
             entity_id: EntityId(entity),
             position: SPAWN,
+            hotbar: hotbar(),
+            selected_slot: 0,
         };
         assert_eq!(
             output.player_events,
@@ -808,6 +921,153 @@ mod tests {
         assert_eq!(output.player_events.len(), 2);
     }
 
+    fn place(number: u128, x: i32, y: i32, z: i32, face: Face) -> (PlayerId, PlayerInput) {
+        let input = PlayerInput::UseItemOn {
+            position: BlockPos::new(x, y, z),
+            face,
+            sequence: 1,
+        };
+        (player(number), input)
+    }
+
+    fn select(number: u128, slot: u8) -> (PlayerId, PlayerInput) {
+        (player(number), PlayerInput::SelectSlot { slot })
+    }
+
+    fn changed(x: i32, y: i32, z: i32, state: BlockState) -> RegionEvent {
+        RegionEvent::BlockChanged {
+            position: BlockPos::new(x, y, z),
+            state,
+        }
+    }
+
+    #[test]
+    fn using_a_block_item_on_a_block_places_it_against_the_clicked_face() {
+        let mut region = on_floor(&[1]);
+        // On top of the floor, two blocks from the player.
+        let output = region.tick(&moves(vec![place(1, 2, -61, 0, Face::Top)]));
+        assert_eq!(output.events, [changed(2, -60, 0, blocks::STONE)]);
+        assert_eq!(output.player_events, [acknowledged(1, 1)]);
+
+        // Against the side of the block just placed, with the next hotbar slot.
+        let output = region.tick(&moves(vec![select(1, 1), place(1, 2, -60, 0, Face::South)]));
+        assert_eq!(output.events, [changed(2, -60, 1, blocks::DIRT)]);
+
+        let chunk = region.chunk(ChunkPos::new(0, 0)).unwrap();
+        assert_eq!(chunk.get(2, -60, 0), Some(blocks::STONE));
+        assert_eq!(chunk.get(2, -60, 1), Some(blocks::DIRT));
+    }
+
+    #[test]
+    fn faces_point_to_the_six_neighbours() {
+        let origin = BlockPos::new(0, 0, 0);
+        let neighbours = [
+            (Face::Bottom, (0, -1, 0)),
+            (Face::Top, (0, 1, 0)),
+            (Face::North, (0, 0, -1)),
+            (Face::South, (0, 0, 1)),
+            (Face::West, (-1, 0, 0)),
+            (Face::East, (1, 0, 0)),
+        ];
+        for (face, (x, y, z)) in neighbours {
+            assert_eq!(face.neighbour(origin), BlockPos::new(x, y, z), "{face:?}");
+        }
+    }
+
+    #[test]
+    fn placing_where_it_is_not_possible_is_only_acknowledged() {
+        let mut region = on_floor(&[1, 2]);
+        region.tick(&moves(vec![walk(2, 3.5, 3.5)]));
+        let attempts = [
+            // Where the player themselves stands, and where the other player stands.
+            place(1, 0, -61, 0, Face::Top),
+            place(1, 3, -61, 3, Face::Top),
+            // Against thin air.
+            place(1, 2, -55, 0, Face::Top),
+            // Into a spot that is taken: below the floor is air, but the floor is not.
+            place(1, 2, -62, 0, Face::Top),
+            // Out of reach.
+            place(1, 12, -61, 0, Face::Top),
+            // Above the top of the world.
+            place(1, 0, 319, 0, Face::Top),
+        ];
+        for (index, attempt) in attempts.into_iter().enumerate() {
+            let output = region.tick(&moves(vec![attempt]));
+            assert!(
+                output.events.is_empty(),
+                "attempt {index}: {:?}",
+                output.events
+            );
+            assert_eq!(
+                output.player_events,
+                [acknowledged(1, 1)],
+                "attempt {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_block_items_can_be_placed() {
+        let mut region = on_floor(&[1]);
+        // A stick, then an empty slot.
+        for slot in [2, 5] {
+            let output = region.tick(&moves(vec![
+                select(1, slot),
+                place(1, 2, -61, 0, Face::Top),
+            ]));
+            assert!(output.events.is_empty(), "slot {slot}");
+            assert_eq!(output.player_events, [acknowledged(1, 1)]);
+        }
+        // Selecting a slot that does not exist keeps the selection.
+        let output = region.tick(&moves(vec![
+            select(1, 0),
+            select(1, 9),
+            place(1, 2, -61, 0, Face::Top),
+        ]));
+        assert_eq!(output.events, [changed(2, -60, 0, blocks::STONE)]);
+    }
+
+    #[test]
+    fn creative_players_fill_their_own_hotbar() {
+        let mut region = on_floor(&[1]);
+        let set = |slot, stack| (player(1), PlayerInput::SetHotbarSlot { slot, stack });
+        let glass = ItemStack {
+            item: items::GLASS,
+            count: 1,
+        };
+        let output = region.tick(&moves(vec![
+            set(4, Some(glass)),
+            select(1, 4),
+            place(1, 2, -61, 0, Face::Top),
+        ]));
+        assert_eq!(output.events, [changed(2, -60, 0, blocks::GLASS)]);
+
+        // Emptying the slot again leaves nothing to place.
+        let output = region.tick(&moves(vec![set(4, None), place(1, 3, -61, 0, Face::Top)]));
+        assert!(output.events.is_empty());
+
+        // Slots that do not exist and items that do not exist are ignored.
+        let nonsense = ItemStack {
+            item: i32::MAX,
+            count: 1,
+        };
+        let output = region.tick(&moves(vec![
+            set(9, Some(glass)),
+            set(4, Some(nonsense)),
+            place(1, 3, -61, 0, Face::Top),
+        ]));
+        assert!(output.events.is_empty());
+    }
+
+    #[test]
+    fn a_placed_block_can_be_broken_again() {
+        let mut region = on_floor(&[1]);
+        region.tick(&moves(vec![place(1, 2, -61, 0, Face::Top)]));
+        let output = region.tick(&moves(vec![dig(1, 2, -60, 0, 2)]));
+        assert_eq!(output.events, [changed(2, -60, 0, blocks::AIR)]);
+        assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
+    }
+
     /// The same inputs always lead to the same region and the same outputs: a recorded
     /// run can be replayed.
     #[test]
@@ -826,7 +1086,7 @@ mod tests {
             let mut inputs = TickInputs::default();
             for _ in 0..random(4) {
                 let number = u128::from(random(6));
-                match random(8) {
+                match random(10) {
                     0 => inputs.player_changes.push(join(number)),
                     1 => inputs.player_changes.push(leave(number)),
                     2 => inputs
@@ -845,6 +1105,14 @@ mod tests {
                         random(8) as i32,
                         random(1000) as i32,
                     )),
+                    6 => inputs.inputs.push(place(
+                        number,
+                        random(24) as i32,
+                        -61,
+                        random(8) as i32,
+                        Face::Top,
+                    )),
+                    7 => inputs.inputs.push(select(number, random(4) as u8)),
                     // Players stay close together so that digging is often in reach.
                     _ => inputs.inputs.push(walk(
                         number,

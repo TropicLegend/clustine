@@ -187,9 +187,10 @@ async fn read_messages<T: DeserializeOwned>(
 mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
     use clustine_sim::api::{
-        EntityKind, EntityState, PlayerEvent, PlayerInput, PlayerJoin, Pose, RegionEvent,
+        EntityKind, EntityState, Face, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
+        PlayerJoin, Pose, RegionEvent,
     };
-    use clustine_world::{Biome, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+    use clustine_world::{Biome, BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
     use uuid::Uuid;
 
     use super::*;
@@ -234,6 +235,21 @@ mod tests {
                     on_ground: true,
                 },
             },
+            EdgeToWorker::Input {
+                player: player(),
+                input: PlayerInput::UseItemOn {
+                    position: BlockPos::new(1, -61, 2),
+                    face: Face::Top,
+                    sequence: 12,
+                },
+            },
+            EdgeToWorker::Input {
+                player: player(),
+                input: PlayerInput::SetHotbarSlot {
+                    slot: 8,
+                    stack: None,
+                },
+            },
             EdgeToWorker::PlayerLeave { player: player() },
         ];
         let to_edge = vec![
@@ -250,7 +266,13 @@ mod tests {
                 event: PlayerEvent::Spawned {
                     entity_id: EntityId(5),
                     position: Vec3::new(0.5, -60.0, 0.5),
+                    hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
+                    selected_slot: 3,
                 },
+            },
+            WorkerToEdge::ToPlayer {
+                player: player(),
+                event: PlayerEvent::Acknowledged { sequence: 12 },
             },
             WorkerToEdge::ChunkSnapshot {
                 position: ChunkPos::new(3, -4),

@@ -12,10 +12,10 @@ use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, ClientboundKeepAlive, Disconnect, PlayerAction, ServerboundPlay,
-    movement_flags, player_action,
+    UseItemOn, face, inventory, movement_flags, player_action,
 };
 use clustine_rpc::EdgeToWorker;
-use clustine_sim::api::PlayerInput;
+use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput};
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
@@ -24,6 +24,9 @@ use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
 use crate::fanout::{Command, NO_TELEPORT, SessionId};
 use crate::login::Profile;
+
+/// The value of the hand field for the hand that holds the selected hotbar item.
+const MAIN_HAND: i32 = 0;
 
 /// Packets that may wait for a client before it is considered too slow and dropped.
 const OUTBOUND_CAPACITY: usize = 2048;
@@ -136,6 +139,28 @@ async fn pump(
                     ServerboundPlay::PlayerAction(action) => {
                         acted(connection, shared, client, action).await?;
                     }
+                    ServerboundPlay::UseItemOn(packet) => {
+                        used_item_on(connection, shared, client, packet).await?;
+                    }
+                    ServerboundPlay::SetHeldItem(packet) => {
+                        let Some(slot) = hotbar_slot(i32::from(packet.slot)) else {
+                            return Err(ConnectionError::Protocol("no such hotbar slot"));
+                        };
+                        send_input(shared, client, PlayerInput::SelectSlot { slot }).await?;
+                    }
+                    ServerboundPlay::SetCreativeModeSlot(packet) => {
+                        // Only the hotbar is modelled; the rest of the inventory is the
+                        // client's own business for now.
+                        let slot = i32::from(packet.slot) - inventory::HOTBAR_START as i32;
+                        if let Some(slot) = hotbar_slot(slot) {
+                            let stack = packet.stack.map(|stack| ItemStack {
+                                item: stack.item,
+                                count: stack.count,
+                            });
+                            let input = PlayerInput::SetHotbarSlot { slot, stack };
+                            send_input(shared, client, input).await?;
+                        }
+                    }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}
@@ -247,4 +272,48 @@ async fn send_input(
         .send(message)
         .await
         .map_err(|_| ConnectionError::ShuttingDown)
+}
+
+/// Handles the player using the item in their hand on a block.
+async fn used_item_on(
+    connection: &mut Connection,
+    shared: &Shared,
+    client: &Client,
+    packet: UseItemOn,
+) -> Result<(), ConnectionError> {
+    let face = match u8::try_from(packet.face) {
+        Ok(face::BOTTOM) => Some(Face::Bottom),
+        Ok(face::TOP) => Some(Face::Top),
+        Ok(face::NORTH) => Some(Face::North),
+        Ok(face::SOUTH) => Some(Face::South),
+        Ok(face::WEST) => Some(Face::West),
+        Ok(face::EAST) => Some(Face::East),
+        _ => None,
+    };
+    match face {
+        // Only the main hand holds anything.
+        Some(face) if packet.hand == MAIN_HAND => {
+            let position = packet.position;
+            let input = PlayerInput::UseItemOn {
+                position: BlockPos::new(position.x, position.y, position.z),
+                face,
+                sequence: packet.sequence,
+            };
+            send_input(shared, client, input).await
+        }
+        // Nothing happens, but the client counts this among its guesses too.
+        _ => {
+            let acknowledgement = AcknowledgeBlockChange {
+                sequence: packet.sequence,
+            };
+            connection.write(&acknowledgement).await
+        }
+    }
+}
+
+/// `slot` as a hotbar slot, if it is one.
+fn hotbar_slot(slot: i32) -> Option<u8> {
+    u8::try_from(slot)
+        .ok()
+        .filter(|slot| usize::from(*slot) < HOTBAR_SLOTS)
 }

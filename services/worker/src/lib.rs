@@ -227,7 +227,9 @@ mod tests {
 
     use clustine_rpc::link::{self, EdgeEnd};
     use clustine_sim::RegionConfig;
-    use clustine_sim::api::{EntityKind, PlayerEvent, PlayerInput, PlayerJoin, RegionEvent};
+    use clustine_sim::api::{
+        EntityKind, HOTBAR_SLOTS, PlayerEvent, PlayerInput, PlayerJoin, RegionEvent,
+    };
     use clustine_world::{EntityId, PlayerId, Vec3};
     use clustine_worldgen::FlatGenerator;
     use tokio::time::timeout;
@@ -240,6 +242,7 @@ mod tests {
         let region = Region::new(RegionConfig {
             spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
             first_entity_id: EntityId(1),
+            starting_hotbar: [None; HOTBAR_SLOTS],
         });
         RegionRunner::new(
             region,
@@ -326,6 +329,8 @@ mod tests {
                 Some(PlayerEvent::Spawned {
                     entity_id: EntityId(1),
                     position: Vec3::new(0.5, -60.0, 0.5),
+                    hotbar: [None; HOTBAR_SLOTS],
+                    selected_slot: 0,
                 })
             );
             assert_eq!(snapshots, square(1).into_iter().collect());

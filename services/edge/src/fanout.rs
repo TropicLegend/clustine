@@ -12,17 +12,21 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use bytes::Bytes;
 use clustine_data::{BlockState, entity_types, synced_registry};
 use clustine_protocol::codec::Position;
+use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, BlockUpdate, ChunkBatchFinished, ChunkBatchStart, Disconnect,
     GameEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
-    PositionPath, RemoveEntities, SetCenterChunk, SetHeadRotation, SpawnEntity, SyncEntityPosition,
-    SynchronizePlayerPosition, UnloadChunk, angle, game_event, game_mode, player_info,
+    PositionPath, RemoveEntities, SetCenterChunk, SetContainerContent, SetHeadRotation,
+    SetHeldSlot, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk, angle,
+    game_event, game_mode, inventory, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_rpc::link::EdgeEnd;
 use clustine_rpc::{EdgeToWorker, WorkerToEdge};
-use clustine_sim::api::{EntityKind, EntityState, PlayerEvent, PlayerJoin, RegionEvent};
+use clustine_sim::api::{
+    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerJoin, RegionEvent,
+};
 use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -269,8 +273,14 @@ impl Fanout {
                     PlayerEvent::Spawned {
                         entity_id,
                         position,
+                        hotbar,
+                        selected_slot,
                     },
-            } => self.spawn_player(player, entity_id, position).await,
+            } => {
+                let inventory = inventory_packets(&hotbar, selected_slot);
+                self.spawn_player(player, entity_id, position, inventory)
+                    .await;
+            }
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Acknowledged { sequence },
@@ -374,7 +384,13 @@ impl Fanout {
 
     /// Puts a player the worker has placed into the world: the packets that start the
     /// play state, then the chunks around them.
-    async fn spawn_player(&mut self, player: PlayerId, entity_id: EntityId, position: Vec3) {
+    async fn spawn_player(
+        &mut self,
+        player: PlayerId,
+        entity_id: EntityId,
+        position: Vec3,
+        inventory: [Bytes; 2],
+    ) {
         let Some(view) = self.players.get_mut(&player) else {
             // The player left before the worker answered.
             return;
@@ -410,7 +426,9 @@ impl Fanout {
                 value: 0.0,
             }),
         ];
-        if !self.send_to_player(player, entered).await {
+        if !self.send_to_player(player, entered).await
+            || !self.send_to_player(player, inventory).await
+        {
             return;
         }
 
@@ -738,6 +756,29 @@ impl PlayerView {
             _ => Vec::new(),
         }
     }
+}
+
+/// The packets that tell a client what its player carries: the nine hotbar slots, all
+/// other slots empty, and which hotbar slot is selected.
+fn inventory_packets(hotbar: &[Option<ItemStack>; HOTBAR_SLOTS], selected_slot: u8) -> [Bytes; 2] {
+    let mut slots = vec![None; inventory::SLOT_COUNT];
+    for (slot, stack) in hotbar.iter().enumerate() {
+        slots[inventory::HOTBAR_START + slot] = stack.map(|stack| protocol::ItemStack {
+            item: stack.item,
+            count: stack.count,
+        });
+    }
+    [
+        encoded(&SetContainerContent {
+            window_id: inventory::PLAYER_WINDOW,
+            state_id: 0,
+            slots,
+            carried: None,
+        }),
+        encoded(&SetHeldSlot {
+            slot: selected_slot.into(),
+        }),
+    ]
 }
 
 /// Adds players to a client's player list.

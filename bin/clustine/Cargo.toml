@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clustine-data.workspace = true
 clustine-edge.workspace = true
 clustine-rpc.workspace = true
 clustine-sim.workspace = true
@@ -23,7 +24,6 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 clustine-botswarm.workspace = true
-clustine-data.workspace = true
 clustine-protocol.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

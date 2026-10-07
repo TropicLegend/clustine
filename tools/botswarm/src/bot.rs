@@ -9,6 +9,7 @@ use clustine_data::{
 };
 use clustine_protocol::chunk::{PaletteKind, SectionData, decode_sections};
 use clustine_protocol::codec::{Position, Reader};
+use clustine_protocol::item::ItemStack;
 use clustine_protocol::packet_ids;
 use clustine_protocol::packets::configuration::{
     AcknowledgeFinishConfiguration, ClientInformation, ClientboundConfiguration, KnownPack,
@@ -21,8 +22,9 @@ use clustine_protocol::packets::login::{
 };
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
-    Login, PlayerAction, PlayerLoaded, ServerboundKeepAlive, SetPlayerPosition,
-    SynchronizePlayerPosition, face, movement_flags, player_action,
+    Login, PlayerAction, PlayerLoaded, ServerboundKeepAlive, SetCreativeModeSlot, SetHeldItem,
+    SetPlayerPosition, SynchronizePlayerPosition, UseItemOn, face, inventory, movement_flags,
+    player_action,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -171,6 +173,10 @@ pub struct Bot {
     pub player_list: BTreeMap<Uuid, String>,
     /// The entities the server has shown the bot and not removed again, by entity id.
     pub entities: BTreeMap<i32, SeenEntity>,
+    /// The items in the hotbar as the server last told the bot, by slot from 0 to 8.
+    pub hotbar: [Option<ItemStack>; 9],
+    /// The hotbar slot the server last selected for the bot.
+    pub selected_slot: i32,
     /// Blocks the server reported as changed since it sent their chunk, by x, y and z.
     block_changes: BTreeMap<(i32, i32, i32), i32>,
     /// The number of the bot's latest action that changes blocks.
@@ -337,6 +343,8 @@ impl Bot {
             chunks: BTreeMap::new(),
             player_list: BTreeMap::new(),
             entities: BTreeMap::new(),
+            hotbar: [None; 9],
+            selected_slot: 0,
             block_changes: BTreeMap::new(),
             sequence: 0,
             acknowledged_sequence: 0,
@@ -424,6 +432,41 @@ impl Bot {
                 status: player_action::START_DESTROY_BLOCK,
                 position: Position { x, y, z },
                 face: face::TOP,
+                sequence: self.sequence,
+            })
+            .await?;
+        Ok(self.sequence)
+    }
+
+    /// Selects a hotbar slot, from 0 to 8.
+    pub async fn select_slot(&mut self, slot: i16) -> Result<()> {
+        self.connection.write(&SetHeldItem { slot }).await
+    }
+
+    /// Puts one `item` into a hotbar slot, from 0 to 8, the way a creative-mode client
+    /// does when the player picks an item from the creative inventory.
+    pub async fn take_from_creative_inventory(&mut self, slot: i16, item: i32) -> Result<()> {
+        self.connection
+            .write(&SetCreativeModeSlot {
+                slot: inventory::HOTBAR_START as i16 + slot,
+                stack: Some(ItemStack { item, count: 1 }),
+            })
+            .await
+    }
+
+    /// Uses the held item on a side of the block at `x`, `y`, `z`, which places a held
+    /// block against it. `side` is one of the `face` values of the protocol. Returns the
+    /// sequence number the server will acknowledge.
+    pub async fn use_item_on(&mut self, x: i32, y: i32, z: i32, side: u8) -> Result<i32> {
+        self.sequence += 1;
+        self.connection
+            .write(&UseItemOn {
+                hand: 0,
+                position: Position { x, y, z },
+                face: side.into(),
+                cursor: [0.5, 0.5, 0.5],
+                inside_block: false,
+                world_border_hit: false,
                 sequence: self.sequence,
             })
             .await?;
@@ -595,6 +638,18 @@ impl Bot {
                 self.block_changes
                     .insert((position.x, position.y, position.z), packet.state);
             }
+            ClientboundPlay::SetContainerContent(packet) => {
+                if packet.window_id == inventory::PLAYER_WINDOW {
+                    for (slot, held) in self.hotbar.iter_mut().enumerate() {
+                        *held = packet
+                            .slots
+                            .get(inventory::HOTBAR_START + slot)
+                            .copied()
+                            .flatten();
+                    }
+                }
+            }
+            ClientboundPlay::SetHeldSlot(packet) => self.selected_slot = packet.slot,
             ClientboundPlay::AcknowledgeBlockChange(packet) => {
                 self.acknowledged_sequence = self.acknowledged_sequence.max(packet.sequence);
             }

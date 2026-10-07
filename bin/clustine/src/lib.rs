@@ -9,9 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use clustine_data::items;
 use clustine_edge::Edge;
 pub use clustine_edge::EdgeConfig;
 use clustine_rpc::link;
+use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_sim::{Region, RegionConfig};
 use clustine_worker::{RegionRunner, Worker};
 use clustine_world::{EntityId, Vec3};
@@ -22,6 +24,20 @@ use tokio::task::JoinHandle;
 /// never waits for the edge, so this has to cover the chunks of many players joining at
 /// the same moment.
 const LINK_CAPACITY: usize = 16 * 1024;
+
+/// The blocks a player has at hand when entering the world. In creative mode they can
+/// take any other item from the creative inventory.
+const STARTING_HOTBAR: [i32; HOTBAR_SLOTS] = [
+    items::STONE,
+    items::COBBLESTONE,
+    items::DIRT,
+    items::GRASS_BLOCK,
+    items::OAK_PLANKS,
+    items::OAK_LOG,
+    items::BRICKS,
+    items::GLASS,
+    items::GLOWSTONE,
+];
 
 /// Settings of a single-process server.
 #[derive(Debug, Clone)]
@@ -67,6 +83,7 @@ impl Server {
             spawn,
             // Clients reject entity id 0.
             first_entity_id: EntityId(1),
+            starting_hotbar: STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 })),
         });
 
         let edge_config = EdgeConfig {

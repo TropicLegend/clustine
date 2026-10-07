@@ -24,6 +24,15 @@ impl BlockPos {
         }
     }
 
+    /// The position `dx`, `dy` and `dz` blocks away. Saturates at the limits of `i32`.
+    pub const fn offset(self, dx: i32, dy: i32, dz: i32) -> Self {
+        Self {
+            x: self.x.saturating_add(dx),
+            y: self.y.saturating_add(dy),
+            z: self.z.saturating_add(dz),
+        }
+    }
+
     /// The x and z coordinates within the chunk column, each in `0..16`.
     pub const fn in_chunk(self) -> (usize, usize) {
         ((self.x & 15) as usize, (self.z & 15) as usize)

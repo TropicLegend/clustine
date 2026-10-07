@@ -31,6 +31,48 @@ impl Pose {
     }
 }
 
+/// The number of slots in a player's hotbar.
+pub const HOTBAR_SLOTS: usize = 9;
+
+/// A number of items of one kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemStack {
+    /// Id in the item registry.
+    pub item: i32,
+    pub count: i32,
+}
+
+/// A side of a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Face {
+    /// Towards negative y.
+    Bottom,
+    /// Towards positive y.
+    Top,
+    /// Towards negative z.
+    North,
+    /// Towards positive z.
+    South,
+    /// Towards negative x.
+    West,
+    /// Towards positive x.
+    East,
+}
+
+impl Face {
+    /// The block that touches `position` on this side.
+    pub fn neighbour(self, position: BlockPos) -> BlockPos {
+        match self {
+            Self::Bottom => position.offset(0, -1, 0),
+            Self::Top => position.offset(0, 1, 0),
+            Self::North => position.offset(0, 0, -1),
+            Self::South => position.offset(0, 0, 1),
+            Self::West => position.offset(-1, 0, 0),
+            Self::East => position.offset(1, 0, 0),
+        }
+    }
+}
+
 /// A player entering the region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerJoin {
@@ -80,6 +122,17 @@ pub enum PlayerInput {
     /// The player broke a block. `sequence` numbers the changes the player's client has
     /// already shown on its own; see [`PlayerEvent::Acknowledged`].
     Dig { position: BlockPos, sequence: i32 },
+    /// The player used the item in their hand on `face` of the block at `position`,
+    /// which for a block item places it against that face. `sequence` is as for `Dig`.
+    UseItemOn {
+        position: BlockPos,
+        face: Face,
+        sequence: i32,
+    },
+    /// The player selected another hotbar slot, from 0 to 8.
+    SelectSlot { slot: u8 },
+    /// A creative-mode player put a stack into a hotbar slot, or emptied it.
+    SetHotbarSlot { slot: u8, stack: Option<ItemStack> },
 }
 
 /// Everything that happened since the previous tick.
@@ -102,7 +155,12 @@ pub struct TickInputs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlayerEvent {
     /// The player has entered the world.
-    Spawned { entity_id: EntityId, position: Vec3 },
+    Spawned {
+        entity_id: EntityId,
+        position: Vec3,
+        hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+        selected_slot: u8,
+    },
     /// Everything the player did with a sequence number up to `sequence` has been
     /// handled, whether it took effect or not. The client then stops showing its own
     /// guess of the outcome and shows what the region reported.
