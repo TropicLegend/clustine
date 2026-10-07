@@ -8,7 +8,7 @@ use clustine_data::{
     BLOCK_STATE_COUNT, DIMENSION_TYPES, DimensionType, GAME_VERSION, entity_types,
 };
 use clustine_protocol::chunk::{PaletteKind, SectionData, decode_sections};
-use clustine_protocol::codec::Reader;
+use clustine_protocol::codec::{Position, Reader};
 use clustine_protocol::packet_ids;
 use clustine_protocol::packets::configuration::{
     AcknowledgeFinishConfiguration, ClientInformation, ClientboundConfiguration, KnownPack,
@@ -21,8 +21,8 @@ use clustine_protocol::packets::login::{
 };
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
-    Login, PlayerLoaded, ServerboundKeepAlive, SetPlayerPosition, SynchronizePlayerPosition,
-    movement_flags,
+    Login, PlayerAction, PlayerLoaded, ServerboundKeepAlive, SetPlayerPosition,
+    SynchronizePlayerPosition, face, movement_flags, player_action,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -171,6 +171,12 @@ pub struct Bot {
     pub player_list: BTreeMap<Uuid, String>,
     /// The entities the server has shown the bot and not removed again, by entity id.
     pub entities: BTreeMap<i32, SeenEntity>,
+    /// Blocks the server reported as changed since it sent their chunk, by x, y and z.
+    block_changes: BTreeMap<(i32, i32, i32), i32>,
+    /// The number of the bot's latest action that changes blocks.
+    sequence: i32,
+    /// Up to which of those actions the server has confirmed handling them.
+    pub acknowledged_sequence: i32,
     /// Whether the bot has told the server that it left the loading screen.
     loaded: bool,
     /// The chunk the server last centred the bot's view on.
@@ -331,6 +337,9 @@ impl Bot {
             chunks: BTreeMap::new(),
             player_list: BTreeMap::new(),
             entities: BTreeMap::new(),
+            block_changes: BTreeMap::new(),
+            sequence: 0,
+            acknowledged_sequence: 0,
             loaded: false,
             center: None,
             location: (0.0, 0.0, 0.0),
@@ -404,6 +413,48 @@ impl Bot {
             let next_tick = Instant::now() + TICK;
             while self.step(next_tick).await? {}
         }
+    }
+
+    /// Breaks the block at `x`, `y`, `z` the way a creative-mode client does, and returns
+    /// the sequence number the server will acknowledge.
+    pub async fn dig(&mut self, x: i32, y: i32, z: i32) -> Result<i32> {
+        self.sequence += 1;
+        self.connection
+            .write(&PlayerAction {
+                status: player_action::START_DESTROY_BLOCK,
+                position: Position { x, y, z },
+                face: face::TOP,
+                sequence: self.sequence,
+            })
+            .await?;
+        Ok(self.sequence)
+    }
+
+    /// The block state at `x`, `y`, `z` as far as the server has told the bot: from the
+    /// chunk it sent and the changes it reported since. `None` if the bot does not hold
+    /// the chunk or the height is outside the world.
+    pub fn block_at(&self, x: i32, y: i32, z: i32) -> Result<Option<i32>> {
+        let Some(sections) = self.sections((x >> 4, z >> 4))? else {
+            return Ok(None);
+        };
+        if let Some(state) = self.block_changes.get(&(x, y, z)) {
+            return Ok(Some(*state));
+        }
+        let above_bottom = y - self.info.dimension_type()?.min_y;
+        let Some(section) = usize::try_from(above_bottom / 16)
+            .ok()
+            .filter(|_| above_bottom >= 0)
+            .and_then(|index| sections.get(index))
+        else {
+            return Ok(None);
+        };
+        let index = (above_bottom as usize % 16) << 8 | (z as usize & 15) << 4 | (x as usize & 15);
+        Ok(Some(section.blocks.get(index)))
+    }
+
+    fn forget_block_changes(&mut self, chunk: (i32, i32)) {
+        self.block_changes
+            .retain(|(x, _, z), _| (x >> 4, z >> 4) != chunk);
     }
 
     /// Stays connected until `done` holds, or fails once `patience` has run out.
@@ -537,11 +588,22 @@ impl Bot {
             }
             ClientboundPlay::UnloadChunk(packet) => {
                 self.chunks.remove(&(packet.chunk_x, packet.chunk_z));
+                self.forget_block_changes((packet.chunk_x, packet.chunk_z));
+            }
+            ClientboundPlay::BlockUpdate(packet) => {
+                let position = packet.position;
+                self.block_changes
+                    .insert((position.x, position.y, position.z), packet.state);
+            }
+            ClientboundPlay::AcknowledgeBlockChange(packet) => {
+                self.acknowledged_sequence = self.acknowledged_sequence.max(packet.sequence);
             }
             ClientboundPlay::Disconnect(packet) => {
                 bail!("disconnected: {}", packet.reason)
             }
             ClientboundPlay::LevelChunkWithLight(packet) => {
+                // A chunk that is sent again replaces what was known about it.
+                self.forget_block_changes((packet.chunk_x, packet.chunk_z));
                 self.chunks.insert((packet.chunk_x, packet.chunk_z), packet);
                 // A client leaves the loading screen once the chunk it is in has
                 // arrived, and tells the server.

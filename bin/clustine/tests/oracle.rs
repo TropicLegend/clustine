@@ -196,3 +196,52 @@ async fn players_appear_like_on_the_official_server() {
 
     server.stop().await;
 }
+
+/// Breaking a block in creative mode has the same visible effect on both servers: the
+/// one who broke it gets an acknowledgement, and the block is air for them, for a
+/// bystander and for someone who joins afterwards.
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn breaking_a_block_matches_the_official_server() {
+    let oracle = Oracle::start(false).await.unwrap();
+    let (server, address) = start().await;
+    let patience = Duration::from_secs(30);
+    let air = Some(i32::from(clustine_data::blocks::AIR.0));
+    let grass = Some(i32::from(clustine_data::blocks::GRASS_BLOCK.0));
+
+    for address in [oracle.address(), address.as_str()] {
+        let mut digger = Bot::join(address, "Digger").await.unwrap();
+        let mut bystander = Bot::join(address, "Bystander").await.unwrap();
+        // The grass block next to the one the digger stands on.
+        let (x, y, z) = (
+            digger.location.0.floor() as i32 + 1,
+            digger.location.1.floor() as i32 - 1,
+            digger.location.2.floor() as i32,
+        );
+        for bot in [&mut digger, &mut bystander] {
+            bot.wait_until(patience, |bot| bot.block_at(x, y, z).unwrap() == grass)
+                .await
+                .unwrap_or_else(|error| panic!("{address}: no grass at the start: {error}"));
+        }
+
+        let sequence = digger.dig(x, y, z).await.unwrap();
+        digger
+            .wait_until(patience, |bot| bot.acknowledged_sequence == sequence)
+            .await
+            .unwrap_or_else(|error| panic!("{address}: not acknowledged: {error}"));
+        for bot in [&mut digger, &mut bystander] {
+            bot.wait_until(patience, |bot| bot.block_at(x, y, z).unwrap() == air)
+                .await
+                .unwrap_or_else(|error| panic!("{address}: the block is still there: {error}"));
+        }
+        assert_eq!(bystander.acknowledged_sequence, 0, "{address}");
+
+        let mut latecomer = Bot::join(address, "Latecomer").await.unwrap();
+        latecomer
+            .wait_until(patience, |bot| bot.block_at(x, y, z).unwrap() == air)
+            .await
+            .unwrap_or_else(|error| panic!("{address}: the latecomer sees the block: {error}"));
+    }
+
+    server.stop().await;
+}

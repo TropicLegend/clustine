@@ -10,19 +10,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use bytes::Bytes;
-use clustine_data::{entity_types, synced_registry};
+use clustine_data::{BlockState, entity_types, synced_registry};
+use clustine_protocol::codec::Position;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    ChunkBatchFinished, ChunkBatchStart, Disconnect, GameEvent, Login, PlayerAbilities,
-    PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities,
-    SetCenterChunk, SetHeadRotation, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition,
-    UnloadChunk, angle, game_event, game_mode, player_info,
+    AcknowledgeBlockChange, BlockUpdate, ChunkBatchFinished, ChunkBatchStart, Disconnect,
+    GameEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
+    PositionPath, RemoveEntities, SetCenterChunk, SetHeadRotation, SpawnEntity, SyncEntityPosition,
+    SynchronizePlayerPosition, UnloadChunk, angle, game_event, game_mode, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_rpc::link::EdgeEnd;
 use clustine_rpc::{EdgeToWorker, WorkerToEdge};
 use clustine_sim::api::{EntityKind, EntityState, PlayerEvent, PlayerJoin, RegionEvent};
-use clustine_world::{Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -91,8 +92,22 @@ pub(crate) struct FanoutConfig {
 struct ReplicaChunk {
     /// How many players have the chunk in view.
     viewers: u32,
-    /// The chunk's packet, once the worker has sent the chunk.
+    /// The chunk, once the worker has sent it, kept up to date with later changes.
+    chunk: Option<Chunk>,
+    /// The chunk's packet. It is encoded when first needed and discarded when the chunk
+    /// changes, so that many players can be sent the same bytes.
     packet: Option<Bytes>,
+}
+
+impl ReplicaChunk {
+    /// The packet that sends the chunk, located at `position`, if the chunk is there.
+    fn packet(&mut self, position: ChunkPos) -> Option<Bytes> {
+        if self.packet.is_none() {
+            let chunk = self.chunk.as_ref()?;
+            self.packet = Some(encoded(&chunk_packet(position, chunk)));
+        }
+        self.packet.clone()
+    }
 }
 
 /// What one player has been sent and is waiting for.
@@ -256,13 +271,20 @@ impl Fanout {
                         position,
                     },
             } => self.spawn_player(player, entity_id, position).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Acknowledged { sequence },
+            } => {
+                let packet = encoded(&AcknowledgeBlockChange { sequence });
+                self.send_to_player(player, [packet]).await;
+            }
             WorkerToEdge::ChunkSnapshot {
                 position,
                 chunk,
                 entities,
                 ..
             } => {
-                self.store_chunk(position, &chunk).await;
+                self.store_chunk(position, chunk).await;
                 for state in entities {
                     self.upsert_entity(state).await;
                 }
@@ -279,6 +301,9 @@ impl Fanout {
         match event {
             RegionEvent::EntitySpawned(state) => self.upsert_entity(state).await,
             RegionEvent::EntityRemoved { entity, .. } => self.remove_entity(entity).await,
+            RegionEvent::BlockChanged { position, state } => {
+                self.change_block(position, state).await;
+            }
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 // A move of an entity the edge has not been told about yet is covered by
                 // the snapshot of the chunk it is in, which is still on its way.
@@ -407,11 +432,19 @@ impl Fanout {
             } else {
                 std::slice::from_ref(&newcomer)
             };
-            if let Some(view) = self.players.get_mut(other) {
-                view.listed.extend(additions.iter().map(|(id, _)| *id));
+            let Some(view) = self.players.get_mut(other) else {
+                continue;
+            };
+            // Someone may already have been told, with the newcomer's entity.
+            let unlisted: Vec<_> = additions
+                .iter()
+                .filter(|(id, _)| view.listed.insert(*id))
+                .cloned()
+                .collect();
+            if !unlisted.is_empty() {
+                let packet = encoded(&player_list_additions(&unlisted));
+                self.send_to_player(*other, [packet]).await;
             }
-            let packet = encoded(&player_list_additions(additions));
-            self.send_to_player(*other, [packet]).await;
         }
 
         let center = ChunkPos::containing(position.x, position.z);
@@ -458,11 +491,12 @@ impl Fanout {
                 subscribe.push(*position);
                 ReplicaChunk {
                     viewers: 0,
+                    chunk: None,
                     packet: None,
                 }
             });
             chunk.viewers += 1;
-            if chunk.packet.is_some() {
+            if chunk.chunk.is_some() {
                 view.pending.insert(*position);
             }
         }
@@ -492,12 +526,13 @@ impl Fanout {
     }
 
     /// Takes a chunk the worker sent into the replica and offers it to its viewers.
-    async fn store_chunk(&mut self, position: ChunkPos, chunk: &Chunk) {
+    async fn store_chunk(&mut self, position: ChunkPos, chunk: Chunk) {
         let Some(entry) = self.replica.get_mut(&position) else {
             // Nobody has the chunk in view any more.
             return;
         };
-        entry.packet = Some(encoded(&chunk_packet(position, chunk)));
+        entry.chunk = Some(chunk);
+        entry.packet = None;
 
         let viewers: Vec<_> = self
             .players
@@ -510,6 +545,40 @@ impl Fanout {
             .collect();
         for player in viewers {
             self.send_chunks(player).await;
+        }
+    }
+
+    /// Applies a block change to the replica and tells everyone who has the chunk.
+    async fn change_block(&mut self, position: BlockPos, state: BlockState) {
+        let chunk_position = position.chunk();
+        let Some(entry) = self.replica.get_mut(&chunk_position) else {
+            return;
+        };
+        let Some(chunk) = &mut entry.chunk else {
+            // The chunk itself is still on its way and will include the change.
+            return;
+        };
+        let (x, z) = position.in_chunk();
+        chunk.set(x, position.y, z, state);
+        entry.packet = None;
+
+        let packet = encoded(&BlockUpdate {
+            position: Position {
+                x: position.x,
+                y: position.y,
+                z: position.z,
+            },
+            state: state.0.into(),
+        });
+        // Players who have not been sent the chunk yet get it with the change in it.
+        let viewers: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.sent.contains(&chunk_position))
+            .map(|(player, _)| *player)
+            .collect();
+        for player in viewers {
+            self.send_to_player(player, [packet.clone()]).await;
         }
     }
 
@@ -539,8 +608,8 @@ impl Fanout {
             view.sent.insert(*position);
             let packet = self
                 .replica
-                .get(position)
-                .and_then(|chunk| chunk.packet.clone());
+                .get_mut(position)
+                .and_then(|chunk| chunk.packet(*position));
             packets.push(packet.expect("pending chunks are in the replica"));
         }
         packets.push(encoded(&ChunkBatchFinished {

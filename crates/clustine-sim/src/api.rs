@@ -3,7 +3,8 @@
 //! These types cross the boundary between the worker and the edge, so they have to stay
 //! serialisable and free of anything specific to the Minecraft protocol.
 
-use clustine_world::{Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+use clustine_data::BlockState;
+use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use serde::{Deserialize, Serialize};
 
 /// Where an entity is and how it is oriented.
@@ -76,6 +77,9 @@ pub enum PlayerInput {
         rotation: Option<(f32, f32)>,
         on_ground: bool,
     },
+    /// The player broke a block. `sequence` numbers the changes the player's client has
+    /// already shown on its own; see [`PlayerEvent::Acknowledged`].
+    Dig { position: BlockPos, sequence: i32 },
 }
 
 /// Everything that happened since the previous tick.
@@ -99,6 +103,10 @@ pub struct TickInputs {
 pub enum PlayerEvent {
     /// The player has entered the world.
     Spawned { entity_id: EntityId, position: Vec3 },
+    /// Everything the player did with a sequence number up to `sequence` has been
+    /// handled, whether it took effect or not. The client then stops showing its own
+    /// guess of the outcome and shows what the region reported.
+    Acknowledged { sequence: i32 },
 }
 
 /// Something that happened in the region and concerns everyone who can see it.
@@ -108,6 +116,11 @@ pub enum RegionEvent {
     EntitySpawned(EntityState),
     /// An entity has ceased to exist. `chunk` is where it was last.
     EntityRemoved { entity: EntityId, chunk: ChunkPos },
+    /// A block has changed.
+    BlockChanged {
+        position: BlockPos,
+        state: BlockState,
+    },
     /// An entity has a new pose. At most one per entity and tick.
     EntityMoved {
         entity: EntityId,
@@ -124,6 +137,7 @@ impl RegionEvent {
         match self {
             Self::EntitySpawned(state) => [state.chunk(); 2],
             Self::EntityRemoved { chunk, .. } => [*chunk; 2],
+            Self::BlockChanged { position, .. } => [position.chunk(); 2],
             Self::EntityMoved {
                 pose,
                 previous_chunk,

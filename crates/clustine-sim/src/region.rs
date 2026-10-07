@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use clustine_world::{Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+use clustine_data::blocks;
+use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 
 use crate::api::{
     EntityKind, EntityState, PlayerChange, PlayerEvent, PlayerInput, Pose, RegionEvent, TickInputs,
@@ -19,6 +20,13 @@ pub struct RegionConfig {
     pub first_entity_id: EntityId,
 }
 
+/// How far above a player's feet their eyes are.
+const EYE_HEIGHT: f64 = 1.62;
+
+/// How far from their eyes a creative-mode player can reach a block, with the block of
+/// tolerance vanilla allows for the client being slightly ahead of the server.
+const BLOCK_REACH: f64 = 6.0;
+
 /// Positions beyond these are pulled back, as in vanilla.
 const MAX_HORIZONTAL_COORDINATE: f64 = 3.0e7;
 const MAX_VERTICAL_COORDINATE: f64 = 2.0e7;
@@ -31,6 +39,8 @@ struct Player {
     /// The chunk the player was in at the end of the previous tick, if the pose has
     /// changed since then.
     moved_from: Option<ChunkPos>,
+    /// The highest sequence number handled in this tick, to be acknowledged.
+    handled_sequence: Option<i32>,
 }
 
 /// A part of the world that is simulated as one unit.
@@ -121,6 +131,7 @@ impl Region {
                         name: join.name.clone(),
                         pose: Pose::at(self.config.spawn),
                         moved_from: None,
+                        handled_sequence: None,
                     };
                     output.player_events.push((
                         join.player,
@@ -145,19 +156,48 @@ impl Region {
             }
         }
 
-        for (player, input) in &inputs.inputs {
+        for (id, input) in &inputs.inputs {
             // Input can arrive for a player who has just left.
-            if let Some(player) = self.players.get_mut(player) {
-                player.apply(input);
+            let Some(player) = self.players.get_mut(id) else {
+                continue;
+            };
+            match input {
+                PlayerInput::Move {
+                    position,
+                    rotation,
+                    on_ground,
+                } => player.move_to(*position, *rotation, *on_ground),
+                PlayerInput::Dig { position, sequence } => {
+                    // Acknowledged whatever comes of it, so the client stops guessing.
+                    player.handled_sequence = player.handled_sequence.max(Some(*sequence));
+                    let (x, z) = position.in_chunk();
+                    let chunk = self.chunks.get_mut(&position.chunk());
+                    if let Some(chunk) = chunk.filter(|_| player.can_reach(*position))
+                        && chunk
+                            .get(x, position.y, z)
+                            .is_some_and(|state| state != blocks::AIR)
+                    {
+                        chunk.set(x, position.y, z, blocks::AIR);
+                        output.events.push(RegionEvent::BlockChanged {
+                            position: *position,
+                            state: blocks::AIR,
+                        });
+                    }
+                }
             }
         }
-        for player in self.players.values_mut() {
+        for (id, player) in &mut self.players {
             if let Some(previous_chunk) = player.moved_from.take() {
                 output.events.push(RegionEvent::EntityMoved {
                     entity: player.entity_id,
                     pose: player.pose,
                     previous_chunk,
                 });
+            }
+            if let Some(sequence) = player.handled_sequence.take() {
+                output
+                    .player_events
+                    .push((*id, PlayerEvent::Acknowledged { sequence }));
             }
         }
 
@@ -206,54 +246,67 @@ impl Player {
         }
     }
 
-    fn apply(&mut self, input: &PlayerInput) {
-        match input {
-            PlayerInput::Move {
-                position,
-                rotation,
-                on_ground,
-            } => {
-                // Input that is not a number is dropped as a whole: nothing sensible can
-                // be done with it and it must never enter the state.
-                let numbers = position
+    /// Whether the player's eyes are close enough to the block at `position` to work on it.
+    fn can_reach(&self, position: BlockPos) -> bool {
+        let eye = [
+            self.pose.position.x,
+            self.pose.position.y + EYE_HEIGHT,
+            self.pose.position.z,
+        ];
+        let block = [position.x, position.y, position.z];
+        // Distance from the eye to the nearest point of the block.
+        let squared: f64 = eye
+            .into_iter()
+            .zip(block)
+            .map(|(eye, block)| {
+                let low = f64::from(block);
+                let nearest = eye.clamp(low, low + 1.0);
+                (eye - nearest).powi(2)
+            })
+            .sum();
+        squared <= BLOCK_REACH * BLOCK_REACH
+    }
+
+    fn move_to(&mut self, position: Option<Vec3>, rotation: Option<(f32, f32)>, on_ground: bool) {
+        // Input that is not a number is dropped as a whole: nothing sensible can be done
+        // with it and it must never enter the state.
+        let numbers = position
+            .iter()
+            .flat_map(|position| [position.x, position.y, position.z])
+            .chain(
+                rotation
                     .iter()
-                    .flat_map(|position| [position.x, position.y, position.z])
-                    .chain(
-                        rotation
-                            .iter()
-                            .flat_map(|(yaw, pitch)| [f64::from(*yaw), f64::from(*pitch)]),
-                    );
-                if !numbers.into_iter().all(f64::is_finite) {
-                    return;
-                }
+                    .flat_map(|(yaw, pitch)| [f64::from(*yaw), f64::from(*pitch)]),
+            );
+        if !numbers.into_iter().all(f64::is_finite) {
+            return;
+        }
 
-                let mut pose = self.pose;
-                if let Some(position) = position {
-                    pose.position = Vec3::new(
-                        position
-                            .x
-                            .clamp(-MAX_HORIZONTAL_COORDINATE, MAX_HORIZONTAL_COORDINATE),
-                        position
-                            .y
-                            .clamp(-MAX_VERTICAL_COORDINATE, MAX_VERTICAL_COORDINATE),
-                        position
-                            .z
-                            .clamp(-MAX_HORIZONTAL_COORDINATE, MAX_HORIZONTAL_COORDINATE),
-                    );
-                }
-                if let Some((yaw, pitch)) = rotation {
-                    pose.yaw = *yaw;
-                    pose.pitch = *pitch;
-                }
-                pose.on_ground = *on_ground;
+        let mut pose = self.pose;
+        if let Some(position) = position {
+            pose.position = Vec3::new(
+                position
+                    .x
+                    .clamp(-MAX_HORIZONTAL_COORDINATE, MAX_HORIZONTAL_COORDINATE),
+                position
+                    .y
+                    .clamp(-MAX_VERTICAL_COORDINATE, MAX_VERTICAL_COORDINATE),
+                position
+                    .z
+                    .clamp(-MAX_HORIZONTAL_COORDINATE, MAX_HORIZONTAL_COORDINATE),
+            );
+        }
+        if let Some((yaw, pitch)) = rotation {
+            pose.yaw = yaw;
+            pose.pitch = pitch;
+        }
+        pose.on_ground = on_ground;
 
-                if pose != self.pose {
-                    let current = self.pose.position;
-                    self.moved_from
-                        .get_or_insert(ChunkPos::containing(current.x, current.z));
-                    self.pose = pose;
-                }
-            }
+        if pose != self.pose {
+            let current = self.pose.position;
+            self.moved_from
+                .get_or_insert(ChunkPos::containing(current.x, current.z));
+            self.pose = pose;
         }
     }
 }
@@ -635,6 +688,126 @@ mod tests {
         );
     }
 
+    fn dig(number: u128, x: i32, y: i32, z: i32, sequence: i32) -> (PlayerId, PlayerInput) {
+        let input = PlayerInput::Dig {
+            position: BlockPos::new(x, y, z),
+            sequence,
+        };
+        (player(number), input)
+    }
+
+    /// A chunk with a floor of stone right below where players stand.
+    fn floor() -> Chunk {
+        let mut chunk = chunk();
+        for z in 0..16 {
+            for x in 0..16 {
+                chunk.set(x, -61, z, blocks::STONE);
+            }
+        }
+        chunk
+    }
+
+    /// A region with the given players standing on a stone floor in chunk (0, 0).
+    fn on_floor(numbers: &[u128]) -> Region {
+        let mut region = joined(numbers);
+        let origin = ChunkPos::new(0, 0);
+        region.tick(&tickets(vec![origin], vec![]));
+        region.tick(&TickInputs {
+            chunks_loaded: vec![(origin, floor())],
+            ..TickInputs::default()
+        });
+        region
+    }
+
+    fn acknowledged(number: u128, sequence: i32) -> (PlayerId, PlayerEvent) {
+        (player(number), PlayerEvent::Acknowledged { sequence })
+    }
+
+    #[test]
+    fn digging_removes_the_block_and_is_acknowledged() {
+        let mut region = on_floor(&[1]);
+        let output = region.tick(&moves(vec![dig(1, 2, -61, 3, 7)]));
+        assert_eq!(
+            output.events,
+            [RegionEvent::BlockChanged {
+                position: BlockPos::new(2, -61, 3),
+                state: blocks::AIR,
+            }]
+        );
+        assert_eq!(output.events[0].chunks(), [ChunkPos::new(0, 0); 2]);
+        assert_eq!(output.player_events, [acknowledged(1, 7)]);
+
+        let chunk = region.chunk(ChunkPos::new(0, 0)).unwrap();
+        assert_eq!(chunk.get(2, -61, 3), Some(blocks::AIR));
+        assert_eq!(chunk.get(3, -61, 3), Some(blocks::STONE));
+    }
+
+    #[test]
+    fn digging_where_nothing_can_be_broken_is_only_acknowledged() {
+        let mut region = on_floor(&[1]);
+        let attempts = [
+            // Air.
+            dig(1, 2, -60, 3, 1),
+            // Too far away: 12 blocks along the floor.
+            dig(1, 12, -61, 0, 2),
+            // Below and above the world.
+            dig(1, 0, -65, 0, 3),
+            dig(1, 0, 320, 0, 4),
+            // In a chunk that is not loaded.
+            dig(1, -1, -61, 0, 5),
+        ];
+        for attempt in attempts {
+            let PlayerInput::Dig { sequence, .. } = attempt.1 else {
+                unreachable!();
+            };
+            let output = region.tick(&moves(vec![attempt]));
+            assert!(output.events.is_empty(), "sequence {sequence}");
+            assert_eq!(output.player_events, [acknowledged(1, sequence)]);
+        }
+        assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
+    }
+
+    #[test]
+    fn reach_is_measured_from_the_eyes_to_the_nearest_point_of_the_block() {
+        let mut region = on_floor(&[1]);
+        // The eyes are at x = 0.5. The block at x = 6 begins 5.5 blocks away
+        // horizontally and about 1.6 below: just within 6. The one at x = 7 is not.
+        let output = region.tick(&moves(vec![dig(1, 7, -61, 0, 1), dig(1, 6, -61, 0, 2)]));
+        assert_eq!(
+            output.events,
+            [RegionEvent::BlockChanged {
+                position: BlockPos::new(6, -61, 0),
+                state: blocks::AIR,
+            }]
+        );
+    }
+
+    #[test]
+    fn one_acknowledgement_per_tick_covers_the_highest_sequence() {
+        let mut region = on_floor(&[1, 2]);
+        let output = region.tick(&moves(vec![
+            dig(1, 0, -61, 0, 5),
+            dig(2, 1, -61, 0, 3),
+            dig(1, 0, -61, 1, 6),
+            dig(1, 0, -61, 2, 4),
+        ]));
+        assert_eq!(output.events.len(), 4);
+        assert_eq!(
+            output.player_events,
+            [acknowledged(1, 6), acknowledged(2, 3)]
+        );
+        // Nothing is acknowledged in a tick without such input.
+        assert!(region.tick(&TickInputs::default()).player_events.is_empty());
+    }
+
+    #[test]
+    fn a_block_cannot_be_broken_twice() {
+        let mut region = on_floor(&[1, 2]);
+        let output = region.tick(&moves(vec![dig(1, 0, -61, 0, 1), dig(2, 0, -61, 0, 1)]));
+        assert_eq!(output.events.len(), 1);
+        assert_eq!(output.player_events.len(), 2);
+    }
+
     /// The same inputs always lead to the same region and the same outputs: a recorded
     /// run can be replayed.
     #[test]
@@ -653,7 +826,7 @@ mod tests {
             let mut inputs = TickInputs::default();
             for _ in 0..random(4) {
                 let number = u128::from(random(6));
-                match random(6) {
+                match random(8) {
                     0 => inputs.player_changes.push(join(number)),
                     1 => inputs.player_changes.push(leave(number)),
                     2 => inputs
@@ -664,11 +837,19 @@ mod tests {
                         .push(ChunkPos::new(random(4) as i32, 0)),
                     4 => inputs
                         .chunks_loaded
-                        .push((ChunkPos::new(random(4) as i32, 0), chunk())),
+                        .push((ChunkPos::new(random(4) as i32, 0), floor())),
+                    5 => inputs.inputs.push(dig(
+                        number,
+                        random(24) as i32,
+                        -61,
+                        random(8) as i32,
+                        random(1000) as i32,
+                    )),
+                    // Players stay close together so that digging is often in reach.
                     _ => inputs.inputs.push(walk(
                         number,
-                        random(2000) as f64 / 10.0 - 100.0,
-                        random(2000) as f64 / 10.0 - 100.0,
+                        random(200) as f64 / 10.0,
+                        random(80) as f64 / 10.0,
                     )),
                 }
             }
@@ -685,6 +866,12 @@ mod tests {
         // The run did something worth comparing.
         let moved = |event: &RegionEvent| matches!(event, RegionEvent::EntityMoved { .. });
         assert!(outputs.iter().any(|output| output.events.iter().any(moved)));
+        let broken = |event: &RegionEvent| matches!(event, RegionEvent::BlockChanged { .. });
+        assert!(
+            outputs
+                .iter()
+                .any(|output| output.events.iter().any(broken))
+        );
         assert!(
             outputs
                 .iter()

@@ -71,12 +71,6 @@ impl RegionRunner {
         for position in output.chunk_requests {
             self.store.request(StoreRequest::Load { position });
         }
-        for (player, event) in output.player_events {
-            if !self.publish(WorkerToEdge::ToPlayer { player, event }) {
-                return false;
-            }
-        }
-
         // The edge only hears about what happens in chunks it subscribed to.
         let mut events = Vec::new();
         for event in output.events {
@@ -101,6 +95,14 @@ impl RegionRunner {
                 events,
             };
             if !self.publish(delta) {
+                return false;
+            }
+        }
+
+        // After the events, so that a player is told that their action was handled only
+        // once they have been told what it did.
+        for (player, event) in output.player_events {
+            if !self.publish(WorkerToEdge::ToPlayer { player, event }) {
                 return false;
             }
         }

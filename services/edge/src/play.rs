@@ -11,11 +11,12 @@ use bytes::Bytes;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, Disconnect, ServerboundPlay, movement_flags,
+    AcknowledgeBlockChange, ClientboundKeepAlive, Disconnect, PlayerAction, ServerboundPlay,
+    movement_flags, player_action,
 };
 use clustine_rpc::EdgeToWorker;
 use clustine_sim::api::PlayerInput;
-use clustine_world::{PlayerId, Vec3};
+use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
@@ -132,6 +133,9 @@ async fn pump(
                     ServerboundPlay::SetPlayerMovementFlags(packet) => {
                         moved(shared, client, None, None, packet.flags).await?;
                     }
+                    ServerboundPlay::PlayerAction(action) => {
+                        acted(connection, shared, client, action).await?;
+                    }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}
@@ -196,6 +200,43 @@ async fn moved(
         rotation,
         on_ground: flags & movement_flags::ON_GROUND != 0,
     };
+    send_input(shared, client, input).await
+}
+
+/// Handles something the player did with their hands.
+async fn acted(
+    connection: &mut Connection,
+    shared: &Shared,
+    client: &Client,
+    action: PlayerAction,
+) -> Result<(), ConnectionError> {
+    match action.status {
+        // In creative mode, starting to break a block breaks it.
+        player_action::START_DESTROY_BLOCK => {
+            let input = PlayerInput::Dig {
+                position: BlockPos::new(action.position.x, action.position.y, action.position.z),
+                sequence: action.sequence,
+            };
+            send_input(shared, client, input).await
+        }
+        // The other ways of breaking a block only exist in survival mode. The client
+        // still counts them among its guesses and waits to hear they were handled.
+        player_action::ABORT_DESTROY_BLOCK | player_action::STOP_DESTROY_BLOCK => {
+            let acknowledgement = AcknowledgeBlockChange {
+                sequence: action.sequence,
+            };
+            connection.write(&acknowledgement).await
+        }
+        // Dropping and using items does not exist yet.
+        _ => Ok(()),
+    }
+}
+
+async fn send_input(
+    shared: &Shared,
+    client: &Client,
+    input: PlayerInput,
+) -> Result<(), ConnectionError> {
     let message = EdgeToWorker::Input {
         player: client.player,
         input,

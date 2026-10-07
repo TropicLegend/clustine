@@ -1105,6 +1105,122 @@ impl Decode for RemoveEntities {
     }
 }
 
+/// Values of [`PlayerAction::status`] in 26.3.
+pub mod player_action {
+    /// Started breaking a block. In creative mode this is the whole break.
+    pub const START_DESTROY_BLOCK: i32 = 0;
+    pub const CHANGE_DESTROY_DIRECTION: i32 = 1;
+    pub const ABORT_DESTROY_BLOCK: i32 = 2;
+    /// Finished breaking a block in survival mode.
+    pub const STOP_DESTROY_BLOCK: i32 = 3;
+    pub const DROP_ALL_ITEMS: i32 = 4;
+    pub const DROP_ITEM: i32 = 5;
+    pub const RELEASE_USE_ITEM: i32 = 6;
+    pub const SWAP_ITEM_WITH_OFFHAND: i32 = 7;
+    pub const STAB: i32 = 8;
+}
+
+/// Block faces as used by [`PlayerAction`] and block placement.
+pub mod face {
+    pub const BOTTOM: u8 = 0;
+    pub const TOP: u8 = 1;
+    pub const NORTH: u8 = 2;
+    pub const SOUTH: u8 = 3;
+    pub const WEST: u8 = 4;
+    pub const EAST: u8 = 5;
+}
+
+/// Something the player does with their hands that is not placing a block: mostly
+/// breaking blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerAction {
+    /// One of the [`player_action`] values.
+    pub status: i32,
+    /// The block concerned; zero for actions without one.
+    pub position: Position,
+    /// One of the [`face`] values: the side of the block that was hit.
+    pub face: u8,
+    /// Numbers the client's predicted block changes; see [`AcknowledgeBlockChange`].
+    pub sequence: i32,
+}
+
+impl Packet for PlayerAction {
+    const ID: i32 = serverbound::PLAYER_ACTION;
+}
+
+impl Encode for PlayerAction {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.status);
+        w.put_position(self.position);
+        w.put_u8(self.face);
+        w.put_var_int(self.sequence);
+    }
+}
+
+impl Decode for PlayerAction {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            status: r.var_int()?,
+            position: r.position()?,
+            face: r.u8()?,
+            sequence: r.var_int()?,
+        })
+    }
+}
+
+/// Tells the client that every block change it predicted up to `sequence` has been
+/// handled. The client then drops those predictions and shows what the server said.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcknowledgeBlockChange {
+    pub sequence: i32,
+}
+
+impl Packet for AcknowledgeBlockChange {
+    const ID: i32 = clientbound::BLOCK_CHANGED_ACK;
+}
+
+impl Encode for AcknowledgeBlockChange {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.sequence);
+    }
+}
+
+impl Decode for AcknowledgeBlockChange {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            sequence: r.var_int()?,
+        })
+    }
+}
+
+/// A single block has changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockUpdate {
+    pub position: Position,
+    /// The new block state id.
+    pub state: i32,
+}
+
+impl Packet for BlockUpdate {
+    const ID: i32 = clientbound::BLOCK_UPDATE;
+}
+
+impl Encode for BlockUpdate {
+    fn encode(&self, w: &mut Writer) {
+        w.put_position(self.position);
+        w.put_var_int(self.state);
+    }
+}
+
+impl Decode for BlockUpdate {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            position: r.position()?,
+            state: r.var_int()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -1117,6 +1233,7 @@ packet_set! {
         SetPlayerRotation,
         SetPlayerMovementFlags,
         PlayerLoaded,
+        PlayerAction,
     }
 }
 
@@ -1140,6 +1257,8 @@ packet_set! {
         SyncEntityPosition,
         SetHeadRotation,
         RemoveEntities,
+        AcknowledgeBlockChange,
+        BlockUpdate,
     }
 }
 
@@ -1496,6 +1615,35 @@ mod tests {
             },
             Set::decode,
             Set::RemoveEntities,
+        );
+    }
+
+    #[test]
+    fn block_packets_round_trip() {
+        let position = Position {
+            x: -12,
+            y: -61,
+            z: 300,
+        };
+        assert_round_trip(
+            PlayerAction {
+                status: player_action::START_DESTROY_BLOCK,
+                position,
+                face: face::TOP,
+                sequence: 7,
+            },
+            ServerboundPlay::decode,
+            ServerboundPlay::PlayerAction,
+        );
+        assert_round_trip(
+            AcknowledgeBlockChange { sequence: 7 },
+            ClientboundPlay::decode,
+            ClientboundPlay::AcknowledgeBlockChange,
+        );
+        assert_round_trip(
+            BlockUpdate { position, state: 0 },
+            ClientboundPlay::decode,
+            ClientboundPlay::BlockUpdate,
         );
     }
 
