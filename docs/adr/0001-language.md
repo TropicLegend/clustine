@@ -1,6 +1,6 @@
 # ADR-0001: Implementation language
 
-- Status: **Proposed** (the workspace skeleton follows this proposal; awaiting confirmation)
+- Status: **Accepted**
 - Date: 2026-10-07
 
 ## Context

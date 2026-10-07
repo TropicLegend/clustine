@@ -4,4 +4,5 @@ description = "Region simulation: the tick loop and game mechanics."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true

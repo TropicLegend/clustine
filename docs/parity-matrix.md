@@ -3,7 +3,7 @@
 Tracks how closely Clustine matches the vanilla server. This is the main place to find
 something to work on.
 
-Target Minecraft version: to be fixed when milestone M1 starts (the latest release at that time).
+Target Minecraft version: **26.3** (protocol 777).
 
 ## Status values
 

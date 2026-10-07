@@ -15,3 +15,34 @@ vanilla mechanics on top of it.
 | **M7 Plugins** | WebAssembly plugin API, later the Bukkit bridge | Example plugins run unchanged on one and on many workers |
 
 M6 can start once M3 has stabilised the simulation API; it does not wait for M4 and M5.
+
+## M1 steps
+
+M1 targets Minecraft: Java Edition 26.3 in offline mode, with the server bound to
+localhost. Online mode and encryption follow directly after M1.
+
+"Oracle" means the same bot scenario is also run against Mojang's official server, which
+guards against a mistake shared by our server and our bot. "Real client" means a manual
+check with an unmodified 26.3 client.
+
+| # | Scope | Verified by | Status |
+|---|---|---|---|
+| 0 | Licence, decision records, protocol notes | CI | done |
+| 1 | `tools/datagen` and the generated id tables | `datagen --check`, tests on known ids | |
+| 2 | Codec primitives and framing | Known-answer vectors, property tests | |
+| 3 | Listener, handshake, status | Bot `ping`; real client lists the server | |
+| 4 | Offline login, configuration, entering play, keep-alive | Bot idles 30 s; oracle | |
+| 5 | Sections, palettes, flat generator, chunk packet | Property tests; chunk compared with the oracle's | |
+| 6 | Region, edge/worker messages and links, tick runner | Simulation tests over both link kinds | |
+| 7 | Edge fan-out, chunk replica, chunk batches | Bot receives the expected chunks; real client sees the world | |
+| 8 | Movement, view updates, chunk loading and unloading | Bot walks 200 blocks; replay test | |
+| 9 | Other players: spawn, move, remove | Two bots see each other | |
+| 10 | Breaking blocks | Bot A breaks, bot B observes; real client | |
+| 11 | Placing blocks from a fixed hotbar | Bot `place`; real client | |
+| 12 | Section format, manifests, local storage, checkpoint on shutdown | Restart test | |
+| 13 | Write-ahead log, recovery, periodic checkpoint | Torn-write tests; `kill -9` test | |
+| 14 | Compression, slow-client handling, timeouts, end-to-end CI job | A stalled bot is dropped without affecting tick time | |
+
+Not in M1: survival mechanics, chat and commands, a lighting engine, neighbour updates,
+server-side collision, entities other than players, more than one dimension, player data
+persistence and real world generation.

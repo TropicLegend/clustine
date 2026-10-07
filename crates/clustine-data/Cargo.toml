@@ -4,4 +4,5 @@ description = "Game data generated from the official server jar's data reports: 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true

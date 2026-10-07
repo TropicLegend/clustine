@@ -28,6 +28,7 @@ creating more separate servers.
 - [Roadmap](docs/roadmap.md)
 - [Parity matrix](docs/parity-matrix.md)
 - [Library evaluation](docs/library-evaluation.md)
+- [Protocol notes for Minecraft 26.3](docs/protocol-26.3.md)
 - [Architecture decision records](docs/adr/)
 
 ## Repository layout
@@ -54,8 +55,9 @@ cargo test --workspace
 
 ## Licence
 
-Not yet decided; see [ADR-0002](docs/adr/0002-licence.md). Until a licence is added, no
-rights are granted to use, modify or redistribute this code.
+Clustine is free software under the GNU Affero General Public License, version 3 or
+later; see [LICENSE](LICENSE) and [ADR-0002](docs/adr/0002-licence.md). If you run a
+modified version for players, you have to offer them its source.
 
 ---
 

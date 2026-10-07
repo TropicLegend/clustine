@@ -16,13 +16,14 @@ protocol 777).
 | Protocol codec | Write our own | Nothing is at once permissively licensed, current, on stable Rust and free of a parent project's runtime |
 | NBT | `fastnbt` | Permissive, actively released, stable Rust |
 | Game data | Generate from the server jar | Same approach as Azalea and Hyperion; existing data crates are stale, nightly-only or GPL |
-| World generation | **Depends on the licence decision** | The only two modern vanilla implementations in Rust are GPL-3.0 and AGPL-3.0 |
+| World generation | Reuse `steel-worldgen` or `pumpkin-world`; choose when world generation starts | The only two modern vanilla implementations in Rust are AGPL-3.0 and GPL-3.0 |
 | Load testing | Azalea swarms, kept outside the stable workspace | MIT, but requires nightly Rust and lags new Minecraft versions |
 | Infrastructure | No obstacles | All candidates are permissively licensed and maintained |
 
-The world generation finding is the one that matters for
-[ADR-0002](adr/0002-licence.md): a permissively licensed Clustine has to write vanilla
-world generation itself.
+The world generation finding weighed heavily in [ADR-0002](adr/0002-licence.md), which
+chose AGPL-3.0-or-later after this evaluation was written. Statements below about what a
+permissive licence would rule out describe the options at that time; with the AGPL, the
+copyleft crates listed here are usable.
 
 ## Parent project licences
 
@@ -95,10 +96,8 @@ required Java version are to be confirmed when `clustine-data` is started.
 No permissively licensed Rust implementation of modern vanilla terrain was found.
 Neither project's parity claim has been reproduced here.
 
-- With **AGPL-3.0**, `steel-worldgen` or `pumpkin-world` could be reused, which removes
-  most of parity tier T2.
-- With **Apache-2.0/MIT**, world generation is written from the vanilla world generation
-  JSON, and neither crate's source may be copied.
+Clustine is AGPL-3.0-or-later, so either crate can be reused, which removes most of parity
+tier T2. Which one is decided when world generation starts.
 
 ## Load testing
 

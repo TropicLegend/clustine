@@ -20,8 +20,8 @@ This document describes the intended design. None of it is implemented yet; the
 ```mermaid
 flowchart LR
     clients([Clients]) <--> edge
-    edge -- inbound packets --> worker
-    worker -- region deltas --> edge
+    edge -- player inputs, chunk subscriptions --> worker
+    worker -- chunk snapshots, region deltas --> edge
     coordinator -- routing table --> edge
     coordinator -- leases, global state --> worker
     worker -- snapshots, log --> worldstore
@@ -33,7 +33,7 @@ flowchart LR
 
 | Service | Responsibility | State |
 |---|---|---|
-| **edge** | Terminates client connections (authentication, encryption, compression). Routes inbound packets to the worker owning the player's region. Fans region deltas out to players: interest management and packet encoding. | Stateless apart from live connections |
+| **edge** | Terminates client connections (authentication, encryption, compression). Translates inbound packets into semantic inputs for the worker owning the player's region. Fans region deltas out to players: interest management and packet encoding. | Live connections and a replica of the chunks its players can see |
 | **coordinator** | Region ownership map and leases, merge/split/migrate decisions, load balancing, global world state (time, weather, game rules, player list). | Replicated with embedded Raft, three replicas |
 | **worker** | Ticks the regions it owns, each on its own tick loop in a thread pool. The only place simulation happens. | Authoritative in-memory region state |
 | **worldstore** | Serves and persists chunks, snapshots and write-ahead logs. | Durable |
@@ -43,6 +43,9 @@ flowchart LR
 
 Edge combines the gateway and fan-out roles. They may be split into two services if
 dense-crowd benchmarks show they need to scale independently.
+
+The worker never sees a Minecraft packet. The interface between edge and worker is
+described in [ADR-0005](adr/0005-edge-worker-interface.md).
 
 The `clustine` binary runs all services in one process for development and small servers.
 
@@ -108,9 +111,9 @@ simulation capacity. Two measures address this:
 
 ## Vanilla parity
 
-- Registries, block states, recipes, loot tables and tags are generated from the official
-  server jar's data reports at build time on the builder's machine. Mojang assets are
-  never redistributed.
+- Ids and names of packets, block states, registry entries and tags are generated from the
+  official server jar's data generator by `tools/datagen` and committed as Rust tables
+  ([ADR-0004](adr/0004-game-data.md)). The jar and its data pack are never redistributed.
 - `difftest` runs the vanilla server with the same seed and inputs and compares chunk
   hashes, redstone outcomes and entity behaviour.
 - Progress is tracked in the [parity matrix](parity-matrix.md).
