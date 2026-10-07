@@ -1,0 +1,16 @@
+# Everything is kept out of the build context except what cargo reads. The step that
+# compiles is cached for as long as these files stay the same, so a change to the
+# manifests in deploy/ or to the documentation compiles nothing again; and neither the
+# local world nor the target directory is sent to Docker.
+#
+# Every workspace member has to be let through, including tools/datagen, which is not
+# built for the image: cargo does not load a workspace with a member missing. If the
+# workspace ever gets members in another top-level directory, add it here.
+*
+!.cargo
+!Cargo.toml
+!Cargo.lock
+!bin
+!crates
+!services
+!tools

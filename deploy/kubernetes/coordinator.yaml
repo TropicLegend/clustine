@@ -1,0 +1,94 @@
+# The coordinator decides which worker runs which region of the world and tells the
+# edges where each region is.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clustine-coordinator
+  labels:
+    app.kubernetes.io/name: clustine-coordinator
+    app.kubernetes.io/component: coordinator
+    app.kubernetes.io/part-of: clustine
+spec:
+  # Inside the cluster only. The links between the services are plain TCP without
+  # authentication: whoever reaches this port can register as a worker.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: clustine-coordinator
+  ports:
+    - name: coordinator
+      port: 25600
+      targetPort: coordinator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clustine-coordinator
+  labels:
+    app.kubernetes.io/name: clustine-coordinator
+    app.kubernetes.io/component: coordinator
+    app.kubernetes.io/part-of: clustine
+spec:
+  replicas: 1
+  # There is one coordinator and it keeps what it knows in memory. A rolling update
+  # would run a second one next to it for a while, and each would give the regions away
+  # on its own; so the old one goes before the new one comes.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clustine-coordinator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clustine-coordinator
+        app.kubernetes.io/component: coordinator
+        app.kubernetes.io/part-of: clustine
+    spec:
+      # The service does not talk to the Kubernetes API, so it gets no token for it.
+      automountServiceAccountToken: false
+      # Without this Kubernetes sets variables such as CLUSTINE_EDGE_PORT for every
+      # Service in the namespace. The programs read none of them, and names that begin
+      # like Clustine's own should not come to mean something by accident.
+      enableServiceLinks: false
+      securityContext:
+        # The user the Dockerfile creates.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: coordinator
+          image: clustine:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - coordinator
+            - --listen=0.0.0.0:25600
+            # The world is divided at chunk x = 4, which is block x = 64, into two
+            # regions. worker.yaml has a worker for each.
+            - --boundaries=4
+          ports:
+            - name: coordinator
+              containerPort: 25600
+          readinessProbe:
+            tcpSocket:
+              port: coordinator
+            periodSeconds: 5
+          # Only to restart a coordinator that has stopped listening altogether, hence
+          # the long delay: a restart makes it forget who runs what.
+          livenessProbe:
+            tcpSocket:
+              port: coordinator
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The coordinator writes no files.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

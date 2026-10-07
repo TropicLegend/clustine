@@ -1,0 +1,61 @@
+name: Cluster
+
+# Deploys Clustine on a Kubernetes cluster inside the runner (kind) and lets bots walk
+# across the boundary between two workers; see deploy/README.md. It builds a release
+# image and starts a cluster, so it only runs when something changes that ends up in the
+# image or in the deployment.
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - deploy/**
+      - crates/**
+      - services/**
+      - bin/**
+      - tools/botswarm/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/cluster.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image is built here and not by test.sh so that its layers are kept in the
+      # GitHub Actions cache, which the plain build in test.sh does not use. A change
+      # to the Rust code still compiles everything again, while a change to deploy/
+      # alone compiles nothing.
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          # The checked-out files, not the repository as Git has it, which is the
+          # default and for which .dockerignore does not count.
+          context: .
+          tags: clustine:dev
+          # Into the runner's Docker, where `kind load` takes it from.
+          load: true
+          # Without attestations the image is a single manifest, the plainest thing to
+          # hand to `kind load`. test.sh builds the same way.
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # GitHub's Ubuntu runners come with kind; test.sh finds the downloaded one if not.
+      - name: Get kind if the runner has none
+        run: command -v kind || deploy/kind/get-kind.sh
+
+      - name: Run the cluster test
+        run: deploy/kind/test.sh
+        env:
+          # Built above.
+          SKIP_BUILD: "1"

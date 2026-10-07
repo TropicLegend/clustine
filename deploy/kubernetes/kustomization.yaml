@@ -1,0 +1,26 @@
+# Clustine on Kubernetes: one coordinator, one world store, two workers and one edge.
+#
+#     kubectl apply -k deploy/kubernetes
+#
+# Everything is created at once and in no particular order, and no init container waits
+# for another service. The programs wait themselves: a worker registers only once it has
+# reached the coordinator and the world store, and the edge starts to listen only once
+# every region has a worker. That the edge is ready therefore means that all of it is.
+#
+# Nothing here can be reached from outside the cluster, and it has to stay that way; see
+# edge.yaml for why.
+#
+# The image is `clustine:dev`, as the Dockerfile in the repository root builds it and as
+# deploy/kind/test.sh loads it into its cluster. For a cluster that pulls from a
+# registry, name the image there in an overlay (`images:`).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: clustine
+
+resources:
+  - namespace.yaml
+  - coordinator.yaml
+  - worldstore.yaml
+  - worker.yaml
+  - edge.yaml

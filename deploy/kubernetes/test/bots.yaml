@@ -1,0 +1,69 @@
+# The test of a deployed cluster: bots join through the edge and walk back and forth
+# across the boundary between the two workers while another bot watches them. The Job
+# succeeds only if every bot stayed connected and the watcher saw each walker as exactly
+# one entity the whole time.
+#
+# Not in the kustomization one directory up, because it is a test and not part of the
+# deployment. Apply it when the edge is ready, as deploy/kind/test.sh does:
+#
+#     kubectl apply -f deploy/kubernetes/test/bots.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clustine-bots
+  namespace: clustine
+  labels:
+    app.kubernetes.io/name: clustine-bots
+    app.kubernetes.io/component: test
+    app.kubernetes.io/part-of: clustine
+spec:
+  # One attempt. Whether the scenario held is the exit status of that attempt, and a
+  # second one after a failure would cover it up.
+  backoffLimit: 0
+  # In case the bots get stuck: a run that works is over long before.
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clustine-bots
+        app.kubernetes.io/component: test
+        app.kubernetes.io/part-of: clustine
+    spec:
+      restartPolicy: Never
+      # The bots have nothing to save when they are told to stop.
+      terminationGracePeriodSeconds: 5
+      automountServiceAccountToken: false
+      # See ../coordinator.yaml.
+      enableServiceLinks: false
+      securityContext:
+        # The user the Dockerfile creates.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bots
+          image: clustine:dev
+          imagePullPolicy: IfNotPresent
+          # `command` and not `args`, since the image's entry point is the server.
+          command:
+            - clustine-botswarm
+            - cross
+            - clustine-edge:25565
+            - --walkers=4
+            - --rounds=3
+            # The regions meet at block x = 64 (`--boundaries=4` in ../coordinator.yaml),
+            # so walking between these two places crosses from one worker to the other.
+            - --west=40.5
+            - --east=90.5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

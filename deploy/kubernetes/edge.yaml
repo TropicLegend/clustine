@@ -1,0 +1,92 @@
+# The edge is what Minecraft clients connect to. It passes what they do on to the worker
+# that runs the region they are in.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clustine-edge
+  labels:
+    app.kubernetes.io/name: clustine-edge
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/part-of: clustine
+spec:
+  # ClusterIP, and it has to stay that. The server runs in offline mode: it does not
+  # check with Mojang who a client is and believes any name it is given, so whoever
+  # reaches this port can play as anybody. Do not make this a LoadBalancer or a
+  # NodePort and do not put an Ingress or a Gateway in front of it. To play, forward
+  # the port to your own machine with `kubectl port-forward`; see deploy/README.md.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: clustine-edge
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: minecraft
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clustine-edge
+  labels:
+    app.kubernetes.io/name: clustine-edge
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/part-of: clustine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clustine-edge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clustine-edge
+        app.kubernetes.io/component: edge
+        app.kubernetes.io/part-of: clustine
+    spec:
+      # The service does not talk to the Kubernetes API, so it gets no token for it.
+      automountServiceAccountToken: false
+      # See coordinator.yaml.
+      enableServiceLinks: false
+      securityContext:
+        # The user the Dockerfile creates.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: edge
+          image: clustine:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - edge
+            - --coordinator=clustine-coordinator:25600
+            # Every address of the pod, but see the Service above: not beyond the cluster.
+            - --bind=0.0.0.0:25565
+          ports:
+            - name: minecraft
+              containerPort: 25565
+          # The edge starts to listen only once every region has a worker. Until then it
+          # is not ready and the Service sends it nobody, which is as it should be.
+          readinessProbe:
+            tcpSocket:
+              port: minecraft
+            periodSeconds: 5
+          # Only to restart an edge that has stopped listening altogether. The delay is
+          # long because of the waiting described above. An edge that is restarted after
+          # it for want of workers loses nothing: nobody was connected to it.
+          livenessProbe:
+            tcpSocket:
+              port: minecraft
+            initialDelaySeconds: 120
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The edge writes no files.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

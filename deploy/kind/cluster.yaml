@@ -1,0 +1,14 @@
+# The cluster of deploy/kind/test.sh, which also gives it its name.
+#
+# One node that is control plane and worker at once is enough. The two Clustine workers
+# are two pods with an address each, and whether they share a machine changes nothing
+# about how a player is handed from one to the other.
+#
+# No ports of the node are mapped to the host: the server is in offline mode and must
+# not be reachable from outside the cluster. See ../kubernetes/edge.yaml.
+#
+# The Kubernetes version is the default of the kind release, which get-kind.sh pins.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
