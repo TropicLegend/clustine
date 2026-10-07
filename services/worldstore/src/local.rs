@@ -2,31 +2,41 @@
 //!
 //! ```text
 //! meta                                       what the world was made with
-//! wal                                        block changes not yet in a saved chunk
+//! logs/<region>.wal                          per region, block changes not yet in a
+//!                                            saved chunk
 //! blobs/ab/abcdef…                           sections, by the hash of their content
 //! manifests/overworld/<rx>.<rz>/<x>.<z>.manifest
 //!                                            chunks, grouped by 32×32 chunks
 //! ```
 //!
 //! Files are written under a temporary name and renamed, so a reader never sees half a
-//! file. Section files are never changed once written.
+//! file. Section files are never changed once written. Only the logs are appended to.
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use clustine_data::DATA_VERSION;
 use clustine_format::{BlockChanges, ChunkManifest, FORMAT_VERSION, Hash, pack, read_log, unpack};
+use clustine_region::RegionId;
 use clustine_world::{Chunk, ChunkPos};
 
 use crate::{Backend, StoreError};
 
 pub(crate) struct LocalFs {
     root: PathBuf,
-    /// The write-ahead log, opened for appending.
-    log: File,
+    /// The write-ahead logs of the regions that have been opened.
+    logs: BTreeMap<RegionId, RegionLog>,
+}
+
+/// The write-ahead log of a region.
+struct RegionLog {
+    /// Opened for appending.
+    file: File,
     /// Whether something has been appended to the log since it was last made durable.
-    log_unsynced: bool,
+    unsynced: bool,
 }
 
 impl LocalFs {
@@ -34,6 +44,7 @@ impl LocalFs {
     pub(crate) fn open(root: &Path, generator_settings: &str) -> Result<Self, StoreError> {
         fs::create_dir_all(root.join("blobs"))?;
         fs::create_dir_all(root.join("manifests"))?;
+        fs::create_dir_all(root.join("logs"))?;
         let current = [
             ("format", FORMAT_VERSION.to_string()),
             ("data-version", DATA_VERSION.to_string()),
@@ -66,29 +77,85 @@ impl LocalFs {
             }
             Err(error) => return Err(error.into()),
         }
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(root.join("wal"))?;
         Ok(Self {
             root: root.to_owned(),
-            log,
-            log_unsynced: false,
+            logs: BTreeMap::new(),
         })
     }
 
-    /// The records in the write-ahead log. A record that was only written in part,
-    /// because the process died while appending it, is cut off.
-    pub(crate) fn read_log(&mut self) -> Result<Vec<BlockChanges>, StoreError> {
-        let path = self.root.join("wal");
-        let bytes = fs::read(&path)?;
-        let (records, valid) = read_log(&bytes)?;
-        if valid < bytes.len() {
-            // So that what is appended from now on follows a complete record.
-            self.log.set_len(valid as u64)?;
-            self.log.sync_data()?;
+    /// Hands the records of every log the world was left with to `apply`, which is to
+    /// put their changes into saved chunks, and empties the log once that is done.
+    ///
+    /// The logs are those of the regions and `wal` in the root, which is the one log of
+    /// a world that was last opened before it could have several regions. That file is
+    /// removed.
+    pub(crate) fn drain_logs(
+        &mut self,
+        mut apply: impl FnMut(&mut Self, &[BlockChanges]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let old = self.root.join("wal");
+        if old.try_exists()? {
+            self.drain_log(&old, &mut apply)?;
+            fs::remove_file(&old)?;
         }
-        Ok(records)
+
+        let mut logs = Vec::new();
+        for entry in fs::read_dir(self.root.join("logs"))? {
+            let entry = entry?;
+            let path = entry.path();
+            let is_log = path.extension().is_some_and(|extension| extension == "wal");
+            if is_log && entry.file_type()?.is_file() {
+                logs.push(path);
+            }
+        }
+        logs.sort();
+        for log in logs {
+            self.drain_log(&log, &mut apply)?;
+        }
+        Ok(())
+    }
+
+    /// Hands the records of the log at `path` to `apply` and then empties the log. What
+    /// is left of a record that was only written in part, because the process died while
+    /// appending it, goes with the rest.
+    fn drain_log(
+        &mut self,
+        path: &Path,
+        apply: &mut impl FnMut(&mut Self, &[BlockChanges]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let bytes = fs::read(path)?;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let (records, _) = read_log(&bytes)?;
+        if !records.is_empty() {
+            apply(self, &records)?;
+        }
+        let log = OpenOptions::new().write(true).open(path)?;
+        log.set_len(0)?;
+        // On disk before anything else happens to the chunks, so that the changes are
+        // never applied again on top of later ones.
+        log.sync_data()?;
+        Ok(())
+    }
+
+    fn log_path(&self, region: RegionId) -> PathBuf {
+        self.root.join("logs").join(format!("{region}.wal"))
+    }
+
+    /// The log of `region`, which is created if the region has none yet.
+    fn region_log(&mut self, region: RegionId) -> Result<&mut RegionLog, StoreError> {
+        let path = self.log_path(region);
+        match self.logs.entry(region) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let file = OpenOptions::new().create(true).append(true).open(path)?;
+                Ok(entry.insert(RegionLog {
+                    file,
+                    unsynced: false,
+                }))
+            }
+        }
     }
 
     fn blob_path(&self, hash: &Hash) -> PathBuf {
@@ -131,25 +198,43 @@ impl Backend for LocalFs {
         Ok(())
     }
 
-    fn log(&mut self, changes: &BlockChanges) -> Result<(), StoreError> {
-        self.log.write_all(&changes.encode())?;
-        self.log_unsynced = true;
+    fn log(&mut self, region: RegionId, changes: &BlockChanges) -> Result<(), StoreError> {
+        let log = self.region_log(region)?;
+        log.file.write_all(&changes.encode())?;
+        log.unsynced = true;
         Ok(())
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
-        if self.log_unsynced {
-            self.log.sync_data()?;
-            self.log_unsynced = false;
+        for log in self.logs.values_mut() {
+            if log.unsynced {
+                log.file.sync_data()?;
+                log.unsynced = false;
+            }
         }
         Ok(())
     }
 
-    fn checkpoint(&mut self) -> Result<(), StoreError> {
-        self.log.set_len(0)?;
-        self.log.sync_data()?;
-        self.log_unsynced = false;
+    fn checkpoint(&mut self, region: RegionId) -> Result<(), StoreError> {
+        let log = self.region_log(region)?;
+        log.file.set_len(0)?;
+        log.file.sync_data()?;
+        log.unsynced = false;
         Ok(())
+    }
+
+    /// A record that was only written in part is cut off.
+    fn pending(&mut self, region: RegionId) -> Result<Vec<BlockChanges>, StoreError> {
+        let path = self.log_path(region);
+        let log = self.region_log(region)?;
+        let bytes = fs::read(path)?;
+        let (records, valid) = read_log(&bytes)?;
+        if valid < bytes.len() {
+            // So that what is appended from now on follows a complete record.
+            log.file.set_len(valid as u64)?;
+            log.file.sync_data()?;
+        }
+        Ok(records)
     }
 }
 

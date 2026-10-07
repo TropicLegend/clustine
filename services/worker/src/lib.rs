@@ -666,7 +666,7 @@ mod tests {
             RegionRunner::new(region, worker_end, store.unwrap()).with_checkpoint_interval(50);
         joined(&edge, &mut runner).await;
         let log_length = || {
-            std::fs::metadata(directory.path().join("wal"))
+            std::fs::metadata(directory.path().join("logs/0.wal"))
                 .unwrap()
                 .len()
         };

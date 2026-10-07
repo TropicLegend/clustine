@@ -22,7 +22,7 @@ release.
 ```text
 <world>/
   meta
-  wal
+  logs/<region>.wal
   blobs/<first two hex digits>/<hash in hex>
   manifests/overworld/<rx>.<rz>/<x>.<z>.manifest
 ```
@@ -30,10 +30,18 @@ release.
 - `meta` is a text file of `key=value` lines: `format` (the format version),
   `data-version` (the Minecraft data version whose block state and biome ids the world
   uses) and `generator` (the generator settings).
-- `wal` is the write-ahead log: block changes that are not in a saved chunk yet.
+- `logs` holds the write-ahead logs, one per region: block changes that are not in a
+  saved chunk yet. `<region>` is the number of the region in decimal.
 - `blobs` holds the sections.
 - `manifests` holds one file per stored chunk at chunk coordinates `x`, `z`, grouped
   into directories of 32×32 chunks (`rx = x >> 5`, `rz = z >> 5`).
+
+A world that was last opened before it could have several regions has a single log
+instead, the file `wal` next to `meta`. When such a world is opened, the changes in that
+log are applied like those in any other log and the file is removed.
+
+How the world is divided into regions is not stored. Chunks and sections are kept the
+same way whichever region they are in.
 
 ## Sections
 
@@ -80,9 +88,12 @@ A section with flag `0` is nothing but air in the air biome and has no file.
 The epoch is always 1 for now. It will identify which owner of a region wrote the chunk
 once regions can move between workers.
 
-## Write-ahead log
+## Write-ahead logs
 
-The log is a sequence of records, each framed as a u32 payload length, a u32 CRC-32 of
+Each region has a log of its own, which holds the block changes made in the region since
+its last checkpoint.
+
+A log is a sequence of records, each framed as a u32 payload length, a u32 CRC-32 of
 the payload, and the payload. All integers are big-endian. The payload of a record of
 block changes is:
 
@@ -95,23 +106,41 @@ block changes is:
 | Number of changes | u32 |
 | Per change | i32 x, i32 y, i32 z, u16 block state |
 
+The epoch is that of the owner of the region that logged the changes. A region has one
+owner at a time, and its epoch counts the owners it has had.
+
 A process can die while appending, which leaves a partial record at the end. Reading
 stops at the first record that is incomplete or fails its checksum; everything from
-there on is cut off.
+there on is cut off. This concerns one log only: the logs of other regions are read in
+full.
 
 ## What is saved when
 
-- Every tick, the block changes of that tick are appended to the log, before players
-  are told about them, and the log is synced to disk.
+- Every tick, the block changes a region made in that tick are appended to the log of
+  the region, before players are told about them. The store takes what the regions have
+  sent it in one go and then syncs every log it has appended to, once each, to disk.
 - When a chunk that has changed is no longer needed by anyone, it is saved and unloaded.
-- At a **checkpoint**, every loaded chunk that has changed is saved and the log is
-  emptied. Checkpoints happen every five minutes by default and when the server stops.
+- At a **checkpoint**, a region saves every loaded chunk of its own that has changed and
+  its log is emptied. The logs of other regions stay as they are. Checkpoints happen
+  every five minutes by default and when the server stops.
 
-When a world is opened and its log is not empty, the server did not stop cleanly. The
-logged changes are then applied, in order, to the chunks they are in, those chunks are
-saved, and the log is emptied. A chunk may have been saved between two logged changes
-and already contain the earlier one; applying all of them again in order gives the same
-result, because each change sets a block to a definite state.
+When a world is opened and one of its logs is not empty, the server did not stop
+cleanly. The logged changes are then applied, in order, to the chunks they are in, those
+chunks are saved, and the log is emptied. This is done with every log there is, before
+any region is opened, so the world may be divided into other regions than last time. A
+chunk may have been saved between two logged changes and already contain the earlier
+one; applying all of them again in order gives the same result, because each change sets
+a block to a definite state.
+
+The same is done with the log of a single region when the region gets a new owner while
+the store keeps running, as after the worker that ran it has died: what the previous
+owner logged is in the saved chunks before the new owner loads any of them.
+
+Only the owner of a region gets anything saved or logged for it. Once an owner with a
+higher epoch has opened the region, what the previous owner still sends is dropped, so
+it cannot overwrite what the new owner does. The store does not remember epochs from one
+run to the next: one that has just been started accepts the first owner of a region
+whatever its epoch.
 
 A change is on its way to disk when a player sees it, but not guaranteed to be there:
 the server does not wait for the log before answering. Killing the process a moment
