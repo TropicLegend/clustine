@@ -5,7 +5,7 @@
 //! sends, and it checks with keep-alives that the client is still there.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use bytes::Bytes;
 use clustine_protocol::nbt::Nbt;
@@ -14,7 +14,6 @@ use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, ClientboundKeepAlive, Disconnect, PlayerAction, ServerboundPlay,
     UseItemOn, face, inventory, movement_flags, player_action,
 };
-use clustine_rpc::EdgeToWorker;
 use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput};
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
@@ -58,7 +57,6 @@ pub(crate) async fn serve(
         session,
         player,
         awaiting_teleport,
-        inputs_sent: AtomicU64::new(0),
     };
     let result = pump(connection, shared, &client, &mut packets).await;
     // Whatever ended the connection, the fan-out task has to forget the player.
@@ -73,8 +71,6 @@ struct Client {
     player: PlayerId,
     /// Set by the fan-out task; see [`NO_TELEPORT`].
     awaiting_teleport: Arc<AtomicI32>,
-    /// How many inputs of the player have been passed on. Inputs are numbered from 1.
-    inputs_sent: AtomicU64,
 }
 
 /// Moves packets in both directions until the connection ends.
@@ -200,7 +196,7 @@ async fn pump(
     }
 }
 
-/// Passes a movement of the player on to the worker.
+/// Passes a movement of the player on to the region they are in.
 async fn moved(
     shared: &Shared,
     client: &Client,
@@ -266,15 +262,15 @@ async fn send_input(
     client: &Client,
     input: PlayerInput,
 ) -> Result<(), ConnectionError> {
-    let message = EdgeToWorker::Input {
+    // Through the fan-out task, which knows which region the player is in.
+    let command = Command::Input {
+        session: client.session,
         player: client.player,
-        number: client.inputs_sent.fetch_add(1, Ordering::Relaxed) + 1,
         input,
     };
-    // Waiting here when the worker is busy slows down reading from this client only.
     shared
-        .worker
-        .send(message)
+        .fanout
+        .send(command)
         .await
         .map_err(|_| ConnectionError::ShuttingDown)
 }

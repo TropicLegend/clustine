@@ -1,11 +1,17 @@
-//! Fan-out: turning what the worker publishes into packets for each player.
+//! Fan-out: turning what the regions publish into packets for each player.
 //!
-//! One task per worker link owns everything the players of this edge share: a replica of
-//! the chunks they can see and, per player, what they have been sent. Connections talk
-//! to it through [`Command`]s and receive encoded packets through a bounded queue. The
-//! task never waits for a client: a client whose queue is full is dropped.
+//! One task owns everything the players of this edge share: a replica of the chunks they
+//! can see and, per player, what they have been sent and which region they are in.
+//! Connections talk to it through [`Command`]s and receive encoded packets through a
+//! bounded queue. The task never waits for a client: a client whose queue is full is
+//! dropped.
+//!
+//! The world is divided into regions, each reached through a link of its own. What a
+//! player sees comes from whichever regions the chunks in view belong to; what a player
+//! does goes to the region the player is in. When a region lets a player go because they
+//! walked out of it, this task hands them to the region they walked into.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
@@ -22,15 +28,19 @@ use clustine_protocol::packets::play::{
     game_event, game_mode, inventory, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
-use clustine_rpc::link::EdgeEnd;
+use clustine_region::{Layout, RegionId};
+use clustine_rpc::link;
 use clustine_rpc::{EdgeToWorker, WorkerToEdge};
 use clustine_sim::api::{
-    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerJoin, RegionEvent,
+    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput, PlayerJoin,
+    PlayerTransfer, RegionEvent,
 };
 use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tokio::task::JoinSet;
+use tracing::{debug, error, info, warn};
 
+use crate::Routing;
 use crate::encode::chunk_packet;
 use crate::login::Profile;
 
@@ -38,6 +48,15 @@ const OVERWORLD: &str = "minecraft:overworld";
 
 /// Player ability flags of creative mode: invulnerable, may fly, breaks blocks instantly.
 const CREATIVE_ABILITIES: u8 = 0x01 | 0x04 | 0x08;
+
+/// Messages from the regions that may wait for the fan-out task.
+const REGION_QUEUE_CAPACITY: usize = 1024;
+
+/// How many of a player's latest inputs are kept in case they have to be sent again to
+/// the region the player walks into. That region needs the ones the old region had not
+/// got to when it let the player go, which is what arrived within a tick or so: a
+/// handful. A client sends some twenty to forty inputs per second.
+const KEPT_INPUTS: usize = 128;
 
 /// Chunks in the first batch a client is sent, as in vanilla.
 const INITIAL_BATCH_SIZE: usize = 9;
@@ -82,6 +101,12 @@ pub(crate) enum Command {
         player: PlayerId,
         chunks_per_tick: f32,
     },
+    /// The player did something that the region they are in has to know.
+    Input {
+        session: SessionId,
+        player: PlayerId,
+        input: PlayerInput,
+    },
 }
 
 /// Settings of the fan-out task.
@@ -122,8 +147,15 @@ struct PlayerView {
     name: String,
     outbound: mpsc::Sender<Bytes>,
     awaiting_teleport: Arc<AtomicI32>,
-    /// The player's entity, once the worker has placed the player.
+    /// The player's entity, once a region has placed the player.
     entity: Option<EntityId>,
+    /// The region the player is in, as far as this task has been told. The region itself
+    /// may already have let the player go, with the message saying so still on its way.
+    region: RegionId,
+    /// How many inputs of the player have been passed on. Inputs are numbered from 1.
+    inputs_sent: u64,
+    /// The latest inputs with their numbers; see [`KEPT_INPUTS`].
+    kept_inputs: VecDeque<(u64, PlayerInput)>,
     view_distance: i32,
     /// The chunks in view. Empty until the worker has placed the player.
     wanted: BTreeSet<ChunkPos>,
@@ -132,8 +164,8 @@ struct PlayerView {
     pending: BTreeSet<ChunkPos>,
     /// Chunks in view the client has been sent.
     sent: BTreeSet<ChunkPos>,
-    /// Entities the client has been shown.
-    visible: BTreeSet<EntityId>,
+    /// Entities the client has been shown, with the player each of them is.
+    visible: BTreeMap<EntityId, PlayerId>,
     /// Players the client has in its player list. A client only shows the entity of a
     /// player it has in that list.
     listed: BTreeSet<PlayerId>,
@@ -144,7 +176,13 @@ struct PlayerView {
 
 pub(crate) struct Fanout {
     config: FanoutConfig,
-    link: EdgeEnd,
+    layout: Layout,
+    /// The region players enter the world in.
+    spawn_region: RegionId,
+    /// Where to send what is meant for each region, by region id.
+    regions: Vec<link::Sender<EdgeToWorker>>,
+    /// Where each region's messages arrive, until [`Fanout::run`] starts reading them.
+    receivers: Vec<link::Receiver<WorkerToEdge>>,
     commands: mpsc::Receiver<Command>,
     players: BTreeMap<PlayerId, PlayerView>,
     /// Which player each player entity of this edge belongs to.
@@ -155,14 +193,28 @@ pub(crate) struct Fanout {
 }
 
 impl Fanout {
+    /// `routing` must have one link per region of its layout.
     pub(crate) fn new(
         config: FanoutConfig,
-        link: EdgeEnd,
+        routing: Routing,
         commands: mpsc::Receiver<Command>,
     ) -> Self {
+        assert_eq!(
+            routing.links.len(),
+            routing.layout.region_count(),
+            "one link per region"
+        );
+        let spawn = routing.spawn;
+        let spawn_region = routing
+            .layout
+            .region_of(ChunkPos::containing(spawn.x, spawn.z));
+        let (regions, receivers) = routing.links.into_iter().map(link::End::split).unzip();
         Self {
             config,
-            link,
+            layout: routing.layout,
+            spawn_region,
+            regions,
+            receivers,
             commands,
             players: BTreeMap::new(),
             entity_owners: BTreeMap::new(),
@@ -171,24 +223,43 @@ impl Fanout {
         }
     }
 
-    /// Serves until the worker or the edge is gone. Every player is disconnected when
-    /// this returns, because their queues are dropped.
+    /// Serves until a region or the edge is gone. Every player is disconnected when this
+    /// returns, because their queues are dropped.
     pub(crate) async fn run(mut self) {
+        // The messages of all regions are read from one queue, each region's in the
+        // order it sent them. `None` says that a region's link has ended. The tasks
+        // feeding the queue stop with this function, which owns them.
+        let (queue, mut messages) = mpsc::channel(REGION_QUEUE_CAPACITY);
+        let mut readers = JoinSet::new();
+        for (index, mut receiver) in std::mem::take(&mut self.receivers).into_iter().enumerate() {
+            let region = RegionId(index as u32);
+            let queue = queue.clone();
+            readers.spawn(async move {
+                while let Some(message) = receiver.recv().await {
+                    if queue.send((region, Some(message))).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = queue.send((region, None)).await;
+            });
+        }
+        drop(queue);
+
         loop {
             let alive = tokio::select! {
                 command = self.commands.recv() => match command {
                     Some(command) => self.handle_command(command).await,
                     None => false,
                 },
-                message = self.link.recv() => match message {
-                    Some(message) => {
-                        self.handle_worker(message).await;
-                        true
-                    }
-                    None => {
-                        warn!("the worker is gone");
+                message = messages.recv() => match message {
+                    Some((region, Some(message))) => self.handle_region(region, message).await,
+                    Some((region, None)) => {
+                        // Without one of its regions the world has a hole; there is no
+                        // carrying on until someone runs that region again.
+                        warn!(%region, "a region is gone");
                         false
                     }
+                    None => false,
                 },
             };
             if !alive {
@@ -197,7 +268,7 @@ impl Fanout {
         }
     }
 
-    /// Returns false if the worker can no longer be reached.
+    /// Returns false if a region can no longer be reached.
     async fn handle_command(&mut self, command: Command) -> bool {
         match command {
             Command::Join {
@@ -223,12 +294,15 @@ impl Fanout {
                         outbound,
                         awaiting_teleport,
                         entity: None,
+                        region: self.spawn_region,
+                        inputs_sent: 0,
+                        kept_inputs: VecDeque::new(),
                         view_distance,
                         wanted: BTreeSet::new(),
                         center: ChunkPos::new(0, 0),
                         pending: BTreeSet::new(),
                         sent: BTreeSet::new(),
-                        visible: BTreeSet::new(),
+                        visible: BTreeMap::new(),
                         listed: BTreeSet::new(),
                         batch_outstanding: false,
                         batch_size: INITIAL_BATCH_SIZE,
@@ -238,7 +312,31 @@ impl Fanout {
                     player,
                     name: profile.name,
                 };
-                self.send_to_worker(EdgeToWorker::PlayerJoin(join)).await
+                self.send_to_region(self.spawn_region, EdgeToWorker::PlayerJoin(join))
+                    .await
+            }
+            Command::Input {
+                session,
+                player,
+                input,
+            } => {
+                if !self.session_matches(player, session) {
+                    return true;
+                }
+                let view = self.players.get_mut(&player).expect("session matched");
+                view.inputs_sent += 1;
+                let number = view.inputs_sent;
+                if view.kept_inputs.len() == KEPT_INPUTS {
+                    view.kept_inputs.pop_front();
+                }
+                view.kept_inputs.push_back((number, input.clone()));
+                let region = view.region;
+                let message = EdgeToWorker::Input {
+                    player,
+                    number,
+                    input,
+                };
+                self.send_to_region(region, message).await
             }
             Command::Leave { session, player } => {
                 if self.session_matches(player, session) {
@@ -267,7 +365,9 @@ impl Fanout {
         }
     }
 
-    async fn handle_worker(&mut self, message: WorkerToEdge) {
+    /// Handles what the region `from` sent. Returns false if a region can no longer be
+    /// reached.
+    async fn handle_region(&mut self, from: RegionId, message: WorkerToEdge) -> bool {
         match message {
             WorkerToEdge::ToPlayer {
                 player,
@@ -301,12 +401,8 @@ impl Fanout {
             }
             WorkerToEdge::ToPlayer {
                 player,
-                event: PlayerEvent::Departed(_),
-            } => {
-                // There is one region, which covers the whole world.
-                warn!("a player left the only region there is");
-                self.remove_player(player).await;
-            }
+                event: PlayerEvent::Departed(transfer),
+            } => return self.hand_over(player, from, transfer).await,
             WorkerToEdge::ChunkSnapshot {
                 position,
                 chunk,
@@ -324,6 +420,91 @@ impl Fanout {
                 }
             }
         }
+        true
+    }
+
+    /// Passes a player whom the region `from` has let go on to the region they walked
+    /// into, together with what they have done since. Returns false if a region can no
+    /// longer be reached.
+    ///
+    /// Nothing else is handled while this runs, so no input of the player can go to the
+    /// old region after the ones sent again here have been picked, or to the new region
+    /// before them.
+    async fn hand_over(
+        &mut self,
+        player: PlayerId,
+        from: RegionId,
+        transfer: PlayerTransfer,
+    ) -> bool {
+        let position = transfer.pose.position;
+        let chunk = ChunkPos::containing(position.x, position.z);
+        let to = self.layout.region_of(chunk);
+        // The region did not report the entity as removed, because it lives on. Should
+        // it turn out to have nowhere to go, the region it was heading for is told to
+        // report it, or it would stay on the screens of those who saw it cross.
+        let discard = EdgeToWorker::Discard {
+            entity: transfer.entity_id,
+            chunk,
+        };
+
+        // The player's connection can have ended while the message was on its way, and
+        // they can even be back already, as a new entity somewhere else.
+        let current = self
+            .players
+            .get_mut(&player)
+            .filter(|view| view.entity == Some(transfer.entity_id));
+        let Some(view) = current else {
+            return self.send_to_region(to, discard).await;
+        };
+        if to == from {
+            // The region and this edge disagree about where the region ends. Sending
+            // the player back would have them bounce between the two forever.
+            error!(name = %view.name, %from, "a region let go of a player who is inside it");
+            refuse(&view.outbound, "The server lost track of where you are.");
+            return self.send_to_region(to, discard).await && self.remove_player(player).await;
+        }
+
+        // The old region ignored everything it was sent after letting the player go.
+        while view
+            .kept_inputs
+            .front()
+            .is_some_and(|(number, _)| *number <= transfer.last_input)
+        {
+            view.kept_inputs.pop_front();
+        }
+        let missed = view.inputs_sent.saturating_sub(transfer.last_input);
+        if view.kept_inputs.len() as u64 != missed {
+            // The region was so far behind that some of what it missed is no longer
+            // kept. Carrying on would leave the player with, say, another item in hand
+            // than the server believes.
+            warn!(name = %view.name, missed, "too many inputs to send again");
+            refuse(&view.outbound, "The server fell too far behind.");
+            return self.send_to_region(to, discard).await && self.remove_player(player).await;
+        }
+        view.region = to;
+        let again: Vec<_> = view.kept_inputs.iter().cloned().collect();
+        debug!(name = %view.name, %from, %to, inputs = again.len(), "handing a player over");
+
+        if !self
+            .send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
+            .await
+        {
+            return false;
+        }
+        for (number, input) in again {
+            let message = EdgeToWorker::Input {
+                player,
+                number,
+                input,
+            };
+            if !self.send_to_region(to, message).await {
+                return false;
+            }
+        }
+        // Normally the view has followed the move already; this covers a player who was
+        // let go without having been seen to move, such as one who joined right there.
+        self.move_view(player, chunk).await;
+        true
     }
 
     async fn handle_event(&mut self, event: RegionEvent) {
@@ -391,7 +572,7 @@ impl Fanout {
         let viewers: Vec<_> = self
             .players
             .iter_mut()
-            .filter_map(|(player, view)| view.visible.remove(&entity).then_some(*player))
+            .filter_map(|(player, view)| view.visible.remove(&entity).map(|_| *player))
             .collect();
         for player in viewers {
             let packet = encoded(&RemoveEntities {
@@ -548,16 +729,8 @@ impl Fanout {
         self.entities
             .retain(|_, state| replica.contains_key(&state.chunk()));
 
-        if !subscribe.is_empty() {
-            self.send_to_worker(EdgeToWorker::Subscribe { chunks: subscribe })
-                .await;
-        }
-        if !unsubscribe.is_empty() {
-            self.send_to_worker(EdgeToWorker::Unsubscribe {
-                chunks: unsubscribe,
-            })
-            .await;
-        }
+        self.subscribe(subscribe).await;
+        self.unsubscribe(unsubscribe).await;
         if self.send_to_player(player, packets).await {
             self.send_chunks(player).await;
         }
@@ -677,8 +850,44 @@ impl Fanout {
         true
     }
 
+    /// Asks the regions the chunks belong to for them and for what happens in them.
+    /// Returns false if a region can no longer be reached, which ends the task shortly
+    /// after anyway.
+    async fn subscribe(&mut self, chunks: Vec<ChunkPos>) -> bool {
+        let mut reached = true;
+        for (region, chunks) in self.by_region(chunks) {
+            reached &= self
+                .send_to_region(region, EdgeToWorker::Subscribe { chunks })
+                .await;
+        }
+        reached
+    }
+
+    /// Tells the regions the chunks belong to that they are no longer needed here.
+    async fn unsubscribe(&mut self, chunks: Vec<ChunkPos>) -> bool {
+        let mut reached = true;
+        for (region, chunks) in self.by_region(chunks) {
+            reached &= self
+                .send_to_region(region, EdgeToWorker::Unsubscribe { chunks })
+                .await;
+        }
+        reached
+    }
+
+    /// Sorts chunks by the region they belong to.
+    fn by_region(&self, chunks: Vec<ChunkPos>) -> BTreeMap<RegionId, Vec<ChunkPos>> {
+        let mut sorted: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for chunk in chunks {
+            sorted
+                .entry(self.layout.region_of(chunk))
+                .or_default()
+                .push(chunk);
+        }
+        sorted
+    }
+
     /// Forgets a player and releases what was held for them. Dropping their queue ends
-    /// their connection. Returns false if the worker can no longer be reached.
+    /// their connection. Returns false if a region can no longer be reached.
     async fn remove_player(&mut self, player: PlayerId) -> bool {
         let Some(view) = self.players.remove(&player) else {
             return true;
@@ -687,9 +896,23 @@ impl Fanout {
         if let Some(entity) = view.entity {
             self.entity_owners.remove(&entity);
             self.config.online.fetch_sub(1, Ordering::Relaxed);
+            // The region the player is in reports the entity gone as well, but only
+            // once it has heard, and if the player is being handed over just now, only
+            // after a detour. By then the player may be back as a new entity, and a
+            // client must never be shown two entities of one player. So the entity is
+            // hidden here and now; the region's report then finds nothing left to do.
+            self.entities.remove(&entity);
+            let packet = encoded(&RemoveEntities {
+                entity_ids: vec![entity.0],
+            });
+            for other in self.players.values_mut() {
+                if other.visible.remove(&entity).is_some() {
+                    // See below for why this is not `send_to_player`.
+                    let _ = other.outbound.try_send(packet.clone());
+                }
+            }
         }
-        // Their entity disappears when the worker reports it gone; the entry in the
-        // player list is this edge's to remove.
+        // The entry in the player list is this edge's to remove.
         let listing: Vec<_> = self
             .players
             .iter_mut()
@@ -720,16 +943,12 @@ impl Fanout {
         let replica = &self.replica;
         self.entities
             .retain(|_, state| replica.contains_key(&state.chunk()));
-        if !unsubscribe.is_empty()
-            && !self
-                .send_to_worker(EdgeToWorker::Unsubscribe {
-                    chunks: unsubscribe,
-                })
-                .await
-        {
+        if !self.unsubscribe(unsubscribe).await {
             return false;
         }
-        self.send_to_worker(EdgeToWorker::PlayerLeave { player })
+        // If that region has just let the player go, it ignores this, and the message
+        // saying so, which is on its way, makes `hand_over` clean up.
+        self.send_to_region(view.region, EdgeToWorker::PlayerLeave { player })
             .await
     }
 
@@ -739,9 +958,12 @@ impl Fanout {
             .is_some_and(|view| view.session == session)
     }
 
-    /// Returns false if the worker can no longer be reached.
-    async fn send_to_worker(&mut self, message: EdgeToWorker) -> bool {
-        self.link.send(message).await.is_ok()
+    /// Returns false if the region can no longer be reached.
+    async fn send_to_region(&mut self, region: RegionId, message: EdgeToWorker) -> bool {
+        match self.regions.get(region.0 as usize) {
+            Some(link) => link.send(message).await.is_ok(),
+            None => false,
+        }
     }
 }
 
@@ -754,12 +976,26 @@ impl PlayerView {
         let in_world = self.entity.is_some();
         let own = self.entity == Some(state.entity);
         let in_view = in_world && !own && self.wanted.contains(&state.chunk());
-        let shown = self.visible.contains(&state.entity);
+        let shown = self.visible.contains_key(&state.entity);
         match (in_view, shown) {
             (true, false) => {
-                self.visible.insert(state.entity);
                 let mut packets = Vec::new();
                 let EntityKind::Player { player, name } = &state.kind;
+                // A client takes a player to be one entity. Should word of an entity
+                // the player was before still be around, it goes first.
+                let outdated: Vec<_> = self
+                    .visible
+                    .iter()
+                    .filter(|(_, shown)| *shown == player)
+                    .map(|(entity, _)| entity.0)
+                    .collect();
+                if !outdated.is_empty() {
+                    self.visible.retain(|_, shown| shown != player);
+                    packets.push(encoded(&RemoveEntities {
+                        entity_ids: outdated,
+                    }));
+                }
+                self.visible.insert(state.entity, *player);
                 if self.listed.insert(*player) {
                     let addition = [(*player, name.clone())];
                     packets.push(encoded(&player_list_additions(&addition)));

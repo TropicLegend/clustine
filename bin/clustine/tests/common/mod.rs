@@ -18,10 +18,25 @@ pub fn config() -> Config {
         world: None,
         checkpoint_interval: Duration::from_secs(300),
         serialise_link: false,
+        boundaries: boundaries(),
     }
 }
 
+/// Where the tests' worlds are divided into regions: nowhere, unless the environment
+/// variable `CLUSTINE_TEST_BOUNDARIES` lists chunk x coordinates, separated by commas.
+/// Setting it runs every test against a world of several regions.
+fn boundaries() -> Vec<i32> {
+    std::env::var("CLUSTINE_TEST_BOUNDARIES")
+        .map(|list| {
+            list.split(',')
+                .map(|x| x.trim().parse().expect("a chunk x coordinate"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Starts a server on a free port and returns it with its address as `host:port`.
+#[allow(dead_code)] // Not every test binary uses it.
 pub async fn start() -> (Server, String) {
     start_with(config()).await
 }
@@ -55,4 +70,40 @@ pub fn view_area(center: (i32, i32), view_distance: i32) -> Vec<(i32, i32)> {
         }
     }
     area
+}
+
+/// An address on this machine that nothing listens on right now, as `host:port`.
+#[allow(dead_code)] // Not every test binary uses it.
+pub async fn free_address() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    listener.local_addr().unwrap().to_string()
+}
+
+/// Starts the real server binary on `address` with its world in `world` and with the
+/// further arguments `more`, and waits until it accepts connections. The process is
+/// killed when the returned handle is dropped.
+#[allow(dead_code)] // Not every test binary uses it.
+pub async fn spawn_server(
+    address: &str,
+    world: &std::path::Path,
+    more: &[&str],
+) -> tokio::process::Child {
+    let server = tokio::process::Command::new(env!("CARGO_BIN_EXE_clustine"))
+        .args(["--bind", address, "--view-distance"])
+        .arg(VIEW_DISTANCE.to_string())
+        .arg("--world")
+        .arg(world)
+        .args(more)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    for _ in 0..200 {
+        if clustine_botswarm::ping(address).await.is_ok() {
+            return server;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the server did not start");
 }

@@ -1,8 +1,9 @@
 //! Single-binary mode: runs every Clustine service in one process.
 //!
-//! The services are wired together the same way they will be across processes: the edge
-//! and the worker only share a link, and the worker reaches the world store through
-//! messages.
+//! The services are wired together the same way they are across processes: the edge
+//! shares nothing with a region but a link, and a region reaches the world store through
+//! messages. The world can be divided into several regions here too, each ticking on a
+//! thread of its own.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -11,17 +12,19 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clustine_data::items;
-use clustine_edge::Edge;
 pub use clustine_edge::EdgeConfig;
-use clustine_rpc::link;
+use clustine_edge::{Edge, Routing};
+use clustine_region::Layout;
+use clustine_rpc::{RegionHello, link};
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_sim::{Region, RegionConfig};
 use clustine_worker::{RegionRunner, Worker};
-use clustine_world::{ChunkArea, EntityIds, Vec3};
+use clustine_world::{ChunkGenerator, EntityIds, Vec3};
 use clustine_worldgen::FlatGenerator;
+use clustine_worldstore::Store;
 use tokio::task::JoinHandle;
 
-/// Messages that may wait in each direction between the edge and the worker. The worker
+/// Messages that may wait in each direction between the edge and a region. A region
 /// never waits for the edge, so this has to cover the chunks of many players joining at
 /// the same moment.
 const LINK_CAPACITY: usize = 16 * 1024;
@@ -65,9 +68,14 @@ pub struct Config {
     /// How often every changed chunk that is still loaded is saved. In between, changes
     /// to such chunks are only in the write-ahead log.
     pub checkpoint_interval: Duration,
-    /// Serialise every message between the edge and the worker, as a deployment with
+    /// Serialise every message between the edge and the regions, as a deployment with
     /// separate processes does. Slower; meant for testing that boundary.
     pub serialise_link: bool,
+    /// The chunk x coordinates at which the world is divided into regions, ascending.
+    /// Each region is simulated on its own; players are handed from one to the next as
+    /// they walk, but cannot change blocks on the other side of a boundary. Empty for a
+    /// world that is one region.
+    pub boundaries: Vec<i32>,
 }
 
 /// A running server. Dropping it without calling [`Server::stop`] leaves it running
@@ -75,7 +83,8 @@ pub struct Config {
 pub struct Server {
     address: SocketAddr,
     edge: JoinHandle<()>,
-    worker: Worker,
+    /// One per region.
+    workers: Vec<Worker>,
 }
 
 impl Server {
@@ -84,24 +93,45 @@ impl Server {
         let generator = FlatGenerator::classic();
         // Players enter above the middle of the block at the origin.
         let spawn = Vec3::new(0.5, f64::from(generator.surface_y()), 0.5);
-        let generator = Arc::new(generator);
+        let generator: Arc<dyn ChunkGenerator> = Arc::new(generator);
+        let layout = Layout::new(config.boundaries).context("dividing the world into regions")?;
+        // One store for all regions, as in a cluster.
         let store = match &config.world {
-            Some(directory) => clustine_worldstore::spawn_local(directory, generator)
+            Some(directory) => Store::local(directory, Arc::clone(&generator))
                 .with_context(|| format!("opening the world in {}", directory.display()))?,
-            None => clustine_worldstore::spawn(generator),
+            None => Store::memory(Arc::clone(&generator)),
         };
+        let checkpoint_interval = config.checkpoint_interval.as_millis() as u64 / 50;
 
-        let (edge_end, worker_end) = if config.serialise_link {
-            link::framed(LINK_CAPACITY)
-        } else {
-            link::in_process(LINK_CAPACITY)
-        };
-        let region = Region::new(RegionConfig {
-            spawn,
-            area: ChunkArea::EVERYWHERE,
-            entity_ids: EntityIds::block(0).expect("there is a first block of entity ids"),
-            starting_hotbar: STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 })),
-        });
+        let mut links = Vec::new();
+        let mut runners = Vec::new();
+        for (region, area) in layout.regions() {
+            let hello = RegionHello {
+                region,
+                // Nobody else ever runs a region of this process's world.
+                epoch: 1,
+                layout: layout.fingerprint(),
+            };
+            let store = store
+                .open_region(hello)
+                .with_context(|| format!("opening region {region}"))?;
+            let (edge_end, worker_end) = if config.serialise_link {
+                link::framed(LINK_CAPACITY)
+            } else {
+                link::in_process(LINK_CAPACITY)
+            };
+            let state = Region::new(RegionConfig {
+                spawn,
+                area,
+                entity_ids: EntityIds::block(region.0).context("too many regions")?,
+                starting_hotbar: STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 })),
+            });
+            links.push(edge_end);
+            runners.push(
+                RegionRunner::new(state, worker_end, store)
+                    .with_checkpoint_interval(checkpoint_interval),
+            );
+        }
 
         let edge_config = EdgeConfig {
             description: config.description,
@@ -111,17 +141,19 @@ impl Server {
             client_timeout: config.client_timeout,
             compression_threshold: config.compression_threshold,
         };
-        let edge = Edge::bind(config.bind, edge_config, edge_end)
+        let routing = Routing {
+            layout,
+            spawn,
+            links,
+        };
+        let edge = Edge::bind(config.bind, edge_config, routing)
             .await
             .with_context(|| format!("listening on {}", config.bind))?;
         let address = edge.local_addr()?;
         Ok(Self {
             address,
             edge: tokio::spawn(edge.run()),
-            worker: Worker::spawn(
-                RegionRunner::new(region, worker_end, store)
-                    .with_checkpoint_interval(config.checkpoint_interval.as_millis() as u64 / 50),
-            ),
+            workers: runners.into_iter().map(Worker::spawn).collect(),
         })
     }
 
@@ -142,8 +174,9 @@ impl Server {
         self.edge.abort();
         // The task was cancelled on purpose, so its result carries no information.
         let _ = self.edge.await;
-        // Waits for the current tick and for the world to be stored.
-        let worker = self.worker;
-        let _ = tokio::task::spawn_blocking(move || worker.stop()).await;
+        // Waits for the current ticks and for the world to be stored.
+        let workers = self.workers;
+        let _ =
+            tokio::task::spawn_blocking(move || workers.into_iter().for_each(Worker::stop)).await;
     }
 }

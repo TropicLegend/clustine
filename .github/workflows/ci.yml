@@ -20,3 +20,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The end-to-end tests once more, with the world divided into two regions.
+      - run: cargo test -p clustine --locked
+        env:
+          CLUSTINE_TEST_BOUNDARIES: "4"

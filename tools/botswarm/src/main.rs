@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use clustine_botswarm::{Bot, Oracle};
+use clustine_botswarm::{Bot, Crossing, Oracle, cross};
 use clustine_protocol::chunk::unpack_heightmap;
 
 /// Scripted Minecraft clients for testing a server.
@@ -61,6 +61,32 @@ enum Scenario {
         /// Blocks per tick; a walking player covers about 0.22.
         #[arg(long, default_value_t = 0.22)]
         speed: f64,
+    },
+    /// Several bots walk back and forth between two places, building at each, while
+    /// another watches from the spawn point. Fails unless they all stay connected and
+    /// the watcher sees each of them as one entity throughout. With a region boundary
+    /// between the two places this tests the handing over of players.
+    Cross {
+        /// Server address as host:port.
+        #[arg(default_value = "127.0.0.1:25565")]
+        address: String,
+        /// How many bots walk.
+        #[arg(long, default_value_t = Crossing::default().walkers)]
+        walkers: usize,
+        /// How many times each walks there and back.
+        #[arg(long, default_value_t = Crossing::default().rounds)]
+        rounds: u32,
+        /// The x coordinates to walk between; both must be in view of the spawn point.
+        #[arg(long, default_value_t = Crossing::default().west, allow_negative_numbers = true)]
+        west: f64,
+        #[arg(long, default_value_t = Crossing::default().east, allow_negative_numbers = true)]
+        east: f64,
+        /// Blocks per tick of the slowest bot.
+        #[arg(long, default_value_t = Crossing::default().speed)]
+        speed: f64,
+        /// What the bots' names begin with, to tell runs apart.
+        #[arg(long, default_value = "")]
+        name_prefix: String,
     },
     /// Join the game and describe the chunk the bot is placed in.
     Chunks {
@@ -137,6 +163,29 @@ async fn main() -> Result<()> {
             println!(
                 "{} teleports confirmed, {} keep-alives answered",
                 bot.stats.teleports_confirmed, bot.stats.keep_alives_answered
+            );
+        }
+        Scenario::Cross {
+            address,
+            walkers,
+            rounds,
+            west,
+            east,
+            speed,
+            name_prefix,
+        } => {
+            let crossing = Crossing {
+                walkers,
+                rounds,
+                west,
+                east,
+                speed,
+                name_prefix,
+            };
+            let report = cross(&target(address), &crossing).await?;
+            println!(
+                "{} crossings by {walkers} bots, {} blocks built, {} moves seen by the watcher",
+                report.crossings, report.blocks_built, report.moves_seen
             );
         }
         Scenario::Chunks {

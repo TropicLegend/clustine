@@ -9,7 +9,7 @@ use clustine_botswarm::Bot;
 use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
 
-use common::{VIEW_DISTANCE, config, start, start_with, view_area};
+use common::{VIEW_DISTANCE, config, free_address, spawn_server, start, start_with, view_area};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -131,41 +131,15 @@ async fn a_lone_builder_finds_the_build_again() {
     server.stop().await;
 }
 
-/// Starts the real server binary on `address` with its world in `world`, and waits
-/// until it accepts connections.
-async fn spawn_server(address: &str, world: &std::path::Path) -> tokio::process::Child {
-    let server = tokio::process::Command::new(env!("CARGO_BIN_EXE_clustine"))
-        .args(["--bind", address, "--view-distance"])
-        .arg(VIEW_DISTANCE.to_string())
-        .arg("--world")
-        .arg(world)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    for _ in 0..200 {
-        if clustine_botswarm::ping(address).await.is_ok() {
-            return server;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("the server did not start");
-}
-
 /// Killing the server process outright loses nothing players were told had happened:
 /// what was not yet saved is recovered from the write-ahead log.
 #[tokio::test]
 async fn the_world_survives_the_server_being_killed() {
     let directory = tempfile::tempdir().unwrap();
     let world = directory.path().join("world");
-    // A port that is free now; the server binds it a moment later.
-    let address = {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().to_string()
-    };
+    let address = free_address().await;
 
-    let mut server = spawn_server(&address, &world).await;
+    let mut server = spawn_server(&address, &world, &[]).await;
     let mut builder = join(&address, "Builder").await;
     build(&mut builder).await;
     // The changes are handed to the log before the player is told; give the store's
@@ -179,7 +153,7 @@ async fn the_world_survives_the_server_being_killed() {
     assert!(!world.join("manifests/overworld").exists());
     assert!(std::fs::metadata(world.join("logs/0.wal")).unwrap().len() > 0);
 
-    let mut server = spawn_server(&address, &world).await;
+    let mut server = spawn_server(&address, &world, &[]).await;
     let visitor = join(&address, "Visitor").await;
     assert_built(&visitor);
     // Recovery saved the chunks and emptied the log.

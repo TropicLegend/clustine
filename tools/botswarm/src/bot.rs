@@ -110,6 +110,10 @@ impl JoinInfo {
 pub struct PlayStats {
     pub keep_alives_answered: u32,
     pub teleports_confirmed: u32,
+    /// How many entities the server made appear and disappear. Something the bot sees
+    /// without interruption appears once, however far it moves.
+    pub entities_spawned: u32,
+    pub entities_removed: u32,
     /// How many packets of each kind arrived, by packet name.
     pub received: BTreeMap<&'static str, u32>,
 }
@@ -403,9 +407,15 @@ impl Bot {
             if distance < 1e-9 {
                 return Ok(());
             }
-            let fraction = (blocks_per_tick / distance).min(1.0);
-            self.location.0 += dx * fraction;
-            self.location.2 += dz * fraction;
+            if distance <= blocks_per_tick + 1e-9 {
+                // The last step ends exactly where the walk was meant to end, which
+                // adding up the steps does not always do.
+                (self.location.0, self.location.2) = (x, z);
+            } else {
+                let fraction = blocks_per_tick / distance;
+                self.location.0 += dx * fraction;
+                self.location.2 += dz * fraction;
+            }
             self.connection
                 .write(&SetPlayerPosition {
                     x: self.location.0,
@@ -421,6 +431,22 @@ impl Bot {
             let next_tick = Instant::now() + TICK;
             while self.step(next_tick).await? {}
         }
+    }
+
+    /// Moves straight to `x` and `z` at the current height in a single step, without
+    /// waiting for the tick to pass as [`Bot::walk_to`] does.
+    pub async fn step_to(&mut self, x: f64, z: f64) -> Result<()> {
+        self.location.0 = x;
+        self.location.2 = z;
+        self.connection
+            .write(&SetPlayerPosition {
+                x,
+                y: self.location.1,
+                z,
+                flags: movement_flags::ON_GROUND,
+            })
+            .await?;
+        self.connection.write(&ClientTickEnd).await
     }
 
     /// Breaks the block at `x`, `y`, `z` the way a creative-mode client does, and returns
@@ -598,6 +624,21 @@ impl Bot {
                     "player entity {} spawned before its player list entry",
                     packet.entity_id
                 );
+                // Nor does a server show the same entity twice.
+                ensure!(
+                    !self.entities.contains_key(&packet.entity_id),
+                    "entity {} spawned while it is already there",
+                    packet.entity_id
+                );
+                ensure!(
+                    !self
+                        .entities
+                        .values()
+                        .any(|entity| entity.uuid == packet.uuid),
+                    "a second entity with the UUID {} spawned",
+                    packet.uuid
+                );
+                self.stats.entities_spawned += 1;
                 self.entities.insert(
                     packet.entity_id,
                     SeenEntity {
@@ -626,7 +667,9 @@ impl Bot {
             }
             ClientboundPlay::RemoveEntities(packet) => {
                 for entity in packet.entity_ids {
-                    self.entities.remove(&entity);
+                    if self.entities.remove(&entity).is_some() {
+                        self.stats.entities_removed += 1;
+                    }
                 }
             }
             ClientboundPlay::UnloadChunk(packet) => {

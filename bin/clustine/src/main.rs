@@ -41,6 +41,12 @@ struct Args {
     /// Largest view distance granted to a client, in chunks.
     #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE, value_parser = clap::value_parser!(i32).range(2..=32))]
     view_distance: i32,
+
+    /// Chunk x coordinates at which to divide the world into regions that are simulated
+    /// separately, in ascending order and separated by commas. Blocks cannot be changed
+    /// across such a boundary. Without this the world is one region.
+    #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+    boundaries: Vec<i32>,
 }
 
 #[tokio::main]
@@ -59,6 +65,7 @@ async fn main() -> Result<()> {
         world: Some(args.world),
         checkpoint_interval: Duration::from_secs(args.checkpoint_interval),
         serialise_link: false,
+        boundaries: args.boundaries,
     })
     .await?;
     info!(address = %server.address(), "listening");

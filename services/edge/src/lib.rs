@@ -1,7 +1,9 @@
 //! Edge service: terminates client connections, routes inbound packets, fans region deltas out to players.
 //!
 //! The edge owns everything that is specific to the Minecraft protocol; see
-//! `docs/adr/0005-edge-worker-interface.md`.
+//! `docs/adr/0005-edge-worker-interface.md`. It also is what makes a world of several
+//! regions look like one to a client: it gathers what a player sees from the regions the
+//! chunks in view belong to, and moves a player from region to region as they walk.
 
 mod configuration;
 mod connection;
@@ -18,8 +20,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::time::Duration;
 
-use clustine_rpc::EdgeToWorker;
-use clustine_rpc::link::{self, EdgeEnd};
+use clustine_region::Layout;
+use clustine_rpc::link::EdgeEnd;
+use clustine_world::Vec3;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -64,6 +67,16 @@ impl EdgeConfig {
     pub const DEFAULT_COMPRESSION_THRESHOLD: usize = 256;
 }
 
+/// How the world is divided into regions and how the edge reaches each of them.
+#[derive(Debug)]
+pub struct Routing {
+    pub layout: Layout,
+    /// Where players enter the world.
+    pub spawn: Vec3,
+    /// The edge's ends of its links to the regions of the layout, from west to east.
+    pub links: Vec<EdgeEnd>,
+}
+
 /// State shared by all connections of one edge.
 struct Shared {
     config: EdgeConfig,
@@ -71,10 +84,9 @@ struct Shared {
     opening_packets: Vec<Vec<u8>>,
     /// See [`configuration::registry_packets`].
     registry_packets: Vec<Vec<u8>>,
-    /// Where connections in the play state register and report.
+    /// Where connections in the play state register, report, and pass on what their
+    /// players do.
     fanout: mpsc::Sender<Command>,
-    /// Where connections send what their players do.
-    worker: link::Sender<EdgeToWorker>,
     next_session: AtomicU64,
     /// The number of players in the world, kept by the fan-out task.
     online: Arc<AtomicU32>,
@@ -89,11 +101,14 @@ pub struct Edge {
 
 impl Edge {
     /// Starts listening on `address`. Port 0 picks a free port; see [`Edge::local_addr`].
-    /// `worker` is the edge's end of its link to the worker that simulates the world.
+    ///
+    /// # Panics
+    ///
+    /// If `routing` does not have exactly one link per region of its layout.
     pub async fn bind(
         address: SocketAddr,
         config: EdgeConfig,
-        worker: EdgeEnd,
+        routing: Routing,
     ) -> io::Result<Self> {
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let online = Arc::new(AtomicU32::new(0));
@@ -109,11 +124,10 @@ impl Edge {
                 opening_packets: configuration::opening_packets(),
                 registry_packets: configuration::registry_packets(),
                 fanout: commands,
-                worker: worker.sender(),
                 next_session: AtomicU64::new(0),
                 online,
             }),
-            fanout: Fanout::new(fanout_config, worker, command_receiver),
+            fanout: Fanout::new(fanout_config, routing, command_receiver),
         })
     }
 
@@ -121,7 +135,7 @@ impl Edge {
         self.listener.local_addr()
     }
 
-    /// Accepts and serves connections until the worker is gone or the returned future is
+    /// Accepts and serves connections until a region is gone or the returned future is
     /// dropped. Either way every open connection is closed.
     pub async fn run(self) {
         // Everything runs in this set, so dropping the future stops all of it.

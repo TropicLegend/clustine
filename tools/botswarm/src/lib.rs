@@ -6,6 +6,7 @@
 
 pub mod bot;
 pub mod connection;
+pub mod cross;
 pub mod oracle;
 
 use std::time::{Duration, Instant};
@@ -17,6 +18,7 @@ use clustine_protocol::packets::status::{ClientboundStatus, PingRequest, StatusR
 
 pub use bot::{Behaviour, Bot, JoinInfo, PlayStats, SeenEntity};
 pub use connection::Connection;
+pub use cross::{Crossing, CrossingReport, cross};
 pub use oracle::Oracle;
 
 /// A server's answer to the server list ping.
