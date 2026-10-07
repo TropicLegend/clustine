@@ -18,6 +18,10 @@ M6 can start once M3 has stabilised the simulation API; it does not wait for M4 
 
 ## M1 steps
 
+M1 was completed on 2026-10-07. Besides the automated tests, joining, walking, seeing
+other players, breaking and placing blocks, and the world surviving a restart were
+checked by hand with unmodified 26.3 clients.
+
 M1 targets Minecraft: Java Edition 26.3 in offline mode, with the server bound to
 localhost. Online mode and encryption follow directly after M1.
 
@@ -37,7 +41,7 @@ check with an unmodified 26.3 client.
 | 7 | Edge fan-out, chunk replica, chunk batches | Bot receives the expected chunks; real client sees the world | done |
 | 8 | Movement, view updates, chunk loading and unloading | Bot walks 200 blocks; replay test | done |
 | 9 | Other players: spawn, move, remove | Two bots see each other | done |
-| 10 | Breaking blocks | Bot A breaks, bot B observes; real client | done; real client check pending |
+| 10 | Breaking blocks | Bot A breaks, bot B observes; real client | done |
 | 11 | Placing blocks from a fixed hotbar | Bot `place`; real client | done |
 | 12 | Section format, manifests, local storage, checkpoint on shutdown | Restart test | done |
 | 13 | Write-ahead log, recovery, periodic checkpoint | Torn-write tests; `kill -9` test | done |
