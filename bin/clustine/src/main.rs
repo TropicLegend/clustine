@@ -1,6 +1,7 @@
 //! Single-binary mode: runs every Clustine service in one process.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -23,6 +24,10 @@ struct Args {
     #[arg(long, default_value_t = 20)]
     max_players: u32,
 
+    /// Directory the world is kept in; created if it does not exist.
+    #[arg(long, default_value = "world")]
+    world: PathBuf,
+
     /// Largest view distance granted to a client, in chunks.
     #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE, value_parser = clap::value_parser!(i32).range(2..=32))]
     view_distance: i32,
@@ -39,6 +44,7 @@ async fn main() -> Result<()> {
         max_players: args.max_players,
         keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
         view_distance: args.view_distance,
+        world: Some(args.world),
         serialise_link: false,
     })
     .await?;

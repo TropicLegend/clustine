@@ -8,5 +8,13 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clustine-data.workspace = true
+clustine-format.workspace = true
 clustine-rpc.workspace = true
 clustine-world.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+clustine-worldgen.workspace = true
+tempfile.workspace = true

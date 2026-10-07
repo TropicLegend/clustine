@@ -12,6 +12,8 @@ pub fn config() -> Config {
         keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
         // Small, so that tests do not wait for hundreds of chunks.
         view_distance: VIEW_DISTANCE,
+        // Nothing is written to disk unless a test asks for it.
+        world: None,
         serialise_link: false,
     }
 }

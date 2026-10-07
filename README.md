@@ -28,6 +28,7 @@ creating more separate servers.
 - [Roadmap](docs/roadmap.md)
 - [Parity matrix](docs/parity-matrix.md)
 - [Library evaluation](docs/library-evaluation.md)
+- [World format](docs/world-format.md)
 - [Protocol notes for Minecraft 26.3](docs/protocol-26.3.md)
 - [Architecture decision records](docs/adr/)
 
@@ -58,8 +59,8 @@ cargo test --workspace
 The server listens on `127.0.0.1:25565` by default and runs in offline mode: names are
 not authenticated, so keep it on localhost. So far players can log in, are put into a
 flat creative world, can walk around it, see each other, and break and place blocks.
-Nothing is saved yet: the world starts afresh with every server start, and a chunk that
-nobody has in view any more is forgotten.
+The world is kept in the directory `world` (see `--world`) and saved when chunks are
+unloaded and when the server stops. Changes since then are lost if the process is killed.
 
 ```bash
 cargo run -p clustine

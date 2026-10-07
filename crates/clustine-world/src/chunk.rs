@@ -24,6 +24,12 @@ impl Chunk {
         }
     }
 
+    /// A chunk column of the given sections, from bottom to top, whose lowest block is at
+    /// `min_y`.
+    pub fn from_sections(min_y: i32, sections: Vec<Section>) -> Self {
+        Self { min_y, sections }
+    }
+
     /// The y coordinate of the lowest block.
     pub fn min_y(&self) -> i32 {
         self.min_y
@@ -94,6 +100,10 @@ impl Chunk {
 /// because unmodified chunks are regenerated instead of being persisted.
 pub trait ChunkGenerator: Send + Sync {
     fn generate(&self, position: ChunkPos) -> Chunk;
+
+    /// Names the generator and everything that decides what it produces. A stored world
+    /// records this and refuses to continue with a generator that says something else.
+    fn settings(&self) -> String;
 }
 
 #[cfg(test)]

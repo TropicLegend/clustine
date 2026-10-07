@@ -54,6 +54,20 @@ impl ChunkGenerator for FlatGenerator {
         }
         chunk
     }
+
+    fn settings(&self) -> String {
+        let layers: Vec<_> = self
+            .layers
+            .iter()
+            .map(|state| state.block().map_or("unknown", |block| block.name))
+            .collect();
+        format!(
+            "flat;{};from {};biome {}",
+            layers.join(","),
+            self.dimension.min_y,
+            self.biome.0
+        )
+    }
 }
 
 #[cfg(test)]
@@ -80,6 +94,17 @@ mod tests {
                 .all(|section| section.non_air_count() == 0)
         );
         assert_eq!(chunk.surface_heights(), [4; 256]);
+    }
+
+    #[test]
+    fn settings_describe_the_layers() {
+        let settings = FlatGenerator::classic().settings();
+        assert!(
+            settings.starts_with(
+                "flat;minecraft:bedrock,minecraft:dirt,minecraft:dirt,minecraft:grass_block;from -64;"
+            ),
+            "{settings}"
+        );
     }
 
     #[test]

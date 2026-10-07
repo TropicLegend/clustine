@@ -44,15 +44,25 @@ pub enum WorkerToEdge {
     },
 }
 
-/// What a worker asks of the world store.
+/// What a worker asks of the world store. Requests are handled in the order they are made.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StoreRequest {
-    /// Load the chunk, generating it if it has never been stored.
+    /// Load the chunk, generating it if it has never been stored. Answered with
+    /// [`StoreReply::Loaded`].
     Load { position: ChunkPos },
+    /// Store the chunk as it is after `tick`. Not answered.
+    Save {
+        position: ChunkPos,
+        tick: u64,
+        chunk: Chunk,
+    },
+    /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
+    Flush,
 }
 
 /// What the world store answers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StoreReply {
     Loaded { position: ChunkPos, chunk: Chunk },
+    Flushed,
 }

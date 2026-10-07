@@ -91,6 +91,9 @@ simulation capacity. Two measures address this:
 
 ## World format
 
+What is implemented so far is specified in [world-format.md](world-format.md); this
+section describes where the format is going.
+
 - **Sections.** The unit of storage is a 16×16×16 section, palette-compressed and
   compressed with zstd using trained dictionaries.
 - **Content addressing.** Sections are stored by hash and referenced from a per-chunk

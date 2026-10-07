@@ -34,6 +34,8 @@ pub struct RegionRunner {
     subscriptions: BTreeSet<ChunkPos>,
     /// Subscribed chunks the edge has not been sent a snapshot of yet.
     awaiting_snapshot: BTreeSet<ChunkPos>,
+    /// Loaded chunks that have changed since they were loaded or last stored.
+    unsaved: BTreeSet<ChunkPos>,
 }
 
 impl RegionRunner {
@@ -44,6 +46,7 @@ impl RegionRunner {
             store,
             subscriptions: BTreeSet::new(),
             awaiting_snapshot: BTreeSet::new(),
+            unsaved: BTreeSet::new(),
         }
     }
 
@@ -74,6 +77,9 @@ impl RegionRunner {
         // The edge only hears about what happens in chunks it subscribed to.
         let mut events = Vec::new();
         for event in output.events {
+            if let RegionEvent::BlockChanged { position, .. } = &event {
+                self.unsaved.insert(position.chunk());
+            }
             let [current, previous] = event.chunks();
             let visible_now = self.subscriptions.contains(&current);
             let visible_before = self.subscriptions.contains(&previous);
@@ -134,7 +140,29 @@ impl RegionRunner {
         true
     }
 
-    /// Ticks 20 times per second until the edge is gone or `stop` is set.
+    /// Hands the chunk at `position` to the store if it has unsaved changes.
+    fn save(&mut self, position: ChunkPos) {
+        if self.unsaved.remove(&position)
+            && let Some(chunk) = self.region.chunk(position)
+        {
+            self.store.request(StoreRequest::Save {
+                position,
+                tick: self.region.tick_number(),
+                chunk: chunk.clone(),
+            });
+        }
+    }
+
+    /// Stores every chunk that has unsaved changes and waits until the store is done.
+    pub fn checkpoint(&mut self) {
+        for position in self.unsaved.clone() {
+            self.save(position);
+        }
+        self.store.flush();
+    }
+
+    /// Ticks 20 times per second until the edge is gone or `stop` is set, then stores
+    /// what has not been stored yet.
     pub fn run(&mut self, stop: &AtomicBool) {
         let mut deadline = Instant::now() + TICK;
         while !stop.load(Ordering::Relaxed) && self.step() {
@@ -146,6 +174,7 @@ impl RegionRunner {
             }
             deadline += TICK;
         }
+        self.checkpoint();
     }
 
     fn accept(&mut self, message: EdgeToWorker, inputs: &mut TickInputs) {
@@ -168,6 +197,9 @@ impl RegionRunner {
             EdgeToWorker::Unsubscribe { chunks } => {
                 for position in chunks {
                     if self.subscriptions.remove(&position) {
+                        // The region drops the chunk at the start of the coming tick,
+                        // before anything else can change it, so this is its final state.
+                        self.save(position);
                         inputs.tickets_removed.push(position);
                         self.awaiting_snapshot.remove(&position);
                     }
@@ -230,7 +262,7 @@ mod tests {
     use clustine_sim::api::{
         EntityKind, HOTBAR_SLOTS, PlayerEvent, PlayerInput, PlayerJoin, RegionEvent,
     };
-    use clustine_world::{EntityId, PlayerId, Vec3};
+    use clustine_world::{BlockPos, EntityId, PlayerId, Vec3};
     use clustine_worldgen::FlatGenerator;
     use tokio::time::timeout;
     use uuid::Uuid;
@@ -461,6 +493,99 @@ mod tests {
             .unwrap();
         assert!(runner.step());
         assert_eq!(edge.try_recv(), Ok(None));
+    }
+
+    /// Joins a player, subscribes to the chunk they stand in and waits until it is loaded.
+    async fn joined(edge: &EdgeEnd, runner: &mut RegionRunner) {
+        edge.send(EdgeToWorker::PlayerJoin(PlayerJoin {
+            player: player(),
+            name: "Notch".to_owned(),
+        }))
+        .await
+        .unwrap();
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![ChunkPos::new(0, 0)],
+        })
+        .await
+        .unwrap();
+        step_until(runner, |runner| runner.region().loaded_chunk_count() == 1);
+    }
+
+    fn dig(x: i32) -> EdgeToWorker {
+        EdgeToWorker::Input {
+            player: player(),
+            input: PlayerInput::Dig {
+                position: BlockPos::new(x, -61, 0),
+                sequence: 1,
+            },
+        }
+    }
+
+    /// A changed chunk that nobody needs any more is stored, and comes back changed.
+    #[tokio::test]
+    async fn changes_survive_a_chunk_being_unloaded() {
+        let (edge, worker_end) = link::in_process(256);
+        let mut runner = runner(worker_end);
+        let origin = ChunkPos::new(0, 0);
+        joined(&edge, &mut runner).await;
+
+        edge.send(dig(1)).await.unwrap();
+        assert!(runner.step());
+        let changed = runner.region().chunk(origin).unwrap().clone();
+        assert_eq!(changed.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+
+        edge.send(EdgeToWorker::Unsubscribe {
+            chunks: vec![origin],
+        })
+        .await
+        .unwrap();
+        assert!(runner.step());
+        assert_eq!(runner.region().loaded_chunk_count(), 0);
+
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![origin],
+        })
+        .await
+        .unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 1
+        });
+        assert_eq!(runner.region().chunk(origin), Some(&changed));
+    }
+
+    /// Stopping stores what is still loaded, so that another runner on the same world
+    /// finds it.
+    #[tokio::test]
+    async fn stopping_stores_changed_chunks() {
+        let directory = tempfile::tempdir().unwrap();
+        let on_disk = |link| {
+            let generator = FlatGenerator::classic();
+            let region = Region::new(RegionConfig {
+                spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
+                first_entity_id: EntityId(1),
+                starting_hotbar: [None; HOTBAR_SLOTS],
+            });
+            let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));
+            RegionRunner::new(region, link, store.unwrap())
+        };
+        let origin = ChunkPos::new(0, 0);
+
+        let (edge, worker_end) = link::in_process(256);
+        let mut first = on_disk(worker_end);
+        joined(&edge, &mut first).await;
+        edge.send(dig(1)).await.unwrap();
+        edge.send(dig(2)).await.unwrap();
+        assert!(first.step());
+        let changed = first.region().chunk(origin).unwrap().clone();
+        // The player is still there and the chunk still loaded when the runner stops.
+        first.run(&AtomicBool::new(true));
+        drop((first, edge));
+
+        let (edge, worker_end) = link::in_process(256);
+        let mut second = on_disk(worker_end);
+        joined(&edge, &mut second).await;
+        assert_eq!(second.region().chunk(origin), Some(&changed));
+        assert_eq!(changed.get(2, -61, 0), Some(clustine_data::blocks::AIR));
     }
 
     #[tokio::test]

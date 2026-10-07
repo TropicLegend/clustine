@@ -21,7 +21,9 @@ enum Blocks {
 /// A 16×16×16 cube of blocks with one biome.
 ///
 /// Biomes can vary within a section in vanilla; that is not modelled yet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Two sections are equal if they hold the same blocks and biome, however they came to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "SectionRepr", into = "SectionRepr")]
 pub struct Section {
     blocks: Blocks,
@@ -30,7 +32,35 @@ pub struct Section {
     biome: Biome,
 }
 
+impl PartialEq for Section {
+    fn eq(&self, other: &Self) -> bool {
+        self.biome == other.biome
+            && self.non_air == other.non_air
+            && match (&self.blocks, &other.blocks) {
+                (Blocks::Uniform(a), Blocks::Uniform(b)) => a == b,
+                // One side may be stored block by block although all blocks are equal.
+                _ => self.states().eq(other.states()),
+            }
+    }
+}
+
+impl Eq for Section {}
+
 impl Section {
+    /// A section of the given blocks, in the order of `y << 8 | z << 4 | x`.
+    pub fn from_states(states: Box<[BlockState; BLOCKS_PER_SECTION]>, biome: Biome) -> Self {
+        let first = states[0];
+        if states.iter().all(|state| *state == first) {
+            return Self::filled(first, biome);
+        }
+        let non_air = states.iter().filter(|state| **state != blocks::AIR).count();
+        Self {
+            blocks: Blocks::Mixed(states),
+            non_air: non_air as u16,
+            biome,
+        }
+    }
+
     /// A section consisting of `state` only.
     pub fn filled(state: BlockState, biome: Biome) -> Self {
         Self {
@@ -135,7 +165,6 @@ impl TryFrom<SectionRepr> for Section {
         match repr.blocks {
             BlocksRepr::Uniform(state) => Ok(Self::filled(state, repr.biome)),
             BlocksRepr::Mixed(states) => {
-                let non_air = states.iter().filter(|state| **state != blocks::AIR).count();
                 let states: Box<[BlockState; BLOCKS_PER_SECTION]> = states
                     .into_boxed_slice()
                     .try_into()
@@ -145,11 +174,7 @@ impl TryFrom<SectionRepr> for Section {
                             states.len()
                         )
                     })?;
-                Ok(Self {
-                    blocks: Blocks::Mixed(states),
-                    non_air: non_air as u16,
-                    biome: repr.biome,
-                })
+                Ok(Self::from_states(states, repr.biome))
             }
         }
     }
@@ -202,6 +227,37 @@ mod tests {
         let mut section = Section::filled(blocks::STONE, PLAINS);
         section.set(0, 0, 0, blocks::STONE);
         assert_eq!(section.uniform_state(), Some(blocks::STONE));
+    }
+
+    #[test]
+    fn equality_is_about_content_not_about_history() {
+        // Changing a block and changing it back leaves the section stored block by block.
+        let mut edited = Section::filled(blocks::STONE, PLAINS);
+        edited.set(1, 2, 3, blocks::DIRT);
+        edited.set(1, 2, 3, blocks::STONE);
+        assert_eq!(edited.uniform_state(), None);
+        assert_eq!(edited, Section::filled(blocks::STONE, PLAINS));
+        assert_ne!(edited, Section::filled(blocks::DIRT, PLAINS));
+        assert_ne!(edited, Section::filled(blocks::STONE, Biome(1)));
+
+        edited.set(0, 0, 0, blocks::AIR);
+        assert_ne!(edited, Section::filled(blocks::STONE, PLAINS));
+    }
+
+    #[test]
+    fn sections_can_be_built_from_their_blocks() {
+        let mut expected = Section::filled(blocks::AIR, PLAINS);
+        expected.set(1, 0, 0, blocks::STONE);
+        expected.set(0, 1, 0, blocks::DIRT);
+        let states: Vec<_> = expected.states().collect();
+        let built = Section::from_states(states.try_into().unwrap(), PLAINS);
+        assert_eq!(built, expected);
+        assert_eq!(built.non_air_count(), 2);
+
+        // All equal blocks collapse into the compact form.
+        let uniform = Section::from_states(Box::new([blocks::STONE; 4096]), PLAINS);
+        assert_eq!(uniform.uniform_state(), Some(blocks::STONE));
+        assert_eq!(uniform.non_air_count(), 4096);
     }
 
     #[test]

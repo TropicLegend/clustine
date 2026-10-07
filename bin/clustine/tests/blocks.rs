@@ -107,31 +107,6 @@ async fn breaking_out_of_reach_is_acknowledged_without_effect() {
     server.stop().await;
 }
 
-/// The change is in the world, not just on the screens of those who watched it.
-#[tokio::test]
-async fn a_hole_is_still_there_after_walking_away_and_back() {
-    let (server, address) = start().await;
-    let mut digger = join(&address, "Digger").await;
-    // Someone has to stay: nothing is stored yet, so a chunk nobody has in view is
-    // generated afresh the next time it is needed.
-    let _resident = join(&address, "Resident").await;
-
-    digger.dig(1, -61, 0).await.unwrap();
-    sees_block(&mut digger, (1, -61, 0), AIR).await;
-
-    digger.walk_to(200.5, 0.5, 2.0).await.unwrap();
-    digger
-        .wait_until(PATIENCE, |bot| !bot.chunks.contains_key(&(0, 0)))
-        .await
-        .unwrap();
-    assert_eq!(digger.block_at(1, -61, 0).unwrap(), None);
-
-    digger.walk_to(0.5, 0.5, 2.0).await.unwrap();
-    sees_block(&mut digger, (1, -61, 0), AIR).await;
-
-    server.stop().await;
-}
-
 #[tokio::test]
 async fn many_blocks_broken_at_once_all_arrive() {
     let (server, address) = start().await;

@@ -5,6 +5,7 @@
 //! messages.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +54,9 @@ pub struct Config {
     pub keep_alive_interval: Duration,
     /// The largest view distance granted to a client, in chunks.
     pub view_distance: i32,
+    /// The directory the world is kept in. It is created if it does not exist. With
+    /// `None` the world only lasts as long as the server runs.
+    pub world: Option<PathBuf>,
     /// Serialise every message between the edge and the worker, as a deployment with
     /// separate processes does. Slower; meant for testing that boundary.
     pub serialise_link: bool,
@@ -72,7 +76,12 @@ impl Server {
         let generator = FlatGenerator::classic();
         // Players enter above the middle of the block at the origin.
         let spawn = Vec3::new(0.5, f64::from(generator.surface_y()), 0.5);
-        let store = clustine_worldstore::spawn(Arc::new(generator));
+        let generator = Arc::new(generator);
+        let store = match &config.world {
+            Some(directory) => clustine_worldstore::spawn_local(directory, generator)
+                .with_context(|| format!("opening the world in {}", directory.display()))?,
+            None => clustine_worldstore::spawn(generator),
+        };
 
         let (edge_end, worker_end) = if config.serialise_link {
             link::framed(LINK_CAPACITY)
@@ -114,12 +123,14 @@ impl Server {
         let _ = (&mut self.edge).await;
     }
 
-    /// Stops accepting connections, closes the existing ones and stops the simulation.
+    /// Stops accepting connections, closes the existing ones, stops the simulation and
+    /// stores what has changed in the world.
     pub async fn stop(self) {
         self.edge.abort();
         // The task was cancelled on purpose, so its result carries no information.
         let _ = self.edge.await;
-        // Waits for the current tick, at most a few milliseconds.
-        self.worker.stop();
+        // Waits for the current tick and for the world to be stored.
+        let worker = self.worker;
+        let _ = tokio::task::spawn_blocking(move || worker.stop()).await;
     }
 }
