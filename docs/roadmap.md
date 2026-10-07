@@ -40,7 +40,7 @@ check with an unmodified 26.3 client.
 | 10 | Breaking blocks | Bot A breaks, bot B observes; real client | done; real client check pending |
 | 11 | Placing blocks from a fixed hotbar | Bot `place`; real client | done; real client check pending |
 | 12 | Section format, manifests, local storage, checkpoint on shutdown | Restart test | done |
-| 13 | Write-ahead log, recovery, periodic checkpoint | Torn-write tests; `kill -9` test | |
+| 13 | Write-ahead log, recovery, periodic checkpoint | Torn-write tests; `kill -9` test | done |
 | 14 | Compression, slow-client handling, timeouts, end-to-end CI job | A stalled bot is dropped without affecting tick time | |
 
 Not in M1: survival mechanics, chat and commands, a lighting engine, neighbour updates,

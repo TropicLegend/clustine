@@ -57,6 +57,9 @@ pub struct Config {
     /// The directory the world is kept in. It is created if it does not exist. With
     /// `None` the world only lasts as long as the server runs.
     pub world: Option<PathBuf>,
+    /// How often every changed chunk that is still loaded is saved. In between, changes
+    /// to such chunks are only in the write-ahead log.
+    pub checkpoint_interval: Duration,
     /// Serialise every message between the edge and the worker, as a deployment with
     /// separate processes does. Slower; meant for testing that boundary.
     pub serialise_link: bool,
@@ -108,7 +111,10 @@ impl Server {
         Ok(Self {
             address,
             edge: tokio::spawn(edge.run()),
-            worker: Worker::spawn(RegionRunner::new(region, worker_end, store)),
+            worker: Worker::spawn(
+                RegionRunner::new(region, worker_end, store)
+                    .with_checkpoint_interval(config.checkpoint_interval.as_millis() as u64 / 50),
+            ),
         })
     }
 

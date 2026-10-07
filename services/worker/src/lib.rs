@@ -21,6 +21,9 @@ use tracing::{error, info};
 /// The length of a tick: 20 ticks per second.
 pub const TICK: Duration = Duration::from_millis(50);
 
+/// Ticks between two checkpoints unless set otherwise: five minutes.
+pub const DEFAULT_CHECKPOINT_INTERVAL: u64 = 5 * 60 * 20;
+
 /// A runner that has fallen further behind than this many ticks skips them instead of
 /// trying to catch up.
 const MAX_CATCH_UP_TICKS: u32 = 10;
@@ -36,6 +39,8 @@ pub struct RegionRunner {
     awaiting_snapshot: BTreeSet<ChunkPos>,
     /// Loaded chunks that have changed since they were loaded or last stored.
     unsaved: BTreeSet<ChunkPos>,
+    /// How many ticks pass between two checkpoints.
+    checkpoint_interval: u64,
 }
 
 impl RegionRunner {
@@ -47,7 +52,15 @@ impl RegionRunner {
             subscriptions: BTreeSet::new(),
             awaiting_snapshot: BTreeSet::new(),
             unsaved: BTreeSet::new(),
+            checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
         }
+    }
+
+    /// Sets how many ticks pass between two checkpoints. Until a checkpoint, changes to
+    /// chunks that stay loaded are only in the write-ahead log, which grows meanwhile.
+    pub fn with_checkpoint_interval(mut self, ticks: u64) -> Self {
+        self.checkpoint_interval = ticks.max(1);
+        self
     }
 
     pub fn region(&self) -> &Region {
@@ -75,11 +88,30 @@ impl RegionRunner {
             self.store.request(StoreRequest::Load { position });
         }
         // The edge only hears about what happens in chunks it subscribed to.
+        // Logged before anyone is told, so that what players are shown is on its way to
+        // disk already.
+        let changes: Vec<_> = output
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RegionEvent::BlockChanged { position, state } => Some((*position, *state)),
+                _ => None,
+            })
+            .collect();
+        if !changes.is_empty() {
+            self.unsaved
+                .extend(changes.iter().map(|(position, _)| position.chunk()));
+            self.store.request(StoreRequest::Log {
+                tick: output.tick,
+                changes,
+            });
+        }
+        if output.tick % self.checkpoint_interval == 0 {
+            self.checkpoint();
+        }
+
         let mut events = Vec::new();
         for event in output.events {
-            if let RegionEvent::BlockChanged { position, .. } = &event {
-                self.unsaved.insert(position.chunk());
-            }
             let [current, previous] = event.chunks();
             let visible_now = self.subscriptions.contains(&current);
             let visible_before = self.subscriptions.contains(&previous);
@@ -153,12 +185,13 @@ impl RegionRunner {
         }
     }
 
-    /// Stores every chunk that has unsaved changes and waits until the store is done.
-    pub fn checkpoint(&mut self) {
+    /// Hands every chunk with unsaved changes to the store and lets it empty the log,
+    /// which from then on only has to cover what happens next.
+    fn checkpoint(&mut self) {
         for position in self.unsaved.clone() {
             self.save(position);
         }
-        self.store.flush();
+        self.store.request(StoreRequest::Checkpoint);
     }
 
     /// Ticks 20 times per second until the edge is gone or `stop` is set, then stores
@@ -175,6 +208,7 @@ impl RegionRunner {
             deadline += TICK;
         }
         self.checkpoint();
+        self.store.flush();
     }
 
     fn accept(&mut self, message: EdgeToWorker, inputs: &mut TickInputs) {
@@ -586,6 +620,52 @@ mod tests {
         joined(&edge, &mut second).await;
         assert_eq!(second.region().chunk(origin), Some(&changed));
         assert_eq!(changed.get(2, -61, 0), Some(clustine_data::blocks::AIR));
+    }
+
+    /// Changes to a chunk that stays loaded reach the stored world at the next
+    /// checkpoint, which also empties the log.
+    #[tokio::test]
+    async fn checkpoints_save_loaded_chunks_and_empty_the_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let generator = FlatGenerator::classic();
+        let region = Region::new(RegionConfig {
+            spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
+            first_entity_id: EntityId(1),
+            starting_hotbar: [None; HOTBAR_SLOTS],
+        });
+        let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));
+        let (edge, worker_end) = link::in_process(256);
+        let mut runner =
+            RegionRunner::new(region, worker_end, store.unwrap()).with_checkpoint_interval(50);
+        joined(&edge, &mut runner).await;
+        let log_length = || {
+            std::fs::metadata(directory.path().join("wal"))
+                .unwrap()
+                .len()
+        };
+        let manifest = directory
+            .path()
+            .join("manifests/overworld/0.0/0.0.manifest");
+
+        // Just after a checkpoint, so that the next one is 50 ticks away.
+        step_until(&mut runner, |runner| {
+            runner.region().tick_number() % 50 == 1
+        });
+        edge.send(dig(1)).await.unwrap();
+        assert!(runner.step());
+        runner.store.flush();
+        assert!(log_length() > 0, "the change was not logged");
+        assert!(
+            !manifest.exists(),
+            "the chunk was saved before the checkpoint"
+        );
+
+        step_until(&mut runner, |runner| {
+            runner.region().tick_number() % 50 == 0
+        });
+        runner.store.flush();
+        assert!(manifest.exists(), "the checkpoint did not save the chunk");
+        assert_eq!(log_length(), 0);
     }
 
     #[tokio::test]

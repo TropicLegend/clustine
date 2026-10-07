@@ -30,6 +30,10 @@ impl<'a> Input<'a> {
         Ok(i32::from_be_bytes(self.array()?))
     }
 
+    pub(crate) fn u32(&mut self) -> Result<u32, FormatError> {
+        Ok(u32::from_be_bytes(self.array()?))
+    }
+
     pub(crate) fn u64(&mut self) -> Result<u64, FormatError> {
         Ok(u64::from_be_bytes(self.array()?))
     }

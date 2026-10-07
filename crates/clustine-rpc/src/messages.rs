@@ -1,7 +1,8 @@
 //! The messages services exchange.
 
+use clustine_data::BlockState;
 use clustine_sim::api::{EntityState, PlayerEvent, PlayerInput, PlayerJoin, RegionEvent};
-use clustine_world::{Chunk, ChunkPos, PlayerId};
+use clustine_world::{BlockPos, Chunk, ChunkPos, PlayerId};
 use serde::{Deserialize, Serialize};
 
 /// What an edge tells the worker that owns a region. See
@@ -56,6 +57,15 @@ pub enum StoreRequest {
         tick: u64,
         chunk: Chunk,
     },
+    /// Record the block changes of `tick`, so that they are not lost if the process dies
+    /// before the chunks they are in have been saved. Not answered.
+    Log {
+        tick: u64,
+        changes: Vec<(BlockPos, BlockState)>,
+    },
+    /// Every change logged so far is contained in a chunk saved before this request, so
+    /// the log can be emptied. Not answered.
+    Checkpoint,
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
 }

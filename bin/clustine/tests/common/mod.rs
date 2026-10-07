@@ -14,6 +14,7 @@ pub fn config() -> Config {
         view_distance: VIEW_DISTANCE,
         // Nothing is written to disk unless a test asks for it.
         world: None,
+        checkpoint_interval: Duration::from_secs(300),
         serialise_link: false,
     }
 }

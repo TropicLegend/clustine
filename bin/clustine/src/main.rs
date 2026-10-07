@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -28,6 +29,10 @@ struct Args {
     #[arg(long, default_value = "world")]
     world: PathBuf,
 
+    /// Seconds between two saves of all changed chunks that are still loaded.
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
+    checkpoint_interval: u64,
+
     /// Largest view distance granted to a client, in chunks.
     #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE, value_parser = clap::value_parser!(i32).range(2..=32))]
     view_distance: i32,
@@ -45,6 +50,7 @@ async fn main() -> Result<()> {
         keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
         view_distance: args.view_distance,
         world: Some(args.world),
+        checkpoint_interval: Duration::from_secs(args.checkpoint_interval),
         serialise_link: false,
     })
     .await?;

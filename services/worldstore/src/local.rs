@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! meta                                       what the world was made with
+//! wal                                        block changes not yet in a saved chunk
 //! blobs/ab/abcdef…                           sections, by the hash of their content
 //! manifests/overworld/<rx>.<rz>/<x>.<z>.manifest
 //!                                            chunks, grouped by 32×32 chunks
@@ -10,18 +11,22 @@
 //! Files are written under a temporary name and renamed, so a reader never sees half a
 //! file. Section files are never changed once written.
 
-use std::fs;
-use std::io::{self, ErrorKind};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use clustine_data::DATA_VERSION;
-use clustine_format::{ChunkManifest, FORMAT_VERSION, Hash, pack, unpack};
+use clustine_format::{BlockChanges, ChunkManifest, FORMAT_VERSION, Hash, pack, read_log, unpack};
 use clustine_world::{Chunk, ChunkPos};
 
 use crate::{Backend, StoreError};
 
 pub(crate) struct LocalFs {
     root: PathBuf,
+    /// The write-ahead log, opened for appending.
+    log: File,
+    /// Whether something has been appended to the log since it was last made durable.
+    log_unsynced: bool,
 }
 
 impl LocalFs {
@@ -61,9 +66,29 @@ impl LocalFs {
             }
             Err(error) => return Err(error.into()),
         }
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join("wal"))?;
         Ok(Self {
             root: root.to_owned(),
+            log,
+            log_unsynced: false,
         })
+    }
+
+    /// The records in the write-ahead log. A record that was only written in part,
+    /// because the process died while appending it, is cut off.
+    pub(crate) fn read_log(&mut self) -> Result<Vec<BlockChanges>, StoreError> {
+        let path = self.root.join("wal");
+        let bytes = fs::read(&path)?;
+        let (records, valid) = read_log(&bytes)?;
+        if valid < bytes.len() {
+            // So that what is appended from now on follows a complete record.
+            self.log.set_len(valid as u64)?;
+            self.log.sync_data()?;
+        }
+        Ok(records)
     }
 
     fn blob_path(&self, hash: &Hash) -> PathBuf {
@@ -105,6 +130,27 @@ impl Backend for LocalFs {
         write_atomically(&self.manifest_path(position), &manifest.encode())?;
         Ok(())
     }
+
+    fn log(&mut self, changes: &BlockChanges) -> Result<(), StoreError> {
+        self.log.write_all(&changes.encode())?;
+        self.log_unsynced = true;
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<(), StoreError> {
+        if self.log_unsynced {
+            self.log.sync_data()?;
+            self.log_unsynced = false;
+        }
+        Ok(())
+    }
+
+    fn checkpoint(&mut self) -> Result<(), StoreError> {
+        self.log.set_len(0)?;
+        self.log.sync_data()?;
+        self.log_unsynced = false;
+        Ok(())
+    }
 }
 
 /// Writes a file so that it is either there in full or not at all.
@@ -114,6 +160,10 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
-    fs::write(&temporary, contents)?;
+    let mut file = File::create(&temporary)?;
+    file.write_all(contents)?;
+    // On disk before it takes the place of what was there, or a crash of the machine
+    // could leave an empty file under the final name.
+    file.sync_all()?;
     fs::rename(&temporary, path)
 }

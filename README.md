@@ -59,8 +59,8 @@ cargo test --workspace
 The server listens on `127.0.0.1:25565` by default and runs in offline mode: names are
 not authenticated, so keep it on localhost. So far players can log in, are put into a
 flat creative world, can walk around it, see each other, and break and place blocks.
-The world is kept in the directory `world` (see `--world`) and saved when chunks are
-unloaded and when the server stops. Changes since then are lost if the process is killed.
+The world is kept in the directory `world` (see `--world`). Changes are logged as they
+happen, so they survive the server being killed.
 
 ```bash
 cargo run -p clustine

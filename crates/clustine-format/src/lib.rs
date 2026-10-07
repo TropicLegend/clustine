@@ -11,11 +11,13 @@
 //! world store's business.
 
 mod bytes;
+mod log;
 mod manifest;
 mod section;
 
 use std::fmt;
 
+pub use log::{BlockChanges, read_log};
 pub use manifest::ChunkManifest;
 pub use section::{decode_section, encode_section, pack, unpack};
 

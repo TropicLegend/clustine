@@ -9,16 +9,17 @@
 mod local;
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use clustine_format::FormatError;
+use clustine_format::{BlockChanges, FormatError};
 use clustine_rpc::{StoreReply, StoreRequest};
 use clustine_world::{Chunk, ChunkGenerator, ChunkPos};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::local::LocalFs;
 
@@ -44,6 +45,22 @@ trait Backend: Send {
     /// The stored chunk, or `None` if it was never stored.
     fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError>;
     fn save(&mut self, position: ChunkPos, tick: u64, chunk: &Chunk) -> Result<(), StoreError>;
+
+    /// Appends block changes to the write-ahead log. They need not be durable before
+    /// [`Backend::commit`] is called.
+    fn log(&mut self, _changes: &BlockChanges) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Makes everything logged so far durable.
+    fn commit(&mut self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Empties the write-ahead log: every logged change is in a saved chunk.
+    fn checkpoint(&mut self) -> Result<(), StoreError> {
+        Ok(())
+    }
 }
 
 /// Keeps chunks in memory: they last as long as the store.
@@ -98,13 +115,57 @@ pub fn spawn(generator: Arc<dyn ChunkGenerator>) -> StoreHandle {
 }
 
 /// Starts a store that keeps changed chunks in the directory `root`, creating the world
-/// there if there is none.
+/// there if there is none. If the server died last time, the changes it had logged but
+/// not yet saved are applied first.
 pub fn spawn_local(
     root: &Path,
     generator: Arc<dyn ChunkGenerator>,
 ) -> Result<StoreHandle, StoreError> {
-    let backend = LocalFs::open(root, &generator.settings())?;
+    let mut backend = LocalFs::open(root, &generator.settings())?;
+    let pending = backend.read_log()?;
+    if !pending.is_empty() {
+        let (chunks, changes) = recover(&mut backend, generator.as_ref(), &pending)?;
+        info!(chunks, changes, "recovered changes that had not been saved");
+    }
     Ok(start(Box::new(backend), generator))
+}
+
+/// Applies logged block changes to the chunks they are in, saves those chunks and
+/// empties the log. Returns the number of chunks and of changes.
+///
+/// The log holds every change since the last checkpoint, in order. A chunk may have
+/// been saved in between with some of them already in it; applying all of them again in
+/// order ends in the same state, because each one sets a block to a definite state.
+fn recover(
+    backend: &mut dyn Backend,
+    generator: &dyn ChunkGenerator,
+    pending: &[BlockChanges],
+) -> Result<(usize, usize), StoreError> {
+    let mut chunks = BTreeMap::new();
+    let mut changes = 0;
+    let mut tick = 0;
+    for record in pending {
+        tick = tick.max(record.tick);
+        for (position, state) in &record.changes {
+            let chunk_position = position.chunk();
+            let chunk = match chunks.entry(chunk_position) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(
+                    backend
+                        .load(chunk_position)?
+                        .unwrap_or_else(|| generator.generate(chunk_position)),
+                ),
+            };
+            let (x, z) = position.in_chunk();
+            chunk.set(x, position.y, z, *state);
+            changes += 1;
+        }
+    }
+    for (position, chunk) in &chunks {
+        backend.save(*position, tick, chunk)?;
+    }
+    backend.checkpoint()?;
+    Ok((chunks.len(), changes))
 }
 
 fn start(mut backend: Box<dyn Backend>, generator: Arc<dyn ChunkGenerator>) -> StoreHandle {
@@ -113,36 +174,61 @@ fn start(mut backend: Box<dyn Backend>, generator: Arc<dyn ChunkGenerator>) -> S
     thread::Builder::new()
         .name("worldstore".to_owned())
         .spawn(move || {
-            for request in request_receiver {
-                let reply = match request {
-                    StoreRequest::Load { position } => match backend.load(position) {
-                        Ok(stored) => StoreReply::Loaded {
-                            position,
-                            chunk: stored.unwrap_or_else(|| generator.generate(position)),
+            // Requests are taken in batches: everything that is waiting is handled, then
+            // what was logged is made durable in one go.
+            while let Ok(first) = request_receiver.recv() {
+                let batch = std::iter::once(first).chain(request_receiver.try_iter());
+                let mut replies = Vec::new();
+                for request in batch {
+                    match request {
+                        StoreRequest::Load { position } => match backend.load(position) {
+                            Ok(stored) => replies.push(StoreReply::Loaded {
+                                position,
+                                chunk: stored.unwrap_or_else(|| generator.generate(position)),
+                            }),
+                            // Generating the chunk instead would look fine at first and
+                            // then overwrite what players built once it is saved. Not
+                            // answering leaves a hole in the world that someone can
+                            // look into.
+                            Err(error) => {
+                                error!(?position, %error, "a stored chunk cannot be read");
+                            }
                         },
-                        // Generating the chunk instead would look fine at first and
-                        // then overwrite what players built once it is saved. Not
-                        // answering leaves a hole in the world that someone can look
-                        // into.
-                        Err(error) => {
-                            error!(?position, %error, "a stored chunk cannot be read");
-                            continue;
+                        StoreRequest::Save {
+                            position,
+                            tick,
+                            chunk,
+                        } => {
+                            if let Err(error) = backend.save(position, tick, &chunk) {
+                                error!(?position, %error, "a chunk could not be stored");
+                            }
                         }
-                    },
-                    StoreRequest::Save {
-                        position,
-                        tick,
-                        chunk,
-                    } => {
-                        if let Err(error) = backend.save(position, tick, &chunk) {
-                            error!(?position, %error, "a chunk could not be stored");
+                        StoreRequest::Log { tick, changes } => {
+                            let record = BlockChanges {
+                                tick,
+                                epoch: 1,
+                                changes,
+                            };
+                            if let Err(error) = backend.log(&record) {
+                                error!(%error, "block changes could not be logged");
+                            }
                         }
-                        continue;
+                        StoreRequest::Checkpoint => {
+                            if let Err(error) = backend.checkpoint() {
+                                error!(%error, "the log could not be emptied");
+                            }
+                        }
+                        StoreRequest::Flush => replies.push(StoreReply::Flushed),
                     }
-                    StoreRequest::Flush => StoreReply::Flushed,
-                };
-                if reply_sender.send(reply).is_err() {
-                    break;
+                }
+                // Before any answer, so that a flush means "durable".
+                if let Err(error) = backend.commit() {
+                    error!(%error, "the log could not be made durable");
+                }
+                for reply in replies {
+                    if reply_sender.send(reply).is_err() {
+                        return;
+                    }
                 }
             }
         })
@@ -278,6 +364,118 @@ mod tests {
             .map(|prefix| fs::read_dir(prefix.unwrap().path()).unwrap().count())
             .sum();
         assert_eq!(blobs, 2);
+    }
+
+    fn log(store: &StoreHandle, tick: u64, changes: &[(i32, i32, i32, clustine_data::BlockState)]) {
+        store.request(StoreRequest::Log {
+            tick,
+            changes: changes
+                .iter()
+                .map(|(x, y, z, state)| (clustine_world::BlockPos::new(*x, *y, *z), *state))
+                .collect(),
+        });
+    }
+
+    /// Changes that were logged but never saved, as after a crash, are in the world
+    /// when it is opened again.
+    #[test]
+    fn logged_changes_are_recovered_when_the_world_is_opened() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let store = spawn_local(directory.path(), generator()).unwrap();
+            // The same block twice: the later change wins. And a second chunk.
+            log(
+                &store,
+                1,
+                &[(3, -61, 4, blocks::STONE), (40, -61, 4, blocks::AIR)],
+            );
+            log(
+                &store,
+                2,
+                &[(3, -61, 4, blocks::AIR), (3, 100, 4, blocks::GLASS)],
+            );
+            store.flush();
+            // The store is dropped without the chunks ever being saved.
+        }
+
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        assert_eq!(load(&store, ChunkPos::new(0, 0)), edited());
+        let other = load(&store, ChunkPos::new(2, 0));
+        assert_eq!(other.get(8, -61, 4), Some(blocks::AIR));
+
+        // Recovery saved the chunks and emptied the log.
+        assert_eq!(fs::read(directory.path().join("wal")).unwrap(), b"");
+        drop(store);
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        assert_eq!(load(&store, ChunkPos::new(0, 0)), edited());
+    }
+
+    /// A chunk saved in the middle of the logged changes ends up right all the same.
+    #[test]
+    fn recovery_copes_with_chunks_saved_in_between() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = ChunkPos::new(0, 0);
+        {
+            let store = spawn_local(directory.path(), generator()).unwrap();
+            log(&store, 1, &[(3, -61, 4, blocks::STONE)]);
+            let mut saved = generator().generate(origin);
+            saved.set(3, -61, 4, blocks::STONE);
+            save(&store, origin, &saved);
+            log(
+                &store,
+                2,
+                &[(3, -61, 4, blocks::AIR), (3, 100, 4, blocks::GLASS)],
+            );
+            store.flush();
+        }
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        assert_eq!(load(&store, origin), edited());
+    }
+
+    #[test]
+    fn a_checkpoint_empties_the_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let wal = directory.path().join("wal");
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        log(&store, 1, &[(3, -61, 4, blocks::STONE)]);
+        store.flush();
+        assert!(!fs::read(&wal).unwrap().is_empty());
+
+        store.request(StoreRequest::Checkpoint);
+        store.flush();
+        assert_eq!(fs::read(&wal).unwrap(), b"");
+
+        // Logging goes on after a checkpoint.
+        log(&store, 2, &[(3, -61, 4, blocks::AIR)]);
+        store.flush();
+        assert!(!fs::read(&wal).unwrap().is_empty());
+    }
+
+    /// The process can die in the middle of appending to the log. Whatever is left of
+    /// the last record is ignored and the records before it are recovered.
+    #[test]
+    fn a_log_cut_off_in_the_middle_of_a_record_is_recovered_up_to_there() {
+        let directory = tempfile::tempdir().unwrap();
+        let wal = directory.path().join("wal");
+        let origin = ChunkPos::new(0, 0);
+        {
+            let store = spawn_local(directory.path(), generator()).unwrap();
+            log(&store, 1, &[(3, -61, 4, blocks::AIR)]);
+            log(&store, 2, &[(3, 100, 4, blocks::GLASS)]);
+            log(&store, 3, &[(5, 100, 5, blocks::STONE)]);
+            store.flush();
+        }
+        let complete = fs::read(&wal).unwrap();
+        // Three records of the same length; cut at the start of, just into, and just
+        // before the end of the third.
+        let record = complete.len() / 3;
+        for length in [2 * record, 2 * record + 1, 3 * record - 1] {
+            fs::write(&wal, &complete[..length]).unwrap();
+            // Recovery from an earlier round has saved the chunk; start from scratch.
+            let _ = fs::remove_dir_all(directory.path().join("manifests"));
+            let store = spawn_local(directory.path(), generator()).unwrap();
+            assert_eq!(load(&store, origin), edited(), "cut at {length}");
+        }
     }
 
     #[test]
