@@ -23,7 +23,7 @@ use clustine_rpc::link::{self, EdgeEnd};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use crate::fanout::{Command, Fanout, FanoutConfig};
 
@@ -153,8 +153,10 @@ impl Edge {
             };
             let shared = Arc::clone(&self.shared);
             connections.spawn(async move {
+                // Shown by default: a client that cannot get in is otherwise invisible
+                // from the server's side.
                 if let Err(error) = session::serve(stream, &shared).await {
-                    debug!(%peer, %error, "connection ended with an error");
+                    info!(%peer, %error, "connection ended with an error");
                 }
             });
         }

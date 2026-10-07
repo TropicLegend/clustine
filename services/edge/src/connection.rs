@@ -19,7 +19,7 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) enum ConnectionError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
-    #[error("the client did not keep up in time")]
+    #[error("the client took too long to send what was expected or to take what was sent")]
     TimedOut,
     #[error("connection closed in the middle of a packet")]
     UnexpectedEof,
