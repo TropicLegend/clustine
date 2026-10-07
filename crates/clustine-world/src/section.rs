@@ -1,11 +1,12 @@
 //! A 16×16×16 cube of blocks.
 
 use clustine_data::{BlockState, blocks};
+use serde::{Deserialize, Serialize};
 
 use crate::{BLOCKS_PER_SECTION, SECTION_SIZE};
 
 /// A biome, as its id in the biome registry Clustine sends to clients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Biome(pub u16);
 
 /// The blocks of a section. Most sections of a world are all air or all stone, so a
@@ -20,7 +21,8 @@ enum Blocks {
 /// A 16×16×16 cube of blocks with one biome.
 ///
 /// Biomes can vary within a section in vanilla; that is not modelled yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SectionRepr", into = "SectionRepr")]
 pub struct Section {
     blocks: Blocks,
     /// Number of blocks that are not air.
@@ -97,6 +99,59 @@ impl Section {
             Blocks::Uniform(state) => *state,
             Blocks::Mixed(states) => states[index],
         })
+    }
+}
+
+/// How a section is serialised: without the derived block count, and with the blocks of
+/// a mixed section as a sequence, since serde has no support for arrays this long.
+#[derive(Serialize, Deserialize)]
+struct SectionRepr {
+    biome: Biome,
+    blocks: BlocksRepr,
+}
+
+#[derive(Serialize, Deserialize)]
+enum BlocksRepr {
+    Uniform(BlockState),
+    Mixed(Vec<BlockState>),
+}
+
+impl From<Section> for SectionRepr {
+    fn from(section: Section) -> Self {
+        Self {
+            biome: section.biome,
+            blocks: match section.blocks {
+                Blocks::Uniform(state) => BlocksRepr::Uniform(state),
+                Blocks::Mixed(states) => BlocksRepr::Mixed(states.to_vec()),
+            },
+        }
+    }
+}
+
+impl TryFrom<SectionRepr> for Section {
+    type Error = String;
+
+    fn try_from(repr: SectionRepr) -> Result<Self, Self::Error> {
+        match repr.blocks {
+            BlocksRepr::Uniform(state) => Ok(Self::filled(state, repr.biome)),
+            BlocksRepr::Mixed(states) => {
+                let non_air = states.iter().filter(|state| **state != blocks::AIR).count();
+                let states: Box<[BlockState; BLOCKS_PER_SECTION]> = states
+                    .into_boxed_slice()
+                    .try_into()
+                    .map_err(|states: Box<[BlockState]>| {
+                        format!(
+                            "a section has {BLOCKS_PER_SECTION} blocks, not {}",
+                            states.len()
+                        )
+                    })?;
+                Ok(Self {
+                    blocks: Blocks::Mixed(states),
+                    non_air: non_air as u16,
+                    biome: repr.biome,
+                })
+            }
+        }
     }
 }
 

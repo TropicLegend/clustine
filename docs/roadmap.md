@@ -33,7 +33,7 @@ check with an unmodified 26.3 client.
 | 3 | Listener, handshake, status | Bot `ping`; real client lists the server | done; real client check pending |
 | 4 | Offline login, configuration, entering play, keep-alive | Bot idles 30 s; oracle | done |
 | 5 | Sections, palettes, flat generator, chunk packet | Property tests; chunk compared with the oracle's | done |
-| 6 | Region, edge/worker messages and links, tick runner | Simulation tests over both link kinds | |
+| 6 | Region, edge/worker messages and links, tick runner | Simulation tests over both link kinds | done |
 | 7 | Edge fan-out, chunk replica, chunk batches | Bot receives the expected chunks; real client sees the world | |
 | 8 | Movement, view updates, chunk loading and unloading | Bot walks 200 blocks; replay test | |
 | 9 | Other players: spawn, move, remove | Two bots see each other | |

@@ -1,0 +1,12 @@
+# A region tick must be a function of the region's state and its inputs.
+# See the "Determinism" section of docs/architecture.md.
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use BTreeMap" },
+    { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use BTreeSet" },
+]
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "time has to come in through the tick inputs" },
+    { path = "std::time::SystemTime::now", reason = "time has to come in through the tick inputs" },
+]

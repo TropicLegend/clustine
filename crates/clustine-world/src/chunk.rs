@@ -1,11 +1,12 @@
 //! A chunk column: a stack of sections.
 
 use clustine_data::{BlockState, DimensionType, blocks};
+use serde::{Deserialize, Serialize};
 
 use crate::{Biome, COLUMNS_PER_CHUNK, ChunkPos, SECTION_SIZE, Section};
 
 /// A 16×16 column of the world from the bottom of its dimension to the top.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chunk {
     /// The y coordinate of the lowest block.
     min_y: i32,

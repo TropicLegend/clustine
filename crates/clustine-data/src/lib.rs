@@ -6,6 +6,8 @@
 #[rustfmt::skip]
 mod generated;
 
+use serde::{Deserialize, Serialize};
+
 pub use generated::blocks::{BLOCK_STATE_COUNT, BLOCKS};
 pub use generated::dimension_types::DIMENSION_TYPES;
 pub use generated::entity_types::ENTITY_TYPES;
@@ -31,7 +33,7 @@ pub mod entity_types {
 
 /// One concrete combination of a block and its property values, identified by its
 /// numeric id.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct BlockState(pub u16);
 
 impl BlockState {
