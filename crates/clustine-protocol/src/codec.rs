@@ -196,6 +196,18 @@ impl Writer {
         }
     }
 
+    /// Writes a velocity in the compact form the protocol uses for it.
+    ///
+    /// Only a velocity of zero can be written so far, which takes a single byte.
+    ///
+    /// # Panics
+    ///
+    /// If `velocity` is not zero.
+    pub fn put_velocity(&mut self, velocity: [f64; 3]) {
+        assert_eq!(velocity, [0.0; 3], "only a zero velocity is supported");
+        self.put_u8(0);
+    }
+
     /// Writes a bit set, given as 64-bit words with bit 0 of the first word first.
     ///
     /// On the wire a bit set is a byte count followed by its bytes, lowest bits first,
@@ -399,6 +411,28 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Reads a velocity in the compact form the protocol uses for it: a single zero
+    /// byte, or three 15-bit components and a shared scale packed into six bytes, with
+    /// the scale continuing in a VarInt if it does not fit two bits.
+    pub fn velocity(&mut self) -> Result<[f64; 3], DecodeError> {
+        let lowest = self.u8()?;
+        if lowest == 0 {
+            return Ok([0.0; 3]);
+        }
+        let middle = self.u8()?;
+        let highest = u32::from_be_bytes(self.array_of()?);
+        let packed = u64::from(highest) << 16 | u64::from(middle) << 8 | u64::from(lowest);
+        let mut scale = u64::from(lowest & 3);
+        if lowest & 4 != 0 {
+            scale |= u64::from(self.var_int()? as u32) << 2;
+        }
+        let component = |shift: u32| {
+            let quantised = (packed >> shift & 32767).min(32766) as f64;
+            (quantised * 2.0 / 32766.0 - 1.0) * scale as f64
+        };
+        Ok([component(3), component(18), component(33)])
+    }
+
     /// Reads a bit set into 64-bit words, bit 0 of the first word first; see
     /// [`Writer::put_bit_set`].
     pub fn bit_set(&mut self) -> Result<Vec<u64>, DecodeError> {
@@ -566,6 +600,35 @@ mod tests {
     }
 
     #[test]
+    fn zero_velocity_is_one_byte() {
+        assert_eq!(written(|w| w.put_velocity([0.0; 3])), [0]);
+        assert_eq!(Reader::new(&[0]).velocity(), Ok([0.0; 3]));
+    }
+
+    #[test]
+    fn packed_velocity_is_six_bytes_plus_an_optional_scale() {
+        // Scale 1, all three components at the middle of their range: about zero.
+        let middle = 16383u64;
+        let packed = 1 | middle << 3 | middle << 18 | middle << 33;
+        let mut bytes = vec![packed as u8, (packed >> 8) as u8];
+        bytes.extend_from_slice(&((packed >> 16) as u32).to_be_bytes());
+        let mut reader = Reader::new(&bytes);
+        let velocity = reader.velocity().unwrap();
+        assert!(
+            velocity.iter().all(|component| component.abs() < 1e-4),
+            "{velocity:?}"
+        );
+        assert_eq!(reader.finish(), Ok(()));
+
+        // With the continuation bit, a VarInt extends the scale: 1 | 3 << 2 = 13.
+        bytes[0] |= 4;
+        bytes.push(3);
+        let mut reader = Reader::new(&bytes);
+        assert!(reader.velocity().is_ok());
+        assert_eq!(reader.finish(), Ok(()));
+    }
+
+    #[test]
     fn finish_reports_trailing_bytes() {
         let mut reader = Reader::new(&[1, 2, 3]);
         reader.u8().unwrap();
@@ -685,6 +748,7 @@ mod tests {
             let _ = Reader::new(&bytes).uuid();
             let _ = Reader::new(&bytes).position();
             let _ = Reader::new(&bytes).bit_set();
+            let _ = Reader::new(&bytes).velocity();
             let _ = Reader::new(&bytes).array(|r| r.string(max_length));
             let _ = Reader::new(&bytes).option(|r| r.array(Reader::var_long));
         }

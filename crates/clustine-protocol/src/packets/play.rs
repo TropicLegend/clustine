@@ -3,6 +3,9 @@
 //! Only the packets Clustine uses are modelled; the rest decode as `Unhandled`.
 
 use super::configuration::{Disconnect as ConfigurationDisconnect, empty_packet, keep_alive};
+use uuid::Uuid;
+
+use super::login::{MAX_NAME_LENGTH, ProfileProperty};
 use super::{Packet, packet_set};
 use crate::codec::{Decode, DecodeError, Encode, Position, Reader, Writer};
 use crate::nbt::Nbt;
@@ -723,6 +726,385 @@ impl Decode for UnloadChunk {
     }
 }
 
+/// Bits of [`PlayerInfoUpdate::actions`]. They decide which fields the entries carry.
+pub mod player_info {
+    pub const ADD_PLAYER: u8 = 0x01;
+    pub const INITIALIZE_CHAT: u8 = 0x02;
+    pub const UPDATE_GAME_MODE: u8 = 0x04;
+    pub const UPDATE_LISTED: u8 = 0x08;
+    pub const UPDATE_LATENCY: u8 = 0x10;
+    pub const UPDATE_DISPLAY_NAME: u8 = 0x20;
+    pub const UPDATE_LIST_ORDER: u8 = 0x40;
+    pub const UPDATE_HAT: u8 = 0x80;
+}
+
+/// The key a player signs chat messages with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatSession {
+    pub session_id: Uuid,
+    pub expires_at: i64,
+    pub public_key: Vec<u8>,
+    pub key_signature: Vec<u8>,
+}
+
+/// What a [`PlayerInfoUpdate`] says about one player. A field is present exactly when
+/// the packet's actions include the matching bit of [`player_info`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlayerInfoEntry {
+    pub uuid: Uuid,
+    /// Name and profile properties, with `ADD_PLAYER`.
+    pub profile: Option<(String, Vec<ProfileProperty>)>,
+    /// With `INITIALIZE_CHAT`; the inner value is absent for a player without a key.
+    pub chat_session: Option<Option<ChatSession>>,
+    pub game_mode: Option<i32>,
+    /// Whether the player appears in the player list.
+    pub listed: Option<bool>,
+    /// In milliseconds.
+    pub latency: Option<i32>,
+    /// With `UPDATE_DISPLAY_NAME`; the inner value is absent to show the plain name.
+    pub display_name: Option<Option<Nbt>>,
+    pub list_order: Option<i32>,
+    pub show_hat: Option<bool>,
+}
+
+/// Adds players to the client's list of known players or updates them.
+///
+/// A client only shows a player entity whose player it already knows from this packet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerInfoUpdate {
+    /// A combination of [`player_info`] bits.
+    pub actions: u8,
+    pub entries: Vec<PlayerInfoEntry>,
+}
+
+impl Packet for PlayerInfoUpdate {
+    const ID: i32 = clientbound::PLAYER_INFO_UPDATE;
+}
+
+impl Encode for PlayerInfoUpdate {
+    fn encode(&self, w: &mut Writer) {
+        // A missing field is written as its default, so that the packet stays well-formed.
+        w.put_u8(self.actions);
+        w.put_array(&self.entries, |w, entry| {
+            w.put_uuid(entry.uuid);
+            if self.actions & player_info::ADD_PLAYER != 0 {
+                let (name, properties) = entry.profile.clone().unwrap_or_default();
+                w.put_string(&name);
+                w.put_array(&properties, |w, property| property.encode(w));
+            }
+            if self.actions & player_info::INITIALIZE_CHAT != 0 {
+                let session = entry.chat_session.clone().flatten();
+                w.put_option(session.as_ref(), |w, session| {
+                    w.put_uuid(session.session_id);
+                    w.put_i64(session.expires_at);
+                    w.put_length(session.public_key.len());
+                    w.put_bytes(&session.public_key);
+                    w.put_length(session.key_signature.len());
+                    w.put_bytes(&session.key_signature);
+                });
+            }
+            if self.actions & player_info::UPDATE_GAME_MODE != 0 {
+                w.put_var_int(entry.game_mode.unwrap_or_default());
+            }
+            if self.actions & player_info::UPDATE_LISTED != 0 {
+                w.put_bool(entry.listed.unwrap_or_default());
+            }
+            if self.actions & player_info::UPDATE_LATENCY != 0 {
+                w.put_var_int(entry.latency.unwrap_or_default());
+            }
+            if self.actions & player_info::UPDATE_DISPLAY_NAME != 0 {
+                let name = entry.display_name.clone().flatten();
+                w.put_option(name.as_ref(), |w, name| w.put_nbt(name));
+            }
+            if self.actions & player_info::UPDATE_LIST_ORDER != 0 {
+                w.put_var_int(entry.list_order.unwrap_or_default());
+            }
+            if self.actions & player_info::UPDATE_HAT != 0 {
+                w.put_bool(entry.show_hat.unwrap_or_default());
+            }
+        });
+    }
+}
+
+impl Decode for PlayerInfoUpdate {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let actions = r.u8()?;
+        let has = |action: u8| actions & action != 0;
+        let entries = r.array(|r| {
+            let mut entry = PlayerInfoEntry {
+                uuid: r.uuid()?,
+                ..PlayerInfoEntry::default()
+            };
+            if has(player_info::ADD_PLAYER) {
+                let name = r.string(MAX_NAME_LENGTH)?;
+                entry.profile = Some((name, r.array(ProfileProperty::decode)?));
+            }
+            if has(player_info::INITIALIZE_CHAT) {
+                entry.chat_session = Some(r.option(|r| {
+                    Ok(ChatSession {
+                        session_id: r.uuid()?,
+                        expires_at: r.i64()?,
+                        public_key: {
+                            let length = r.length()?;
+                            r.bytes(length)?.to_vec()
+                        },
+                        key_signature: {
+                            let length = r.length()?;
+                            r.bytes(length)?.to_vec()
+                        },
+                    })
+                })?);
+            }
+            if has(player_info::UPDATE_GAME_MODE) {
+                entry.game_mode = Some(r.var_int()?);
+            }
+            if has(player_info::UPDATE_LISTED) {
+                entry.listed = Some(r.bool()?);
+            }
+            if has(player_info::UPDATE_LATENCY) {
+                entry.latency = Some(r.var_int()?);
+            }
+            if has(player_info::UPDATE_DISPLAY_NAME) {
+                entry.display_name = Some(r.option(Reader::nbt)?.flatten());
+            }
+            if has(player_info::UPDATE_LIST_ORDER) {
+                entry.list_order = Some(r.var_int()?);
+            }
+            if has(player_info::UPDATE_HAT) {
+                entry.show_hat = Some(r.bool()?);
+            }
+            Ok(entry)
+        })?;
+        Ok(Self { actions, entries })
+    }
+}
+
+/// Removes players from the client's list of known players.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerInfoRemove {
+    pub players: Vec<Uuid>,
+}
+
+impl Packet for PlayerInfoRemove {
+    const ID: i32 = clientbound::PLAYER_INFO_REMOVE;
+}
+
+impl Encode for PlayerInfoRemove {
+    fn encode(&self, w: &mut Writer) {
+        w.put_array(&self.players, |w, player| w.put_uuid(*player));
+    }
+}
+
+impl Decode for PlayerInfoRemove {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            players: r.array(Reader::uuid)?,
+        })
+    }
+}
+
+/// Turns an angle in degrees into the 1/256 turns the protocol uses for entities.
+pub fn angle(degrees: f32) -> u8 {
+    (degrees * 256.0 / 360.0).rem_euclid(256.0) as u8
+}
+
+/// Makes an entity appear.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnEntity {
+    pub entity_id: i32,
+    /// For a player, the UUID of their profile.
+    pub uuid: Uuid,
+    /// Id in the entity type registry.
+    pub kind: i32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub velocity: [f64; 3],
+    /// Angles in 1/256 turns; see [`angle`].
+    pub pitch: u8,
+    pub yaw: u8,
+    pub head_yaw: u8,
+    /// Meaning depends on the entity type; 0 for players.
+    pub data: i32,
+}
+
+impl Packet for SpawnEntity {
+    const ID: i32 = clientbound::ADD_ENTITY;
+}
+
+impl Encode for SpawnEntity {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_uuid(self.uuid);
+        w.put_var_int(self.kind);
+        for value in [self.x, self.y, self.z] {
+            w.put_f64(value);
+        }
+        w.put_velocity(self.velocity);
+        w.put_u8(self.pitch);
+        w.put_u8(self.yaw);
+        w.put_u8(self.head_yaw);
+        w.put_var_int(self.data);
+    }
+}
+
+impl Decode for SpawnEntity {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            uuid: r.uuid()?,
+            kind: r.var_int()?,
+            x: r.f64()?,
+            y: r.f64()?,
+            z: r.f64()?,
+            velocity: r.velocity()?,
+            pitch: r.u8()?,
+            yaw: r.u8()?,
+            head_yaw: r.u8()?,
+            data: r.var_int()?,
+        })
+    }
+}
+
+/// The way an entity gets to the position of a [`SyncEntityPosition`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum PositionPath {
+    /// Straight to the position.
+    Linear { x: f64, y: f64, z: f64 },
+    /// Through intermediate positions, each with the number of ticks it takes.
+    Stepped(Vec<(f64, f64, f64, i32)>),
+}
+
+impl PositionPath {
+    /// Where the entity ends up.
+    pub fn end(&self) -> Option<(f64, f64, f64)> {
+        match self {
+            Self::Linear { x, y, z } => Some((*x, *y, *z)),
+            Self::Stepped(steps) => steps.last().map(|(x, y, z, _)| (*x, *y, *z)),
+        }
+    }
+}
+
+/// Puts an entity at an absolute position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncEntityPosition {
+    pub entity_id: i32,
+    pub path: PositionPath,
+    /// In degrees.
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
+}
+
+impl Packet for SyncEntityPosition {
+    const ID: i32 = clientbound::ENTITY_POSITION_SYNC;
+}
+
+impl Encode for SyncEntityPosition {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        match &self.path {
+            PositionPath::Linear { x, y, z } => {
+                w.put_var_int(0);
+                for value in [x, y, z] {
+                    w.put_f64(*value);
+                }
+            }
+            PositionPath::Stepped(steps) => {
+                w.put_var_int(1);
+                w.put_array(steps, |w, (x, y, z, ticks)| {
+                    for value in [x, y, z] {
+                        w.put_f64(*value);
+                    }
+                    w.put_var_int(*ticks);
+                });
+            }
+        }
+        w.put_f32(self.yaw);
+        w.put_f32(self.pitch);
+        w.put_bool(self.on_ground);
+    }
+}
+
+impl Decode for SyncEntityPosition {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            path: match r.var_int()? {
+                0 => PositionPath::Linear {
+                    x: r.f64()?,
+                    y: r.f64()?,
+                    z: r.f64()?,
+                },
+                1 => PositionPath::Stepped(
+                    r.array(|r| Ok((r.f64()?, r.f64()?, r.f64()?, r.var_int()?)))?,
+                ),
+                other => {
+                    return Err(DecodeError::InvalidValue {
+                        what: "position path type",
+                        value: other.into(),
+                    });
+                }
+            },
+            yaw: r.f32()?,
+            pitch: r.f32()?,
+            on_ground: r.bool()?,
+        })
+    }
+}
+
+/// Turns an entity's head, which the position packets do not do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetHeadRotation {
+    pub entity_id: i32,
+    /// In 1/256 turns; see [`angle`].
+    pub head_yaw: u8,
+}
+
+impl Packet for SetHeadRotation {
+    const ID: i32 = clientbound::ROTATE_HEAD;
+}
+
+impl Encode for SetHeadRotation {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_u8(self.head_yaw);
+    }
+}
+
+impl Decode for SetHeadRotation {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            head_yaw: r.u8()?,
+        })
+    }
+}
+
+/// Makes entities disappear.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveEntities {
+    pub entity_ids: Vec<i32>,
+}
+
+impl Packet for RemoveEntities {
+    const ID: i32 = clientbound::REMOVE_ENTITIES;
+}
+
+impl Encode for RemoveEntities {
+    fn encode(&self, w: &mut Writer) {
+        w.put_array(&self.entity_ids, |w, id| w.put_var_int(*id));
+    }
+}
+
+impl Decode for RemoveEntities {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_ids: r.array(Reader::var_int)?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -752,6 +1134,12 @@ packet_set! {
         ChunkBatchStart,
         ChunkBatchFinished,
         UnloadChunk,
+        PlayerInfoUpdate,
+        PlayerInfoRemove,
+        SpawnEntity,
+        SyncEntityPosition,
+        SetHeadRotation,
+        RemoveEntities,
     }
 }
 
@@ -991,6 +1379,134 @@ mod tests {
             ClientboundPlay::decode,
             ClientboundPlay::UnloadChunk,
         );
+    }
+
+    #[test]
+    fn entity_packets_round_trip() {
+        use ClientboundPlay as Set;
+        let uuid = Uuid::from_u128(0x1234_5678_9ABC_DEF0);
+        assert_round_trip(
+            PlayerInfoUpdate {
+                actions: player_info::ADD_PLAYER
+                    | player_info::UPDATE_GAME_MODE
+                    | player_info::UPDATE_LISTED,
+                entries: vec![PlayerInfoEntry {
+                    uuid,
+                    profile: Some(("Notch".to_owned(), Vec::new())),
+                    game_mode: Some(game_mode::CREATIVE),
+                    listed: Some(true),
+                    ..PlayerInfoEntry::default()
+                }],
+            },
+            Set::decode,
+            Set::PlayerInfoUpdate,
+        );
+        // Every action at once, as the official server sends for a joining player.
+        assert_round_trip(
+            PlayerInfoUpdate {
+                actions: 0xFF,
+                entries: vec![PlayerInfoEntry {
+                    uuid,
+                    profile: Some((
+                        "Notch".to_owned(),
+                        vec![ProfileProperty {
+                            name: "textures".to_owned(),
+                            value: "abc".to_owned(),
+                            signature: Some("def".to_owned()),
+                        }],
+                    )),
+                    chat_session: Some(Some(ChatSession {
+                        session_id: uuid,
+                        expires_at: 99,
+                        public_key: vec![1, 2, 3],
+                        key_signature: vec![4, 5],
+                    })),
+                    game_mode: Some(game_mode::SURVIVAL),
+                    listed: Some(false),
+                    latency: Some(42),
+                    display_name: Some(Some(Nbt::String("The Notch".to_owned()))),
+                    list_order: Some(-1),
+                    show_hat: Some(true),
+                }],
+            },
+            Set::decode,
+            Set::PlayerInfoUpdate,
+        );
+        assert_round_trip(
+            PlayerInfoRemove {
+                players: vec![uuid],
+            },
+            Set::decode,
+            Set::PlayerInfoRemove,
+        );
+        assert_round_trip(
+            SpawnEntity {
+                entity_id: 300,
+                uuid,
+                kind: 159,
+                x: 0.5,
+                y: -60.0,
+                z: -7.25,
+                velocity: [0.0; 3],
+                pitch: angle(-45.0),
+                yaw: angle(90.0),
+                head_yaw: angle(90.0),
+                data: 0,
+            },
+            Set::decode,
+            Set::SpawnEntity,
+        );
+        assert_round_trip(
+            SyncEntityPosition {
+                entity_id: 300,
+                path: PositionPath::Linear {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                },
+                yaw: 90.0,
+                pitch: -45.0,
+                on_ground: true,
+            },
+            Set::decode,
+            Set::SyncEntityPosition,
+        );
+        assert_round_trip(
+            SyncEntityPosition {
+                entity_id: 300,
+                path: PositionPath::Stepped(vec![(1.0, 2.0, 3.0, 1), (4.0, 5.0, 6.0, 2)]),
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: false,
+            },
+            Set::decode,
+            Set::SyncEntityPosition,
+        );
+        assert_round_trip(
+            SetHeadRotation {
+                entity_id: 300,
+                head_yaw: 64,
+            },
+            Set::decode,
+            Set::SetHeadRotation,
+        );
+        assert_round_trip(
+            RemoveEntities {
+                entity_ids: vec![1, 300],
+            },
+            Set::decode,
+            Set::RemoveEntities,
+        );
+    }
+
+    #[test]
+    fn angles_wrap_into_a_byte() {
+        assert_eq!(angle(0.0), 0);
+        assert_eq!(angle(90.0), 64);
+        assert_eq!(angle(180.0), 128);
+        assert_eq!(angle(-90.0), 192);
+        assert_eq!(angle(360.0), 0);
+        assert_eq!(angle(450.0), 64);
     }
 
     #[test]

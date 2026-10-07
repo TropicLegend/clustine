@@ -186,7 +186,9 @@ async fn read_messages<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
-    use clustine_sim::api::{PlayerEvent, PlayerInput, PlayerJoin, Pose, RegionEvent};
+    use clustine_sim::api::{
+        EntityKind, EntityState, PlayerEvent, PlayerInput, PlayerJoin, Pose, RegionEvent,
+    };
     use clustine_world::{Biome, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
     use uuid::Uuid;
 
@@ -254,6 +256,21 @@ mod tests {
                 position: ChunkPos::new(3, -4),
                 tick: 99,
                 chunk: chunk(),
+                entities: vec![EntityState {
+                    entity: EntityId(5),
+                    kind: EntityKind::Player {
+                        player: player(),
+                        name: "Notch".to_owned(),
+                    },
+                    pose: Pose::at(Vec3::new(50.0, -60.0, -60.0)),
+                }],
+            },
+            WorkerToEdge::TickDelta {
+                tick: 100,
+                events: vec![RegionEvent::EntityRemoved {
+                    entity: EntityId(5),
+                    chunk: ChunkPos::new(3, -4),
+                }],
             },
         ];
 

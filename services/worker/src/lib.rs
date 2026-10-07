@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use clustine_rpc::link::WorkerEnd;
 use clustine_rpc::{EdgeToWorker, StoreReply, StoreRequest, WorkerToEdge};
-use clustine_sim::{Region, TickInputs};
+use clustine_sim::api::RegionEvent;
+use clustine_sim::{PlayerChange, Region, TickInputs};
 use clustine_world::ChunkPos;
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info};
@@ -70,6 +71,42 @@ impl RegionRunner {
         for position in output.chunk_requests {
             self.store.request(StoreRequest::Load { position });
         }
+        for (player, event) in output.player_events {
+            if !self.publish(WorkerToEdge::ToPlayer { player, event }) {
+                return false;
+            }
+        }
+
+        // The edge only hears about what happens in chunks it subscribed to.
+        let mut events = Vec::new();
+        for event in output.events {
+            let [current, previous] = event.chunks();
+            let visible_now = self.subscriptions.contains(&current);
+            let visible_before = self.subscriptions.contains(&previous);
+            match event {
+                // An entity coming in from where the edge could not see it is new to
+                // the edge, which needs to know what it is.
+                RegionEvent::EntityMoved { entity, .. } if visible_now && !visible_before => {
+                    if let Some(state) = self.region.entity(entity) {
+                        events.push(RegionEvent::EntitySpawned(state));
+                    }
+                }
+                event if visible_now || visible_before => events.push(event),
+                _ => {}
+            }
+        }
+        if !events.is_empty() {
+            let delta = WorkerToEdge::TickDelta {
+                tick: output.tick,
+                events,
+            };
+            if !self.publish(delta) {
+                return false;
+            }
+        }
+
+        // Snapshots come last and show the state after this tick, so they include what
+        // the events above already said. The edge has to cope with hearing it twice.
         let ready: Vec<_> = self
             .awaiting_snapshot
             .iter()
@@ -77,37 +114,18 @@ impl RegionRunner {
             .collect();
         for (position, chunk) in ready {
             self.awaiting_snapshot.remove(&position);
+            let entities = self
+                .region
+                .entities()
+                .filter(|entity| entity.chunk() == position)
+                .collect();
             let snapshot = WorkerToEdge::ChunkSnapshot {
                 position,
                 tick: output.tick,
                 chunk,
+                entities,
             };
             if !self.publish(snapshot) {
-                return false;
-            }
-        }
-        for (player, event) in output.player_events {
-            if !self.publish(WorkerToEdge::ToPlayer { player, event }) {
-                return false;
-            }
-        }
-        // The edge only hears about what happens in chunks it subscribed to.
-        let events: Vec<_> = output
-            .events
-            .into_iter()
-            .filter(|event| {
-                event
-                    .chunks()
-                    .iter()
-                    .any(|chunk| self.subscriptions.contains(chunk))
-            })
-            .collect();
-        if !events.is_empty() {
-            let delta = WorkerToEdge::TickDelta {
-                tick: output.tick,
-                events,
-            };
-            if !self.publish(delta) {
                 return false;
             }
         }
@@ -130,8 +148,12 @@ impl RegionRunner {
 
     fn accept(&mut self, message: EdgeToWorker, inputs: &mut TickInputs) {
         match message {
-            EdgeToWorker::PlayerJoin(join) => inputs.joins.push(join),
-            EdgeToWorker::PlayerLeave { player } => inputs.leaves.push(player),
+            EdgeToWorker::PlayerJoin(join) => {
+                inputs.player_changes.push(PlayerChange::Join(join));
+            }
+            EdgeToWorker::PlayerLeave { player } => {
+                inputs.player_changes.push(PlayerChange::Leave(player));
+            }
             EdgeToWorker::Input { player, input } => inputs.inputs.push((player, input)),
             EdgeToWorker::Subscribe { chunks } => {
                 for position in chunks {
@@ -203,7 +225,7 @@ mod tests {
 
     use clustine_rpc::link::{self, EdgeEnd};
     use clustine_sim::RegionConfig;
-    use clustine_sim::api::{PlayerEvent, PlayerInput, PlayerJoin, RegionEvent};
+    use clustine_sim::api::{EntityKind, PlayerEvent, PlayerInput, PlayerJoin, RegionEvent};
     use clustine_world::{EntityId, PlayerId, Vec3};
     use clustine_worldgen::FlatGenerator;
     use tokio::time::timeout;
@@ -271,6 +293,7 @@ mod tests {
 
             let mut spawned = None;
             let mut snapshots = BTreeSet::new();
+            let mut entities = Vec::new();
             while spawned.is_none() || snapshots.len() < 9 {
                 match next(&mut edge).await {
                     WorkerToEdge::ToPlayer { player: to, event } => {
@@ -278,12 +301,22 @@ mod tests {
                         spawned = Some(event);
                     }
                     WorkerToEdge::ChunkSnapshot {
-                        position, chunk, ..
+                        position,
+                        chunk,
+                        entities: in_chunk,
+                        ..
                     } => {
                         assert_eq!(chunk.surface_heights(), [4; 256]);
                         assert!(snapshots.insert(position), "{position:?} sent twice");
+                        // Entities come with the chunk they are in.
+                        assert!(in_chunk.iter().all(|entity| entity.chunk() == position));
+                        entities.extend(in_chunk);
                     }
-                    WorkerToEdge::TickDelta { .. } => panic!("nothing moved"),
+                    // Whether the join is also reported as an event depends on whether
+                    // the subscription arrived within the same tick.
+                    WorkerToEdge::TickDelta { events, .. } => {
+                        assert!(matches!(events[..], [RegionEvent::EntitySpawned(_)]));
+                    }
                 }
             }
             assert_eq!(
@@ -294,6 +327,9 @@ mod tests {
                 })
             );
             assert_eq!(snapshots, square(1).into_iter().collect());
+            // The player's own entity is in the snapshot of the chunk it stands in.
+            assert_eq!(entities.len(), 1);
+            assert_eq!(entities[0].entity, EntityId(1));
 
             worker.stop();
         }
@@ -344,6 +380,78 @@ mod tests {
 
         // From one chunk nobody subscribed to into another: nobody is told.
         edge.send(walk_to(40.0)).await.unwrap();
+        assert!(runner.step());
+        assert_eq!(edge.try_recv(), Ok(None));
+    }
+
+    /// An entity that walks into view from somewhere the edge was not watching is
+    /// introduced in full, because the edge has never heard of it.
+    #[tokio::test]
+    async fn an_entity_entering_the_subscribed_area_is_introduced() {
+        let (mut edge, worker_end) = link::in_process(256);
+        let mut runner = runner(worker_end);
+        let walk_to = |x: f64| EdgeToWorker::Input {
+            player: player(),
+            input: PlayerInput::Move {
+                position: Some(Vec3::new(x, -60.0, 0.5)),
+                rotation: None,
+                on_ground: true,
+            },
+        };
+
+        // The edge watches a chunk far from where the player enters the world.
+        edge.send(EdgeToWorker::PlayerJoin(PlayerJoin {
+            player: player(),
+            name: "Notch".to_owned(),
+        }))
+        .await
+        .unwrap();
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![ChunkPos::new(5, 0)],
+        })
+        .await
+        .unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 1
+        });
+        assert!(runner.step());
+        let mut seen = Vec::new();
+        while let Ok(Some(message)) = edge.try_recv() {
+            seen.push(message);
+        }
+        assert!(
+            seen.iter().all(|message| match message {
+                WorkerToEdge::ChunkSnapshot { entities, .. } => entities.is_empty(),
+                WorkerToEdge::ToPlayer { .. } => true,
+                WorkerToEdge::TickDelta { .. } => false,
+            }),
+            "{seen:?}"
+        );
+
+        edge.send(walk_to(85.0)).await.unwrap();
+        assert!(runner.step());
+        let Ok(Some(WorkerToEdge::TickDelta { events, .. })) = edge.try_recv() else {
+            panic!("expected a delta");
+        };
+        let [RegionEvent::EntitySpawned(state)] = &events[..] else {
+            panic!("expected the entity to be introduced, got {events:?}");
+        };
+        assert_eq!(state.entity, EntityId(1));
+        assert_eq!(state.pose.position.x, 85.0);
+        assert!(matches!(&state.kind, EntityKind::Player { name, .. } if name == "Notch"));
+
+        // Leaving the watched chunk again is an ordinary move, and the player leaving
+        // the game out there is none of the edge's business.
+        edge.send(walk_to(120.0)).await.unwrap();
+        assert!(runner.step());
+        assert!(matches!(
+            edge.try_recv(),
+            Ok(Some(WorkerToEdge::TickDelta { events, .. }))
+                if matches!(events[..], [RegionEvent::EntityMoved { .. }])
+        ));
+        edge.send(EdgeToWorker::PlayerLeave { player: player() })
+            .await
+            .unwrap();
         assert!(runner.step());
         assert_eq!(edge.try_recv(), Ok(None));
     }

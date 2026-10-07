@@ -36,7 +36,7 @@ check with an unmodified 26.3 client.
 | 6 | Region, edge/worker messages and links, tick runner | Simulation tests over both link kinds | done |
 | 7 | Edge fan-out, chunk replica, chunk batches | Bot receives the expected chunks; real client sees the world | done |
 | 8 | Movement, view updates, chunk loading and unloading | Bot walks 200 blocks; replay test | done |
-| 9 | Other players: spawn, move, remove | Two bots see each other | |
+| 9 | Other players: spawn, move, remove | Two bots see each other | done |
 | 10 | Breaking blocks | Bot A breaks, bot B observes; real client | |
 | 11 | Placing blocks from a fixed hotbar | Bot `place`; real client | |
 | 12 | Section format, manifests, local storage, checkpoint on shutdown | Restart test | |

@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_world::{Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 
-use crate::api::{PlayerEvent, PlayerInput, Pose, RegionEvent, TickInputs, TickOutput};
+use crate::api::{
+    EntityKind, EntityState, PlayerChange, PlayerEvent, PlayerInput, Pose, RegionEvent, TickInputs,
+    TickOutput,
+};
 
 /// What a region is created with.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +26,7 @@ const MAX_VERTICAL_COORDINATE: f64 = 2.0e7;
 #[derive(Debug, Clone, PartialEq)]
 struct Player {
     entity_id: EntityId,
+    name: String,
     pose: Pose,
     /// The chunk the player was in at the end of the previous tick, if the pose has
     /// changed since then.
@@ -82,6 +86,18 @@ impl Region {
         Some((player.entity_id, player.pose))
     }
 
+    /// All entities, in a fixed order.
+    pub fn entities(&self) -> impl Iterator<Item = EntityState> + '_ {
+        self.players
+            .iter()
+            .map(|(id, player)| player.entity_state(*id))
+    }
+
+    /// The entity with the given id, if it exists.
+    pub fn entity(&self, entity: EntityId) -> Option<EntityState> {
+        self.entities().find(|state| state.entity == entity)
+    }
+
     /// Advances the region by one tick.
     pub fn tick(&mut self, inputs: &TickInputs) -> TickOutput {
         self.tick += 1;
@@ -89,7 +105,66 @@ impl Region {
             tick: self.tick,
             ..TickOutput::default()
         };
+        self.update_chunks(inputs, &mut output);
 
+        for change in &inputs.player_changes {
+            match change {
+                PlayerChange::Join(join) => {
+                    if self.players.contains_key(&join.player) {
+                        // The edge admits each player once; a second join is its mistake.
+                        continue;
+                    }
+                    let entity_id = self.next_entity_id;
+                    self.next_entity_id = EntityId(entity_id.0 + 1);
+                    let player = Player {
+                        entity_id,
+                        name: join.name.clone(),
+                        pose: Pose::at(self.config.spawn),
+                        moved_from: None,
+                    };
+                    output.player_events.push((
+                        join.player,
+                        PlayerEvent::Spawned {
+                            entity_id,
+                            position: player.pose.position,
+                        },
+                    ));
+                    output
+                        .events
+                        .push(RegionEvent::EntitySpawned(player.entity_state(join.player)));
+                    self.players.insert(join.player, player);
+                }
+                PlayerChange::Leave(id) => {
+                    if let Some(player) = self.players.remove(id) {
+                        output.events.push(RegionEvent::EntityRemoved {
+                            entity: player.entity_id,
+                            chunk: player.entity_state(*id).chunk(),
+                        });
+                    }
+                }
+            }
+        }
+
+        for (player, input) in &inputs.inputs {
+            // Input can arrive for a player who has just left.
+            if let Some(player) = self.players.get_mut(player) {
+                player.apply(input);
+            }
+        }
+        for player in self.players.values_mut() {
+            if let Some(previous_chunk) = player.moved_from.take() {
+                output.events.push(RegionEvent::EntityMoved {
+                    entity: player.entity_id,
+                    pose: player.pose,
+                    previous_chunk,
+                });
+            }
+        }
+
+        output
+    }
+
+    fn update_chunks(&mut self, inputs: &TickInputs, output: &mut TickOutput) {
         // Additions come first so that a ticket released and taken again within one tick
         // keeps the chunk loaded.
         for position in &inputs.tickets_added {
@@ -116,56 +191,21 @@ impl Region {
                 output.chunk_requests.push(*position);
             }
         }
-
-        for player in &inputs.leaves {
-            self.players.remove(player);
-        }
-        for join in &inputs.joins {
-            if self.players.contains_key(&join.player) {
-                // The edge admits each player once; a second join is its mistake.
-                continue;
-            }
-            let entity_id = self.next_entity_id;
-            self.next_entity_id = EntityId(entity_id.0 + 1);
-            let position = self.config.spawn;
-            self.players.insert(
-                join.player,
-                Player {
-                    entity_id,
-                    pose: Pose::at(position),
-                    moved_from: None,
-                },
-            );
-            output.player_events.push((
-                join.player,
-                PlayerEvent::Spawned {
-                    entity_id,
-                    position,
-                },
-            ));
-        }
-
-        for (player, input) in &inputs.inputs {
-            // Input can arrive for a player who has just left.
-            if let Some(player) = self.players.get_mut(player) {
-                player.apply(input);
-            }
-        }
-        for player in self.players.values_mut() {
-            if let Some(previous_chunk) = player.moved_from.take() {
-                output.events.push(RegionEvent::EntityMoved {
-                    entity: player.entity_id,
-                    pose: player.pose,
-                    previous_chunk,
-                });
-            }
-        }
-
-        output
     }
 }
 
 impl Player {
+    fn entity_state(&self, id: PlayerId) -> EntityState {
+        EntityState {
+            entity: self.entity_id,
+            kind: EntityKind::Player {
+                player: id,
+                name: self.name.clone(),
+            },
+            pose: self.pose,
+        }
+    }
+
     fn apply(&mut self, input: &PlayerInput) {
         match input {
             PlayerInput::Move {
@@ -220,14 +260,16 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use clustine_world::{Biome, PlayerId};
+    use clustine_world::Biome;
 
     use super::*;
     use crate::api::PlayerJoin;
 
+    const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
+
     fn region() -> Region {
         Region::new(RegionConfig {
-            spawn: Vec3::new(0.5, -60.0, 0.5),
+            spawn: SPAWN,
             first_entity_id: EntityId(1),
         })
     }
@@ -236,10 +278,57 @@ mod tests {
         PlayerId(uuid::Uuid::from_u128(number))
     }
 
-    fn join(number: u128) -> PlayerJoin {
-        PlayerJoin {
+    fn join(number: u128) -> PlayerChange {
+        PlayerChange::Join(PlayerJoin {
             player: player(number),
             name: format!("Player{number}"),
+        })
+    }
+
+    fn leave(number: u128) -> PlayerChange {
+        PlayerChange::Leave(player(number))
+    }
+
+    fn changes(player_changes: Vec<PlayerChange>) -> TickInputs {
+        TickInputs {
+            player_changes,
+            ..TickInputs::default()
+        }
+    }
+
+    fn walk(number: u128, x: f64, z: f64) -> (PlayerId, PlayerInput) {
+        let input = PlayerInput::Move {
+            position: Some(Vec3::new(x, -60.0, z)),
+            rotation: None,
+            on_ground: true,
+        };
+        (player(number), input)
+    }
+
+    fn moves(inputs: Vec<(PlayerId, PlayerInput)>) -> TickInputs {
+        TickInputs {
+            inputs,
+            ..TickInputs::default()
+        }
+    }
+
+    /// A region that the given players have joined.
+    fn joined(numbers: &[u128]) -> Region {
+        let mut region = region();
+        region.tick(&changes(
+            numbers.iter().map(|number| join(*number)).collect(),
+        ));
+        region
+    }
+
+    fn state(number: u128, entity: i32, position: Vec3) -> EntityState {
+        EntityState {
+            entity: EntityId(entity),
+            kind: EntityKind::Player {
+                player: player(number),
+                name: format!("Player{number}"),
+            },
+            pose: Pose::at(position),
         }
     }
 
@@ -249,6 +338,21 @@ mod tests {
             .find(|dimension| dimension.name == "minecraft:overworld")
             .unwrap();
         Chunk::empty(overworld, Biome(0))
+    }
+
+    fn tickets(added: Vec<ChunkPos>, removed: Vec<ChunkPos>) -> TickInputs {
+        TickInputs {
+            tickets_added: added,
+            tickets_removed: removed,
+            ..TickInputs::default()
+        }
+    }
+
+    fn loaded(position: ChunkPos) -> TickInputs {
+        TickInputs {
+            chunks_loaded: vec![(position, chunk())],
+            ..TickInputs::default()
+        }
     }
 
     #[test]
@@ -261,75 +365,101 @@ mod tests {
     #[test]
     fn joining_players_spawn_with_distinct_entity_ids() {
         let mut region = region();
-        let output = region.tick(&TickInputs {
-            joins: vec![join(1), join(2)],
-            ..TickInputs::default()
-        });
-        let spawn = Vec3::new(0.5, -60.0, 0.5);
+        let output = region.tick(&changes(vec![join(1), join(2)]));
+        let spawned = |entity| PlayerEvent::Spawned {
+            entity_id: EntityId(entity),
+            position: SPAWN,
+        };
         assert_eq!(
             output.player_events,
+            [(player(1), spawned(1)), (player(2), spawned(2))]
+        );
+        assert_eq!(
+            output.events,
             [
-                (
-                    player(1),
-                    PlayerEvent::Spawned {
-                        entity_id: EntityId(1),
-                        position: spawn
-                    }
-                ),
-                (
-                    player(2),
-                    PlayerEvent::Spawned {
-                        entity_id: EntityId(2),
-                        position: spawn
-                    }
-                ),
+                RegionEvent::EntitySpawned(state(1, 1, SPAWN)),
+                RegionEvent::EntitySpawned(state(2, 2, SPAWN)),
             ]
         );
         assert_eq!(region.player_count(), 2);
         assert_eq!(
             region.player(player(2)),
-            Some((EntityId(2), Pose::at(spawn)))
+            Some((EntityId(2), Pose::at(SPAWN)))
         );
         assert_eq!(region.player(player(3)), None);
     }
 
     #[test]
-    fn entity_ids_are_not_reused_after_a_player_leaves() {
+    fn entities_can_be_listed_and_looked_up() {
+        let region = joined(&[1, 2]);
+        assert_eq!(
+            region.entities().collect::<Vec<_>>(),
+            [state(1, 1, SPAWN), state(2, 2, SPAWN)]
+        );
+        assert_eq!(region.entity(EntityId(2)), Some(state(2, 2, SPAWN)));
+        assert_eq!(region.entity(EntityId(3)), None);
+        assert_eq!(state(1, 1, SPAWN).chunk(), ChunkPos::new(0, 0));
+    }
+
+    #[test]
+    fn leaving_removes_the_entity_from_where_it_was() {
+        let mut region = joined(&[1]);
+        region.tick(&moves(vec![walk(1, 40.0, -1.0)]));
+        let output = region.tick(&changes(vec![leave(1)]));
+        assert_eq!(
+            output.events,
+            [RegionEvent::EntityRemoved {
+                entity: EntityId(1),
+                chunk: ChunkPos::new(2, -1),
+            }]
+        );
+        assert_eq!(region.player_count(), 0);
+        // Leaving twice, or without having joined, changes nothing.
+        assert!(
+            region
+                .tick(&changes(vec![leave(1), leave(9)]))
+                .events
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn leaving_and_coming_back_within_one_tick_gives_a_new_entity() {
+        let mut region = joined(&[1]);
+        let output = region.tick(&changes(vec![leave(1), join(1)]));
+        assert_eq!(
+            output.events,
+            [
+                RegionEvent::EntityRemoved {
+                    entity: EntityId(1),
+                    chunk: ChunkPos::new(0, 0),
+                },
+                RegionEvent::EntitySpawned(state(1, 2, SPAWN)),
+            ]
+        );
+        assert_eq!(region.player(player(1)).unwrap().0, EntityId(2));
+    }
+
+    /// The order of changes within a tick decides the outcome: this is the reverse of
+    /// the test above and must leave nobody behind.
+    #[test]
+    fn joining_and_leaving_within_one_tick_leaves_nobody() {
         let mut region = region();
-        region.tick(&TickInputs {
-            joins: vec![join(1)],
-            ..TickInputs::default()
-        });
-        let output = region.tick(&TickInputs {
-            leaves: vec![player(1)],
-            joins: vec![join(1)],
-            ..TickInputs::default()
-        });
-        assert!(matches!(
-            output.player_events[..],
-            [(
-                _,
-                PlayerEvent::Spawned {
-                    entity_id: EntityId(2),
-                    ..
-                }
-            )]
-        ));
-        assert_eq!(region.player_count(), 1);
+        let output = region.tick(&changes(vec![join(1), leave(1)]));
+        assert_eq!(region.player_count(), 0);
+        assert_eq!(output.events.len(), 2);
+
+        // The player can join again later.
+        let output = region.tick(&changes(vec![join(1)]));
+        assert_eq!(output.player_events.len(), 1);
     }
 
     #[test]
     fn a_second_join_of_the_same_player_is_ignored() {
-        let mut region = region();
-        region.tick(&TickInputs {
-            joins: vec![join(1)],
-            ..TickInputs::default()
-        });
-        let output = region.tick(&TickInputs {
-            joins: vec![join(1)],
-            ..TickInputs::default()
-        });
+        let mut region = joined(&[1]);
+        let output = region.tick(&changes(vec![join(1)]));
         assert!(output.player_events.is_empty());
+        assert!(output.events.is_empty());
         assert_eq!(region.player_count(), 1);
     }
 
@@ -338,57 +468,30 @@ mod tests {
         let mut region = region();
         let position = ChunkPos::new(2, -3);
 
-        let output = region.tick(&TickInputs {
-            tickets_added: vec![position],
-            ..TickInputs::default()
-        });
+        let output = region.tick(&tickets(vec![position], vec![]));
         assert_eq!(output.chunk_requests, [position]);
         assert!(region.chunk(position).is_none());
 
         // Not requested again while the answer is outstanding.
-        assert!(
-            region
-                .tick(&TickInputs::default())
-                .chunk_requests
-                .is_empty()
-        );
+        let output = region.tick(&TickInputs::default());
+        assert!(output.chunk_requests.is_empty());
 
-        region.tick(&TickInputs {
-            chunks_loaded: vec![(position, chunk())],
-            ..TickInputs::default()
-        });
+        region.tick(&loaded(position));
         assert_eq!(region.chunk(position), Some(&chunk()));
-        assert!(
-            region
-                .tick(&TickInputs::default())
-                .chunk_requests
-                .is_empty()
-        );
+        let output = region.tick(&TickInputs::default());
+        assert!(output.chunk_requests.is_empty());
     }
 
     #[test]
     fn a_chunk_stays_loaded_until_its_last_ticket_is_released() {
         let mut region = region();
         let position = ChunkPos::new(0, 0);
-        region.tick(&TickInputs {
-            tickets_added: vec![position, position],
-            ..TickInputs::default()
-        });
-        region.tick(&TickInputs {
-            chunks_loaded: vec![(position, chunk())],
-            ..TickInputs::default()
-        });
+        region.tick(&tickets(vec![position, position], vec![]));
+        region.tick(&loaded(position));
 
-        region.tick(&TickInputs {
-            tickets_removed: vec![position],
-            ..TickInputs::default()
-        });
+        region.tick(&tickets(vec![], vec![position]));
         assert_eq!(region.loaded_chunk_count(), 1);
-
-        region.tick(&TickInputs {
-            tickets_removed: vec![position],
-            ..TickInputs::default()
-        });
+        region.tick(&tickets(vec![], vec![position]));
         assert_eq!(region.loaded_chunk_count(), 0);
     }
 
@@ -396,20 +499,10 @@ mod tests {
     fn a_ticket_moved_within_one_tick_keeps_the_chunk() {
         let mut region = region();
         let position = ChunkPos::new(0, 0);
-        region.tick(&TickInputs {
-            tickets_added: vec![position],
-            ..TickInputs::default()
-        });
-        region.tick(&TickInputs {
-            chunks_loaded: vec![(position, chunk())],
-            ..TickInputs::default()
-        });
+        region.tick(&tickets(vec![position], vec![]));
+        region.tick(&loaded(position));
 
-        let output = region.tick(&TickInputs {
-            tickets_added: vec![position],
-            tickets_removed: vec![position],
-            ..TickInputs::default()
-        });
+        let output = region.tick(&tickets(vec![position], vec![position]));
         assert!(output.chunk_requests.is_empty());
         assert_eq!(region.loaded_chunk_count(), 1);
     }
@@ -418,63 +511,31 @@ mod tests {
     fn a_chunk_that_arrives_after_its_ticket_was_released_is_dropped() {
         let mut region = region();
         let position = ChunkPos::new(0, 0);
-        region.tick(&TickInputs {
-            tickets_added: vec![position],
-            ..TickInputs::default()
-        });
-        region.tick(&TickInputs {
-            tickets_removed: vec![position],
-            ..TickInputs::default()
-        });
-        region.tick(&TickInputs {
-            chunks_loaded: vec![(position, chunk())],
-            ..TickInputs::default()
-        });
+        region.tick(&tickets(vec![position], vec![]));
+        region.tick(&tickets(vec![], vec![position]));
+        region.tick(&loaded(position));
         assert_eq!(region.loaded_chunk_count(), 0);
 
         // Needing it again asks storage again.
-        let output = region.tick(&TickInputs {
-            tickets_added: vec![position],
-            ..TickInputs::default()
-        });
+        let output = region.tick(&tickets(vec![position], vec![]));
         assert_eq!(output.chunk_requests, [position]);
     }
 
     #[test]
     fn unrequested_chunks_are_ignored() {
         let mut region = region();
-        region.tick(&TickInputs {
-            chunks_loaded: vec![(ChunkPos::new(9, 9), chunk())],
-            ..TickInputs::default()
-        });
+        region.tick(&loaded(ChunkPos::new(9, 9)));
         assert_eq!(region.loaded_chunk_count(), 0);
-    }
-
-    fn walk(number: u128, x: f64, z: f64) -> (PlayerId, PlayerInput) {
-        let input = PlayerInput::Move {
-            position: Some(Vec3::new(x, -60.0, z)),
-            rotation: None,
-            on_ground: true,
-        };
-        (player(number), input)
-    }
-
-    fn joined(numbers: &[u128]) -> Region {
-        let mut region = region();
-        region.tick(&TickInputs {
-            joins: numbers.iter().map(|number| join(*number)).collect(),
-            ..TickInputs::default()
-        });
-        region
     }
 
     #[test]
     fn moves_within_a_tick_are_reported_once_with_the_final_pose() {
         let mut region = joined(&[1]);
-        let output = region.tick(&TickInputs {
-            inputs: vec![walk(1, 1.0, 0.5), walk(1, 2.0, 0.5), walk(1, 17.0, 0.5)],
-            ..TickInputs::default()
-        });
+        let output = region.tick(&moves(vec![
+            walk(1, 1.0, 0.5),
+            walk(1, 2.0, 0.5),
+            walk(1, 17.0, 0.5),
+        ]));
         let pose = Pose {
             position: Vec3::new(17.0, -60.0, 0.5),
             yaw: 0.0,
@@ -507,35 +568,27 @@ mod tests {
             rotation: Some((90.0, -30.0)),
             on_ground: true,
         };
-        let output = region.tick(&TickInputs {
-            inputs: vec![(player(1), turn.clone())],
-            ..TickInputs::default()
-        });
+        let output = region.tick(&moves(vec![(player(1), turn.clone())]));
         let (_, pose) = region.player(player(1)).unwrap();
-        assert_eq!(pose.position, Vec3::new(0.5, -60.0, 0.5));
+        assert_eq!(pose.position, SPAWN);
         assert_eq!((pose.yaw, pose.pitch, pose.on_ground), (90.0, -30.0, true));
         assert_eq!(output.events.len(), 1);
 
         // Repeating the same input changes nothing, so nothing is reported.
-        let output = region.tick(&TickInputs {
-            inputs: vec![(player(1), turn)],
-            ..TickInputs::default()
-        });
+        let output = region.tick(&moves(vec![(player(1), turn)]));
         assert!(output.events.is_empty());
     }
 
     #[test]
     fn moves_are_reported_in_a_fixed_order() {
         let mut region = joined(&[1, 2]);
-        let output = region.tick(&TickInputs {
-            inputs: vec![walk(2, 5.0, 5.0), walk(1, 3.0, 3.0)],
-            ..TickInputs::default()
-        });
+        let output = region.tick(&moves(vec![walk(2, 5.0, 5.0), walk(1, 3.0, 3.0)]));
         let entities: Vec<_> = output
             .events
             .iter()
             .map(|event| match event {
                 RegionEvent::EntityMoved { entity, .. } => *entity,
+                other => panic!("unexpected event {other:?}"),
             })
             .collect();
         assert_eq!(entities, [EntityId(1), EntityId(2)]);
@@ -544,10 +597,7 @@ mod tests {
     #[test]
     fn positions_outside_the_world_are_pulled_back() {
         let mut region = joined(&[1]);
-        region.tick(&TickInputs {
-            inputs: vec![walk(1, 1e9, -1e9)],
-            ..TickInputs::default()
-        });
+        region.tick(&moves(vec![walk(1, 1e9, -1e9)]));
         let (_, pose) = region.player(player(1)).unwrap();
         assert_eq!(pose.position, Vec3::new(3.0e7, -60.0, -3.0e7));
     }
@@ -557,10 +607,7 @@ mod tests {
         let mut region = joined(&[1]);
         let before = region.player(player(1));
         for bad in [f64::NAN, f64::INFINITY] {
-            let output = region.tick(&TickInputs {
-                inputs: vec![walk(1, bad, 0.0), walk(1, 0.0, bad)],
-                ..TickInputs::default()
-            });
+            let output = region.tick(&moves(vec![walk(1, bad, 0.0), walk(1, 0.0, bad)]));
             assert!(output.events.is_empty());
         }
         let spin = PlayerInput::Move {
@@ -568,10 +615,7 @@ mod tests {
             rotation: Some((f32::NAN, 0.0)),
             on_ground: false,
         };
-        region.tick(&TickInputs {
-            inputs: vec![(player(1), spin)],
-            ..TickInputs::default()
-        });
+        region.tick(&moves(vec![(player(1), spin)]));
         assert_eq!(region.player(player(1)), before);
     }
 
@@ -579,11 +623,16 @@ mod tests {
     fn input_for_an_absent_player_is_ignored() {
         let mut region = joined(&[1]);
         let output = region.tick(&TickInputs {
-            leaves: vec![player(1)],
+            player_changes: vec![leave(1)],
             inputs: vec![walk(1, 9.0, 9.0), walk(7, 1.0, 1.0)],
             ..TickInputs::default()
         });
-        assert!(output.events.is_empty());
+        assert_eq!(
+            output.events.len(),
+            1,
+            "only the removal: {:?}",
+            output.events
+        );
     }
 
     /// The same inputs always lead to the same region and the same outputs: a recorded
@@ -605,8 +654,8 @@ mod tests {
             for _ in 0..random(4) {
                 let number = u128::from(random(6));
                 match random(6) {
-                    0 => inputs.joins.push(join(number)),
-                    1 => inputs.leaves.push(player(number)),
+                    0 => inputs.player_changes.push(join(number)),
+                    1 => inputs.player_changes.push(leave(number)),
                     2 => inputs
                         .tickets_added
                         .push(ChunkPos::new(random(4) as i32, 0)),
@@ -634,34 +683,13 @@ mod tests {
         let (region, outputs) = replay();
         assert_eq!(replay(), (region.clone(), outputs.clone()));
         // The run did something worth comparing.
-        assert!(outputs.iter().any(|output| !output.events.is_empty()));
+        let moved = |event: &RegionEvent| matches!(event, RegionEvent::EntityMoved { .. });
+        assert!(outputs.iter().any(|output| output.events.iter().any(moved)));
         assert!(
             outputs
                 .iter()
                 .any(|output| !output.chunk_requests.is_empty())
         );
-        assert!(region.tick_number() == 300);
-    }
-
-    #[test]
-    fn equal_inputs_give_equal_regions() {
-        let inputs = [
-            TickInputs {
-                joins: vec![join(1), join(2)],
-                tickets_added: vec![ChunkPos::new(0, 0), ChunkPos::new(1, 0)],
-                ..TickInputs::default()
-            },
-            TickInputs {
-                chunks_loaded: vec![(ChunkPos::new(1, 0), chunk())],
-                leaves: vec![player(1)],
-                ..TickInputs::default()
-            },
-        ];
-        let run = || {
-            let mut region = region();
-            let outputs: Vec<_> = inputs.iter().map(|inputs| region.tick(inputs)).collect();
-            (region, outputs)
-        };
-        assert_eq!(run(), run());
+        assert_eq!(region.tick_number(), 300);
     }
 }

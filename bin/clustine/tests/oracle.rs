@@ -139,3 +139,60 @@ async fn walking_matches_the_official_server() {
 
     server.stop().await;
 }
+
+/// Two players see each other appear and disappear the same way on both servers.
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn players_appear_like_on_the_official_server() {
+    let oracle = Oracle::start(false).await.unwrap();
+    let (server, address) = start().await;
+    let patience = Duration::from_secs(30);
+
+    for address in [oracle.address(), address.as_str()] {
+        let mut alice = Bot::join(address, "Alice").await.unwrap();
+        let mut bob = Bot::join(address, "Bob").await.unwrap();
+
+        for (watcher, name) in [(&mut alice, "Bob"), (&mut bob, "Alice")] {
+            watcher
+                .wait_until(patience, |bot| bot.seen_player(name).is_some())
+                .await
+                .unwrap_or_else(|error| panic!("{address}: {name} never appeared: {error}"));
+        }
+        for (watcher, other) in [(&alice, &bob), (&bob, &alice)] {
+            let name = &other.info.profile.name;
+            let seen = watcher.seen_player(name).unwrap();
+            // The entity is the other player: their profile, their entity id, a player.
+            assert_eq!(seen.uuid, other.info.profile.uuid, "{address}");
+            assert_eq!(seen.kind, clustine_data::entity_types::PLAYER, "{address}");
+            assert!(
+                watcher.entities.contains_key(&other.info.login.entity_id),
+                "{address}"
+            );
+            // It appears where the other player was placed.
+            let (x, y, z) = seen.position;
+            let (ox, oy, oz) = other.location;
+            assert!(
+                (x - ox).abs() < 0.01 && (y - oy).abs() < 0.01 && (z - oz).abs() < 0.01,
+                "{address}: {name} seen at {:?} but placed at {:?}",
+                seen.position,
+                other.location
+            );
+            // Both players are in the list, and one's own entity is never sent.
+            assert_eq!(watcher.player_list.len(), 2, "{address}");
+            assert!(
+                !watcher.entities.contains_key(&watcher.info.login.entity_id),
+                "{address}"
+            );
+        }
+
+        drop(bob);
+        alice
+            .wait_until(patience, |bot| {
+                bot.seen_player("Bob").is_none() && bot.player_list.len() == 1
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{address}: Bob never disappeared: {error}"));
+    }
+
+    server.stop().await;
+}

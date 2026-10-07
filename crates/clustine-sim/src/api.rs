@@ -37,6 +37,34 @@ pub struct PlayerJoin {
     pub name: String,
 }
 
+/// A player entering or leaving the region.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PlayerChange {
+    Join(PlayerJoin),
+    Leave(PlayerId),
+}
+
+/// What kind of thing an entity is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EntityKind {
+    Player { player: PlayerId, name: String },
+}
+
+/// Everything needed to show an entity to someone who has not seen it before.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntityState {
+    pub entity: EntityId,
+    pub kind: EntityKind,
+    pub pose: Pose,
+}
+
+impl EntityState {
+    /// The chunk the entity is in.
+    pub fn chunk(&self) -> ChunkPos {
+        ChunkPos::containing(self.pose.position.x, self.pose.position.z)
+    }
+}
+
 /// Something a player did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlayerInput {
@@ -53,8 +81,9 @@ pub enum PlayerInput {
 /// Everything that happened since the previous tick.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickInputs {
-    pub joins: Vec<PlayerJoin>,
-    pub leaves: Vec<PlayerId>,
+    /// Players entering and leaving, in the order it happened. The order matters: a
+    /// player can leave and come back, or join and leave, within one tick.
+    pub player_changes: Vec<PlayerChange>,
     /// What players did, in the order it arrived.
     pub inputs: Vec<(PlayerId, PlayerInput)>,
     /// Chunks someone started to need. A chunk stays loaded while it has tickets.
@@ -75,6 +104,10 @@ pub enum PlayerEvent {
 /// Something that happened in the region and concerns everyone who can see it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RegionEvent {
+    /// An entity has come into existence.
+    EntitySpawned(EntityState),
+    /// An entity has ceased to exist. `chunk` is where it was last.
+    EntityRemoved { entity: EntityId, chunk: ChunkPos },
     /// An entity has a new pose. At most one per entity and tick.
     EntityMoved {
         entity: EntityId,
@@ -89,6 +122,8 @@ impl RegionEvent {
     /// The chunks from which the event can be observed.
     pub fn chunks(&self) -> [ChunkPos; 2] {
         match self {
+            Self::EntitySpawned(state) => [state.chunk(); 2],
+            Self::EntityRemoved { chunk, .. } => [*chunk; 2],
             Self::EntityMoved {
                 pose,
                 previous_chunk,

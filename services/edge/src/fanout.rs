@@ -10,16 +10,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use bytes::Bytes;
-use clustine_data::synced_registry;
+use clustine_data::{entity_types, synced_registry};
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     ChunkBatchFinished, ChunkBatchStart, Disconnect, GameEvent, Login, PlayerAbilities,
-    SetCenterChunk, SynchronizePlayerPosition, UnloadChunk, game_event, game_mode,
+    PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities,
+    SetCenterChunk, SetHeadRotation, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition,
+    UnloadChunk, angle, game_event, game_mode, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_rpc::link::EdgeEnd;
 use clustine_rpc::{EdgeToWorker, WorkerToEdge};
-use clustine_sim::api::{PlayerEvent, PlayerJoin, RegionEvent};
+use clustine_sim::api::{EntityKind, EntityState, PlayerEvent, PlayerJoin, RegionEvent};
 use clustine_world::{Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -109,6 +111,11 @@ struct PlayerView {
     pending: BTreeSet<ChunkPos>,
     /// Chunks in view the client has been sent.
     sent: BTreeSet<ChunkPos>,
+    /// Entities the client has been shown.
+    visible: BTreeSet<EntityId>,
+    /// Players the client has in its player list. A client only shows the entity of a
+    /// player it has in that list.
+    listed: BTreeSet<PlayerId>,
     /// Whether a batch has been sent that the client has not confirmed.
     batch_outstanding: bool,
     batch_size: usize,
@@ -122,6 +129,8 @@ pub(crate) struct Fanout {
     /// Which player each player entity of this edge belongs to.
     entity_owners: BTreeMap<EntityId, PlayerId>,
     replica: BTreeMap<ChunkPos, ReplicaChunk>,
+    /// The entities in the chunks of the replica.
+    entities: BTreeMap<EntityId, EntityState>,
 }
 
 impl Fanout {
@@ -137,6 +146,7 @@ impl Fanout {
             players: BTreeMap::new(),
             entity_owners: BTreeMap::new(),
             replica: BTreeMap::new(),
+            entities: BTreeMap::new(),
         }
     }
 
@@ -197,6 +207,8 @@ impl Fanout {
                         center: ChunkPos::new(0, 0),
                         pending: BTreeSet::new(),
                         sent: BTreeSet::new(),
+                        visible: BTreeSet::new(),
+                        listed: BTreeSet::new(),
                         batch_outstanding: false,
                         batch_size: INITIAL_BATCH_SIZE,
                     },
@@ -245,8 +257,16 @@ impl Fanout {
                     },
             } => self.spawn_player(player, entity_id, position).await,
             WorkerToEdge::ChunkSnapshot {
-                position, chunk, ..
-            } => self.store_chunk(position, &chunk).await,
+                position,
+                chunk,
+                entities,
+                ..
+            } => {
+                self.store_chunk(position, &chunk).await;
+                for state in entities {
+                    self.upsert_entity(state).await;
+                }
+            }
             WorkerToEdge::TickDelta { events, .. } => {
                 for event in events {
                     self.handle_event(event).await;
@@ -257,13 +277,73 @@ impl Fanout {
 
     async fn handle_event(&mut self, event: RegionEvent) {
         match event {
+            RegionEvent::EntitySpawned(state) => self.upsert_entity(state).await,
+            RegionEvent::EntityRemoved { entity, .. } => self.remove_entity(entity).await,
             RegionEvent::EntityMoved { entity, pose, .. } => {
+                // A move of an entity the edge has not been told about yet is covered by
+                // the snapshot of the chunk it is in, which is still on its way.
+                if let Some(state) = self.entities.get_mut(&entity) {
+                    state.pose = pose;
+                    self.refresh_entity(entity, true).await;
+                }
                 // The view of a player follows where the worker says the player is.
                 if let Some(player) = self.entity_owners.get(&entity).copied() {
                     let center = ChunkPos::containing(pose.position.x, pose.position.z);
                     self.move_view(player, center).await;
                 }
             }
+        }
+    }
+
+    /// Takes in an entity the worker described, which may be new or already known.
+    async fn upsert_entity(&mut self, state: EntityState) {
+        if !self.replica.contains_key(&state.chunk()) {
+            // Nobody watches where it is; this can be a snapshot that arrives late.
+            return;
+        }
+        let entity = state.entity;
+        let moved = self
+            .entities
+            .insert(entity, state.clone())
+            .is_some_and(|known| known.pose != state.pose);
+        self.refresh_entity(entity, moved).await;
+    }
+
+    /// Brings every player's client up to date about one entity: shows it to those who
+    /// have it in view, moves it if `moved`, and hides it from those who lost sight of it.
+    async fn refresh_entity(&mut self, entity: EntityId, moved: bool) {
+        let Some(state) = self.entities.get(&entity).cloned() else {
+            return;
+        };
+        let mut outgoing = Vec::new();
+        for (player, view) in &mut self.players {
+            let packets = view.update_visibility(&state, moved);
+            if !packets.is_empty() {
+                outgoing.push((*player, packets));
+            }
+        }
+        if !self.replica.contains_key(&state.chunk()) {
+            // It went where this edge does not watch.
+            self.entities.remove(&entity);
+        }
+        for (player, packets) in outgoing {
+            self.send_to_player(player, packets).await;
+        }
+    }
+
+    /// Forgets an entity that no longer exists and hides it from everyone who saw it.
+    async fn remove_entity(&mut self, entity: EntityId) {
+        self.entities.remove(&entity);
+        let viewers: Vec<_> = self
+            .players
+            .iter_mut()
+            .filter_map(|(player, view)| view.visible.remove(&entity).then_some(*player))
+            .collect();
+        for player in viewers {
+            let packet = encoded(&RemoveEntities {
+                entity_ids: vec![entity.0],
+            });
+            self.send_to_player(player, [packet]).await;
         }
     }
 
@@ -305,10 +385,37 @@ impl Fanout {
                 value: 0.0,
             }),
         ];
-        if self.send_to_player(player, entered).await {
-            let center = ChunkPos::containing(position.x, position.z);
-            self.move_view(player, center).await;
+        if !self.send_to_player(player, entered).await {
+            return;
         }
+
+        // Everyone in the world is in everyone's player list, including their own.
+        let in_world: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.entity.is_some())
+            .map(|(id, view)| (*id, view.name.clone()))
+            .collect();
+        let newcomer = in_world
+            .iter()
+            .find(|(id, _)| *id == player)
+            .cloned()
+            .expect("the player was just placed");
+        for (other, _) in &in_world {
+            let additions: &[(PlayerId, String)] = if *other == player {
+                &in_world
+            } else {
+                std::slice::from_ref(&newcomer)
+            };
+            if let Some(view) = self.players.get_mut(other) {
+                view.listed.extend(additions.iter().map(|(id, _)| *id));
+            }
+            let packet = encoded(&player_list_additions(additions));
+            self.send_to_player(*other, [packet]).await;
+        }
+
+        let center = ChunkPos::containing(position.x, position.z);
+        self.move_view(player, center).await;
     }
 
     /// Centres a player's view on `center`: tells the client, starts sending the chunks
@@ -361,6 +468,13 @@ impl Fanout {
         }
         view.center = center;
         view.wanted = wanted;
+        // Entities in chunks that came into view appear, those left behind disappear.
+        for state in self.entities.values() {
+            packets.extend(view.update_visibility(state, false));
+        }
+        let replica = &self.replica;
+        self.entities
+            .retain(|_, state| replica.contains_key(&state.chunk()));
 
         if !subscribe.is_empty() {
             self.send_to_worker(EdgeToWorker::Subscribe { chunks: subscribe })
@@ -466,6 +580,23 @@ impl Fanout {
         if let Some(entity) = view.entity {
             self.entity_owners.remove(&entity);
         }
+        // Their entity disappears when the worker reports it gone; the entry in the
+        // player list is this edge's to remove.
+        let listing: Vec<_> = self
+            .players
+            .iter_mut()
+            .filter_map(|(other, view)| view.listed.remove(&player).then_some(*other))
+            .collect();
+        for other in listing {
+            let packet = encoded(&PlayerInfoRemove {
+                players: vec![player.0],
+            });
+            // A viewer that cannot be reached is removed by this very function, which
+            // cannot be awaited from itself; its turn comes with its next packet.
+            if let Some(other) = self.players.get(&other) {
+                let _ = other.outbound.try_send(packet);
+            }
+        }
         let mut unsubscribe = Vec::new();
         for position in &view.wanted {
             let chunk = self
@@ -478,6 +609,9 @@ impl Fanout {
                 unsubscribe.push(*position);
             }
         }
+        let replica = &self.replica;
+        self.entities
+            .retain(|_, state| replica.contains_key(&state.chunk()));
         if !unsubscribe.is_empty()
             && !self
                 .send_to_worker(EdgeToWorker::Unsubscribe {
@@ -501,6 +635,109 @@ impl Fanout {
     async fn send_to_worker(&mut self, message: EdgeToWorker) -> bool {
         self.link.send(message).await.is_ok()
     }
+}
+
+impl PlayerView {
+    /// Works out what the client has to be told about `state` and records it: the
+    /// packets that show the entity if it came into view, move it if `moved`, or hide it
+    /// if it left the view. A player is never shown their own entity; the client
+    /// creates that itself.
+    fn update_visibility(&mut self, state: &EntityState, moved: bool) -> Vec<Bytes> {
+        let in_world = self.entity.is_some();
+        let own = self.entity == Some(state.entity);
+        let in_view = in_world && !own && self.wanted.contains(&state.chunk());
+        let shown = self.visible.contains(&state.entity);
+        match (in_view, shown) {
+            (true, false) => {
+                self.visible.insert(state.entity);
+                let mut packets = Vec::new();
+                let EntityKind::Player { player, name } = &state.kind;
+                if self.listed.insert(*player) {
+                    let addition = [(*player, name.clone())];
+                    packets.push(encoded(&player_list_additions(&addition)));
+                }
+                packets.extend(spawn_packets(state));
+                packets
+            }
+            (true, true) if moved => move_packets(state).into(),
+            (false, true) => {
+                self.visible.remove(&state.entity);
+                vec![encoded(&RemoveEntities {
+                    entity_ids: vec![state.entity.0],
+                })]
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Adds players to a client's player list.
+fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
+    PlayerInfoUpdate {
+        actions: player_info::ADD_PLAYER
+            | player_info::UPDATE_GAME_MODE
+            | player_info::UPDATE_LISTED,
+        entries: players
+            .iter()
+            .map(|(player, name)| PlayerInfoEntry {
+                uuid: player.0,
+                profile: Some((name.clone(), Vec::new())),
+                game_mode: Some(game_mode::CREATIVE),
+                listed: Some(true),
+                ..PlayerInfoEntry::default()
+            })
+            .collect(),
+    }
+}
+
+/// The packets that make an entity appear on a client.
+fn spawn_packets(state: &EntityState) -> [Bytes; 2] {
+    let EntityKind::Player { player, .. } = &state.kind;
+    let position = state.pose.position;
+    [
+        encoded(&SpawnEntity {
+            entity_id: state.entity.0,
+            uuid: player.0,
+            kind: entity_types::PLAYER,
+            x: position.x,
+            y: position.y,
+            z: position.z,
+            velocity: [0.0; 3],
+            pitch: angle(state.pose.pitch),
+            yaw: angle(state.pose.yaw),
+            head_yaw: angle(state.pose.yaw),
+            data: 0,
+        }),
+        head_rotation(state),
+    ]
+}
+
+/// The packets that put an entity a client already shows where it is now.
+fn move_packets(state: &EntityState) -> [Bytes; 2] {
+    let position = state.pose.position;
+    [
+        encoded(&SyncEntityPosition {
+            entity_id: state.entity.0,
+            path: PositionPath::Linear {
+                x: position.x,
+                y: position.y,
+                z: position.z,
+            },
+            yaw: state.pose.yaw,
+            pitch: state.pose.pitch,
+            on_ground: state.pose.on_ground,
+        }),
+        head_rotation(state),
+    ]
+}
+
+/// The head of a player looks where the player looks; the position packets only turn
+/// the body.
+fn head_rotation(state: &EntityState) -> Bytes {
+    encoded(&SetHeadRotation {
+        entity_id: state.entity.0,
+        head_yaw: angle(state.pose.yaw),
+    })
 }
 
 fn encoded<P: Packet>(packet: &P) -> Bytes {

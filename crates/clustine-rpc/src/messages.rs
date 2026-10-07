@@ -1,6 +1,6 @@
 //! The messages services exchange.
 
-use clustine_sim::api::{PlayerEvent, PlayerInput, PlayerJoin, RegionEvent};
+use clustine_sim::api::{EntityState, PlayerEvent, PlayerInput, PlayerJoin, RegionEvent};
 use clustine_world::{Chunk, ChunkPos, PlayerId};
 use serde::{Deserialize, Serialize};
 
@@ -27,11 +27,13 @@ pub enum EdgeToWorker {
 /// What a worker tells an edge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorkerToEdge {
-    /// The state of a subscribed chunk after `tick`. Sent once per subscription.
+    /// The state of a subscribed chunk after `tick`, with the entities that are in it.
+    /// Sent once per subscription; later changes follow as [`WorkerToEdge::TickDelta`].
     ChunkSnapshot {
         position: ChunkPos,
         tick: u64,
         chunk: Chunk,
+        entities: Vec<EntityState>,
     },
     /// What happened during `tick` in the chunks the edge is subscribed to.
     TickDelta { tick: u64, events: Vec<RegionEvent> },

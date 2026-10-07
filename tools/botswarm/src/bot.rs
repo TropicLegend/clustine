@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use clustine_data::{BLOCK_STATE_COUNT, DIMENSION_TYPES, DimensionType, GAME_VERSION};
+use clustine_data::{
+    BLOCK_STATE_COUNT, DIMENSION_TYPES, DimensionType, GAME_VERSION, entity_types,
+};
 use clustine_protocol::chunk::{PaletteKind, SectionData, decode_sections};
 use clustine_protocol::codec::Reader;
 use clustine_protocol::packet_ids;
@@ -125,6 +127,35 @@ impl Default for Behaviour {
     }
 }
 
+/// An entity as the bot last heard of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeenEntity {
+    /// For a player, the UUID of their profile.
+    pub uuid: Uuid,
+    /// Id in the entity type registry.
+    pub kind: i32,
+    /// From the spawn or the latest absolute position. Relative moves, which the
+    /// official server uses for small steps, are not followed.
+    pub position: (f64, f64, f64),
+    /// In degrees.
+    pub yaw: f32,
+    /// In 1/256 turns.
+    pub head_yaw: u8,
+    /// How many absolute positions the server has sent since the spawn.
+    pub position_syncs: u32,
+}
+
+impl Bot {
+    /// The entity of the player called `name`, if the bot currently sees it.
+    pub fn seen_player(&self, name: &str) -> Option<&SeenEntity> {
+        let (uuid, _) = self
+            .player_list
+            .iter()
+            .find(|(_, listed)| *listed == name)?;
+        self.entities.values().find(|entity| entity.uuid == *uuid)
+    }
+}
+
 /// A bot in the play state.
 pub struct Bot {
     connection: Connection,
@@ -136,6 +167,10 @@ pub struct Bot {
     /// The chunks the client currently holds, by chunk x and z: those the server sent
     /// and has not told the client to forget.
     pub chunks: BTreeMap<(i32, i32), LevelChunkWithLight>,
+    /// The server's player list as the client knows it: names by profile UUID.
+    pub player_list: BTreeMap<Uuid, String>,
+    /// The entities the server has shown the bot and not removed again, by entity id.
+    pub entities: BTreeMap<i32, SeenEntity>,
     /// Whether the bot has told the server that it left the loading screen.
     loaded: bool,
     /// The chunk the server last centred the bot's view on.
@@ -294,6 +329,8 @@ impl Bot {
             stats: PlayStats::default(),
             position: None,
             chunks: BTreeMap::new(),
+            player_list: BTreeMap::new(),
+            entities: BTreeMap::new(),
             loaded: false,
             center: None,
             location: (0.0, 0.0, 0.0),
@@ -446,6 +483,57 @@ impl Bot {
             }
             ClientboundPlay::SetCenterChunk(packet) => {
                 self.center = Some((packet.chunk_x, packet.chunk_z));
+            }
+            ClientboundPlay::PlayerInfoUpdate(packet) => {
+                for entry in packet.entries {
+                    if let Some((name, _)) = entry.profile {
+                        self.player_list.insert(entry.uuid, name);
+                    }
+                }
+            }
+            ClientboundPlay::PlayerInfoRemove(packet) => {
+                for player in packet.players {
+                    self.player_list.remove(&player);
+                }
+            }
+            ClientboundPlay::SpawnEntity(packet) => {
+                // A client ignores a player entity whose player it has not been told of.
+                ensure!(
+                    packet.kind != entity_types::PLAYER
+                        || self.player_list.contains_key(&packet.uuid),
+                    "player entity {} spawned before its player list entry",
+                    packet.entity_id
+                );
+                self.entities.insert(
+                    packet.entity_id,
+                    SeenEntity {
+                        uuid: packet.uuid,
+                        kind: packet.kind,
+                        position: (packet.x, packet.y, packet.z),
+                        yaw: f32::from(packet.yaw) * 360.0 / 256.0,
+                        head_yaw: packet.head_yaw,
+                        position_syncs: 0,
+                    },
+                );
+            }
+            ClientboundPlay::SyncEntityPosition(packet) => {
+                if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    if let Some(position) = packet.path.end() {
+                        entity.position = position;
+                    }
+                    entity.yaw = packet.yaw;
+                    entity.position_syncs += 1;
+                }
+            }
+            ClientboundPlay::SetHeadRotation(packet) => {
+                if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    entity.head_yaw = packet.head_yaw;
+                }
+            }
+            ClientboundPlay::RemoveEntities(packet) => {
+                for entity in packet.entity_ids {
+                    self.entities.remove(&entity);
+                }
             }
             ClientboundPlay::UnloadChunk(packet) => {
                 self.chunks.remove(&(packet.chunk_x, packet.chunk_z));
