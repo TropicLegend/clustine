@@ -540,13 +540,18 @@ mod tests {
         hotbar
     }
 
-    fn region() -> Region {
-        Region::new(RegionConfig {
+    /// What a region for `area` is created with.
+    fn config(area: ChunkArea) -> RegionConfig {
+        RegionConfig {
             spawn: SPAWN,
-            area: ChunkArea::EVERYWHERE,
+            area,
             entity_ids: EntityIds::block(0).unwrap(),
             starting_hotbar: hotbar(),
-        })
+        }
+    }
+
+    fn region() -> Region {
+        Region::new(config(ChunkArea::EVERYWHERE))
     }
 
     /// An input as the edge passes it on: numbered in the order the inputs are made.
@@ -555,6 +560,11 @@ mod tests {
     fn numbered(player: PlayerId, input: PlayerInput) -> Input {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         (player, NEXT.fetch_add(1, Ordering::Relaxed), input)
+    }
+
+    /// `input` with a number of the test's choosing in place of the next one.
+    fn with_number(number: u64, (player, _, input): Input) -> Input {
+        (player, number, input)
     }
 
     fn player(number: u128) -> PlayerId {
@@ -597,7 +607,12 @@ mod tests {
 
     /// A region that the given players have joined.
     fn joined(numbers: &[u128]) -> Region {
-        let mut region = region();
+        joined_in(ChunkArea::EVERYWHERE, numbers)
+    }
+
+    /// A region for `area` that the given players have joined.
+    fn joined_in(area: ChunkArea, numbers: &[u128]) -> Region {
+        let mut region = Region::new(config(area));
         region.tick(&changes(
             numbers.iter().map(|number| join(*number)).collect(),
         ));
@@ -941,7 +956,12 @@ mod tests {
 
     /// A region with the given players standing on a stone floor in chunk (0, 0).
     fn on_floor(numbers: &[u128]) -> Region {
-        let mut region = joined(numbers);
+        on_floor_in(ChunkArea::EVERYWHERE, numbers)
+    }
+
+    /// The same in a region for `area`, which has to contain that chunk.
+    fn on_floor_in(area: ChunkArea, numbers: &[u128]) -> Region {
+        let mut region = joined_in(area, numbers);
         let origin = ChunkPos::new(0, 0);
         region.tick(&tickets(vec![origin], vec![]));
         region.tick(&TickInputs {
@@ -1187,6 +1207,776 @@ mod tests {
         assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
     }
 
+    /// Chunks 0 and 1: the blocks with x from 0 up to, but not including, 32.
+    const MIDDLE: ChunkArea = ChunkArea {
+        min_x: Some(0),
+        max_x: Some(2),
+    };
+    /// The two parts of a world divided at the block with x = 0, which like the spawn
+    /// point belongs to the eastern one.
+    const WEST: ChunkArea = ChunkArea {
+        min_x: None,
+        max_x: Some(0),
+    };
+    const EAST: ChunkArea = ChunkArea {
+        min_x: Some(0),
+        max_x: None,
+    };
+
+    const GLASS: ItemStack = ItemStack {
+        item: items::GLASS,
+        count: 1,
+    };
+
+    fn set_slot(number: u128, slot: u8, stack: Option<ItemStack>) -> Input {
+        numbered(player(number), PlayerInput::SetHotbarSlot { slot, stack })
+    }
+
+    /// What a region hands over when it lets a player go at `x` after their input
+    /// `last_input`. Nothing about them is as it is for a player who has just joined.
+    fn transfer(number: u128, entity: i32, x: f64, last_input: u64) -> PlayerTransfer {
+        let mut hotbar = hotbar();
+        hotbar[0] = None;
+        hotbar[6] = Some(GLASS);
+        PlayerTransfer {
+            entity_id: EntityId(entity),
+            name: format!("Player{number}"),
+            pose: Pose {
+                position: Vec3::new(x, -60.0, 0.5),
+                yaw: 135.0,
+                pitch: -20.0,
+                on_ground: true,
+            },
+            hotbar,
+            selected_slot: 6,
+            last_input,
+        }
+    }
+
+    fn arrive(number: u128, transfer: &PlayerTransfer) -> PlayerChange {
+        PlayerChange::Arrive(player(number), transfer.clone())
+    }
+
+    fn departed(number: u128, transfer: PlayerTransfer) -> (PlayerId, PlayerEvent) {
+        (player(number), PlayerEvent::Departed(transfer))
+    }
+
+    fn is_removal(event: &RegionEvent) -> bool {
+        matches!(event, RegionEvent::EntityRemoved { .. })
+    }
+
+    #[test]
+    fn chunks_outside_the_area_are_neither_requested_nor_loaded() {
+        let mut region = Region::new(config(MIDDLE));
+        // Right beyond either end, the eastern one not being part of the area, and far off.
+        let outside = [
+            ChunkPos::new(-1, 0),
+            ChunkPos::new(2, 0),
+            ChunkPos::new(40, -7),
+        ];
+        let inside = [ChunkPos::new(0, 5), ChunkPos::new(1, -7)];
+        let all = [outside.as_slice(), &inside].concat();
+
+        let output = region.tick(&tickets(all.clone(), vec![]));
+        assert_eq!(output.chunk_requests, inside);
+
+        // Storage is not asked later either, and a chunk nobody asked for is not taken.
+        let output = region.tick(&TickInputs {
+            chunks_loaded: all.iter().map(|position| (*position, chunk())).collect(),
+            ..TickInputs::default()
+        });
+        assert!(output.chunk_requests.is_empty());
+        for position in outside {
+            assert_eq!(region.chunk(position), None, "{position:?}");
+        }
+        for position in inside {
+            assert_eq!(region.chunk(position), Some(&chunk()), "{position:?}");
+        }
+        assert_eq!(region.loaded_chunk_count(), 2);
+
+        // Tickets that were never counted can be released and taken again without effect.
+        let output = region.tick(&tickets(outside.to_vec(), outside.to_vec()));
+        assert!(output.chunk_requests.is_empty());
+        assert_eq!(region.loaded_chunk_count(), 2);
+        // Inside, a chunk still goes with its last ticket.
+        region.tick(&tickets(vec![], inside.to_vec()));
+        assert_eq!(region.loaded_chunk_count(), 0);
+    }
+
+    #[test]
+    fn an_input_numbered_no_higher_than_the_last_applied_one_is_ignored() {
+        let mut region = on_floor(&[1, 2]);
+        let x = |region: &Region, number| region.player(player(number)).unwrap().1.position.x;
+
+        // The same number twice.
+        region.tick(&moves(vec![
+            with_number(5, walk(1, 1.5, 0.5)),
+            with_number(5, walk(1, 2.5, 0.5)),
+        ]));
+        assert_eq!(x(&region, 1), 1.5);
+
+        // A lower number arriving later, be it in the same tick or in a later one.
+        region.tick(&moves(vec![
+            with_number(7, walk(1, 3.5, 0.5)),
+            with_number(6, walk(1, 4.5, 0.5)),
+        ]));
+        assert_eq!(x(&region, 1), 3.5);
+        let output = region.tick(&moves(vec![
+            with_number(4, walk(1, 5.5, 0.5)),
+            with_number(7, walk(1, 6.5, 0.5)),
+            // Nothing at all comes of such an input: no block breaks, and the player is
+            // not told that it was handled.
+            with_number(7, dig(1, 2, -61, 0, 9)),
+        ]));
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(output.player_events.is_empty());
+        assert_eq!(x(&region, 1), 3.5);
+        assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
+
+        // The next higher number is applied, and each player's inputs are numbered on
+        // their own.
+        region.tick(&moves(vec![
+            with_number(8, walk(1, 8.5, 0.5)),
+            with_number(1, walk(2, 7.5, 0.5)),
+        ]));
+        assert_eq!((x(&region, 1), x(&region, 2)), (8.5, 7.5));
+    }
+
+    #[test]
+    fn a_player_who_steps_out_of_the_area_is_let_go_with_all_they_carry() {
+        let mut region = on_floor_in(MIDDLE, &[1]);
+        region.tick(&moves(vec![with_number(1, set_slot(1, 4, Some(GLASS)))]));
+
+        let output = region.tick(&moves(vec![
+            with_number(2, dig(1, 2, -61, 3, 7)),
+            with_number(3, select(1, 4)),
+            // Chunk 2 is the first one east of the area.
+            with_number(4, walk(1, 32.5, 0.5)),
+            // What follows the step is for the region the player is in now to judge.
+            with_number(5, select(1, 1)),
+            with_number(6, dig(1, 3, -61, 3, 8)),
+            with_number(7, walk(1, 1.5, 0.5)),
+        ]));
+        let pose = Pose {
+            position: Vec3::new(32.5, -60.0, 0.5),
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        // Those watching see the step, and nothing tells them that the entity is gone.
+        assert_eq!(
+            output.events,
+            [
+                changed(2, -61, 3, blocks::AIR),
+                RegionEvent::EntityMoved {
+                    entity: EntityId(1),
+                    pose,
+                    previous_chunk: ChunkPos::new(0, 0),
+                },
+            ]
+        );
+        let mut carried = hotbar();
+        carried[4] = Some(GLASS);
+        assert_eq!(
+            output.player_events,
+            [
+                acknowledged(1, 7),
+                departed(
+                    1,
+                    PlayerTransfer {
+                        entity_id: EntityId(1),
+                        name: "Player1".to_owned(),
+                        pose,
+                        hotbar: carried,
+                        selected_slot: 4,
+                        last_input: 4,
+                    }
+                ),
+            ]
+        );
+        assert_eq!(region.player_count(), 0);
+        assert_eq!(region.player(player(1)), None);
+        assert_eq!(region.entity(EntityId(1)), None);
+
+        // The region has nothing to do with the player any more, not even when they leave.
+        let output = region.tick(&TickInputs {
+            player_changes: vec![leave(1)],
+            inputs: vec![with_number(8, walk(1, 1.5, 0.5))],
+            ..TickInputs::default()
+        });
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(output.player_events.is_empty());
+    }
+
+    #[test]
+    fn a_player_is_let_go_exactly_where_the_area_ends() {
+        let steps = [
+            (MIDDLE, 0.0, true),
+            (MIDDLE, -0.1, false),
+            (MIDDLE, 31.9, true),
+            (MIDDLE, 32.0, false),
+            (EAST, 2.9e7, true),
+            (EAST, -0.1, false),
+        ];
+        for (area, x, stays) in steps {
+            let mut region = joined_in(area, &[1]);
+            // Along z an area has no end.
+            let output = region.tick(&moves(vec![walk(1, x, -1.0e6)]));
+            assert_eq!(region.player_count(), usize::from(stays), "x = {x}");
+            assert_eq!(output.player_events.len(), usize::from(!stays), "x = {x}");
+        }
+    }
+
+    #[test]
+    fn a_player_who_leaves_in_the_tick_they_step_out_in_is_simply_gone() {
+        let mut region = joined_in(MIDDLE, &[1]);
+        // Changes are applied before inputs, so there is nobody left to step out.
+        let output = region.tick(&TickInputs {
+            player_changes: vec![leave(1)],
+            inputs: vec![walk(1, 40.5, 0.5)],
+            ..TickInputs::default()
+        });
+        assert_eq!(
+            output.events,
+            [RegionEvent::EntityRemoved {
+                entity: EntityId(1),
+                chunk: ChunkPos::new(0, 0),
+            }]
+        );
+        assert!(output.player_events.is_empty());
+        assert_eq!(region.player_count(), 0);
+    }
+
+    #[test]
+    fn an_arriving_player_carries_on_as_they_were_handed_over() {
+        let mut region = Region::new(RegionConfig {
+            entity_ids: EntityIds {
+                first: EntityId(1),
+                end: EntityId(3),
+            },
+            ..config(MIDDLE)
+        });
+        let transfer = transfer(1, 77, 20.5, 40);
+        let output = region.tick(&changes(vec![arrive(1, &transfer)]));
+        let arrived = EntityState {
+            pose: transfer.pose,
+            ..state(1, 77, SPAWN)
+        };
+        assert_eq!(output.events, [RegionEvent::EntitySpawned(arrived.clone())]);
+        // The player is in the world already and is not told that they entered it.
+        assert!(output.player_events.is_empty());
+        assert_eq!(
+            region.player(player(1)),
+            Some((EntityId(77), transfer.pose))
+        );
+        assert_eq!(region.entity(EntityId(77)), Some(arrived));
+
+        // The entity id came with the player: both of the region's own are still to be had.
+        let output = region.tick(&changes(vec![join(2), join(3)]));
+        assert_eq!(
+            output.events,
+            [
+                RegionEvent::EntitySpawned(state(2, 1, SPAWN)),
+                RegionEvent::EntitySpawned(state(3, 2, SPAWN)),
+            ]
+        );
+
+        // What the region the player came from had applied is not applied again.
+        let output = region.tick(&moves(vec![
+            with_number(39, walk(1, 3.5, 0.5)),
+            with_number(40, select(1, 2)),
+        ]));
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        // What comes after that is. As it is a step out of the area, it shows that the
+        // region kept everything else as it was handed over.
+        let output = region.tick(&moves(vec![with_number(41, walk(1, 33.5, 0.5))]));
+        let handed_on = PlayerTransfer {
+            pose: Pose {
+                position: Vec3::new(33.5, -60.0, 0.5),
+                ..transfer.pose
+            },
+            last_input: 41,
+            ..transfer
+        };
+        assert_eq!(output.player_events, [departed(1, handed_on)]);
+    }
+
+    #[test]
+    fn a_player_who_is_already_there_does_not_arrive_again() {
+        let mut region = joined_in(EAST, &[1]);
+        let mut untouched = region.clone();
+
+        // With the entity the player has here, the handover is one that came twice.
+        let output = region.tick(&changes(vec![arrive(1, &transfer(1, 1, 20.5, 40))]));
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(output.player_events.is_empty());
+        untouched.tick(&TickInputs::default());
+        assert_eq!(region, untouched);
+
+        // With another entity, that one was on its way and has nowhere to go now. It is
+        // removed where it was seen last, be that inside the area or outside.
+        for (x, chunk) in [(40.5, 2), (-40.5, -3)] {
+            let output = region.tick(&changes(vec![arrive(1, &transfer(1, 50, x, 40))]));
+            assert_eq!(
+                output.events,
+                [RegionEvent::EntityRemoved {
+                    entity: EntityId(50),
+                    chunk: ChunkPos::new(chunk, 0),
+                }]
+            );
+            assert!(output.player_events.is_empty());
+            untouched.tick(&TickInputs::default());
+            assert_eq!(region, untouched);
+        }
+    }
+
+    #[test]
+    fn a_player_who_joins_outside_the_area_is_let_go_at_once() {
+        // The spawn point lies in chunk 0, which this region does not have.
+        let mut region = Region::new(config(ChunkArea {
+            min_x: Some(1),
+            max_x: None,
+        }));
+        let output = region.tick(&changes(vec![join(1)]));
+        let spawned = PlayerEvent::Spawned {
+            entity_id: EntityId(1),
+            position: SPAWN,
+            hotbar: hotbar(),
+            selected_slot: 0,
+        };
+        let transfer = PlayerTransfer {
+            entity_id: EntityId(1),
+            name: "Player1".to_owned(),
+            pose: Pose::at(SPAWN),
+            hotbar: hotbar(),
+            selected_slot: 0,
+            last_input: 0,
+        };
+        assert_eq!(
+            output.player_events,
+            [(player(1), spawned), departed(1, transfer)]
+        );
+        assert!(!output.events.iter().any(is_removal));
+        assert_eq!(region.player_count(), 0);
+    }
+
+    #[test]
+    fn a_player_who_arrives_outside_the_area_is_passed_on_unchanged() {
+        let mut region = Region::new(config(MIDDLE));
+        let transfer = transfer(1, 77, -8.5, 40);
+        let output = region.tick(&changes(vec![arrive(1, &transfer)]));
+        assert_eq!(output.player_events, [departed(1, transfer.clone())]);
+        assert!(!output.events.iter().any(is_removal));
+        assert_eq!(region.player_count(), 0);
+
+        // Not even an input that would bring them into the area keeps them here.
+        let output = region.tick(&TickInputs {
+            player_changes: vec![arrive(1, &transfer)],
+            inputs: vec![with_number(41, walk(1, 8.5, 0.5))],
+            ..TickInputs::default()
+        });
+        assert_eq!(output.player_events, [departed(1, transfer)]);
+        assert_eq!(region.player_count(), 0);
+    }
+
+    #[test]
+    fn a_discarded_entity_is_reported_as_removed_and_nobody_is_touched() {
+        let mut region = joined_in(MIDDLE, &[1]);
+        let mut untouched = region.clone();
+        // The second has the id of an entity that is here, and its chunk is not in the
+        // area: neither matters.
+        let discarded = [
+            (EntityId(77), ChunkPos::new(1, -4)),
+            (EntityId(1), ChunkPos::new(-3, 9)),
+        ];
+        let output = region.tick(&changes(
+            discarded
+                .iter()
+                .map(|(entity, chunk)| PlayerChange::Discard {
+                    entity: *entity,
+                    chunk: *chunk,
+                })
+                .collect(),
+        ));
+        assert_eq!(
+            output.events,
+            discarded.map(|(entity, chunk)| RegionEvent::EntityRemoved { entity, chunk })
+        );
+        assert!(output.player_events.is_empty());
+        untouched.tick(&TickInputs::default());
+        assert_eq!(region, untouched);
+    }
+
+    #[test]
+    fn a_region_that_has_used_up_its_entity_ids_refuses_players() {
+        let mut region = Region::new(RegionConfig {
+            entity_ids: EntityIds {
+                first: EntityId(7),
+                end: EntityId(9),
+            },
+            ..config(ChunkArea::EVERYWHERE)
+        });
+        let output = region.tick(&changes(vec![join(1), join(2), join(3)]));
+        assert_eq!(
+            output.events,
+            [
+                RegionEvent::EntitySpawned(state(1, 7, SPAWN)),
+                RegionEvent::EntitySpawned(state(2, 8, SPAWN)),
+            ]
+        );
+        assert_eq!(output.player_events.len(), 3);
+        assert_eq!(output.player_events[2], (player(3), PlayerEvent::Refused));
+        assert_eq!(region.player_count(), 2);
+        assert_eq!(region.player(player(3)), None);
+
+        // Trying again does not help, and what a refused player does is ignored.
+        let output = region.tick(&TickInputs {
+            player_changes: vec![join(3)],
+            inputs: vec![walk(3, 1.5, 0.5)],
+            ..TickInputs::default()
+        });
+        assert_eq!(output.player_events, [(player(3), PlayerEvent::Refused)]);
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert_eq!(region.entities().count(), 2);
+    }
+
+    #[test]
+    fn blocks_outside_the_area_can_neither_be_dug_nor_placed() {
+        let west = ChunkPos::new(-1, 0);
+        // A player near the line works on blocks beyond it. The chunk there has been
+        // asked for and has been offered, with a floor like the one the player stands on.
+        let attempt = |area: ChunkArea| {
+            let mut region = on_floor_in(area, &[1]);
+            region.tick(&tickets(vec![west], vec![]));
+            region.tick(&TickInputs {
+                chunks_loaded: vec![(west, floor())],
+                inputs: vec![walk(1, 1.5, 2.5)],
+                ..TickInputs::default()
+            });
+            let outputs = [
+                // Break the floor right beyond the line.
+                dig(1, -1, -61, 2, 1),
+                // Put a block on the floor one block further out.
+                place(1, -2, -61, 2, Face::Top),
+                // Fill the hole again, against the side of a block that is in the area.
+                place(1, 0, -61, 2, Face::West),
+            ]
+            .map(|input| region.tick(&moves(vec![input])));
+            (region, outputs)
+        };
+
+        // Where one region has the whole world, all of this works.
+        let (_, outputs) = attempt(ChunkArea::EVERYWHERE);
+        assert_eq!(
+            outputs.map(|output| output.events),
+            [
+                [changed(-1, -61, 2, blocks::AIR)],
+                [changed(-2, -60, 2, blocks::STONE)],
+                [changed(-1, -61, 2, blocks::STONE)],
+            ]
+        );
+
+        let (region, outputs) = attempt(EAST);
+        for output in outputs {
+            assert!(output.events.is_empty(), "{:?}", output.events);
+            assert_eq!(output.player_events, [acknowledged(1, 1)]);
+        }
+        assert_eq!(region.chunk(west), None);
+        assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
+    }
+
+    /// The entity of a player in `region` and what a handover has to preserve of them.
+    fn carried(
+        region: &Region,
+        id: PlayerId,
+    ) -> Option<(EntityId, Pose, [Option<ItemStack>; HOTBAR_SLOTS], u8)> {
+        let player = region.players.get(&id)?;
+        Some((
+            player.entity_id,
+            player.pose,
+            player.hotbar,
+            player.selected_slot,
+        ))
+    }
+
+    /// What the edge keeps of a player to route them between two regions: it sends their
+    /// inputs to the region it believes them to be in, and when that region lets them go
+    /// it passes them on to the other one, with every input the first did not apply.
+    struct Route {
+        /// The region the edge believes the player to be in: 0 lies west of the line.
+        region: usize,
+        /// How many inputs the player has made.
+        made: u64,
+        /// Whether the player last walked to the east of the line.
+        east: bool,
+        /// The inputs sent that no region has reported as applied.
+        kept: Vec<Input>,
+        /// What a region let the player go with, and the step in which the edge gets
+        /// round to passing them on.
+        departed: Option<(u64, PlayerTransfer)>,
+    }
+
+    impl Route {
+        /// Passes the player on if a region has let them go and it is time. Returns the
+        /// number of inputs that were sent again.
+        fn pass_on(&mut self, id: PlayerId, step: u64, waiting: &mut [TickInputs; 2]) -> usize {
+            let Some((_, transfer)) = self.departed.take_if(|(due, _)| *due <= step) else {
+                return 0;
+            };
+            self.region = 1 - self.region;
+            self.kept
+                .retain(|(_, number, _)| *number > transfer.last_input);
+            let inputs = &mut waiting[self.region];
+            inputs
+                .player_changes
+                .push(PlayerChange::Arrive(id, transfer));
+            inputs.inputs.extend(self.kept.iter().cloned());
+            self.kept.len()
+        }
+
+        /// Whether one region has let the player go and the other has not taken them in.
+        fn under_way(&self, id: PlayerId, waiting: &[TickInputs; 2]) -> bool {
+            let arriving = |change: &PlayerChange| match change {
+                PlayerChange::Arrive(player, _) => Some(*player),
+                _ => None,
+            };
+            self.departed.is_some()
+                || waiting
+                    .iter()
+                    .flat_map(|inputs| &inputs.player_changes)
+                    .any(|change| arriving(change) == Some(id))
+        }
+    }
+
+    /// Walks three players back and forth across the line between two regions, with a
+    /// router that does what the edge will do, and compares what becomes of them with a
+    /// single region that has the whole world and gets the same inputs in the same order.
+    ///
+    /// The regions tick in turns. The edge hears of a player being let go right after
+    /// the tick or up to two steps later, so that the region the player walked into
+    /// ticks without them, and what the player does in the meantime is sent to the
+    /// region that no longer has them. The edge passes a player on at the end of a step,
+    /// after the tick; `at_any_time` lets it do so before the tick as well, when the
+    /// inputs of the step have been sent.
+    fn two_regions_match_one(at_any_time: bool) {
+        const STEPS: u64 = 3000;
+        let numbers = [1, 2, 3];
+
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+
+        let mut reference = joined(&numbers);
+        // Everyone starts east of the line, where the spawn point is.
+        let mut regions = [
+            Region::new(RegionConfig {
+                entity_ids: EntityIds::block(1).unwrap(),
+                ..config(WEST)
+            }),
+            joined_in(EAST, &numbers),
+        ];
+        // What the edge has sent to each region since that region's last tick.
+        let mut waiting = [TickInputs::default(), TickInputs::default()];
+        let mut routes: BTreeMap<PlayerId, Route> = numbers
+            .iter()
+            .map(|number| {
+                let route = Route {
+                    region: 1,
+                    made: 0,
+                    east: true,
+                    kept: Vec::new(),
+                    departed: None,
+                };
+                (player(*number), route)
+            })
+            .collect();
+        let (mut compared, mut handovers, mut sent_again, mut ticked_without) = (0, 0, 0, 0);
+
+        for step in 0.. {
+            if step < STEPS {
+                let mut made = TickInputs::default();
+                for _ in 0..random(6) {
+                    let id = player(u128::from(1 + random(3)));
+                    let route = routes.get_mut(&id).unwrap();
+                    let input = match random(8) {
+                        0 => PlayerInput::SelectSlot {
+                            slot: random(10) as u8,
+                        },
+                        1 => {
+                            // Counts make it unlikely that two stacks are alike.
+                            let stack = ItemStack {
+                                count: 1 + random(64) as i32,
+                                ..[STONE, DIRT, GLASS][random(3) as usize]
+                            };
+                            PlayerInput::SetHotbarSlot {
+                                slot: random(10) as u8,
+                                stack: (random(4) != 0).then_some(stack),
+                            }
+                        }
+                        2 => PlayerInput::Move {
+                            position: None,
+                            rotation: Some((random(360) as f32, random(180) as f32 - 90.0)),
+                            on_ground: random(2) == 0,
+                        },
+                        _ => {
+                            // Up to 12 blocks from the line, now and then on its other side.
+                            route.east ^= random(4) == 0;
+                            let distance = random(120) as f64 / 10.0;
+                            let x = if route.east {
+                                distance
+                            } else {
+                                -0.1 - distance
+                            };
+                            PlayerInput::Move {
+                                position: Some(Vec3::new(x, -60.0, random(80) as f64 / 10.0)),
+                                rotation: None,
+                                on_ground: true,
+                            }
+                        }
+                    };
+                    route.made += 1;
+                    let input = (id, route.made, input);
+                    made.inputs.push(input.clone());
+                    waiting[route.region].inputs.push(input.clone());
+                    route.kept.push(input);
+                }
+                reference.tick(&made);
+            } else if waiting.iter().all(|inputs| inputs.inputs.is_empty())
+                && routes
+                    .iter()
+                    .all(|(id, route)| !route.under_way(*id, &waiting))
+            {
+                // Everything the players did has reached the region they are in.
+                break;
+            }
+
+            if at_any_time {
+                for (id, route) in &mut routes {
+                    sent_again += route.pass_on(*id, step, &mut waiting);
+                }
+            }
+            let ticking = (step % 2) as usize;
+            ticked_without += routes
+                .values()
+                .filter(|route| route.departed.is_some() && route.region != ticking)
+                .count();
+            let output = regions[ticking].tick(&std::mem::take(&mut waiting[ticking]));
+            assert!(!output.events.iter().any(is_removal), "step {step}");
+            for (id, event) in output.player_events {
+                // Nobody joins or digs, so nothing else is to be expected.
+                let PlayerEvent::Departed(transfer) = event else {
+                    panic!("unexpected event {event:?} in step {step}");
+                };
+                let route = routes.get_mut(&id).unwrap();
+                assert_eq!(route.departed, None, "step {step}");
+                route.departed = Some((step + random(3), transfer));
+                handovers += 1;
+            }
+            for (id, route) in &mut routes {
+                sent_again += route.pass_on(*id, step, &mut waiting);
+            }
+
+            // A player is in one region, or in none while they are being passed on. Once
+            // that region has ticked with everything the player did, it has them as the
+            // single region has, which is never behind.
+            for (id, route) in &routes {
+                let holding = regions
+                    .iter()
+                    .filter(|region| region.player(*id).is_some())
+                    .count();
+                let under_way = route.under_way(*id, &waiting);
+                assert_eq!(holding, usize::from(!under_way), "step {step}");
+                let behind = waiting[route.region]
+                    .inputs
+                    .iter()
+                    .any(|(player, ..)| player == id);
+                if !under_way && !behind {
+                    let here = carried(&regions[route.region], *id);
+                    assert!(here.is_some(), "step {step}");
+                    assert_eq!(here, carried(&reference, *id), "step {step}");
+                    compared += 1;
+                }
+            }
+        }
+
+        // The loop ended with every player caught up, and the run did something worth
+        // comparing.
+        assert!(compared > 3000, "{compared} comparisons");
+        assert!(handovers > 500, "{handovers} handovers");
+        assert!(sent_again > 500, "{sent_again} inputs sent again");
+        assert!(ticked_without > 100, "{ticked_without} ticks without");
+    }
+
+    #[test]
+    fn two_regions_and_a_router_treat_players_as_one_region_does() {
+        two_regions_match_one(false);
+    }
+
+    /// Fails for the reason that the test below shows on its own.
+    #[test]
+    #[ignore = "an input is lost when a player returns to a region that has inputs waiting"]
+    fn two_regions_and_a_router_that_acts_at_any_time_treat_players_as_one_region_does() {
+        two_regions_match_one(true);
+    }
+
+    /// The shortest run in which a handover loses an input. It fails, and is ignored
+    /// until it is decided where that is to be mended.
+    ///
+    /// A region applies the changes of a tick before its inputs, so a player who arrives
+    /// is there for inputs that were sent to the region ahead of them: those the edge
+    /// sent while it had not heard that the region had let the player go. If the player
+    /// went away and came back between two ticks of the region, such an input is applied
+    /// before the earlier ones that the edge sends again, and those then count as
+    /// applied already.
+    #[test]
+    #[ignore = "an input is lost when a player returns to a region that has inputs waiting"]
+    fn inputs_waiting_where_a_player_returns_to_do_not_overtake_those_sent_again() {
+        let made = [
+            with_number(1, walk(1, -0.5, 0.5)),
+            with_number(2, walk(1, 0.5, 0.5)),
+            with_number(3, set_slot(1, 4, Some(GLASS))),
+            with_number(4, select(1, 4)),
+        ];
+        let mut reference = joined(&[1]);
+        reference.tick(&moves(made.to_vec()));
+
+        let mut west = Region::new(RegionConfig {
+            entity_ids: EntityIds::block(1).unwrap(),
+            ..config(WEST)
+        });
+        let mut east = joined_in(EAST, &[1]);
+        let handed_over = |output: TickOutput| match output.player_events.as_slice() {
+            [(_, PlayerEvent::Departed(transfer))] => transfer.clone(),
+            other => panic!("unexpected events {other:?}"),
+        };
+
+        // The first three inputs reach the eastern region in one tick. It lets the player
+        // go at the first and leaves the other two to the western one.
+        let first = handed_over(east.tick(&moves(made[..3].to_vec())));
+        assert_eq!(first.last_input, 1);
+        // The edge has not heard of that when the fourth input comes and sends it east
+        // as well. Then it hears, and passes the player on with all that the eastern
+        // region did not apply. In the west the player turns round at once.
+        let second = handed_over(west.tick(&TickInputs {
+            player_changes: vec![arrive(1, &first)],
+            inputs: made[1..].to_vec(),
+            ..TickInputs::default()
+        }));
+        assert_eq!(second.last_input, 2);
+        // The eastern region has not ticked in the meantime, so the fourth input is
+        // still waiting there when the third and the fourth are sent to it again.
+        east.tick(&TickInputs {
+            player_changes: vec![arrive(1, &second)],
+            inputs: [&made[3..], &made[2..]].concat(),
+            ..TickInputs::default()
+        });
+        assert_eq!(carried(&east, player(1)), carried(&reference, player(1)));
+    }
+
     /// The same inputs always lead to the same region and the same outputs: a recorded
     /// run can be replayed.
     #[test]
@@ -1265,5 +2055,128 @@ mod tests {
                 .any(|output| !output.chunk_requests.is_empty())
         );
         assert_eq!(region.tick_number(), 300);
+    }
+
+    /// The same holds for a region that has a part of the world only, with players
+    /// arriving from its neighbours and departing to them.
+    #[test]
+    fn a_recorded_run_of_a_bounded_region_replays_identically() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        // Inputs are numbered here and not by `numbered`, whose numbers depend on the
+        // tests that run at the same time: a handover decides by them what is applied.
+        let mut made = 0u64;
+
+        let mut recorded = Vec::new();
+        for _ in 0..600 {
+            let mut inputs = TickInputs::default();
+            for _ in 0..random(4) {
+                let number = u128::from(random(6));
+                made += 1;
+                // Chunks -1 to 3, of which 0 and 1 are in the area.
+                let position = ChunkPos::new(random(5) as i32 - 1, 0);
+                // Mostly in the area, which reaches from 0 to 32.
+                let x = random(400) as f64 / 10.0 - 4.0;
+                match random(14) {
+                    0 => inputs.player_changes.push(join(number)),
+                    1 => inputs.player_changes.push(leave(number)),
+                    2 => {
+                        // Handed over with a few of the latest inputs still to be applied.
+                        let entity = 1000 + random(4) as i32;
+                        let last_input = made.saturating_sub(random(4));
+                        let transfer = transfer(number, entity, x, last_input);
+                        inputs.player_changes.push(arrive(number, &transfer));
+                    }
+                    3 => inputs.player_changes.push(PlayerChange::Discard {
+                        entity: EntityId(2000 + random(4) as i32),
+                        chunk: position,
+                    }),
+                    4 => inputs.tickets_added.push(position),
+                    5 => inputs.tickets_removed.push(position),
+                    6 => inputs.chunks_loaded.push((position, floor())),
+                    7 => {
+                        let block = dig(
+                            number,
+                            random(40) as i32 - 4,
+                            -61,
+                            random(8) as i32,
+                            random(1000) as i32,
+                        );
+                        inputs.inputs.push(with_number(made, block));
+                    }
+                    8 => {
+                        let block = place(
+                            number,
+                            random(40) as i32 - 4,
+                            -61,
+                            random(8) as i32,
+                            Face::Top,
+                        );
+                        inputs.inputs.push(with_number(made, block));
+                    }
+                    9 => {
+                        let slot = select(number, random(9) as u8);
+                        inputs.inputs.push(with_number(made, slot));
+                    }
+                    10 => {
+                        let stack = [None, Some(STONE), Some(GLASS)][random(3) as usize];
+                        let slot = set_slot(number, random(9) as u8, stack);
+                        inputs.inputs.push(with_number(made, slot));
+                    }
+                    _ => {
+                        let step = walk(number, x, random(80) as f64 / 10.0);
+                        inputs.inputs.push(with_number(made, step));
+                    }
+                }
+            }
+            recorded.push(inputs);
+        }
+
+        let replay = || {
+            let mut region = Region::new(config(MIDDLE));
+            let outputs: Vec<_> = recorded.iter().map(|inputs| region.tick(inputs)).collect();
+            (region, outputs)
+        };
+        let (region, outputs) = replay();
+        assert_eq!(replay(), (region.clone(), outputs.clone()));
+
+        // The run did something worth comparing: players who joined and players who
+        // arrived were let go, the latter after moving about, and entities were discarded.
+        let let_go = |arrived: bool| {
+            outputs
+                .iter()
+                .flat_map(|output| &output.player_events)
+                .any(|(_, event)| {
+                    matches!(event, PlayerEvent::Departed(transfer)
+                        if (transfer.entity_id.0 >= 1000) == arrived && transfer.last_input > 0)
+                })
+        };
+        assert!(let_go(false));
+        assert!(let_go(true));
+        let happened = |wanted: fn(&RegionEvent) -> bool| {
+            outputs
+                .iter()
+                .any(|output| output.events.iter().any(wanted))
+        };
+        assert!(happened(|event| {
+            matches!(event, RegionEvent::EntityMoved { entity, .. } if entity.0 >= 1000)
+        }));
+        assert!(happened(|event| {
+            matches!(event, RegionEvent::EntityRemoved { entity, .. } if entity.0 >= 2000)
+        }));
+        assert!(happened(|event| {
+            matches!(event, RegionEvent::BlockChanged { .. })
+        }));
+        assert!(
+            outputs
+                .iter()
+                .any(|output| !output.chunk_requests.is_empty())
+        );
+        assert_eq!(region.tick_number(), 600);
     }
 }
