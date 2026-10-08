@@ -36,6 +36,8 @@ mod kill_regions;
 #[cfg(test)]
 mod regions;
 #[cfg(test)]
+mod scenarios;
+#[cfg(test)]
 mod tests;
 
 use std::io;
