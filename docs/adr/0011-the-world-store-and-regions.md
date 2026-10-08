@@ -1,6 +1,6 @@
 # ADR-0011: The world store and regions
 
-- Status: **Proposed**; the design of step C1 of milestone M3, phase C. Revised after an
+- Status: **Accepted**; the design of step C1 of milestone M3, phase C. Revised after an
   independent review against the code (see the end). Not built yet.
 - Date: 2026-10-08
 

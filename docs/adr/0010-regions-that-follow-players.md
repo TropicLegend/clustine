@@ -1,7 +1,12 @@
 # ADR-0010: Regions that follow players
 
 - Status: **Accepted** as the plan for milestone M3, phase C; revised after an independent
-  review (see the end). Nothing of it is built yet.
+  review (see the end). Being built. How the world store does its part is
+  [ADR-0011](0011-the-world-store-and-regions.md), which changes some of what is said
+  here about the store and lists that under "Changes to ADR-0010": above all, the tick
+  of a grant is the store's and a claim carries none, the merge names the epoch the
+  absorbed region was opened with, the new region of a split is opened with an
+  ordinary hello, and a pinned region claims the chunks of its areas like any other.
 - Date: 2026-10-08
 
 ## Context

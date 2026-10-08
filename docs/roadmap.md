@@ -188,7 +188,7 @@ differently, so that each leaves everything working.
 | # | Scope | Verified by | Status |
 |---|---|---|---|
 | C0 | The messages and types of ADR-0010, refused or ignored by everyone | All existing tests | done |
-| C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | to do |
+| C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each. Designed in [ADR-0011](adr/0011-the-world-store-and-regions.md), in steps C1.1 to C1.7 | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | designed and reviewed; being built |
 | C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | done |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos | Hand-over, block, takeover, chaos and move tests on two pinned regions | to do |
 | C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | to do |
