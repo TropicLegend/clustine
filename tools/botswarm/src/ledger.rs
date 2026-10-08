@@ -1174,6 +1174,18 @@ impl Player {
             if gone.kind != entity_types::PLAYER || !name.starts_with(&others) {
                 continue;
             }
+            // One that is still on its way to its lane goes faster than anyone walks, up
+            // to half a chunk a tick. When the server falls a few ticks behind, as on a
+            // small machine at the start, it leaves the view between two of the places
+            // it is seen in, and where it was seen last says nothing.
+            let on_its_way = name
+                .strip_prefix(&others)
+                .and_then(|number| number.parse::<usize>().ok())
+                .and_then(|number| self.progress.bots().get(number).map(|bot| !bot.playing))
+                .unwrap_or(false);
+            if on_its_way && self.ledger.to_the_lane > 1.0 {
+                continue;
+            }
             let (x, _, z) = gone.position;
             // A bot can have walked out of view only from the rim of what is in view.
             ensure!(
