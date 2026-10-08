@@ -36,12 +36,20 @@ deploy/kind/test.sh
 
 It builds the image `clustine:dev`, creates the cluster `clustine-test`, loads the image
 into it, applies `kubernetes/`, waits until the services are ready and runs the bots.
-The world is divided at block x = 64, each worker runs one side, and the bots walk back
-and forth between x = 40.5 and x = 90.5, placing and breaking blocks at either end and,
-from either side, across the boundary. The test passes if no bot was disconnected, every
-block came and went, a watching bot saw each walker as exactly one entity the whole
-time, and each of the two workers logged players arriving from and departing to another
-region. If it fails, it
+The world is divided at block x = 64, two of the three workers run a side each and the
+third waits, and the bots walk back and forth between x = 40.5 and x = 90.5, placing
+and breaking blocks at either end and, from either side, across the boundary. That part
+passes if no bot was disconnected, every block came and went, a watching bot saw each
+walker as exactly one entity the whole time, and two workers logged players arriving
+from and departing to another region.
+
+Then the test deletes the pods of the three workers and of the world store, one after
+the other and without warning, under bots that keep a ledger of everything they did
+and were told was handled (`kubernetes/test/ledger.yaml`). That part passes if no bot
+was disconnected, every acknowledged block is there for a bot that joins at the end,
+nobody was seen twice or vanished, every pod is another one than before, and two of
+the new workers run a region, which they can only have restored from the world store.
+If the test fails, it
 prints the end of every pod's log, the events and the list of pods. The cluster is
 deleted at the end either way.
 

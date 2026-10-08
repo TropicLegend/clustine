@@ -38,8 +38,10 @@ metadata:
     app.kubernetes.io/component: worker
     app.kubernetes.io/part-of: clustine
 spec:
-  # One for each region; `--boundaries=4` in coordinator.yaml makes two regions.
-  replicas: 2
+  # One for each region and one to spare: `--boundaries=4` in coordinator.yaml makes
+  # two regions. The spare waits, and is given the region of a worker that died once
+  # that worker's lease is over; the players of the region stay connected meanwhile.
+  replicas: 3
   serviceName: clustine-worker
   # All at once instead of one after the other in the order of their numbers. No worker
   # depends on the one before it, and the edge waits for all of them anyway.

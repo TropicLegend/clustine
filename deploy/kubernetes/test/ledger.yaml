@@ -1,0 +1,73 @@
+# The second test of a deployed cluster: bots that keep a ledger of everything they did
+# and were told was handled, while deploy/kind/test.sh deletes the pods of workers and
+# of the world store under them. The Job succeeds only if no bot was disconnected, every
+# acknowledged block is there, also for a bot that joins at the end, and nobody was seen
+# twice or vanished.
+#
+# Not in the kustomization one directory up, because it is a test and not part of the
+# deployment.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clustine-ledger
+  namespace: clustine
+  labels:
+    app.kubernetes.io/name: clustine-ledger
+    app.kubernetes.io/component: test
+    app.kubernetes.io/part-of: clustine
+spec:
+  # One attempt. Whether the scenario held is the exit status of that attempt, and a
+  # second one after a failure would cover it up.
+  backoffLimit: 0
+  # In case the bots get stuck: a run that works is over long before.
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clustine-ledger
+        app.kubernetes.io/component: test
+        app.kubernetes.io/part-of: clustine
+    spec:
+      restartPolicy: Never
+      # The bots have nothing to save when they are told to stop.
+      terminationGracePeriodSeconds: 5
+      automountServiceAccountToken: false
+      # See ../coordinator.yaml.
+      enableServiceLinks: false
+      securityContext:
+        # The user the Dockerfile creates.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bots
+          image: clustine:dev
+          imagePullPolicy: IfNotPresent
+          # `command` and not `args`, since the image's entry point is the server.
+          command:
+            - clustine-botswarm
+            - ledger
+            - clustine-edge:25565
+            - --bots=4
+            # Long enough for every pod that is deleted meanwhile to be missed and
+            # replaced; see deploy/kind/test.sh.
+            - --seconds=150
+            # As for the other bots: the regions meet at block x = 64.
+            - --west=40.5
+            - --east=90.5
+            - --line=64
+            # How long an action may wait for its acknowledgement. A region whose worker
+            # died stands still for the coordinator's lease and a moment.
+            - --patience=30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

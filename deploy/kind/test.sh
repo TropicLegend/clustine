@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 #
 # The cluster test. Builds the image, starts a Kubernetes cluster in Docker with kind,
-# deploys Clustine on it with two workers and lets bots walk back and forth across the
-# boundary between them. It passes if no bot was disconnected, a watching bot saw each
-# walker as exactly one entity throughout, and both workers handed players over.
+# deploys Clustine on it with two regions and three workers and lets bots walk back and
+# forth across the boundary between the regions. It passes if no bot was disconnected, a
+# watching bot saw each walker as exactly one entity throughout, and two workers handed
+# players over. Then it deletes the pods of the workers and of the world store, one
+# after the other, under bots that keep a ledger of everything they did: nobody may be
+# disconnected, and nothing they were told was handled may be missing afterwards.
 #
 # Usage: deploy/kind/test.sh [--reuse]
 #
@@ -231,56 +234,146 @@ for workload in \
   k rollout status "$workload" --timeout="${rollout_timeout}s"
 done
 
+# Waits for the Job `$1` to end, shows its log and fails the test unless it succeeded.
+wait_for_job() {
+  local job="$1" result=timeout deadline conditions
+  # `kubectl wait` waits for one condition, and waiting for "Complete" alone would sit
+  # out the whole timeout when the bots have failed in the first seconds. So ask for
+  # both.
+  deadline=$((SECONDS + bots_timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    # A request that fails once is asked again; nothing but the deadline ends the wait.
+    conditions="$(k get job "$job" \
+      --output 'jsonpath={range .status.conditions[*]}{.type}={.status}{"\n"}{end}' \
+      2>/dev/null || true)"
+    if grep -Fqx 'Complete=True' <<<"$conditions"; then
+      result=complete
+      break
+    fi
+    if grep -Fqx 'Failed=True' <<<"$conditions"; then
+      result=failed
+      break
+    fi
+    sleep 2
+  done
+
+  step "Log of ${job}"
+  k logs "job/${job}" || true
+
+  case "$result" in
+    complete) ;;
+    failed) die "${job} failed; its log is above" ;;
+    *) die "${job} did not finish within ${bots_timeout} seconds" ;;
+  esac
+}
+
+# How many of the workers' pods run a region, as far as their logs say. A pod that was
+# replaced starts its log anew.
+running_regions() {
+  local pod count=0
+  for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2; do
+    # Into a file first: a grep that stops reading at its first match would have
+    # kubectl fail on a log that is long, and the pipe with it.
+    k logs "$pod" >"${scratch}/running.log" 2>/dev/null || true
+    if grep -q -F 'running a region' "${scratch}/running.log"; then
+      count=$((count + 1))
+    fi
+  done
+  printf '%s\n' "$count"
+}
+
+# The time the pod `$1` was created, which changes when it is replaced.
+created() {
+  k get pod "$1" --output 'jsonpath={.metadata.creationTimestamp} {.metadata.uid}' 2>/dev/null || true
+}
+
 step "Running the bots"
 # Foreground, so that the pod of an earlier Job is gone too before the new one starts.
 k delete job clustine-bots --ignore-not-found --cascade=foreground --wait --timeout=60s
 k apply --filename "${root}/deploy/kubernetes/test/bots.yaml"
 
-# `kubectl wait` waits for one condition, and waiting for "Complete" alone would sit out
-# the whole timeout when the bots have failed in the first seconds. So ask for both.
-result=timeout
-deadline=$((SECONDS + bots_timeout))
-while [ "$SECONDS" -lt "$deadline" ]; do
-  # A request that fails once is asked again; nothing but the deadline ends the wait.
-  conditions="$(k get job clustine-bots \
-    --output 'jsonpath={range .status.conditions[*]}{.type}={.status}{"\n"}{end}' \
-    2>/dev/null || true)"
-  if grep -Fqx 'Complete=True' <<<"$conditions"; then
-    result=complete
-    break
-  fi
-  if grep -Fqx 'Failed=True' <<<"$conditions"; then
-    result=failed
-    break
-  fi
-  sleep 2
-done
+wait_for_job clustine-bots
 
-step "Log of the bots"
-k logs job/clustine-bots || true
-
-case "$result" in
-  complete) ;;
-  failed) die "the bots failed; their log is above" ;;
-  *) die "the bots did not finish within ${bots_timeout} seconds" ;;
-esac
-
-step "Checking that both workers handed players over"
-# The bots would be just as content with a world that one worker runs alone. That each
-# worker saw players arrive and saw players leave is what shows that two took part.
-silent=0
-for pod in clustine-worker-0 clustine-worker-1; do
+step "Checking that two workers handed players over"
+# The bots would be just as content with a world that one worker runs alone. That two
+# workers saw players arrive and saw players leave is what shows that two took part; the
+# third is the spare.
+took_part=0
+for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2; do
   k logs "$pod" >"${scratch}/${pod}.log"
+  seen=1
   for line in 'player arrived from another region' 'player departed to another region'; do
     # grep prints the count and fails if it is 0.
     count="$(grep -c -F -- "$line" "${scratch}/${pod}.log" || true)"
     printf '%s logged "%s" %s times\n' "$pod" "$line" "$count"
-    # Written so that anything but a count of at least one is a failure.
+    # Written so that anything but a count of at least one counts as not seen.
     if ! [ "$count" -ge 1 ]; then
-      silent=1
+      seen=0
     fi
   done
+  took_part=$((took_part + seen))
 done
-if [ "$silent" = 1 ]; then
-  die "not every worker saw players arrive and leave, so the bots did not cross between two workers"
+if ! [ "$took_part" -ge 2 ]; then
+  die "fewer than two workers saw players arrive and leave, so the bots did not cross between two workers"
+fi
+
+step "Deleting pods under bots that keep a ledger"
+k delete job clustine-ledger --ignore-not-found --cascade=foreground --wait --timeout=60s
+k apply --filename "${root}/deploy/kubernetes/test/ledger.yaml"
+# The bots are to be playing when the first pod goes: their Job's pod is running then.
+k wait --for=jsonpath='{.status.ready}'=1 job/clustine-ledger --timeout=120s
+
+# Without warning and without time to save anything, as when a machine dies. Each pod
+# comes back under its name. The region a worker ran is run again from what the world
+# store has: by the worker itself if it is back within the coordinator's lease, which
+# keeps its region for it then, or else by the spare.
+declare -A before
+for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2 clustine-worldstore-0; do
+  before[$pod]="$(created "$pod")"
+done
+for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2 clustine-worldstore-0; do
+  step "Deleting ${pod}"
+  k delete pod "$pod" --grace-period=0 --force
+  # Back and ready before the next one goes, so that never more than one is missing.
+  # First the pod that takes its place has to be there: until then the name is that of
+  # the pod that is going or of none.
+  deadline=$((SECONDS + rollout_timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    now="$(created "$pod")"
+    if [ -n "$now" ] && [ "$now" != "${before[$pod]}" ]; then
+      break
+    fi
+    sleep 1
+  done
+  k wait --for=condition=Ready "pod/${pod}" --timeout="${rollout_timeout}s"
+  case "$pod" in
+    clustine-worker-*)
+      # Whole again: both regions are run, by pods that say so in the logs they have
+      # now. If the deleted pod ran one, that is a pod that restored it.
+      deadline=$((SECONDS + 60))
+      while [ "$SECONDS" -lt "$deadline" ] && [ "$(running_regions)" -lt 2 ]; do
+        sleep 1
+      done
+      printf 'workers that run a region: %s\n' "$(running_regions)"
+      ;;
+  esac
+done
+
+wait_for_job clustine-ledger
+
+step "Checking that the pods were replaced and the regions are run again"
+# The bots would be just as content if nothing had been deleted. Every pod has to be
+# another one than before, and two of the new workers have to run a region, which they
+# can only have restored from the world store.
+for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2 clustine-worldstore-0; do
+  now="$(created "$pod")"
+  printf '%s: before "%s", now "%s"\n' "$pod" "${before[$pod]}" "$now"
+  if [ -z "$now" ] || [ "$now" = "${before[$pod]}" ]; then
+    die "${pod} was not replaced, so the bots were not tried by its loss"
+  fi
+done
+running="$(running_regions)"
+printf 'workers that run a region: %s\n' "$running"
+if ! [ "$running" -ge 2 ]; then
+  die "fewer than two of the new workers run a region"
 fi
