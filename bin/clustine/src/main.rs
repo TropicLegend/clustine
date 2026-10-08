@@ -97,7 +97,7 @@ enum Service {
         listen: SocketAddr,
 
         /// Chunk x coordinates at which to divide the world into regions, in ascending
-        /// order and separated by commas. Each region needs a worker of its own.
+        /// order and separated by commas. The workers that are there share the regions.
         #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
         boundaries: Vec<i32>,
 

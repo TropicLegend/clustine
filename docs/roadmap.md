@@ -189,7 +189,7 @@ differently, so that each leaves everything working.
 |---|---|---|---|
 | C0 | The messages and types of ADR-0010, refused or ignored by everyone | All existing tests | done |
 | C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | to do |
-| C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | to do |
+| C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | done |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos | Hand-over, block, takeover, chaos and move tests on two pinned regions | to do |
 | C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | to do |
 | C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | to do |
@@ -375,6 +375,14 @@ Phase C has begun. [ADR-0010](adr/0010-regions-that-follow-players.md) is its pl
 accepted after an independent review that found 21 defects. C0 is done: what the record
 adds is in `clustine-rpc` and `clustine-sim`, and everyone passes over it or refuses it.
 `RegionId` is in `clustine-world` now, so that the sim can name regions.
+
+C2a is done as well: a worker process runs several regions, each on a thread of its
+own, and the coordinator gives a region to the worker with the fewest, evens regions
+out one release at a time, and passes over a worker that just failed a region
+(ADR-0009, section 7). A cluster no longer needs a worker to spare: the regions of a
+worker that dies or leaves go to the others. `chaos.rs` has two workers running three
+regions with one of them killed again and again; `moves.rs` has a single worker that
+runs everything and hands it to one that arrives.
 
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`

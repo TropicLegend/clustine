@@ -1459,26 +1459,20 @@ async fn players_keep_playing_when_regions_are_moved_at_the_worst_moments() {
 }
 
 /// A move that cannot be made is refused with a reason, the command ends with an
-/// error, and nothing changes for the players: a move when no worker waits, to a
-/// worker that runs a region, of a region that does not exist, and to a worker that
-/// does not exist.
+/// error, and nothing changes for the players: a move to the worker that runs the
+/// region already, of a region that does not exist, and to a worker that does not
+/// exist.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_move_that_cannot_be_made_is_refused_with_a_reason_and_changes_nothing() {
     if a_repetition() {
         return;
     }
-    // As many workers as regions: none waits.
-    let full = Setup {
-        workers: 2,
-        ..SMALL
-    };
-    let mut moves = Moves::start("refusals", full).await;
+    let mut moves = Moves::start("refusals", SMALL).await;
     let routes = moves.routes();
-    let busy = moves.owner(1).expect("the cluster is whole");
+    let owner = moves.owner(0).expect("the cluster is whole");
     let began = Instant::now();
-    let asked_for: [(&str, Region, Option<String>); 4] = [
-        ("with no worker waiting", 0, None),
-        ("to a worker that runs a region", 0, Some(worker_name(busy))),
+    let asked_for: [(&str, Region, Option<String>); 3] = [
+        ("to the worker that runs it", 0, Some(worker_name(owner))),
         ("of a region that does not exist", 7, None),
         (
             "to a worker that does not exist",
@@ -1900,8 +1894,8 @@ async fn a_worker_that_is_told_to_stop_hands_its_region_over_first() {
     played(&moves.finish(false).await);
 }
 
-/// A worker that is told to stop while no other waits cannot hand its region over. It
-/// goes on running it, and stops at once when it is told a second time; its region is
+/// A worker that is told to stop while it is the only one cannot hand its regions over.
+/// It goes on running them, and stops at once when it is told a second time; they are
 /// run again once a worker is there. With `CLUSTINE_MOVES_SOAK` it is also left alone
 /// until it gives up by itself, which takes 20 seconds.
 #[tokio::test(flavor = "multi_thread")]
@@ -1909,11 +1903,12 @@ async fn a_worker_that_is_told_to_stop_with_nobody_to_hand_over_to_goes_on_until
     if a_repetition() {
         return;
     }
-    let full = Setup {
-        workers: 2,
+    // One worker, which runs both regions: there is no other to hand anything to.
+    let alone = Setup {
+        workers: 1,
         ..SMALL
     };
-    let mut moves = Moves::start("told to stop twice", full).await;
+    let mut moves = Moves::start("told to stop twice", alone).await;
     let patient = if a_soak() {
         [false, true]
     } else {
@@ -1923,7 +1918,7 @@ async fn a_worker_that_is_told_to_stop_with_nobody_to_hand_over_to_goes_on_until
         let region = moves.region_at(moves.progress.bots()[0].x);
         let owner = moves.owner(region).expect("the cluster was whole");
         let told = Instant::now();
-        let stopping = format!("which runs region {region}, with no worker waiting: told to stop");
+        let stopping = format!("which runs region {region}, with no other worker: told to stop");
         moves.signal(owner, "TERM", &stopping).await;
         moves
             .until("the worker has heard that it is to stop", |moves| {
@@ -1962,25 +1957,26 @@ async fn a_worker_that_is_told_to_stop_with_nobody_to_hand_over_to_goes_on_until
     played(&moves.finish(false).await);
 }
 
-/// A worker is told to stop while no other waits, and a worker registers a moment
-/// later: the region is handed to that one then, and the first is gone without an
-/// error. The spare of a cluster may be the last to arrive.
+/// A worker is told to stop while it is the only one, and a worker registers a moment
+/// later: its regions are handed to that one then, and the first is gone without an
+/// error. The worker that takes over may be the last to arrive.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_that_is_told_to_stop_hands_over_to_a_worker_that_arrives_later() {
     if a_repetition() {
         return;
     }
-    let full = Setup {
-        workers: 2,
+    // One worker, which runs both regions, until the other arrives.
+    let alone = Setup {
+        workers: 1,
         ..SMALL
     };
-    let mut moves = Moves::start("spare arrives later", full).await;
+    let mut moves = Moves::start("spare arrives later", alone).await;
     let region = moves.region_at(moves.progress.bots()[0].x);
     let owner = moves.owner(region).expect("the cluster was whole");
     let epoch = moves.epoch(region);
     let coordinator_said = moves.cluster.log("coordinator").len();
     let told = Instant::now();
-    let stopping = format!("which runs region {region}, with no worker waiting: told to stop");
+    let stopping = format!("which runs region {region}, with no other worker: told to stop");
     moves.signal(owner, "TERM", &stopping).await;
     moves
         .until(

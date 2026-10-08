@@ -124,6 +124,18 @@ impl Chaos {
     /// and bots that walk between the block x coordinates `west` and `east` on it.
     /// Returns once every bot is on its lane and has been acknowledged.
     async fn start(test: &str, boundaries: &[i32], west: f64, east: f64) -> Self {
+        // One worker for each region and one to spare.
+        Self::start_with(test, boundaries, boundaries.len() + 2, west, east).await
+    }
+
+    /// The same with `workers` workers, however many regions there are.
+    async fn start_with(
+        test: &str,
+        boundaries: &[i32],
+        workers: usize,
+        west: f64,
+        east: f64,
+    ) -> Self {
         let alone = ONE_AT_A_TIME.lock().await;
         let seed = seed();
         println!("{test}: seed {seed} (set CLUSTINE_CHAOS_SEED={seed} to run it again)");
@@ -132,7 +144,6 @@ impl Chaos {
             .tempdir()
             .unwrap();
         let list: Vec<String> = boundaries.iter().map(i32::to_string).collect();
-        let workers = boundaries.len() + 2;
         let mut cluster = Cluster::new(directory.path(), workers, &list.join(",")).await;
         let checkpoints = checkpoint_seconds(seed);
         println!("{test}: the workers checkpoint every {checkpoints} s");
@@ -678,6 +689,53 @@ async fn players_keep_playing_while_the_workers_that_run_their_regions_are_kille
     assert!(report.actions > 0 && report.crossings > 0, "{report}");
 }
 
+/// Two workers run three regions between them. One of the two is killed, again and
+/// again: the other then runs all three, and when the killed one is back it is given
+/// one of them again, so that neither runs everything for long.
+#[tokio::test(flavor = "multi_thread")]
+async fn players_keep_playing_on_fewer_workers_than_regions_while_one_is_killed() {
+    if a_repetition() {
+        return;
+    }
+    let mut chaos = Chaos::start_with("few workers", &[2, 3], 2, 20.5, 60.5).await;
+    let regions = 3;
+    for _ in 0..rounds(3) {
+        // Regions are evened out, so with both workers there neither runs everything.
+        chaos
+            .until("both workers run a region", |chaos| {
+                let first = chaos.owner(0);
+                (1..regions).any(|region| chaos.owner(region) != first) && chaos.every_region_runs()
+            })
+            .await;
+        let region = chaos.region_with_players();
+        let Some(killed) = chaos.owner(region) else {
+            chaos.fail(&format!("region {region} has no owner to kill"));
+        };
+        chaos
+            .kill_worker(killed, &format!("which ran region {region}, among others"))
+            .await;
+        // The one that is left runs all of them.
+        chaos
+            .until("the other worker runs every region", |chaos| {
+                (0..regions).all(|region| chaos.owner(region).is_some_and(|owner| owner != killed))
+            })
+            .await;
+        chaos.whole().await;
+        chaos.start_worker(killed);
+        chaos.registered(killed).await;
+        // And hands one over once the other is back.
+        chaos
+            .until(
+                "the worker that came back is given a region again",
+                |chaos| (0..regions).any(|region| chaos.owner(region) == Some(killed)),
+            )
+            .await;
+        chaos.whole().await;
+    }
+    let report = chaos.finish().await;
+    assert!(report.actions > 0 && report.crossings > 0, "{report}");
+}
+
 /// The world store is killed and comes back, again and again: sometimes at once,
 /// sometimes only after the workers have found it gone, and sometimes after a good
 /// part of the time the edge has patience for.
@@ -952,6 +1010,70 @@ async fn players_join_and_leave_while_the_region_they_do_it_in_has_no_worker() {
         chaos.note(format!("{visitor_name} is in and has built"));
         drop(visitor);
         gone.push(visitor_name);
+    }
+    let report = chaos.finish().await;
+    assert!(report.actions > 0 && report.crossings > 0, "{report}");
+}
+
+/// A player whose region has lost its worker leaves and joins again under their name,
+/// before another worker has the region: what a person does when the game stands
+/// still. They are let in once the region runs again, and can play.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_player_who_left_joins_again_while_their_region_has_no_worker() {
+    if a_repetition() {
+        return;
+    }
+    let mut chaos = Chaos::start("leaving and coming back", &[3], 33.5, 62.5).await;
+    let address = chaos.cluster.edge.0.clone();
+    let spawn_region = chaos.region_at(0.5);
+    let air = Some(i32::from(blocks::AIR.0));
+    for round in 0..rounds(3) {
+        let name = format!("Guest{round}");
+        let guest = chaos.join(&name).await;
+        let worker = chaos.owner(spawn_region).expect("the cluster was whole");
+        let why = format!("which ran region {spawn_region}, where {name} is");
+        chaos.kill_worker(worker, &why).await;
+        drop(guest);
+        let joining = {
+            let (address, name) = (address.clone(), name.clone());
+            tokio::spawn(async move { Bot::join(&address, &name).await })
+        };
+        chaos.note(format!("{name} left and is joining again"));
+        chaos.whole().await;
+        chaos.start_worker(worker);
+        chaos.registered(worker).await;
+
+        let mut back = match joining.await.unwrap() {
+            Ok(back) => back,
+            Err(error) => chaos.fail(&format!(
+                "{name}, who joined again while the region had no worker, was not let in: {error:#}"
+            )),
+        };
+        let played = async {
+            let count = view_area((0, 0), VIEW_DISTANCE).len();
+            back.wait_for_chunks(count, PATIENCE).await?;
+            let placed = back.use_item_on(2, -61, 3, face::TOP).await?;
+            back.wait_until(PATIENCE, |bot| {
+                bot.acknowledged_sequence >= placed
+                    && bot
+                        .block_at(2, -60, 3)
+                        .is_ok_and(|block| block.is_some() && block != air)
+            })
+            .await?;
+            let broken = back.dig(2, -60, 3).await?;
+            back.wait_until(PATIENCE, |bot| {
+                bot.acknowledged_sequence >= broken
+                    && bot.block_at(2, -60, 3).is_ok_and(|block| block == air)
+            })
+            .await
+        };
+        if let Err(error) = played.await {
+            chaos.fail(&format!(
+                "{name} could not play after joining again: {error:#}"
+            ));
+        }
+        chaos.note(format!("{name} is back and has built"));
+        drop(back);
     }
     let report = chaos.finish().await;
     assert!(report.actions > 0 && report.crossings > 0, "{report}");

@@ -1,6 +1,8 @@
 # ADR-0009: Moving a region on purpose
 
-- Status: **Accepted**; implemented (milestone M3, phase B)
+- Status: **Accepted**; implemented (milestone M3, phase B). Since step C2a of
+  [ADR-0010](0010-regions-that-follow-players.md) a worker runs several regions, which
+  changes who can be a target; see "Since workers run several regions" below
 - Date: 2026-10-08; revised the same day after an independent review, and again after
   the tests (see the end)
 
@@ -175,6 +177,33 @@ ADR-0008's review already named as the alternative.
 All services of a cluster are of one build; a worker of an older build would not
 understand `Release`.
 
+### 7. Since workers run several regions
+
+This record was written when a worker ran one region. Since step C2a of ADR-0010 it
+runs several, and what is said above about targets and waiting workers reads so:
+
+- A **target** is a worker that is registered, has a connection right now, is not
+  leaving and is not the region's owner. It may run regions and be the target of other
+  releases. Where nobody names one, it is the worker with the fewest regions, counting
+  the releases it is the target of, and of several such the one that has waited
+  longest. A reserved target is not kept free; it counts as having the region.
+- A region without an owner goes to the worker that has the fewest regions, at a tick.
+  Regions no longer wait because every worker has one.
+- A worker that leaves hands each of its regions over, to the same worker or to several.
+  It has nobody to hand over to only when it is the last worker.
+- **Regions are evened out.** At a tick, outside a new coordinator's grace period and
+  while no release is under way, the coordinator begins one release if the worker with
+  the most regions has at least two more than the one with the fewest: of its highest
+  region, for the lightest worker. So a worker that registers later is given its share,
+  one region at a time, and a difference of one is left alone. A move by name that
+  leaves a difference of two is evened out again; to empty a worker, tell it to stop.
+- **A worker that just failed a region is passed over** for six leases: one from which
+  a region was taken because it did not vouch for it, or that left a release
+  unanswered. Workers in order come before it whatever their loads, and nothing is
+  evened out towards it or from it. It is still given a region if nobody else can take
+  it. Without this a worker that is connected but cannot reach the store would be
+  given the same region again and again, being the one with the fewest.
+
 ## Why not hand the state over directly
 
 The old owner could send the region to the new one and spare the store a checkpoint.
@@ -187,10 +216,10 @@ tests of phase A already try.
 
 - A move is as safe as a crash, and a crash at any point of a move is an ordinary one.
 - The pause does not include the lease or the log since the last checkpoint.
-- A region can only be moved to a worker that runs none, because a worker runs one
-  region until phase C.
-- With no waiting worker a worker that leaves cannot hand anything over; it stops as
-  before, and its region stands still until a worker is there.
+- A region could only be moved to a worker that ran none, as long as a worker ran one
+  region; see section 7.
+- The last worker that leaves cannot hand anything over; it stops as before, and its
+  regions stand still until a worker is there.
 - A worker no longer exits because a region was taken from it.
 
 ## Review
