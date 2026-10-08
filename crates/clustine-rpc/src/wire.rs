@@ -435,6 +435,32 @@ mod tests {
         assert_eq!(fresh.tick(), 4);
     }
 
+    /// What is said first to the world store is one of two things, and neither is
+    /// taken for the other, nor a bare hello for either.
+    #[test]
+    fn what_is_said_first_to_the_world_store_round_trips() {
+        use crate::StoreHello;
+
+        let said = [StoreHello::Region(hello()), StoreHello::Regions];
+        let mut written = Vec::new();
+        for hello in &said {
+            blocking::write(&mut written, hello).unwrap();
+        }
+        let mut reader = Cursor::new(&written);
+        for hello in said {
+            assert_eq!(blocking::read(&mut reader).unwrap(), Some(hello));
+        }
+        assert_eq!(blocking::read::<StoreHello>(&mut reader).unwrap(), None);
+
+        // A hello for a region is the hello behind a byte that says which of the two
+        // it is.
+        let bare = encode(&hello());
+        let wrapped = encode(&StoreHello::Region(hello()));
+        assert_eq!(wrapped[4], 0);
+        assert_eq!(wrapped[5..], bare[4..]);
+        assert_eq!(encode(&StoreHello::Regions)[4..], [1]);
+    }
+
     #[tokio::test]
     async fn a_stream_that_ends_within_a_message_is_an_error() {
         let mut written = Vec::new();

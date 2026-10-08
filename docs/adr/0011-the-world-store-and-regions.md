@@ -1309,3 +1309,12 @@ what was decided. None of it changes what section 4.3 guarantees.
    `a_grant_of_a_failed_group_does_not_come_back` waited for the first region's answers
    to end and then asserted that the second was lost as well; the handles are lost one
    after the other, and once it looked in between. It waits for the second now.
+
+### C1.6
+
+1. **Tests in `tcp.rs` that speak to the store on a connection of their own** said a
+   bare `RegionHello` first, which the store no longer reads: the helpers `greeted` and
+   `welcoming_store` and the test
+   `a_region_whose_owner_went_away_while_it_was_restored_is_opened_again_with_everything`
+   say and expect `StoreHello::Region` now. What they assert is as it was. Section 9
+   does not name them; section 5 implies them.

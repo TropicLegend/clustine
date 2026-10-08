@@ -1562,18 +1562,28 @@ fn nobody_is_served_while_the_log_cannot_be_cut_back_for_good() {
             };
             assert!(matches!(error, StoreError::Io(_)), "{error}");
         }
-        // Nor is anyone told which regions there are.
+        // Nor is anyone told which regions there are, in this process or another.
         assert!(matches!(store.regions(), Err(StoreError::Io(_))));
+        assert!(matches!(regions(&address), Err(StoreError::Io(_))));
     }
     // The connection ends without a word.
     let mut connection = std::net::TcpStream::connect(&address).unwrap();
-    clustine_rpc::wire::blocking::write(&mut connection, &hello(1, 2)).unwrap();
+    let said = clustine_rpc::StoreHello::Region(hello(1, 2));
+    clustine_rpc::wire::blocking::write(&mut connection, &said).unwrap();
     let said: Option<clustine_rpc::StoreWelcome> =
         clustine_rpc::wire::blocking::read(&mut connection).unwrap();
     assert_eq!(said, None);
 
+    // A connection that asks for the list is closed without it as well.
+    let mut connection = std::net::TcpStream::connect(&address).unwrap();
+    let said = clustine_rpc::StoreHello::Regions;
+    clustine_rpc::wire::blocking::write(&mut connection, &said).unwrap();
+    let list: Option<RegionList> = clustine_rpc::wire::blocking::read(&mut connection).unwrap();
+    assert_eq!(list, None);
+
     disk.failing_syncs.store(false, Ordering::SeqCst);
     assert_eq!(store.regions().unwrap().regions.len(), 2);
+    assert_eq!(regions(&address).unwrap(), store.regions().unwrap());
     let (remote, restored) = StoreHandle::connect(&address, hello(1, 2)).unwrap();
     assert_eq!(restored.state, None);
     assert_eq!(deltas(&restored), [(1, delta(1))]);

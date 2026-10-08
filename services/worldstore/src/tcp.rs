@@ -5,6 +5,9 @@
 //! in order and everything in the format of [`wire`]. [`serve`] is the store's side of
 //! this, [`StoreHandle::connect`] the owner's.
 //!
+//! Or it is about the list of regions: whoever opens it asks for the list, is sent it
+//! and nothing else, and the connection is closed. [`regions`] asks so.
+//!
 //! What a region is restored with can be far larger than a message may be: a busy region
 //! commits a delta every tick, and its checkpoints are minutes apart. So a welcome is
 //! followed by the region's state and deltas in parts of bounded size, a single large
@@ -26,8 +29,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use clustine_rpc::{
-    RegionHello, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
-    StoreWelcome, TickState, held_bytes, held_from_bytes, wire,
+    RegionHello, RegionList, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreHello,
+    StoreReply, StoreRequest, StoreWelcome, TickState, held_bytes, held_from_bytes, wire,
 };
 use clustine_world::{ChunkArea, ChunkPos, EntityIds};
 use tracing::{info, warn};
@@ -203,8 +206,12 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
     let greeted = greeting(stream, GREETING_TIMEOUT, |stream| {
         wire::blocking::read(stream)
     });
-    let hello: RegionHello = match greeted {
-        Ok(hello) => hello,
+    let hello = match greeted {
+        Ok(StoreHello::Region(hello)) => hello,
+        Ok(StoreHello::Regions) => {
+            list(store, stream, peer);
+            return;
+        }
         Err(error) => {
             info!(%peer, %error, "a connection ended without a hello");
             return;
@@ -279,6 +286,25 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
         drop(link);
     });
     info!(%peer, %region, epoch, "the connection of a region ended");
+}
+
+/// Sends the list of regions to whoever asked for it on `stream`, after which the
+/// connection is closed.
+fn list(store: &Store, stream: &TcpStream, peer: SocketAddr) {
+    match store.regions() {
+        Ok(regions) => {
+            // Whoever asked must not hold on to a thread by not reading the answer.
+            let sent = stream
+                .set_write_timeout(Some(GREETING_TIMEOUT))
+                .and_then(|()| wire::blocking::write(&mut &*stream, &regions));
+            if let Err(error) = sent {
+                info!(%peer, %error, "the list of regions could not be sent");
+            }
+        }
+        // Not said: the connection is closed without a list, as it is without a welcome
+        // when a hello meets this, and whoever asked asks again.
+        Err(error) => info!(%peer, %error, "the list of regions cannot be given just now"),
+    }
 }
 
 /// Welcomes the owner of a region on `stream` and sends it what the region is restored
@@ -566,6 +592,28 @@ impl StoreHandle {
     }
 }
 
+/// Reads the list of regions from the store that is served at `address` (host:port), as
+/// [`Store::regions`] gives it in the store's own process. A connection is made for it
+/// each time.
+///
+/// If the store cannot be reached, does not answer, or closes the connection without
+/// the list, which it does for as long as it serves nobody after a failed write, the
+/// error is [`StoreError::Io`], and it is worth asking again.
+pub fn regions(address: &str) -> Result<RegionList, StoreError> {
+    regions_within(address, GREETING_TIMEOUT)
+}
+
+/// Does what [`regions`] does, with `patience` for the connection to be made and for
+/// the store to answer.
+fn regions_within(address: &str, patience: Duration) -> Result<RegionList, StoreError> {
+    let stream = reach(address, patience)?;
+    let _ = stream.set_nodelay(true);
+    wire::blocking::write(&mut &stream, &StoreHello::Regions)?;
+    Ok(greeting(&stream, patience, |stream| {
+        wire::blocking::read(stream)
+    })?)
+}
+
 /// Does what [`StoreHandle::connect`] does, with `patience` for the connection to be
 /// made and for the store to answer the hello.
 fn connect_within(
@@ -576,7 +624,7 @@ fn connect_within(
     let stream = Arc::new(reach(address, patience)?);
     // Requests are written in batches already, and one must not wait for the next.
     let _ = stream.set_nodelay(true);
-    wire::blocking::write(&mut &*stream, &hello)?;
+    wire::blocking::write(&mut &*stream, &StoreHello::Region(hello))?;
     // Nothing is asked of the store before all of it is here: the region is not its
     // owner's with half of what it is restored with.
     let restored = greeting(&stream, patience, |stream| welcomed(stream, hello))??;
@@ -774,7 +822,7 @@ mod tests {
     fn greeted(address: &str, hello: RegionHello) -> TcpStream {
         let mut connection = TcpStream::connect(address).unwrap();
         connection.set_nodelay(true).unwrap();
-        wire::blocking::write(&mut connection, &hello).unwrap();
+        wire::blocking::write(&mut connection, &StoreHello::Region(hello)).unwrap();
         let welcome = wire::blocking::read(&mut connection).unwrap();
         assert!(
             matches!(welcome, Some(StoreWelcome::Accepted { .. })),
@@ -1414,8 +1462,8 @@ mod tests {
         let address = listener.local_addr().unwrap().to_string();
         let store = thread::spawn(move || {
             let (mut connection, _) = listener.accept().unwrap();
-            let said: Option<RegionHello> = wire::blocking::read(&mut connection).unwrap();
-            assert_eq!(said, Some(hello(1, 1)));
+            let said: Option<StoreHello> = wire::blocking::read(&mut connection).unwrap();
+            assert_eq!(said, Some(StoreHello::Region(hello(1, 1))));
             let welcome = StoreWelcome::Accepted {
                 entity_ids: EntityIds::block(0).unwrap(),
                 pinned: Vec::new(),
@@ -1993,7 +2041,7 @@ mod tests {
             // the welcome alone.
             for parts in [1, 0] {
                 let mut connection = TcpStream::connect(&address).unwrap();
-                wire::blocking::write(&mut connection, &hello(1, 3)).unwrap();
+                wire::blocking::write(&mut connection, &StoreHello::Region(hello(1, 3))).unwrap();
                 let welcome = wire::blocking::read(&mut connection).unwrap();
                 let accepted = StoreWelcome::Accepted {
                     entity_ids: expected.entity_ids,

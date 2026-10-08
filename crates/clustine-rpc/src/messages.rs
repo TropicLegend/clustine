@@ -408,7 +408,19 @@ pub struct TickState {
     pub state: Vec<u8>,
 }
 
-/// The world store's answer to a [`RegionHello`].
+/// What is said first on a connection to the world store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StoreHello {
+    /// Open a region. Answered with a [`StoreWelcome`], and if that accepts the hello,
+    /// the connection is about the region from then on.
+    Region(RegionHello),
+    /// Send the list of regions and close. Answered with one [`RegionList`]; the
+    /// connection is closed without one if the store cannot give it just now, and it
+    /// is worth asking again.
+    Regions,
+}
+
+/// The world store's answer to a [`StoreHello::Region`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StoreWelcome {
     /// The store lets the owner have the region. What the region is restored with
@@ -517,8 +529,9 @@ pub struct ChunkBox {
 /// section 7.
 pub type Crowds = Vec<(ChunkPos, u32)>;
 
-/// What a service says first on a connection to a worker or to the world store: which
-/// region the connection is about and who the service takes its owner to be.
+/// What a service says first on a connection to a worker, and, in a
+/// [`StoreHello::Region`], on one to the world store: which region the connection is
+/// about and who the service takes its owner to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegionHello {
     pub region: RegionId,

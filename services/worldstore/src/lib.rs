@@ -19,7 +19,8 @@
 //! is needed, which is why a world is tied to the generator settings it was created with.
 //!
 //! Whoever runs a region may be in another process than the store: [`serve`] offers a
-//! store over TCP, and [`StoreHandle::connect`] opens a region of a store that is served.
+//! store over TCP, [`StoreHandle::connect`] opens a region of a store that is served,
+//! and [`regions`] reads its list of regions.
 
 mod chunks;
 mod disk;
@@ -51,7 +52,7 @@ use crate::chunks::{ChunkService, Chunks, FileChunks, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk};
 use crate::lanes::Lanes;
 pub use crate::table::Division;
-pub use crate::tcp::{Server, serve};
+pub use crate::tcp::{Server, regions, serve};
 
 /// Why a world could not be opened, read or written, or a region not be opened.
 #[derive(Debug, thiserror::Error)]

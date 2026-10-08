@@ -2158,3 +2158,66 @@ fn a_checkpoint_of_a_region_that_is_absorbed_meanwhile_is_not_put_in_place() {
         assert_eq!(state_of(&restored), Some((5, whole("merged", 5))));
     }
 }
+
+/// The list of regions is read by another process as the store's own process has it:
+/// a connection that asks for it is sent the list and closed.
+#[test]
+fn the_list_of_regions_is_read_over_a_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let stores = [
+        Store::memory_divided(generator(), gap()).unwrap(),
+        Store::local_divided(directory.path(), generator(), gap()).unwrap(),
+    ];
+    for store in stores {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = serve(store.clone(), listener).unwrap();
+        let address = server.local_addr().to_string();
+        // A world that has just been made, and one in which regions were granted
+        // chunks, split and merged.
+        assert_eq!(regions(&address).unwrap(), store.regions().unwrap());
+        let (first, _) = opened(&store, 0, 4);
+        let (second, _) = opened(&store, 1, 2);
+        assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+        let split_off = StoreReply::Split {
+            region: RegionId(3),
+        };
+        assert_eq!(split(&first, 5, &[FREE, WEST], 7), split_off);
+        assert!(matches!(
+            absorb(&first, 1, 2, 6),
+            StoreReply::Absorbed { .. }
+        ));
+        second.flush();
+        let list = regions(&address).unwrap();
+        assert_eq!(list, store.regions().unwrap());
+        assert_eq!(list.home, RegionId(2));
+        assert_eq!(list.absorbed, [(RegionId(1), RegionId(0))]);
+        let epochs: Vec<(RegionId, u64)> = list
+            .regions
+            .iter()
+            .map(|info| (info.region, info.epoch))
+            .collect();
+        assert_eq!(
+            epochs,
+            [(RegionId(0), 4), (RegionId(2), 0), (RegionId(3), 7)]
+        );
+
+        // On a connection of the test's own: the list, and then nothing more.
+        let mut connection = std::net::TcpStream::connect(&address).unwrap();
+        let wire_write = clustine_rpc::wire::blocking::write::<clustine_rpc::StoreHello>;
+        wire_write(&mut connection, &clustine_rpc::StoreHello::Regions).unwrap();
+        let sent: Option<RegionList> = clustine_rpc::wire::blocking::read(&mut connection).unwrap();
+        assert_eq!(sent, Some(list));
+        let more: Option<RegionList> = clustine_rpc::wire::blocking::read(&mut connection).unwrap();
+        assert_eq!(more, None);
+        // A region is opened over a connection as before, beside it.
+        let (remote, restored) = StoreHandle::connect(&address, hello_of(&gap(), 3, 7)).unwrap();
+        assert_eq!(restored.held, [(WEST, 5), (FREE, 5)]);
+        assert_eq!(load(&remote, FREE), generator().generate(FREE));
+    }
+
+    // Where no store listens, there is no list.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    drop(listener);
+    assert!(matches!(regions(&address), Err(StoreError::Io(_))));
+}
