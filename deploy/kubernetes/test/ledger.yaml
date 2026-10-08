@@ -50,6 +50,9 @@ spec:
             - clustine-botswarm
             - ledger
             - clustine-edge:25565
+            # A pod that has just become ready is not reached through its Service at
+            # once. A client would try again, and so do the bots before they begin.
+            - --wait-for-server=60
             - --bots=4
             # Long enough for every pod that is deleted meanwhile to be missed and
             # replaced; see deploy/kind/test.sh.

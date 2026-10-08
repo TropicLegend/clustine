@@ -23,6 +23,13 @@ struct Args {
     #[arg(long, global = true)]
     accept_eula: bool,
 
+    /// Before a scenario with several bots begins, wait up to this many seconds for the
+    /// server to answer in the server list. A server that has just become ready on
+    /// Kubernetes is not reached through its Service at once, and a client would try
+    /// again; so does this.
+    #[arg(long, global = true, default_value_t = 0)]
+    wait_for_server: u64,
+
     #[command(subcommand)]
     scenario: Scenario,
 }
@@ -163,6 +170,20 @@ async fn main() -> Result<()> {
         None => address,
     };
 
+    // Only tried again while there is time left; the last failure is the one reported.
+    let reachable = |address: String| async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(args.wait_for_server);
+        loop {
+            match clustine_botswarm::ping(&address).await {
+                Ok(_) => return Ok(address),
+                Err(error) if tokio::time::Instant::now() >= deadline => {
+                    return Err(error).context("the server does not answer");
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        }
+    };
+
     match args.scenario {
         Scenario::Ping { address } => {
             let status = clustine_botswarm::ping(&target(address)).await?;
@@ -231,7 +252,8 @@ async fn main() -> Result<()> {
                 speed,
                 name_prefix,
             };
-            let report = cross(&target(address), &crossing).await?;
+            let address = reachable(target(address)).await?;
+            let report = cross(&address, &crossing).await?;
             println!(
                 "{} crossings by {walkers} bots, {} blocks built, {} moves seen by the watcher",
                 report.crossings, report.blocks_built, report.moves_seen
@@ -262,7 +284,8 @@ async fn main() -> Result<()> {
                 patience: Duration::from_secs(patience),
                 name_prefix,
             };
-            let report = ledger(&target(address), &scenario, &Progress::new(bots)).await?;
+            let address = reachable(target(address)).await?;
+            let report = ledger(&address, &scenario, &Progress::new(bots)).await?;
             println!("{bots} bots with seed {seed}: {report}");
         }
         Scenario::Chunks {

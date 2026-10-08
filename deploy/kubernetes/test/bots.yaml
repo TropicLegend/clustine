@@ -51,6 +51,9 @@ spec:
             - clustine-botswarm
             - cross
             - clustine-edge:25565
+            # A pod that has just become ready is not reached through its Service at
+            # once. A client would try again, and so do the bots before they begin.
+            - --wait-for-server=60
             - --walkers=4
             - --rounds=3
             # The regions meet at block x = 64 (`--boundaries=4` in ../coordinator.yaml),
