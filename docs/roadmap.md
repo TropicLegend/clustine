@@ -448,9 +448,14 @@ a player's region for everything the player sees and other regions as a guest wh
 region names them, takes answers by their number, sends a player or an action on
 blocks where a region says, and is handed the home region and nothing else. Every
 end-to-end test passes with regions that take their stripes as given and with regions
-that ask the store; the pause at a move is 0.8 seconds in the middle, as before. Left
-of C2b: the scenarios of ADR-0013 by someone else, and C2b.5, which takes the given
-stripes away so that asking is the only way.
+that ask the store; the pause at a move is 0.8 seconds in the middle, as before. The
+scenarios of ADR-0013 were then written by someone who did not read the edge's code: 59
+tests, among them runs generated against a second implementation of the record. They
+found a contradiction in the record itself, which the edge had followed (a subscription
+ended while another region's pointed at it, which only regions that merge and split can
+bring about), and an entity that stayed on screens when its player left in the very
+tick they were handed on; both are put right. Left of C2b: C2b.5, which takes the
+given stripes away so that asking is the only way.
 
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`

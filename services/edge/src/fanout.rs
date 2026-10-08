@@ -983,11 +983,7 @@ impl Fanout {
                     }
                     let chunk =
                         ChunkPos::containing(transfer.pose.position.x, transfer.pose.position.z);
-                    let discard = EdgeToWorker::Discard {
-                        entity: transfer.entity_id,
-                        chunk,
-                    };
-                    self.send_to_region(holder, discard).await;
+                    self.discard(holder, transfer.entity_id, chunk).await;
                     self.remove_player(player).await;
                 } else {
                     self.hand_over(player, from, holder, transfer).await;
@@ -1196,14 +1192,6 @@ impl Fanout {
     ) {
         let position = transfer.pose.position;
         let chunk = ChunkPos::containing(position.x, position.z);
-        // The region did not report the entity as removed, because it lives on. Should
-        // it turn out to have nowhere to go, the region it was heading for is told to
-        // report it, or it would stay on the screens of those who saw it cross.
-        let discard = EdgeToWorker::Discard {
-            entity: transfer.entity_id,
-            chunk,
-        };
-
         // The player's connection can have ended while the message was on its way, and
         // they can even be back already, as a new entity somewhere else.
         let current = self
@@ -1211,7 +1199,7 @@ impl Fanout {
             .get_mut(&player)
             .filter(|view| view.entity == Some(transfer.entity_id));
         let Some(view) = current else {
-            self.send_to_region(to, discard).await;
+            self.discard(to, transfer.entity_id, chunk).await;
             return;
         };
         if view.region != from {
@@ -1225,7 +1213,7 @@ impl Fanout {
             // does. Sending the player back would have them bounce there forever.
             error!(name = %view.name, %from, "a region let go of a player who is inside it");
             refuse(&view.outbound, "The server lost track of where you are.");
-            self.send_to_region(to, discard).await;
+            self.discard(to, transfer.entity_id, chunk).await;
             self.remove_player(player).await;
             return;
         }
@@ -1273,6 +1261,20 @@ impl Fanout {
         // Normally the view has followed the move already; this covers a player who was
         // let go without having been seen to move, such as one who joined right there.
         self.move_view(player, chunk).await;
+    }
+
+    /// Gives up an entity that a region let go and that has nowhere to go: its player
+    /// left meanwhile, or cannot be placed.
+    ///
+    /// The old region did not report the entity as removed, because it lived on. The
+    /// region it was heading for, `to`, is told to report it, for every edge whose
+    /// players saw it cross. This edge takes it off its own screens here and now: it
+    /// takes a removal only from the region that showed it the entity last, which is
+    /// the old one, and it may not be asking `to` for that chunk at all.
+    async fn discard(&mut self, to: RegionId, entity: EntityId, chunk: ChunkPos) {
+        self.send_to_region(to, EdgeToWorker::Discard { entity, chunk })
+            .await;
+        self.remove_entity(entity).await;
     }
 
     /// Handles something that happened in the region `from`.
@@ -1743,6 +1745,12 @@ impl Fanout {
                 self.asking.push((region, Asking::AsGuest, chunk, false));
             } else {
                 self.end(region, chunk);
+                // Another region's viewers can have been told that this region holds
+                // the chunk, from a belief older than this region's own. Nothing is
+                // asked here any more, so they ask their own region again.
+                if watched {
+                    self.ask_those_told(region, chunk);
+                }
             }
         }
         if !watched {
@@ -1897,13 +1905,22 @@ impl Fanout {
         {
             entry.served_by = None;
         }
+        self.ask_those_told(from, chunk);
+        self.flush_asking().await;
+    }
+
+    /// Has every region ask the store again whose viewers were told that `holder`
+    /// holds `chunk`, now that nothing is asked of `holder` for it: at once, or at the
+    /// task's next check where that region was asked again less than a second ago.
+    /// The messages are sent with the turn's others.
+    fn ask_those_told(&mut self, holder: RegionId, chunk: ChunkPos) {
         let now = Instant::now();
         for (region, port) in &mut self.regions {
             let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
                 continue;
             };
             if subscription.kind != Kind::Viewer
-                || subscription.condition != Condition::Elsewhere(from)
+                || subscription.condition != Condition::Elsewhere(holder)
             {
                 continue;
             }
@@ -1919,7 +1936,6 @@ impl Fanout {
                 self.asking.push((*region, Asking::Subscribe, chunk, true));
             }
         }
-        self.flush_asking().await;
     }
 
     /// Asks again where a region was asked again less than a second before the last
@@ -6301,16 +6317,16 @@ mod scenarios {
         edge.end().await;
     }
 
-    /// Statement E, where section 2 breaks it. Two regions' players see a chunk a
-    /// third holds. The north names the east for it, as it heard at a time when that
-    /// was so; the east is asked for it already, for its own player, and names the
-    /// west. Then the east's player goes. Its subscription was told elsewhere, so by
-    /// section 2 it is ended as one that carried nothing. But it was what the north's
-    /// subscription pointed at: the north's is left told elsewhere with a region
-    /// where nothing is asked, and nothing will ever have the north asked again.
-    /// Statement E says that there is a subscription at the east, or an asking due.
+    /// Statement E, where section 2 as first written broke it. Two regions' players
+    /// see a chunk a third holds. The north names the east for it, as it heard at a
+    /// time when that was so; the east is asked for it already, for its own player,
+    /// and names the west. Then the east's player goes. Its subscription was told
+    /// elsewhere, so it is ended as one that carried nothing. But it was what the
+    /// north's subscription pointed at: left as it is, the north's would be told
+    /// elsewhere with a region where nothing is asked, and nothing would ever have
+    /// the north asked again. Statement E says that there is a subscription at the
+    /// east, or an asking due; section 2 now has the north asked again.
     #[tokio::test]
-    #[ignore = "finding: a subscription another was told elsewhere with is ended; E breaks"]
     async fn statement_e_holds_when_a_subscription_another_points_at_is_ended() {
         let mut edge = Harness::start().await;
         let first = edge.joined(player(1), EntityId(5)).await;
@@ -6350,7 +6366,6 @@ mod scenarios {
     /// entity that departed that one "that never arrived anywhere is" taken off the
     /// screens, and ADR-0006 has the region it was heading for report it removed.
     #[tokio::test]
-    #[ignore = "finding: a discarded entity that another region showed last stays on screens"]
     async fn a_discarded_entity_another_region_showed_last_is_taken_off_the_screens() {
         let near = ChunkPos::new(3, 0);
         let mut edge = Harness::start().await;
@@ -6667,9 +6682,6 @@ mod scenarios {
         joined: u128,
         /// How often a run came to the cases it is there for.
         tally: BTreeMap<&'static str, u64>,
-        /// The run has come to where section 2 of ADR-0013 breaks statement E, and
-        /// ends there.
-        stopped: bool,
     }
 
     impl Drop for Run {
@@ -6747,38 +6759,7 @@ mod scenarios {
                 dropped: Vec::new(),
                 joined: 0,
                 tally: BTreeMap::new(),
-                stopped: false,
             }
-        }
-
-        /// Whether what the edge has to hold by sections 2 to 6 of ADR-0013 breaks
-        /// statement E of its section 1: a viewer's subscription was told elsewhere
-        /// with a region where nothing is asked for the chunk, and no asking is due.
-        /// The rule for a subscription that was told elsewhere and loses its last
-        /// viewer leads there when another region's subscription was told elsewhere
-        /// with its region; see
-        /// `statement_e_holds_when_a_subscription_another_points_at_is_ended`.
-        /// The edge does as section 2 says and then finds statement E broken, so a
-        /// run ends before the step that leads there. When that is put right, this
-        /// goes, and with it what stops a run.
-        fn pointing_at_nothing(&mut self) -> bool {
-            let broken = self.kept.iter().any(|subscriptions| {
-                subscriptions.iter().any(|(chunk, kept)| match kept.answer {
-                    Answer::Told(holder) => {
-                        !self.kept[holder.0 as usize].contains_key(chunk)
-                            && !kept.due
-                            && !kept.at_once
-                    }
-                    _ => false,
-                })
-            });
-            if broken {
-                self.log
-                    .push("the run ends: the next step breaks statement E".to_owned());
-                self.count("a run ends where section 2 breaks statement E");
-                self.stopped = true;
-            }
-            broken
         }
 
         fn count(&mut self, what: &'static str) {
@@ -7260,6 +7241,11 @@ mod scenarios {
             let was = kept.answer;
             if matches!(kept.answer, Answer::Told(_)) {
                 subscriptions.remove(&chunk);
+                // Nothing is asked here any more, so whoever was told elsewhere with
+                // this region asks again, as after its `NotMine`.
+                if seen {
+                    self.those_told_ask_again(region, chunk);
+                }
             } else {
                 kept.role = Role::Guest;
             }
@@ -7276,6 +7262,38 @@ mod scenarios {
                 self.replica.remove(&chunk);
                 self.served_by.remove(&chunk);
                 self.unsure.remove(&chunk);
+            }
+        }
+
+        /// Nothing is asked of `holder` for `chunk` any more: the viewers' subscriptions
+        /// that were told elsewhere with it are asked again, at once or, where that
+        /// was done less than a second ago, at one of the edge's checks.
+        fn those_told_ask_again(&mut self, holder: RegionId, chunk: ChunkPos) {
+            let now = Instant::now();
+            let mut asked_again = Vec::new();
+            for subscriptions in &mut self.kept {
+                let Some(kept) = subscriptions.get_mut(&chunk) else {
+                    continue;
+                };
+                if kept.role != Role::Viewer || kept.answer != Answer::Told(holder) {
+                    continue;
+                }
+                let lately = kept
+                    .asked_again
+                    .is_some_and(|at| now.duration_since(at) < ASK_AGAIN_AFTER);
+                if lately {
+                    kept.due = true;
+                } else {
+                    kept.at_once = true;
+                }
+                asked_again.push(lately);
+            }
+            for lately in asked_again {
+                self.count(if lately {
+                    "an asking again that is due"
+                } else {
+                    "an asking again at once"
+                });
             }
         }
 
@@ -7426,32 +7444,7 @@ mod scenarios {
                     if self.served_by.get(chunk) == Some(&region) {
                         self.served_by.remove(chunk);
                     }
-                    let now = Instant::now();
-                    let mut asked_again = Vec::new();
-                    for subscriptions in &mut self.kept {
-                        let Some(kept) = subscriptions.get_mut(chunk) else {
-                            continue;
-                        };
-                        if kept.role != Role::Viewer || kept.answer != Answer::Told(region) {
-                            continue;
-                        }
-                        let lately = kept
-                            .asked_again
-                            .is_some_and(|at| now.duration_since(at) < ASK_AGAIN_AFTER);
-                        if lately {
-                            kept.due = true;
-                        } else {
-                            kept.at_once = true;
-                        }
-                        asked_again.push(lately);
-                    }
-                    for lately in asked_again {
-                        self.count(if lately {
-                            "an asking again that is due"
-                        } else {
-                            "an asking again at once"
-                        });
-                    }
+                    self.those_told_ask_again(region, *chunk);
                 }
                 WorkerToEdge::TickDelta { events, .. } => {
                     for event in events {
@@ -7608,9 +7601,6 @@ mod scenarios {
             };
             self.log.push(format!("{player:?} leaves"));
             let person = self.gone(player).expect("the player is there");
-            if self.pointing_at_nothing() {
-                return;
-            }
             self.edge.leave(&person.client).await;
             self.sync().await;
         }
@@ -7667,9 +7657,6 @@ mod scenarios {
         /// The edge reads the next thing a region has made for it.
         async fn deliver(&mut self, region: RegionId) {
             let index = region.0 as usize;
-            if self.stopped {
-                return;
-            }
             let Some(made) = self.played[index].out.pop_front() else {
                 return;
             };
@@ -7678,9 +7665,6 @@ mod scenarios {
                     self.log
                         .push(format!("{region:?} says {}", brief(&message)));
                     self.told(region, &message);
-                    if self.pointing_at_nothing() {
-                        return;
-                    }
                     self.edge.tell(region, message);
                 }
                 Made::Entry(entry) => {
@@ -7691,9 +7675,6 @@ mod scenarios {
                         entry: entry.clone(),
                     };
                     self.told(region, &message);
-                    if self.pointing_at_nothing() {
-                        return;
-                    }
                     self.edge.say(region, entry);
                 }
                 Made::Welcome {
@@ -7728,9 +7709,6 @@ mod scenarios {
                     self.since[index] = since;
                     let welcome = WorkerToEdge::Welcome(welcome);
                     self.told(region, &welcome);
-                    if self.pointing_at_nothing() {
-                        return;
-                    }
                     self.edge.tell(region, welcome);
                     for entry in entries {
                         let number = self.edge.outbox[index] + 1;
@@ -7739,9 +7717,6 @@ mod scenarios {
                             entry: entry.clone(),
                         };
                         self.told(region, &message);
-                        if self.pointing_at_nothing() {
-                            return;
-                        }
                         self.edge.say(region, entry);
                     }
                     for presence in presences {
@@ -8014,9 +7989,6 @@ mod scenarios {
                 .is_some_and(lets_go)
             {
                 self.deliver(region).await;
-                if self.stopped {
-                    return;
-                }
             }
             if !self.may_end(region) {
                 return;
@@ -8098,9 +8070,6 @@ mod scenarios {
                     self.tick(region, true);
                     while !self.played[region.0 as usize].out.is_empty() {
                         self.deliver(region).await;
-                        if self.stopped {
-                            return;
-                        }
                     }
                 }
             }
@@ -8174,9 +8143,7 @@ mod scenarios {
                 _ if self.dice.chance(30) => self.forget(),
                 _ => self.walk().await,
             }
-            if !self.stopped {
-                self.check().await;
-            }
+            self.check().await;
         }
 
         // Looking at what the edge did.
@@ -8433,9 +8400,6 @@ mod scenarios {
                     self.tick(region, true);
                     while !self.played[region.0 as usize].out.is_empty() {
                         self.deliver(region).await;
-                        if self.stopped {
-                            return;
-                        }
                     }
                 }
                 self.pass_time().await;
@@ -8534,13 +8498,8 @@ mod scenarios {
                 if step % 150 == 0 {
                     self.rest().await;
                 }
-                if self.stopped {
-                    break;
-                }
             }
-            if !self.stopped {
-                self.rest().await;
-            }
+            self.rest().await;
             self.edge.drained().await;
             self.edge.quiet().await;
             std::mem::take(&mut self.tally)

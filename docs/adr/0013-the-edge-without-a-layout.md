@@ -2,7 +2,8 @@
 
 - Status: **Accepted**; the design of the edge's part of step C2b of milestone M3, phase
   C (step C2b.4 of ADR-0012). Revised after an independent review against the code and
-  the contract (see the end). Built; its scenarios are to be written by someone else.
+  the contract (see the end). Built, and tested from this record by someone who did not
+  read the code; what that found is at the end of section 8.
 - Date: 2026-10-08
 
 ## Context
@@ -107,7 +108,11 @@ new region when the player's region changes (section 4).
 **`unwant(R, c)`** lowers `viewers`. If it reaches 0:
 
 - the subscription is `Elsewhere(H)`: it is ended with `Unsubscribe` and forgotten. It
-  carried nothing;
+  carried nothing. If some viewer still sees `c`, every viewer's subscription for `c`
+  that is `Elsewhere(R)` is asked again as after a `NotMine` from `R` (section 3): at
+  once, or at the next check if it was asked again less than a second ago. Another
+  region can have named `R` from a belief older than `R`'s own, and statement E does
+  not hold with nothing asked at `R`;
 - some viewer still sees `c` (`ReplicaChunk::viewers > 0`): it becomes a guest's,
   `ask` the next number, and `SubscribeAsGuest` is sent, **whatever its condition**.
   A subscription that serves the chunk goes on serving it, and one that waits is
@@ -329,6 +334,32 @@ alone being hundreds of answers, and its players were disconnected for the wait.
 subscription messages of a turn are gathered by region and kind where no chunk is
 named twice for a region, so that a view that moves is three messages and not one for
 every chunk; where one is named twice, they go in the order they were made.
+
+**Found by the tests written from this record** (59, by someone who did not read the
+edge's code; scenarios 1 to 20 and runs generated against a second implementation of
+sections 2 to 6):
+
+- Section 2 contradicted statement E. A viewer's subscription that was told elsewhere
+  was ended with its last viewer as one that carried nothing, but another region's
+  subscription could be told elsewhere with *its* region: the north names the east
+  from an older belief, the east names the west, the east's player goes, and the
+  north's subscription pointed at a region where nothing was asked, never to be asked
+  again. The edge did as the record said and then failed its own check. Those
+  subscriptions are now asked again, as the first case of `unwant` says. Pinned
+  stripes cannot produce such a belief; regions that merge and split can.
+- A discarded entity stayed on screens when another region had shown it last. A player
+  is let go to the east and leaves; the east takes the arrival in before the leave,
+  shows the entity, and lets it go to the west within the same tick. The edge has the
+  west discard it, and the west reports it removed, but section 7 takes a removal only
+  from the region that introduced the entity last, the east. The edge now takes an
+  entity it has discarded off its own screens itself. That also covers an edge that is
+  not asking the discarding region for the chunk and would never hear the removal.
+
+The tests read the letter of the record where it was silent, and the edge agrees with
+each reading: a player is passed on by `NotMine` as often as there are ports and
+disconnected at the next; `served_by` stays through an `Unknown`; a hand-over leaves
+the old region a guest's subscription for the whole view the player still sees, which
+costs a `NotMine` at regions that do not hold those chunks.
 
 ## Consequences
 
