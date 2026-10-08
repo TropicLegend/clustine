@@ -838,9 +838,15 @@ fn hand_on(
     for session in sessions.iter() {
         session.witness.check(&state, session.edge);
     }
+    resume(&mut next, sessions);
+    next
+}
 
+/// Resumes every edge with `next`, the new owner of the region, and holds what it
+/// answers to what the edges were told by the owner before.
+fn resume(next: &mut RegionRunner, sessions: &mut [&mut Session]) {
     for session in sessions.iter_mut() {
-        session.link = Link::attach(&next);
+        session.link = Link::attach(next);
         session.absorbed = 0;
         session.link.hello(
             session.edge,
@@ -855,7 +861,7 @@ fn hand_on(
             .iter_mut()
             .map(|session| &mut session.link)
             .collect();
-        run_until(&mut next, &mut links, "every edge resuming", |_, links| {
+        run_until(next, &mut links, "every edge resuming", |_, links| {
             links
                 .iter()
                 .all(|link| snapshot(&link.log, HOME).is_some() && applied(&link.log).is_some())
@@ -933,7 +939,6 @@ fn hand_on(
     for session in sessions.iter_mut() {
         session.absorb();
     }
-    next
 }
 
 /// Players join, move, dig here and beyond the region, walk out of it and leave, on two
@@ -3191,4 +3196,274 @@ fn of_two_links_of_an_edge_that_say_hello_at_once_the_later_one_stays() {
         runner.region().player(player(1)).map(|(entity, _)| entity),
         Some(entity)
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// 13. Releasing a region
+//
+// From section 1, step 3 of `docs/adr/0009-moving-a-region.md`. Unlike the tests above,
+// these were written by whoever wrote the release, through the public interface alone.
+// ---------------------------------------------------------------------------------------
+
+/// Steps a runner that was asked to release its region until it has ended and every one
+/// of `links` is closed, and says how it ended.
+fn run_to_the_end(runner: &mut RegionRunner, links: &mut [&mut Link]) -> Ended {
+    run_until(
+        runner,
+        links,
+        "the runner ending and closing its links",
+        |runner, links| runner.ended().is_some() && links.iter().all(|link| link.closed),
+    );
+    runner.ended().expect("the wait ended on it")
+}
+
+/// Sends `body` as the session's next message, and keeps it as an edge does until it
+/// hears that the region has applied it.
+fn send_and_keep(session: &mut Session, kept: &mut Vec<(u64, EdgeToWorker)>, body: EdgeToWorker) {
+    session.send(body.clone());
+    kept.push((session.sent, body));
+}
+
+/// Sends again, on the session's new link, what it kept and was not told to be applied.
+fn send_again(session: &Session, kept: &[(u64, EdgeToWorker)]) {
+    for (number, body) in kept {
+        if *number > session.witness.applied {
+            session.link.numbered(*number, body.clone());
+        }
+    }
+}
+
+#[test]
+fn a_released_region_is_restored_from_its_state_alone_with_all_its_edges_were_told() {
+    in_memory_and_on_disk(
+        a_released_region_is_restored_from_its_state_alone_with_all_its_edges_were_told_in,
+    );
+}
+
+fn a_released_region_is_restored_from_its_state_alone_with_all_its_edges_were_told_in(
+    mut world: World,
+) {
+    let mut runner = world.open();
+    let status = runner.status();
+    let mut e = Session::begin(&runner, E, 7);
+    let mut f = Session::begin(&runner, F, 3);
+    let (one, two, three) = (player(1), player(2), player(3));
+    let near = BlockPos::new(12, GROUND, 9);
+    e.send(join(one));
+    e.send(join(two));
+    f.send(join(three));
+    e.players = vec![one, two];
+    f.players = vec![three];
+    settle(&mut runner, &mut [&mut e, &mut f]);
+    assert_eq!(runner.ended(), None);
+    assert_eq!(status.ended(), None);
+
+    // A block here, a block of the next region, a step out of the region and a step
+    // within it are on their way when the release begins, and more comes while it is
+    // under way. How much of it the region still takes is up to the store's pace.
+    let (mut kept_e, mut kept_f) = (Vec::new(), Vec::new());
+    send_and_keep(&mut e, &mut kept_e, input(one, 1, dig(near, 1)));
+    send_and_keep(&mut e, &mut kept_e, input(one, 2, dig(BEYOND, 2)));
+    send_and_keep(&mut e, &mut kept_e, input(two, 1, move_to(16.5)));
+    send_and_keep(&mut f, &mut kept_f, input(three, 1, move_to(12.5)));
+    runner.begin_release();
+    send_and_keep(&mut e, &mut kept_e, input(one, 3, move_to(11.5)));
+    send_and_keep(
+        &mut f,
+        &mut kept_f,
+        input(three, 2, PlayerInput::SelectSlot { slot: 3 }),
+    );
+    let ended = run_to_the_end(&mut runner, &mut [&mut e.link, &mut f.link]);
+    assert_eq!(ended, Ended::Released);
+    assert_eq!(status.ended(), Some(Ended::Released));
+    assert!(!runner.store_is_lost());
+    e.absorb();
+    f.absorb();
+
+    // The next owner gets the region as it was after its last tick, in a state file,
+    // with no commits to apply to it.
+    let (handle, restored) = world.open_raw();
+    assert!(restored.state.is_some());
+    assert!(
+        restored.deltas.is_empty(),
+        "{} commits come with the state of a released region",
+        restored.deltas.len()
+    );
+    let mut next =
+        RegionRunner::restore(config(), handle, restored).expect("what the store has is readable");
+    let state = next.region().state();
+    assert_eq!(state, runner.region().state());
+    // And the edges had been told all of it before their links were closed.
+    e.witness.check(&state, E);
+    f.witness.check(&state, F);
+    drop(runner);
+
+    // They resume with the next owner, which applies what they send again, once.
+    resume(&mut next, &mut [&mut e, &mut f]);
+    send_again(&e, &kept_e);
+    send_again(&f, &kept_f);
+    settle(&mut next, &mut [&mut e, &mut f]);
+    let state = next.region().state();
+    assert_eq!(state.edges[&E].applied, e.sent);
+    assert_eq!(state.edges[&F].applied, f.sent);
+    assert_eq!(state.players[&one].pose.position.x, 11.5);
+    assert_eq!(state.players[&one].last_input, 3);
+    assert_eq!(state.players[&three].pose.position.x, 12.5);
+    assert_eq!(state.players[&three].selected_slot, 3);
+    assert!(!state.players.contains_key(&two));
+    assert_eq!(
+        state.edges[&E].sent, 2,
+        "one entry for the block and one for the player"
+    );
+    assert!(matches!(
+        e.witness.outbox.get(&2),
+        Some(Durable::Departed { player, .. }) if *player == two
+    ));
+    assert_eq!(
+        next.region().chunk(HOME).map(|chunk| block_in(chunk, near)),
+        Some(blocks::AIR)
+    );
+    e.witness.check(&state, E);
+    f.witness.check(&state, F);
+}
+
+#[test]
+fn a_release_of_a_region_that_another_owner_has_taken_ends_as_lost_and_shows_nothing_more() {
+    let mut world = World::memory();
+    let mut runner = world.open();
+    let status = runner.status();
+    let mut e = established(&mut runner, E, 5);
+    let mut watcher = established(&mut runner, F, 5);
+    join_and_wait(&mut runner, &mut e, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut e, &mut watcher], 0, 1);
+
+    // Another owner takes the region, and the first is asked to release it before it
+    // has found out.
+    let other = world.open();
+    let e_seen = e.log.len();
+    let watcher_seen = watcher.log.len();
+    e.numbered(2, join(player(2)));
+    e.numbered(3, input(player(1), 1, move_to(12.5)));
+    runner.begin_release();
+    let ended = run_to_the_end(&mut runner, &mut [&mut e, &mut watcher]);
+    assert_eq!(ended, Ended::StoreLost);
+    assert_eq!(status.ended(), Some(Ended::StoreLost));
+    assert!(runner.store_is_lost());
+    assert!(status.store_lost.load(Ordering::SeqCst));
+
+    for (link, seen) in [(&e, e_seen), (&watcher, watcher_seen)] {
+        let after = &link.log[seen..];
+        assert!(spawned(after, player(2)).is_none(), "{}", brief(after));
+        assert!(entity_spawn(after, player(2)).is_none(), "{}", brief(after));
+        assert!(events(after).is_empty(), "{}", brief(after));
+        assert!(
+            progress(after).iter().all(|(applied, _)| *applied <= 1),
+            "{}",
+            brief(after)
+        );
+    }
+    // The owner that took it is none the worse for it.
+    assert!(other.region().player(player(2)).is_none());
+    assert_eq!(other.region().state().edges[&E].applied, 1);
+}
+
+#[test]
+fn a_runner_that_has_released_its_region_ticks_no_more_and_closes_a_link_that_comes_later() {
+    let mut world = World::memory();
+    let mut runner = world.open();
+    let mut e = established(&mut runner, E, 5);
+    join_and_wait(&mut runner, &mut e, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut e], 0, 1);
+
+    runner.begin_release();
+    assert_eq!(run_to_the_end(&mut runner, &mut [&mut e]), Ended::Released);
+    let released_at = runner.region().tick_number();
+
+    let mut late = Link::attach(&runner);
+    late.hello(E, 5, 0, vec![player(1)], vec![HOME]);
+    late.numbered(2, input(player(1), 1, move_to(12.5)));
+    run_until(
+        &mut runner,
+        &mut [&mut late],
+        "a link to a runner that has released its region being closed",
+        |_, links| links[0].closed,
+    );
+    assert!(late.log.is_empty(), "{}", brief(&late.log));
+    // Asking again changes nothing.
+    runner.begin_release();
+    for _ in 0..20 {
+        runner.step();
+    }
+    assert_eq!(runner.region().tick_number(), released_at);
+    assert_eq!(runner.ended(), Some(Ended::Released));
+
+    // The edge finds the region, as it was, at whoever opens it next.
+    let mut next = world.open();
+    let again = resumed(&mut next, E, 5, 0, vec![player(1)]);
+    assert_eq!(welcome(&again.log), Some(Welcome::Resumed));
+    assert!(matches!(
+        presence(&again.log, player(1)),
+        Some((_, Presence::Present { .. }))
+    ));
+}
+
+#[test]
+fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links() {
+    let mut world = World::memory();
+    let runner = world.open();
+    let links = runner.links();
+    let status = runner.status();
+    let worker = Worker::spawn(runner);
+
+    let (edge, end) = link::in_process::<EdgeMessage, WorkerToEdge>(CAPACITY);
+    links.attach(end);
+    let mut e = Link {
+        end: edge,
+        log: Vec::new(),
+        closed: false,
+    };
+    e.hello(E, 5, 0, Vec::new(), vec![HOME]);
+    e.numbered(1, join(player(1)));
+    let near = BlockPos::new(12, GROUND, 9);
+    wait_for(&mut e, "the player entering the world", |link| {
+        spawned(&link.log, player(1)).is_some()
+    });
+    e.numbered(2, input(player(1), 1, dig(near, 1)));
+    wait_for(&mut e, "the dig being acknowledged", |link| {
+        acknowledged(&link.log, player(1), 1).is_some()
+    });
+    let entity = spawned(&e.log, player(1)).expect("waited for it").1;
+    assert_eq!(status.ended(), None);
+
+    assert_eq!(worker.release(), Ended::Released);
+    assert_eq!(status.ended(), Some(Ended::Released));
+    e.drain();
+    assert!(e.closed, "its links are closed by the time it has released");
+
+    // The thread is gone: a link handed over now is closed.
+    let (edge, end) = link::in_process::<EdgeMessage, WorkerToEdge>(CAPACITY);
+    links.attach(end);
+    let mut late = Link {
+        end: edge,
+        log: Vec::new(),
+        closed: false,
+    };
+    wait_for(
+        &mut late,
+        "a link to a worker that has released its region closing",
+        |link| link.closed,
+    );
+
+    let (handle, restored) = world.open_raw();
+    assert!(restored.state.is_some());
+    assert!(restored.deltas.is_empty());
+    let mut next =
+        RegionRunner::restore(config(), handle, restored).expect("what the store has is readable");
+    assert_eq!(
+        next.region().player(player(1)).map(|(entity, _)| entity),
+        Some(entity)
+    );
+    let again = resumed(&mut next, E, 5, 0, vec![player(1)]);
+    let (_, _, chunk, _) = snapshot(&again.log, HOME).expect("waited for it");
+    assert_eq!(block_in(chunk, near), blocks::AIR);
 }

@@ -43,7 +43,8 @@ from; the rest of this record is about not turning it into one needlessly.
      handle if it gets one, and says `Released`.
    - If it runs it: first an ordinary checkpoint **while it goes on ticking** (every
      changed chunk saved, the whole state, and a `Flush` to know the store has all of
-     it), so that what is left to do while players stand still is small. Then it stops
+     it), so that what is left to do while players stand still is small. Links are
+     served meanwhile, new ones too. Then it stops
      ticking and takes no more links; what edges send from now on they keep and send
      again to the new owner. It waits until the store has confirmed every commit and
      publishes what those ticks produced. It checkpoints once more, which is the few
@@ -103,7 +104,9 @@ A worker that gets SIGTERM tells the coordinator `Leaving` and goes on running.
 - The worker exits when the coordinator has closed its connection, when it cannot
   reach the coordinator at all, on a second signal, or after 20 seconds, whichever
   comes first. With a region left it then stops as it always has: it saves what is not
-  saved and closes the region. Kubernetes gives a worker 30 seconds; a store that
+  saved and closes the region. If it is in the middle of releasing one, it lets go of
+  it as it is, without waiting for the store any longer: nothing unconfirmed was shown,
+  so that is a crash like any other, and waiting is what it has no time for. Kubernetes gives a worker 30 seconds; a store that
   neither answers nor closes can hold a stop until Kubernetes kills the process, which
   is a crash like any other.
 

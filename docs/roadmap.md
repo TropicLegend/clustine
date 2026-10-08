@@ -285,10 +285,10 @@ end. Its messages are in `clustine-rpc`; nobody acts on them yet.
 
 Next, in this order:
 
-1. In parallel, each in a crate of its own: the coordinator (`services/coordinator`:
-   releases with a reserved target, leaving workers, `Move` and its answers, sections 1
-   to 4 of the record) and the runner's release (`services/worker`: the checkpoint while
-   ticking, stopping, waiting for commits, publishing, the last checkpoint, closing).
+1. The coordinator (`services/coordinator`: releases with a reserved target, leaving
+   workers, `Move` and its answers, sections 1 to 4 of the record). The runner's release
+   is done: `Worker::begin_release`, `Worker::release` and `RegionStatus::ended` in
+   `services/worker`; a `stop` during a release abandons it (`Ended::Abandoned`).
 2. The worker process and `clustine move` (`bin/clustine`): release in every phase,
    dropping a region that is taken without exiting, leaving on SIGTERM, listening only
    once registered; and the edge's link-keeper, which has to try each region by itself

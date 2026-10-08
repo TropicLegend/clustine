@@ -14,12 +14,17 @@
 //! belong to edges, not to links: a link that ends or does not keep up is dropped without
 //! the region missing a tick, and its edge's players stay until the edge is back, has
 //! started anew or has been away for too long.
+//!
+//! A region is given to another worker by **releasing** it, which is a crash that the
+//! runner prepares: it brings the store up to date, lets go of the region and closes its
+//! links, so that the next owner restores it from a state file alone. See
+//! `docs/adr/0009-moving-a-region.md`, section 1, and [`RegionRunner::begin_release`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
 use std::ops::Bound;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -78,6 +83,34 @@ pub struct RegionStatus {
     /// reached, or it has given the region to another owner. The runner has stopped for
     /// good then; the region is to be opened again and restored.
     pub store_lost: AtomicBool,
+    /// How the runner ended, once it has; read through [`RegionStatus::ended`].
+    ended: AtomicU8,
+}
+
+impl RegionStatus {
+    /// How the runner ended, or `None` while it runs or is still releasing the region.
+    /// By the time this says so, the runner has closed its links and, unless the store
+    /// handle was lost anyway, has let go of it; whoever waits for a release needs to
+    /// look at nothing else.
+    pub fn ended(&self) -> Option<Ended> {
+        match self.ended.load(Ordering::SeqCst) {
+            1 => Some(Ended::Stopped),
+            2 => Some(Ended::StoreLost),
+            3 => Some(Ended::Released),
+            4 => Some(Ended::Abandoned),
+            _ => None,
+        }
+    }
+
+    fn set_ended(&self, ended: Ended) {
+        let code = match ended {
+            Ended::Stopped => 1,
+            Ended::StoreLost => 2,
+            Ended::Released => 3,
+            Ended::Abandoned => 4,
+        };
+        self.ended.store(code, Ordering::SeqCst);
+    }
 }
 
 /// Attaches links to a [`RegionRunner`] while it runs, from any thread.
@@ -88,7 +121,8 @@ pub struct Links {
 
 impl Links {
     /// Hands `link` to the runner, which serves it from its next tick on. If the runner
-    /// is gone, the link is closed instead, which its other end notices.
+    /// is gone, has ended, or has stopped ticking in order to release its region, the
+    /// link is closed instead, which its other end notices.
     pub fn attach(&self, link: WorkerEnd) {
         // Nobody is left to serve the link, and dropping it is what closes it.
         let _ = self.attached.send(link);
@@ -104,6 +138,53 @@ pub enum Ended {
     /// opened again and restored from what the store has; this runner must not be used
     /// any more.
     StoreLost,
+    /// It released the region: the store has the region's whole state and every changed
+    /// chunk as of its last tick, everything that tick and those before it produced was
+    /// published, the region is closed at the store and the links are closed. Another
+    /// owner can open the region and restores it from a state file alone.
+    Released,
+    /// It was asked to stop while it was releasing the region, and let go of the region
+    /// without waiting for the store any longer. Nothing was published that the store had
+    /// not confirmed, so this is a crash like any other: the next owner restores what
+    /// the store has.
+    Abandoned,
+}
+
+/// How far a runner is with releasing its region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Nobody has asked for a release.
+    Running,
+    /// The first checkpoint and a flush have been asked for. The region ticks on and
+    /// serves its links until the store has answered the flush, so that the checkpoint
+    /// that is taken while players stand still is a small one.
+    Preparing,
+    /// The region ticks no more and takes nothing from its links. It waits for the store
+    /// to confirm the commits of the ticks that have run, and publishes them.
+    Settling,
+    /// The last checkpoint and a flush have been asked for.
+    Closing,
+    /// The runner has ended, for whichever reason, and does nothing but close the links
+    /// it is handed.
+    Ended,
+}
+
+/// What a runner that has let go of its region has in place of a store handle. Putting
+/// it there drops the handle, which is what closes the region at the store.
+struct Closed;
+
+impl RegionStore for Closed {
+    fn request(&self, _: StoreRequest) {}
+
+    fn try_reply(&self) -> Option<StoreReply> {
+        None
+    }
+
+    fn is_lost(&self) -> bool {
+        false
+    }
+
+    fn flush(&self) {}
 }
 
 /// Why a region could not be restored from what the world store has of it.
@@ -286,6 +367,18 @@ pub struct RegionRunner {
     gone_after: u64,
     /// Whether the store handle is lost, after which the runner does nothing any more.
     lost: bool,
+    /// How far the runner is with releasing the region.
+    phase: Phase,
+    /// How the runner ended, once it has.
+    ended: Option<Ended>,
+    /// How many flushes the runner has asked the store for, and how many of them the
+    /// store has answered. A release waits for its flushes this way rather than with
+    /// [`RegionStore::flush`], which would wait for ever for a store that does not
+    /// answer, and throw away the confirmations of commits on the way.
+    flushes_asked: u64,
+    flushes_answered: u64,
+    /// Set from another thread to have [`RegionRunner::run`] release the region.
+    release_asked: Arc<AtomicBool>,
     status: Arc<RegionStatus>,
 }
 
@@ -357,6 +450,11 @@ impl RegionRunner {
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             gone_after: DEFAULT_GONE_AFTER,
             lost: false,
+            phase: Phase::Running,
+            ended: None,
+            flushes_asked: 0,
+            flushes_answered: 0,
+            release_asked: Arc::new(AtomicBool::new(false)),
             status: Arc::new(status),
         }
     }
@@ -403,10 +501,43 @@ impl RegionRunner {
     /// way; the region ticks on with the links that remain, or with none.
     ///
     /// Once the store handle is lost, this does nothing but close links.
+    ///
+    /// After [`RegionRunner::begin_release`] it does the same until the store has
+    /// answered the flush behind the first checkpoint, and from then on carries the
+    /// release on instead, a step at a time and without ever waiting: no tick runs, and
+    /// nothing is taken from links. Once the runner has ended, a step closes the links
+    /// attached since and does nothing else.
     pub fn step(&mut self) {
         if self.lost {
             self.give_up();
             return;
+        }
+        match self.phase {
+            Phase::Running => {}
+            Phase::Preparing => {
+                // Looked at before anything is taken from a link, so that whatever a
+                // link is relieved of is also given to a tick.
+                if !self.take_replies() {
+                    return;
+                }
+                if self.flushes_answered == self.flushes_asked {
+                    info!(
+                        tick = self.region.tick_number(),
+                        "the store has the first checkpoint of a release; the region stops ticking"
+                    );
+                    self.phase = Phase::Settling;
+                    self.carry_release_on();
+                    return;
+                }
+            }
+            Phase::Settling | Phase::Closing => {
+                self.carry_release_on();
+                return;
+            }
+            Phase::Ended => {
+                self.refuse_links();
+                return;
+            }
         }
         // The links known so far come first, and only then the ones attached since, so
         // that a link an edge has ended is seen to have ended before its next one says
@@ -450,7 +581,7 @@ impl RegionRunner {
                     self.release_held();
                 }
                 StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
-                StoreReply::Flushed => {}
+                StoreReply::Flushed => self.flushes_answered += 1,
             }
         }
         // Looked at after the answers: a handle that is lost has none, so nothing
@@ -475,7 +606,112 @@ impl RegionRunner {
         // again.
         self.links.clear();
         self.pending.clear();
+        self.refuse_links();
+        // A release that was under way skips what needs the store, which is all that
+        // was left of it.
+        self.phase = Phase::Ended;
+        if self.ended.is_none() {
+            self.ended = Some(Ended::StoreLost);
+            self.status.set_ended(Ended::StoreLost);
+        }
+    }
+
+    /// Closes the links that have been attached and not been taken up.
+    fn refuse_links(&mut self) {
+        // Dropping a link closes it.
         while self.attached.try_recv().is_ok() {}
+    }
+
+    /// Begins to release the region, as section 1 of
+    /// `docs/adr/0009-moving-a-region.md` has it for an owner that runs it. This asks the
+    /// store for an ordinary checkpoint and returns at once; [`RegionRunner::step`]
+    /// does the rest, and [`RegionRunner::ended`] says when it is done:
+    ///
+    /// 1. The region goes on ticking and serving its links until the store has the
+    ///    checkpoint, which can be minutes of changed chunks.
+    /// 2. Then it ticks no more, takes nothing more from its links and closes links that
+    ///    are attached from now on. It waits until the store has confirmed the commit of
+    ///    every tick that ran, and publishes what those ticks produced, in order.
+    /// 3. It checkpoints once more, which is what changed since a moment ago, waits
+    ///    until the store has that, closes the region at the store and then its links,
+    ///    and has ended as [`Ended::Released`].
+    ///
+    /// If the store handle is lost on the way, the runner publishes nothing more, closes
+    /// its links and has ended as [`Ended::StoreLost`]. A store that neither answers nor
+    /// closes keeps the release where it is; nothing here waits for it, so whoever steps
+    /// the runner decides how long to go on, and drops the runner to give up.
+    ///
+    /// Asking again, or asking a runner that has ended, changes nothing.
+    pub fn begin_release(&mut self) {
+        if self.phase != Phase::Running {
+            return;
+        }
+        if self.lost || self.store.is_lost() {
+            self.give_up();
+            return;
+        }
+        info!(
+            tick = self.region.tick_number(),
+            unsaved = self.unsaved.len(),
+            "releasing the region"
+        );
+        self.checkpoint();
+        self.ask_for_flush();
+        self.phase = Phase::Preparing;
+    }
+
+    /// How the runner ended, or `None` if it has not. One that has ended ticks no more,
+    /// whatever is asked of it, and closes every link it is handed.
+    pub fn ended(&self) -> Option<Ended> {
+        self.ended
+    }
+
+    /// Asks the store to say when it has done everything asked of it so far.
+    fn ask_for_flush(&mut self) {
+        self.flushes_asked += 1;
+        self.store.request(StoreRequest::Flush);
+    }
+
+    /// Does what can be done of a release whose region has stopped ticking, without
+    /// waiting for anything.
+    fn carry_release_on(&mut self) {
+        // No new links: their edges find them closed and look for the region again,
+        // which they find at its next owner.
+        self.refuse_links();
+        if !self.take_replies() {
+            return;
+        }
+        // What the ticks that ran produced is owed to the edges as soon as the store has
+        // it, as ever. The next owner is restored with all of it, and an edge that had
+        // not been told would have to be told again through the resume.
+        self.publish_committed();
+        match self.phase {
+            Phase::Settling if self.pending.is_empty() => {
+                // Only now: the store keeps this state in place of every commit up to
+                // the region's last tick, so those commits have to be confirmed first.
+                self.checkpoint();
+                self.ask_for_flush();
+                self.phase = Phase::Closing;
+            }
+            Phase::Closing if self.flushes_answered == self.flushes_asked => {
+                info!(tick = self.region.tick_number(), "the region is released");
+                self.end(Ended::Released);
+            }
+            _ => {}
+        }
+    }
+
+    /// Lets go of the region for good: of the store handle first, which closes the
+    /// region at the store once everything asked of it before is done, and then of the
+    /// links, so that an edge that finds its link closed finds the region free.
+    fn end(&mut self, ended: Ended) {
+        self.store = Box::new(Closed);
+        self.links.clear();
+        self.pending.clear();
+        self.refuse_links();
+        self.phase = Phase::Ended;
+        self.ended = Some(ended);
+        self.status.set_ended(ended);
     }
 
     /// Publishes the ticks that are committed, oldest first, as far as that goes. A link
@@ -839,15 +1075,35 @@ impl RegionRunner {
     }
 
     /// Ticks 20 times per second until `stop` is set, then stores what has not been
-    /// stored yet. Returns early, and for good, if the store handle is lost.
+    /// stored yet. Returns early, and for good, if the store handle is lost, or once the
+    /// region is released, which [`Worker::begin_release`] asks for.
+    ///
+    /// A release is carried on by looking at the store's answers every millisecond, and
+    /// never by waiting for one. If `stop` is set while a release is under way, the
+    /// region is let go of as it is, without anything more being asked of the store or
+    /// waited for: this ends as [`Ended::Abandoned`].
     pub fn run(&mut self, stop: &AtomicBool) -> Ended {
         let mut deadline = Instant::now() + TICK;
-        while !stop.load(Ordering::Relaxed) {
+        loop {
+            if let Some(ended) = self.ended {
+                return ended;
+            }
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if self.release_asked.load(Ordering::Relaxed) {
+                self.begin_release();
+            }
             self.step();
+            if matches!(self.phase, Phase::Settling | Phase::Closing) {
+                // No tick is due any more; all that is left is the store's answers.
+                thread::sleep(COMMIT_POLL);
+                continue;
+            }
             // Between two ticks the runner publishes what the store confirms meanwhile.
             loop {
-                if self.lost {
-                    return Ended::StoreLost;
+                if let Some(ended) = self.ended {
+                    return ended;
                 }
                 let now = Instant::now();
                 let Some(early) = deadline.checked_duration_since(now) else {
@@ -867,8 +1123,15 @@ impl RegionRunner {
             }
             deadline += TICK;
         }
-        if self.lost {
-            return Ended::StoreLost;
+        if self.phase != Phase::Running {
+            // Whoever stops a release has waited long enough for the store. What the
+            // store was asked for it still does if it can, before it closes the region.
+            warn!(
+                tick = self.region.tick_number(),
+                "stopped in the middle of a release; letting go of the region as it is"
+            );
+            self.end(Ended::Abandoned);
+            return Ended::Abandoned;
         }
         self.checkpoint();
         self.store.flush();
@@ -876,6 +1139,7 @@ impl RegionRunner {
             self.give_up();
             return Ended::StoreLost;
         }
+        self.end(Ended::Stopped);
         Ended::Stopped
     }
 
@@ -1308,6 +1572,7 @@ fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
 pub struct Worker {
     thread: JoinHandle<Ended>,
     stop: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -1315,6 +1580,7 @@ impl Worker {
     /// handle is lost, which [`RegionStatus::store_lost`] shows.
     pub fn spawn(runner: RegionRunner) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let release = Arc::clone(&runner.release_asked);
         let thread = thread::Builder::new()
             .name("region".to_owned())
             .spawn({
@@ -1327,11 +1593,52 @@ impl Worker {
                 }
             })
             .expect("spawning the region thread");
-        Self { thread, stop }
+        Self {
+            thread,
+            stop,
+            release,
+        }
+    }
+
+    /// Asks the region thread to release the region, as [`RegionRunner::begin_release`]
+    /// describes, and returns at once. The thread ends by itself when the release is
+    /// done or the store handle is lost; [`RegionStatus::ended`] and
+    /// [`Worker::is_finished`] show that, and [`Worker::release`] or [`Worker::stop`]
+    /// return how it ended.
+    ///
+    /// The release waits for the store for as long as the store neither answers nor
+    /// closes. [`Worker::stop`] ends that wait.
+    pub fn begin_release(&self) {
+        self.release.store(true, Ordering::Relaxed);
+    }
+
+    /// Releases the region and waits until that is done: [`Worker::begin_release`], and
+    /// then for the thread to end. Returns [`Ended::Released`] if the region is another
+    /// owner's to open now, restored from a state file alone, and [`Ended::StoreLost`]
+    /// if the store handle was lost before or on the way; either way the links are
+    /// closed, the store handle is dropped and the thread is gone.
+    ///
+    /// This blocks for as long as the release takes, which is without a limit if the
+    /// store neither answers nor closes. Whoever has a limit asks with
+    /// [`Worker::begin_release`], watches [`RegionStatus::ended`] and calls
+    /// [`Worker::stop`] when the time is up.
+    pub fn release(self) -> Ended {
+        self.begin_release();
+        // As in `stop`.
+        self.thread.join().unwrap_or(Ended::StoreLost)
+    }
+
+    /// Whether the region thread has ended, by itself or because it was asked to.
+    pub fn is_finished(&self) -> bool {
+        self.thread.is_finished()
     }
 
     /// Stops ticking, waits for the thread to finish its current tick and to store what
     /// has changed, and says how the runner ended. Its links are closed by then.
+    ///
+    /// A worker that is releasing its region stores nothing more and does not wait for
+    /// the store: it lets go of the region as it is, which is [`Ended::Abandoned`]. One
+    /// that has ended already says how.
     pub fn stop(self) -> Ended {
         self.stop.store(true, Ordering::Relaxed);
         // A panic in the region thread has already been reported by the panic hook, and
@@ -1354,7 +1661,7 @@ mod tests {
     use clustine_sim::{PlayerTransfer, RemoteAction, RemoteStep};
     use clustine_world::{BlockPos, ChunkArea, EntityIds, Vec3};
     use clustine_worldgen::FlatGenerator;
-    use clustine_worldstore::Store;
+    use clustine_worldstore::{Store, StoreHandle};
     use tokio::time::timeout;
     use uuid::Uuid;
 
@@ -1508,11 +1815,16 @@ mod tests {
     #[derive(Default)]
     struct GateControl {
         holding: AtomicBool,
+        /// Whether the answers to flushes are held back, which is apart from those to
+        /// commits: a release waits for the one while the other goes on.
+        holding_flushes: AtomicBool,
         lost: AtomicBool,
         /// The answers held back, in the order the store gave them.
         kept: Mutex<VecDeque<StoreReply>>,
         /// The ticks of the commits asked for, in that order.
         commits: Mutex<Vec<u64>>,
+        /// How many flushes were asked for.
+        flushes: AtomicU64,
     }
 
     impl GateControl {
@@ -1524,12 +1836,51 @@ mod tests {
             self.holding.store(false, Ordering::SeqCst);
         }
 
+        fn hold_flushes(&self) {
+            self.holding_flushes.store(true, Ordering::SeqCst);
+        }
+
+        fn release_flushes(&self) {
+            self.holding_flushes.store(false, Ordering::SeqCst);
+        }
+
+        /// Loses the handle, as the store does when it gives the region to another
+        /// owner or cannot be reached.
+        fn lose(&self) {
+            self.lost.store(true, Ordering::SeqCst);
+        }
+
+        /// Whether `reply` is to be held back as things are.
+        fn holds(&self, reply: &StoreReply) -> bool {
+            match reply {
+                StoreReply::Committed { .. } => self.holding.load(Ordering::SeqCst),
+                StoreReply::Flushed => self.holding_flushes.load(Ordering::SeqCst),
+                _ => false,
+            }
+        }
+
+        /// How many answers to commits are held back.
         fn kept(&self) -> usize {
-            self.kept.lock().unwrap().len()
+            let kept = self.kept.lock().unwrap();
+            let commits = kept
+                .iter()
+                .filter(|reply| matches!(reply, StoreReply::Committed { .. }));
+            commits.count()
+        }
+
+        /// How many answers to flushes are held back.
+        fn kept_flushes(&self) -> usize {
+            let kept = self.kept.lock().unwrap();
+            let flushes = kept.iter().filter(|reply| **reply == StoreReply::Flushed);
+            flushes.count()
         }
 
         fn commits(&self) -> Vec<u64> {
             self.commits.lock().unwrap().clone()
+        }
+
+        fn flushes(&self) -> u64 {
+            self.flushes.load(Ordering::SeqCst)
         }
     }
 
@@ -1538,6 +1889,9 @@ mod tests {
             if let StoreRequest::Commit { tick, .. } = &request {
                 self.control.commits.lock().unwrap().push(*tick);
             }
+            if request == StoreRequest::Flush {
+                self.control.flushes.fetch_add(1, Ordering::SeqCst);
+            }
             self.inner.request(request);
         }
 
@@ -1545,16 +1899,17 @@ mod tests {
             if RegionStore::is_lost(self) {
                 return None;
             }
-            let holding = self.control.holding.load(Ordering::SeqCst);
             let mut kept = self.control.kept.lock().unwrap();
-            if !holding && let Some(reply) = kept.pop_front() {
+            let free = kept.iter().position(|reply| !self.control.holds(reply));
+            if let Some(reply) = free.and_then(|index| kept.remove(index)) {
                 return Some(reply);
             }
             loop {
-                match self.inner.try_reply()? {
-                    reply @ StoreReply::Committed { .. } if holding => kept.push_back(reply),
-                    reply => return Some(reply),
+                let reply = self.inner.try_reply()?;
+                if !self.control.holds(&reply) {
+                    return Some(reply);
                 }
+                kept.push_back(reply);
             }
         }
 
@@ -3896,5 +4251,678 @@ mod tests {
         ));
         let state = restored_state(restored(None, vec![])).unwrap();
         assert_eq!(state, RegionState::new(EntityIds::block(0).unwrap()));
+    }
+
+    /// Opens the one region of `store` as the owner that comes after the one of
+    /// [`owner`], as the worker does that a released region is given to.
+    fn opened_next(store: &Store) -> (StoreHandle, Restored) {
+        let hello = RegionHello {
+            epoch: 2,
+            ..owner()
+        };
+        store.open_region(hello).unwrap()
+    }
+
+    /// Steps a runner that is releasing its region until it has ended, and says how.
+    fn released(runner: &mut RegionRunner) -> Ended {
+        for _ in 0..20_000 {
+            runner.step();
+            if let Some(ended) = runner.ended() {
+                return ended;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the release did not end");
+    }
+
+    /// Steps a runner that is releasing its region until it has stopped ticking.
+    fn step_until_it_ticks_no_more(runner: &mut RegionRunner) {
+        for _ in 0..20_000 {
+            runner.step();
+            if runner.phase == Phase::Settling {
+                return;
+            }
+            assert_eq!(runner.phase, Phase::Preparing);
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the store did not answer the flush behind the first checkpoint");
+    }
+
+    /// Waits until the store has answered a flush that the gate holds back.
+    fn wait_for_kept_flush(runner: &mut RegionRunner, gate: &GateControl) {
+        for _ in 0..20_000 {
+            assert!(runner.take_replies());
+            if gate.kept_flushes() >= 1 {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the store did not answer the flush");
+    }
+
+    /// The x coordinates of the moves among `messages`, in the order they were told.
+    fn moves(messages: &[WorkerToEdge]) -> Vec<f64> {
+        let mut moves = Vec::new();
+        for message in messages {
+            if let WorkerToEdge::TickDelta { events, .. } = message {
+                for event in events {
+                    if let RegionEvent::EntityMoved { pose, .. } = event {
+                        moves.push(pose.position.x);
+                    }
+                }
+            }
+        }
+        moves
+    }
+
+    /// The ticks that `messages` tell of, in the order they were told.
+    fn ticks(messages: &[WorkerToEdge]) -> Vec<u64> {
+        let tick = |message: &WorkerToEdge| match message {
+            WorkerToEdge::TickDelta { tick, .. } => Some(*tick),
+            _ => None,
+        };
+        messages.iter().filter_map(tick).collect()
+    }
+
+    /// A released region is in the store as it was after its last tick: the next owner
+    /// gets a state file and no commits to apply to it, and every chunk as it was.
+    #[tokio::test]
+    async fn a_released_region_is_restored_from_a_state_file_alone() {
+        for on_disk_too in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = match on_disk_too {
+                true => on_disk(directory.path()),
+                false => memory(),
+            };
+            let (mut edge, worker_end) = in_process(256);
+            let mut first = opened(&store, config(WEST));
+            let status = first.status();
+            first.links().attach(worker_end);
+            joined(&edge, &mut first).await;
+            edge.send(join(other_player(), "Jeb")).await.unwrap();
+            edge.send(dig(1)).await.unwrap();
+            edge.send(walk(player(), 14.5)).await.unwrap();
+            step(&mut first);
+            // A block beyond the region, which leaves an entry in the outbox.
+            edge.send(dig(16)).await.unwrap();
+            step(&mut first);
+            assert_eq!(status.ended(), None);
+
+            // Something more happens while the release is under way, and whether the
+            // region still takes it or not, the store ends up with the region as it is.
+            first.begin_release();
+            edge.send(dig(2)).await.unwrap();
+            assert_eq!(released(&mut first), Ended::Released);
+            assert_eq!(status.ended(), Some(Ended::Released));
+            assert!(!status.store_lost.load(Ordering::Relaxed));
+            assert!(!first.store_is_lost());
+            assert!(first.links.is_empty());
+            let state = first.region().state();
+            let chunk = first.region().chunk(ORIGIN).unwrap().clone();
+            assert_eq!(chunk.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+            assert_eq!(state.players.len(), 2);
+            assert_eq!(state.edges[&edge.edge].outbox.len(), 1);
+
+            // The edge was told of every tick up to the last before its link closed.
+            let told = edge.everything();
+            let applied = told.iter().rev().find_map(|message| match message {
+                WorkerToEdge::Progress { applied, .. } => Some(*applied),
+                _ => None,
+            });
+            assert_eq!(applied, Some(state.edges[&edge.edge].applied));
+            assert!(closed(&mut edge).await);
+
+            // The old runner is still there, which a restore must not depend on.
+            let (handle, restored) = opened_next(&store);
+            assert_eq!(restored.deltas, []);
+            assert_eq!(
+                restored.state.as_ref().map(|stored| stored.tick),
+                Some(state.tick)
+            );
+            let mut second = RegionRunner::restore(config(WEST), handle, restored).unwrap();
+            assert_eq!(second.region().state(), state);
+            let (again, worker_end) = in_process(256);
+            second.links().attach(worker_end);
+            again
+                .send(EdgeToWorker::Subscribe {
+                    chunks: vec![ORIGIN],
+                })
+                .await
+                .unwrap();
+            step_until(&mut second, |runner| {
+                runner.region().loaded_chunk_count() == 1
+            });
+            assert_eq!(second.region().chunk(ORIGIN), Some(&chunk));
+
+            // Released for good: no tick, whatever is asked of the runner.
+            first.begin_release();
+            first.step();
+            assert_eq!(first.region().state(), state);
+            assert_eq!(first.run(&AtomicBool::new(false)), Ended::Released);
+        }
+    }
+
+    /// What a release publishes last is followed at once by the link being closed. An
+    /// edge gets all of it all the same, also over a link that serialises, where a
+    /// message is on its way for a while.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn what_a_release_publishes_reaches_the_edge_before_its_link_is_closed() {
+        for connect in KINDS {
+            let store = memory();
+            let (mut edge, worker_end) = connect(256);
+            let (mut runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+            runner.links().attach(worker_end);
+            joined(&edge, &mut runner).await;
+
+            // The step is taken in a tick whose commit is confirmed only once the region
+            // has stopped ticking, so that it is the release that publishes it.
+            gate.hold();
+            edge.send(walk(player(), 3.0)).await.unwrap();
+            for _ in 0..20_000 {
+                runner.step();
+                if x_of(&runner, player()) == Some(3.0) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(x_of(&runner, player()), Some(3.0));
+            runner.begin_release();
+            step_until_it_ticks_no_more(&mut runner);
+            gate.release();
+            assert_eq!(released(&mut runner), Ended::Released);
+
+            let mut told = Vec::new();
+            let everything = async {
+                while let Some(message) = edge.end.recv().await {
+                    told.push(message);
+                }
+            };
+            timeout(Duration::from_secs(10), everything)
+                .await
+                .expect("the link was not closed");
+            assert_eq!(moves(&told).last(), Some(&3.0));
+            let applied = runner.region().edge(edge.edge).unwrap().applied;
+            assert!(
+                matches!(told.last(), Some(WorkerToEdge::Progress { applied: told, .. }) if *told == applied),
+                "{told:?}"
+            );
+        }
+    }
+
+    /// The first checkpoint of a release can be minutes of changed chunks, and players
+    /// do not stand still for it: the region ticks on and serves its links until the
+    /// store has it. From then on it takes nothing more, and what an edge sends is the
+    /// next owner's to apply when the edge sends it again.
+    #[tokio::test]
+    async fn a_region_ticks_on_during_the_first_checkpoint_of_a_release_and_not_after() {
+        let store = memory();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+        runner.links().attach(worker_end);
+        joined(&edge, &mut runner).await;
+        step(&mut runner);
+        edge.everything();
+
+        gate.hold_flushes();
+        runner.begin_release();
+        assert_eq!(runner.ended(), None);
+        // The store has done all of it, which the runner does not get to know.
+        wait_for_kept_flush(&mut runner, &gate);
+        for x in [3.0, 4.0] {
+            let before = runner.region().tick_number();
+            edge.send(walk(player(), x)).await.unwrap();
+            step(&mut runner);
+            assert_eq!(runner.region().tick_number(), before + 1);
+            assert_eq!(x_of(&runner, player()), Some(x));
+            let told = edge.everything();
+            assert_eq!(moves(&told), [x]);
+            let applied = edge.sent.load(Ordering::Relaxed);
+            assert!(
+                matches!(told.last(), Some(WorkerToEdge::Progress { applied: told, .. }) if *told == applied),
+                "{told:?}"
+            );
+        }
+        // A link that comes meanwhile is served as well.
+        let (mut other, other_end) = in_process(256);
+        runner.links().attach(other_end);
+        step(&mut runner);
+        assert_eq!(
+            other.everything()[0],
+            WorkerToEdge::Welcome(Welcome::Unknown)
+        );
+        assert_eq!(runner.phase, Phase::Preparing);
+
+        // The flush is answered, and the step that finds it so takes nothing from a
+        // link any more.
+        let late = walk(player(), 5.0);
+        edge.send(late.clone()).await.unwrap();
+        let number = edge.sent.load(Ordering::Relaxed);
+        gate.release_flushes();
+        let ticks = runner.region().tick_number();
+        assert_eq!(released(&mut runner), Ended::Released);
+        assert_eq!(runner.region().tick_number(), ticks);
+        assert_eq!(x_of(&runner, player()), Some(4.0));
+        assert_eq!(runner.region().edge(edge.edge).unwrap().applied, number - 1);
+        assert_eq!(edge.everything(), []);
+        assert!(closed(&mut edge).await);
+        assert!(closed(&mut other).await);
+        let state = runner.region().state();
+
+        // The edge has kept what it was not told to be applied, and sends it again
+        // under the number it had.
+        let (handle, restored) = opened_next(&store);
+        assert_eq!(restored.deltas, []);
+        let mut next =
+            RegionRunner::restore(config(ChunkArea::EVERYWHERE), handle, restored).unwrap();
+        assert_eq!(next.region().state(), state);
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut again = edge.again(edge_end);
+        next.links().attach(worker_end);
+        again
+            .send(again.hello(0, &[player()], &[ORIGIN]))
+            .await
+            .unwrap();
+        again.send_as(number, late).await;
+        step_until(&mut next, |runner| x_of(runner, player()) == Some(5.0));
+        step(&mut next);
+        assert_eq!(next.region().edge(edge.edge).unwrap().applied, number);
+        assert_eq!(
+            again.everything()[0],
+            WorkerToEdge::Welcome(Welcome::Resumed)
+        );
+    }
+
+    /// Ticks that ran before the region stopped ticking are owed to the edges once the
+    /// store has them, and not before. A release waits for that, and closes the links
+    /// only after it has published them, oldest first.
+    #[tokio::test]
+    async fn a_release_publishes_the_ticks_that_ran_once_they_are_confirmed_and_in_order() {
+        let store = memory();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+        runner.links().attach(worker_end);
+        joined(&edge, &mut runner).await;
+        step(&mut runner);
+        edge.everything();
+
+        // Two ticks before the release begins and one during its first checkpoint, none
+        // of which the runner hears to be on disk.
+        gate.hold();
+        gate.hold_flushes();
+        let first = runner.region().tick_number() + 1;
+        for x in [3.0, 4.0] {
+            edge.send(walk(player(), x)).await.unwrap();
+            runner.step();
+        }
+        runner.begin_release();
+        edge.send(walk(player(), 5.0)).await.unwrap();
+        runner.step();
+        assert_eq!(runner.region().tick_number(), first + 2);
+        assert_eq!(gate.commits().last(), Some(&(first + 2)));
+        gate.release_flushes();
+        step_until_it_ticks_no_more(&mut runner);
+        let last = runner.region().tick_number();
+
+        // The store has all three, and for as long as the runner is not told, nobody
+        // else is, and the release goes no further.
+        wait_for_kept(&mut runner, &gate, 3);
+        for _ in 0..20 {
+            runner.step();
+        }
+        assert_eq!(runner.phase, Phase::Settling);
+        assert_eq!(runner.ended(), None);
+        assert_eq!(runner.region().tick_number(), last);
+        assert_eq!(runner.links.len(), 1);
+        assert_eq!(edge.everything(), []);
+
+        gate.release();
+        assert_eq!(released(&mut runner), Ended::Released);
+        let told = edge.everything();
+        assert_eq!(moves(&told), [3.0, 4.0, 5.0]);
+        assert_eq!(ticks(&told), [first, first + 1, first + 2]);
+        let number = edge.sent.load(Ordering::Relaxed);
+        let applied: Vec<_> = told
+            .iter()
+            .filter_map(|message| match message {
+                WorkerToEdge::Progress { applied, .. } => Some(*applied),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(applied, [number - 2, number - 1, number]);
+        assert!(closed(&mut edge).await);
+
+        let (_handle, restored) = opened_next(&store);
+        assert_eq!(restored.deltas, []);
+        let state = restored_state(restored).unwrap();
+        assert_eq!(state, runner.region().state());
+        assert_eq!(state.players[&player()].pose.position.x, 5.0);
+    }
+
+    /// A release whose store handle is lost has nothing left to do that it could do:
+    /// the store has what it confirmed, and the rest was never shown. It shows nothing
+    /// more, closes its links and ends, whenever that happens.
+    #[tokio::test]
+    async fn a_release_whose_store_handle_is_lost_ends_as_lost_and_publishes_nothing_more() {
+        for case in [
+            "before it begins",
+            "during the first checkpoint",
+            "while it waits for commits",
+            "during the last checkpoint",
+        ] {
+            let store = memory();
+            let (mut edge, worker_end) = in_process(256);
+            let (mut runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+            let (links, status) = (runner.links(), runner.status());
+            links.attach(worker_end);
+            joined(&edge, &mut runner).await;
+            step(&mut runner);
+            edge.everything();
+
+            // A tick the store has, and the edge has not heard of.
+            gate.hold();
+            edge.send(walk(player(), 3.0)).await.unwrap();
+            runner.step();
+            wait_for_kept(&mut runner, &gate, 1);
+            match case {
+                "before it begins" => {
+                    gate.lose();
+                    runner.begin_release();
+                    // Known at once, without a step.
+                    assert_eq!(runner.ended(), Some(Ended::StoreLost));
+                }
+                "during the first checkpoint" => {
+                    gate.hold_flushes();
+                    runner.begin_release();
+                    runner.step();
+                    assert_eq!(runner.phase, Phase::Preparing);
+                    gate.lose();
+                }
+                "while it waits for commits" => {
+                    runner.begin_release();
+                    step_until_it_ticks_no_more(&mut runner);
+                    runner.step();
+                    assert_eq!(runner.phase, Phase::Settling);
+                    gate.lose();
+                }
+                _ => {
+                    // The tick is confirmed and published; only the last flush is not
+                    // answered.
+                    runner.begin_release();
+                    step_until_it_ticks_no_more(&mut runner);
+                    gate.hold_flushes();
+                    gate.release();
+                    for _ in 0..20_000 {
+                        runner.step();
+                        if runner.phase == Phase::Closing {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    assert_eq!(runner.phase, Phase::Closing);
+                    wait_for_kept_flush(&mut runner, &gate);
+                    assert_eq!(moves(&edge.everything()), [3.0], "{case}");
+                    gate.lose();
+                }
+            }
+            assert_eq!(released(&mut runner), Ended::StoreLost, "{case}");
+            assert_eq!(runner.ended(), Some(Ended::StoreLost), "{case}");
+            assert_eq!(status.ended(), Some(Ended::StoreLost), "{case}");
+            assert!(status.store_lost.load(Ordering::Relaxed), "{case}");
+            assert!(runner.store_is_lost(), "{case}");
+            assert!(runner.links.is_empty(), "{case}");
+
+            // That the store answers after all changes nothing, and the runner returns
+            // by itself rather than wait for anything.
+            gate.release();
+            gate.release_flushes();
+            let ticks = runner.region().tick_number();
+            runner.step();
+            assert_eq!(runner.run(&AtomicBool::new(false)), Ended::StoreLost);
+            assert_eq!(runner.region().tick_number(), ticks, "{case}");
+            assert_eq!(edge.everything(), [], "{case}");
+            assert!(closed(&mut edge).await, "{case}");
+
+            let (mut late, late_end) = in_process(256);
+            links.attach(late_end);
+            runner.step();
+            assert_eq!(late.everything(), [], "{case}");
+            assert!(closed(&mut late).await, "{case}");
+        }
+    }
+
+    /// Once a region has stopped ticking it takes no new links: there is nothing it
+    /// could tell them. Their edges find them closed and look for the region again.
+    #[tokio::test]
+    async fn a_link_attached_once_a_released_region_ticks_no_more_is_closed_and_not_served() {
+        let store = memory();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+        let links = runner.links();
+        links.attach(worker_end);
+        joined(&edge, &mut runner).await;
+        step(&mut runner);
+        edge.everything();
+
+        // The release waits for a commit, so that it lasts.
+        gate.hold();
+        edge.send(walk(player(), 3.0)).await.unwrap();
+        runner.step();
+        runner.begin_release();
+        step_until_it_ticks_no_more(&mut runner);
+
+        let (mut during, during_end) = in_process(256);
+        links.attach(during_end);
+        during
+            .send(EdgeToWorker::Subscribe {
+                chunks: vec![ORIGIN],
+            })
+            .await
+            .unwrap();
+        runner.step();
+        assert_eq!(runner.phase, Phase::Settling);
+        assert_eq!(during.everything(), []);
+        assert!(closed(&mut during).await);
+        // The link it had stays for what it is still owed.
+        assert_eq!(runner.links.len(), 1);
+        assert!(runner.region().edge(during.edge).is_none());
+
+        gate.release();
+        assert_eq!(released(&mut runner), Ended::Released);
+        assert_eq!(moves(&edge.everything()), [3.0]);
+        assert!(closed(&mut edge).await);
+
+        let (mut after, after_end) = in_process(256);
+        links.attach(after_end);
+        runner.step();
+        assert_eq!(after.everything(), []);
+        assert!(closed(&mut after).await);
+    }
+
+    /// The checkpoints of the interval go on while a release is under way, also in the
+    /// very tick the release begins after. The store ends up with the region as it is
+    /// all the same.
+    #[tokio::test]
+    async fn checkpoints_of_the_interval_that_fall_into_a_release_do_no_harm() {
+        for held in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = on_disk(directory.path());
+            let (edge, worker_end) = in_process(256);
+            let (runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+            // A checkpoint with every tick.
+            let mut runner = runner.with_checkpoint_interval(1);
+            runner.links().attach(worker_end);
+            joined(&edge, &mut runner).await;
+            edge.send(dig(1)).await.unwrap();
+            step(&mut runner);
+
+            if held {
+                gate.hold_flushes();
+            }
+            runner.begin_release();
+            // Held, the region takes all of these; otherwise as many as it gets to.
+            for x in 2..6 {
+                edge.send(dig(x)).await.unwrap();
+                step(&mut runner);
+            }
+            if held {
+                assert_eq!(runner.phase, Phase::Preparing);
+                let chunk = runner.region().chunk(ORIGIN).unwrap();
+                assert_eq!(chunk.get(5, -61, 0), Some(clustine_data::blocks::AIR));
+                gate.release_flushes();
+            }
+            assert_eq!(released(&mut runner), Ended::Released);
+            let state = runner.region().state();
+            let chunk = runner.region().chunk(ORIGIN).unwrap().clone();
+
+            let (handle, restored) = opened_next(&store);
+            assert_eq!(restored.deltas, []);
+            let config = config(ChunkArea::EVERYWHERE);
+            let mut next = RegionRunner::restore(config, handle, restored).unwrap();
+            assert_eq!(next.region().state(), state);
+            let (again, worker_end) = in_process(256);
+            next.links().attach(worker_end);
+            again
+                .send(EdgeToWorker::Subscribe {
+                    chunks: vec![ORIGIN],
+                })
+                .await
+                .unwrap();
+            step_until(&mut next, |runner| {
+                runner.region().loaded_chunk_count() == 1
+            });
+            assert_eq!(next.region().chunk(ORIGIN), Some(&chunk));
+        }
+    }
+
+    /// Waits until the region thread of `worker` has ended by itself.
+    fn wait_until_finished(worker: &Worker) {
+        for _ in 0..20_000 {
+            if worker.is_finished() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the region thread did not end");
+    }
+
+    /// A region on a thread of its own is released by asking its worker, which says how
+    /// that went once the thread is gone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_worker_releases_its_region_and_its_thread_ends() {
+        // Waiting for the release, and asking for it and looking later.
+        for blocking in [true, false] {
+            let store = memory();
+            let runner = opened(&store, config(ChunkArea::EVERYWHERE));
+            let (links, status) = (runner.links(), runner.status());
+            let worker = Worker::spawn(runner);
+            let (mut edge, worker_end) = in_process(256);
+            links.attach(worker_end);
+            edge.send(join(player(), "Notch")).await.unwrap();
+            edge.send(EdgeToWorker::Subscribe {
+                chunks: vec![ORIGIN],
+            })
+            .await
+            .unwrap();
+            // A player acts on a chunk they have been shown.
+            while !matches!(next(&mut edge).await, WorkerToEdge::ChunkSnapshot { .. }) {}
+            edge.send(dig_by(player(), 1, 9)).await.unwrap();
+            let acknowledged = PlayerEvent::Acknowledged { sequence: 9 };
+            loop {
+                match next(&mut edge).await {
+                    WorkerToEdge::ToPlayer { event, .. } if event == acknowledged => break,
+                    _ => {}
+                }
+            }
+            assert_eq!(status.ended(), None);
+            assert!(!worker.is_finished());
+
+            let ended = if blocking {
+                worker.release()
+            } else {
+                worker.begin_release();
+                wait_until_finished(&worker);
+                assert_eq!(status.ended(), Some(Ended::Released));
+                // There is nothing left to stop, and stopping says how it ended.
+                worker.stop()
+            };
+            assert_eq!(ended, Ended::Released);
+            assert_eq!(status.ended(), Some(Ended::Released));
+            assert!(!status.store_lost.load(Ordering::Relaxed));
+            assert!(closed(&mut edge).await);
+            let (mut late, late_end) = in_process(256);
+            links.attach(late_end);
+            assert!(closed(&mut late).await);
+
+            let (handle, restored) = opened_next(&store);
+            assert_eq!(restored.deltas, []);
+            assert!(restored.state.is_some());
+            let config = config(ChunkArea::EVERYWHERE);
+            let mut next = RegionRunner::restore(config, handle, restored).unwrap();
+            assert_eq!(next.region().player_count(), 1);
+            assert_eq!(
+                next.region().tick_number(),
+                status.tick.load(Ordering::Relaxed)
+            );
+            let (again, worker_end) = in_process(256);
+            next.links().attach(worker_end);
+            again
+                .send(EdgeToWorker::Subscribe {
+                    chunks: vec![ORIGIN],
+                })
+                .await
+                .unwrap();
+            step_until(&mut next, |runner| {
+                runner.region().loaded_chunk_count() == 1
+            });
+            let chunk = next.region().chunk(ORIGIN).unwrap();
+            assert_eq!(chunk.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+        }
+    }
+
+    /// A release waits for the store for as long as the store neither answers nor
+    /// closes. Whoever cannot wait any longer stops the worker, which lets go of the
+    /// region at once and as it is; that is a crash, which the next owner recovers
+    /// from. A worker that is not releasing anything stops as it always has.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_a_worker_ends_a_release_that_waits_for_the_store() {
+        let store = memory();
+        let (runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+        let (links, status) = (runner.links(), runner.status());
+        let worker = Worker::spawn(runner);
+        let (mut edge, worker_end) = in_process(256);
+        links.attach(worker_end);
+        edge.send(join(player(), "Notch")).await.unwrap();
+        while !matches!(next(&mut edge).await, WorkerToEdge::ToPlayer { .. }) {}
+
+        // The answer to the first flush never comes.
+        gate.hold_flushes();
+        worker.begin_release();
+        for _ in 0..20_000 {
+            if gate.flushes() >= 1 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(gate.flushes(), 1);
+        assert_eq!(status.ended(), None);
+        assert!(!worker.is_finished());
+
+        assert_eq!(worker.stop(), Ended::Abandoned);
+        assert_eq!(status.ended(), Some(Ended::Abandoned));
+        assert!(!status.store_lost.load(Ordering::Relaxed));
+        assert!(closed(&mut edge).await);
+        // Nothing more was asked of the store.
+        assert_eq!(gate.flushes(), 1);
+
+        // The player was shown to be in the world, so the next owner has them.
+        let (_handle, restored) = opened_next(&store);
+        let state = restored_state(restored).unwrap();
+        assert!(state.players.contains_key(&player()));
+
+        let runner = opened(&memory(), config(ChunkArea::EVERYWHERE));
+        let status = runner.status();
+        let worker = Worker::spawn(runner);
+        assert_eq!(worker.stop(), Ended::Stopped);
+        assert_eq!(status.ended(), Some(Ended::Stopped));
     }
 }
