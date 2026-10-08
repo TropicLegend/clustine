@@ -1696,3 +1696,375 @@ fn a_state_and_a_delta_survive_serialisation() {
         assert_eq!(back, state);
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Since when a region knows an edge
+//
+// From section 2.6 of `docs/adr/0012-the-tick-on-chunks.md` and scenario S16 of its
+// section 8, by someone who has not read how the region does it.
+// ---------------------------------------------------------------------------------------
+
+/// A region that has not run a tick. The one place below that makes a region without
+/// the fixtures above, so that a change to how a region is made is a change here.
+fn never_ran() -> Region {
+    Region::new(config_a(), ids())
+}
+
+/// The region as another owner has it, who was given `state` by the store.
+fn restored_from(state: RegionState) -> Region {
+    Region::restore(config_a(), state)
+}
+
+fn since(region: &Region, edge: EdgeId) -> u64 {
+    region.edge(edge).expect("the edge is known").since
+}
+
+/// Lets `ticks` ticks pass in which nothing happens, so that the number of a tick is
+/// not by chance that of a fixture's.
+fn idle(region: &mut Region, ticks: usize) {
+    for _ in 0..ticks {
+        checked_tick(region, &TickInputs::default());
+    }
+}
+
+/// What the delta of a tick says of `edge`, if the edge changed and is still known.
+fn edge_delta(output: &TickOutput, edge: EdgeId) -> Option<&clustine_sim::EdgeDelta> {
+    output
+        .delta
+        .edges
+        .iter()
+        .find(|(id, _)| *id == edge)
+        .and_then(|(_, change)| change.as_ref())
+}
+
+#[test]
+fn since_is_the_number_of_the_tick_that_noted_the_edge() {
+    let mut region = loaded(config_a(), CHUNK_A);
+    idle(&mut region, 5);
+    let before = region.tick_number();
+
+    let output = checked_tick(&mut region, &edges(vec![started(E, 10)]));
+    assert_eq!(output.tick, before + 1);
+    assert_eq!(since(&region, E), before + 1);
+
+    // Another edge, noted later, has the number of its own tick, and the first keeps
+    // its own.
+    idle(&mut region, 3);
+    let output = checked_tick(&mut region, &edges(vec![started(F, 10)]));
+    assert_eq!(since(&region, F), output.tick);
+    assert_eq!(since(&region, F), before + 5);
+    assert_eq!(since(&region, E), before + 1);
+}
+
+#[test]
+fn an_edge_noted_in_a_regions_first_tick_is_known_since_tick_one() {
+    // No state is made in tick 0, so 0 stays free for an edge that has been told none.
+    let mut region = never_ran();
+    assert_eq!(region.tick_number(), 0);
+    let output = checked_tick(&mut region, &edges(vec![started(E, 10)]));
+    assert_eq!(output.tick, 1);
+    assert_eq!(since(&region, E), 1);
+}
+
+#[test]
+fn two_edges_noted_in_one_tick_are_known_since_that_tick() {
+    let mut region = loaded(config_a(), CHUNK_A);
+    idle(&mut region, 2);
+    let output = checked_tick(&mut region, &edges(vec![started(E, 10), started(F, 77)]));
+    assert_eq!(since(&region, E), output.tick);
+    assert_eq!(since(&region, F), output.tick);
+}
+
+#[test]
+fn a_higher_start_gives_a_new_since() {
+    let (mut region, _) = handing_over();
+    let first = since(&region, E);
+    let others = since(&region, F);
+    assert!(first > 0);
+    idle(&mut region, 2);
+
+    let output = checked_tick(&mut region, &edges(vec![started(E, 20)]));
+    assert!(output.tick > first);
+    assert_eq!(since(&region, E), output.tick);
+    assert_eq!(since(&region, F), others, "another edge keeps its own");
+
+    // And again for the next start, each state with the number of the tick that made it.
+    let second = output.tick;
+    idle(&mut region, 1);
+    let output = checked_tick(&mut region, &edges(vec![started(E, 21)]));
+    assert_eq!(since(&region, E), output.tick);
+    assert_eq!(output.tick, second + 2);
+}
+
+#[test]
+fn the_same_start_and_a_lower_one_leave_since() {
+    let (mut region, _) = handing_over();
+    let noted = since(&region, E);
+    assert!(noted < region.tick_number(), "the fixture ran on after it");
+
+    let start = region.edge(E).expect("the edge is known").start;
+    for again in [start, start - 1, start, 0] {
+        let output = checked_tick(&mut region, &edges(vec![started(E, again)]));
+        assert_eq!(since(&region, E), noted, "after start {again}");
+        assert!(
+            edge_delta(&output, E).is_none_or(|delta| delta.since == noted),
+            "the delta of a tick that left the edge alone names another since"
+        );
+    }
+    // Several times in one tick, the same.
+    checked_tick(
+        &mut region,
+        &edges(vec![started(E, start), started(E, start)]),
+    );
+    assert_eq!(since(&region, E), noted);
+}
+
+#[test]
+fn a_confirmation_leaves_since() {
+    let mut region = three_entries();
+    let noted = since(&region, E);
+    assert!(noted > 0 && noted < region.tick_number());
+
+    for number in [1, 1, 3, 99] {
+        let output = checked_tick(
+            &mut region,
+            &edges(vec![EdgeEvent::Confirmed { edge: E, number }]),
+        );
+        assert_eq!(since(&region, E), noted, "after confirming {number}");
+        assert!(
+            edge_delta(&output, E).is_none_or(|delta| delta.since == noted),
+            "the delta that drops entries carries the since the edge has"
+        );
+    }
+    assert_eq!(outbox_numbers(&region, E), Vec::<u64>::new());
+}
+
+#[test]
+fn applied_leaves_since() {
+    let mut region = one_player();
+    let noted = since(&region, E);
+    let others = since(&region, F);
+    for number in [1, 7, 7, 8] {
+        let output = checked_tick(
+            &mut region,
+            &TickInputs {
+                applied: vec![(E, number)],
+                ..TickInputs::default()
+            },
+        );
+        assert_eq!(region.edge(E).map(|edge| edge.applied), Some(number));
+        assert_eq!(since(&region, E), noted, "after applied {number}");
+        assert!(
+            edge_delta(&output, E).is_none_or(|delta| delta.since == noted),
+            "the delta that notes what is applied carries the since the edge has"
+        );
+    }
+    assert_eq!(since(&region, F), others);
+}
+
+#[test]
+fn making_outbox_entries_and_what_players_do_leave_since() {
+    // Both fixtures ran ticks with joins, inputs and new outbox entries, and one of them
+    // a hand-over, after the tick that noted the edge.
+    let (region, _) = handing_over();
+    let noted = since(&region, E);
+    assert!(noted > 0 && noted < region.tick_number());
+    assert!(region.edge(E).expect("the edge is known").sent > 0);
+
+    let mut region = three_entries();
+    let noted = since(&region, E);
+    assert!(noted > 0 && noted < region.tick_number());
+    // One more entry, through a remote action that the edge passed on.
+    let output = checked_tick(
+        &mut region,
+        &TickInputs {
+            remote_actions: vec![(E, remote_break(player(8), 1, OWN_BLOCK))],
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(output.durable.len(), 1, "the remote action is answered");
+    assert_eq!(since(&region, E), noted);
+    assert_eq!(
+        edge_delta(&output, E).map(|delta| delta.since),
+        Some(noted),
+        "the delta that adds an entry carries the since the edge has"
+    );
+}
+
+#[test]
+fn an_edge_that_is_gone_and_comes_back_in_a_later_tick_has_the_number_of_that_tick() {
+    let (mut region, _) = handing_over();
+    let first = since(&region, E);
+    let start = region.edge(E).expect("the edge is known").start;
+    let others = since(&region, F);
+
+    checked_tick(&mut region, &edges(vec![EdgeEvent::Gone { edge: E }]));
+    assert!(region.edge(E).is_none());
+    idle(&mut region, 3);
+
+    // With the start it had: it is the tick that makes the state that counts.
+    let output = checked_tick(&mut region, &edges(vec![started(E, start)]));
+    assert_eq!(since(&region, E), output.tick);
+    assert!(output.tick > first, "a since is not given out twice");
+    assert_eq!(since(&region, F), others);
+
+    // And with a lower start than it had, as the region knows nothing of it any more.
+    checked_tick(&mut region, &edges(vec![EdgeEvent::Gone { edge: E }]));
+    let output = checked_tick(&mut region, &edges(vec![started(E, start - 1)]));
+    assert_eq!(
+        region.edge(E).map(|edge| (edge.start, edge.since)),
+        Some((start - 1, output.tick))
+    );
+}
+
+#[test]
+fn an_edge_that_is_gone_and_comes_back_in_the_same_tick_has_the_number_of_that_tick() {
+    let (mut region, _) = handing_over();
+    let first = since(&region, E);
+    let start = region.edge(E).expect("the edge is known").start;
+    let others = since(&region, F);
+    idle(&mut region, 2);
+
+    let output = checked_tick(
+        &mut region,
+        &edges(vec![EdgeEvent::Gone { edge: E }, started(E, start)]),
+    );
+    assert_eq!(since(&region, E), output.tick);
+    assert_ne!(since(&region, E), first);
+    assert_eq!(since(&region, F), others);
+    assert_eq!(
+        edge_delta(&output, E).map(|delta| (delta.start, delta.since)),
+        Some((start, output.tick)),
+        "the delta has the state that the tick made"
+    );
+}
+
+#[test]
+fn an_edge_noted_gone_and_noted_again_within_one_tick_has_the_number_of_that_tick() {
+    let mut region = loaded(config_a(), CHUNK_A);
+    idle(&mut region, 1);
+    let output = checked_tick(
+        &mut region,
+        &edges(vec![
+            started(E, 10),
+            EdgeEvent::Gone { edge: E },
+            started(E, 10),
+            started(E, 10),
+        ]),
+    );
+    assert_eq!(since(&region, E), output.tick);
+}
+
+#[test]
+fn the_delta_of_the_tick_that_makes_a_state_for_an_edge_carries_its_since() {
+    let mut region = loaded(config_a(), CHUNK_A);
+    idle(&mut region, 4);
+
+    let output = checked_tick(&mut region, &edges(vec![started(E, 10)]));
+    assert_eq!(
+        edge_delta(&output, E).map(|delta| (delta.start, delta.since)),
+        Some((10, output.tick))
+    );
+
+    // A state that has only the deltas to go by comes to the same since: what the store
+    // has of a region between two checkpoints is its deltas.
+    let mut from_deltas = region.state();
+    idle(&mut region, 2);
+    let reset = checked_tick(&mut region, &edges(vec![started(E, 11)]));
+    assert_eq!(
+        edge_delta(&reset, E).map(|delta| (delta.start, delta.since)),
+        Some((11, reset.tick))
+    );
+    from_deltas.apply(&reset.delta);
+    assert_eq!(from_deltas.edges[&E].since, reset.tick);
+    assert_eq!(from_deltas.edges[&E], region.state().edges[&E]);
+
+    // An edge the state has never heard of is made by the delta alone.
+    let mut empty = RegionState::new(ids());
+    empty.apply(&reset.delta);
+    assert_eq!(empty.edges[&E].since, reset.tick);
+}
+
+#[test]
+fn since_changes_only_when_an_edge_is_noted_or_reset_in_every_tick_of_a_scenario() {
+    // What section 2.6 says, played beside the region: the start and the since of every
+    // edge, changed by `Started` for an edge that is not known or has a lower start, and
+    // by nothing else.
+    let mut region = loaded(config_a(), CHUNK_A);
+    let mut expected: std::collections::BTreeMap<EdgeId, (u64, u64)> = Default::default();
+    let mut made = 0;
+    for inputs in scenario() {
+        let output = checked_tick(&mut region, &inputs);
+        for event in &inputs.edges {
+            match event {
+                EdgeEvent::Started { edge, start } => {
+                    let known = expected.get(edge).map(|(start, _)| *start);
+                    if known.is_none_or(|known| known < *start) {
+                        expected.insert(*edge, (*start, output.tick));
+                        made += 1;
+                    }
+                }
+                EdgeEvent::Gone { edge } => {
+                    expected.remove(edge);
+                }
+                EdgeEvent::Confirmed { .. } => {}
+            }
+        }
+        let actual: std::collections::BTreeMap<EdgeId, (u64, u64)> = region
+            .state()
+            .edges
+            .iter()
+            .map(|(edge, state)| (*edge, (state.start, state.since)))
+            .collect();
+        assert_eq!(actual, expected, "after tick {}", output.tick);
+    }
+    assert!(
+        made >= 4,
+        "the scenario notes two edges, resets one and brings one back"
+    );
+}
+
+#[test]
+fn a_restored_region_keeps_each_since_and_gives_a_new_state_its_own_tick() {
+    let (original, _) = handing_over();
+    let noted = since(&original, E);
+    let start = original.edge(E).expect("the edge is known").start;
+
+    let mut restored = restored_from(original.state());
+    assert_eq!(since(&restored, E), noted);
+    assert_eq!(since(&restored, F), since(&original, F));
+
+    // The edge says hello to the new owner with the start it has: nothing changes.
+    checked_tick(&mut restored, &edges(vec![started(E, start)]));
+    assert_eq!(since(&restored, E), noted);
+
+    // A state made by the new owner has the number of the tick that makes it, which
+    // goes on from the ticks of the owner before.
+    let output = checked_tick(&mut restored, &edges(vec![started(E, start + 1)]));
+    assert_eq!(output.tick, original.tick_number() + 2);
+    assert_eq!(since(&restored, E), output.tick);
+    assert_eq!(since(&restored, F), since(&original, F));
+}
+
+#[test]
+fn a_state_and_a_delta_keep_their_since_through_serialisation() {
+    // The next owner compares a hello with the since the store gives back, so it has to
+    // come back as it went in.
+    let mut region = loaded(config_a(), CHUNK_A);
+    idle(&mut region, 3);
+    let output = checked_tick(&mut region, &edges(vec![started(E, 10)]));
+
+    let bytes = postcard::to_stdvec(&output.delta).expect("the delta serialises");
+    let delta: clustine_sim::StateDelta = postcard::from_bytes(&bytes).expect("reads back");
+    let carried = delta
+        .edges
+        .iter()
+        .find(|(id, _)| *id == E)
+        .and_then(|(_, change)| change.as_ref())
+        .map(|change| change.since);
+    assert_eq!(carried, Some(output.tick));
+
+    let bytes = postcard::to_stdvec(&region.state()).expect("the state serialises");
+    let state: RegionState = postcard::from_bytes(&bytes).expect("reads back");
+    assert_eq!(state.edges[&E].since, output.tick);
+}

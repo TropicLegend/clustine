@@ -3496,3 +3496,2072 @@ fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links(
     let (_, _, chunk, _) = snapshot(&again.log, HOME).expect("waited for it");
     assert_eq!(block_in(chunk, near), blocks::AIR);
 }
+
+// ---------------------------------------------------------------------------------------
+// 14. Since when a region knows an edge, the entries of a welcome, and what is stored
+//
+// From sections 2.6, 4.1, 4.5, 5.2 and 5.3 of `docs/adr/0012-the-tick-on-chunks.md` and
+// the scenarios R11, R12 and R14 of its section 8, by someone who has not read how the
+// runner does it. The links above say the `since` they were told by themselves; where an
+// edge says another, or none, its hello is sent by `hello_since`.
+// ---------------------------------------------------------------------------------------
+
+/// Says hello on `link` with the `since` the test names, whatever the links of the edge
+/// were told. The link still notes what its welcome says, for the links after it.
+fn hello_since(
+    link: &Link,
+    edge: EdgeId,
+    start: u64,
+    since: u64,
+    seen: u64,
+    players: Vec<PlayerId>,
+    chunks: Vec<ChunkPos>,
+) {
+    link.edge.set(Some(edge));
+    link.plain(EdgeToWorker::Hello {
+        edge,
+        start,
+        since,
+        seen,
+        players,
+        chunks,
+    });
+}
+
+/// Whether `links[index]` has everything of the tick that took its hello: the welcome
+/// with what follows it, the snapshot of the home chunk and a progress.
+fn answered(links: &[&mut Link], index: usize) -> bool {
+    snapshot(&links[index].log, HOME).is_some() && applied(&links[index].log).is_some()
+}
+
+/// As [`resumed`], with a hello that says `since`.
+fn greeted(
+    runner: &mut RegionRunner,
+    edge: EdgeId,
+    start: u64,
+    since: u64,
+    seen: u64,
+    players: Vec<PlayerId>,
+) -> Link {
+    let mut link = Link::attach(runner);
+    hello_since(&link, edge, start, since, seen, players, vec![HOME]);
+    run_until(
+        runner,
+        &mut [&mut link],
+        "the answer to a hello",
+        |_, links| links[0].closed || answered(links, 0),
+    );
+    link
+}
+
+/// The `since` the last welcome said that a link of `edge` has read: what an edge that
+/// keeps to section 5.1 says in its next hello.
+fn told(edge: EdgeId) -> u64 {
+    SINCE.with(|since| since.borrow().get(&edge).copied().unwrap_or(0))
+}
+
+/// The welcome on a link, as it is.
+fn welcomed(log: &[WorkerToEdge]) -> Welcome {
+    match log.first() {
+        Some(WorkerToEdge::Welcome(welcome)) => *welcome,
+        _ => panic!("no welcome first: {}", brief(log)),
+    }
+}
+
+/// The `since` of a welcome that says the region does not share the edge's numbering
+/// and has nothing in its outbox for it.
+fn unknown_since(log: &[WorkerToEdge]) -> u64 {
+    match welcomed(log) {
+        Welcome::Unknown { since, entries: 0 } => since,
+        other => panic!(
+            "welcomed {other:?}, not as unknown without entries: {}",
+            brief(log)
+        ),
+    }
+}
+
+/// Holds the beginning of a link's log to the order of section 5.2: the welcome, then
+/// exactly as many outbox entries as it announced, in ascending order of their numbers,
+/// then one presence answer for each player of the hello, and none after those. Returns
+/// the welcome and the numbers of its entries.
+fn resume_of(log: &[WorkerToEdge], named: &[PlayerId]) -> (Welcome, Vec<u64>) {
+    let welcome = welcomed(log);
+    let entries = match welcome {
+        Welcome::Resumed { entries } | Welcome::Unknown { entries, .. } => entries as usize,
+        Welcome::Superseded => panic!("superseded: {}", brief(log)),
+    };
+    assert!(
+        log.len() > entries + named.len(),
+        "{welcome:?} for {} players, and the link has less than that: {}",
+        named.len(),
+        brief(log)
+    );
+    let numbers: Vec<u64> = log[1..=entries]
+        .iter()
+        .map(|message| match message {
+            WorkerToEdge::Outbox { number, .. } => *number,
+            other => panic!(
+                "{welcome:?}, and {other:?} is among what it announced: {}",
+                brief(log)
+            ),
+        })
+        .collect();
+    assert!(
+        numbers.windows(2).all(|pair| pair[0] < pair[1]),
+        "the entries of a welcome ascend: {}",
+        brief(log)
+    );
+    let mut answers: Vec<PlayerId> = log[1 + entries..1 + entries + named.len()]
+        .iter()
+        .map(|message| match message {
+            WorkerToEdge::Presence { player, .. } => *player,
+            other => panic!(
+                "{welcome:?}, and {other:?} is where a presence answer belongs: {}",
+                brief(log)
+            ),
+        })
+        .collect();
+    answers.sort();
+    let mut expected = named.to_vec();
+    expected.sort();
+    assert_eq!(
+        answers,
+        expected,
+        "one presence answer for each player of the hello: {}",
+        brief(log)
+    );
+    assert!(
+        log[1 + entries + named.len()..]
+            .iter()
+            .all(|message| !matches!(message, WorkerToEdge::Presence { .. })),
+        "a presence answer behind the resume: {}",
+        brief(log)
+    );
+    (welcome, numbers)
+}
+
+fn is_absent(log: &[WorkerToEdge], id: PlayerId) -> bool {
+    matches!(presence(log, id), Some((_, Presence::Absent)))
+}
+
+fn is_present(log: &[WorkerToEdge], id: PlayerId, entity: EntityId) -> bool {
+    matches!(
+        presence(log, id),
+        Some((_, Presence::Present { entity: present, .. })) if *present == entity
+    )
+}
+
+/// The numbers of the outbox entries the region keeps for `edge`.
+fn kept(runner: &RegionRunner, edge: EdgeId) -> Vec<u64> {
+    runner
+        .region()
+        .edge(edge)
+        .expect("the edge is known")
+        .outbox
+        .keys()
+        .copied()
+        .collect()
+}
+
+// R11, and section 4.5 case by case.
+
+#[test]
+fn a_first_hello_is_welcomed_unknown_with_the_since_of_its_tick_and_that_since_is_resumed() {
+    in_memory_and_on_disk(
+        a_first_hello_is_welcomed_unknown_with_the_since_of_its_tick_and_that_since_is_resumed_in,
+    );
+}
+
+fn a_first_hello_is_welcomed_unknown_with_the_since_of_its_tick_and_that_since_is_resumed_in(
+    mut world: World,
+) {
+    let mut runner = world.open();
+    // Some ticks first, so that the tick of the hello is not the region's first.
+    run_to_tick(&mut runner, &mut [], 6);
+
+    // The tick that takes the hello makes the state for the edge, and gives it its own
+    // number.
+    let mut first = Link::attach(&runner);
+    hello_since(&first, E, 5, 0, 0, vec![player(1)], vec![HOME]);
+    let mut made = None;
+    for _ in 0..STEPS {
+        let before = runner.region().tick_number();
+        runner.step();
+        if let Some(edge) = runner.region().edge(E) {
+            assert_eq!(
+                runner.region().tick_number(),
+                before + 1,
+                "a step is one tick"
+            );
+            made = Some((before + 1, edge.since));
+            break;
+        }
+    }
+    let (tick, since) = made.expect("a tick taking the hello");
+    assert_eq!(since, tick);
+    assert!(since > 6);
+
+    run_until(
+        &mut runner,
+        &mut [&mut first],
+        "the answer to a hello",
+        |_, links| answered(links, 0),
+    );
+    let (welcome, _) = resume_of(&first.log, &[player(1)]);
+    assert_eq!(
+        welcome,
+        Welcome::Unknown { since, entries: 0 },
+        "{}",
+        brief(&first.log)
+    );
+    assert!(is_absent(&first.log, player(1)));
+    assert!(outbox(&first.log).is_empty(), "{}", brief(&first.log));
+
+    // The edge says what it was told, and the region has its numbering.
+    let second = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&second.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&second.log)
+    );
+    assert!(!second.closed);
+    assert_eq!(
+        runner.region().edge(E).map(|edge| (edge.start, edge.since)),
+        Some((5, since)),
+        "a resume leaves the since"
+    );
+}
+
+#[test]
+fn a_hello_with_another_since_or_none_before_the_edge_sent_anything_is_told_the_same_since() {
+    in_memory_and_on_disk(
+        a_hello_with_another_since_or_none_before_the_edge_sent_anything_is_told_the_same_since_in,
+    );
+}
+
+fn a_hello_with_another_since_or_none_before_the_edge_sent_anything_is_told_the_same_since_in(
+    mut world: World,
+) {
+    let mut runner = world.open();
+    run_to_tick(&mut runner, &mut [], 6);
+    let mut watcher = established(&mut runner, F, 1);
+    let theirs = join_and_wait(&mut runner, &mut watcher, 1, player(2));
+    let first = greeted(&mut runner, E, 5, 0, 0, Vec::new());
+    let since = unknown_since(&first.log);
+    assert!(since > 6);
+
+    // An edge that never read that welcome says none, or whatever it was told by an
+    // owner before; one that says a number the region has yet to reach is no nearer.
+    for said in [0, since - 1, since + 1, u64::MAX] {
+        let link = greeted(&mut runner, E, 5, said, 3, vec![player(1)]);
+        assert_eq!(
+            resume_of(&link.log, &[player(1)]).0,
+            Welcome::Unknown { since, entries: 0 },
+            "said {said}: {}",
+            brief(&link.log)
+        );
+        assert!(is_absent(&link.log, player(1)));
+        assert!(!link.closed);
+        assert_eq!(applied(&link.log), Some(0));
+        assert_eq!(
+            runner
+                .region()
+                .edge(E)
+                .map(|edge| (edge.start, edge.since, edge.applied)),
+            Some((5, since, 0)),
+            "said {said}: the state is the one the edge was told of before"
+        );
+    }
+
+    // After that welcome the link takes numbered messages from 1.
+    let mut link = greeted(&mut runner, E, 5, 0, 0, vec![player(1)]);
+    assert_eq!(unknown_since(&link.log), since);
+    let entity = join_and_wait(&mut runner, &mut link, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut link, &mut watcher], 0, 1);
+    assert!(!link.closed);
+
+    // None of it was anything to another edge.
+    sync(&mut runner, &mut [&mut watcher, &mut link], 0);
+    assert!(!watcher.closed);
+    assert!(removal(&watcher.log, theirs).is_none());
+    assert_eq!(
+        runner.region().player(player(2)).map(|(entity, _)| entity),
+        Some(theirs)
+    );
+
+    // And the since it was told every time is the one that resumes.
+    let back = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&back.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&back.log)
+    );
+    assert!(is_present(&back.log, player(1), entity));
+}
+
+#[test]
+fn a_hello_with_another_since_after_a_join_was_applied_resets_the_edge() {
+    in_memory_and_on_disk(a_hello_with_another_since_after_a_join_was_applied_resets_the_edge_in);
+}
+
+fn a_hello_with_another_since_after_a_join_was_applied_resets_the_edge_in(mut world: World) {
+    let mut runner = world.open();
+    run_to_tick(&mut runner, &mut [], 6);
+    let mut watcher = established(&mut runner, F, 1);
+    let theirs = join_and_wait(&mut runner, &mut watcher, 1, player(2));
+    let mut link = greeted(&mut runner, E, 5, 0, 0, Vec::new());
+    let first = unknown_since(&link.log);
+    let mut entity = join_and_wait(&mut runner, &mut link, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut link, &mut watcher], 0, 1);
+
+    // The edge has lost what it was told: it says none; then the one it had before the
+    // region reset it, which the region no longer has; then one the region never gave.
+    let says: [fn(u64, u64) -> u64; 3] = [|_, _| 0, |first, _| first, |_, known| known + 1];
+    let mut known = first;
+    for say in says {
+        let said = say(first, known);
+        let mut new = Link::attach(&runner);
+        hello_since(&new, E, 5, said, 1, vec![player(1)], vec![HOME]);
+        run_until(
+            &mut runner,
+            &mut [&mut new, &mut link, &mut watcher],
+            "the edge being reset, its old link closed and the other edge seeing the player go",
+            |_, links| {
+                answered(links, 0) && links[1].closed && removal(&links[2].log, entity).is_some()
+            },
+        );
+        let (welcome, _) = resume_of(&new.log, &[player(1)]);
+        let Welcome::Unknown { since, entries: 0 } = welcome else {
+            panic!("said {said}, welcomed {welcome:?}: {}", brief(&new.log));
+        };
+        assert!(
+            since > known,
+            "said {said}: the since {since} is not above {known}, which the region had"
+        );
+        assert!(is_absent(&new.log, player(1)), "{}", brief(&new.log));
+        assert!(outbox(&new.log).is_empty(), "{}", brief(&new.log));
+        assert_eq!(runner.region().player(player(1)), None);
+        assert_eq!(
+            runner
+                .region()
+                .edge(E)
+                .map(|edge| (edge.start, edge.since, edge.applied, edge.sent)),
+            Some((5, since, 0, 0)),
+            "said {said}: the edge is known anew, from the tick of the hello"
+        );
+        assert_eq!(
+            progress(&new.log).first().map(|(applied, _)| *applied),
+            Some(0),
+            "the region counts from nothing received: {}",
+            brief(&new.log)
+        );
+        assert_eq!(
+            runner.region().player(player(2)).map(|(entity, _)| entity),
+            Some(theirs),
+            "another edge's player is not touched"
+        );
+        assert!(removal(&watcher.log, theirs).is_none());
+
+        // Numbered messages from 1 are taken on that link.
+        let again = join_and_wait(&mut runner, &mut new, 1, player(1));
+        assert_ne!(again, entity, "the player enters the world anew");
+        wait_applied(&mut runner, &mut [&mut new, &mut watcher], 0, 1);
+        assert!(!new.closed);
+        entity = again;
+        known = since;
+        link = new;
+    }
+
+    // The edge that keeps what it was told is resumed, with its player.
+    let back = greeted(&mut runner, E, 5, known, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&back.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&back.log)
+    );
+    assert!(is_present(&back.log, player(1), entity));
+
+    // So it is by the next owner: the state the reset made is the one in the store.
+    let mut next = world.open();
+    drop(runner);
+    assert_eq!(
+        next.region().edge(E).map(|edge| (edge.start, edge.since)),
+        Some((5, known))
+    );
+    let back = greeted(&mut next, E, 5, known, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&back.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&back.log)
+    );
+    assert!(is_present(&back.log, player(1), entity));
+}
+
+#[test]
+fn a_hello_without_a_since_while_the_first_links_join_is_held_is_told_the_same_since() {
+    in_memory_and_on_disk(
+        a_hello_without_a_since_while_the_first_links_join_is_held_is_told_the_same_since_in,
+    );
+}
+
+fn a_hello_without_a_since_while_the_first_links_join_is_held_is_told_the_same_since_in(
+    mut world: World,
+) {
+    let mut runner = world.open();
+    run_to_tick(&mut runner, &mut [], 6);
+
+    // Held: the home chunk cannot be there within the step that asks the store for it,
+    // and what is held is not received. Whether the store has confirmed the tick of the
+    // hello, so that its welcome is out, is open.
+    let mut first = Link::attach(&runner);
+    hello_since(&first, E, 5, 0, 0, Vec::new(), vec![HOME]);
+    first.numbered(1, join(player(1)));
+    runner.step();
+    first.drain();
+    assert!(snapshot(&first.log, HOME).is_none());
+    let made = runner
+        .region()
+        .edge(E)
+        .expect("the step took the hello")
+        .since;
+
+    // The edge never read that welcome. The region has taken nothing from it, so it is
+    // told of the same state again.
+    let mut second = Link::attach(&runner);
+    hello_since(&second, E, 5, 0, 0, vec![player(1)], vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut second, &mut first],
+        "the second link being answered and the first closed",
+        |_, links| answered(links, 0) && links[1].closed,
+    );
+    sync(&mut runner, &mut [&mut second, &mut first], 0);
+    assert_eq!(
+        resume_of(&second.log, &[player(1)]).0,
+        Welcome::Unknown {
+            since: made,
+            entries: 0
+        },
+        "{}",
+        brief(&second.log)
+    );
+    assert_eq!(
+        runner
+            .region()
+            .edge(E)
+            .map(|edge| (edge.since, edge.applied)),
+        Some((made, 0))
+    );
+    assert_eq!(
+        runner.region().player_count(),
+        0,
+        "what was held when its link ended was applied"
+    );
+
+    // The edge sends it again, as its number 1, and it is applied once.
+    let entity = join_and_wait(&mut runner, &mut second, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut second], 0, 1);
+    assert!(!second.closed);
+    assert_eq!(runner.region().player_count(), 1);
+    assert_eq!(
+        runner.region().player(player(1)).map(|(entity, _)| entity),
+        Some(entity)
+    );
+}
+
+#[test]
+fn what_an_edge_that_lost_its_since_had_held_behind_its_resume_is_dropped() {
+    in_memory_and_on_disk(
+        what_an_edge_that_lost_its_since_had_held_behind_its_resume_is_dropped_in,
+    );
+}
+
+fn what_an_edge_that_lost_its_since_had_held_behind_its_resume_is_dropped_in(mut world: World) {
+    let mut runner = restored_with_a_player(&mut world);
+    let first = told(E);
+
+    // Held: the home chunk cannot be there within the step that asks the store for it.
+    let mut old = Link::attach(&runner);
+    old.hello(E, 5, 0, vec![player(1)], vec![HOME]);
+    old.numbered(2, join(player(2)));
+    runner.step();
+    old.drain();
+    assert!(snapshot(&old.log, HOME).is_none());
+
+    // The region has applied the edge's first message, under the owner before.
+    let mut new = Link::attach(&runner);
+    hello_since(&new, E, 5, 0, 0, vec![player(1)], vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old],
+        "the edge being reset",
+        |_, links| answered(links, 0),
+    );
+    sync(&mut runner, &mut [&mut new, &mut old], 0);
+
+    let (welcome, _) = resume_of(&new.log, &[player(1)]);
+    let Welcome::Unknown { since, entries: 0 } = welcome else {
+        panic!("welcomed {welcome:?}: {}", brief(&new.log));
+    };
+    assert!(since > first, "{since} after {first}");
+    assert!(old.closed);
+    assert!(is_absent(&new.log, player(1)));
+    assert_eq!(
+        runner.region().player_count(),
+        0,
+        "the reset removes the edge's player, and its held join is not applied"
+    );
+    assert_eq!(
+        runner
+            .region()
+            .edge(E)
+            .map(|edge| (edge.start, edge.since, edge.applied)),
+        Some((5, since, 0))
+    );
+    assert!(
+        spawned(&new.log, player(2)).is_none(),
+        "{}",
+        brief(&new.log)
+    );
+    assert!(
+        entity_spawn(&new.log, player(2)).is_none(),
+        "{}",
+        brief(&new.log)
+    );
+    assert!(progress(&new.log).iter().all(|(applied, _)| *applied == 0));
+}
+
+#[test]
+fn what_an_edge_that_lost_its_since_had_sent_for_the_coming_tick_is_forgotten() {
+    in_memory_and_on_disk(
+        what_an_edge_that_lost_its_since_had_sent_for_the_coming_tick_is_forgotten_in,
+    );
+}
+
+fn what_an_edge_that_lost_its_since_had_sent_for_the_coming_tick_is_forgotten_in(mut world: World) {
+    let mut runner = world.open();
+    let mut old = established(&mut runner, E, 5);
+    let mut watcher = established(&mut runner, F, 1);
+    let first = told(E);
+    let entity = join_and_wait(&mut runner, &mut old, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut old, &mut watcher], 0, 1);
+
+    // Both are there when the runner next looks: a join on the link that was attached
+    // first and is served first, and then the hello of a link that says no since.
+    old.numbered(2, join(player(2)));
+    let mut new = Link::attach(&runner);
+    hello_since(&new, E, 5, 0, 0, Vec::new(), vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old, &mut watcher],
+        "the edge being reset and the other edge seeing the player go",
+        |_, links| answered(links, 0) && removal(&links[2].log, entity).is_some(),
+    );
+    sync(&mut runner, &mut [&mut new, &mut watcher, &mut old], 0);
+
+    let since = unknown_since(&new.log);
+    assert!(since > first, "{since} after {first}");
+    assert_eq!(
+        runner.region().player_count(),
+        0,
+        "the join the edge had sent before it was reset was applied after it"
+    );
+    assert!(entity_spawn(&watcher.log, player(2)).is_none());
+    assert!(spawned(&new.log, player(2)).is_none());
+    assert_eq!(
+        runner
+            .region()
+            .edge(E)
+            .map(|edge| (edge.since, edge.applied)),
+        Some((since, 0)),
+        "a number of the numbering that was given up became one of the new"
+    );
+    assert!(
+        progress(&new.log).iter().all(|(applied, _)| *applied == 0),
+        "{}",
+        brief(&new.log)
+    );
+
+    // So the edge's first message after the welcome is its number 1.
+    join_and_wait(&mut runner, &mut new, 1, player(3));
+    assert!(!new.closed);
+}
+
+#[test]
+fn a_message_numbered_1_right_behind_the_hello_of_an_edge_that_lost_its_since_is_taken() {
+    in_memory_and_on_disk(
+        a_message_numbered_1_right_behind_the_hello_of_an_edge_that_lost_its_since_is_taken_in,
+    );
+}
+
+fn a_message_numbered_1_right_behind_the_hello_of_an_edge_that_lost_its_since_is_taken_in(
+    mut world: World,
+) {
+    let mut runner = world.open();
+    let mut old = established(&mut runner, E, 5);
+    let mut watcher = established(&mut runner, F, 1);
+    let first = told(E);
+    let entity = join_and_wait(&mut runner, &mut old, 1, player(1));
+    old.numbered(2, input(player(1), 1, move_to(12.5)));
+    wait_applied(&mut runner, &mut [&mut old, &mut watcher], 0, 2);
+
+    // The region has received two messages. It counts from nothing received from the
+    // hello on, so a number 1 that is there with the hello is not one it has had.
+    let mut new = Link::attach(&runner);
+    hello_since(&new, E, 5, 0, 0, vec![player(1)], vec![HOME]);
+    new.numbered(1, join(player(2)));
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old, &mut watcher],
+        "the edge being reset and its first message applied",
+        |_, links| {
+            answered(links, 0)
+                && removal(&links[2].log, entity).is_some()
+                && spawned(&links[0].log, player(2)).is_some()
+        },
+    );
+    wait_applied(&mut runner, &mut [&mut new, &mut watcher], 0, 1);
+    sync(&mut runner, &mut [&mut new, &mut watcher], 0);
+
+    let (welcome, _) = resume_of(&new.log, &[player(1)]);
+    let Welcome::Unknown { since, entries: 0 } = welcome else {
+        panic!("welcomed {welcome:?}: {}", brief(&new.log));
+    };
+    assert!(since > first, "{since} after {first}");
+    assert!(!new.closed);
+    assert_eq!(runner.region().player(player(1)), None);
+    assert!(runner.region().player(player(2)).is_some());
+    assert_eq!(runner.region().player_count(), 1);
+    assert_eq!(
+        runner
+            .region()
+            .edge(E)
+            .map(|edge| (edge.since, edge.applied)),
+        Some((since, 1))
+    );
+    assert!(
+        progress(&new.log).iter().all(|(applied, _)| *applied <= 1),
+        "a number of the numbering that was given up: {}",
+        brief(&new.log)
+    );
+}
+
+#[test]
+fn of_two_hellos_at_once_of_an_edge_that_lost_its_since_the_link_that_stays_is_told_the_new_one() {
+    let mut world = World::memory();
+    let mut runner = world.open();
+    let (mut old, mut watcher, stays, leaves) = with_an_unconfirmed_departure(&mut runner);
+    let first = told(E);
+
+    // What a connection that is half open causes, to an edge that lost its since: two
+    // links, both there when the runner next looks.
+    let mut one = Link::attach(&runner);
+    hello_since(&one, E, 5, 0, 0, Vec::new(), vec![HOME]);
+    let mut other = Link::attach(&runner);
+    hello_since(&other, E, 5, 0, 0, Vec::new(), vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut other, &mut one, &mut old, &mut watcher],
+        "the later link being answered, the earlier closed and the edge reset",
+        |_, links| {
+            answered(links, 0)
+                && links[1].closed
+                && removal(&links[3].log, stays).is_some()
+                && removal(&links[3].log, leaves).is_some()
+        },
+    );
+    sync(&mut runner, &mut [&mut other, &mut watcher], 0);
+
+    // The state the region has for the edge now is the one the reset made, with nothing
+    // in its outbox, and that is what the link that stays has to be told.
+    let made = runner.region().edge(E).expect("the edge is known").since;
+    assert!(made > first, "{made} after {first}");
+    assert_eq!(
+        welcomed(&other.log),
+        Welcome::Unknown {
+            since: made,
+            entries: 0
+        },
+        "{}",
+        brief(&other.log)
+    );
+    assert!(outbox(&other.log).is_empty(), "{}", brief(&other.log));
+    assert_eq!(runner.region().player_count(), 0);
+
+    let entity = join_and_wait(&mut runner, &mut other, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut other, &mut watcher], 0, 1);
+    assert!(!other.closed);
+    let back = greeted(&mut runner, E, 5, made, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&back.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&back.log)
+    );
+    assert!(is_present(&back.log, player(1), entity));
+}
+
+#[test]
+fn an_edge_that_lost_its_since_is_reset_before_its_join_is_published() {
+    in_memory_and_on_disk(an_edge_that_lost_its_since_is_reset_before_its_join_is_published_in);
+}
+
+fn an_edge_that_lost_its_since_is_reset_before_its_join_is_published_in(mut world: World) {
+    let mut runner = world.open();
+    let mut old = established(&mut runner, E, 5);
+    let mut watcher = established(&mut runner, F, 1);
+    let first = told(E);
+
+    // A tick takes the join in; whether the store has confirmed that tick when the
+    // hello comes is open. The join is received either way.
+    old.numbered(1, join(player(1)));
+    runner.step();
+    assert!(
+        runner.region().player(player(1)).is_some(),
+        "the step took the join in"
+    );
+    let mut new = Link::attach(&runner);
+    hello_since(&new, E, 5, 0, 0, vec![player(1)], vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old, &mut watcher],
+        "the edge being reset",
+        |_, links| answered(links, 0),
+    );
+    sync(&mut runner, &mut [&mut new, &mut watcher, &mut old], 0);
+
+    let (welcome, _) = resume_of(&new.log, &[player(1)]);
+    let Welcome::Unknown { since, entries: 0 } = welcome else {
+        panic!("welcomed {welcome:?}: {}", brief(&new.log));
+    };
+    assert!(since > first, "{since} after {first}");
+    assert!(is_absent(&new.log, player(1)), "{}", brief(&new.log));
+    assert_eq!(runner.region().player_count(), 0);
+    assert_eq!(
+        runner
+            .region()
+            .edge(E)
+            .map(|edge| (edge.since, edge.applied)),
+        Some((since, 0))
+    );
+    assert!(
+        spawned(&new.log, player(1)).is_none(),
+        "the join was of a tick before the hello's: {}",
+        brief(&new.log)
+    );
+    // Whoever was shown the player has been shown them go.
+    let shown = events(&watcher.log)
+        .into_iter()
+        .find_map(|(_, _, event)| match event {
+            RegionEvent::EntitySpawned(state) => Some(state.entity),
+            _ => None,
+        });
+    if let Some(entity) = shown {
+        assert!(
+            removal(&watcher.log, entity).is_some(),
+            "{}",
+            brief(&watcher.log)
+        );
+    }
+
+    let entity = join_and_wait(&mut runner, &mut new, 1, player(1));
+    assert_ne!(Some(entity), shown);
+    assert!(!new.closed);
+}
+
+#[test]
+fn an_edge_that_lost_its_since_is_reset_with_its_outbox_and_its_departures() {
+    in_memory_and_on_disk(
+        an_edge_that_lost_its_since_is_reset_with_its_outbox_and_its_departures_in,
+    );
+}
+
+fn an_edge_that_lost_its_since_is_reset_with_its_outbox_and_its_departures_in(mut world: World) {
+    let mut runner = world.open();
+    let (mut old, mut watcher, stays, leaves) = with_an_unconfirmed_departure(&mut runner);
+    let first = told(E);
+
+    // It says it has seen nothing, so a resume would send the departure again.
+    let named = [player(1), player(2)];
+    let mut new = Link::attach(&runner);
+    hello_since(&new, E, 5, 0, 0, named.to_vec(), vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old, &mut watcher],
+        "the edge being reset and the other edge seeing both entities removed",
+        |_, links| {
+            answered(links, 0)
+                && removal(&links[2].log, stays).is_some()
+                && removal(&links[2].log, leaves).is_some()
+        },
+    );
+    sync(&mut runner, &mut [&mut new, &mut watcher, &mut old], 0);
+
+    let (welcome, _) = resume_of(&new.log, &named);
+    let Welcome::Unknown { since, entries: 0 } = welcome else {
+        panic!("welcomed {welcome:?}: {}", brief(&new.log));
+    };
+    assert!(since > first, "{since} after {first}");
+    assert!(
+        outbox(&new.log).is_empty(),
+        "the outbox of the numbering that was given up is dropped: {}",
+        brief(&new.log)
+    );
+    assert!(is_absent(&new.log, player(1)) && is_absent(&new.log, player(2)));
+    assert!(
+        removal(&new.log, leaves).is_some(),
+        "every link is told of a departure nobody will pass on, the new one too: {}",
+        brief(&new.log)
+    );
+    let told_of = events(&watcher.log)
+        .into_iter()
+        .filter(|(_, _, event)| matches!(event, RegionEvent::EntityRemoved { entity, .. } if *entity == leaves))
+        .count();
+    assert_eq!(told_of, 1, "no entity is reported twice");
+    assert_eq!(
+        runner.region().edge(E).map(|edge| (
+            edge.since,
+            edge.applied,
+            edge.sent,
+            edge.outbox.len()
+        )),
+        Some((since, 0, 0, 0))
+    );
+    assert_eq!(runner.region().player_count(), 0);
+}
+
+#[test]
+fn a_higher_start_is_unknown_whatever_since_it_says_and_the_old_start_is_superseded() {
+    let mut world = World::memory();
+    let mut runner = world.open();
+    let mut old = established(&mut runner, E, 5);
+    let first = told(E);
+    let entity = join_and_wait(&mut runner, &mut old, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut old], 0, 1);
+    let mut watcher = established(&mut runner, F, 1);
+
+    // The since is the right one for the state the region has, and the start is not.
+    let mut new = Link::attach(&runner);
+    hello_since(&new, E, 6, first, 0, vec![player(1)], vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old, &mut watcher],
+        "the new start being answered and the other edge seeing the player go",
+        |_, links| answered(links, 0) && removal(&links[2].log, entity).is_some(),
+    );
+    let (welcome, _) = resume_of(&new.log, &[player(1)]);
+    let Welcome::Unknown { since, entries: 0 } = welcome else {
+        panic!("welcomed {welcome:?}: {}", brief(&new.log));
+    };
+    assert!(since > first, "{since} after {first}");
+    assert!(is_absent(&new.log, player(1)));
+    assert_eq!(
+        runner.region().edge(E).map(|edge| (edge.start, edge.since)),
+        Some((6, since))
+    );
+
+    // The start that was replaced is told so, whichever since it says.
+    for said in [first, since, 0] {
+        let mut stale = Link::attach(&runner);
+        hello_since(&stale, E, 5, said, 0, vec![player(1)], vec![HOME]);
+        run_until(
+            &mut runner,
+            &mut [&mut stale, &mut new],
+            "the stale link being closed",
+            |_, links| links[0].closed,
+        );
+        assert_eq!(
+            stale.log,
+            vec![WorkerToEdge::Welcome(Welcome::Superseded)],
+            "said {said}: {}",
+            brief(&stale.log)
+        );
+    }
+    sync(&mut runner, &mut [&mut new], 0);
+    assert!(!new.closed);
+    assert_eq!(
+        runner.region().edge(E).map(|edge| (edge.start, edge.since)),
+        Some((6, since))
+    );
+}
+
+#[test]
+fn an_edge_that_was_forgotten_and_says_the_since_it_had_is_unknown_with_a_new_one() {
+    let mut world = World::memory();
+    let mut runner = world.open().with_gone_after(GONE_AFTER);
+    let mut e = established(&mut runner, E, 5);
+    let mut watcher = established(&mut runner, F, 5);
+    let first = told(E);
+    let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
+    sync(&mut runner, &mut [&mut watcher, &mut e], 0);
+
+    drop(e);
+    run_until(
+        &mut runner,
+        &mut [&mut watcher],
+        "the other edge seeing the player removed",
+        |_, links| removal(&links[0].log, entity).is_some(),
+    );
+    assert!(runner.region().edge(E).is_none());
+
+    // The edge was away, not started anew: it says the start and the since it has. The
+    // region has a state for it again, and it is another.
+    let mut back = greeted(&mut runner, E, 5, first, 0, vec![player(1)]);
+    let (welcome, _) = resume_of(&back.log, &[player(1)]);
+    let Welcome::Unknown { since, entries: 0 } = welcome else {
+        panic!("welcomed {welcome:?}: {}", brief(&back.log));
+    };
+    assert!(since > first, "{since} after {first}");
+    assert!(is_absent(&back.log, player(1)));
+    assert_eq!(applied(&back.log), Some(0));
+    let again = join_and_wait(&mut runner, &mut back, 1, player(1));
+    assert_ne!(again, entity);
+    wait_applied(&mut runner, &mut [&mut back, &mut watcher], 0, 1);
+
+    let resumed = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&resumed.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&resumed.log)
+    );
+    assert!(is_present(&resumed.log, player(1), again));
+}
+
+#[test]
+fn after_a_restore_a_hello_is_held_to_the_since_the_store_gave_back() {
+    in_memory_and_on_disk(after_a_restore_a_hello_is_held_to_the_since_the_store_gave_back_in);
+}
+
+fn after_a_restore_a_hello_is_held_to_the_since_the_store_gave_back_in(mut world: World) {
+    let mut runner = world.open();
+    run_to_tick(&mut runner, &mut [], 6);
+    let mut e = established(&mut runner, E, 5);
+    let first = told(E);
+    let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut e], 0, 1);
+
+    let mut next = world.open();
+    drop(runner);
+    assert_eq!(
+        next.region().edge(E).map(|edge| (edge.start, edge.since)),
+        Some((5, first)),
+        "a since an edge was told is in the store"
+    );
+
+    // The edge that kept it is resumed by the next owner.
+    let back = greeted(&mut next, E, 5, first, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&back.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&back.log)
+    );
+    assert!(is_present(&back.log, player(1), entity));
+    drop(back);
+
+    // One that lost it, of which the region has applied a message, is reset by the next
+    // owner as it would have been by the one before.
+    let mut watcher = established(&mut next, F, 1);
+    let mut lost = Link::attach(&next);
+    hello_since(&lost, E, 5, 0, 0, vec![player(1)], vec![HOME]);
+    run_until(
+        &mut next,
+        &mut [&mut lost, &mut watcher],
+        "the edge being reset and the other edge seeing the player go",
+        |_, links| answered(links, 0) && removal(&links[1].log, entity).is_some(),
+    );
+    let (welcome, _) = resume_of(&lost.log, &[player(1)]);
+    let Welcome::Unknown { since, entries: 0 } = welcome else {
+        panic!("welcomed {welcome:?}: {}", brief(&lost.log));
+    };
+    assert!(since > first, "{since} after {first}");
+    assert!(is_absent(&lost.log, player(1)));
+    assert_eq!(next.region().player(player(1)), None);
+    assert_eq!(
+        progress(&lost.log).first().map(|(applied, _)| *applied),
+        Some(0),
+        "{}",
+        brief(&lost.log)
+    );
+    let again = join_and_wait(&mut next, &mut lost, 1, player(1));
+    assert_ne!(again, entity);
+    assert!(!lost.closed);
+}
+
+#[test]
+fn after_a_restore_an_edge_the_region_took_nothing_from_is_told_the_same_since_again() {
+    in_memory_and_on_disk(
+        after_a_restore_an_edge_the_region_took_nothing_from_is_told_the_same_since_again_in,
+    );
+}
+
+fn after_a_restore_an_edge_the_region_took_nothing_from_is_told_the_same_since_again_in(
+    mut world: World,
+) {
+    let mut runner = world.open();
+    run_to_tick(&mut runner, &mut [], 6);
+    // The welcome is on the link only once the tick that made the state is committed.
+    let e = established(&mut runner, E, 5);
+    let first = unknown_since(&e.log);
+
+    let mut next = world.open();
+    drop(runner);
+    assert_eq!(
+        next.region()
+            .edge(E)
+            .map(|edge| (edge.start, edge.since, edge.applied)),
+        Some((5, first, 0))
+    );
+
+    let unread = greeted(&mut next, E, 5, 0, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&unread.log, &[player(1)]).0,
+        Welcome::Unknown {
+            since: first,
+            entries: 0
+        },
+        "{}",
+        brief(&unread.log)
+    );
+    drop(unread);
+    let mut back = greeted(&mut next, E, 5, first, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&back.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&back.log)
+    );
+    join_and_wait(&mut next, &mut back, 1, player(1));
+    wait_applied(&mut next, &mut [&mut back], 0, 1);
+
+    // A state the next owner makes has a number of its own: no since is given out twice.
+    let newer = greeted(&mut next, E, 6, first, 0, Vec::new());
+    assert!(unknown_since(&newer.log) > first);
+}
+
+#[test]
+fn of_two_hellos_of_an_edge_at_once_the_link_that_stays_is_told_the_since_the_region_has() {
+    let mut world = World::memory();
+    let mut runner = world.open();
+    run_to_tick(&mut runner, &mut [], 6);
+
+    // Two links of one edge, both there when the runner next looks, neither told a
+    // since.
+    let mut first = Link::attach(&runner);
+    hello_since(&first, E, 5, 0, 0, Vec::new(), vec![HOME]);
+    let mut second = Link::attach(&runner);
+    hello_since(&second, E, 5, 0, 0, Vec::new(), vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut second, &mut first],
+        "the first link being closed and the second answered",
+        |_, links| links[1].closed && answered(links, 0),
+    );
+    let since = unknown_since(&second.log);
+    assert_eq!(
+        runner.region().edge(E).map(|edge| edge.since),
+        Some(since),
+        "the link that stays was told another since than the region has"
+    );
+    if !first.log.is_empty() {
+        assert_eq!(
+            unknown_since(&first.log),
+            since,
+            "one state was made, and both were told of it"
+        );
+    }
+
+    // So the edge, with the since of the link that stayed, numbers from 1 and resumes.
+    let entity = join_and_wait(&mut runner, &mut second, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut second], 0, 1);
+    let third = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&third.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&third.log)
+    );
+    assert!(is_present(&third.log, player(1), entity));
+}
+
+// R12: the entries a welcome announces.
+
+#[test]
+fn the_entries_of_a_resumed_welcome_are_the_outbox_above_what_the_hello_has_seen() {
+    // None, some and all of the outbox seen, and more than there is.
+    for seen in [0, 1, 2, 3, 9] {
+        the_entries_of_a_resumed_welcome_are_the_outbox_above(World::memory(), seen);
+        the_entries_of_a_resumed_welcome_are_the_outbox_above(World::local(), seen);
+    }
+}
+
+fn the_entries_of_a_resumed_welcome_are_the_outbox_above(mut world: World, seen: u64) {
+    let mut runner = world.open();
+    let _old = three_entries(&mut runner);
+    let named = [player(1), player(7)];
+    let above: Vec<u64> = (1..=3).filter(|number| *number > seen).collect();
+
+    let mut link = resumed(&mut runner, E, 5, seen, named.to_vec());
+    let (welcome, numbers) = resume_of(&link.log, &named);
+    assert_eq!(
+        welcome,
+        Welcome::Resumed {
+            entries: above.len() as u32
+        },
+        "with {seen} seen: {}",
+        brief(&link.log)
+    );
+    assert_eq!(numbers, above, "with {seen} seen: {}", brief(&link.log));
+
+    // None of them comes a second time, and the hello's `seen` has dropped the others.
+    sync(&mut runner, &mut [&mut link], 0);
+    assert_eq!(outbox_numbers(&link.log), above, "{}", brief(&link.log));
+    assert_eq!(kept(&runner, E), above, "with {seen} seen");
+    let mut next = world.open();
+    drop(runner);
+    assert_eq!(kept(&next, E), above, "with {seen} seen, in the store");
+
+    // The next owner announces what is left of it, to an edge that has seen none.
+    let again = resumed(&mut next, E, 5, 0, named.to_vec());
+    let (welcome, numbers) = resume_of(&again.log, &named);
+    assert_eq!(
+        welcome,
+        Welcome::Resumed {
+            entries: above.len() as u32
+        },
+        "with {seen} seen, by the next owner: {}",
+        brief(&again.log)
+    );
+    assert_eq!(numbers, above);
+}
+
+#[test]
+fn an_entry_of_a_tick_before_the_hellos_is_among_the_welcomes_entries_and_comes_once() {
+    in_memory_and_on_disk(
+        an_entry_of_a_tick_before_the_hellos_is_among_the_welcomes_entries_and_comes_once_in,
+    );
+}
+
+fn an_entry_of_a_tick_before_the_hellos_is_among_the_welcomes_entries_and_comes_once_in(
+    mut world: World,
+) {
+    let mut runner = world.open();
+    let mut old = established(&mut runner, E, 5);
+    join_and_wait(&mut runner, &mut old, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut old], 0, 1);
+
+    // A tick makes the entry; whether the store has confirmed that tick when the hello
+    // comes is open.
+    old.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    runner.step();
+    let mut new = Link::attach(&runner);
+    new.hello(E, 5, 0, vec![player(1)], vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old],
+        "the resume",
+        |_, links| answered(links, 0),
+    );
+    sync(&mut runner, &mut [&mut new, &mut old], 0);
+
+    let (welcome, numbers) = resume_of(&new.log, &[player(1)]);
+    assert_eq!(
+        welcome,
+        Welcome::Resumed { entries: 1 },
+        "{}",
+        brief(&new.log)
+    );
+    assert_eq!(numbers, vec![1]);
+    assert_eq!(outbox_numbers(&new.log), vec![1], "{}", brief(&new.log));
+}
+
+#[test]
+fn an_entry_made_in_the_tick_of_the_hello_is_not_among_the_welcomes_entries() {
+    in_memory_and_on_disk(
+        an_entry_made_in_the_tick_of_the_hello_is_not_among_the_welcomes_entries_in,
+    );
+}
+
+fn an_entry_made_in_the_tick_of_the_hello_is_not_among_the_welcomes_entries_in(mut world: World) {
+    let mut runner = world.open();
+    let mut old = established(&mut runner, E, 5);
+    join_and_wait(&mut runner, &mut old, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut old], 0, 1);
+
+    // The dig is received on the old link as the new one says hello, so its entry is
+    // made by the tick of the hello or a later one: the state before has none.
+    old.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    let mut new = Link::attach(&runner);
+    new.hello(E, 5, 0, vec![player(1)], vec![HOME]);
+    run_until(
+        &mut runner,
+        &mut [&mut new, &mut old],
+        "the entry on the new link",
+        |_, links| answered(links, 0) && !outbox(&links[0].log).is_empty(),
+    );
+    sync(&mut runner, &mut [&mut new, &mut old], 0);
+
+    let (welcome, numbers) = resume_of(&new.log, &[player(1)]);
+    assert_eq!(
+        welcome,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&new.log)
+    );
+    assert!(numbers.is_empty());
+    let entries = outbox(&new.log);
+    assert_eq!(entries.len(), 1, "{}", brief(&new.log));
+    assert_eq!(entries[0].1, 1);
+    assert!(
+        presence(&new.log, player(1)).is_some_and(|(answer, _)| answer < entries[0].0),
+        "{}",
+        brief(&new.log)
+    );
+}
+
+// What section 4.1 says of the bytes a worker hands the store, and what R12 and R14 need
+// written by hand through a handle.
+
+/// The postcard of a state, with nothing in front: what a build before the format wrote.
+fn state_bytes(state: &RegionState) -> Vec<u8> {
+    postcard::to_stdvec(state).expect("a state serialises")
+}
+
+/// The postcard of a tick's change of the state, with nothing in front.
+fn delta_bytes(delta: &clustine_sim::StateDelta) -> Vec<u8> {
+    postcard::to_stdvec(delta).expect("a delta serialises")
+}
+
+/// `postcard` as a build with the format number `format` hands it to the store: behind
+/// a zero byte and that number.
+fn in_format(format: u8, postcard: Vec<u8>) -> Vec<u8> {
+    let mut bytes = vec![0x00, format];
+    bytes.extend(postcard);
+    bytes
+}
+
+/// `postcard` as this build hands it to the store.
+fn of_this_build(postcard: Vec<u8>) -> Vec<u8> {
+    in_format(clustine_worker::STATE_FORMAT, postcard)
+}
+
+/// `postcard` as a build before the format handed it to the store: as it is. It begins
+/// with its tick, which is not 0.
+fn from_before(postcard: Vec<u8>) -> Vec<u8> {
+    assert_ne!(postcard[0], 0x00, "the bytes of a tick above 0");
+    postcard
+}
+
+/// What a store is to keep of a region: its state as of a tick, if any, and what was
+/// committed in later ticks, each as the bytes a worker handed over.
+type Stored = (Option<(u64, Vec<u8>)>, Vec<(u64, Vec<u8>)>);
+
+/// Has the store keep what `stored` makes of the region's entity ids, written by hand
+/// through a handle as the region's owner writes it. Returns the entity ids.
+fn store_by_hand(
+    world: &mut World,
+    stored: impl FnOnce(clustine_world::EntityIds) -> Stored,
+) -> clustine_world::EntityIds {
+    let (handle, restored) = world.open_raw();
+    let (state, deltas) = stored(restored.entity_ids);
+    if let Some((tick, state)) = state {
+        handle.request(clustine_rpc::StoreRequest::Checkpoint { tick, state });
+    }
+    for (tick, state) in deltas {
+        handle.request(clustine_rpc::StoreRequest::Commit {
+            tick,
+            changes: Vec::new(),
+            state,
+        });
+    }
+    handle.flush();
+    restored.entity_ids
+}
+
+/// The tick of the state and of each delta that the store hands the next owner.
+fn stored_ticks(restored: &Restored) -> (Option<u64>, Vec<u64>) {
+    (
+        restored.state.as_ref().map(|state| state.tick),
+        restored.deltas.iter().map(|delta| delta.tick).collect(),
+    )
+}
+
+/// Why the region cannot be restored from what the store has.
+fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
+    let (handle, restored) = world.open_raw();
+    match RegionRunner::restore(config(), handle, restored) {
+        Ok(runner) => panic!(
+            "the region was restored, at tick {} with {} players",
+            runner.region().tick_number(),
+            runner.region().player_count()
+        ),
+        Err(error) => error,
+    }
+}
+
+/// A player of `edge` as a region keeps them.
+fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
+    clustine_sim::PlayerState {
+        entity_id: entity,
+        name: "someone".to_owned(),
+        pose: Pose {
+            position: SPAWN,
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        },
+        hotbar: hotbar(),
+        selected_slot: 0,
+        last_input: 0,
+        handled: None,
+        edge,
+    }
+}
+
+/// An outbox entry whose shape no step of ADR-0012 changes.
+fn done(sequence: i32) -> Durable {
+    Durable::RemoteDone {
+        player: player(9),
+        sequence,
+    }
+}
+
+/// The state of a region that has run until `tick`: player 1 of edge E, which has an
+/// entry it did not confirm, and edge F.
+fn lived_in(ids: clustine_world::EntityIds, tick: u64) -> RegionState {
+    let mut state = RegionState::new(ids);
+    state.tick = tick;
+    state.next_entity_id = EntityId(ids.first.0 + 1);
+    state.players.insert(player(1), someone(ids.first, E));
+    state.edges.insert(
+        E,
+        clustine_sim::EdgeState {
+            start: 5,
+            since: 7,
+            applied: 2,
+            sent: 1,
+            outbox: BTreeMap::from([(1, done(1))]),
+        },
+    );
+    state.edges.insert(
+        F,
+        clustine_sim::EdgeState {
+            start: 5,
+            since: 8,
+            applied: 0,
+            sent: 0,
+            outbox: BTreeMap::new(),
+        },
+    );
+    state
+}
+
+/// The change of a tick that noted `edge`, with start 5, and took the join of `id` as
+/// its first message, giving them `entity`.
+fn joining(tick: u64, edge: EdgeId, id: PlayerId, entity: EntityId) -> clustine_sim::StateDelta {
+    clustine_sim::StateDelta {
+        tick,
+        next_entity_id: Some(EntityId(entity.0 + 1)),
+        players: vec![(id, Some(someone(entity, edge)))],
+        edges: vec![(
+            edge,
+            Some(clustine_sim::EdgeDelta {
+                start: 5,
+                since: tick,
+                applied: 1,
+                sent: 0,
+                cleared: false,
+                confirmed: 0,
+                added: Vec::new(),
+            }),
+        )],
+    }
+}
+
+/// The change of a tick that answered the second message of `edge`, known since
+/// `since`, with its first outbox entry.
+fn answering(tick: u64, edge: EdgeId, since: u64) -> clustine_sim::StateDelta {
+    clustine_sim::StateDelta {
+        tick,
+        next_entity_id: None,
+        players: Vec::new(),
+        edges: vec![(
+            edge,
+            Some(clustine_sim::EdgeDelta {
+                start: 5,
+                since,
+                applied: 2,
+                sent: 1,
+                cleared: false,
+                confirmed: 0,
+                added: vec![(1, done(1))],
+            }),
+        )],
+    }
+}
+
+#[test]
+fn after_unknown_every_entry_follows_and_the_hellos_seen_drops_none() {
+    in_memory_and_on_disk(after_unknown_every_entry_follows_and_the_hellos_seen_drops_none_in);
+}
+
+/// A state that knows the edge with entries and has taken no message from it is step
+/// C3's to make, by absorbing a region. What the welcome does with one is said for this
+/// step, so the test has the store keep such a state, written by hand.
+fn after_unknown_every_entry_follows_and_the_hellos_seen_drops_none_in(mut world: World) {
+    let state = |ids| {
+        let mut state = RegionState::new(ids);
+        state.tick = 30;
+        state.edges.insert(
+            E,
+            clustine_sim::EdgeState {
+                start: 5,
+                since: 9,
+                applied: 0,
+                sent: 3,
+                outbox: BTreeMap::from([(1, done(1)), (2, done(2)), (3, done(3))]),
+            },
+        );
+        state
+    };
+    let ids = store_by_hand(&mut world, |ids| {
+        (
+            Some((30, of_this_build(state_bytes(&state(ids))))),
+            Vec::new(),
+        )
+    });
+    let mut runner = world.open();
+    assert_eq!(runner.region().state(), state(ids));
+    let named = [player(1)];
+
+    // The edge never read the welcome that told it the 9: it says none, or another, and
+    // a `seen` of a numbering the region does not share.
+    for (said, seen) in [(0, 2), (8, 3), (10, 99)] {
+        let mut link = greeted(&mut runner, E, 5, said, seen, named.to_vec());
+        let (welcome, numbers) = resume_of(&link.log, &named);
+        assert_eq!(
+            welcome,
+            Welcome::Unknown {
+                since: 9,
+                entries: 3
+            },
+            "said {said}: {}",
+            brief(&link.log)
+        );
+        assert_eq!(numbers, vec![1, 2, 3], "from the outbox's first");
+        let entries: Vec<&Durable> = outbox(&link.log)
+            .into_iter()
+            .map(|(_, _, entry)| entry)
+            .collect();
+        assert_eq!(entries, vec![&done(1), &done(2), &done(3)]);
+        assert!(is_absent(&link.log, player(1)));
+        sync(&mut runner, &mut [&mut link], 0);
+        assert_eq!(
+            kept(&runner, E),
+            vec![1, 2, 3],
+            "said {said} and {seen} seen: an entry was dropped for it"
+        );
+        assert_eq!(
+            runner.region().edge(E).map(|edge| edge.since),
+            Some(9),
+            "said {said}"
+        );
+        assert_eq!(outbox_numbers(&link.log), vec![1, 2, 3], "none comes twice");
+    }
+
+    // Once it says the since, what it has seen is taken.
+    let mut link = greeted(&mut runner, E, 5, 9, 2, named.to_vec());
+    let (welcome, numbers) = resume_of(&link.log, &named);
+    assert_eq!(
+        welcome,
+        Welcome::Resumed { entries: 1 },
+        "{}",
+        brief(&link.log)
+    );
+    assert_eq!(numbers, vec![3]);
+    sync(&mut runner, &mut [&mut link], 0);
+    assert_eq!(kept(&runner, E), vec![3]);
+
+    // And its messages are numbered from 1, as the region has taken none.
+    join_and_wait(&mut runner, &mut link, 1, player(1));
+    assert!(!link.closed);
+}
+
+// R14, and the rest of section 4.1.
+
+#[test]
+fn what_a_worker_stores_begins_with_a_zero_byte_and_the_format_number() {
+    in_memory_and_on_disk(what_a_worker_stores_begins_with_a_zero_byte_and_the_format_number_in);
+}
+
+fn what_a_worker_stores_begins_with_a_zero_byte_and_the_format_number_in(mut world: World) {
+    let front = [0x00, clustine_worker::STATE_FORMAT];
+    let mut runner = world.open();
+    let mut e = established(&mut runner, E, 5);
+    join_and_wait(&mut runner, &mut e, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut e], 0, 1);
+
+    // The commits of the tick of the hello and of the join.
+    let (handle, restored) = world.open_raw();
+    drop(runner);
+    assert!(restored.deltas.len() >= 2, "{:?}", stored_ticks(&restored));
+    for item in &restored.deltas {
+        assert_eq!(item.state[..2], front, "the delta of tick {}", item.tick);
+        let delta: clustine_sim::StateDelta =
+            postcard::from_bytes(&item.state[2..]).expect("the postcard of a delta behind them");
+        assert_eq!(delta.tick, item.tick);
+    }
+
+    // A release leaves the whole state.
+    let mut next = RegionRunner::restore(config(), handle, restored).expect("readable");
+    next.begin_release();
+    assert_eq!(run_to_the_end(&mut next, &mut []), Ended::Released);
+    let (_handle, restored) = world.open_raw();
+    let item = restored.state.expect("a released region has a state file");
+    assert_eq!(item.state[..2], front, "the state of tick {}", item.tick);
+    let state: RegionState =
+        postcard::from_bytes(&item.state[2..]).expect("the postcard of a state behind them");
+    assert_eq!(state.tick, item.tick);
+    assert_eq!(state, next.region().state());
+}
+
+#[test]
+fn a_region_stored_before_there_was_a_format_is_restored_empty_at_its_last_tick() {
+    in_memory_and_on_disk(
+        a_region_stored_before_there_was_a_format_is_restored_empty_at_its_last_tick_in,
+    );
+}
+
+fn a_region_stored_before_there_was_a_format_is_restored_empty_at_its_last_tick_in(
+    mut world: World,
+) {
+    let ids = store_by_hand(&mut world, |ids| {
+        let (second, third) = (EntityId(ids.first.0 + 1), EntityId(ids.first.0 + 2));
+        (
+            Some((40, from_before(state_bytes(&lived_in(ids, 40))))),
+            vec![
+                (
+                    41,
+                    from_before(delta_bytes(&joining(41, EdgeId(33), player(2), second))),
+                ),
+                (
+                    42,
+                    from_before(delta_bytes(&joining(42, EdgeId(44), player(3), third))),
+                ),
+            ],
+        )
+    });
+
+    // No players, no edges, the tick of the last item; every time it is opened.
+    let mut expected = RegionState::new(ids);
+    expected.tick = 42;
+    for _ in 0..2 {
+        let (handle, restored) = world.open_raw();
+        assert_eq!(
+            stored_ticks(&restored),
+            (Some(40), vec![41, 42]),
+            "the store has what was written by hand"
+        );
+        let runner = RegionRunner::restore(config(), handle, restored)
+            .expect("a region from before is carried on");
+        let state = runner.region().state();
+        assert!(state.players.is_empty(), "{:?}", state.players);
+        assert!(state.edges.is_empty(), "{:?}", state.edges);
+        assert_eq!(runner.region().tick_number(), 42);
+        assert_eq!(state, expected);
+    }
+
+    // It is carried on: an edge is new to it, and entity ids are given out from the
+    // start of the block again.
+    let mut runner = world.open();
+    let mut e = established(&mut runner, E, 5);
+    let since = unknown_since(&e.log);
+    assert!(since > 42, "{since}");
+    let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
+    assert_eq!(entity, ids.first);
+    wait_applied(&mut runner, &mut [&mut e], 0, 1);
+
+    // The next owner drops the same again, and applies what this build committed.
+    let mut next = world.open();
+    drop(runner);
+    let state = next.region().state();
+    assert_eq!(
+        state.players.keys().copied().collect::<Vec<_>>(),
+        vec![player(1)]
+    );
+    assert_eq!(state.players[&player(1)].entity_id, entity);
+    assert_eq!(
+        state.edges.keys().copied().collect::<Vec<_>>(),
+        vec![E],
+        "{:?}",
+        state.edges
+    );
+    assert_eq!((state.edges[&E].since, state.edges[&E].applied), (since, 1));
+    let back = resumed(&mut next, E, 5, 0, vec![player(1)]);
+    assert_eq!(
+        resume_of(&back.log, &[player(1)]).0,
+        Welcome::Resumed { entries: 0 },
+        "{}",
+        brief(&back.log)
+    );
+    assert!(is_present(&back.log, player(1), entity));
+}
+
+#[test]
+fn deltas_of_this_build_behind_what_is_from_before_are_applied() {
+    in_memory_and_on_disk(deltas_of_this_build_behind_what_is_from_before_are_applied_in);
+}
+
+fn deltas_of_this_build_behind_what_is_from_before_are_applied_in(mut world: World) {
+    let ids = store_by_hand(&mut world, |ids| {
+        let second = EntityId(ids.first.0 + 1);
+        (
+            Some((40, from_before(state_bytes(&lived_in(ids, 40))))),
+            vec![
+                (
+                    41,
+                    from_before(delta_bytes(&joining(41, EdgeId(33), player(2), second))),
+                ),
+                (
+                    42,
+                    of_this_build(delta_bytes(&joining(42, E, player(1), ids.first))),
+                ),
+                (44, of_this_build(delta_bytes(&answering(44, E, 42)))),
+            ],
+        )
+    });
+
+    // The region of tick 41 without players and edges, and the two deltas on it.
+    let mut expected = RegionState::new(ids);
+    expected.tick = 41;
+    expected.apply(&joining(42, E, player(1), ids.first));
+    expected.apply(&answering(44, E, 42));
+
+    let (handle, restored) = world.open_raw();
+    assert_eq!(
+        stored_ticks(&restored),
+        (Some(40), vec![41, 42, 44]),
+        "the store has what was written by hand"
+    );
+    let mut runner =
+        RegionRunner::restore(config(), handle, restored).expect("a region from before");
+    assert_eq!(runner.region().tick_number(), 44);
+    assert_eq!(runner.region().state(), expected);
+
+    // The edge of those deltas says the since they have, and is resumed with what they
+    // left for it.
+    let link = greeted(&mut runner, E, 5, 42, 0, vec![player(1)]);
+    let (welcome, numbers) = resume_of(&link.log, &[player(1)]);
+    assert_eq!(
+        welcome,
+        Welcome::Resumed { entries: 1 },
+        "{}",
+        brief(&link.log)
+    );
+    assert_eq!(numbers, vec![1]);
+    assert!(is_present(&link.log, player(1), ids.first));
+}
+
+#[test]
+fn a_state_of_this_build_before_a_delta_from_before_is_dropped_with_it() {
+    in_memory_and_on_disk(a_state_of_this_build_before_a_delta_from_before_is_dropped_with_it_in);
+}
+
+fn a_state_of_this_build_before_a_delta_from_before_is_dropped_with_it_in(mut world: World) {
+    let ids = store_by_hand(&mut world, |ids| {
+        let (second, third) = (EntityId(ids.first.0 + 1), EntityId(ids.first.0 + 2));
+        (
+            Some((40, of_this_build(state_bytes(&lived_in(ids, 40))))),
+            vec![
+                (
+                    41,
+                    of_this_build(delta_bytes(&joining(41, EdgeId(33), player(2), second))),
+                ),
+                (
+                    42,
+                    from_before(delta_bytes(&joining(42, EdgeId(44), player(3), third))),
+                ),
+                (
+                    43,
+                    of_this_build(delta_bytes(&joining(43, EdgeId(55), player(4), ids.first))),
+                ),
+            ],
+        )
+    });
+
+    // Everything up to the last item from before goes, whatever build wrote it.
+    let mut expected = RegionState::new(ids);
+    expected.tick = 42;
+    expected.apply(&joining(43, EdgeId(55), player(4), ids.first));
+
+    let (handle, restored) = world.open_raw();
+    assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42, 43]));
+    let runner = RegionRunner::restore(config(), handle, restored).expect("a region from before");
+    assert_eq!(runner.region().state(), expected);
+}
+
+#[test]
+fn what_is_from_before_is_dropped_without_being_read() {
+    in_memory_and_on_disk(what_is_from_before_is_dropped_without_being_read_in);
+}
+
+fn what_is_from_before_is_dropped_without_being_read_in(mut world: World) {
+    // Bytes that are the postcard of nothing: a first byte that is not 0, and a 0 with
+    // a format number below this build's behind it.
+    let lower = clustine_worker::STATE_FORMAT - 1;
+    let ids = store_by_hand(&mut world, |ids| {
+        (
+            Some((40, vec![0x28, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])),
+            vec![
+                (41, vec![0xff; 9]),
+                (42, in_format(lower, vec![0xff; 9])),
+                (
+                    43,
+                    of_this_build(delta_bytes(&joining(43, E, player(1), ids.first))),
+                ),
+            ],
+        )
+    });
+    let mut expected = RegionState::new(ids);
+    expected.tick = 42;
+    expected.apply(&joining(43, E, player(1), ids.first));
+
+    let (handle, restored) = world.open_raw();
+    assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42, 43]));
+    let runner = RegionRunner::restore(config(), handle, restored)
+        .expect("what is from before is not read, so it cannot fail to be");
+    assert_eq!(runner.region().state(), expected);
+
+    // A state with the lower number, and nothing behind it.
+    let mut world = World::memory();
+    let ids = store_by_hand(&mut world, |ids| {
+        (
+            Some((40, in_format(lower, state_bytes(&lived_in(ids, 40))))),
+            Vec::new(),
+        )
+    });
+    let mut expected = RegionState::new(ids);
+    expected.tick = 40;
+    assert_eq!(world.open().region().state(), expected);
+
+    // No bytes at all do not begin with a zero byte either.
+    let mut world = World::memory();
+    let ids = store_by_hand(&mut world, |_| {
+        (
+            Some((40, Vec::new())),
+            vec![(41, Vec::new()), (42, vec![0x2a])],
+        )
+    });
+    let mut expected = RegionState::new(ids);
+    expected.tick = 42;
+    let (handle, restored) = world.open_raw();
+    assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42]));
+    let runner = RegionRunner::restore(config(), handle, restored)
+        .expect("what is from before is not read, so it cannot fail to be");
+    assert_eq!(runner.region().state(), expected);
+}
+
+#[test]
+fn deltas_from_before_without_a_state_are_dropped_up_to_the_last() {
+    in_memory_and_on_disk(deltas_from_before_without_a_state_are_dropped_up_to_the_last_in);
+}
+
+/// What a build before the format leaves of a region that it ran for less than the
+/// time between two checkpoints: commits, and no state file.
+fn deltas_from_before_without_a_state_are_dropped_up_to_the_last_in(mut world: World) {
+    let ids = store_by_hand(&mut world, |ids| {
+        let second = EntityId(ids.first.0 + 1);
+        (
+            None,
+            vec![
+                (
+                    3,
+                    from_before(delta_bytes(&joining(3, EdgeId(33), player(2), ids.first))),
+                ),
+                (
+                    4,
+                    from_before(delta_bytes(&joining(4, EdgeId(44), player(3), second))),
+                ),
+            ],
+        )
+    });
+    let mut expected = RegionState::new(ids);
+    expected.tick = 4;
+    let (handle, restored) = world.open_raw();
+    assert_eq!(
+        stored_ticks(&restored),
+        (None, vec![3, 4]),
+        "the store has what was written by hand"
+    );
+    let mut runner = RegionRunner::restore(config(), handle, restored)
+        .expect("a region from before is carried on");
+    assert_eq!(runner.region().state(), expected);
+
+    // It runs on from there, and the next owner has what it committed.
+    let mut e = established(&mut runner, E, 5);
+    assert!(unknown_since(&e.log) > 4);
+    let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
+    assert_eq!(entity, ids.first);
+    wait_applied(&mut runner, &mut [&mut e], 0, 1);
+    let next = world.open();
+    assert_eq!(next.region().player_count(), 1);
+    assert_eq!(
+        next.region().player(player(1)).map(|(entity, _)| entity),
+        Some(entity)
+    );
+}
+
+#[test]
+#[ignore = "finding: a state of tick 0 is read; one from before is refused as a later build's"]
+fn the_state_of_a_region_that_never_ran_stored_before_there_was_a_format_is_not_read() {
+    in_memory_and_on_disk(
+        the_state_of_a_region_that_never_ran_stored_before_there_was_a_format_is_not_read_in,
+    );
+}
+
+fn the_state_of_a_region_that_never_ran_stored_before_there_was_a_format_is_not_read_in(
+    mut world: World,
+) {
+    // What a build before the format left of a region that was opened and given up
+    // before its first tick: the postcard of a new state. Its first byte is the 0 of
+    // its tick, and its second is of its entity ids and no format number.
+    let ids = store_by_hand(&mut world, |ids| {
+        let never_ran = state_bytes(&RegionState::new(ids));
+        assert_eq!(never_ran[0], 0x00);
+        (Some((0, never_ran)), Vec::new())
+    });
+    let (handle, restored) = world.open_raw();
+    assert_eq!(
+        stored_ticks(&restored),
+        (Some(0), Vec::new()),
+        "the store has what was written by hand"
+    );
+    let runner = RegionRunner::restore(config(), handle, restored)
+        .unwrap_or_else(|error| panic!("a state of tick 0 was read: {error}"));
+    assert_eq!(runner.region().state(), RegionState::new(ids));
+}
+
+#[test]
+fn a_state_of_tick_0_of_this_build_is_that_of_a_region_that_never_ran() {
+    let mut world = World::memory();
+    let ids = store_by_hand(&mut world, |ids| {
+        (
+            Some((0, of_this_build(state_bytes(&RegionState::new(ids))))),
+            Vec::new(),
+        )
+    });
+    let (handle, restored) = world.open_raw();
+    assert_eq!(stored_ticks(&restored), (Some(0), Vec::new()));
+    let runner =
+        RegionRunner::restore(config(), handle, restored).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(runner.region().state(), RegionState::new(ids));
+}
+
+#[test]
+fn a_runner_told_to_stop_before_its_first_tick_leaves_a_state_of_tick_0_that_is_restored_new() {
+    // Where a state of tick 0 comes from: a worker that is told to stop when it has
+    // just opened a region checkpoints it as it is.
+    let mut world = World::memory();
+    let mut runner = world.open();
+    let ids = runner.region().state().entity_ids;
+    let stop = std::sync::atomic::AtomicBool::new(true);
+    assert_eq!(runner.run(&stop), Ended::Stopped);
+    assert_eq!(runner.region().tick_number(), 0);
+
+    let (handle, restored) = world.open_raw();
+    assert_eq!(stored_ticks(&restored), (Some(0), Vec::new()));
+    let next = RegionRunner::restore(config(), handle, restored)
+        .expect("the state of a region that never ran");
+    assert_eq!(next.region().state(), RegionState::new(ids));
+}
+
+#[test]
+#[ignore = "finding: a state of tick 0 is read, so its bytes can be an error"]
+fn a_state_of_tick_0_is_not_read_whatever_it_is_and_what_was_committed_since_is_applied() {
+    in_memory_and_on_disk(
+        a_state_of_tick_0_is_not_read_whatever_it_is_and_what_was_committed_since_is_applied_in,
+    );
+}
+
+fn a_state_of_tick_0_is_not_read_whatever_it_is_and_what_was_committed_since_is_applied_in(
+    mut world: World,
+) {
+    // Bytes that are the postcard of nothing behind the number of a later format: read,
+    // they would be an error either way.
+    let later = clustine_worker::STATE_FORMAT + 1;
+    let ids = store_by_hand(&mut world, |ids| {
+        (
+            Some((0, in_format(later, vec![0xff; 9]))),
+            vec![(
+                1,
+                of_this_build(delta_bytes(&joining(1, E, player(1), ids.first))),
+            )],
+        )
+    });
+    let mut expected = RegionState::new(ids);
+    expected.apply(&joining(1, E, player(1), ids.first));
+    let (handle, restored) = world.open_raw();
+    assert_eq!(
+        stored_ticks(&restored),
+        (Some(0), vec![1]),
+        "the store has what was written by hand"
+    );
+    let runner = RegionRunner::restore(config(), handle, restored)
+        .unwrap_or_else(|error| panic!("a state of tick 0 was read: {error}"));
+    assert_eq!(runner.region().state(), expected);
+}
+
+#[test]
+fn a_state_or_a_delta_with_a_higher_format_number_is_not_restored() {
+    let later = clustine_worker::STATE_FORMAT + 1;
+
+    // The state.
+    let mut world = World::memory();
+    store_by_hand(&mut world, |ids| {
+        (
+            Some((40, in_format(later, state_bytes(&lived_in(ids, 40))))),
+            Vec::new(),
+        )
+    });
+    let error = restore_error(&mut world);
+    assert!(
+        matches!(error, clustine_worker::RestoreError::Format { tick: 40, format } if format == later),
+        "{error}"
+    );
+
+    // A delta behind a state of this build.
+    let mut world = World::local();
+    store_by_hand(&mut world, |ids| {
+        (
+            Some((40, of_this_build(state_bytes(&lived_in(ids, 40))))),
+            vec![
+                (41, of_this_build(delta_bytes(&answering(41, F, 8)))),
+                (42, in_format(0xff, delta_bytes(&answering(42, F, 8)))),
+            ],
+        )
+    });
+    let error = restore_error(&mut world);
+    assert!(
+        matches!(
+            error,
+            clustine_worker::RestoreError::Format {
+                tick: 42,
+                format: 0xff
+            }
+        ),
+        "{error}"
+    );
+
+    // A delta behind what is from before: that is dropped, and the delta is still a
+    // later build's.
+    let mut world = World::memory();
+    store_by_hand(&mut world, |ids| {
+        (
+            Some((40, from_before(state_bytes(&lived_in(ids, 40))))),
+            vec![(41, in_format(later, delta_bytes(&answering(41, F, 8))))],
+        )
+    });
+    let error = restore_error(&mut world);
+    assert!(
+        matches!(error, clustine_worker::RestoreError::Format { tick: 41, format } if format == later),
+        "{error}"
+    );
+}
+
+#[test]
+fn bytes_of_this_format_that_are_not_what_they_should_be_are_an_error_as_before() {
+    // A state cut short.
+    let mut world = World::memory();
+    store_by_hand(&mut world, |ids| {
+        let mut bytes = state_bytes(&lived_in(ids, 40));
+        bytes.truncate(bytes.len() / 2);
+        (Some((40, of_this_build(bytes))), Vec::new())
+    });
+    let error = restore_error(&mut world);
+    assert!(
+        matches!(error, clustine_worker::RestoreError::State { tick: 40, .. }),
+        "{error}"
+    );
+
+    // A delta cut short, behind a state that is whole.
+    let mut world = World::memory();
+    store_by_hand(&mut world, |ids| {
+        let mut bytes = delta_bytes(&joining(41, EdgeId(33), player(2), ids.first));
+        bytes.truncate(bytes.len() / 2);
+        (
+            Some((40, of_this_build(state_bytes(&lived_in(ids, 40))))),
+            vec![(41, of_this_build(bytes))],
+        )
+    });
+    let error = restore_error(&mut world);
+    assert!(
+        matches!(error, clustine_worker::RestoreError::Delta { tick: 41, .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_state_and_deltas_of_this_build_written_by_hand_are_restored_as_they_are() {
+    // The other tests of what is stored rest on this: what they write by hand in the
+    // form of this build is read as a worker's own is.
+    let mut world = World::memory();
+    let ids = store_by_hand(&mut world, |ids| {
+        (
+            Some((40, of_this_build(state_bytes(&lived_in(ids, 40))))),
+            vec![(41, of_this_build(delta_bytes(&answering(41, F, 8))))],
+        )
+    });
+    let mut expected = lived_in(ids, 40);
+    expected.apply(&answering(41, F, 8));
+    let runner = world.open();
+    assert_eq!(runner.region().state(), expected);
+    assert_eq!(runner.region().player_count(), 1);
+}
+
+#[test]
+fn a_checkpoint_replaces_what_was_dropped() {
+    in_memory_and_on_disk(a_checkpoint_replaces_what_was_dropped_in);
+}
+
+fn a_checkpoint_replaces_what_was_dropped_in(mut world: World) {
+    store_by_hand(&mut world, |ids| {
+        let second = EntityId(ids.first.0 + 1);
+        (
+            Some((40, from_before(state_bytes(&lived_in(ids, 40))))),
+            vec![(
+                41,
+                from_before(delta_bytes(&joining(41, EdgeId(33), player(2), second))),
+            )],
+        )
+    });
+    let mut runner = world.open();
+    let mut e = established(&mut runner, E, 5);
+    let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
+    wait_applied(&mut runner, &mut [&mut e], 0, 1);
+
+    // A release ends with a checkpoint.
+    runner.begin_release();
+    assert_eq!(run_to_the_end(&mut runner, &mut [&mut e]), Ended::Released);
+    let (handle, restored) = world.open_raw();
+    let item = restored.state.as_ref().expect("a state file");
+    assert_eq!(
+        item.state[..2],
+        [0x00, clustine_worker::STATE_FORMAT],
+        "the state of tick {}",
+        item.tick
+    );
+    assert!(item.tick > 41);
+    assert!(restored.deltas.is_empty(), "{:?}", stored_ticks(&restored));
+    let next = RegionRunner::restore(config(), handle, restored).expect("readable");
+    assert_eq!(next.region().state(), runner.region().state());
+    assert_eq!(
+        next.region().player(player(1)).map(|(entity, _)| entity),
+        Some(entity)
+    );
+    assert_eq!(next.region().player_count(), 1);
+}
