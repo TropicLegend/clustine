@@ -128,7 +128,7 @@ from disk when the store is back.
 |---|---|---|---|
 | A0 | Numbers and ids on the wire at both ends, snapshots taken at tick time, epoch tags at the edge; no change in behaviour | All existing tests | done |
 | A1 | Store and format: commit lane and `Committed`, state records and state file, restored state on opening, epochs and id blocks on disk, no folding at start | Store tests: kill at every point of a commit, a checkpoint and a recovery; latency of commits while chunks are saved | to do |
-| A2 | Sim: export and restore of state, per-tick state changes, outbox, inbox numbers | Unit tests; restore then the kept messages equals the uninterrupted run up to the commit followed by the rest in one tick | to do |
+| A2 | Sim: export and restore of state, per-tick state changes, outbox, inbox numbers | Unit tests; restore then the kept messages equals the uninterrupted run up to the commit followed by the rest in one tick | done; tests from the ADR by someone else to come |
 | A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | to do |
 | A4 | Edge: name and start count, outbox per region, kept inputs per player, resume and reconciliation, living through the loss of a region | E2E in one process: a region is torn down without warning and rebuilt while bots walk, build, hand over and watch | to do |
 | A5 | Coordinator: lease 5 s, per-region vouching, table changes that edges live through | State machine and service tests | done (the worker reports real vouches in A3; edges living through a change of owner is A4) |
@@ -214,9 +214,17 @@ with them so far:
   worker calls `vouch`, heartbeats vouch `Committed` for everything it was told to run.
   Nothing the coordinator decides depends on entity ids any more; it still fills in
   `Assignment::entity_ids`, which goes once the worker takes its block from the store.
-- `Durable` is in the sim's API, `EdgeId` in `clustine-world`. The sim's own types of
-  ADR-0008 (`RegionState`, `StateDelta`, `EdgeEvent`, the new inputs and outputs) are
-  A2's to define, as only A3 uses them and comes after it.
+- `Durable` is in the sim's API, `EdgeId` in `clustine-world`.
+- A2 is done: `RegionState`, `StateDelta` and `RegionState::apply` in
+  `crates/clustine-sim/src/state.rs`; `Region::new(config, entity_ids)`,
+  `Region::restore(config, state)` and `Region::state()`; `TickInputs::edges` and
+  `applied`; joins, arrivals, leaves, remote actions and inputs carry their edge (an
+  input from another edge than the player's is ignored, and so is whatever names an
+  edge the region does not know); `TickOutput::durable` and `delta` in place of the
+  departures, refusals, remote requests and remote outcomes. Until A3 the worker turns
+  outbox entries back into the messages the edge knows and confirms each one itself in
+  the next tick. When an edge says hello again with a higher start, the old start's last
+  message number can become the edge's `applied`; A3 drops the old start's messages.
 
 Next, in this order:
 

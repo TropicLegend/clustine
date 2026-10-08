@@ -167,12 +167,13 @@ impl Server {
             } else {
                 link::in_process(LINK_CAPACITY)
             };
-            let state = Region::new(RegionConfig {
+            let config = RegionConfig {
                 spawn,
                 area,
-                entity_ids: EntityIds::block(region.0).context("too many regions")?,
                 starting_hotbar: starting_hotbar(),
-            });
+            };
+            let entity_ids = EntityIds::block(region.0).context("too many regions")?;
+            let state = Region::new(config, entity_ids);
             links.push(RegionLink {
                 // Nobody else ever runs a region of this process's world.
                 epoch: 1,

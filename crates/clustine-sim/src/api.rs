@@ -4,8 +4,10 @@
 //! serialisable and free of anything specific to the Minecraft protocol.
 
 use clustine_data::BlockState;
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
 use serde::{Deserialize, Serialize};
+
+use crate::state::StateDelta;
 
 /// Where an entity is and how it is oriented.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -93,16 +95,27 @@ pub struct PlayerTransfer {
     pub last_input: u64,
 }
 
-/// A player entering or leaving the region.
+/// A player entering or leaving the region. Each but `Discard` names the edge it came
+/// from, which is not on the wire: the runner knows which edge a link belongs to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlayerChange {
-    /// A player enters the world.
-    Join(PlayerJoin),
-    /// A player's connection has ended.
-    Leave(PlayerId),
+    /// A player enters the world through the edge, and is that edge's from then on.
+    ///
+    /// If the region has the player already under another edge, they have connected
+    /// anew: the entity they had is reported removed and they enter the world afresh. If
+    /// it has them under this edge, the join is ignored. A join through an edge the
+    /// region does not know is ignored.
+    Join(EdgeId, PlayerJoin),
+    /// A player's connection through the edge has ended. It removes the player only if
+    /// they are that edge's, whatever their entity: what another edge says is about an
+    /// earlier connection, which must not end the current one.
+    Leave(EdgeId, PlayerId),
     /// A player comes in from another region, as that region let them go with
-    /// [`PlayerEvent::Departed`].
-    Arrive(PlayerId, PlayerTransfer),
+    /// [`Durable::Departed`], and is the edge's from then on. A player the region has
+    /// already stays as they are, and the entity that was on its way is reported removed
+    /// if it is another one; so is the entity of an arrival through an edge the region
+    /// does not know, as nobody could be told about the player.
+    Arrive(EdgeId, PlayerId, PlayerTransfer),
     /// An entity that another region let go will not arrive anywhere, because its player
     /// left in the meantime. It is reported as removed to those watching `chunk`, where
     /// it was seen last.
@@ -168,7 +181,7 @@ pub struct RemoteAction {
     /// Who did it.
     pub player: PlayerId,
     /// The number the player's client gave the action. Nobody acknowledges it to the
-    /// player before the action has been dealt with; see [`RemoteOutcome::Done`].
+    /// player before the action has been dealt with; see [`Durable::RemoteDone`].
     pub sequence: i32,
     pub step: RemoteStep,
 }
@@ -207,44 +220,73 @@ impl RemoteStep {
     }
 }
 
-/// What became of a [`RemoteAction`] that a region was given.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum RemoteOutcome {
-    /// It has been dealt with, whether or not it changed anything. The player can now
-    /// be told so, as with [`PlayerEvent::Acknowledged`]; what it changed has been
-    /// reported among the tick's events.
-    Done { player: PlayerId, sequence: i32 },
-    /// What is left of it concerns yet another region.
-    Next(RemoteAction),
-}
-
 /// Something a region tells an edge that must reach it even if the region's owner dies
 /// right after: an entry of the region's outbox for that edge. It stays in the outbox, and
 /// is sent again on every new link, until the edge has confirmed it. See
 /// `docs/adr/0008-durable-regions-and-resuming.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Departed`, `Refused` and a `Remote` made of a player's own action go to the outbox of
+/// the player's edge; `RemoteDone` and a `Remote` that continues a remote action go to
+/// the outbox of the edge the action came from.
 pub enum Durable {
-    /// The player has been let go to another region; see [`PlayerEvent::Departed`].
+    /// The player has stepped out of the region's part of the world and is no longer in
+    /// the region. Whoever routes the player passes this on to the region they are in
+    /// now as [`PlayerChange::Arrive`], together with every input numbered above
+    /// [`PlayerTransfer::last_input`]. Nothing says that the entity is gone: it lives on
+    /// in the region it walked into. Passed on to an edge as [`PlayerEvent::Departed`].
     Departed {
         player: PlayerId,
         transfer: PlayerTransfer,
     },
-    /// The player could not enter the world; see [`PlayerEvent::Refused`].
+    /// The player could not enter the world, because the region has no entity id left
+    /// for them. Passed on to an edge as [`PlayerEvent::Refused`].
     Refused { player: PlayerId },
-    /// What is left of an action concerns another region; see [`RemoteAction`].
+    /// What is left of an action concerns another region: the one that has the block
+    /// [`RemoteStep::concerns`] names. The player's own action that is passed on is not
+    /// among the acknowledged ones of the tick.
     Remote(RemoteAction),
-    /// A remote action has been dealt with; see [`RemoteOutcome::Done`].
+    /// A remote action has been dealt with, whether or not it changed anything. The
+    /// player can now be told so, as with [`PlayerEvent::Acknowledged`]; what it changed
+    /// has been reported among the tick's events.
     RemoteDone { player: PlayerId, sequence: i32 },
+}
+
+/// Something the runner tells the region about an edge. See
+/// `docs/adr/0008-durable-regions-and-resuming.md`, section 2.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EdgeEvent {
+    /// The edge is there with this start. If the region knows the edge with a lower
+    /// start, the edge is reset: its players are removed and reported so, the entity of
+    /// every [`Durable::Departed`] in its outbox is reported removed too, its outbox is
+    /// dropped, and `applied` and `sent` start from 0 again. An edge the region does not
+    /// know is noted with nothing applied or sent. The same start changes nothing, and so
+    /// does a lower one, which the runner never passes on.
+    Started { edge: EdgeId, start: u64 },
+    /// The edge has the outbox entries up to `number`, which are dropped.
+    Confirmed { edge: EdgeId, number: u64 },
+    /// The edge has been away too long. Its players and the entities of the departures
+    /// in its outbox are removed as for a reset, and the region forgets the edge.
+    Gone { edge: EdgeId },
 }
 
 /// Everything that happened since the previous tick.
 ///
-/// A tick applies all of `player_changes` and then all of `inputs`. What players did
+/// A tick applies all of `edges`, then `applied`, then all of `player_changes`, then all
+/// of `remote_actions`, and then all of `inputs`. What players did
 /// and what became of them arrives as one sequence, though, and its order is lost when
 /// it is sorted into the two. [`TickInputs::change`] and [`TickInputs::input`] sort it
 /// so that nothing a player did before a change is applied after it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickInputs {
+    /// What became of edges, in the order it happened. Applied before anything else.
+    pub edges: Vec<EdgeEvent>,
+    /// For edges whose messages are among these inputs: the number of the last of them.
+    /// The region notes it as that edge's [`EdgeState::applied`]; an edge it does not
+    /// know is passed over.
+    ///
+    /// [`EdgeState::applied`]: crate::EdgeState::applied
+    pub applied: Vec<(EdgeId, u64)>,
     /// Players entering and leaving, in the order it happened. The order matters: a
     /// player can leave and come back, or join and leave, within one tick.
     pub player_changes: Vec<PlayerChange>,
@@ -253,13 +295,18 @@ pub struct TickInputs {
     /// applied input is ignored, so that inputs can be sent again to the region a player
     /// has moved to without any being applied twice.
     ///
+    /// Each names the edge it came through. Only the edge a player belongs to acts for
+    /// them: an input through another edge is ignored.
+    ///
     /// Only what a player did after the last of their changes in `player_changes`
     /// belongs here; see [`TickInputs::change`].
-    pub inputs: Vec<(PlayerId, u64, PlayerInput)>,
-    /// What players of other regions did to blocks of this one, in the order it arrived.
-    /// It is applied after `player_changes` and before `inputs`, and answered one for
-    /// one in [`TickOutput::remote_outcomes`].
-    pub remote_actions: Vec<RemoteAction>,
+    pub inputs: Vec<(EdgeId, PlayerId, u64, PlayerInput)>,
+    /// What players of other regions did to blocks of this one, in the order it arrived,
+    /// each with the edge that passed it on. It is applied after `player_changes` and
+    /// before `inputs`, and answered one for one with a [`Durable::RemoteDone`] or a
+    /// [`Durable::Remote`] for that edge. An action through an edge the region does not
+    /// know is ignored, as there is nobody to answer.
+    pub remote_actions: Vec<(EdgeId, RemoteAction)>,
     /// Chunks someone started to need. A chunk stays loaded while it has tickets.
     pub tickets_added: Vec<ChunkPos>,
     /// Chunks someone stopped needing; one entry releases one ticket.
@@ -282,21 +329,31 @@ impl TickInputs {
     /// - Before leaving, it was the last a player did. If they are back within the
     ///   tick, it must not be the first thing their new self does, and its number must
     ///   not make the region ignore what they really do.
+    ///
+    /// A leave drops only what came through its own edge. Should the player belong to
+    /// another edge, the leave changes nothing and what that edge passed on still
+    /// counts; should they belong to this one, what came through another edge is
+    /// ignored anyway. A join or an arrival drops what the player did through any edge:
+    /// all of it was done by an earlier self.
     pub fn change(&mut self, change: PlayerChange) {
-        let player = match &change {
-            PlayerChange::Join(join) => Some(join.player),
-            PlayerChange::Leave(player) | PlayerChange::Arrive(player, _) => Some(*player),
-            PlayerChange::Discard { .. } => None,
-        };
-        if let Some(player) = player {
-            self.inputs.retain(|(actor, ..)| *actor != player);
+        match &change {
+            PlayerChange::Join(_, PlayerJoin { player, .. })
+            | PlayerChange::Arrive(_, player, _) => {
+                self.inputs.retain(|(_, actor, ..)| actor != player);
+            }
+            PlayerChange::Leave(edge, player) => {
+                self.inputs
+                    .retain(|(from, actor, ..)| !(actor == player && from == edge));
+            }
+            PlayerChange::Discard { .. } => {}
         }
         self.player_changes.push(change);
     }
 
-    /// Adds something a player did, which came after everything added so far.
-    pub fn input(&mut self, player: PlayerId, number: u64, input: PlayerInput) {
-        self.inputs.push((player, number, input));
+    /// Adds something a player did, as passed on by `edge`, which came after everything
+    /// added so far.
+    pub fn input(&mut self, edge: EdgeId, player: PlayerId, number: u64, input: PlayerInput) {
+        self.inputs.push((edge, player, number, input));
     }
 }
 
@@ -314,13 +371,11 @@ pub enum PlayerEvent {
     /// handled, whether it took effect or not. The client then stops showing its own
     /// guess of the outcome and shows what the region reported.
     Acknowledged { sequence: i32 },
-    /// The player has stepped out of the region's part of the world and is no longer in
-    /// the region. Whoever routes the player passes this on to the region they are in
-    /// now as [`PlayerChange::Arrive`], together with every input numbered above
-    /// [`PlayerTransfer::last_input`].
+    /// The player has been let go to another region. A region does not emit this
+    /// itself: it makes a [`Durable::Departed`], which a worker passes on as this.
     Departed(PlayerTransfer),
-    /// The player could not enter the world, because the region has no entity id left
-    /// for them.
+    /// The player could not enter the world. A region does not emit this itself: it
+    /// makes a [`Durable::Refused`], which a worker passes on as this.
     Refused,
 }
 
@@ -370,15 +425,25 @@ impl RegionEvent {
 pub struct TickOutput {
     /// The number of this tick; the first tick of a region is 1.
     pub tick: u64,
+    /// [`PlayerEvent::Spawned`], in the order the players joined, and then
+    /// [`PlayerEvent::Acknowledged`], in the order of the players. What else concerns a
+    /// single player is among `durable`.
     pub player_events: Vec<(PlayerId, PlayerEvent)>,
     pub events: Vec<RegionEvent>,
     /// Chunks that have to be fetched from storage and passed in through
     /// [`TickInputs::chunks_loaded`].
     pub chunk_requests: Vec<ChunkPos>,
-    /// What players of this region did to blocks of another, to be passed on to the
-    /// region that has the block [`RemoteStep::concerns`] names. Such an action is not
-    /// among the acknowledged ones of this tick.
-    pub remote_requests: Vec<RemoteAction>,
-    /// What became of each of [`TickInputs::remote_actions`], in the same order.
-    pub remote_outcomes: Vec<RemoteOutcome>,
+    /// The outbox entries made in this tick, each with the edge whose outbox it is in
+    /// and its number there. An edge's entries are numbered on from its
+    /// [`EdgeState::sent`].
+    ///
+    /// They are in the order they were made: refusals, in the order of the joins; the
+    /// answers to [`TickInputs::remote_actions`], one for one and in their order; what
+    /// players did to blocks of other regions, in the order of [`TickInputs::inputs`];
+    /// and the players who were let go, in the order of the players.
+    ///
+    /// [`EdgeState::sent`]: crate::EdgeState::sent
+    pub durable: Vec<(EdgeId, u64, Durable)>,
+    /// Everything that changed in the region's state in this tick.
+    pub delta: StateDelta,
 }

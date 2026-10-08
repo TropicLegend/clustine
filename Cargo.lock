@@ -363,6 +363,7 @@ version = "0.0.0"
 dependencies = [
  "clustine-data",
  "clustine-world",
+ "postcard",
  "serde",
  "uuid",
 ]

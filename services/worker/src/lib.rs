@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use clustine_rpc::link::WorkerEnd;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, StoreReply, StoreRequest, WorkerToEdge};
 use clustine_sim::api::RegionEvent;
-use clustine_sim::{PlayerChange, PlayerEvent, Region, RemoteOutcome, TickInputs};
+use clustine_sim::{Durable, EdgeEvent, PlayerChange, PlayerEvent, Region, TickInputs};
 use clustine_world::{ChunkPos, EdgeId, PlayerId};
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
@@ -111,6 +111,13 @@ impl EdgeLink {
     }
 }
 
+/// The link a player belongs to, and the edge of that link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Owner {
+    link: LinkId,
+    edge: EdgeId,
+}
+
 /// Something a tick produced for an edge, in the order it is to be published.
 enum Outgoing {
     To(LinkId, WorkerToEdge),
@@ -138,12 +145,9 @@ pub struct RegionRunner {
     attach: Sender<WorkerEnd>,
     /// The link each player belongs to: the one they joined or arrived through. What
     /// concerns a single player goes to that link, and only that link acts for them.
-    players: BTreeMap<PlayerId, LinkId>,
+    players: BTreeMap<PlayerId, Owner>,
     /// What the coming tick will be given.
     inputs: TickInputs,
-    /// The link each of the remote actions among those inputs came through, in the same
-    /// order. What becomes of an action is told to that link.
-    remote_from: Vec<LinkId>,
     /// Loaded chunks that have changed since they were loaded or last stored.
     unsaved: BTreeSet<ChunkPos>,
     /// How many ticks pass between two checkpoints.
@@ -172,7 +176,6 @@ impl RegionRunner {
             attach,
             players: BTreeMap::new(),
             inputs: TickInputs::default(),
-            remote_from: Vec::new(),
             unsaved: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             status: Arc::default(),
@@ -235,7 +238,6 @@ impl RegionRunner {
         // What is collected from here on is for the tick after this one: the players and
         // the chunks of a link that is lost while it is told what this tick did.
         let inputs = mem::take(&mut self.inputs);
-        let remote_from = mem::take(&mut self.remote_from);
         let output = self.region.tick(&inputs);
 
         for position in output.chunk_requests {
@@ -281,29 +283,43 @@ impl RegionRunner {
             }
         }
 
-        // What players did to blocks of other regions goes to their edge to be passed
-        // on, while it is still known which link they belong to: a player can be let go
-        // in the same tick.
-        for action in output.remote_requests {
-            if let Some(id) = self.players.get(&action.player).copied() {
-                outgoing.push(Outgoing::To(id, WorkerToEdge::Remote(action)));
+        // Each outbox entry is passed on once and confirmed in the coming tick, so that
+        // outboxes stay empty for as long as edges do not confirm entries themselves.
+        let mut confirmed = BTreeMap::new();
+        let (mut remote, mut refusals, mut departures) = (Vec::new(), Vec::new(), Vec::new());
+        for (edge, number, entry) in output.durable {
+            confirmed.insert(edge, number);
+            match entry {
+                Durable::Refused { .. } => refusals.push((edge, entry)),
+                Durable::Departed { .. } => departures.push((edge, entry)),
+                Durable::Remote(_) | Durable::RemoteDone { .. } => remote.push((edge, entry)),
             }
         }
 
-        // After the events, so that a player is told that their action was handled only
-        // once they have been told what it did. That goes for players of other regions
-        // too, whose edge asked for what they did to be done here.
-        for (outcome, id) in output.remote_outcomes.into_iter().zip(remote_from) {
-            let message = match outcome {
-                RemoteOutcome::Done { player, sequence } => {
-                    WorkerToEdge::RemoteDone { player, sequence }
-                }
-                RemoteOutcome::Next(action) => WorkerToEdge::Remote(action),
-            };
-            outgoing.push(Outgoing::To(id, message));
+        // What players did to blocks of other regions goes to their edge to be passed
+        // on, and what became of what players of other regions did goes to the edge that
+        // asked for it to be done here. After the events, so that a player is told that
+        // their action was handled only once they have been told what it did.
+        for (edge, entry) in remote {
+            outgoing.extend(self.pass_on(edge, entry));
         }
-        for (player, event) in output.player_events {
+        // Who entered the world or could not, then what was acknowledged, then who was
+        // let go: a player is told what became of their actions before they are told
+        // that they are someone else's from now on.
+        let mut events = output.player_events.into_iter().peekable();
+        while let Some((player, event)) =
+            events.next_if(|(_, event)| !matches!(event, PlayerEvent::Acknowledged { .. }))
+        {
             outgoing.extend(self.tell(player, event));
+        }
+        for (edge, entry) in refusals {
+            outgoing.extend(self.pass_on(edge, entry));
+        }
+        for (player, event) in events {
+            outgoing.extend(self.tell(player, event));
+        }
+        for (edge, entry) in departures {
+            outgoing.extend(self.pass_on(edge, entry));
         }
 
         // Snapshots come last and show the state after this tick, so they include what
@@ -332,6 +348,11 @@ impl RegionRunner {
         }
 
         self.publish_all(output.tick, outgoing);
+        for (edge, number) in confirmed {
+            self.inputs
+                .edges
+                .push(EdgeEvent::Confirmed { edge, number });
+        }
 
         if self.store.is_lost() && !self.status.store_lost.swap(true, Ordering::Relaxed) {
             error!("the world store is lost; nothing that changes from now on is kept");
@@ -448,66 +469,23 @@ impl RegionRunner {
             );
             return false;
         }
-        if let Some(number) = number {
-            link.received = number;
-        }
         match body {
             EdgeToWorker::Hello { edge, start, .. } => {
-                // Nothing of what the edge knows of the region is used yet.
+                // A link is one edge's for as long as it lasts.
+                if link.edge.is_some_and(|known| known != edge) {
+                    warn!(
+                        link = id.0,
+                        "an edge said hello as another one; closing its link"
+                    );
+                    return false;
+                }
+                // Nothing else of what the edge knows of the region is used yet.
                 info!(link = id.0, edge = edge.0, start, "an edge said hello");
                 link.edge = Some(edge);
+                self.inputs.edges.push(EdgeEvent::Started { edge, start });
             }
-            // The region has no outbox yet.
+            // The runner confirms what it passes on itself.
             EdgeToWorker::Confirm { .. } => {}
-            EdgeToWorker::PlayerJoin(join) => {
-                // A player who joins through another link than the one they belong to
-                // has connected anew, and the link they had may not have noticed yet
-                // that they are gone. The new connection replaces the old one.
-                let previous = self.players.insert(join.player, id);
-                if previous.is_some_and(|previous| previous != id) {
-                    self.leave(join.player);
-                }
-                self.inputs.change(PlayerChange::Join(join));
-            }
-            EdgeToWorker::PlayerLeave { player } => {
-                // What another link has to say is about a connection the player had
-                // before, which must not end the one they have now.
-                if self.players.get(&player) == Some(&id) {
-                    self.players.remove(&player);
-                    self.leave(player);
-                }
-            }
-            EdgeToWorker::PlayerArrive { player, transfer } => {
-                // The region keeps a player who is here already and gives up the entity
-                // that was on its way, so such a player stays with the link they have.
-                if let Entry::Vacant(entry) = self.players.entry(player) {
-                    entry.insert(id);
-                    self.status.arrivals.fetch_add(1, Ordering::Relaxed);
-                    info!(
-                        name = %transfer.name,
-                        entity_id = transfer.entity_id.0,
-                        "player arrived from another region"
-                    );
-                }
-                self.inputs.change(PlayerChange::Arrive(player, transfer));
-            }
-            EdgeToWorker::Remote(action) => {
-                self.inputs.remote_actions.push(action);
-                self.remote_from.push(id);
-            }
-            EdgeToWorker::Discard { entity, chunk } => {
-                self.inputs.change(PlayerChange::Discard { entity, chunk });
-            }
-            EdgeToWorker::Input {
-                player,
-                number,
-                input,
-            } => {
-                // As with leaving: only the link a player belongs to acts for them.
-                if self.players.get(&player) == Some(&id) {
-                    self.inputs.input(player, number, input);
-                }
-            }
             EdgeToWorker::Subscribe { chunks } => {
                 let area = self.region.area();
                 for position in chunks {
@@ -526,14 +504,103 @@ impl RegionRunner {
                     }
                 }
             }
+            numbered => {
+                // What changes the region is some edge's doing, and the region has to know
+                // whose: an edge says hello before anything else. One that does not is
+                // treated as one whose messages are out of order.
+                let (Some(edge), Some(number)) = (link.edge, number) else {
+                    warn!(
+                        link = id.0,
+                        "an edge sent a numbered message before saying hello; closing its link"
+                    );
+                    return false;
+                };
+                link.received = number;
+                match self.inputs.applied.iter_mut().find(|(of, _)| *of == edge) {
+                    Some((_, applied)) => *applied = number,
+                    None => self.inputs.applied.push((edge, number)),
+                }
+                self.accept_numbered(Owner { link: id, edge }, numbered);
+            }
         }
         true
     }
 
+    /// Handles a numbered message that came through the link and edge `from`.
+    fn accept_numbered(&mut self, from: Owner, body: EdgeToWorker) {
+        let Owner { link: id, edge } = from;
+        match body {
+            EdgeToWorker::PlayerJoin(join) => {
+                // A player who joins through another link than the one they belong to
+                // has connected anew, and the link they had may not have noticed yet
+                // that they are gone. The new connection replaces the old one.
+                let previous = self.players.insert(join.player, from);
+                if let Some(previous) = previous
+                    && previous.link != id
+                {
+                    self.leave(previous.edge, join.player);
+                }
+                self.inputs.change(PlayerChange::Join(edge, join));
+            }
+            EdgeToWorker::PlayerLeave { player } => {
+                // What another link has to say is about a connection the player had
+                // before, which must not end the one they have now.
+                if self
+                    .players
+                    .get(&player)
+                    .is_some_and(|owner| owner.link == id)
+                {
+                    self.players.remove(&player);
+                    self.leave(edge, player);
+                }
+            }
+            EdgeToWorker::PlayerArrive { player, transfer } => {
+                // The region keeps a player who is here already and gives up the entity
+                // that was on its way, so such a player stays with the link they have.
+                if let Entry::Vacant(entry) = self.players.entry(player) {
+                    entry.insert(from);
+                    self.status.arrivals.fetch_add(1, Ordering::Relaxed);
+                    info!(
+                        name = %transfer.name,
+                        entity_id = transfer.entity_id.0,
+                        "player arrived from another region"
+                    );
+                }
+                self.inputs
+                    .change(PlayerChange::Arrive(edge, player, transfer));
+            }
+            EdgeToWorker::Remote(action) => {
+                self.inputs.remote_actions.push((edge, action));
+            }
+            EdgeToWorker::Discard { entity, chunk } => {
+                self.inputs.change(PlayerChange::Discard { entity, chunk });
+            }
+            EdgeToWorker::Input {
+                player,
+                number,
+                input,
+            } => {
+                // As with leaving: only the link a player belongs to acts for them.
+                if self
+                    .players
+                    .get(&player)
+                    .is_some_and(|owner| owner.link == id)
+                {
+                    self.inputs.input(edge, player, number, input);
+                }
+            }
+            // Not numbered; `accept` handles them.
+            EdgeToWorker::Hello { .. }
+            | EdgeToWorker::Confirm { .. }
+            | EdgeToWorker::Subscribe { .. }
+            | EdgeToWorker::Unsubscribe { .. } => {}
+        }
+    }
+
     /// Queues that `player` leaves the region. See [`TickInputs::change`] for what
     /// becomes of what they did earlier in this step.
-    fn leave(&mut self, player: PlayerId) {
-        self.inputs.change(PlayerChange::Leave(player));
+    fn leave(&mut self, edge: EdgeId, player: PlayerId) {
+        self.inputs.change(PlayerChange::Leave(edge, player));
     }
 
     /// Gives back the ticket of a link that no longer needs the chunk at `position`.
@@ -554,12 +621,12 @@ impl RegionRunner {
         let players: Vec<_> = self
             .players
             .iter()
-            .filter(|(_, owner)| **owner == id)
-            .map(|(player, _)| *player)
+            .filter(|(_, owner)| owner.link == id)
+            .map(|(player, owner)| (*player, owner.edge))
             .collect();
-        for player in players {
+        for (player, edge) in players {
             self.players.remove(&player);
-            self.leave(player);
+            self.leave(edge, player);
         }
         for position in link.subscriptions {
             self.release(position);
@@ -622,9 +689,45 @@ impl RegionRunner {
     }
 
     /// Makes ready what concerns a single player for the link they belong to. Returns
+    /// nothing if there is nobody to tell.
+    fn tell(&self, player: PlayerId, event: PlayerEvent) -> Option<Outgoing> {
+        // A player without a link had one that was lost earlier in this step.
+        let owner = self.players.get(&player)?;
+        let message = WorkerToEdge::ToPlayer { player, event };
+        Some(Outgoing::To(owner.link, message))
+    }
+
+    /// The link through which the region tells `edge` what it has to: the one attached
+    /// last of those that said hello as that edge.
+    fn link_of(&self, edge: EdgeId) -> Option<LinkId> {
+        self.links
+            .iter()
+            .rev()
+            .find(|(_, link)| link.edge == Some(edge))
+            .map(|(id, _)| *id)
+    }
+
+    /// Makes ready an outbox entry for `edge` as the message it stands for. Returns
     /// nothing if there is nobody to tell and nothing follows from that.
-    fn tell(&mut self, player: PlayerId, event: PlayerEvent) -> Option<Outgoing> {
-        let departed = match &event {
+    fn pass_on(&mut self, edge: EdgeId, entry: Durable) -> Option<Outgoing> {
+        let link = self.link_of(edge);
+        let (player, event) = match entry {
+            Durable::Remote(action) => {
+                return link.map(|id| Outgoing::To(id, WorkerToEdge::Remote(action)));
+            }
+            Durable::RemoteDone { player, sequence } => {
+                let message = WorkerToEdge::RemoteDone { player, sequence };
+                return link.map(|id| Outgoing::To(id, message));
+            }
+            Durable::Refused { player } => (player, PlayerEvent::Refused),
+            Durable::Departed { player, transfer } => (player, PlayerEvent::Departed(transfer)),
+        };
+        // Forgotten only now, so that the event still finds its way. A refused player
+        // who is in the region nonetheless arrived within the same tick, and is kept.
+        if self.region.player(player).is_none() {
+            self.players.remove(&player);
+        }
+        let removed = match &event {
             PlayerEvent::Departed(transfer) => {
                 self.status.departures.fetch_add(1, Ordering::Relaxed);
                 info!(
@@ -640,18 +743,8 @@ impl RegionRunner {
             }
             _ => None,
         };
-        let last = matches!(event, PlayerEvent::Departed(_) | PlayerEvent::Refused);
-
-        // A player without a link had one that was lost earlier in this step.
-        let link = self.players.get(&player).copied();
-        // Forgotten only now, so that the event still finds its way. A refused player
-        // who is in the region nonetheless arrived within the same tick, and is kept.
-        if last && self.region.player(player).is_none() {
-            self.players.remove(&player);
-        }
-
         let message = WorkerToEdge::ToPlayer { player, event };
-        match departed {
+        match removed {
             Some(removed) => Some(Outgoing::Departed {
                 link,
                 message,
@@ -714,18 +807,38 @@ mod tests {
     /// way a link between two processes does.
     const KINDS: [fn(usize) -> (TestEdge, WorkerEnd); 2] = [in_process, framed];
 
-    /// An edge's end of a link that numbers what it sends, as an edge does.
+    /// An edge's end of a link that says hello first and numbers what it sends, as an
+    /// edge does. Each is an edge of its own.
     struct TestEdge {
         end: EdgeEnd,
+        /// Which edge this is.
+        edge: EdgeId,
         /// The number of the last numbered message sent.
         sent: AtomicU64,
     }
 
     impl TestEdge {
         fn new(end: EdgeEnd) -> Self {
-            Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let name = format!("test-edge-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+            let edge = Self {
                 end,
+                edge: EdgeId::from_name(&name),
                 sent: AtomicU64::new(0),
+            };
+            // Before anything else, as an edge does; there is room for it on a new link.
+            edge.try_send(edge.hello()).unwrap();
+            edge
+        }
+
+        /// What this edge says first on a link.
+        fn hello(&self) -> EdgeToWorker {
+            EdgeToWorker::Hello {
+                edge: self.edge,
+                start: 1,
+                seen: 0,
+                players: Vec::new(),
+                chunks: Vec::new(),
             }
         }
 
@@ -783,15 +896,19 @@ mod tests {
         RegionConfig {
             spawn: SPAWN,
             area,
-            entity_ids: EntityIds::block(0).unwrap(),
             starting_hotbar: [None; HOTBAR_SLOTS],
         }
+    }
+
+    /// A region that has never run, with the first block of entity ids.
+    fn region_of(config: RegionConfig) -> Region {
+        Region::new(config, EntityIds::block(0).unwrap())
     }
 
     /// A runner for a region of a flat world that only lasts as long as the runner.
     fn runner_of(config: RegionConfig, link: WorkerEnd) -> RegionRunner {
         let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
-        RegionRunner::new(Region::new(config), link, store)
+        RegionRunner::new(region_of(config), link, store)
     }
 
     fn runner(link: WorkerEnd) -> RegionRunner {
@@ -1174,7 +1291,7 @@ mod tests {
     async fn a_link_attached_while_the_runner_runs_is_served() {
         for connect in KINDS {
             let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
-            let region = Region::new(config(ChunkArea::EVERYWHERE));
+            let region = region_of(config(ChunkArea::EVERYWHERE));
             let runner = RegionRunner::without_links(region, store);
             let (links, status) = (runner.links(), runner.status());
             let worker = Worker::spawn(runner);
@@ -1316,7 +1433,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let on_disk = |link| {
             let generator = FlatGenerator::classic();
-            let region = Region::new(config(ChunkArea::EVERYWHERE));
+            let region = region_of(config(ChunkArea::EVERYWHERE));
             let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));
             RegionRunner::new(region, link, store.unwrap())
         };
@@ -1346,10 +1463,9 @@ mod tests {
     async fn checkpoints_save_loaded_chunks_and_empty_the_log() {
         let directory = tempfile::tempdir().unwrap();
         let generator = FlatGenerator::classic();
-        let region = Region::new(RegionConfig {
+        let region = region_of(RegionConfig {
             spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
             area: ChunkArea::EVERYWHERE,
-            entity_ids: EntityIds::block(0).unwrap(),
             starting_hotbar: [None; HOTBAR_SLOTS],
         });
         let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));
@@ -1514,15 +1630,8 @@ mod tests {
             let (mut edge, worker_end) = in_process(256);
             let mut runner = runner(worker_end);
             joined(&edge, &mut runner).await;
-            // A hello carries no number and takes none.
-            let hello = EdgeToWorker::Hello {
-                edge: EdgeId::from_name("edge-0"),
-                start: 1,
-                seen: 0,
-                players: Vec::new(),
-                chunks: Vec::new(),
-            };
-            edge.send(hello).await.unwrap();
+            // A hello carries no number and takes none, also when it comes again.
+            edge.send(edge.hello()).await.unwrap();
             runner.step();
             assert_eq!(runner.links.len(), 1);
             assert_eq!(runner.region().player_count(), 1);
@@ -1535,6 +1644,71 @@ mod tests {
             received(&mut edge);
             assert_eq!(edge.recv().await, None);
         }
+    }
+
+    /// The region has to know whose doing a change is, so an edge says hello before
+    /// anything numbered. One that does not is out of order.
+    #[tokio::test]
+    async fn a_link_that_sends_something_numbered_before_saying_hello_is_closed() {
+        let (edge, worker_end) = link::in_process(256);
+        let mut runner = runner(worker_end);
+        // Unnumbered messages concern nobody's doing and are taken.
+        let subscribe = EdgeMessage {
+            number: None,
+            body: EdgeToWorker::Subscribe {
+                chunks: vec![ChunkPos::new(0, 0)],
+            },
+        };
+        edge.send(subscribe).await.unwrap();
+        runner.step();
+        assert_eq!(runner.links.len(), 1);
+
+        let join = EdgeMessage {
+            number: Some(1),
+            body: join(player(), "Notch"),
+        };
+        edge.send(join).await.unwrap();
+        step_until(&mut runner, |runner| runner.links.is_empty());
+        runner.step();
+        assert_eq!(runner.region().player_count(), 0);
+        assert_eq!(runner.region().loaded_chunk_count(), 0);
+    }
+
+    /// Until edges confirm what they get, the runner confirms each outbox entry it has
+    /// passed on, whether it could be delivered or not, so that nothing piles up.
+    #[tokio::test]
+    async fn what_the_region_passes_on_is_confirmed_and_the_outboxes_stay_empty() {
+        let (mut edge, worker_end) = in_process(256);
+        let mut runner = runner_of(config(WEST), worker_end);
+        let outbox = |runner: &RegionRunner, edge: &TestEdge| {
+            let state = runner.region().edge(edge.edge).unwrap();
+            (state.sent, state.outbox.len())
+        };
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(walk(player(), 14.5)).await.unwrap();
+        runner.step();
+        assert_eq!(outbox(&runner, &edge), (0, 0));
+        received(&mut edge);
+
+        // A block beyond the region, and a step beyond it.
+        edge.send(dig(16)).await.unwrap();
+        edge.send(walk(player(), 20.0)).await.unwrap();
+        runner.step();
+        assert_eq!(outbox(&runner, &edge), (2, 2));
+        assert!(matches!(
+            received(&mut edge)[..],
+            [
+                WorkerToEdge::Remote(_),
+                WorkerToEdge::ToPlayer {
+                    event: PlayerEvent::Departed(_),
+                    ..
+                },
+            ]
+        ));
+        runner.step();
+        assert_eq!(outbox(&runner, &edge), (2, 0));
+        // How far the edge's messages are applied is noted too.
+        assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 4);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1564,6 +1738,8 @@ mod tests {
         // Room for a single message, and nobody reads it.
         let (mut edge, worker_end) = in_process(1);
         let mut runner = runner(worker_end);
+        // The hello has to make room first.
+        runner.step();
         edge.try_send(join(player(), "Notch")).unwrap();
         runner.step();
         edge.try_send(EdgeToWorker::Subscribe { chunks: square(1) })
@@ -2095,11 +2271,9 @@ mod tests {
             first: EntityId(1),
             end: EntityId(2),
         };
-        let config = RegionConfig {
-            entity_ids,
-            ..config(ChunkArea::EVERYWHERE)
-        };
-        let mut runner = runner_of(config, worker_end);
+        let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
+        let region = Region::new(config(ChunkArea::EVERYWHERE), entity_ids);
+        let mut runner = RegionRunner::new(region, worker_end, store);
 
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(join(other_player(), "Jeb")).await.unwrap();

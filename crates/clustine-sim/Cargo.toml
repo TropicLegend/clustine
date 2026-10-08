@@ -13,4 +13,5 @@ clustine-world.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+postcard.workspace = true
 uuid.workspace = true

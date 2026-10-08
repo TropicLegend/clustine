@@ -134,12 +134,14 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
         opened = open_region(&args.store, hello) => opened?,
         _ = &mut stop => return Ok(()),
     };
-    let state = Region::new(RegionConfig {
+    // Until the world store issues entity ids, the coordinator says which are the
+    // region's.
+    let config = RegionConfig {
         spawn: orders.spawn,
         area,
-        entity_ids,
         starting_hotbar: starting_hotbar(),
-    });
+    };
+    let state = Region::new(config, entity_ids);
     let ticks = (args.checkpoint_interval.as_millis() / clustine_worker::TICK.as_millis()) as u64;
     let runner = RegionRunner::without_links(state, store).with_checkpoint_interval(ticks);
     let links = runner.links();
