@@ -235,10 +235,9 @@ What checks it:
 - `deploy/kind/test.sh`: the same bots on Kubernetes while the pods of the workers and
   of the world store are deleted.
 
-**For the owner to try with real clients**, whenever there is time; phase B has begun
-meanwhile, as asked:
+**For the owner to try with real clients**, whenever there is time:
 
-1. A cluster as processes, each in a terminal of its own, with one worker to spare:
+1. A cluster as processes, each in a terminal of its own:
    ```bash
    cargo build -p clustine
    target/debug/clustine coordinator --boundaries 4
@@ -249,6 +248,9 @@ meanwhile, as asked:
    target/debug/clustine edge
    ```
    Join with one or two clients at `localhost:25565`. The regions meet at block x = 64.
+   The workers share the two regions: the first to be there may be given both, and
+   one of them is moved to another worker a moment later, which the coordinator logs.
+   Two workers are enough; with three one has nothing to do until another goes.
 2. Stand in one region, build something, and kill the worker that runs it with
    `kill -9` (the coordinator's log says which worker has which region). Expected:
    everyone in that region stands still for five to seven seconds, the blocks of the
@@ -370,6 +372,16 @@ workers for two regions, so one is to spare):
    it. Start it again: within a few seconds moves work again.
 
 What to say if it is not so: which step, what was seen, and the logs of the terminals.
+
+**The owner's first try, 2026-10-08**: after a worker was killed, joining again did not
+work; the client was told "The server fell too far behind", which the edge says when a
+region has not placed a player, or not confirmed what they did, for 20 seconds. It
+could not be reproduced with bots, also not with one that keeps moving, leaves and
+joins again under its name at the default settings. Looking for it found that the edge
+took what a region said of a player who had left and joined again since for the player
+as they are now, and put them into the world as their old self; that is fixed
+(`what_a_region_says_of_a_player_who_left_and_came_back_since_is_not_taken_for_them`).
+Whether it is what the owner saw is open until they have tried again or sent the logs.
 
 Phase C has begun. [ADR-0010](adr/0010-regions-that-follow-players.md) is its plan,
 accepted after an independent review that found 21 defects. C0 is done: what the record
