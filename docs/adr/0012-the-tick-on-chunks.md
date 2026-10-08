@@ -2,8 +2,11 @@
 
 - Status: **Accepted**; the design of step C2b of milestone M3, phase C, for the
   simulation and the region runner. Revised after an independent review against the
-  code (see the end). Not built yet. The edge's side of the step is designed
-  elsewhere, against section 5 of this record.
+  code (see "Review"). Built in the five steps of section 8, the last of which took
+  the scaffold of that section out again; what turned out otherwise is under "Found
+  while building" at the end. The edge's side of the step is
+  [ADR-0013](0013-the-edge-without-a-layout.md), designed against section 5 of this
+  record.
 - Date: 2026-10-08
 
 ## Context
@@ -1219,6 +1222,14 @@ the edge changes, and the edge of C2b.4 is built against regions that presume an
 regions that ask. C2b.5 removes the field, the switch and the variable, and the
 second run is the only one.
 
+**It is out.** Step C2b.5 is built. `RegionConfig::presumed`, `Config::presumed`,
+`clustine worker --ask-the-store` and `CLUSTINE_TEST_ASK_THE_STORE` are gone: a region
+knows of a chunk only what `Holdings`, the store's answers and its own asking tell
+it, in the single process and in a cluster alike, and a commit is verified with four
+checks again, of which the one with `CLUSTINE_TEST_BOUNDARIES` runs regions that ask
+like every other. What this record says of `presumed`, here and under "Found while
+building", is how the step was built and describes nothing that is still there.
+
 | # | Scope | Needs | The edge in the same commit | Its tests |
 |---|---|---|---|---|
 | C2b.1 | `since`; the welcome with its entries; `seen` not confirmed after `Unknown`; the reset of an edge that has lost its `since`; the format byte and states from before (`STATE_FORMAT` 1) | nothing | says and keeps `since`; reads the new welcome | Below, S16; R11, R12, R14 |
@@ -1977,3 +1988,84 @@ The worker's unit tests have one test and more for each rule of sections 4.2 to 
 on stores with a division (stripes at 1, and the gap), among them the three that need
 a `Gate`. They were written by whoever built the runner, and are no substitute for the
 scenarios R1 to R22.
+
+### Step C2b.5
+
+The scaffold came out without anything in sections 1 to 5 having to be decided
+differently, and nothing the processes do had stood on it: every end-to-end test
+passes as it is. What did stand on it without the record saying so, and what the step
+settles of the items above:
+
+1. **The sim had four tests of the scaffold, not one.** Beside
+   `what_a_region_presumes_it_never_asks_about_gives_back_or_forgets` in `region.rs`
+   there were the three under "Section 8" in `tests/chunks.rs`, written from this
+   record. All four are gone with the field. No other test of the sim presumed
+   anything.
+2. **A dig in the tick of the join.** `what_concerns_a_player_goes_to_their_link_only`
+   (worker, `lib.rs`) is on a world of one region with nothing subscribed to. Its
+   players join and dig a block of the chunk they stand in within one tick, and it
+   expected each dig acknowledged. A region that presumed the whole world held that
+   chunk from the start, and a block of a held chunk that is not loaded is not there.
+   A region that asks claims the chunk at the end of that tick, so the dig is about a
+   chunk it knows nothing of and is passed on without a region (section 2.3), which
+   an edge ends by acknowledging it where no region serves it the chunk (section 5.6,
+   rule 26). The sequence is: `PlayerJoin` and `Input { Dig }` of one player on one
+   link before a tick, no subscription; the tick makes `Durable::Remote { to: None }`
+   where it made `PlayerEvent::Acknowledged`. No client can click a block before a
+   region has sent it the chunk, which is after the grant, so no player comes by it.
+   The test waits until the region holds the chunk before its players dig: its point
+   is who is told, not when.
+3. **The test of `NotHeld` made its disagreement with the scaffold**
+   (`a_runner_that_is_told_it_does_not_hold_a_chunk_it_loads_gives_up`): a region that
+   took the whole world for its own, on a store divided into stripes, loaded a chunk
+   of the other stripe. Without the scaffold nothing a region does has it load a chunk
+   the store has not granted it, which is what section 4.2 says. The test now makes
+   the disagreement up where a region learns what it holds: it adds a chunk of the
+   other stripe to `Restored::held` before the runner is made.
+4. **How the worker's western tests know their neighbour** (section 6). Ten of the
+   eleven have their own edge ask for the first chunk of the eastern stripe as a
+   viewer and wait for `Elsewhere` before they begin (`look_east`), on region 0 of a
+   store divided at 1, in memory or on disk as the test had it. The subscription is
+   the link's and ends with it. In
+   `an_edge_that_stays_away_is_gone_with_its_players_and_departures` the last a link
+   carries is the step across, and the player is let go in that tick all the same:
+   the ticket goes with the link, and what a region believes of a chunk that nothing
+   wants any more it forgets only at the end of a tick, after its players are let go
+   (section 2.1, steps 8 and 9). The eleventh,
+   `a_subscription_to_a_chunk_of_another_region_is_answered_elsewhere_and_told_no_events`,
+   hears `Elsewhere` in the tick of the store's answer, where it was the tick of the
+   subscription. The state and the delta whose bytes are written down
+   (`a_state_and_a_delta`) come from a region that is given viewer's tickets on two
+   chunks of its neighbour and the store's `foreign` for them; the bytes are the same.
+5. **`RegionStatus::held`** (C2b.3, item 2) is 1 at the end of
+   `the_status_follows_the_region`, where it was 0: the home chunk, granted when a
+   player stood in it, and the region's for good, loaded or not.
+6. **The lookups of a region in the layout are gone** (C2b.2, item 6; section 7).
+   `hold` in the worker process cannot fail any more, and the single process has no
+   `Regions::has`. A region the layout does not have is opened like any other and
+   refused by the store with `UnknownRegion`.
+7. **The single process as it is started from the command line asks for the first
+   time** (C2b.3, item 4). It was started with the stripes given in every run until
+   now, also in the two tests that start it as a process of its own (`spawn_server`,
+   in `handoff.rs` and `persistence.rs`); `Server::start` inside the tests was covered
+   by the fifth check. The two tests pass. What the owner runs, `cargo run -p clustine
+   -- --boundaries 4`, has regions that ask from this step on, which no real client
+   has met outside a cluster.
+8. **The chaos and move tests are on regions that ask in every run** (C2b.3, item 3):
+   they are in the run without `CLUSTINE_TEST_BOUNDARIES`, which has no other kind of
+   region any more.
+9. **The pause at a move**, as
+   `players_stand_still_only_briefly_while_their_regions_are_moved_back_and_forth`
+   prints it, measured in turn on one machine with one seed (211034): 0.90 s in the
+   middle with regions that presumed (five runs, 0.88 to 0.92), 0.94 s with regions
+   that asked before this step (four runs, 0.93 to 0.97), 0.95 s after it (four runs,
+   0.92 to 0.97). Asking costs about a tick at a move, which is the tick the
+   consequences name for everything a restored region sends again, and taking the
+   scaffold out changed nothing. The same runs print the longest wait of a bot for an
+   acknowledgement while nothing is done to the cluster: 0.11 to 0.40 s in five runs
+   with regions that presumed, 0.08 to 0.58 s in thirteen with regions that ask, with
+   0.15 and 0.23 s in the middle. That is the greatest of many waits and scatters
+   widely; whether asking makes the slowest action across a boundary slower was not
+   looked into.
+
+Not run for this step: the cluster test on kind, which needs Docker and runs on GitHub.
