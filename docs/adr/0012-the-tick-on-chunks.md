@@ -1592,6 +1592,29 @@ And what the record left to the reader, which the tests and the code read alike:
 Left for step C3, which is the first to make such states: what presence says after
 `Unknown` when the state has a player of the edge and nothing received.
 
+## Changed by ADR-0013
+
+[ADR-0013](0013-the-edge-without-a-layout.md) designs the edge against section 5, and
+its review found two places where the contract as written made an edge wait for ever
+or leave a chunk unserved. They read so now:
+
+- **Rules 8 and 9.** An edge takes a `ChunkSnapshot` numbered at or above the number
+  its subscription for the chunk began with on this link, not only one with the number
+  of its last message. A `Subscribe` or `SubscribeAsGuest` that reaches the region
+  after the tick that made the snapshot changes the kind of a served subscription and
+  is not answered (rule 9, third case), while the snapshot in flight carries the
+  number from before. `Elsewhere` and `NotMine` are taken only at the number of the
+  edge's last message, as rule 8 says.
+- **Rules 5 and 6.** A viewer's subscription that loses its last viewer while a viewer
+  of another region's player still sees the chunk becomes a guest's with
+  `SubscribeAsGuest` whatever its condition, unless it was told elsewhere; it is not
+  ended because it waits. Otherwise another region's viewer that was told `Elsewhere`
+  with this region would look at a chunk nobody serves, and by rule 13 hear nothing
+  more. So a guest's subscription is also made from a waiting viewer's, which section
+  4.3 takes as it is.
+
+Nothing of this changes what a region does.
+
 ## Open questions
 
 1. **Whether a region may take in an arrival for a chunk it has nothing to do with.**
