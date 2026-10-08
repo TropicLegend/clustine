@@ -32,6 +32,7 @@ use clustine_worker::{Links, RegionRunner, RegionStatus, Worker};
 use clustine_worldstore::{Store, StoreError, StoreHandle};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
@@ -652,11 +653,34 @@ async fn whole_world(coordinator: &str) -> (RoutingWatch, RoutingTable) {
     }
 }
 
+/// How often the edge tries to link to a region's owner while that is new: the owner
+/// of a region that was moved takes links a moment after the routing table names it, and
+/// its players stand still until the edge is through.
+const LINK_RETRY_AT_FIRST: Duration = Duration::from_millis(100);
+
+/// For how long it tries that often, before it tries every [`RETRY`].
+const LINK_RETRY_EAGERLY_FOR: Duration = Duration::from_secs(2);
+
+/// What the link-keeper knows of one region.
+#[derive(Default)]
+struct LinkState {
+    /// The epoch of the owner the edge has a link to.
+    linked: Option<u64>,
+    /// The epoch of the owner an attempt to link is under way to.
+    trying: Option<u64>,
+    /// Since when the edge has been without a link to the owner the table names.
+    since: Option<Instant>,
+    /// When to try again, if the last attempt failed.
+    again: Option<Instant>,
+}
+
 /// Keeps the edge linked to whoever runs each region, for as long as the edge is
 /// there: links to every region of `table`, and links again when the coordinator names
-/// another owner or the edge says that a link has ended. A worker that cannot be
-/// reached is tried again; a coordinator that goes away is waited for, with the regions
-/// where they were.
+/// another owner or the edge says that a link has ended. Each region is tried by itself
+/// and at once, so that a worker that does not answer keeps nobody but its own region
+/// waiting, and a new route is taken up also while the old one is still being tried. A
+/// worker that cannot be reached is tried again, often at first; a coordinator that
+/// goes away is waited for, with the regions where they were.
 async fn keep_linked(
     coordinator: &str,
     watch: RoutingWatch,
@@ -665,75 +689,130 @@ async fn keep_linked(
 ) {
     let layout = table.layout.fingerprint();
     let mut watch = Some(watch);
-    // The epoch of the owner the edge has a link to, by region.
-    let mut linked: BTreeMap<RegionId, u64> = BTreeMap::new();
+    let mut regions: BTreeMap<RegionId, LinkState> = BTreeMap::new();
+    // The attempts under way: each ends with the region, the epoch it was for, and the
+    // link if there is one.
+    let mut attempts = JoinSet::new();
     loop {
+        // An attempt for every region that is not linked to the owner the table names,
+        // has none under way to that owner, and is not waiting to try again.
+        let now = Instant::now();
         for route in &table.routes {
-            if linked.get(&route.region) == Some(&route.epoch) {
+            let state = regions.entry(route.region).or_default();
+            if state.linked == Some(route.epoch) {
+                state.since = None;
                 continue;
             }
+            state.since.get_or_insert(now);
+            let due = state.again.is_none_or(|again| again <= now);
+            if state.trying == Some(route.epoch) || !due {
+                continue;
+            }
+            state.trying = Some(route.epoch);
+            state.again = None;
+            let (region, epoch, address) = (route.region, route.epoch, route.address.clone());
             let hello = RegionHello {
-                region: route.region,
-                epoch: route.epoch,
+                region,
+                epoch,
                 layout,
             };
-            let connecting =
-                tcp::connect::<EdgeMessage, WorkerToEdge>(&route.address, hello, LINK_CAPACITY);
-            match timeout(LINK_TIMEOUT, connecting).await {
-                Ok(Ok(end)) => {
-                    let link = RegionLink {
-                        region: route.region,
-                        epoch: route.epoch,
-                        end,
-                    };
-                    if !relinks.replace(link).await {
-                        return;
+            attempts.spawn(async move {
+                let connecting =
+                    tcp::connect::<EdgeMessage, WorkerToEdge>(&address, hello, LINK_CAPACITY);
+                let link = match timeout(LINK_TIMEOUT, connecting).await {
+                    Ok(Ok(end)) => Some(end),
+                    // A worker that restores its region takes no links until it is done.
+                    Ok(Err(error)) => {
+                        debug!(%region, %address, %error, "a region cannot be linked to yet");
+                        None
                     }
-                    info!(region = %route.region, epoch = route.epoch, address = %route.address, "linked to a region");
-                    linked.insert(route.region, route.epoch);
+                    Err(_) => {
+                        debug!(%region, %address, "a worker did not answer in time");
+                        None
+                    }
+                };
+                (region, epoch, address, link)
+            });
+        }
+        let again = regions.values().filter_map(|state| state.again).min();
+
+        tokio::select! {
+            Some(ended) = attempts.join_next() => {
+                // An attempt neither panics nor is cancelled.
+                let Ok((region, epoch, address, link)) = ended else {
+                    continue;
+                };
+                let state = regions.entry(region).or_default();
+                if state.trying == Some(epoch) {
+                    state.trying = None;
                 }
-                // A worker that restores its region takes no links until it is done.
-                Ok(Err(error)) => {
-                    debug!(region = %route.region, address = %route.address, %error, "a region cannot be linked to yet");
-                }
-                Err(_) => {
-                    debug!(region = %route.region, address = %route.address, "a worker did not answer in time");
+                let current = table.route(region).is_some_and(|route| route.epoch == epoch);
+                match link {
+                    // The table has moved on meanwhile; the link is closed by dropping it.
+                    Some(_) if !current => {}
+                    Some(end) => {
+                        if !relinks.replace(RegionLink { region, epoch, end }).await {
+                            return;
+                        }
+                        info!(%region, epoch, %address, "linked to a region");
+                        state.linked = Some(epoch);
+                        state.since = None;
+                    }
+                    None if current => {
+                        let eager = state
+                            .since
+                            .is_some_and(|since| since.elapsed() < LINK_RETRY_EAGERLY_FOR);
+                        let wait = if eager { LINK_RETRY_AT_FIRST } else { RETRY };
+                        state.again = Some(Instant::now() + wait);
+                    }
+                    None => {}
                 }
             }
-        }
-
-        // Linked to the owner the table names, not to one before it: a worker that hangs
-        // or is cut off keeps its link open for as long as it likes, and the region's new
-        // owner, which takes no links while it restores, has to be tried again.
-        let whole = table
-            .routes
-            .iter()
-            .all(|route| linked.get(&route.region) == Some(&route.epoch));
-        tokio::select! {
             ended = relinks.ended() => match ended {
                 // A link to an owner the edge has left behind already ended.
                 Some((region, epoch)) => {
-                    if linked.get(&region) == Some(&epoch) {
-                        linked.remove(&region);
+                    let state = regions.entry(region).or_default();
+                    if state.linked == Some(epoch) {
+                        state.linked = None;
+                        state.again = None;
                     }
                 }
                 None => return,
             },
             next = next_table(&mut watch), if watch.is_some() => match next {
-                Some(next) if next.layout == table.layout => table = next,
+                Some(next) if next.layout == table.layout => {
+                    // A region with a new owner is tried at once, whatever the last
+                    // attempt at the old one came to.
+                    for route in &next.routes {
+                        let changed = table
+                            .route(route.region)
+                            .is_none_or(|old| old.epoch != route.epoch);
+                        if changed && let Some(state) = regions.get_mut(&route.region) {
+                            state.again = None;
+                            state.since = None;
+                        }
+                    }
+                    table = next;
+                }
                 Some(_) => warn!("the coordinator divides the world differently now; keeping to the layout this edge started with"),
                 None => {
                     warn!("lost the coordinator; carrying on with the regions as they are");
                     watch = None;
                 }
             },
-            // A worker to try again, or a coordinator to look for.
-            () = sleep(RETRY), if !whole || watch.is_none() => {
-                if watch.is_none() {
-                    watch = RoutingWatch::connect(coordinator).await.ok();
-                }
+            () = sleep_until_some(again), if again.is_some() => {}
+            // A coordinator to look for.
+            () = sleep(RETRY), if watch.is_none() => {
+                watch = RoutingWatch::connect(coordinator).await.ok();
             }
         }
+    }
+}
+
+/// Sleeps until `when`, which the caller has made sure is there.
+async fn sleep_until_some(when: Option<Instant>) {
+    if let Some(when) = when {
+        tokio::time::sleep_until(when.into()).await;
     }
 }
 
