@@ -131,6 +131,10 @@ struct Worker {
     connected: bool,
     /// Whether it has said that it is leaving since it last registered.
     leaving: bool,
+    /// When it last failed a region: when one was taken from it because it did not
+    /// vouch for it, or because it did not answer when asked to release it. Registering
+    /// again does not undo that; see [`Coordinator::FAULT_MEMORY`].
+    failed: Option<Instant>,
 }
 
 /// A region that its owner has been asked to let go of.
@@ -271,7 +275,9 @@ impl Holder {
 /// with the fewest regions**: the regions it owns and those it is the reserved target of
 /// (see below) are counted. Of several with equally few it goes to the one that has
 /// waited longest: the one that registered first, but a worker that lost or released a
-/// region is behind all the others from then on.
+/// region is behind all the others from then on. A worker that failed a region a
+/// little while ago comes after every worker that did not, however few regions it has
+/// (see below).
 ///
 /// [`Coordinator::tick`] gives the regions without an owner away like that, the lowest
 /// first and counting each as it goes, so that they are spread evenly over the workers
@@ -296,8 +302,20 @@ impl Holder {
 /// a lease before, or if its owner has been waiting for the store for longer than
 /// `STORE_PATIENCE`: at that point, rather than a lease after the last vouch that
 /// counted, so that a worker cut off from the store keeps the region no longer than that.
-/// The owner stays registered and goes behind the other workers, so that of those with
-/// as few regions as it has, another one is given the region.
+/// The owner stays registered and goes behind the other workers.
+///
+/// A worker from which a region was taken like that has **failed** the region, and so
+/// has one from which a region was taken because it did not answer a release within
+/// the lease. Whatever kept it from vouching or answering may well keep it from running
+/// the next region, which would stand still for a lease with it. So for
+/// [`Coordinator::FAULT_MEMORY`] leases after it last failed a region, a worker is **at
+/// fault**: wherever the worker with the fewest regions is looked for, those that are
+/// not at fault come before those that are, whatever they run, and regions are not
+/// evened out towards it or away from it. It is still given a region when nobody else
+/// can be, and a move that names it is done as asked. Registering again does not end
+/// this, as a worker that only lost its connection registers too; time does, and a
+/// worker that was forgotten in the meantime is a new one. A worker that released a
+/// region, or whose epoch the world store refused, has not failed it.
 ///
 /// Whatever workers report and in whatever order, a region never has two owners and
 /// never goes back to an epoch below one it has had, because storage and peers tell the
@@ -341,9 +359,9 @@ impl Holder {
 ///
 /// - not during the grace period of a new coordinator, and not while any release is
 ///   under way, so that regions move one at a time;
-/// - among the workers that are registered, have a connection and are not leaving: a
-///   worker without a connection could not be told, and nothing is evened out towards
-///   one that leaves;
+/// - among the workers that are registered, have a connection, are not leaving and are
+///   not at fault: a worker without a connection could not be told, and nothing is
+///   evened out towards one that leaves or that may not be able to run the region;
 /// - if the one of them with the most regions has at least two more than the one with
 ///   the fewest, which is the one a region without an owner would go to. Of several
 ///   with the most it is the one that has waited least. A difference of one is left
@@ -351,7 +369,9 @@ impl Holder {
 /// - of the region with the highest number that the former runs, for the latter.
 ///
 /// From then on it is a release like any other, and the next one is begun by a tick
-/// after it has ended.
+/// after it has ended. Who brought the difference about makes no difference: a move
+/// that somebody asked for and that leaves a worker two regions ahead of another is
+/// evened out again.
 #[derive(Debug, Clone)]
 pub struct Coordinator {
     config: CoordinatorConfig,
@@ -384,6 +404,12 @@ impl Coordinator {
     /// the world store. Moving a region would not help while nobody can reach the store;
     /// after this long the store is likely fine and the owner cut off from it.
     pub const STORE_PATIENCE: Duration = Duration::from_secs(30);
+
+    /// For how many leases a worker that failed a region is at fault; see
+    /// [`Coordinator`]. Long enough for a worker that is given a region and fails it
+    /// again to be found out before the fault is forgotten, short enough for a worker
+    /// that had a bad moment to be of use again soon.
+    pub const FAULT_MEMORY: u32 = 6;
 
     /// A coordinator that knows of no worker yet.
     ///
@@ -490,6 +516,7 @@ impl Coordinator {
                     arrival: self.arrivals,
                     connected: true,
                     leaving: false,
+                    failed: None,
                 };
                 self.workers.insert(name.to_owned(), worker);
                 self.arrivals += 1;
@@ -698,7 +725,7 @@ impl Coordinator {
                 }
             },
             None => self
-                .first_target(&from)
+                .first_target(now, &from)
                 .ok_or(MoveRefusal::NoTarget(region))?,
         };
 
@@ -809,7 +836,8 @@ impl Coordinator {
         if grace || !self.releases.is_empty() {
             return;
         }
-        let Some(light) = self.lightest(None) else {
+        // The lightest is one that is not at fault, if there is such a worker at all.
+        let Some(light) = self.lightest(now, None) else {
             return;
         };
         // No release is under way, so these are the regions the workers own.
@@ -819,9 +847,14 @@ impl Coordinator {
             .workers
             .iter()
             .filter(|(_, worker)| worker.connected && !worker.leaving)
+            // A region is not taken from a worker at fault either: the workers that
+            // are in order are evened out among themselves.
+            .filter(|(_, worker)| !self.at_fault(worker, now))
             .max_by_key(|(name, worker)| (load(name), worker.arrival))
-            .map(|(name, _)| name.clone())
-            .expect("there is a lightest worker, so there is one with the most regions");
+            .map(|(name, _)| name.clone());
+        let Some(heavy) = heavy else {
+            return;
+        };
         // With one more, the two would only change places.
         if load(&heavy) < load(&light) + 2 {
             return;
@@ -907,10 +940,29 @@ impl Coordinator {
         loads
     }
 
-    /// The worker that is given the next region: of those that are registered, have a
-    /// connection and are not leaving, the one with the fewest regions, and of several
-    /// such the one that has waited longest. `except` is left out, if it is given.
-    fn lightest(&self, except: Option<&str>) -> Option<String> {
+    /// Whether `worker` failed a region so short a time before `now` that the others
+    /// are given regions before it.
+    fn at_fault(&self, worker: &Worker, now: Instant) -> bool {
+        let memory = self.config.lease * Self::FAULT_MEMORY;
+        worker
+            .failed
+            .is_some_and(|failed| now.saturating_duration_since(failed) < memory)
+    }
+
+    /// Notes that the worker `name` failed a region at `now`.
+    fn note_failure(&mut self, now: Instant, name: &str) {
+        let worker = self
+            .workers
+            .get_mut(name)
+            .expect("the owner of a region is a registered worker");
+        worker.failed = Some(worker.failed.map_or(now, |failed| failed.max(now)));
+    }
+
+    /// The worker that is given the next region as of `now`: of those that are
+    /// registered, have a connection and are not leaving, one that is not at fault if
+    /// there is one; of those the one with the fewest regions, and of several such the
+    /// one that has waited longest. `except` is left out, if it is given.
+    fn lightest(&self, now: Instant, except: Option<&str>) -> Option<String> {
         let loads = self.loads();
         self.workers
             .iter()
@@ -921,15 +973,15 @@ impl Coordinator {
             .filter(|(name, _)| except != Some(name.as_str()))
             .min_by_key(|(name, worker)| {
                 let load = loads.get(name.as_str()).copied().unwrap_or(0);
-                (load, worker.arrival)
+                (self.at_fault(worker, now), load, worker.arrival)
             })
             .map(|(name, _)| name.clone())
     }
 
-    /// The target of a release by `owner` if nobody names one: of the workers that
-    /// could be one, the one [`Coordinator::lightest`] picks.
-    fn first_target(&self, owner: &str) -> Option<String> {
-        self.lightest(Some(owner))
+    /// The target of a release by `owner` as of `now` if nobody names one: of the
+    /// workers that could be one, the one [`Coordinator::lightest`] picks.
+    fn first_target(&self, now: Instant, owner: &str) -> Option<String> {
+        self.lightest(now, Some(owner))
     }
 
     /// Notes that `from`, which owns `region` with `epoch`, is asked at `now` to release
@@ -988,7 +1040,7 @@ impl Coordinator {
         }
         let next = meant
             .filter(|to| self.unfit(to, &owner.worker).is_none())
-            .or_else(|| self.first_target(&owner.worker));
+            .or_else(|| self.first_target(now, &owner.worker));
         match next {
             Some(next) => {
                 self.grant(now, region, &next);
@@ -1047,6 +1099,9 @@ impl Coordinator {
                     epoch = release.epoch,
                     "a region was not released within the lease and is taken from its owner"
                 );
+                // A worker that does not answer may not be able to run a region either.
+                let from = release.from.clone();
+                self.note_failure(now, &from);
             }
             self.hand_over(now, region, false);
         }
@@ -1090,7 +1145,7 @@ impl Coordinator {
             // No target owns any of these, as their owners are leaving. So a target for
             // one of them is a target for all of them, and without one there is none.
             // Each release counts for its target when the next one is looked for.
-            let Some(to) = self.first_target(&from) else {
+            let Some(to) = self.first_target(now, &from) else {
                 break;
             };
             self.note_release(now, region, epoch, &from, &to, None);
@@ -1272,13 +1327,13 @@ impl Coordinator {
                 "a region was taken from its owner"
             );
             // Whatever keeps the worker from vouching may well keep it from running the
-            // region again, so a worker that has not failed gets it first, unless that
-            // one has more regions.
+            // region again, so a worker that has not failed gets it first.
             let worker = self
                 .workers
                 .get_mut(&owner.worker)
                 .expect("the owner of a region is a registered worker");
             worker.arrival = self.arrivals;
+            worker.failed = Some(worker.failed.map_or(now, |failed| failed.max(now)));
             self.arrivals += 1;
         }
     }
@@ -1297,7 +1352,7 @@ impl Coordinator {
             .collect();
         for id in unowned {
             // Who can be given a region does not change as these are given.
-            let Some(name) = self.lightest(None) else {
+            let Some(name) = self.lightest(now, None) else {
                 break;
             };
             // Epochs do not come back once they have run out, so there is nothing to
@@ -2075,6 +2130,238 @@ mod tests {
         assert_eq!(regions_of(&cluster, "c"), [3]);
     }
 
+    /// For how long a worker that failed a region is at fault, in the milliseconds the
+    /// tests give times in.
+    const MEMORY: u64 = Coordinator::FAULT_MEMORY as u64 * LEASE;
+
+    /// When `a` fails its region in [`a_fails_and_b_has_both`].
+    const FAILED: u64 = 2 * LEASE + 1;
+
+    /// A world of two regions, of which `a` and `b` ran one each until `a`, which is
+    /// still there, did not vouch for its own any longer: at `FAILED` it was taken
+    /// from it and given to `b`.
+    fn a_fails_and_b_has_both() -> Cluster {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        assert!(cluster.heartbeat_with(2 * LEASE, "a", &[]));
+        assert!(cluster.heartbeat(2 * LEASE, "b"));
+        // Not back to the worker that failed it, although that one runs nothing now
+        // and the other runs a region.
+        assert_eq!(cluster.tick(FAILED), changes(&["a", "b"], true));
+        assert!(cluster.assignments("a").is_empty());
+        assert_eq!(
+            cluster.assignments("b"),
+            [
+                assignment(0, FIRST_EPOCH + 3, 2),
+                assignment(1, FIRST_EPOCH + 2, 1)
+            ]
+        );
+        cluster
+    }
+
+    #[test]
+    fn a_worker_that_did_not_vouch_is_passed_over_for_six_leases_and_then_counts_again() {
+        let mut cluster = a_fails_and_b_has_both();
+        // Registering again makes no difference: a worker that lost its connection
+        // does that too.
+        assert_eq!(
+            cluster.register(FAILED, "a", "a:25601", &[]),
+            Changes::default()
+        );
+        // Nothing is evened out towards it either, with two regions against none.
+        nothing_happens(&mut cluster, FAILED, 5, &["a", "b"]);
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(FAILED + MEMORY - 1, name));
+        }
+        assert_eq!(cluster.tick(FAILED + MEMORY - 1), Changes::default());
+
+        // Six leases after it failed, it is a worker like any other.
+        assert_eq!(MEMORY, 6 * LEASE);
+        assert_eq!(
+            cluster.tick(FAILED + MEMORY),
+            asks(&[order("b", 1, FIRST_EPOCH + 2)])
+        );
+        assert_eq!(targets(&cluster), [(1, "a")]);
+    }
+
+    #[test]
+    fn a_worker_at_fault_is_given_the_region_back_when_nobody_else_can_take_it() {
+        // The other worker has no connection.
+        let mut cluster = a_runs_and_b_waits();
+        assert_eq!(cluster.disconnected(LEASE, "b"), Changes::default());
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat_with(2 * LEASE, name, &[]));
+        }
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a"], true));
+        assert_eq!(cluster.assignments("a"), [assignment(0, NEXT_OWNER, 1)]);
+
+        // Both are at fault, one after the other: the region goes to the one of them
+        // that has waited longer since.
+        let mut cluster = a_runs_and_b_waits();
+        let mut now = LEASE;
+        for (lost, next) in [("a", "b"), ("b", "a"), ("a", "b")] {
+            now += LEASE + 1;
+            for name in ["a", "b"] {
+                assert!(cluster.heartbeat_with(now, name, &[]));
+            }
+            assert_eq!(cluster.tick(now), changes(&["a", "b"], true), "{lost}");
+            assert_eq!(cluster.assignments(next).len(), 1, "{next}");
+        }
+    }
+
+    #[test]
+    fn a_worker_that_did_not_answer_a_release_is_passed_over_as_well() {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        cluster.register(LEASE, "c", "c:25601", &[]);
+        cluster.move_region(LEASE + 1, 0, Some("c"), 1).unwrap();
+        for name in ["a", "b", "c"] {
+            assert!(cluster.heartbeat(2 * LEASE + 1, name));
+        }
+        // The owner is there and vouches, but does not answer.
+        let expected = Changes {
+            moves: vec![outcome(1, 0, Some(("c", FIRST_EPOCH + 3)), false)],
+            ..changes(&["a", "c"], true)
+        };
+        assert_eq!(cluster.tick(2 * LEASE + 2), expected);
+
+        // The worker that was given its region dies. The region goes to the worker
+        // that runs one, not to the one that runs nothing and has waited longer.
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(3 * LEASE + 2, name));
+        }
+        assert_eq!(cluster.tick(3 * LEASE + 2), changes(&["b", "c"], true));
+        assert_eq!(regions_of(&cluster, "b"), [0, 1]);
+        assert!(cluster.assignments("a").is_empty());
+
+        // A worker that releases when it is asked has failed nothing: it is given
+        // the next region that loses its owner.
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        cluster.register(LEASE, "c", "c:25601", &[]);
+        cluster.move_region(LEASE + 1, 0, Some("c"), 1).unwrap();
+        cluster.released(LEASE + 2, "a", 0, FIRST_EPOCH + 1);
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(2 * LEASE + 1, name));
+        }
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a", "c"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0]);
+    }
+
+    #[test]
+    fn a_worker_whose_epoch_the_store_refused_is_not_at_fault() {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(LEASE, name));
+        }
+        // What the store has seen is news to the coordinator, not a failure of the
+        // worker: it is given the region again, having fewer than the other.
+        assert_eq!(
+            cluster.epoch_refused(LEASE + 1, "a", 0, FIRST_EPOCH + 50),
+            changes(&["a"], true)
+        );
+        assert_eq!(
+            cluster.assignments("a"),
+            [assignment(0, FIRST_EPOCH + 51, 2)]
+        );
+    }
+
+    #[test]
+    fn workers_that_are_in_order_are_evened_out_while_another_is_at_fault() {
+        let mut cluster = Cluster::new(&[-8, 8]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 2]);
+        // One of them stops vouching, and the other has all three regions.
+        assert!(cluster.heartbeat_with(2 * LEASE, "a", &[]));
+        assert!(cluster.heartbeat(2 * LEASE, "b"));
+        assert_eq!(cluster.tick(FAILED), changes(&["a", "b"], true));
+        assert_eq!(regions_of(&cluster, "b"), [0, 1, 2]);
+        let held = cluster.assignments("b");
+
+        // A third worker comes. A region is moved to it, and not to the one at
+        // fault, which has waited longer and runs as little.
+        cluster.register(FAILED, "c", "c:25601", &[]);
+        assert_eq!(
+            cluster.tick(FAILED + 1),
+            asks(&[order("b", 2, held[2].epoch)])
+        );
+        assert_eq!(targets(&cluster), [(2, "c")]);
+        assert_eq!(
+            cluster.released(FAILED + 2, "b", 2, held[2].epoch),
+            changes(&["b", "c"], true)
+        );
+        // Two and one among those that are in order: the third does not count.
+        nothing_happens(&mut cluster, FAILED + 2, 5, &["a", "b", "c"]);
+        for name in ["a", "b", "c"] {
+            assert!(cluster.heartbeat(FAILED + MEMORY - 1, name));
+        }
+        assert_eq!(cluster.tick(FAILED + MEMORY - 1), Changes::default());
+        // Until its fault is forgotten.
+        assert_eq!(
+            cluster.tick(FAILED + MEMORY),
+            asks(&[order("b", 1, held[1].epoch)])
+        );
+        assert_eq!(targets(&cluster), [(1, "a")]);
+    }
+
+    #[test]
+    fn nothing_is_evened_out_from_a_worker_at_fault() {
+        let mut cluster = Cluster::new(&[-8, 0, 8]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        // It vouches for three of its four regions. The fourth is taken from it
+        // and given back, as nobody else is there.
+        let three: Vec<(RegionId, Vouch)> =
+            Vec::from_iter((0..3).map(|region| (RegionId(region), Vouch::Committed)));
+        assert!(cluster.heartbeat_with(2 * LEASE, "a", &three));
+        assert_eq!(cluster.tick(FAILED), changes(&["a"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 1, 2, 3]);
+        let last = cluster.assignments("a")[3].epoch;
+
+        // A worker that comes now is not handed any of them as long as the fault is
+        // remembered: the workers at fault are left out of evening out altogether.
+        cluster.register(FAILED, "b", "b:25601", &[]);
+        nothing_happens(&mut cluster, FAILED, 5, &["a", "b"]);
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(FAILED + MEMORY - 1, name));
+        }
+        assert_eq!(cluster.tick(FAILED + MEMORY - 1), Changes::default());
+        assert_eq!(cluster.tick(FAILED + MEMORY), asks(&[order("a", 3, last)]));
+    }
+
+    #[test]
+    fn a_move_by_name_to_a_worker_at_fault_is_done_and_one_by_choice_passes_it_over() {
+        let mut cluster = a_fails_and_b_has_both();
+        cluster.register(FAILED, "c", "c:25601", &[]);
+        // By choice the region goes to the worker that has not failed one, although
+        // the other has waited longer.
+        let (moving, _) = cluster.move_region(FAILED, 1, None, 7).unwrap();
+        assert_eq!(moving, begun("b", "c"));
+        // Whoever names the worker at fault knows better.
+        let (moving, _) = cluster.move_region(FAILED, 0, Some("a"), 8).unwrap();
+        assert_eq!(moving, begun("b", "a"));
+        let expected = Changes {
+            moves: vec![outcome(8, 0, Some(("a", FIRST_EPOCH + 4)), true)],
+            ..changes(&["a", "b"], true)
+        };
+        assert_eq!(
+            cluster.released(FAILED + 1, "b", 0, FIRST_EPOCH + 3),
+            expected
+        );
+        assert_eq!(regions_of(&cluster, "a"), [0]);
+    }
+
     #[test]
     fn nothing_is_evened_out_during_the_grace_period() {
         let mut cluster = Cluster::new(&[0]);
@@ -2510,16 +2797,16 @@ mod tests {
         ];
         assert!(cluster.heartbeat_with(2 * LEASE, "a", &[]));
         assert!(cluster.heartbeat_with(2 * LEASE, "b", &both));
-        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a"], true));
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a", "b"], true));
+        // It goes to the worker that has not failed it, which keeps its own.
         assert_eq!(
             cluster.assignments("b"),
-            [assignment(1, FIRST_EPOCH + 2, 1)]
+            [
+                assignment(0, FIRST_EPOCH + 3, 2),
+                assignment(1, FIRST_EPOCH + 2, 1)
+            ]
         );
-        // And it is given to `a` again, which waits alone.
-        assert_eq!(
-            cluster.assignments("a"),
-            [assignment(0, FIRST_EPOCH + 3, 2)]
-        );
+        assert!(cluster.assignments("a").is_empty());
     }
 
     #[test]
@@ -4198,8 +4485,9 @@ mod tests {
     /// random. Regions are moved, workers release them when asked, unasked or not at
     /// all, say that they leave and lose their connections. [`Cluster`] checks every
     /// call; this adds what only shows over time, that whoever is given a region or
-    /// picked as a target is the worker with the fewest regions then, and that ticks
-    /// even regions out, one release at a time.
+    /// picked as a target is the worker with the fewest regions then, that ticks even
+    /// regions out, one release at a time, and that a worker that failed a region is
+    /// passed over for both as long as that is remembered.
     #[test]
     fn epochs_only_rise_and_nothing_is_shared_whatever_workers_do() {
         const WORKERS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
@@ -4208,7 +4496,9 @@ mod tests {
         let (mut moves, mut unmoved, mut let_go, mut overdue) = (0, 0, 0, 0);
         let (mut left, mut vanished, mut asked_to_leave, mut cut_off) = (0, 0, 0, 0);
         let (mut compared, mut meant, mut shared, mut handed_on) = (0, 0, 0, 0);
-        let (mut evened, mut even) = (0, 0);
+        let (mut evened, mut even, mut faulted, mut passed_over) = (0, 0, 0, 0);
+        // For how long a worker that failed a region is at fault.
+        let memory = u64::from(Coordinator::FAULT_MEMORY) * LEASE;
 
         for seed in 1..=24_u64 {
             let mut random = Generator(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
@@ -4233,6 +4523,10 @@ mod tests {
             let mut used_blocks: BTreeSet<i32> = BTreeSet::new();
             let mut tenures: BTreeMap<RegionId, (String, u64)> = BTreeMap::new();
             let mut movers: BTreeSet<u64> = BTreeSet::new();
+            // When each worker that the present coordinator knows last failed a
+            // region: when one was taken from it that it neither released nor was
+            // refused by the store, while it was still registered afterwards.
+            let mut faults: BTreeMap<String, u64> = BTreeMap::new();
 
             for step in 0..4000_u64 {
                 now += random.below(LEASE / 8);
@@ -4247,6 +4541,13 @@ mod tests {
                     .map(|(name, _)| name.clone())
                     .collect();
                 let fit_before = fit_workers(&cluster.coordinator);
+                // The workers that are at fault as of this step, going by what was
+                // known before it.
+                let at_fault = |faults: &BTreeMap<String, u64>| -> BTreeSet<String> {
+                    let recent = faults.iter().filter(|(_, failed)| now < **failed + memory);
+                    recent.map(|(name, _)| name.clone()).collect()
+                };
+                let faulty_before = at_fault(&faults);
                 cluster.last = None;
                 // What the worker reports to hold, if this step is a registration.
                 let mut reported: Option<Vec<Assignment>> = None;
@@ -4254,6 +4555,11 @@ mod tests {
                 let mut let_go_of: Option<RegionId> = None;
                 // Whether this step is a tick.
                 let mut ticked = false;
+                // Whether this step is a call that ends like a tick, in which regions
+                // are taken from workers that failed them, and the worker and region
+                // of which that is not true: what the store refused it.
+                let mut settled = false;
+                let mut excused: Option<(&str, RegionId)> = None;
                 // Whether what is assigned in this step has to respect the grace
                 // period of a new coordinator.
                 let mut graceful = true;
@@ -4328,6 +4634,7 @@ mod tests {
                 } else if roll < 88 {
                     let changes = cluster.tick(now);
                     ticked = true;
+                    settled = true;
                     for worker in WORKERS {
                         let had = before.assignments(worker);
                         let has = cluster.assignments(worker);
@@ -4367,8 +4674,10 @@ mod tests {
                         !has.iter()
                             .any(|held| held.region == region && held.epoch < seen)
                     );
+                    settled = true;
                     if owned {
                         dropped += 1;
+                        excused = Some((name, region));
                     }
                     // The worker has dropped the region.
                     if let Some(held) = running.get_mut(name) {
@@ -4392,6 +4701,7 @@ mod tests {
                         used_blocks.clear();
                         tenures.clear();
                         movers.clear();
+                        faults.clear();
                         restarts += 1;
                         continue;
                     }
@@ -4409,10 +4719,14 @@ mod tests {
                             // with as many waited longer.
                             assert!(fit_before.contains_key(&begun.to), "{begun:?}");
                             assert_ne!(begun.from, begun.to);
+                            // One that failed a region of late comes after all
+                            // those that did not.
                             let others = fit_before.iter();
                             let chosen = others
                                 .filter(|(other, _)| **other != begun.from)
-                                .min_by_key(|(_, load)| **load)
+                                .min_by_key(|(other, load)| {
+                                    (faulty_before.contains(*other), **load)
+                                })
                                 .map(|(other, _)| other.as_str());
                             match to {
                                 Some(to) => assert_eq!(to, begun.to),
@@ -4482,6 +4796,7 @@ mod tests {
                     let owned = !before.assignments(name).is_empty();
                     let known = cluster.coordinator.workers.contains_key(name);
                     cluster.disconnected(now, name);
+                    settled = true;
                     if leaving_before.contains(name) {
                         // It is gone, with what it owned.
                         assert!(!cluster.coordinator.workers.contains_key(name));
@@ -4494,6 +4809,36 @@ mod tests {
 
                 let said = cluster.last.take().unwrap_or_default();
                 let after = cluster.view();
+
+                // Who failed a region in this step. The coordinator remembers that
+                // of a worker for as long as it knows the worker, and nothing else.
+                if settled {
+                    for worker in WORKERS {
+                        let has = after.assignments(worker);
+                        let gone = |held: &&Assignment| {
+                            let same = |has: &Assignment| {
+                                (has.region, has.epoch) == (held.region, held.epoch)
+                            };
+                            excused != Some((worker, held.region)) && !has.iter().any(same)
+                        };
+                        if before.assignments(worker).iter().any(|held| gone(&held)) {
+                            faults.insert(worker.to_owned(), now);
+                            faulted += 1;
+                        }
+                    }
+                }
+                faults.retain(|name, _| cluster.coordinator.workers.contains_key(name));
+                for (name, worker) in &cluster.coordinator.workers {
+                    let failed = faults.get(name).map(|failed| cluster.at(*failed));
+                    assert_eq!(worker.failed, failed, "{name}");
+                }
+                // A worker that came to be at fault in this step was so for some of
+                // what the step did and not for the rest.
+                let faulty_after = at_fault(&faults);
+                let faulty = |name: &str| {
+                    let before = faulty_before.contains(name);
+                    (before == faulty_after.contains(name)).then_some(before)
+                };
 
                 // What workers were given in this step, as opposed to what they said
                 // they held, in the order it was issued: it is above every epoch
@@ -4528,7 +4873,9 @@ mod tests {
                     );
                 }
                 // Whoever was given a region in this step had the fewest regions of the
-                // workers that could be given it at that moment. What the others had
+                // workers that could be given it at that moment, and was at fault only
+                // if all of them were: a worker that is not at fault comes before one
+                // that is, whatever the two run. What the others had
                 // then is known for sure only if they lost nothing in this step and no
                 // release that was meant for them ended in it, so each of them is
                 // counted between the least and the most it can have had. A region
@@ -4588,6 +4935,18 @@ mod tests {
                         if other == worker || handed_over && old == Some(other.as_str()) {
                             continue;
                         }
+                        match (faulty(worker), faulty(other)) {
+                            (Some(mine), Some(theirs)) if mine == theirs => {}
+                            (Some(false), Some(true)) => {
+                                passed_over += usize::from(least(other) < had);
+                                continue;
+                            }
+                            (Some(true), Some(false)) => panic!(
+                                "{worker} is at fault and was given {assignment:?}, \
+                                 although {other} is not"
+                            ),
+                            _ => continue,
+                        }
                         assert!(
                             had <= most(other),
                             "{worker} had {had} regions and was given {assignment:?}, \
@@ -4624,21 +4983,26 @@ mod tests {
                 // A release to even out is begun by a tick alone, when the coordinator
                 // is no longer new and no other release is under way. It takes the
                 // highest region of a worker with the most regions among those that
-                // can be given one, the one of them that has waited least, for the
-                // one that would be given the next region, which has fewer by two
-                // regions or more.
+                // can be given one and are not at fault, the one of them that has
+                // waited least, for the one of them with the fewest, which has fewer
+                // by two regions or more. All faults of the step are known by then.
                 let owned = |name: &str| after.assignments(name).len();
+                let sound: Vec<(&String, u64)> = fit
+                    .iter()
+                    .filter(|(name, _)| !faulty_after.contains(*name))
+                    .map(|(name, (_, arrival))| (name, *arrival))
+                    .collect();
                 for (region, release) in &evening {
                     assert!(ticked && now >= grace_ends, "{release:?}");
                     assert_eq!(coordinator.releases.len(), 1, "{release:?}");
-                    let heavy = fit
+                    let heavy = sound
                         .iter()
-                        .max_by_key(|(name, (_, arrival))| (owned(name), *arrival))
-                        .map(|(name, _)| name);
-                    let light = fit
+                        .max_by_key(|(name, arrival)| (owned(name), *arrival))
+                        .map(|(name, _)| *name);
+                    let light = sound
                         .iter()
-                        .min_by_key(|(name, (_, arrival))| (owned(name), *arrival))
-                        .map(|(name, _)| name);
+                        .min_by_key(|(name, arrival)| (owned(name), *arrival))
+                        .map(|(name, _)| *name);
                     assert_eq!(heavy, Some(&release.from), "{release:?}");
                     assert_eq!(light, Some(&release.to), "{release:?}");
                     assert!(owned(&release.from) >= owned(&release.to) + 2);
@@ -4649,9 +5013,9 @@ mod tests {
                 // And no tick leaves two of those workers further apart than by one
                 // region without having begun to do something about it.
                 if ticked && now >= grace_ends && coordinator.releases.is_empty() {
-                    let most = fit.keys().map(|name| owned(name)).max();
-                    let fewest = fit.keys().map(|name| owned(name)).min();
-                    assert!(most <= fewest.map(|fewest| fewest + 1), "{fit:?}");
+                    let most = sound.iter().map(|(name, _)| owned(name)).max();
+                    let fewest = sound.iter().map(|(name, _)| owned(name)).min();
+                    assert!(most <= fewest.map(|fewest| fewest + 1), "{sound:?}");
                     even += 1;
                 }
 
@@ -4666,7 +5030,10 @@ mod tests {
                     let chosen = fit
                         .iter()
                         .filter(|(other, _)| **other != release.from)
-                        .min_by_key(|(other, (load, arrival))| (load - later(other), *arrival))
+                        .min_by_key(|(other, (load, arrival))| {
+                            let at_fault = faulty_after.contains(*other);
+                            (at_fault, load - later(other), *arrival)
+                        })
                         .map(|(other, _)| other);
                     assert_eq!(chosen, Some(&release.to), "{release:?}");
                     handed_on += 1;
@@ -4734,6 +5101,8 @@ mod tests {
             handed_on,
             evened,
             even,
+            faulted,
+            passed_over,
         ];
         assert!(counts.iter().all(|count| *count >= 100), "{counts:?}");
     }
