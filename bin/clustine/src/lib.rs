@@ -21,10 +21,10 @@ pub use clustine_edge::EdgeConfig;
 use clustine_edge::{Edge, EdgeIdentity, RegionLink, Routing};
 use clustine_region::Layout;
 use clustine_rpc::{RegionHello, link};
+use clustine_sim::RegionConfig;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
-use clustine_sim::{Region, RegionConfig};
 use clustine_worker::{RegionRunner, Worker};
-use clustine_world::{ChunkGenerator, EntityIds, Vec3};
+use clustine_world::{ChunkGenerator, Vec3};
 use clustine_worldgen::FlatGenerator;
 use clustine_worldstore::Store;
 use tokio::task::JoinHandle;
@@ -159,7 +159,8 @@ impl Server {
                 epoch: 1,
                 layout: layout.fingerprint(),
             };
-            // What the region is restored with is not used yet, but for its tick.
+            // The region carries on with what the store has of it, which for a world kept
+            // on disk is where the server before this one left it.
             let (store, restored) = store
                 .open_region(hello)
                 .with_context(|| format!("opening region {region}"))?;
@@ -173,18 +174,16 @@ impl Server {
                 area,
                 starting_hotbar: starting_hotbar(),
             };
-            let entity_ids = EntityIds::block(region.0).context("too many regions")?;
-            let state = Region::new(config, entity_ids);
+            let runner = RegionRunner::restore(config, store, restored)
+                .with_context(|| format!("restoring region {region}"))?
+                .with_checkpoint_interval(checkpoint_interval);
+            runner.links().attach(worker_end);
             links.push(RegionLink {
                 // Nobody else ever runs a region of this process's world.
                 epoch: 1,
                 end: edge_end,
             });
-            runners.push(
-                RegionRunner::new(state, worker_end, store)
-                    .with_checkpoint_interval(checkpoint_interval)
-                    .continuing_from(restored.tick()),
-            );
+            runners.push(runner);
         }
 
         let edge_config = EdgeConfig {
@@ -231,7 +230,12 @@ impl Server {
         let _ = self.edge.await;
         // Waits for the current ticks and for the world to be stored.
         let workers = self.workers;
-        let _ =
-            tokio::task::spawn_blocking(move || workers.into_iter().for_each(Worker::stop)).await;
+        let stop = move || {
+            for worker in workers {
+                // A region that lost the store has stopped already and said so.
+                worker.stop();
+            }
+        };
+        let _ = tokio::task::spawn_blocking(stop).await;
     }
 }

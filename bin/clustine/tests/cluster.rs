@@ -100,17 +100,7 @@ impl Cluster {
             );
             self.workers[number].1 = Some(worker);
         }
-        let store = self.spawn(
-            "worldstore",
-            &[
-                "worldstore",
-                "--listen",
-                &self.store.0,
-                "--world",
-                self.world.to_str().unwrap(),
-            ],
-        );
-        self.store.1 = Some(store);
+        self.start_store();
         let coordinator = self.spawn(
             "coordinator",
             &[
@@ -134,6 +124,35 @@ impl Cluster {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("the cluster did not come up:\n{}", self.all_logs());
+    }
+
+    /// Starts the world store on the cluster's world.
+    fn start_store(&mut self) {
+        let store = self.spawn(
+            "worldstore",
+            &[
+                "worldstore",
+                "--listen",
+                &self.store.0,
+                "--world",
+                self.world.to_str().unwrap(),
+            ],
+        );
+        self.store.1 = Some(store);
+    }
+
+    /// Waits until the process `name` has logged `message` at least `times` times.
+    async fn wait_for_log(&self, name: &str, message: &str, times: usize) {
+        for _ in 0..600 {
+            if self.log(name).matches(message).count() >= times {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "{name} did not log `{message}` {times} times:\n{}",
+            self.all_logs()
+        );
     }
 
     fn processes(&mut self) -> Vec<(&'static str, &mut Option<Child>)> {
@@ -218,6 +237,57 @@ fn assert_built_on_both_sides(bot: &Bot) {
     assert_eq!(bot.block_at(46, -61, 1).unwrap(), AIR);
     assert_eq!(bot.block_at(48, -61, 3).unwrap(), AIR);
     assert_eq!(bot.block_at(50, -60, 1).unwrap(), STONE);
+}
+
+/// The world store dies and is started again. The workers keep their regions: each
+/// opens its region again, restores it from what the store has and lets edges in once
+/// more. What players were shown before is there, because nothing is shown that the
+/// store does not have.
+#[tokio::test(flavor = "multi_thread")]
+async fn workers_restore_their_regions_when_the_world_store_is_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::new(directory.path()).await;
+    cluster.start().await;
+    let address = cluster.edge.0.clone();
+    let workers = ["worker-0", "worker-1"];
+
+    let mut builder = join(&address, "Builder").await;
+    build_on_both_sides(&mut builder).await;
+    let mut store = cluster.store.1.take().unwrap();
+    store.kill().await.unwrap();
+    for worker in workers {
+        cluster
+            .wait_for_log(worker, "lost the world store; opening the region again", 1)
+            .await;
+    }
+    drop(builder);
+
+    cluster.start_store();
+    for worker in workers {
+        cluster.wait_for_log(worker, "running a region", 2).await;
+    }
+    // The edge starts over once it reaches every region again.
+    let mut visitor = None;
+    for _ in 0..600 {
+        if let Ok(bot) = Bot::join(&address, "Visitor").await {
+            visitor = Some(bot);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut visitor =
+        visitor.unwrap_or_else(|| panic!("nobody could join again:\n{}", cluster.all_logs()));
+    let count = view_area((0, 0), VIEW_DISTANCE).len();
+    visitor.wait_for_chunks(count, PATIENCE).await.unwrap();
+    assert_built_on_both_sides(&visitor);
+    drop(visitor);
+
+    // The workers are the processes they were, and stop cleanly with their regions.
+    for (name, process) in cluster.processes() {
+        let ended = process.as_mut().unwrap().try_wait().unwrap();
+        assert_eq!(ended, None, "{name} ended");
+    }
+    cluster.terminate().await;
 }
 
 /// Bots walk back and forth between two worker processes and build on both sides. What

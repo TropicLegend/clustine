@@ -32,8 +32,8 @@ use clustine_region::{Layout, RegionId};
 use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, WorkerToEdge};
 use clustine_sim::api::{
-    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput, PlayerJoin,
-    PlayerTransfer, RegionEvent,
+    Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
+    PlayerJoin, PlayerTransfer, RegionEvent,
 };
 use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use tokio::sync::mpsc;
@@ -203,6 +203,8 @@ pub(crate) struct Fanout {
     regions: Vec<link::Sender<EdgeMessage>>,
     /// The number of the last numbered message sent to each region, by region id.
     numbered: Vec<u64>,
+    /// The number of the last outbox entry seen from each region, by region id.
+    seen: Vec<u64>,
     /// The epoch of the owner each region's link goes to, by region id. What a region
     /// sends is tagged with the epoch of the link it came over, and dropped if that is
     /// not the region's link any more.
@@ -246,6 +248,7 @@ impl Fanout {
             spawn_region,
             identity: routing.identity,
             numbered: vec![0; regions.len()],
+            seen: vec![0; regions.len()],
             regions,
             epochs,
             receivers,
@@ -455,37 +458,42 @@ impl Fanout {
                 player,
                 event: PlayerEvent::Acknowledged { sequence },
             } => self.handled(player, sequence).await,
+            WorkerToEdge::Outbox { number, entry } => {
+                // A region sends an entry again until it is confirmed, and each is
+                // handled once. Their numbers ascend, so the highest seen says which
+                // are new.
+                let Some(seen) = self.seen.get_mut(from.0 as usize) else {
+                    return true;
+                };
+                if number <= *seen {
+                    return true;
+                }
+                *seen = number;
+                return self.handle_entry(from, entry).await
+                    && self
+                        .send_to_region(from, EdgeToWorker::Confirm { number })
+                        .await;
+            }
+            // What a region said before it kept an outbox, handled as the entries that
+            // have replaced it.
             WorkerToEdge::Remote(action) => {
-                // The region that has the block the next step is about takes it.
-                let to = self.layout.region_of(action.step.concerns().chunk());
-                let (player, sequence) = (action.player, action.sequence);
-                if let Some(view) = self.players.get_mut(&player) {
-                    view.under_way.insert(sequence);
-                }
-                if to != from {
-                    return self.send_to_region(to, EdgeToWorker::Remote(action)).await;
-                }
-                // The region passed on what, by this edge's layout, is its own to do.
-                // Sending it back would have the two go round in circles.
-                error!(%from, "a region passed on an action about one of its own blocks");
-                self.arrived(player, sequence).await;
+                return self.handle_entry(from, Durable::Remote(action)).await;
             }
             WorkerToEdge::RemoteDone { player, sequence } => {
-                self.arrived(player, sequence).await;
+                let entry = Durable::RemoteDone { player, sequence };
+                return self.handle_entry(from, entry).await;
             }
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Refused,
-            } => {
-                if let Some(view) = self.players.get(&player) {
-                    refuse(&view.outbound, "The world cannot take another player.");
-                }
-                self.remove_player(player).await;
-            }
+            } => return self.handle_entry(from, Durable::Refused { player }).await,
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Departed(transfer),
-            } => return self.hand_over(player, from, transfer).await,
+            } => {
+                let entry = Durable::Departed { player, transfer };
+                return self.handle_entry(from, entry).await;
+            }
             WorkerToEdge::ChunkSnapshot {
                 position,
                 chunk,
@@ -502,16 +510,50 @@ impl Fanout {
                     self.handle_event(event).await;
                 }
             }
-            // No region resumes with this edge or keeps an outbox yet; see
+            // This edge does not resume with a region yet; see
             // docs/adr/0008-durable-regions-and-resuming.md.
             message @ (WorkerToEdge::Welcome(_)
-            | WorkerToEdge::Outbox { .. }
             | WorkerToEdge::Presence { .. }
             | WorkerToEdge::Progress { .. }) => {
                 debug!(%from, ?message, "ignored what a region said about resuming");
             }
         }
         true
+    }
+
+    /// Handles an entry of the outbox that the region `from` keeps for this edge.
+    /// Returns false if a region can no longer be reached.
+    async fn handle_entry(&mut self, from: RegionId, entry: Durable) -> bool {
+        match entry {
+            Durable::Remote(action) => {
+                // The region that has the block the next step is about takes it.
+                let to = self.layout.region_of(action.step.concerns().chunk());
+                let (player, sequence) = (action.player, action.sequence);
+                if let Some(view) = self.players.get_mut(&player) {
+                    view.under_way.insert(sequence);
+                }
+                if to != from {
+                    return self.send_to_region(to, EdgeToWorker::Remote(action)).await;
+                }
+                // The region passed on what, by this edge's layout, is its own to do.
+                // Sending it back would have the two go round in circles.
+                error!(%from, "a region passed on an action about one of its own blocks");
+                self.arrived(player, sequence).await;
+                true
+            }
+            Durable::RemoteDone { player, sequence } => {
+                self.arrived(player, sequence).await;
+                true
+            }
+            Durable::Refused { player } => {
+                if let Some(view) = self.players.get(&player) {
+                    refuse(&view.outbound, "The world cannot take another player.");
+                }
+                self.remove_player(player).await;
+                true
+            }
+            Durable::Departed { player, transfer } => self.hand_over(player, from, transfer).await,
+        }
     }
 
     /// Notes that a region has handled everything `player` did to blocks up to

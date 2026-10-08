@@ -176,6 +176,12 @@ impl Region {
         Some((player.entity_id, player.pose))
     }
 
+    /// Everything the region knows of `player`, if they are in the region: among it the
+    /// edge they belong to, which is whom the region tells what concerns them.
+    pub fn player_state(&self, player: PlayerId) -> Option<PlayerState> {
+        self.players.get(&player).map(Player::to_state)
+    }
+
     /// What the region keeps for `edge`, if it knows the edge.
     pub fn edge(&self, edge: EdgeId) -> Option<&EdgeState> {
         self.edges.get(&edge)

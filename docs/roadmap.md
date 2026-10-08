@@ -129,7 +129,7 @@ from disk when the store is back.
 | A0 | Numbers and ids on the wire at both ends, snapshots taken at tick time, epoch tags at the edge; no change in behaviour | All existing tests | done |
 | A1 | Store and format: commit lane and `Committed`, state records and state file, restored state on opening, epochs and id blocks on disk, no folding at start | Store tests: kill at every point of a commit, a checkpoint and a recovery; latency of commits while chunks are saved | done; commits are shown not to wait for saves, not timed on a real disk |
 | A2 | Sim: export and restore of state, per-tick state changes, outbox, inbox numbers | Unit tests; restore then the kept messages equals the uninterrupted run up to the commit followed by the rest in one tick | done, with tests from the ADR by someone who had not seen the code |
-| A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | to do |
+| A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | done; tests from the ADR by someone else to come |
 | A4 | Edge: name and start count, outbox per region, kept inputs per player, resume and reconciliation, living through the loss of a region | E2E in one process: a region is torn down without warning and rebuilt while bots walk, build, hand over and watch | to do |
 | A5 | Coordinator: lease 5 s, per-region vouching, table changes that edges live through | State machine and service tests | done (the worker reports real vouches in A3; edges living through a change of owner is A4) |
 | A6 | Chaos tests: workers and the world store killed at random under bots that keep a ledger of everything acknowledged; on kind by deleting pods; in CI | No disconnect, ledger equals world, one entity per player throughout, repeatedly | to do |
@@ -237,29 +237,31 @@ with them so far:
   the next tick. When an edge says hello again with a higher start, the old start's last
   message number can become the edge's `applied`; A3 drops the old start's messages.
 
-A0, A1, A2 and A5 are on `main`, with the tests for A2 written from ADR-0008 alone
-(`crates/clustine-sim/tests/specification.rs`). What a player notices has not changed
-yet: a worker that dies still disconnects its players.
+A0, A1, A2, A3 and A5 are on `main`, with the tests for A2 written from ADR-0008 alone
+(`crates/clustine-sim/tests/specification.rs`). A worker restores its region from the
+store (`RegionRunner::restore`), holds what a tick produced until the tick is committed,
+answers a hello with the resume and reopens its region when it loses the store. What a
+player notices has not changed yet: the edge still gives up when a region's link ends.
 
 Next, in this order:
 
-1. A3 (`services/worker`, and `bin/clustine` where it starts workers): restore the
-   region from `Restored` (`Region::restore`, folding the deltas with
-   `RegionState::apply`) instead of `continuing_from`; send `Commit` with the postcard
-   of each tick's `StateDelta`, and `Checkpoint` with the whole state; hold each tick's
-   `Outgoing` until its `Committed`, at most eight ticks ahead; the resume of section 4
-   (refusing a lower start, closing other links of the edge, dropping the old start's
-   waiting messages, `Welcome`, outbox entries above `seen`, presence answers, holding
-   the line until the hello's snapshots are out); numbered messages deduplicated against
-   what was received; `Progress`; `Gone` after 30 seconds; restoring after losing the
-   store, and `WorkerClient::vouch` and `epoch_refused` (vouch `Committed` for a region
-   that ticked within the last second); and the entity id block from the store, after
-   which `Assignment::entity_ids` goes. It can
-   be delegated with a brief like those of A1 and A2, which said: own crates, a worktree,
-   the interface, the tests expected, no commits to `main`, no pushes or downloads.
-2. A4 (`services/edge`): kept messages and inputs, resuming, reconciliation, living
-   through the loss of a region. Ordering mistakes hide here: not delegated.
-3. A6, the chaos tests; then A7, the docs; then the stop for the owner's check.
+1. Tests for A3 written from section 4 of ADR-0008 by someone who has not seen the
+   worker's code.
+2. A4 (`services/edge`, and the edge's side of `bin/clustine`): kept messages and inputs,
+   resuming, reconciliation, living through the loss of a region. Ordering mistakes hide
+   here: not delegated. Its core is on the local branch `a4-edge` of the machine it was
+   begun on (the fan-out keeps a region's players and resumes; eleven tests with
+   scripted regions); what is left is to rebase it onto A3, have the edge track which
+   region introduced an entity, fit the binary to it (links that can be replaced while
+   the edge runs, in the single process and in the cluster; an edge that is superseded
+   exits), an end-to-end test that tears a region down and rebuilds it under bots, and
+   the edge as a StatefulSet.
+3. A6, the chaos tests; then A7, the docs; then what to try with real clients is
+   written down and phase B begins.
+
+Not covered by tests in A3, for A6 to cover: the worker's path for an epoch the store
+refuses, registering again with the coordinator while a region runs, and `Superseded`
+over a link between processes.
 
 Notes for what follows A0, which the ADR does not spell out:
 
@@ -295,8 +297,8 @@ review first:
   leaves one coordinator with nothing on disk and one edge whose death takes its players
   with it (see the limits below); regions that survive their worker and edges that
   survive a region are what this builds on.
-- **Terrain generation**, reusing what SteelMC or Pumpkin have if the licence of
-  ADR-0002 allows it; `docs/library-evaluation.md` has what was found about both.
+- **Terrain generation**, reusing what SteelMC or Pumpkin have, which ADR-0002 chose
+  the AGPL for; `docs/library-evaluation.md` has what was found about both.
 
 The owner also asked for the work to go on without waiting for them: at each stop of M3
 what to try with real clients is written down here, and the next phase begins.

@@ -183,6 +183,17 @@ fn a_new_region_starts_from_the_state_of_its_entity_ids() {
 }
 
 #[test]
+fn a_players_state_is_what_the_whole_state_has_of_them() {
+    let region = populated();
+    let state = region.state();
+    assert!(!state.players.is_empty());
+    for (id, expected) in &state.players {
+        assert_eq!(region.player_state(*id).as_ref(), Some(expected));
+    }
+    assert_eq!(region.player_state(player(99)), None);
+}
+
+#[test]
 fn an_unknown_edge_is_noted_with_nothing_applied_or_sent() {
     let mut region = Region::new(config(), ids());
     let output = tick(

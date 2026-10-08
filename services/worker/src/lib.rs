@@ -1,16 +1,23 @@
 //! Worker service: ticks the regions it owns.
 //!
 //! A [`RegionRunner`] connects a region to the outside: it turns the messages of the
-//! edges and the answers of the world store into tick inputs, runs the tick, and
-//! publishes what resulted. The simulation itself never waits for anything.
+//! edges and the answers of the world store into tick inputs, runs the tick, hands what
+//! changed to the store and, once the store has it on disk, publishes what resulted. The
+//! simulation itself never waits for anything.
 //!
-//! Edges come and go. Each has a link of its own, with its own subscriptions and its own
-//! players, and a link that ends or does not keep up is dropped without the region
-//! missing a tick.
+//! A region is restored from what the world store has of it, and nothing a tick produced
+//! is shown to anyone before the store has confirmed that tick. So whatever an edge was
+//! told can be told again by another runner that carries on with the region. See
+//! `docs/adr/0008-durable-regions-and-resuming.md`, section 4.
+//!
+//! Edges come and go. Each has one link at a time, which begins with a hello. Players
+//! belong to edges, not to links: a link that ends or does not keep up is dropped without
+//! the region missing a tick, and its edge's players stay until the edge is back, has
+//! started anew or has been away for too long.
 
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
+use std::ops::Bound;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -18,10 +25,15 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use clustine_rpc::link::WorkerEnd;
-use clustine_rpc::{EdgeMessage, EdgeToWorker, StoreReply, StoreRequest, WorkerToEdge};
+use clustine_rpc::{
+    EdgeMessage, EdgeToWorker, Presence, Restored, StoreReply, StoreRequest, Welcome, WorkerToEdge,
+};
 use clustine_sim::api::RegionEvent;
-use clustine_sim::{Durable, EdgeEvent, PlayerChange, PlayerEvent, Region, TickInputs};
-use clustine_world::{ChunkPos, EdgeId, PlayerId};
+use clustine_sim::{
+    Durable, EdgeEvent, PlayerChange, PlayerEvent, Region, RegionConfig, RegionState, StateDelta,
+    TickInputs,
+};
+use clustine_world::{ChunkPos, EdgeId, EntityId, PlayerId};
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
 
@@ -31,14 +43,28 @@ pub const TICK: Duration = Duration::from_millis(50);
 /// Ticks between two checkpoints unless set otherwise: five minutes.
 pub const DEFAULT_CHECKPOINT_INTERVAL: u64 = 5 * 60 * 20;
 
+/// Ticks an edge may be without a link before the region forgets it, unless set
+/// otherwise: 30 seconds.
+pub const DEFAULT_GONE_AFTER: u64 = 30 * 20;
+
+/// How many ticks a region may be ahead of what the world store has confirmed. At that
+/// bound it waits.
+pub const MAX_TICKS_AHEAD: usize = 8;
+
 /// A runner that has fallen further behind than this many ticks skips them instead of
 /// trying to catch up.
 const MAX_CATCH_UP_TICKS: u32 = 10;
 
+/// How often a runner that waits for its next tick looks whether the store has confirmed
+/// a commit, so that what a tick did reaches players a write later and not a tick later.
+const COMMIT_POLL: Duration = Duration::from_millis(1);
+
 /// Counters of a region that others may read while its runner runs.
 #[derive(Debug, Default)]
 pub struct RegionStatus {
-    /// The number of the last tick that ran.
+    /// The number of the last tick that ran. A region whose commits go unanswered stops
+    /// ticking within [`MAX_TICKS_AHEAD`] ticks, so a number that goes up shows that the
+    /// store confirms what the region does.
     pub tick: AtomicU64,
     /// How many players were in the region after that tick.
     pub players: AtomicU64,
@@ -49,8 +75,8 @@ pub struct RegionStatus {
     /// How many players have been let go to other regions.
     pub departures: AtomicU64,
     /// Whether the world store no longer does what the region asks of it: it cannot be
-    /// reached, or it has given the region to another owner. The region goes on
-    /// ticking, but nothing it changes is kept, so whoever runs it should stop it.
+    /// reached, or it has given the region to another owner. The runner has stopped for
+    /// good then; the region is to be opened again and restored.
     pub store_lost: AtomicBool,
 }
 
@@ -69,18 +95,87 @@ impl Links {
     }
 }
 
+/// Why a runner no longer runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// It was asked to stop, and the world store has everything.
+    Stopped,
+    /// The world store no longer does what the region asks of it. The region has to be
+    /// opened again and restored from what the store has; this runner must not be used
+    /// any more.
+    StoreLost,
+}
+
+/// Why a region could not be restored from what the world store has of it.
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    #[error("the stored state of the region as of tick {tick} cannot be read: {error}")]
+    State { tick: u64, error: postcard::Error },
+    #[error("the stored change of the region's state in tick {tick} cannot be read: {error}")]
+    Delta { tick: u64, error: postcard::Error },
+}
+
+/// What a runner needs of the world store. A [`StoreHandle`] is what it is in earnest;
+/// tests put something in between that holds answers back.
+trait RegionStore: Send {
+    fn request(&self, request: StoreRequest);
+    fn try_reply(&self) -> Option<StoreReply>;
+    fn is_lost(&self) -> bool;
+    fn flush(&self);
+}
+
+impl RegionStore for StoreHandle {
+    fn request(&self, request: StoreRequest) {
+        StoreHandle::request(self, request);
+    }
+
+    fn try_reply(&self) -> Option<StoreReply> {
+        StoreHandle::try_reply(self)
+    }
+
+    fn is_lost(&self) -> bool {
+        StoreHandle::is_lost(self)
+    }
+
+    fn flush(&self) {
+        StoreHandle::flush(self);
+    }
+}
+
 /// Names a link for as long as its runner exists. Links are numbered in the order they
 /// were attached, which is also the order they are served in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct LinkId(u64);
+
+/// What a link is owed in answer to its hello, which is made from the region as it is
+/// just before the next tick.
+struct Resume {
+    /// The number of the last outbox entry the edge has got.
+    seen: u64,
+    /// The players the edge believes to be in the region.
+    players: Vec<PlayerId>,
+    /// Whether the region knew the edge with the start of the hello.
+    known: bool,
+}
 
 /// A link to an edge and what the runner keeps for it.
 struct EdgeLink {
     end: WorkerEnd,
     /// The edge, once it has said hello.
     edge: Option<EdgeId>,
-    /// The number of the last numbered message received.
-    received: u64,
+    /// The number of the last numbered message taken from this link, passed on or not.
+    last: Option<u64>,
+    /// Whether the region did not know the edge with the start of the hello, and no
+    /// numbered message of this link has been passed on yet; see
+    /// [`RegionRunner::accept`].
+    unknown: bool,
+    /// The answer to the hello, until the next tick takes it.
+    resume: Option<Resume>,
+    /// The chunks named in the hello that the link has not been made a snapshot of yet.
+    /// While there are any, what the link sends is kept in `held`.
+    hold: BTreeSet<ChunkPos>,
+    /// What the link sent while it was held, in the order it came.
+    held: VecDeque<EdgeMessage>,
     /// Chunks the edge is subscribed to.
     subscriptions: BTreeSet<ChunkPos>,
     /// Subscribed chunks the edge has not been sent a snapshot of yet.
@@ -88,14 +183,28 @@ struct EdgeLink {
 }
 
 impl EdgeLink {
-    /// What the edge is to hear of `events`: what happened in chunks it subscribed to.
-    fn visible(&self, events: &[RegionEvent], region: &Region) -> Vec<RegionEvent> {
+    /// What the edge is to hear of `events`: what happened in chunks it subscribed to,
+    /// and that the entities among `orphaned` are gone.
+    fn visible(
+        &self,
+        events: &[RegionEvent],
+        region: &Region,
+        orphaned: &BTreeSet<EntityId>,
+    ) -> Vec<RegionEvent> {
         let mut visible = Vec::new();
         for event in events {
             let [current, previous] = event.chunks();
             let visible_now = self.subscriptions.contains(&current);
             let visible_before = self.subscriptions.contains(&previous);
             match event {
+                // A player who was let go and will not be passed on was last seen where
+                // this region ends, in a chunk nobody can subscribe to here. Those who
+                // saw them leave did so from any chunk, so everyone is told.
+                RegionEvent::EntityRemoved { entity, chunk }
+                    if orphaned.contains(entity) && !region.area().contains(*chunk) =>
+                {
+                    visible.push(event.clone());
+                }
                 // An entity coming in from where the edge could not see it is new to
                 // the edge, which needs to know what it is.
                 RegionEvent::EntityMoved { entity, .. } if visible_now && !visible_before => {
@@ -111,30 +220,40 @@ impl EdgeLink {
     }
 }
 
-/// The link a player belongs to, and the edge of that link.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Owner {
-    link: LinkId,
-    edge: EdgeId,
+/// What the runner keeps for an edge the region knows, or will know after the coming
+/// tick.
+struct KnownEdge {
+    /// The highest start the edge has said hello with.
+    start: u64,
+    /// Whether the region, as it is after its last tick, knows the edge with that start.
+    /// False from a hello of an edge it does not know, or with a higher start, until the
+    /// tick that takes that hello has run.
+    settled: bool,
+    /// The number of the last numbered message of the edge that was passed on to the
+    /// region: into the inputs of a tick that has run, or of the coming one.
+    received: u64,
+    /// The region's `applied` for the edge after its last tick.
+    applied: u64,
+    /// The edge's link, if it has one: the last that said hello as this edge.
+    link: Option<LinkId>,
+    /// The tick after which the edge was last seen without a link.
+    away_since: u64,
 }
 
-/// Something a tick produced for an edge, in the order it is to be published.
-enum Outgoing {
-    To(LinkId, WorkerToEdge),
-    /// That a player has been let go, for the link they belonged to, if they still had
-    /// one. If it cannot be delivered, `removed` goes to every link instead; see
-    /// [`RegionRunner::publish_all`].
-    Departed {
-        link: Option<LinkId>,
-        message: WorkerToEdge,
-        removed: RegionEvent,
-    },
+/// What a tick produced for edges, held until the world store has confirmed the tick.
+struct HeldTick {
+    tick: u64,
+    /// Whether a commit was sent for the tick. A tick that changed nothing sends none and
+    /// counts as committed as soon as the tick before it is.
+    needs_commit: bool,
+    /// What goes to which link, in the order it is to be published.
+    outgoing: Vec<(LinkId, WorkerToEdge)>,
 }
 
 /// Runs one region for the edges that are linked to it.
 pub struct RegionRunner {
     region: Region,
-    store: StoreHandle,
+    store: Box<dyn RegionStore>,
     /// The links to edges, in the order they were attached.
     links: BTreeMap<LinkId, EdgeLink>,
     /// The number the next link gets.
@@ -143,35 +262,83 @@ pub struct RegionRunner {
     attached: Receiver<WorkerEnd>,
     /// Kept to make [`Links`] of.
     attach: Sender<WorkerEnd>,
-    /// The link each player belongs to: the one they joined or arrived through. What
-    /// concerns a single player goes to that link, and only that link acts for them.
-    players: BTreeMap<PlayerId, Owner>,
+    /// The edges the region knows, and those it will know after the coming tick.
+    edges: BTreeMap<EdgeId, KnownEdge>,
+    /// The number of the last applied input of each player in the region, after its last
+    /// tick; what has changed of it is what edges are told as progress.
+    last_inputs: BTreeMap<PlayerId, u64>,
     /// What the coming tick will be given.
     inputs: TickInputs,
+    /// Whose doing each `Discard` among `inputs` is, which the inputs themselves do not
+    /// say.
+    discards: Vec<(EdgeId, EntityId, ChunkPos)>,
+    /// The ticks that have run and are not published yet, oldest first.
+    pending: VecDeque<HeldTick>,
+    /// The highest tick the store has confirmed the commit of.
+    committed: u64,
+    /// Chunks the store could not read. Nothing waits for a snapshot of them.
+    unreadable: BTreeSet<ChunkPos>,
     /// Loaded chunks that have changed since they were loaded or last stored.
     unsaved: BTreeSet<ChunkPos>,
     /// How many ticks pass between two checkpoints.
     checkpoint_interval: u64,
-    /// The tick the world store had the region up to when it was opened. The region
-    /// counts its ticks from 0 at every start until it is restored from the store, so
-    /// the ticks it hands the store are counted on from this one: the store orders
-    /// commits by their ticks.
-    stored_ticks: u64,
+    /// How many ticks an edge may be without a link before it is gone.
+    gone_after: u64,
+    /// Whether the store handle is lost, after which the runner does nothing any more.
+    lost: bool,
     status: Arc<RegionStatus>,
 }
 
 impl RegionRunner {
-    /// A runner with `link` as its first link.
-    pub fn new(region: Region, link: WorkerEnd, store: StoreHandle) -> Self {
-        let mut runner = Self::without_links(region, store);
-        runner.take_up(link);
-        runner
+    /// A runner for the region as the world store has it: `restored` is what the store
+    /// returned when the region was opened, and `store` the handle it came with. The
+    /// region carries on after the last tick the store has; one that was never opened
+    /// before starts with the entity ids the store issued to it. It has no links until
+    /// some are attached through [`RegionRunner::links`].
+    pub fn restore(
+        config: RegionConfig,
+        store: StoreHandle,
+        restored: Restored,
+    ) -> Result<Self, RestoreError> {
+        let state = restored_state(restored)?;
+        Ok(Self::with_store(
+            Region::restore(config, state),
+            Box::new(store),
+        ))
     }
 
-    /// A runner that ticks without any link until one is attached through
-    /// [`RegionRunner::links`].
-    pub fn without_links(region: Region, store: StoreHandle) -> Self {
+    /// A runner that carries on with `region`, of which `store` has everything up to its
+    /// last tick.
+    fn with_store(region: Region, store: Box<dyn RegionStore>) -> Self {
         let (attach, attached) = mpsc::channel();
+        let state = region.state();
+        // Edges count as away from now, however long they were before: they could not
+        // have had a link to a region that was not running.
+        let edges = state
+            .edges
+            .iter()
+            .map(|(id, edge)| {
+                let known = KnownEdge {
+                    start: edge.start,
+                    settled: true,
+                    received: edge.applied,
+                    applied: edge.applied,
+                    link: None,
+                    away_since: state.tick,
+                };
+                (*id, known)
+            })
+            .collect();
+        let last_inputs = state
+            .players
+            .iter()
+            .map(|(id, player)| (*id, player.last_input))
+            .collect();
+        let status = RegionStatus::default();
+        status.tick.store(state.tick, Ordering::Relaxed);
+        status
+            .players
+            .store(state.players.len() as u64, Ordering::Relaxed);
         Self {
             region,
             store,
@@ -179,16 +346,22 @@ impl RegionRunner {
             next_link: 0,
             attached,
             attach,
-            players: BTreeMap::new(),
+            edges,
+            last_inputs,
             inputs: TickInputs::default(),
+            discards: Vec::new(),
+            pending: VecDeque::new(),
+            committed: state.tick,
+            unreadable: BTreeSet::new(),
             unsaved: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
-            stored_ticks: 0,
-            status: Arc::default(),
+            gone_after: DEFAULT_GONE_AFTER,
+            lost: false,
+            status: Arc::new(status),
         }
     }
 
-    /// A handle through which further links are attached while the runner runs.
+    /// A handle through which links are attached, also while the runner runs.
     pub fn links(&self) -> Links {
         Links {
             attached: self.attach.clone(),
@@ -201,17 +374,17 @@ impl RegionRunner {
     }
 
     /// Sets how many ticks pass between two checkpoints. Until a checkpoint, changes to
-    /// chunks that stay loaded are only in the write-ahead log, which grows meanwhile.
+    /// chunks that stay loaded are only in the write-ahead log, which grows meanwhile,
+    /// and so does what a region is restored from.
     pub fn with_checkpoint_interval(mut self, ticks: u64) -> Self {
         self.checkpoint_interval = ticks.max(1);
         self
     }
 
-    /// Says up to which tick the world store had the region when it was opened (see
-    /// [`clustine_rpc::Restored::tick`]), from which the ticks handed to the store are
-    /// counted on.
-    pub fn continuing_from(mut self, tick: u64) -> Self {
-        self.stored_ticks = tick;
+    /// Sets how many ticks an edge may be without a link before the region forgets it
+    /// and removes its players.
+    pub fn with_gone_after(mut self, ticks: u64) -> Self {
+        self.gone_after = ticks;
         self
     }
 
@@ -219,13 +392,25 @@ impl RegionRunner {
         &self.region
     }
 
-    /// Runs one tick with everything that has arrived since the last one. A link that
-    /// has ended or does not keep up is dropped on the way; the region ticks on with the
-    /// links that remain, or with none.
+    /// Whether the store handle is lost and the runner has stopped for good.
+    pub fn store_is_lost(&self) -> bool {
+        self.lost
+    }
+
+    /// Takes what has arrived since the last step, publishes the ticks the store has
+    /// confirmed and runs one tick, unless the region is [`MAX_TICKS_AHEAD`] ticks ahead
+    /// of what is confirmed. A link that has ended or does not keep up is dropped on the
+    /// way; the region ticks on with the links that remain, or with none.
+    ///
+    /// Once the store handle is lost, this does nothing but close links.
     pub fn step(&mut self) {
-        // The links known so far come first, and only then the ones attached since. An
-        // edge that connects again has ended its old link before, so its players leave
-        // through the old link before they join through the new one, and stay.
+        if self.lost {
+            self.give_up();
+            return;
+        }
+        // The links known so far come first, and only then the ones attached since, so
+        // that a link an edge has ended is seen to have ended before its next one says
+        // hello.
         let known: Vec<_> = self.links.keys().copied().collect();
         for id in known {
             self.drain(id);
@@ -234,6 +419,20 @@ impl RegionRunner {
             let id = self.take_up(end);
             self.drain(id);
         }
+        if !self.take_replies() {
+            return;
+        }
+        self.publish_committed();
+        if self.pending.len() < MAX_TICKS_AHEAD {
+            self.tick();
+            // A tick that changed nothing has nothing to wait for.
+            self.publish_committed();
+        }
+    }
+
+    /// Takes the store's answers. Returns false if the store handle is lost, which
+    /// stops the runner.
+    fn take_replies(&mut self) -> bool {
         while let Some(reply) = self.store.try_reply() {
             match reply {
                 StoreReply::Loaded { position, chunk } => {
@@ -241,24 +440,186 @@ impl RegionRunner {
                 }
                 // The region goes on waiting for the chunk, which leaves a hole in the
                 // world rather than a chunk that would overwrite what was built there.
+                // Nothing else waits for it.
                 StoreReply::Unreadable { position } => {
                     error!(?position, "a chunk cannot be read from the world store");
+                    self.unreadable.insert(position);
+                    for link in self.links.values_mut() {
+                        link.hold.remove(&position);
+                    }
+                    self.release_held();
                 }
-                // Nothing waits for its commits yet.
-                StoreReply::Committed { .. } | StoreReply::Flushed => {}
+                StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
+                StoreReply::Flushed => {}
+            }
+        }
+        // Looked at after the answers: a handle that is lost has none, so nothing
+        // confirmed is published by an owner the store has let go of.
+        if self.store.is_lost() {
+            self.give_up();
+            return false;
+        }
+        true
+    }
+
+    /// Stops for good, because the store handle is lost: what the region did since its
+    /// last confirmed commit may never have reached the disk, so nobody is told of it,
+    /// and carrying on from memory would build on what a restored region does not have.
+    fn give_up(&mut self) {
+        if !self.lost {
+            error!("the world store is lost; the region stops and has to be restored");
+            self.lost = true;
+            self.status.store_lost.store(true, Ordering::Relaxed);
+        }
+        // Dropping a link closes it, which is how edges learn to look for the region
+        // again.
+        self.links.clear();
+        self.pending.clear();
+        while self.attached.try_recv().is_ok() {}
+    }
+
+    /// Publishes the ticks that are committed, oldest first, as far as that goes. A link
+    /// that turns out to be of no use on the way gets nothing more.
+    fn publish_committed(&mut self) {
+        while self
+            .pending
+            .front()
+            .is_some_and(|held| !held.needs_commit || held.tick <= self.committed)
+        {
+            let Some(held) = self.pending.pop_front() else {
+                return;
+            };
+            for (id, message) in held.outgoing {
+                self.publish(id, message);
+            }
+        }
+    }
+
+    /// Runs one tick with everything that has arrived since the last one, hands what
+    /// changed to the store and makes ready what edges are to hear of it.
+    fn tick(&mut self) {
+        let before = self.region.tick_number();
+        let away: Vec<_> = self
+            .edges
+            .iter()
+            .filter(|(_, edge)| {
+                edge.link.is_none() && before.saturating_sub(edge.away_since) >= self.gone_after
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for edge in away {
+            info!(edge = edge.0, "an edge has been away for too long");
+            self.edges.remove(&edge);
+            self.inputs.edges.push(EdgeEvent::Gone { edge });
+        }
+
+        // Everything is made ready as of the end of the tick, to be held back as a whole.
+        // The answers to hellos come first, and are made from the region as it is before
+        // the tick: what earlier ticks put into an outbox was made ready for links that
+        // are closed now, and is sent again here.
+        let mut outgoing = Vec::new();
+        let mut resumed = BTreeSet::new();
+        for (id, link) in &mut self.links {
+            let (Some(edge), Some(resume)) = (link.edge, link.resume.take()) else {
+                continue;
+            };
+            resumed.insert(*id);
+            let welcome = match resume.known {
+                true => Welcome::Resumed,
+                false => Welcome::Unknown,
+            };
+            outgoing.push((*id, WorkerToEdge::Welcome(welcome)));
+            if let Some(state) = self.region.edge(edge).filter(|_| resume.known) {
+                let above = (Bound::Excluded(resume.seen), Bound::Unbounded);
+                for (number, entry) in state.outbox.range(above) {
+                    let entry = entry.clone();
+                    outgoing.push((
+                        *id,
+                        WorkerToEdge::Outbox {
+                            number: *number,
+                            entry,
+                        },
+                    ));
+                }
+            }
+            for player in resume.players {
+                // A player of another edge has connected anew through that one; this
+                // edge's connection of theirs is of the past.
+                let state = self
+                    .region
+                    .player_state(player)
+                    .filter(|state| resume.known && state.edge == edge);
+                let answer = match state {
+                    Some(state) => Presence::Present {
+                        entity: state.entity_id,
+                        pose: state.pose,
+                        hotbar: state.hotbar,
+                        selected_slot: state.selected_slot,
+                        last_input: state.last_input,
+                        handled: state.handled,
+                    },
+                    None => Presence::Absent,
+                };
+                outgoing.push((*id, WorkerToEdge::Presence { player, answer }));
             }
         }
 
-        // What is collected from here on is for the tick after this one: the players and
-        // the chunks of a link that is lost while it is told what this tick did.
+        // The entities of the departures in the outbox of an edge that this tick resets
+        // or forgets, which it reports removed: nobody will pass those players on.
+        let mut orphaned = BTreeSet::new();
+        for event in &self.inputs.edges {
+            let dropped = match event {
+                EdgeEvent::Gone { edge } => self.region.edge(*edge),
+                EdgeEvent::Started { edge, start } => {
+                    self.region.edge(*edge).filter(|known| known.start < *start)
+                }
+                EdgeEvent::Confirmed { .. } => None,
+            };
+            for entry in dropped.iter().flat_map(|edge| edge.outbox.values()) {
+                if let Durable::Departed { transfer, .. } = entry {
+                    orphaned.insert(transfer.entity_id);
+                }
+            }
+        }
+
+        // Who comes in from another region, to be counted if the region takes them in.
+        let arriving: BTreeMap<_, _> = self
+            .inputs
+            .player_changes
+            .iter()
+            .filter_map(|change| match change {
+                PlayerChange::Arrive(_, player, transfer)
+                    if self.region.player(*player).is_none() =>
+                {
+                    Some((*player, transfer.entity_id))
+                }
+                _ => None,
+            })
+            .collect();
+
+        // What is collected from here on is for the tick after this one.
         let inputs = mem::take(&mut self.inputs);
+        self.discards.clear();
         let output = self.region.tick(&inputs);
+        for edge in self.edges.values_mut() {
+            edge.settled = true;
+        }
+        for (player, entity) in arriving {
+            if let Some(state) = self.region.player_state(player)
+                && state.entity_id == entity
+            {
+                self.status.arrivals.fetch_add(1, Ordering::Relaxed);
+                info!(
+                    name = %state.name,
+                    entity_id = entity.0,
+                    "player arrived from another region"
+                );
+            }
+        }
 
         for position in output.chunk_requests {
             self.store.request(StoreRequest::Load { position });
         }
-        // Logged before anyone is told, so that what players are shown is on its way to
-        // disk already.
         let changes: Vec<_> = output
             .events
             .iter()
@@ -267,77 +628,103 @@ impl RegionRunner {
                 _ => None,
             })
             .collect();
-        if !changes.is_empty() {
+        let needs_commit = !(changes.is_empty() && output.delta.changes_only_the_tick());
+        if needs_commit {
             self.unsaved
                 .extend(changes.iter().map(|(position, _)| position.chunk()));
             self.store.request(StoreRequest::Commit {
-                tick: self.stored_ticks + output.tick,
+                tick: output.tick,
                 changes,
-                // The region's state is not kept yet.
-                state: Vec::new(),
+                state: postcard::to_stdvec(&output.delta)
+                    .expect("a change of state is made of what postcard can write"),
             });
         }
+        // After the commit of the tick the saved chunks show.
         if output.tick % self.checkpoint_interval == 0 {
             self.checkpoint();
         }
 
-        // Everything is made ready before anything is published, as of the end of the
-        // tick, so that it could be held back as a whole.
-        let mut outgoing = Vec::new();
-
         // An edge only hears about what happens in chunks it subscribed to.
         for (id, link) in &self.links {
-            let events = link.visible(&output.events, &self.region);
+            let events = link.visible(&output.events, &self.region, &orphaned);
             if !events.is_empty() {
                 let delta = WorkerToEdge::TickDelta {
                     tick: output.tick,
                     events,
                 };
-                outgoing.push(Outgoing::To(*id, delta));
+                outgoing.push((*id, delta));
             }
         }
 
-        // Each outbox entry is passed on once and confirmed in the coming tick, so that
-        // outboxes stay empty for as long as edges do not confirm entries themselves.
-        let mut confirmed = BTreeMap::new();
-        let (mut remote, mut refusals, mut departures) = (Vec::new(), Vec::new(), Vec::new());
-        for (edge, number, entry) in output.durable {
-            confirmed.insert(edge, number);
-            match entry {
-                Durable::Refused { .. } => refusals.push((edge, entry)),
-                Durable::Departed { .. } => departures.push((edge, entry)),
-                Durable::Remote(_) | Durable::RemoteDone { .. } => remote.push((edge, entry)),
+        // What concerns a single player goes to the edge they belong to. One who was let
+        // go or refused in this very tick is no longer in the region, but then the outbox
+        // entry saying so names their edge.
+        let edge_of = |player: PlayerId| {
+            let present = self.region.player_state(player).map(|state| state.edge);
+            present.or_else(|| {
+                output
+                    .durable
+                    .iter()
+                    .find_map(|(edge, _, entry)| match entry {
+                        Durable::Departed { player: of, .. } | Durable::Refused { player: of }
+                            if *of == player =>
+                        {
+                            Some(*edge)
+                        }
+                        _ => None,
+                    })
+            })
+        };
+        // What concerns an edge goes to the link it has, and nowhere if it has none: an
+        // outbox entry stays in the outbox, and the rest the edge works out again when it
+        // is back.
+        let link_of = |edge: EdgeId| self.edges.get(&edge).and_then(|known| known.link);
+        let to_player = |player: PlayerId, event: PlayerEvent| {
+            let link = link_of(edge_of(player)?)?;
+            Some((link, WorkerToEdge::ToPlayer { player, event }))
+        };
+        let entry_for = |edge: EdgeId, number: u64, entry: &Durable| {
+            let entry = entry.clone();
+            Some((link_of(edge)?, WorkerToEdge::Outbox { number, entry }))
+        };
+
+        // After the events, so that a player is told that their action was handled only
+        // once they have been told what it did. Who entered the world, then what was
+        // refused or concerns other regions, then what was acknowledged, then who was let
+        // go: a player is told what became of their actions before they are told that
+        // they are someone else's from now on. The region numbers the entries of a tick
+        // in that order too, so their numbers ascend on the link, which an edge relies
+        // on: it remembers only the highest it has seen.
+        let departed = |entry: &Durable| matches!(entry, Durable::Departed { .. });
+        let (acknowledged, entered): (Vec<_>, Vec<_>) = output
+            .player_events
+            .into_iter()
+            .partition(|(_, event)| matches!(event, PlayerEvent::Acknowledged { .. }));
+        for (player, event) in entered {
+            outgoing.extend(to_player(player, event));
+        }
+        for (edge, number, entry) in &output.durable {
+            if !departed(entry) {
+                outgoing.extend(entry_for(*edge, *number, entry));
+            }
+        }
+        for (player, event) in acknowledged {
+            outgoing.extend(to_player(player, event));
+        }
+        for (edge, number, entry) in &output.durable {
+            if let Durable::Departed { transfer, .. } = entry {
+                self.status.departures.fetch_add(1, Ordering::Relaxed);
+                info!(
+                    name = %transfer.name,
+                    entity_id = transfer.entity_id.0,
+                    "player departed to another region"
+                );
+                outgoing.extend(entry_for(*edge, *number, entry));
             }
         }
 
-        // What players did to blocks of other regions goes to their edge to be passed
-        // on, and what became of what players of other regions did goes to the edge that
-        // asked for it to be done here. After the events, so that a player is told that
-        // their action was handled only once they have been told what it did.
-        for (edge, entry) in remote {
-            outgoing.extend(self.pass_on(edge, entry));
-        }
-        // Who entered the world or could not, then what was acknowledged, then who was
-        // let go: a player is told what became of their actions before they are told
-        // that they are someone else's from now on.
-        let mut events = output.player_events.into_iter().peekable();
-        while let Some((player, event)) =
-            events.next_if(|(_, event)| !matches!(event, PlayerEvent::Acknowledged { .. }))
-        {
-            outgoing.extend(self.tell(player, event));
-        }
-        for (edge, entry) in refusals {
-            outgoing.extend(self.pass_on(edge, entry));
-        }
-        for (player, event) in events {
-            outgoing.extend(self.tell(player, event));
-        }
-        for (edge, entry) in departures {
-            outgoing.extend(self.pass_on(edge, entry));
-        }
-
-        // Snapshots come last and show the state after this tick, so they include what
-        // the events above already said. The edge has to cope with hearing it twice.
+        // Snapshots show the state after this tick, so they include what the events above
+        // already said. The edge has to cope with hearing it twice.
         for (id, link) in &mut self.links {
             let ready: Vec<_> = link
                 .awaiting_snapshot
@@ -346,6 +733,7 @@ impl RegionRunner {
                 .collect();
             for (position, chunk) in ready {
                 link.awaiting_snapshot.remove(&position);
+                link.hold.remove(&position);
                 let entities = self
                     .region
                     .entities()
@@ -357,20 +745,19 @@ impl RegionRunner {
                     chunk,
                     entities,
                 };
-                outgoing.push(Outgoing::To(*id, snapshot));
+                outgoing.push((*id, snapshot));
             }
         }
 
-        self.publish_all(output.tick, outgoing);
-        for (edge, number) in confirmed {
-            self.inputs
-                .edges
-                .push(EdgeEvent::Confirmed { edge, number });
-        }
+        outgoing.extend(self.progress(&output.delta, &resumed));
+        self.pending.push_back(HeldTick {
+            tick: output.tick,
+            needs_commit,
+            outgoing,
+        });
+        // What links sent behind a hello acts on chunks that are loaded now.
+        self.release_held();
 
-        if self.store.is_lost() && !self.status.store_lost.swap(true, Ordering::Relaxed) {
-            error!("the world store is lost; nothing that changes from now on is kept");
-        }
         self.status.tick.store(output.tick, Ordering::Relaxed);
         let players = self.region.player_count() as u64;
         self.status.players.store(players, Ordering::Relaxed);
@@ -378,48 +765,118 @@ impl RegionRunner {
         self.status.chunks.store(chunks, Ordering::Relaxed);
     }
 
+    /// Makes ready what each edge with a link is told of how far the region has got with
+    /// what the edge sent, after the tick `delta` is of: those whose `applied` changed,
+    /// those with a player whose last applied input changed, and those whose link is
+    /// among `resumed`. The last so that an edge that is back hears how far the region
+    /// is even when nothing it sends again is new to the region.
+    fn progress(
+        &mut self,
+        delta: &StateDelta,
+        resumed: &BTreeSet<LinkId>,
+    ) -> Vec<(LinkId, WorkerToEdge)> {
+        let mut changed = BTreeSet::new();
+        for (id, edge) in &delta.edges {
+            if let (Some(edge), Some(known)) = (edge, self.edges.get_mut(id))
+                && known.applied != edge.applied
+            {
+                known.applied = edge.applied;
+                changed.insert(*id);
+            }
+        }
+        let mut inputs: BTreeMap<EdgeId, Vec<(PlayerId, u64)>> = BTreeMap::new();
+        for (id, player) in &delta.players {
+            let Some(player) = player else {
+                self.last_inputs.remove(id);
+                continue;
+            };
+            let previous = self.last_inputs.insert(*id, player.last_input);
+            if previous.unwrap_or(0) != player.last_input {
+                let of_edge = inputs.entry(player.edge).or_default();
+                of_edge.push((*id, player.last_input));
+            }
+        }
+        let mut progress = Vec::new();
+        for (id, known) in &self.edges {
+            let Some(link) = known.link else {
+                continue;
+            };
+            let inputs = inputs.remove(id).unwrap_or_default();
+            if changed.contains(id) || !inputs.is_empty() || resumed.contains(&link) {
+                let applied = known.applied;
+                progress.push((link, WorkerToEdge::Progress { applied, inputs }));
+            }
+        }
+        progress
+    }
+
     /// Hands the chunk at `position` to the store if it has unsaved changes.
     fn save(&mut self, position: ChunkPos) {
         if self.unsaved.remove(&position)
             && let Some(chunk) = self.region.chunk(position)
         {
+            // The commit of the region's last tick has been sent, which the store has
+            // on disk before it writes the chunk.
             self.store.request(StoreRequest::Save {
                 position,
-                tick: self.stored_ticks + self.region.tick_number(),
+                tick: self.region.tick_number(),
                 chunk: chunk.clone(),
             });
         }
     }
 
-    /// Hands every chunk with unsaved changes to the store and lets it empty the log,
-    /// which from then on only has to cover what happens next.
+    /// Hands every chunk with unsaved changes and the region's whole state to the store,
+    /// which keeps them in place of the commits up to here.
     fn checkpoint(&mut self) {
         for position in self.unsaved.clone() {
             self.save(position);
         }
-        // The region's state is not kept yet.
         self.store.request(StoreRequest::Checkpoint {
-            tick: self.stored_ticks + self.region.tick_number(),
-            state: Vec::new(),
+            tick: self.region.tick_number(),
+            state: postcard::to_stdvec(&self.region.state())
+                .expect("a region's state is made of what postcard can write"),
         });
     }
 
     /// Ticks 20 times per second until `stop` is set, then stores what has not been
-    /// stored yet.
-    pub fn run(&mut self, stop: &AtomicBool) {
+    /// stored yet. Returns early, and for good, if the store handle is lost.
+    pub fn run(&mut self, stop: &AtomicBool) -> Ended {
         let mut deadline = Instant::now() + TICK;
         while !stop.load(Ordering::Relaxed) {
             self.step();
-            let now = Instant::now();
-            if let Some(early) = deadline.checked_duration_since(now) {
-                thread::sleep(early);
-            } else if now.duration_since(deadline) > TICK * MAX_CATCH_UP_TICKS {
-                deadline = now;
+            // Between two ticks the runner publishes what the store confirms meanwhile.
+            loop {
+                if self.lost {
+                    return Ended::StoreLost;
+                }
+                let now = Instant::now();
+                let Some(early) = deadline.checked_duration_since(now) else {
+                    if now.duration_since(deadline) > TICK * MAX_CATCH_UP_TICKS {
+                        deadline = now;
+                    }
+                    break;
+                };
+                if self.pending.is_empty() {
+                    thread::sleep(early);
+                    break;
+                }
+                thread::sleep(early.min(COMMIT_POLL));
+                if self.take_replies() {
+                    self.publish_committed();
+                }
             }
             deadline += TICK;
         }
+        if self.lost {
+            return Ended::StoreLost;
+        }
         self.checkpoint();
         self.store.flush();
+        if self.store.is_lost() {
+            self.give_up();
+            return Ended::StoreLost;
+        }
+        Ended::Stopped
     }
 
     /// Makes `end` a link of the runner.
@@ -431,7 +888,11 @@ impl RegionRunner {
             EdgeLink {
                 end,
                 edge: None,
-                received: 0,
+                last: None,
+                unknown: false,
+                resume: None,
+                hold: BTreeSet::new(),
+                held: VecDeque::new(),
                 subscriptions: BTreeSet::new(),
                 awaiting_snapshot: BTreeSet::new(),
             },
@@ -440,7 +901,8 @@ impl RegionRunner {
         id
     }
 
-    /// Turns everything a link has received into inputs of the coming tick.
+    /// Takes everything a link has received: into the inputs of the coming tick, or
+    /// aside while the link is held.
     fn drain(&mut self, id: LinkId) {
         // Taken out meanwhile, so that the links that are left are the other ones.
         let Some(mut link) = self.links.remove(&id) else {
@@ -449,7 +911,9 @@ impl RegionRunner {
         loop {
             match link.end.try_recv() {
                 Ok(Some(message)) => {
-                    if !self.accept(id, &mut link, message) {
+                    if !link.hold.is_empty() {
+                        link.held.push_back(message);
+                    } else if !self.accept(id, &mut link, message) {
                         self.let_go(id, link);
                         return;
                     }
@@ -467,47 +931,79 @@ impl RegionRunner {
         }
     }
 
+    /// Passes on what links sent while they were held, for those that no longer are.
+    fn release_held(&mut self) {
+        let free: Vec<_> = self
+            .links
+            .iter()
+            .filter(|(_, link)| link.hold.is_empty() && !link.held.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in free {
+            let Some(mut link) = self.links.remove(&id) else {
+                continue;
+            };
+            let mut useful = true;
+            while useful && let Some(message) = link.held.pop_front() {
+                useful = self.accept(id, &mut link, message);
+            }
+            if useful {
+                self.links.insert(id, link);
+            } else {
+                self.let_go(id, link);
+            }
+        }
+    }
+
     /// Handles a message of the link `id`, which is not among `self.links` meanwhile.
-    /// Returns false if the link is of no use any more: what it sent is out of order.
+    /// Returns false if the link is of no use any more: what it sent is out of order, or
+    /// its edge has been replaced.
+    ///
+    /// A numbered message is passed on to the region once: one whose number is not above
+    /// what the region has received of the edge is dropped, as the edge sends again what
+    /// it has not heard to be applied, and the next number is taken. Anything else is a
+    /// gap, which ends the link. An edge the region did not know when it said hello is
+    /// the exception until its first message is taken: it may be an edge the region has
+    /// forgotten, which sends what it kept under numbers that mean nothing any more
+    /// before it has read that it is unknown, and numbers from 1 again after. Ending the
+    /// link on those would end it before the edge has read the answer, and the edge
+    /// would never learn to start again. So they are dropped until number 1 comes.
     fn accept(&mut self, id: LinkId, link: &mut EdgeLink, message: EdgeMessage) -> bool {
         let EdgeMessage { number, body } = message;
-        // Each numbered message has to follow the one before. Anything else would be the
-        // edge's mistake, as it sends nothing again yet.
-        let expected = body.is_numbered().then_some(link.received + 1);
-        if number != expected {
+        if number.is_some() != body.is_numbered() {
             warn!(
                 link = id.0,
                 ?number,
-                ?expected,
-                "an edge sent a message out of order; closing its link"
+                "an edge sent a number where none belongs, or none where one does; closing its link"
             );
             return false;
         }
         match body {
-            EdgeToWorker::Hello { edge, start, .. } => {
-                // A link is one edge's for as long as it lasts.
-                if link.edge.is_some_and(|known| known != edge) {
-                    warn!(
-                        link = id.0,
-                        "an edge said hello as another one; closing its link"
-                    );
-                    return false;
-                }
-                // Nothing else of what the edge knows of the region is used yet.
-                info!(link = id.0, edge = edge.0, start, "an edge said hello");
-                link.edge = Some(edge);
-                self.inputs.edges.push(EdgeEvent::Started { edge, start });
+            EdgeToWorker::Hello {
+                edge,
+                start,
+                seen,
+                players,
+                chunks,
+            } => {
+                let resume = Resume {
+                    seen,
+                    players,
+                    known: false,
+                };
+                return self.hello(id, link, edge, start, resume, chunks);
             }
-            // The runner confirms what it passes on itself.
-            EdgeToWorker::Confirm { .. } => {}
+            EdgeToWorker::Confirm { number } => {
+                // Without a hello there is no telling whose outbox is meant.
+                if let Some(edge) = link.edge {
+                    self.inputs
+                        .edges
+                        .push(EdgeEvent::Confirmed { edge, number });
+                }
+            }
             EdgeToWorker::Subscribe { chunks } => {
-                let area = self.region.area();
                 for position in chunks {
-                    // Chunks elsewhere are another region's to show.
-                    if area.contains(position) && link.subscriptions.insert(position) {
-                        self.inputs.tickets_added.push(position);
-                        link.awaiting_snapshot.insert(position);
-                    }
+                    self.subscribe(link, position);
                 }
             }
             EdgeToWorker::Unsubscribe { chunks } => {
@@ -529,57 +1025,193 @@ impl RegionRunner {
                     );
                     return false;
                 };
-                link.received = number;
+                // A link that has said hello is its edge's link, and such an edge is
+                // not forgotten.
+                let Some(known) = self.edges.get_mut(&edge) else {
+                    return false;
+                };
+                let next = known.received + 1;
+                if link.unknown {
+                    if number != next {
+                        return true;
+                    }
+                    link.unknown = false;
+                } else {
+                    // On one link each number follows the one before. The first may be
+                    // one the region has already, but not one beyond the next.
+                    let in_order = match link.last {
+                        Some(last) => number == last + 1,
+                        None => number <= next,
+                    };
+                    if !in_order {
+                        warn!(
+                            link = id.0,
+                            number,
+                            last = ?link.last,
+                            received = known.received,
+                            "an edge sent a message out of order; closing its link"
+                        );
+                        return false;
+                    }
+                }
+                link.last = Some(number);
+                if number < next {
+                    return true;
+                }
+                known.received = number;
                 match self.inputs.applied.iter_mut().find(|(of, _)| *of == edge) {
                     Some((_, applied)) => *applied = number,
                     None => self.inputs.applied.push((edge, number)),
                 }
-                self.accept_numbered(Owner { link: id, edge }, numbered);
+                self.accept_numbered(edge, numbered);
             }
         }
         true
     }
 
-    /// Handles a numbered message that came through the link and edge `from`.
-    fn accept_numbered(&mut self, from: Owner, body: EdgeToWorker) {
-        let Owner { link: id, edge } = from;
+    /// Handles the hello of the link `id`, which is not among `self.links` meanwhile.
+    /// Returns false if the link is of no use: its edge has been replaced by a later
+    /// start, or it has said hello before.
+    fn hello(
+        &mut self,
+        id: LinkId,
+        link: &mut EdgeLink,
+        edge: EdgeId,
+        start: u64,
+        mut resume: Resume,
+        chunks: Vec<ChunkPos>,
+    ) -> bool {
+        // A link is one edge's for as long as it lasts, and what a hello sets off happens
+        // once per link.
+        if link.edge.is_some() {
+            warn!(link = id.0, "an edge said hello twice; closing its link");
+            return false;
+        }
+        if self
+            .edges
+            .get(&edge)
+            .is_some_and(|known| known.start > start)
+        {
+            info!(
+                link = id.0,
+                edge = edge.0,
+                start,
+                "an edge said hello that a later start has replaced; closing its link"
+            );
+            // At once, and not with a tick: nothing of the region is in it. If it does
+            // not fit, the edge finds its link closed, which says nearly as much.
+            let _ = link
+                .end
+                .try_send(WorkerToEdge::Welcome(Welcome::Superseded));
+            return false;
+        }
+
+        // What the region has to tell the edge goes to this link from now on. A link the
+        // edge had before is one it has given up, whether or not that has been noticed.
+        let others: Vec<_> = self
+            .links
+            .iter()
+            .filter(|(_, other)| other.edge == Some(edge))
+            .map(|(other, _)| *other)
+            .collect();
+        for other in others {
+            if let Some(replaced) = self.links.remove(&other) {
+                info!(link = other.0, "an edge said hello on another link");
+                self.let_go(other, replaced);
+            }
+        }
+
+        let tick = self.region.tick_number();
+        let known = match self.edges.get_mut(&edge) {
+            Some(known) if known.start == start => known,
+            Some(known) => {
+                // The coming tick resets the edge. Nothing the earlier start sent may be
+                // applied after that, and the new start numbers from 1.
+                known.start = start;
+                known.settled = false;
+                known.received = 0;
+                self.forget_inputs_of(edge);
+                self.edges.get_mut(&edge).expect("the edge was just found")
+            }
+            None => self.edges.entry(edge).or_insert(KnownEdge {
+                start,
+                settled: false,
+                received: 0,
+                applied: 0,
+                link: None,
+                away_since: tick,
+            }),
+        };
+        known.link = Some(id);
+        resume.known = known.settled;
+        info!(
+            link = id.0,
+            edge = edge.0,
+            start,
+            known = resume.known,
+            "an edge said hello"
+        );
+        self.inputs.edges.push(EdgeEvent::Started { edge, start });
+        self.inputs.edges.push(EdgeEvent::Confirmed {
+            edge,
+            number: resume.seen,
+        });
+        link.edge = Some(edge);
+        link.unknown = !resume.known;
+        link.resume = Some(resume);
+        for position in chunks {
+            self.subscribe(link, position);
+            // What the edge sends next acts on these chunks, so it waits until they are
+            // loaded, which is when their snapshots are made.
+            if link.awaiting_snapshot.contains(&position) && !self.unreadable.contains(&position) {
+                link.hold.insert(position);
+            }
+        }
+        true
+    }
+
+    /// Subscribes `link` to the chunk at `position`, if that is the region's.
+    fn subscribe(&mut self, link: &mut EdgeLink, position: ChunkPos) {
+        // Chunks elsewhere are another region's to show.
+        if self.region.area().contains(position) && link.subscriptions.insert(position) {
+            self.inputs.tickets_added.push(position);
+            link.awaiting_snapshot.insert(position);
+        }
+    }
+
+    /// Drops from the coming tick's inputs everything that came from `edge`.
+    fn forget_inputs_of(&mut self, edge: EdgeId) {
+        let mut discards: Vec<_> = self
+            .discards
+            .iter()
+            .filter(|(from, ..)| *from == edge)
+            .map(|(_, entity, chunk)| (*entity, *chunk))
+            .collect();
+        self.discards.retain(|(from, ..)| *from != edge);
+        self.inputs.player_changes.retain(|change| match change {
+            PlayerChange::Join(from, _)
+            | PlayerChange::Leave(from, _)
+            | PlayerChange::Arrive(from, ..) => *from != edge,
+            PlayerChange::Discard { entity, chunk } => {
+                let found = discards.iter().position(|of| *of == (*entity, *chunk));
+                found.map(|index| discards.swap_remove(index)).is_none()
+            }
+        });
+        self.inputs.inputs.retain(|(from, ..)| *from != edge);
+        self.inputs.remote_actions.retain(|(from, _)| *from != edge);
+        self.inputs.applied.retain(|(of, _)| *of != edge);
+    }
+
+    /// Passes a numbered message on to the region, as one that came from `edge`.
+    fn accept_numbered(&mut self, edge: EdgeId, body: EdgeToWorker) {
         match body {
             EdgeToWorker::PlayerJoin(join) => {
-                // A player who joins through another link than the one they belong to
-                // has connected anew, and the link they had may not have noticed yet
-                // that they are gone. The new connection replaces the old one.
-                let previous = self.players.insert(join.player, from);
-                if let Some(previous) = previous
-                    && previous.link != id
-                {
-                    self.leave(previous.edge, join.player);
-                }
                 self.inputs.change(PlayerChange::Join(edge, join));
             }
             EdgeToWorker::PlayerLeave { player } => {
-                // What another link has to say is about a connection the player had
-                // before, which must not end the one they have now.
-                if self
-                    .players
-                    .get(&player)
-                    .is_some_and(|owner| owner.link == id)
-                {
-                    self.players.remove(&player);
-                    self.leave(edge, player);
-                }
+                self.inputs.change(PlayerChange::Leave(edge, player));
             }
             EdgeToWorker::PlayerArrive { player, transfer } => {
-                // The region keeps a player who is here already and gives up the entity
-                // that was on its way, so such a player stays with the link they have.
-                if let Entry::Vacant(entry) = self.players.entry(player) {
-                    entry.insert(from);
-                    self.status.arrivals.fetch_add(1, Ordering::Relaxed);
-                    info!(
-                        name = %transfer.name,
-                        entity_id = transfer.entity_id.0,
-                        "player arrived from another region"
-                    );
-                }
                 self.inputs
                     .change(PlayerChange::Arrive(edge, player, transfer));
             }
@@ -587,6 +1219,7 @@ impl RegionRunner {
                 self.inputs.remote_actions.push((edge, action));
             }
             EdgeToWorker::Discard { entity, chunk } => {
+                self.discards.push((edge, entity, chunk));
                 self.inputs.change(PlayerChange::Discard { entity, chunk });
             }
             EdgeToWorker::Input {
@@ -594,14 +1227,8 @@ impl RegionRunner {
                 number,
                 input,
             } => {
-                // As with leaving: only the link a player belongs to acts for them.
-                if self
-                    .players
-                    .get(&player)
-                    .is_some_and(|owner| owner.link == id)
-                {
-                    self.inputs.input(edge, player, number, input);
-                }
+                // The region ignores what comes through another edge than the player's.
+                self.inputs.input(edge, player, number, input);
             }
             // Not numbered; `accept` handles them.
             EdgeToWorker::Hello { .. }
@@ -609,12 +1236,6 @@ impl RegionRunner {
             | EdgeToWorker::Subscribe { .. }
             | EdgeToWorker::Unsubscribe { .. } => {}
         }
-    }
-
-    /// Queues that `player` leaves the region. See [`TickInputs::change`] for what
-    /// becomes of what they did earlier in this step.
-    fn leave(&mut self, edge: EdgeId, player: PlayerId) {
-        self.inputs.change(PlayerChange::Leave(edge, player));
     }
 
     /// Gives back the ticket of a link that no longer needs the chunk at `position`.
@@ -630,17 +1251,15 @@ impl RegionRunner {
     }
 
     /// Forgets a link that is of no use any more and has been taken out of
-    /// `self.links`: its players leave and its chunks are no longer needed.
+    /// `self.links`: its chunks are no longer needed, and what it sent while it was held
+    /// is dropped, which its edge sends again. Its edge's players stay: the edge comes
+    /// back for them, or is gone after a while.
     fn let_go(&mut self, id: LinkId, link: EdgeLink) {
-        let players: Vec<_> = self
-            .players
-            .iter()
-            .filter(|(_, owner)| owner.link == id)
-            .map(|(player, owner)| (*player, owner.edge))
-            .collect();
-        for (player, edge) in players {
-            self.players.remove(&player);
-            self.leave(edge, player);
+        if let Some(known) = link.edge.and_then(|edge| self.edges.get_mut(&edge))
+            && known.link == Some(id)
+        {
+            known.link = None;
+            known.away_since = self.region.tick_number();
         }
         for position in link.subscriptions {
             self.release(position);
@@ -648,135 +1267,52 @@ impl RegionRunner {
     }
 
     /// Sends `message` to a link without ever waiting for it. An edge that cannot keep
-    /// up loses its link rather than slowing the region down. Returns whether the
-    /// message is on its way.
-    fn publish(&mut self, id: LinkId, message: WorkerToEdge) -> bool {
+    /// up loses its link rather than slowing the region down.
+    fn publish(&mut self, id: LinkId, message: WorkerToEdge) {
         let Some(link) = self.links.get(&id) else {
-            return false;
+            return;
         };
-        match link.end.try_send(message) {
-            Ok(()) => true,
-            Err(error) => {
-                warn!(link = id.0, %error, "giving up on a link to an edge");
-                if let Some(link) = self.links.remove(&id) {
-                    self.let_go(id, link);
-                }
-                false
+        if let Err(error) = link.end.try_send(message) {
+            warn!(link = id.0, %error, "giving up on a link to an edge");
+            if let Some(link) = self.links.remove(&id) {
+                self.let_go(id, link);
             }
         }
     }
+}
 
-    /// Publishes what a tick produced, in order. A link that turns out to be of no use
-    /// on the way gets nothing more; its players leave in the next tick.
-    fn publish_all(&mut self, tick: u64, outgoing: Vec<Outgoing>) {
-        for message in outgoing {
-            match message {
-                Outgoing::To(id, message) => {
-                    self.publish(id, message);
-                }
-                Outgoing::Departed {
-                    link,
-                    message,
-                    removed,
-                } => {
-                    let delivered = link.is_some_and(|id| self.publish(id, message));
-                    if delivered {
-                        continue;
-                    }
-                    // Nobody will pass the player on to the region they walked into. A
-                    // departing entity is not reported as removed, because it lives on
-                    // over there, so this one would stay on the screens of those who saw
-                    // it leave. It left for where no link of this region is subscribed,
-                    // so all of them are told.
-                    warn!("a departed player cannot be passed on; removing their entity");
-                    let remaining: Vec<_> = self.links.keys().copied().collect();
-                    for id in remaining {
-                        let delta = WorkerToEdge::TickDelta {
-                            tick,
-                            events: vec![removed.clone()],
-                        };
-                        self.publish(id, delta);
-                    }
-                }
-            }
+/// The state of a region as the store has it: its last checkpoint, or that of a region
+/// that has never run, with every commit since applied.
+fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
+    let mut state = match &restored.state {
+        Some(stored) => {
+            postcard::from_bytes(&stored.state).map_err(|error| RestoreError::State {
+                tick: stored.tick,
+                error,
+            })?
         }
+        None => RegionState::new(restored.entity_ids),
+    };
+    for stored in &restored.deltas {
+        let delta: StateDelta =
+            postcard::from_bytes(&stored.state).map_err(|error| RestoreError::Delta {
+                tick: stored.tick,
+                error,
+            })?;
+        state.apply(&delta);
     }
-
-    /// Makes ready what concerns a single player for the link they belong to. Returns
-    /// nothing if there is nobody to tell.
-    fn tell(&self, player: PlayerId, event: PlayerEvent) -> Option<Outgoing> {
-        // A player without a link had one that was lost earlier in this step.
-        let owner = self.players.get(&player)?;
-        let message = WorkerToEdge::ToPlayer { player, event };
-        Some(Outgoing::To(owner.link, message))
-    }
-
-    /// The link through which the region tells `edge` what it has to: the one attached
-    /// last of those that said hello as that edge.
-    fn link_of(&self, edge: EdgeId) -> Option<LinkId> {
-        self.links
-            .iter()
-            .rev()
-            .find(|(_, link)| link.edge == Some(edge))
-            .map(|(id, _)| *id)
-    }
-
-    /// Makes ready an outbox entry for `edge` as the message it stands for. Returns
-    /// nothing if there is nobody to tell and nothing follows from that.
-    fn pass_on(&mut self, edge: EdgeId, entry: Durable) -> Option<Outgoing> {
-        let link = self.link_of(edge);
-        let (player, event) = match entry {
-            Durable::Remote(action) => {
-                return link.map(|id| Outgoing::To(id, WorkerToEdge::Remote(action)));
-            }
-            Durable::RemoteDone { player, sequence } => {
-                let message = WorkerToEdge::RemoteDone { player, sequence };
-                return link.map(|id| Outgoing::To(id, message));
-            }
-            Durable::Refused { player } => (player, PlayerEvent::Refused),
-            Durable::Departed { player, transfer } => (player, PlayerEvent::Departed(transfer)),
-        };
-        // Forgotten only now, so that the event still finds its way. A refused player
-        // who is in the region nonetheless arrived within the same tick, and is kept.
-        if self.region.player(player).is_none() {
-            self.players.remove(&player);
-        }
-        let removed = match &event {
-            PlayerEvent::Departed(transfer) => {
-                self.status.departures.fetch_add(1, Ordering::Relaxed);
-                info!(
-                    name = %transfer.name,
-                    entity_id = transfer.entity_id.0,
-                    "player departed to another region"
-                );
-                let position = transfer.pose.position;
-                Some(RegionEvent::EntityRemoved {
-                    entity: transfer.entity_id,
-                    chunk: ChunkPos::containing(position.x, position.z),
-                })
-            }
-            _ => None,
-        };
-        let message = WorkerToEdge::ToPlayer { player, event };
-        match removed {
-            Some(removed) => Some(Outgoing::Departed {
-                link,
-                message,
-                removed,
-            }),
-            None => link.map(|id| Outgoing::To(id, message)),
-        }
-    }
+    Ok(state)
 }
 
 /// A region running on its own thread.
 pub struct Worker {
-    thread: JoinHandle<()>,
+    thread: JoinHandle<Ended>,
     stop: Arc<AtomicBool>,
 }
 
 impl Worker {
-    /// Starts ticking `runner` on a new thread.
+    /// Starts ticking `runner` on a new thread. The thread ends by itself if the store
+    /// handle is lost, which [`RegionStatus::store_lost`] shows.
     pub fn spawn(runner: RegionRunner) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = thread::Builder::new()
@@ -785,33 +1321,40 @@ impl Worker {
                 let stop = Arc::clone(&stop);
                 let mut runner = runner;
                 move || {
-                    runner.run(&stop);
-                    info!("region stopped");
+                    let ended = runner.run(&stop);
+                    info!(?ended, "region stopped");
+                    ended
                 }
             })
             .expect("spawning the region thread");
         Self { thread, stop }
     }
 
-    /// Stops ticking and waits for the thread to finish its current tick.
-    pub fn stop(self) {
+    /// Stops ticking, waits for the thread to finish its current tick and to store what
+    /// has changed, and says how the runner ended. Its links are closed by then.
+    pub fn stop(self) -> Ended {
         self.stop.store(true, Ordering::Relaxed);
-        // A panic in the region thread has already been reported by the panic hook.
-        let _ = self.thread.join();
+        // A panic in the region thread has already been reported by the panic hook, and
+        // what such a region had not committed is as lost as with a lost store.
+        self.thread.join().unwrap_or(Ended::StoreLost)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::time::Duration;
 
+    use clustine_region::{Layout, RegionId};
+    use clustine_rpc::RegionHello;
     use clustine_rpc::link::{self, EdgeEnd, LinkError};
     use clustine_sim::api::{
         EntityKind, EntityState, HOTBAR_SLOTS, PlayerInput, PlayerJoin, Pose, RegionEvent,
     };
-    use clustine_sim::{PlayerTransfer, RegionConfig, RemoteAction, RemoteStep};
-    use clustine_world::{BlockPos, ChunkArea, EntityId, EntityIds, Vec3};
+    use clustine_sim::{PlayerTransfer, RemoteAction, RemoteStep};
+    use clustine_world::{BlockPos, ChunkArea, EntityIds, Vec3};
     use clustine_worldgen::FlatGenerator;
+    use clustine_worldstore::Store;
     use tokio::time::timeout;
     use uuid::Uuid;
 
@@ -821,38 +1364,59 @@ mod tests {
     /// way a link between two processes does.
     const KINDS: [fn(usize) -> (TestEdge, WorkerEnd); 2] = [in_process, framed];
 
-    /// An edge's end of a link that says hello first and numbers what it sends, as an
-    /// edge does. Each is an edge of its own.
+    /// An edge's end of a link that numbers what it sends, as an edge does.
     struct TestEdge {
         end: EdgeEnd,
-        /// Which edge this is.
+        /// Which edge this is, and which start of it.
         edge: EdgeId,
+        start: u64,
         /// The number of the last numbered message sent.
         sent: AtomicU64,
+        /// What the worker said about resuming and progress, which `recv` and `try_recv`
+        /// set aside: most tests are about what else a region says.
+        aside: Vec<WorkerToEdge>,
     }
 
     impl TestEdge {
+        /// An edge of its own that has said hello, with nothing to resume.
         fn new(end: EdgeEnd) -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let name = format!("test-edge-{}", NEXT.fetch_add(1, Ordering::Relaxed));
-            let edge = Self {
-                end,
-                edge: EdgeId::from_name(&name),
-                sent: AtomicU64::new(0),
-            };
+            let edge = Self::silent(end, EdgeId::from_name(&name), 1);
             // Before anything else, as an edge does; there is room for it on a new link.
-            edge.try_send(edge.hello()).unwrap();
+            edge.try_send(edge.hello(0, &[], &[])).unwrap();
             edge
         }
 
+        /// The start `start` of `edge` on a new link, on which nothing has been said yet.
+        fn silent(end: EdgeEnd, edge: EdgeId, start: u64) -> Self {
+            Self {
+                end,
+                edge,
+                start,
+                sent: AtomicU64::new(0),
+                aside: Vec::new(),
+            }
+        }
+
+        /// The same start of the same edge on another link, numbering on from where it
+        /// was. It has not said hello there yet.
+        fn again(&self, end: EdgeEnd) -> Self {
+            let again = Self::silent(end, self.edge, self.start);
+            again
+                .sent
+                .store(self.sent.load(Ordering::Relaxed), Ordering::Relaxed);
+            again
+        }
+
         /// What this edge says first on a link.
-        fn hello(&self) -> EdgeToWorker {
+        fn hello(&self, seen: u64, players: &[PlayerId], chunks: &[ChunkPos]) -> EdgeToWorker {
             EdgeToWorker::Hello {
                 edge: self.edge,
-                start: 1,
-                seen: 0,
-                players: Vec::new(),
-                chunks: Vec::new(),
+                start: self.start,
+                seen,
+                players: players.to_vec(),
+                chunks: chunks.to_vec(),
             }
         }
 
@@ -876,12 +1440,49 @@ mod tests {
             self.end.send(message).await
         }
 
+        /// Sends `body` under `number`, whatever this edge has sent before.
+        async fn send_as(&self, number: u64, body: EdgeToWorker) {
+            let number = Some(number);
+            self.send_as_is(EdgeMessage { number, body }).await.unwrap();
+        }
+
+        /// Whether `message` is set aside by `recv` and `try_recv`.
+        fn about_resuming(message: &WorkerToEdge) -> bool {
+            matches!(
+                message,
+                WorkerToEdge::Welcome(_)
+                    | WorkerToEdge::Presence { .. }
+                    | WorkerToEdge::Progress { .. }
+            )
+        }
+
         async fn recv(&mut self) -> Option<WorkerToEdge> {
-            self.end.recv().await
+            loop {
+                let message = self.end.recv().await?;
+                if !Self::about_resuming(&message) {
+                    return Some(message);
+                }
+                self.aside.push(message);
+            }
         }
 
         fn try_recv(&mut self) -> Result<Option<WorkerToEdge>, LinkError> {
-            self.end.try_recv()
+            loop {
+                match self.end.try_recv()? {
+                    Some(message) if Self::about_resuming(&message) => self.aside.push(message),
+                    other => return Ok(other),
+                }
+            }
+        }
+
+        /// Everything the edge has been sent and has not looked at yet, with nothing set
+        /// aside, in the order it came.
+        fn everything(&mut self) -> Vec<WorkerToEdge> {
+            let mut messages = Vec::new();
+            while let Ok(Some(message)) = self.end.try_recv() {
+                messages.push(message);
+            }
+            messages
         }
     }
 
@@ -897,6 +1498,75 @@ mod tests {
         (TestEdge::new(edge), worker)
     }
 
+    /// A store's handle whose answers to commits can be held back, and which can be
+    /// lost on demand. It notes what the runner asks for.
+    struct Gate {
+        inner: StoreHandle,
+        control: Arc<GateControl>,
+    }
+
+    #[derive(Default)]
+    struct GateControl {
+        holding: AtomicBool,
+        lost: AtomicBool,
+        /// The answers held back, in the order the store gave them.
+        kept: Mutex<VecDeque<StoreReply>>,
+        /// The ticks of the commits asked for, in that order.
+        commits: Mutex<Vec<u64>>,
+    }
+
+    impl GateControl {
+        fn hold(&self) {
+            self.holding.store(true, Ordering::SeqCst);
+        }
+
+        fn release(&self) {
+            self.holding.store(false, Ordering::SeqCst);
+        }
+
+        fn kept(&self) -> usize {
+            self.kept.lock().unwrap().len()
+        }
+
+        fn commits(&self) -> Vec<u64> {
+            self.commits.lock().unwrap().clone()
+        }
+    }
+
+    impl RegionStore for Gate {
+        fn request(&self, request: StoreRequest) {
+            if let StoreRequest::Commit { tick, .. } = &request {
+                self.control.commits.lock().unwrap().push(*tick);
+            }
+            self.inner.request(request);
+        }
+
+        fn try_reply(&self) -> Option<StoreReply> {
+            if RegionStore::is_lost(self) {
+                return None;
+            }
+            let holding = self.control.holding.load(Ordering::SeqCst);
+            let mut kept = self.control.kept.lock().unwrap();
+            if !holding && let Some(reply) = kept.pop_front() {
+                return Some(reply);
+            }
+            loop {
+                match self.inner.try_reply()? {
+                    reply @ StoreReply::Committed { .. } if holding => kept.push_back(reply),
+                    reply => return Some(reply),
+                }
+            }
+        }
+
+        fn is_lost(&self) -> bool {
+            self.control.lost.load(Ordering::SeqCst) || self.inner.is_lost()
+        }
+
+        fn flush(&self) {
+            self.inner.flush();
+        }
+    }
+
     /// The western one of two regions: it ends where the chunks with x = 1 begin.
     const WEST: ChunkArea = ChunkArea {
         min_x: None,
@@ -906,6 +1576,8 @@ mod tests {
     /// Where players enter the flat world.
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
+    const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
+
     fn config(area: ChunkArea) -> RegionConfig {
         RegionConfig {
             spawn: SPAWN,
@@ -914,15 +1586,50 @@ mod tests {
         }
     }
 
-    /// A region that has never run, with the first block of entity ids.
-    fn region_of(config: RegionConfig) -> Region {
-        Region::new(config, EntityIds::block(0).unwrap())
+    /// A store of a flat world that only lasts as long as the store.
+    fn memory() -> Store {
+        Store::memory(Arc::new(FlatGenerator::classic()))
     }
 
-    /// A runner for a region of a flat world that only lasts as long as the runner.
+    /// A store of a flat world kept in `directory`.
+    fn on_disk(directory: &std::path::Path) -> Store {
+        Store::local(directory, Arc::new(FlatGenerator::classic())).unwrap()
+    }
+
+    /// The hello of the owner of the one region of a store in these tests, whatever
+    /// part of the world the region takes itself to be.
+    fn owner() -> RegionHello {
+        RegionHello {
+            region: RegionId(0),
+            epoch: 1,
+            layout: Layout::single().fingerprint(),
+        }
+    }
+
+    /// A runner for the region as `store` has it, without links.
+    fn opened(store: &Store, config: RegionConfig) -> RegionRunner {
+        let (handle, restored) = store.open_region(owner()).unwrap();
+        RegionRunner::restore(config, handle, restored).unwrap()
+    }
+
+    /// A runner as [`opened`] makes it, with a gate before its store.
+    fn gated(store: &Store, config: RegionConfig) -> (RegionRunner, Arc<GateControl>) {
+        let (inner, restored) = store.open_region(owner()).unwrap();
+        let control = Arc::new(GateControl::default());
+        let gate = Gate {
+            inner,
+            control: Arc::clone(&control),
+        };
+        let region = Region::restore(config, restored_state(restored).unwrap());
+        (RegionRunner::with_store(region, Box::new(gate)), control)
+    }
+
+    /// A runner for a region of a flat world that only lasts as long as the runner,
+    /// with `link` as its first link.
     fn runner_of(config: RegionConfig, link: WorkerEnd) -> RegionRunner {
-        let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
-        RegionRunner::new(region_of(config), link, store)
+        let runner = opened(&memory(), config);
+        runner.links().attach(link);
+        runner
     }
 
     fn runner(link: WorkerEnd) -> RegionRunner {
@@ -935,6 +1642,10 @@ mod tests {
 
     fn other_player() -> PlayerId {
         PlayerId(Uuid::from_u128(2))
+    }
+
+    fn third_player() -> PlayerId {
+        PlayerId(Uuid::from_u128(3))
     }
 
     fn join(player: PlayerId, name: &str) -> EdgeToWorker {
@@ -1000,11 +1711,38 @@ mod tests {
             .collect()
     }
 
+    /// Where `player` stands along the x axis, if they are in the region.
+    fn x_of(runner: &RegionRunner, player: PlayerId) -> Option<f64> {
+        Some(runner.region().player(player)?.1.position.x)
+    }
+
+    /// Waits until the store has confirmed every tick that has run, and publishes them.
+    /// No tick runs meanwhile.
+    fn settle(runner: &mut RegionRunner) {
+        for _ in 0..20_000 {
+            if !runner.take_replies() {
+                return;
+            }
+            runner.publish_committed();
+            if runner.pending.is_empty() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the store did not confirm what the region committed");
+    }
+
+    /// Runs one tick with what has arrived, and publishes it once the store has it.
+    fn step(runner: &mut RegionRunner) {
+        runner.step();
+        settle(runner);
+    }
+
     /// Steps `runner` until `done` holds, giving the store thread and links that
     /// serialise time to deliver.
     fn step_until(runner: &mut RegionRunner, mut done: impl FnMut(&RegionRunner) -> bool) {
         for _ in 0..2000 {
-            runner.step();
+            step(runner);
             if done(runner) {
                 return;
             }
@@ -1019,13 +1757,14 @@ mod tests {
             if let Ok(Some(message)) = edge.try_recv() {
                 return message;
             }
-            runner.step();
+            step(runner);
             thread::sleep(Duration::from_millis(1));
         }
         panic!("the worker sent nothing");
     }
 
-    /// Everything `edge` has been sent and has not looked at yet.
+    /// Everything `edge` has been sent and has not looked at yet, but for what is said
+    /// about resuming and progress.
     fn received(edge: &mut TestEdge) -> Vec<WorkerToEdge> {
         let mut messages = Vec::new();
         while let Ok(Some(message)) = edge.try_recv() {
@@ -1039,6 +1778,12 @@ mod tests {
             .await
             .expect("the worker sent nothing")
             .expect("the worker closed the link")
+    }
+
+    /// Whether the worker has closed the link of `edge`, after whatever it sent before.
+    async fn closed(edge: &mut TestEdge) -> bool {
+        let ended = async { while edge.recv().await.is_some() {} };
+        timeout(Duration::from_secs(10), ended).await.is_ok()
     }
 
     /// The events of the delta that `message` has to be.
@@ -1057,6 +1802,13 @@ mod tests {
             } => (position, entities),
             other => panic!("expected a snapshot, got {other:?}"),
         }
+    }
+
+    /// The outbox of `edge` as the region has it: the number of the last entry made and
+    /// the numbers of those not confirmed.
+    fn outbox(runner: &RegionRunner, edge: &TestEdge) -> (u64, Vec<u64>) {
+        let state = runner.region().edge(edge.edge).unwrap();
+        (state.sent, state.outbox.keys().copied().collect())
     }
 
     /// A stand-in edge joins and subscribes, over a direct and over a serialising link.
@@ -1131,13 +1883,13 @@ mod tests {
         step_until(&mut runner, |runner| {
             runner.region().loaded_chunk_count() == 1
         });
-        runner.step();
+        step(&mut runner);
         received(&mut edge);
 
         // Within the subscribed chunk, then out of it: both can be seen from it.
         for x in [5.0, 20.0] {
             edge.send(walk(player(), x)).await.unwrap();
-            runner.step();
+            step(&mut runner);
             let Ok(Some(WorkerToEdge::TickDelta { events, .. })) = edge.try_recv() else {
                 panic!("expected a delta for the move to x = {x}");
             };
@@ -1149,7 +1901,7 @@ mod tests {
 
         // From one chunk nobody subscribed to into another: nobody is told.
         edge.send(walk(player(), 40.0)).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(edge.try_recv(), Ok(None));
     }
 
@@ -1170,7 +1922,7 @@ mod tests {
         step_until(&mut runner, |runner| {
             runner.region().loaded_chunk_count() == 1
         });
-        runner.step();
+        step(&mut runner);
         let seen = received(&mut edge);
         assert!(
             seen.iter().all(|message| match message {
@@ -1182,7 +1934,7 @@ mod tests {
         );
 
         edge.send(walk(player(), 85.0)).await.unwrap();
-        runner.step();
+        step(&mut runner);
         let Ok(Some(WorkerToEdge::TickDelta { events, .. })) = edge.try_recv() else {
             panic!("expected a delta");
         };
@@ -1196,7 +1948,7 @@ mod tests {
         // Leaving the watched chunk again is an ordinary move, and the player leaving
         // the game out there is none of the edge's business.
         edge.send(walk(player(), 120.0)).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert!(matches!(
             edge.try_recv(),
             Ok(Some(WorkerToEdge::TickDelta { events, .. }))
@@ -1205,7 +1957,7 @@ mod tests {
         edge.send(EdgeToWorker::PlayerLeave { player: player() })
             .await
             .unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(edge.try_recv(), Ok(None));
     }
 
@@ -1304,12 +2056,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_link_attached_while_the_runner_runs_is_served() {
         for connect in KINDS {
-            let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
-            let region = region_of(config(ChunkArea::EVERYWHERE));
-            let runner = RegionRunner::without_links(region, store);
+            let runner = opened(&memory(), config(ChunkArea::EVERYWHERE));
             let (links, status) = (runner.links(), runner.status());
             let worker = Worker::spawn(runner);
-            let origin = ChunkPos::new(0, 0);
 
             let (mut first, first_end) = connect(256);
             links.attach(first_end);
@@ -1328,23 +2077,22 @@ mod tests {
             thread::spawn(attach).join().unwrap();
             second
                 .send(EdgeToWorker::Subscribe {
-                    chunks: vec![origin],
+                    chunks: vec![ORIGIN],
                 })
                 .await
                 .unwrap();
             let (position, entities) = snapshot(next(&mut second).await);
-            assert_eq!(position, origin);
+            assert_eq!(position, ORIGIN);
             // The player of the other edge stands there.
             assert_eq!(entities.len(), 1);
             assert!(status.tick.load(Ordering::Relaxed) > 0);
             assert_eq!(status.players.load(Ordering::Relaxed), 1);
 
             // A link that comes too late is closed rather than left waiting.
-            worker.stop();
+            assert_eq!(worker.stop(), Ended::Stopped);
             let (mut late, late_end) = connect(256);
             links.attach(late_end);
-            let closed = timeout(Duration::from_secs(10), late.recv()).await;
-            assert_eq!(closed, Ok(None));
+            assert!(closed(&mut late).await);
         }
     }
 
@@ -1368,7 +2116,7 @@ mod tests {
         joined(&edge, &mut runner).await;
 
         edge.send(dig(1)).await.unwrap();
-        runner.step();
+        step(&mut runner);
         let changed = runner.region().chunk(origin).unwrap().clone();
         assert_eq!(changed.get(1, -61, 0), Some(clustine_data::blocks::AIR));
 
@@ -1377,7 +2125,7 @@ mod tests {
         })
         .await
         .unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().loaded_chunk_count(), 0);
 
         edge.send(EdgeToWorker::Subscribe {
@@ -1440,34 +2188,37 @@ mod tests {
         }
     }
 
-    /// Stopping stores what is still loaded, so that another runner on the same world
-    /// finds it.
+    /// Stopping stores what is still loaded and the region's state, so that another
+    /// runner on the same world carries on with both.
     #[tokio::test]
-    async fn stopping_stores_changed_chunks() {
+    async fn stopping_stores_changed_chunks_and_the_state() {
         let directory = tempfile::tempdir().unwrap();
-        let on_disk = |link| {
-            let generator = FlatGenerator::classic();
-            let region = region_of(config(ChunkArea::EVERYWHERE));
-            let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));
-            RegionRunner::new(region, link, store.unwrap())
-        };
-        let origin = ChunkPos::new(0, 0);
-
         let (edge, worker_end) = in_process(256);
-        let mut first = on_disk(worker_end);
+        let mut first = opened(&on_disk(directory.path()), config(ChunkArea::EVERYWHERE));
+        first.links().attach(worker_end);
         joined(&edge, &mut first).await;
         edge.send(dig(1)).await.unwrap();
         edge.send(dig(2)).await.unwrap();
-        first.step();
-        let changed = first.region().chunk(origin).unwrap().clone();
+        step(&mut first);
+        let changed = first.region().chunk(ORIGIN).unwrap().clone();
         // The player is still there and the chunk still loaded when the runner stops.
-        first.run(&AtomicBool::new(true));
+        assert_eq!(first.run(&AtomicBool::new(true)), Ended::Stopped);
+        let state = first.region().state();
         drop((first, edge));
 
         let (edge, worker_end) = in_process(256);
-        let mut second = on_disk(worker_end);
-        joined(&edge, &mut second).await;
-        assert_eq!(second.region().chunk(origin), Some(&changed));
+        let mut second = opened(&on_disk(directory.path()), config(ChunkArea::EVERYWHERE));
+        assert_eq!(second.region().state(), state);
+        second.links().attach(worker_end);
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![ORIGIN],
+        })
+        .await
+        .unwrap();
+        step_until(&mut second, |runner| {
+            runner.region().loaded_chunk_count() == 1
+        });
+        assert_eq!(second.region().chunk(ORIGIN), Some(&changed));
         assert_eq!(changed.get(2, -61, 0), Some(clustine_data::blocks::AIR));
     }
 
@@ -1477,15 +2228,14 @@ mod tests {
     async fn checkpoints_save_loaded_chunks_and_empty_the_log() {
         let directory = tempfile::tempdir().unwrap();
         let generator = FlatGenerator::classic();
-        let region = region_of(RegionConfig {
+        let config = RegionConfig {
             spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
             area: ChunkArea::EVERYWHERE,
             starting_hotbar: [None; HOTBAR_SLOTS],
-        });
-        let store = clustine_worldstore::spawn_local(directory.path(), Arc::new(generator));
+        };
         let (edge, worker_end) = in_process(256);
-        let mut runner =
-            RegionRunner::new(region, worker_end, store.unwrap()).with_checkpoint_interval(50);
+        let mut runner = opened(&on_disk(directory.path()), config).with_checkpoint_interval(50);
+        runner.links().attach(worker_end);
         joined(&edge, &mut runner).await;
         // The log is in segments, which a checkpoint removes once it covers them.
         let log_length = || -> u64 {
@@ -1503,7 +2253,7 @@ mod tests {
             runner.region().tick_number() % 50 == 1
         });
         edge.send(dig(1)).await.unwrap();
-        runner.step();
+        step(&mut runner);
         runner.store.flush();
         assert!(log_length() > 0, "the change was not logged");
         assert!(
@@ -1536,7 +2286,7 @@ mod tests {
         edge.send(EdgeToWorker::Unsubscribe { chunks: dropped })
             .await
             .unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().loaded_chunk_count(), 4);
         for position in kept {
             assert!(runner.region().chunk(position).is_some());
@@ -1559,7 +2309,7 @@ mod tests {
         step_until(&mut runner, |runner| {
             runner.region().loaded_chunk_count() == 1
         });
-        runner.step();
+        step(&mut runner);
 
         assert!(matches!(
             edge.try_recv(),
@@ -1573,7 +2323,7 @@ mod tests {
         })
         .await
         .unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().loaded_chunk_count(), 0);
     }
 
@@ -1628,37 +2378,47 @@ mod tests {
     }
 
     /// Numbers are what lets an edge send messages again without any being applied
-    /// twice. An edge whose numbers have a gap, or are where none belong, has lost track,
-    /// and the runner stops listening to it.
+    /// twice. An edge whose numbers on one link have a gap or go back, or are where none
+    /// belong, has lost track, and so has one that says hello twice. The runner stops
+    /// listening to it; its players stay, for the edge to come back to.
     #[tokio::test]
     async fn a_link_whose_messages_are_out_of_order_is_closed() {
-        let skipping = EdgeMessage {
-            number: Some(3),
-            body: walk_as(player(), 1, 5.0),
+        let subscription = EdgeToWorker::Subscribe {
+            chunks: vec![ORIGIN],
         };
-        let numbered_subscription = EdgeMessage {
-            number: Some(2),
-            body: EdgeToWorker::Subscribe {
-                chunks: vec![ChunkPos::new(0, 0)],
-            },
+        let wrong = |edge: &TestEdge| {
+            [
+                // The join was number 1.
+                EdgeMessage {
+                    number: Some(3),
+                    body: walk_as(player(), 1, 5.0),
+                },
+                EdgeMessage {
+                    number: Some(1),
+                    body: walk_as(player(), 1, 5.0),
+                },
+                EdgeMessage {
+                    number: Some(2),
+                    body: subscription.clone(),
+                },
+                EdgeMessage::unnumbered(walk_as(player(), 1, 5.0)),
+                EdgeMessage::unnumbered(edge.hello(0, &[], &[])),
+            ]
         };
-        for wrong in [skipping, numbered_subscription] {
+        for case in 0..5 {
             let (mut edge, worker_end) = in_process(256);
             let mut runner = runner(worker_end);
             joined(&edge, &mut runner).await;
-            // A hello carries no number and takes none, also when it comes again.
-            edge.send(edge.hello()).await.unwrap();
-            runner.step();
             assert_eq!(runner.links.len(), 1);
-            assert_eq!(runner.region().player_count(), 1);
 
+            let wrong = wrong(&edge).into_iter().nth(case).unwrap();
             edge.send_as_is(wrong).await.unwrap();
             step_until(&mut runner, |runner| runner.links.is_empty());
-            runner.step();
-            assert_eq!(runner.region().player_count(), 0);
+            step(&mut runner);
+            assert_eq!(runner.region().player_count(), 1, "case {case}");
+            assert_eq!(x_of(&runner, player()), Some(SPAWN.x), "case {case}");
             // The edge finds its link closed after what it was told before.
-            received(&mut edge);
-            assert_eq!(edge.recv().await, None);
+            assert!(closed(&mut edge).await);
         }
     }
 
@@ -1676,7 +2436,7 @@ mod tests {
             },
         };
         edge.send(subscribe).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.links.len(), 1);
 
         let join = EdgeMessage {
@@ -1685,216 +2445,169 @@ mod tests {
         };
         edge.send(join).await.unwrap();
         step_until(&mut runner, |runner| runner.links.is_empty());
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().player_count(), 0);
         assert_eq!(runner.region().loaded_chunk_count(), 0);
     }
 
-    /// Until edges confirm what they get, the runner confirms each outbox entry it has
-    /// passed on, whether it could be delivered or not, so that nothing piles up.
+    /// An outbox entry stays in the outbox until the edge confirms it, however often
+    /// it was sent.
     #[tokio::test]
-    async fn what_the_region_passes_on_is_confirmed_and_the_outboxes_stay_empty() {
+    async fn an_outbox_entry_stays_until_the_edge_confirms_it() {
         let (mut edge, worker_end) = in_process(256);
         let mut runner = runner_of(config(WEST), worker_end);
-        let outbox = |runner: &RegionRunner, edge: &TestEdge| {
-            let state = runner.region().edge(edge.edge).unwrap();
-            (state.sent, state.outbox.len())
-        };
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(walk(player(), 14.5)).await.unwrap();
-        runner.step();
-        assert_eq!(outbox(&runner, &edge), (0, 0));
+        step(&mut runner);
+        assert_eq!(outbox(&runner, &edge), (0, vec![]));
         received(&mut edge);
 
         // A block beyond the region, and a step beyond it.
         edge.send(dig(16)).await.unwrap();
         edge.send(walk(player(), 20.0)).await.unwrap();
-        runner.step();
-        assert_eq!(outbox(&runner, &edge), (2, 2));
+        step(&mut runner);
+        assert_eq!(outbox(&runner, &edge), (2, vec![1, 2]));
         assert!(matches!(
             received(&mut edge)[..],
             [
-                WorkerToEdge::Remote(_),
-                WorkerToEdge::ToPlayer {
-                    event: PlayerEvent::Departed(_),
-                    ..
+                WorkerToEdge::Outbox {
+                    number: 1,
+                    entry: Durable::Remote(_),
+                },
+                WorkerToEdge::Outbox {
+                    number: 2,
+                    entry: Durable::Departed { .. },
                 },
             ]
         ));
-        runner.step();
-        assert_eq!(outbox(&runner, &edge), (2, 0));
-        // How far the edge's messages are applied is noted too.
+        // Nobody but the edge confirms anything.
+        step(&mut runner);
+        assert_eq!(outbox(&runner, &edge), (2, vec![1, 2]));
+
+        edge.send(EdgeToWorker::Confirm { number: 1 })
+            .await
+            .unwrap();
+        step(&mut runner);
+        assert_eq!(outbox(&runner, &edge), (2, vec![2]));
+        edge.send(EdgeToWorker::Confirm { number: 2 })
+            .await
+            .unwrap();
+        step(&mut runner);
+        assert_eq!(outbox(&runner, &edge), (2, vec![]));
+        // How far the edge's messages are applied is noted too, and nothing was sent
+        // again meanwhile.
         assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 4);
+        assert_eq!(received(&mut edge), []);
     }
 
+    /// A link that ends takes its subscriptions with it and nothing else: the players
+    /// are the edge's, which is expected back.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_link_whose_edge_is_gone_is_dropped_and_the_runner_goes_on() {
+    async fn a_link_that_ends_leaves_its_players_in_the_region() {
         for connect in KINDS {
             let (edge, worker_end) = connect(256);
             let mut runner = runner(worker_end);
             joined(&edge, &mut runner).await;
             assert_eq!(runner.region().player_count(), 1);
+            let known = edge.edge;
 
-            // Found out before the tick, so the tick is already one without the edge:
-            // its player has left and its chunk is no longer needed.
+            // Found out before the tick, so the tick is already one without the link:
+            // its chunk is no longer needed.
             drop(edge);
             step_until(&mut runner, |runner| runner.links.is_empty());
-            assert_eq!(runner.region().player_count(), 0);
+            assert_eq!(runner.region().player_count(), 1);
             assert_eq!(runner.region().loaded_chunk_count(), 0);
-            assert!(runner.players.is_empty());
+            assert_eq!(runner.edges[&known].link, None);
 
             let ticks = runner.region().tick_number();
-            runner.step();
+            step(&mut runner);
             assert_eq!(runner.region().tick_number(), ticks + 1);
+            assert_eq!(runner.region().player_count(), 1);
         }
     }
 
     #[tokio::test]
     async fn an_edge_that_does_not_keep_up_loses_its_link_and_the_runner_goes_on() {
-        // Room for a single message, and nobody reads it.
-        let (mut edge, worker_end) = in_process(1);
+        // Room for the answer to the hello, which is two messages, and nobody reads.
+        let (mut edge, worker_end) = in_process(2);
         let mut runner = runner(worker_end);
-        // The hello has to make room first.
-        runner.step();
+        step(&mut runner);
+        assert_eq!(runner.links.len(), 1);
         edge.try_send(join(player(), "Notch")).unwrap();
-        runner.step();
         edge.try_send(EdgeToWorker::Subscribe { chunks: square(1) })
             .unwrap();
 
-        // What the player was told fills the link, so the chunks cannot be sent.
-        step_until(&mut runner, |runner| runner.links.is_empty());
+        // The tick has run when it turns out that the player cannot be told that they
+        // entered the world. They stay; the chunks are let go with the next tick.
+        step(&mut runner);
+        assert!(runner.links.is_empty());
         assert_eq!(runner.region().player_count(), 1);
-        assert!(runner.region().loaded_chunk_count() > 0);
-
-        // The player leaves and the chunks are let go with the next tick, and the
-        // region ticks on.
-        runner.step();
-        assert_eq!(runner.region().player_count(), 0);
-        assert_eq!(runner.region().loaded_chunk_count(), 0);
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 0
+        });
         let ticks = runner.region().tick_number();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().tick_number(), ticks + 1);
 
         // The edge finds its link closed after what did fit.
         assert!(matches!(
-            edge.recv().await,
-            Some(WorkerToEdge::ToPlayer { .. })
+            edge.everything()[..],
+            [
+                WorkerToEdge::Welcome(Welcome::Unknown),
+                WorkerToEdge::Progress { .. }
+            ]
         ));
-        assert_eq!(edge.recv().await, None);
+        assert!(closed(&mut edge).await);
     }
 
-    /// When a link turns out to be of no use while it is told what a tick did, that tick
-    /// has run. What follows from losing the link happens in the next one.
+    /// An edge that loses its link connects again and finds its players as they were,
+    /// with what the old link still carried applied.
     #[tokio::test]
-    async fn a_link_lost_while_publishing_has_its_players_removed_in_the_next_tick() {
-        // Room for the snapshots of two chunks, which are never read.
-        let (slow, slow_end) = in_process(2);
-        let (mut watcher, watcher_end) = in_process(256);
-        let mut runner = runner(slow_end);
-        runner.links().attach(watcher_end);
-        let (origin, beside) = (ChunkPos::new(0, 0), ChunkPos::new(0, 1));
-
-        slow.send(EdgeToWorker::Subscribe {
-            chunks: vec![origin, beside],
-        })
-        .await
-        .unwrap();
-        watcher
-            .send(EdgeToWorker::Subscribe {
-                chunks: vec![origin],
-            })
-            .await
-            .unwrap();
-        step_until(&mut runner, |runner| {
-            runner.region().loaded_chunk_count() == 2
-        });
-        assert_eq!(snapshot(step_for(&mut runner, &mut watcher)).0, origin);
-        assert_eq!(runner.links.len(), 2);
-
-        // The slow edge cannot be told about its own player, who has joined by then.
-        slow.send(join(player(), "Notch")).await.unwrap();
-        runner.step();
-        assert_eq!(runner.links.len(), 1);
-        assert_eq!(runner.region().player_count(), 1);
-        assert_eq!(runner.region().loaded_chunk_count(), 2);
-
-        // A tick later the player is gone, and so is the chunk that only the slow edge
-        // had asked for.
-        runner.step();
-        assert_eq!(runner.region().player_count(), 0);
-        assert_eq!(runner.region().loaded_chunk_count(), 1);
-        assert!(runner.region().chunk(origin).is_some());
-
-        let seen = received(&mut watcher);
-        let [
-            WorkerToEdge::TickDelta {
-                tick: came,
-                events: first,
-            },
-            WorkerToEdge::TickDelta {
-                tick: went,
-                events: second,
-            },
-        ] = &seen[..]
-        else {
-            panic!("expected two deltas, got {seen:?}");
-        };
-        assert!(matches!(first[..], [RegionEvent::EntitySpawned(_)]));
-        let removed = RegionEvent::EntityRemoved {
-            entity: EntityId(1),
-            chunk: origin,
-        };
-        assert_eq!(*second, [removed]);
-        assert_eq!(*went, came + 1);
-    }
-
-    /// An edge that loses its link connects again and brings its players back. When the
-    /// region sees all of that between two ticks, the players have to end up in it.
-    #[tokio::test]
-    async fn a_player_whose_edge_reconnects_within_one_tick_is_in_the_region_afterwards() {
+    async fn an_edge_that_is_back_on_a_new_link_has_its_players_still() {
         let (old, old_end) = in_process(256);
         let mut runner = runner(old_end);
         joined(&old, &mut runner).await;
-        assert_eq!(
-            runner.region().player(player()),
-            Some((EntityId(1), Pose::at(SPAWN)))
-        );
+        let Some((entity, _)) = runner.region().player(player()) else {
+            panic!("the player has joined");
+        };
 
         // The last the old link carried is something the player did.
         old.send(walk(player(), 3.0)).await.unwrap();
+        let (edge_end, new_end) = link::in_process(256);
+        let mut new = old.again(edge_end);
         drop(old);
-        let (mut new, new_end) = in_process(256);
         runner.links().attach(new_end);
-        new.send(join(player(), "Notch")).await.unwrap();
-        new.send(EdgeToWorker::Subscribe {
-            chunks: vec![ChunkPos::new(0, 0)],
-        })
-        .await
-        .unwrap();
-        runner.step();
+        new.send(new.hello(0, &[player()], &[ORIGIN]))
+            .await
+            .unwrap();
+        step(&mut runner);
 
-        // The player left through the old link first and then joined through the new
-        // one, which makes them a new entity that has not done anything yet.
         assert_eq!(runner.links.len(), 1);
-        assert_eq!(
-            runner.region().player(player()),
-            Some((EntityId(2), Pose::at(SPAWN)))
-        );
+        assert_eq!(runner.region().player_count(), 1);
+        let walked = Pose {
+            position: Vec3::new(3.0, -60.0, 0.5),
+            on_ground: true,
+            ..Pose::at(SPAWN)
+        };
+        assert_eq!(runner.region().player(player()), Some((entity, walked)));
+        // The answer is of the region as it was before the tick that took the step.
+        let told = new.everything();
+        assert_eq!(told[0], WorkerToEdge::Welcome(Welcome::Resumed));
+        let WorkerToEdge::Presence {
+            answer:
+                Presence::Present {
+                    entity: present,
+                    pose,
+                    ..
+                },
+            ..
+        } = &told[1]
+        else {
+            panic!("expected the player to be present, got {told:?}");
+        };
+        assert_eq!((*present, *pose), (entity, Pose::at(SPAWN)));
         // The chunk was let go of and asked for within the same tick, so it stayed.
         assert_eq!(runner.region().loaded_chunk_count(), 1);
-        let spawned = received(&mut new).into_iter().find_map(|message| {
-            let WorkerToEdge::ToPlayer { event, .. } = message else {
-                return None;
-            };
-            Some(event)
-        });
-        assert!(matches!(
-            spawned,
-            Some(PlayerEvent::Spawned {
-                entity_id: EntityId(2),
-                ..
-            })
-        ));
     }
 
     /// The region can also learn of a player's new connection before it learns that the
@@ -1908,13 +2621,13 @@ mod tests {
         let entity = |runner: &RegionRunner| Some(runner.region().player(player())?.0);
 
         first.send(join(player(), "Notch")).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(entity(&runner), Some(EntityId(1)));
 
         // The new entity does not take the step that came through the first link.
         first.send(walk(player(), 3.0)).await.unwrap();
         second.send(join(player(), "Notch")).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(
             runner.region().player(player()),
             Some((EntityId(2), Pose::at(SPAWN)))
@@ -1937,7 +2650,7 @@ mod tests {
             .send(EdgeToWorker::PlayerLeave { player: player() })
             .await
             .unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(
             runner.region().player(player()),
             Some((EntityId(2), Pose::at(SPAWN)))
@@ -1947,7 +2660,7 @@ mod tests {
         // the link they belong to ends within the same tick.
         first.send(join(player(), "Notch")).await.unwrap();
         drop(second);
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.links.len(), 1);
         assert_eq!(entity(&runner), Some(EntityId(3)));
     }
@@ -1961,19 +2674,18 @@ mod tests {
         let leave = || EdgeToWorker::PlayerLeave { player: player() };
 
         owner.send(join(player(), "Notch")).await.unwrap();
-        runner.step();
+        step(&mut runner);
         stranger.send(walk(player(), 5.0)).await.unwrap();
         stranger.send(leave()).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(
             runner.region().player(player()),
             Some((EntityId(1), Pose::at(SPAWN)))
         );
 
         owner.send(leave()).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().player_count(), 0);
-        assert!(runner.players.is_empty());
     }
 
     /// The region handles what players did only after all of them have joined or left.
@@ -1984,14 +2696,14 @@ mod tests {
         let (edge, worker_end) = in_process(256);
         let mut runner = runner(worker_end);
         edge.send(join(player(), "Notch")).await.unwrap();
-        runner.step();
+        step(&mut runner);
 
         edge.send(walk_as(player(), 900, 3.0)).await.unwrap();
         edge.send(EdgeToWorker::PlayerLeave { player: player() })
             .await
             .unwrap();
         edge.send(join(player(), "Notch")).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(
             runner.region().player(player()),
             Some((EntityId(2), Pose::at(SPAWN)))
@@ -1999,7 +2711,7 @@ mod tests {
 
         // Their new connection numbers what they do from the start again.
         edge.send(walk_as(player(), 1, 4.0)).await.unwrap();
-        runner.step();
+        step(&mut runner);
         let (_, pose) = runner.region().player(player()).unwrap();
         assert_eq!(pose.position.x, 4.0);
     }
@@ -2045,15 +2757,17 @@ mod tests {
                 last_input: 8,
                 ..arriving
             };
-            let departed = WorkerToEdge::ToPlayer {
-                player: player(),
-                event: PlayerEvent::Departed(leaving),
+            let departed = WorkerToEdge::Outbox {
+                number: 1,
+                entry: Durable::Departed {
+                    player: player(),
+                    transfer: leaving,
+                },
             };
             assert_eq!(message, departed);
             assert_eq!(runner.region().player_count(), 0);
             assert_eq!(status.departures.load(Ordering::Relaxed), 1);
             // The region is done with the player, and nobody else was told anything.
-            assert!(runner.players.is_empty());
             assert_eq!(bystander.try_recv(), Ok(None));
         }
     }
@@ -2112,10 +2826,13 @@ mod tests {
             };
             assert_eq!(
                 step_for(&mut runner, &mut edge),
-                WorkerToEdge::Remote(request)
+                WorkerToEdge::Outbox {
+                    number: 1,
+                    entry: Durable::Remote(request),
+                }
             );
             // Nobody is told that it was handled, and the other edge hears nothing.
-            runner.step();
+            step(&mut runner);
             assert_eq!(received(&mut edge), []);
             assert_eq!(received(&mut other), []);
 
@@ -2137,15 +2854,18 @@ mod tests {
             assert_eq!(events(step_for(&mut runner, &mut other)), changed);
             assert_eq!(
                 step_for(&mut runner, &mut other),
-                WorkerToEdge::RemoteDone {
-                    player: other_player(),
-                    sequence: 3,
+                WorkerToEdge::Outbox {
+                    number: 1,
+                    entry: Durable::RemoteDone {
+                        player: other_player(),
+                        sequence: 3,
+                    },
                 }
             );
             // The first edge watches the chunk too and is told of the change, but not
             // that anything is done: it did not ask.
             assert_eq!(events(step_for(&mut runner, &mut edge)), changed);
-            runner.step();
+            step(&mut runner);
             assert_eq!(received(&mut edge), []);
 
             // A block to be placed beyond this region against one of this region's is
@@ -2169,17 +2889,20 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 step_for(&mut runner, &mut other),
-                WorkerToEdge::Remote(RemoteAction {
-                    player: other_player(),
-                    sequence: 4,
-                    step: RemoteStep::Place {
-                        target,
-                        block: stone,
-                        placer,
-                    },
-                })
+                WorkerToEdge::Outbox {
+                    number: 2,
+                    entry: Durable::Remote(RemoteAction {
+                        player: other_player(),
+                        sequence: 4,
+                        step: RemoteStep::Place {
+                            target,
+                            block: stone,
+                            placer,
+                        },
+                    }),
+                }
             );
-            runner.step();
+            step(&mut runner);
             assert_eq!(received(&mut edge), []);
             assert_eq!(received(&mut other), []);
         }
@@ -2197,7 +2920,7 @@ mod tests {
         let leave = || EdgeToWorker::PlayerLeave { player: player() };
 
         first.send(join(player(), "Notch")).await.unwrap();
-        runner.step();
+        step(&mut runner);
         second
             .send(EdgeToWorker::PlayerArrive {
                 player: player(),
@@ -2205,7 +2928,7 @@ mod tests {
             })
             .await
             .unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(
             runner.region().player(player()),
             Some((EntityId(1), Pose::at(SPAWN)))
@@ -2214,73 +2937,91 @@ mod tests {
 
         // The player is still the first link's to take out of the region.
         second.send(leave()).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().player_count(), 1);
         first.send(leave()).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!(runner.region().player_count(), 0);
     }
 
-    /// A player steps out of the region, but the link that would pass them on is lost.
-    /// Nothing will come of their entity, so everyone else is told that it is gone.
+    /// A player steps out of the region, but their edge has no link and never comes
+    /// back for them. When the region forgets the edge, everyone is told that the
+    /// entity is gone: it was seen to leave, and nobody will pass it on.
     #[tokio::test]
-    async fn a_departure_that_cannot_be_delivered_removes_the_entity_for_the_other_links() {
-        let (origin, beside) = (ChunkPos::new(0, 0), ChunkPos::new(0, 1));
-        // The link is lost either on the departure itself or on what is sent before it.
-        for subscribed in [false, true] {
-            // Room for two messages, which are never read.
-            let (slow, slow_end) = in_process(2);
-            let (mut watcher, watcher_end) = in_process(256);
-            let mut runner = runner_of(config(WEST), slow_end);
-            runner.links().attach(watcher_end);
+    async fn an_edge_that_stays_away_is_gone_with_its_players_and_departures() {
+        let (edge, edge_end) = in_process(256);
+        let (mut watcher, watcher_end) = in_process(256);
+        let mut runner = runner_of(config(WEST), edge_end).with_gone_after(5);
+        runner.links().attach(watcher_end);
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(join(other_player(), "Jeb")).await.unwrap();
+        watcher
+            .send(EdgeToWorker::Subscribe {
+                chunks: vec![ORIGIN],
+            })
+            .await
+            .unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 1 && runner.region().player_count() == 2
+        });
+        step(&mut runner);
+        received(&mut watcher);
+        let entity = |runner: &RegionRunner, player| runner.region().player(player).unwrap().0;
+        let (leaving, staying) = (entity(&runner, player()), entity(&runner, other_player()));
+        let known = edge.edge;
 
-            if subscribed {
-                // Two snapshots fill the link. The player joins and steps out within
-                // one tick, of which the slow edge cannot even be sent the events.
-                slow.send(EdgeToWorker::Subscribe {
-                    chunks: vec![origin, beside],
-                })
-                .await
-                .unwrap();
-                step_until(&mut runner, |runner| {
-                    runner.region().loaded_chunk_count() == 2
-                });
-                slow.send(join(player(), "Notch")).await.unwrap();
-            } else {
-                // That the player has joined and that their digging was handled fills
-                // the link, so that their departure does not fit.
-                slow.send(join(player(), "Notch")).await.unwrap();
-                runner.step();
-                slow.send(dig(1)).await.unwrap();
-                runner.step();
-            }
-            assert_eq!(runner.links.len(), 2);
-            slow.send(walk(player(), 20.0)).await.unwrap();
-            runner.step();
-            assert_eq!(runner.links.len(), 1);
-            assert_eq!(runner.region().player_count(), 0);
-            assert!(runner.players.is_empty());
+        // The last the link carries is the step out of the region.
+        edge.send(walk(player(), 20.0)).await.unwrap();
+        drop(edge);
+        let away_since = runner.region().tick_number();
+        step(&mut runner);
+        assert!(runner.edges[&known].link.is_none());
+        assert_eq!(runner.region().edge(known).unwrap().outbox.len(), 1);
+        assert_eq!(runner.region().player_count(), 1);
+        // The entity lives on as far as anyone knows.
+        let seen = received(&mut watcher);
+        let [WorkerToEdge::TickDelta { events, .. }] = &seen[..] else {
+            panic!("expected a delta, got {seen:?}");
+        };
+        assert!(matches!(events[..], [RegionEvent::EntityMoved { .. }]));
 
-            // The watcher is not subscribed to anything, least of all to the chunk the
-            // player walked into, which is not this region's.
-            let removed = RegionEvent::EntityRemoved {
-                entity: EntityId(1),
-                chunk: ChunkPos::new(1, 0),
-            };
-            let delta = WorkerToEdge::TickDelta {
-                tick: runner.region().tick_number(),
-                events: vec![removed],
-            };
-            assert_eq!(received(&mut watcher), [delta]);
-
-            // That the lost link's player leaves in the next tick changes nothing more.
-            runner.step();
-            assert!(received(&mut watcher).is_empty());
+        // Five ticks without a link pass, and the sixth forgets the edge.
+        while runner.region().tick_number() < away_since + 5 {
+            step(&mut runner);
+            assert_eq!(runner.region().player_count(), 1);
+            assert_eq!(received(&mut watcher), []);
         }
+        step(&mut runner);
+        assert_eq!(runner.region().tick_number(), away_since + 6);
+        assert_eq!(runner.region().player_count(), 0);
+        assert!(runner.region().edge(known).is_none());
+        assert!(!runner.edges.contains_key(&known));
+        let seen = received(&mut watcher);
+        let [WorkerToEdge::TickDelta { events, .. }] = &seen[..] else {
+            panic!("expected a delta, got {seen:?}");
+        };
+        let mut removed: Vec<_> = events
+            .iter()
+            .map(|event| match event {
+                RegionEvent::EntityRemoved { entity, chunk } => (*entity, *chunk),
+                other => panic!("expected a removal, got {other:?}"),
+            })
+            .collect();
+        removed.sort();
+        let mut expected = vec![(leaving, ChunkPos::new(1, 0)), (staying, ORIGIN)];
+        expected.sort();
+        assert_eq!(removed, expected);
+
+        // An edge with a link is never gone, however little it says.
+        let ticks = runner.region().tick_number();
+        while runner.region().tick_number() < ticks + 10 {
+            step(&mut runner);
+        }
+        assert!(runner.region().edge(watcher.edge).is_some());
     }
 
     #[tokio::test]
-    async fn a_refused_player_is_told_through_their_link_and_forgotten() {
+    async fn a_refused_player_is_told_through_the_outbox_of_their_edge() {
         let (mut edge, worker_end) = in_process(256);
         // A region with a single entity id to give out.
         let entity_ids = EntityIds {
@@ -2289,21 +3030,23 @@ mod tests {
         };
         let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
         let region = Region::new(config(ChunkArea::EVERYWHERE), entity_ids);
-        let mut runner = RegionRunner::new(region, worker_end, store);
+        let mut runner = RegionRunner::with_store(region, Box::new(store));
+        runner.links().attach(worker_end);
 
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(join(other_player(), "Jeb")).await.unwrap();
-        runner.step();
+        step(&mut runner);
         let told = received(&mut edge);
-        let refused = WorkerToEdge::ToPlayer {
-            player: other_player(),
-            event: PlayerEvent::Refused,
+        let refused = WorkerToEdge::Outbox {
+            number: 1,
+            entry: Durable::Refused {
+                player: other_player(),
+            },
         };
         assert!(
             matches!(&told[..], [WorkerToEdge::ToPlayer { .. }, last] if *last == refused),
             "{told:?}"
         );
-        assert_eq!(runner.players.keys().collect::<Vec<_>>(), [&player()]);
     }
 
     #[tokio::test]
@@ -2332,14 +3075,14 @@ mod tests {
             })
             .await
             .unwrap();
-            runner.step();
+            step(&mut runner);
             assert_eq!((population(), traffic()), ((2, 1), (1, 0)));
         }
 
         // Both step out of the region; one of them comes back.
         edge.send(walk(player(), 20.0)).await.unwrap();
         edge.send(walk_as(other_player(), 8, 20.0)).await.unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!((population(), traffic()), ((0, 1), (1, 2)));
         edge.send(EdgeToWorker::PlayerArrive {
             player: other_player(),
@@ -2352,7 +3095,7 @@ mod tests {
         })
         .await
         .unwrap();
-        runner.step();
+        step(&mut runner);
         assert_eq!((population(), traffic()), ((1, 0), (2, 2)));
         assert_eq!(read(&status.tick), runner.region().tick_number());
     }
@@ -2371,5 +3114,787 @@ mod tests {
         // fewer, but a runner that does not pace itself would run thousands.
         let ticks = runner.region().tick_number();
         assert!((5..=12).contains(&ticks), "{ticks} ticks");
+    }
+
+    /// Waits until the store has answered `count` commits that the gate holds back.
+    fn wait_for_kept(runner: &mut RegionRunner, gate: &GateControl, count: usize) {
+        for _ in 0..20_000 {
+            assert!(runner.take_replies());
+            if gate.kept() >= count {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the store did not answer the commits");
+    }
+
+    /// What a tick did is shown to nobody before the store has it, and the region does
+    /// not run far ahead of what the store has.
+    #[tokio::test]
+    async fn nothing_of_a_tick_is_published_before_its_commit_is_confirmed() {
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = gated(&memory(), config(ChunkArea::EVERYWHERE));
+        runner.links().attach(worker_end);
+        gate.hold();
+
+        // Each tick has something of the player's to apply, so each is to be committed.
+        edge.send(join(player(), "Notch")).await.unwrap();
+        for tick in 1..=20 {
+            runner.step();
+            let ran = tick.min(MAX_TICKS_AHEAD as u64);
+            assert_eq!(runner.region().tick_number(), ran);
+            assert_eq!(runner.status().tick.load(Ordering::Relaxed), ran);
+            edge.send(walk(player(), tick as f64)).await.unwrap();
+        }
+        // The store has every one of them on disk, and still nobody is told anything.
+        wait_for_kept(&mut runner, &gate, MAX_TICKS_AHEAD);
+        runner.step();
+        assert_eq!(gate.commits(), (1..=8).collect::<Vec<_>>());
+        assert_eq!(runner.region().tick_number(), 8);
+        assert_eq!(edge.everything(), []);
+        // Not even the player's position, which is seven steps along.
+        assert_eq!(x_of(&runner, player()), Some(7.0));
+
+        // Once the commits are answered, everything arrives in the order it happened,
+        // and the region goes on with what has come in meanwhile.
+        gate.release();
+        step(&mut runner);
+        assert_eq!(runner.region().tick_number(), 9);
+        assert_eq!(x_of(&runner, player()), Some(20.0));
+        let told = edge.everything();
+        assert_eq!(told[0], WorkerToEdge::Welcome(Welcome::Unknown));
+        assert!(matches!(
+            told[1],
+            WorkerToEdge::ToPlayer {
+                event: PlayerEvent::Spawned { .. },
+                ..
+            }
+        ));
+        let applied: Vec<_> = told[2..]
+            .iter()
+            .map(|message| match message {
+                WorkerToEdge::Progress { applied, .. } => *applied,
+                other => panic!("expected progress, got {other:?}"),
+            })
+            .collect();
+        // The join and seven steps in a tick each, then the other thirteen in one.
+        assert_eq!(applied, [1, 2, 3, 4, 5, 6, 7, 8, 21]);
+    }
+
+    /// A tick in which nothing changed but its number is not worth a commit. It counts
+    /// as committed once the tick before it is, and not earlier.
+    #[tokio::test]
+    async fn a_tick_that_changes_nothing_sends_no_commit_and_is_published() {
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = gated(&memory(), config(ChunkArea::EVERYWHERE));
+        runner.links().attach(worker_end);
+
+        // The hello makes the edge known, which is a change. Loading a chunk and showing
+        // it are none: chunks are not part of the region's state.
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![ORIGIN],
+        })
+        .await
+        .unwrap();
+        let (position, _) = snapshot(step_for(&mut runner, &mut edge));
+        assert_eq!(position, ORIGIN);
+        assert!(runner.region().tick_number() > 1);
+        assert_eq!(gate.commits(), [1]);
+
+        // Behind a tick that is not confirmed, ticks that changed nothing wait as well,
+        // and count towards how far ahead the region may be.
+        gate.hold();
+        edge.send(join(player(), "Notch")).await.unwrap();
+        let before = runner.region().tick_number();
+        runner.step();
+        edge.send(EdgeToWorker::Unsubscribe {
+            chunks: vec![ORIGIN],
+        })
+        .await
+        .unwrap();
+        for _ in 0..20 {
+            runner.step();
+        }
+        wait_for_kept(&mut runner, &gate, 1);
+        assert_eq!(runner.region().tick_number(), before + 8);
+        assert_eq!(gate.commits(), [1, before + 1]);
+        assert_eq!(edge.everything(), []);
+
+        gate.release();
+        step(&mut runner);
+        let told = edge.everything();
+        assert!(
+            matches!(
+                told[..],
+                [
+                    WorkerToEdge::TickDelta { .. },
+                    WorkerToEdge::ToPlayer { .. },
+                    WorkerToEdge::Progress { applied: 1, .. },
+                ]
+            ),
+            "{told:?}"
+        );
+        assert_eq!(gate.commits(), [1, before + 1]);
+    }
+
+    /// The owner of a region dies after the store has a tick and before any edge has
+    /// heard of it. Whoever carries on with the region tells the edge what it missed:
+    /// what is in the outbox, and where its players are as of what is on disk.
+    #[tokio::test]
+    async fn a_runner_restored_after_a_commit_that_was_never_published_tells_it_on_hello() {
+        let store = memory();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = gated(&store, config(WEST));
+        runner.links().attach(worker_end);
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(join(other_player(), "Jeb")).await.unwrap();
+        step(&mut runner);
+        let entity = runner.region().player(other_player()).unwrap().0;
+        edge.everything();
+
+        // One steps out of the region and the other aside, in a tick that the store
+        // gets and the edge does not.
+        gate.hold();
+        edge.send(walk(player(), 20.0)).await.unwrap();
+        let aside = walk(other_player(), 5.0);
+        let EdgeToWorker::Input { number: input, .. } = aside else {
+            unreachable!("a step is an input");
+        };
+        edge.send(aside).await.unwrap();
+        runner.step();
+        wait_for_kept(&mut runner, &gate, 1);
+        assert_eq!(edge.everything(), []);
+        let tick = runner.region().tick_number();
+        let committed = runner.region().state();
+        drop(runner);
+        assert!(closed(&mut edge).await);
+
+        let mut restored = opened(&store, config(WEST));
+        assert_eq!(restored.region().state(), committed);
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut again = edge.again(edge_end);
+        restored.links().attach(worker_end);
+        again
+            .send(again.hello(0, &[player(), other_player()], &[]))
+            .await
+            .unwrap();
+        step(&mut restored);
+        assert_eq!(restored.region().tick_number(), tick + 1);
+
+        let told = again.everything();
+        let [
+            WorkerToEdge::Welcome(Welcome::Resumed),
+            WorkerToEdge::Outbox {
+                number: 1,
+                entry: Durable::Departed { player: gone, .. },
+            },
+            WorkerToEdge::Presence {
+                player: first,
+                answer: Presence::Absent,
+            },
+            WorkerToEdge::Presence {
+                player: second,
+                answer,
+            },
+            WorkerToEdge::Progress { applied: 4, inputs },
+        ] = &told[..]
+        else {
+            panic!("unexpected {told:?}");
+        };
+        assert_eq!(
+            (*gone, *first, *second),
+            (player(), player(), other_player())
+        );
+        assert_eq!(*inputs, []);
+        let pose = Pose {
+            position: Vec3::new(5.0, -60.0, 0.5),
+            on_ground: true,
+            ..Pose::at(SPAWN)
+        };
+        assert_eq!(
+            *answer,
+            Presence::Present {
+                entity,
+                pose,
+                hotbar: [None; HOTBAR_SLOTS],
+                selected_slot: 0,
+                last_input: input,
+                handled: None,
+            }
+        );
+    }
+
+    /// A region comes back from disk as it was committed: its players and whose they
+    /// are, what it owes each edge and how far it has got with what each edge sent. It
+    /// takes the edge's messages up from there.
+    #[tokio::test]
+    async fn a_restored_region_carries_on_where_the_store_has_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let (edge, worker_end) = in_process(256);
+        let mut first = opened(&on_disk(directory.path()), config(WEST));
+        first.links().attach(worker_end);
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(walk(player(), 14.5)).await.unwrap();
+        step(&mut first);
+        // A block beyond the region, which leaves an entry in the outbox.
+        edge.send(dig(16)).await.unwrap();
+        step(&mut first);
+        let state = first.region().state();
+        assert_eq!(state.players[&player()].edge, edge.edge);
+        assert_eq!(state.edges[&edge.edge].applied, 3);
+        assert_eq!(state.edges[&edge.edge].outbox.len(), 1);
+        // It ticks on without anything changing, and is gone without a word: neither a
+        // checkpoint nor a goodbye.
+        step(&mut first);
+        step(&mut first);
+        assert_eq!(first.region().tick_number(), state.tick + 2);
+        drop(first);
+
+        let mut second = opened(&on_disk(directory.path()), config(WEST));
+        // Ticks go on from the last the store has.
+        assert_eq!(second.region().state(), state);
+        assert_eq!(second.status().tick.load(Ordering::Relaxed), state.tick);
+        assert_eq!(second.status().players.load(Ordering::Relaxed), 1);
+        step(&mut second);
+        assert_eq!(second.region().tick_number(), state.tick + 1);
+
+        // The edge is back and sends again what it has not heard to be applied. What the
+        // region has is dropped, and the next is taken.
+        let (edge_end, worker_end) = link::in_process(256);
+        let again = edge.again(edge_end);
+        second.links().attach(worker_end);
+        again.send(again.hello(0, &[], &[])).await.unwrap();
+        again.send_as(3, walk(player(), 3.0)).await;
+        step(&mut second);
+        assert_eq!(second.links.len(), 1);
+        assert_eq!(x_of(&second, player()), Some(14.5));
+        again.send_as(4, walk(player(), 13.0)).await;
+        step(&mut second);
+        assert_eq!(x_of(&second, player()), Some(13.0));
+        assert_eq!(second.region().edge(edge.edge).unwrap().applied, 4);
+
+        // A message that leaves a gap ends the link.
+        again.send_as(6, walk(player(), 12.0)).await;
+        step(&mut second);
+        assert!(second.links.is_empty());
+        assert_eq!(x_of(&second, player()), Some(13.0));
+
+        // And so does a first message beyond the next one the region expects.
+        let (edge_end, worker_end) = link::in_process(256);
+        let ahead = edge.again(edge_end);
+        second.links().attach(worker_end);
+        ahead.send(ahead.hello(0, &[], &[])).await.unwrap();
+        ahead.send_as(6, walk(player(), 12.0)).await;
+        step(&mut second);
+        assert!(second.links.is_empty());
+        assert_eq!(second.region().edge(edge.edge).unwrap().applied, 4);
+    }
+
+    /// A start of an edge that a later one has replaced is told so at once, and its
+    /// link is closed.
+    #[tokio::test]
+    async fn an_edge_with_a_lower_start_than_the_region_knows_is_superseded() {
+        // Whether the region has run a tick with the later start or not.
+        for stepped in [true, false] {
+            let id = EdgeId::from_name("superseded");
+            let (edge_end, worker_end) = link::in_process(256);
+            let mut later = TestEdge::silent(edge_end, id, 5);
+            let mut runner = runner(worker_end);
+            later.send(later.hello(0, &[], &[])).await.unwrap();
+            later.send(join(player(), "Notch")).await.unwrap();
+            if stepped {
+                step(&mut runner);
+            }
+
+            let (edge_end, worker_end) = link::in_process(256);
+            let mut earlier = TestEdge::silent(edge_end, id, 3);
+            runner.links().attach(worker_end);
+            earlier.send(earlier.hello(0, &[], &[])).await.unwrap();
+            earlier.send(join(other_player(), "Jeb")).await.unwrap();
+            step(&mut runner);
+
+            let superseded = WorkerToEdge::Welcome(Welcome::Superseded);
+            assert_eq!(earlier.everything(), [superseded]);
+            assert!(closed(&mut earlier).await);
+            // The later start is untouched by it.
+            assert_eq!(runner.links.len(), 1);
+            assert_eq!(runner.region().edge(id).unwrap().start, 5);
+            assert_eq!(runner.region().player_count(), 1);
+            assert!(runner.region().player(player()).is_some());
+            assert_eq!(
+                later.everything()[0],
+                WorkerToEdge::Welcome(Welcome::Unknown)
+            );
+        }
+    }
+
+    /// An edge the region knows says hello on a new link. It is told that the region
+    /// carries on, then what it has not seen of its outbox, then where each player it
+    /// asks about is, before anything the tick itself has to say. Its old link is closed.
+    #[tokio::test]
+    async fn an_edge_that_resumes_is_told_what_it_missed_before_anything_else() {
+        let (mut edge, edge_end) = in_process(256);
+        let (stranger, stranger_end) = in_process(256);
+        let mut runner = runner_of(config(WEST), edge_end);
+        runner.links().attach(stranger_end);
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(join(third_player(), "Dinnerbone")).await.unwrap();
+        stranger.send(join(other_player(), "Jeb")).await.unwrap();
+        edge.send(walk(player(), 14.5)).await.unwrap();
+        step(&mut runner);
+        // Two entries: a block beyond the region, then a step beyond it.
+        edge.send(dig(16)).await.unwrap();
+        step(&mut runner);
+        edge.send(walk(player(), 20.0)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(outbox(&runner, &edge), (2, vec![1, 2]));
+        let entity = runner.region().player(third_player()).unwrap().0;
+
+        // The edge has seen the first entry. With the hello comes something its
+        // remaining player did.
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut again = edge.again(edge_end);
+        runner.links().attach(worker_end);
+        let asked = [player(), third_player(), other_player()];
+        again.send(again.hello(1, &asked, &[])).await.unwrap();
+        let step_aside = walk(third_player(), 2.0);
+        let EdgeToWorker::Input { number: input, .. } = step_aside else {
+            unreachable!("a step is an input");
+        };
+        again.send(step_aside).await.unwrap();
+        step(&mut runner);
+
+        let present = Presence::Present {
+            entity,
+            // As of before the tick that took the step.
+            pose: Pose::at(SPAWN),
+            hotbar: [None; HOTBAR_SLOTS],
+            selected_slot: 0,
+            last_input: 0,
+            handled: None,
+        };
+        let told = again.everything();
+        let [
+            WorkerToEdge::Welcome(Welcome::Resumed),
+            WorkerToEdge::Outbox {
+                number: 2,
+                entry: Durable::Departed { .. },
+            },
+            WorkerToEdge::Presence {
+                player: first,
+                answer: Presence::Absent,
+            },
+            WorkerToEdge::Presence {
+                player: second,
+                answer,
+            },
+            // Of another edge, so not this one's to ask about.
+            WorkerToEdge::Presence {
+                player: third,
+                answer: Presence::Absent,
+            },
+            WorkerToEdge::Progress { applied: 6, inputs },
+        ] = &told[..]
+        else {
+            panic!("unexpected {told:?}");
+        };
+        assert_eq!([*first, *second, *third], asked);
+        assert_eq!(*answer, present);
+        assert_eq!(*inputs, [(third_player(), input)]);
+        // The hello confirmed the entry it had seen.
+        assert_eq!(outbox(&runner, &again), (2, vec![2]));
+        // Nothing went to the link the edge had before, which is closed.
+        received(&mut edge);
+        assert!(closed(&mut edge).await);
+        assert_eq!(runner.links.len(), 2);
+    }
+
+    /// An edge that has started anew is unknown to the region, which removes what the
+    /// earlier start left behind: its players, and what it had sent that was still
+    /// waiting for a tick.
+    #[tokio::test]
+    async fn an_edge_with_a_higher_start_is_unknown_and_what_its_earlier_start_left_is_dropped() {
+        let id = EdgeId::from_name("restarted");
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut old = TestEdge::silent(edge_end, id, 1);
+        let (mut watcher, watcher_end) = in_process(256);
+        let mut runner = runner(worker_end);
+        runner.links().attach(watcher_end);
+        old.send(old.hello(0, &[], &[])).await.unwrap();
+        old.send(join(player(), "Notch")).await.unwrap();
+        watcher
+            .send(EdgeToWorker::Subscribe {
+                chunks: vec![ORIGIN],
+            })
+            .await
+            .unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 1
+        });
+        step(&mut runner);
+        received(&mut watcher);
+        let entity = runner.region().player(player()).unwrap().0;
+
+        // The earlier start sends more, and the later one says hello before a tick has
+        // taken any of it.
+        old.send(join(other_player(), "Jeb")).await.unwrap();
+        old.send(walk(player(), 3.0)).await.unwrap();
+        old.send(EdgeToWorker::Discard {
+            entity: EntityId(77),
+            chunk: ORIGIN,
+        })
+        .await
+        .unwrap();
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut new = TestEdge::silent(edge_end, id, 2);
+        runner.links().attach(worker_end);
+        new.send(new.hello(4, &[player()], &[])).await.unwrap();
+        step(&mut runner);
+
+        assert_eq!(runner.region().player_count(), 0);
+        let state = runner.region().edge(id).unwrap();
+        assert_eq!((state.start, state.applied, state.sent), (2, 0, 0));
+        assert_eq!(
+            new.everything(),
+            [
+                WorkerToEdge::Welcome(Welcome::Unknown),
+                WorkerToEdge::Presence {
+                    player: player(),
+                    answer: Presence::Absent,
+                },
+                WorkerToEdge::Progress {
+                    applied: 0,
+                    inputs: vec![],
+                },
+            ]
+        );
+        // Those watching see the earlier start's player go, and nothing else.
+        let removed = RegionEvent::EntityRemoved {
+            entity,
+            chunk: ORIGIN,
+        };
+        let seen = received(&mut watcher);
+        let [WorkerToEdge::TickDelta { events, .. }] = &seen[..] else {
+            panic!("expected a delta, got {seen:?}");
+        };
+        assert_eq!(*events, [removed]);
+        assert!(closed(&mut old).await);
+
+        // The later start numbers from 1.
+        new.send(join(player(), "Notch")).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.region().player_count(), 1);
+        assert_eq!(runner.region().edge(id).unwrap().applied, 1);
+    }
+
+    /// An edge the region has forgotten sends what it kept under numbers that mean
+    /// nothing to the region any more, before it has read that it is unknown, and
+    /// numbers from 1 again once it has. The link outlasts that, or the edge would
+    /// never read the answer.
+    #[tokio::test]
+    async fn an_edge_the_region_has_forgotten_is_unknown_and_starts_its_numbers_again() {
+        let (mut edge, worker_end) = in_process(256);
+        let mut runner = runner(worker_end);
+        assert_eq!(edge.sent.load(Ordering::Relaxed), 0);
+        // As if it had sent thirty messages to a region that no longer knows of them.
+        edge.send_as(31, join(player(), "Notch")).await;
+        edge.send_as(32, walk(player(), 3.0)).await;
+        step(&mut runner);
+        assert_eq!(runner.links.len(), 1);
+        assert_eq!(runner.region().player_count(), 0);
+        assert_eq!(
+            edge.everything(),
+            [
+                WorkerToEdge::Welcome(Welcome::Unknown),
+                WorkerToEdge::Progress {
+                    applied: 0,
+                    inputs: vec![],
+                },
+            ]
+        );
+
+        edge.send_as(1, join(other_player(), "Jeb")).await;
+        step(&mut runner);
+        assert_eq!(runner.region().player_count(), 1);
+        assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 1);
+        // From here on its numbers have to follow each other again.
+        edge.send_as(3, walk(other_player(), 3.0)).await;
+        step(&mut runner);
+        assert!(runner.links.is_empty());
+    }
+
+    /// A resume holds the line: what an edge sends behind a hello that names chunks
+    /// acts on those chunks, so it waits until they are loaded and shown.
+    #[tokio::test]
+    async fn what_follows_a_hello_with_chunks_waits_for_their_snapshots() {
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut edge = TestEdge::silent(edge_end, EdgeId::from_name("holding"), 1);
+        let mut runner = runner(worker_end);
+        edge.send(edge.hello(0, &[], &[ORIGIN])).await.unwrap();
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(dig(1)).await.unwrap();
+        // An ordinary subscription holds nothing, but it waits its turn behind the rest.
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![ChunkPos::new(0, 1)],
+        })
+        .await
+        .unwrap();
+
+        // The chunk has been asked for by the first tick and cannot be there before the
+        // second.
+        step(&mut runner);
+        assert_eq!(runner.region().loaded_chunk_count(), 0);
+        assert_eq!(runner.links[&LinkId(0)].held.len(), 3);
+        let mut loaded_without_the_player = false;
+        step_until(&mut runner, |runner| {
+            let loaded = runner.region().loaded_chunk_count() >= 1;
+            loaded_without_the_player |= loaded && runner.region().player_count() == 0;
+            runner.region().player_count() == 1
+        });
+        assert!(loaded_without_the_player);
+        // The player dug into a chunk that was there.
+        let chunk = runner.region().chunk(ORIGIN).unwrap();
+        assert_eq!(chunk.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+        assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 2);
+        assert!(runner.links[&LinkId(0)].held.is_empty());
+
+        // On the wire, the snapshot comes before anything of the tick that took what
+        // was held.
+        let told = edge.everything();
+        let place = |wanted: fn(&WorkerToEdge) -> bool| told.iter().position(wanted).unwrap();
+        let shown = place(|message| matches!(message, WorkerToEdge::ChunkSnapshot { .. }));
+        let entered = place(|message| matches!(message, WorkerToEdge::ToPlayer { .. }));
+        assert!(shown < entered, "{told:?}");
+        assert_eq!(told[0], WorkerToEdge::Welcome(Welcome::Unknown));
+    }
+
+    /// What a link sent while it was held does not count as received. If the link ends
+    /// before the hold does, the edge sends it again on its next link, where it is
+    /// applied once.
+    #[tokio::test]
+    async fn what_was_held_on_a_link_that_ended_is_sent_again_and_applied_once() {
+        let id = EdgeId::from_name("held and lost");
+        let (edge_end, worker_end) = link::in_process(256);
+        let first = TestEdge::silent(edge_end, id, 1);
+        let mut runner = runner(worker_end);
+        first.send(first.hello(0, &[], &[ORIGIN])).await.unwrap();
+        first.send(join(player(), "Notch")).await.unwrap();
+        // The chunk has been asked for by the first tick and cannot be there before the
+        // second, so the join is held when the link ends.
+        step(&mut runner);
+        assert_eq!(runner.links[&LinkId(0)].held.len(), 1);
+        let (edge_end, worker_end) = link::in_process(256);
+        let second = first.again(edge_end);
+        drop(first);
+        step(&mut runner);
+        assert!(runner.links.is_empty());
+        assert_eq!(runner.edges[&id].received, 0);
+
+        runner.links().attach(worker_end);
+        second.send(second.hello(0, &[], &[ORIGIN])).await.unwrap();
+        second.send_as(1, join(player(), "Notch")).await;
+        second.send_as(2, walk(player(), 3.0)).await;
+        step_until(&mut runner, |runner| runner.region().player_count() == 1);
+        step(&mut runner);
+        assert_eq!(x_of(&runner, player()), Some(3.0));
+        let state = runner.region().state();
+        assert_eq!(state.edges[&id].applied, 2);
+        // One player has entered the world, once.
+        assert_eq!(state.next_entity_id.0, state.entity_ids.first.0 + 1);
+    }
+
+    /// Within what a tick has to say to an edge, the order is fixed: what happened,
+    /// who entered the world, what the outbox got that is not a departure, what was
+    /// acknowledged, who was let go, the chunks, and how far the region has got. The
+    /// numbers of outbox entries ascend.
+    #[tokio::test]
+    async fn what_a_tick_tells_an_edge_is_in_a_fixed_order() {
+        let (mut edge, edge_end) = in_process(256);
+        let (other, other_end) = in_process(256);
+        let mut runner = runner_of(config(WEST), edge_end);
+        runner.links().attach(other_end);
+        let beside = ChunkPos::new(0, 1);
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(join(other_player(), "Jeb")).await.unwrap();
+        edge.send(walk(player(), 14.5)).await.unwrap();
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![ORIGIN],
+        })
+        .await
+        .unwrap();
+        // Another edge has the chunk beside loaded, so that this one is shown it in the
+        // very tick it asks for it.
+        other
+            .send(EdgeToWorker::Subscribe {
+                chunks: vec![beside],
+            })
+            .await
+            .unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 2
+        });
+        step(&mut runner);
+        edge.everything();
+
+        // All in one tick: a third player joins; the first breaks a block beyond the
+        // region; the second breaks one of the region's and steps out of it.
+        edge.send(join(third_player(), "Dinnerbone")).await.unwrap();
+        edge.send(dig_by(player(), 16, 5)).await.unwrap();
+        edge.send(dig_by(other_player(), 1, 6)).await.unwrap();
+        edge.send(walk(other_player(), 20.0)).await.unwrap();
+        edge.send(EdgeToWorker::Subscribe {
+            chunks: vec![beside],
+        })
+        .await
+        .unwrap();
+        step(&mut runner);
+
+        let told = edge.everything();
+        let [
+            WorkerToEdge::TickDelta { .. },
+            WorkerToEdge::ToPlayer {
+                player: entered,
+                event: PlayerEvent::Spawned { .. },
+            },
+            WorkerToEdge::Outbox {
+                number: 1,
+                entry: Durable::Remote(_),
+            },
+            WorkerToEdge::ToPlayer {
+                player: acknowledged,
+                event: PlayerEvent::Acknowledged { sequence: 6 },
+            },
+            WorkerToEdge::Outbox {
+                number: 2,
+                entry: Durable::Departed { player: gone, .. },
+            },
+            WorkerToEdge::ChunkSnapshot { position, .. },
+            WorkerToEdge::Progress { applied: 7, inputs },
+        ] = &told[..]
+        else {
+            panic!("unexpected {told:?}");
+        };
+        assert_eq!(
+            (*entered, *acknowledged, *gone),
+            (third_player(), other_player(), other_player())
+        );
+        assert_eq!(*position, beside);
+        // The player who was let go is no longer the region's to report on.
+        assert!(matches!(inputs[..], [(of, _)] if of == player()));
+    }
+
+    /// An edge hears how far the region has got with what it sent, once that is on
+    /// disk, and nothing while nothing of its own changes.
+    #[tokio::test]
+    async fn progress_follows_what_an_edge_sent_and_nothing_else() {
+        let (mut edge, edge_end) = in_process(256);
+        let (mut other, other_end) = in_process(256);
+        let mut runner = runner(edge_end);
+        runner.links().attach(other_end);
+        let progress = |applied, inputs| WorkerToEdge::Progress { applied, inputs };
+        let unknown = WorkerToEdge::Welcome(Welcome::Unknown);
+        step(&mut runner);
+        // An edge that has said hello hears where the region is, even if nowhere.
+        assert_eq!(edge.everything(), [unknown.clone(), progress(0, vec![])]);
+        assert_eq!(other.everything(), [unknown, progress(0, vec![])]);
+
+        edge.send(join(player(), "Notch")).await.unwrap();
+        step(&mut runner);
+        let told = edge.everything();
+        assert_eq!(told.last(), Some(&progress(1, vec![])));
+
+        let aside = walk(player(), 3.0);
+        let EdgeToWorker::Input { number, .. } = aside else {
+            unreachable!("a step is an input");
+        };
+        edge.send(aside).await.unwrap();
+        step(&mut runner);
+        assert_eq!(edge.everything(), [progress(2, vec![(player(), number)])]);
+
+        // An input the region has already is dropped by the region, but the message that
+        // carried it counts.
+        edge.send(walk_as(player(), number, 9.0)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(x_of(&runner, player()), Some(3.0));
+        assert_eq!(edge.everything(), [progress(3, vec![])]);
+
+        step(&mut runner);
+        assert_eq!(edge.everything(), []);
+        assert_eq!(other.everything(), []);
+    }
+
+    /// A region whose store handle is lost stops for good: it may have been given to
+    /// another owner, and what it did last may never have reached the disk.
+    #[tokio::test]
+    async fn a_region_whose_store_handle_is_lost_stops_and_publishes_nothing_held() {
+        let store = memory();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = gated(&store, config(ChunkArea::EVERYWHERE));
+        let (links, status) = (runner.links(), runner.status());
+        links.attach(worker_end);
+        step(&mut runner);
+        edge.everything();
+
+        // A tick the store has, and the edge has not heard of yet.
+        gate.hold();
+        edge.send(join(player(), "Notch")).await.unwrap();
+        runner.step();
+        wait_for_kept(&mut runner, &gate, 1);
+        assert_eq!(runner.pending.len(), 1);
+        assert!(!status.store_lost.load(Ordering::Relaxed));
+
+        // Someone opens the region again, which takes it from this runner.
+        let (_handle, restored) = store.open_region(owner()).unwrap();
+        assert_eq!(restored.tick(), runner.region().tick_number());
+        for _ in 0..20_000 {
+            runner.step();
+            if runner.store_is_lost() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(runner.store_is_lost());
+        assert!(status.store_lost.load(Ordering::Relaxed));
+        assert!(runner.links.is_empty());
+
+        // That the commit was confirmed after all changes nothing.
+        gate.release();
+        let ticks = runner.region().tick_number();
+        runner.step();
+        assert_eq!(runner.region().tick_number(), ticks);
+        assert_eq!(runner.run(&AtomicBool::new(false)), Ended::StoreLost);
+        assert_eq!(edge.everything(), []);
+        assert!(closed(&mut edge).await);
+
+        // A link that comes now is closed too.
+        let (mut late, late_end) = in_process(256);
+        links.attach(late_end);
+        runner.step();
+        assert!(closed(&mut late).await);
+    }
+
+    /// What the store has of a region is what the region wrote. If it cannot be read,
+    /// the region is not started from something else instead.
+    #[test]
+    fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
+        let restored = |state, deltas| Restored {
+            entity_ids: EntityIds::block(0).unwrap(),
+            state,
+            deltas,
+        };
+        let unreadable = |tick| clustine_rpc::TickState {
+            tick,
+            state: vec![0xff; 3],
+        };
+        assert!(matches!(
+            restored_state(restored(Some(unreadable(4)), vec![])),
+            Err(RestoreError::State { tick: 4, .. })
+        ));
+        assert!(matches!(
+            restored_state(restored(None, vec![unreadable(7)])),
+            Err(RestoreError::Delta { tick: 7, .. })
+        ));
+        let state = restored_state(restored(None, vec![])).unwrap();
+        assert_eq!(state, RegionState::new(EntityIds::block(0).unwrap()));
     }
 }

@@ -13,6 +13,8 @@ clustine-rpc.workspace = true
 clustine-sim.workspace = true
 clustine-world.workspace = true
 clustine-worldstore.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

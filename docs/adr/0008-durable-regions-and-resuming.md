@@ -174,18 +174,23 @@ store's own record format and are applied to chunks by the store.
     coming tick `t`, and subscribes the link to `chunks`.
   - From the region's state before tick `t` (that is, after `t - 1`), it makes the
     **resume**: `Welcome::Resumed` if the region knew the edge with this start, else
-    `Welcome::Unknown`; then the outbox entries above `seen`; then for each of `players`
-    a presence answer: `Present { entity, pose, hotbar, selected_slot, last_input,
-    handled }` or `Absent`. The resume is published with tick `t`, before anything else
-    of it. As `t` is published only once it is committed, everything in the resume is
-    durable by the time the edge sees it.
+    `Welcome::Unknown`; then, if resumed, the outbox entries above `seen`; then for each
+    of `players` a presence answer: `Present { entity, pose, hotbar, selected_slot,
+    last_input, handled }` if the region has the player and they belong to this edge,
+    else `Absent` (a player it has under another edge has connected anew through that
+    one). The resume is published with tick `t`, before anything else of it. As `t` is
+    published only once it is committed, everything in the resume is durable by the time
+    the edge sees it. A `Progress` goes with the tick of every hello, so that an edge
+    which sent again only what the region had already is told to let go of it.
 - **Numbered messages.** Join, leave, arrive, discard, input and remote action carry a
   number per (edge, region), in an envelope `EdgeMessage { number: Option<u64>, body }`;
   hello, subscribe, unsubscribe and confirm carry none. The runner passes each on once,
-  in order. It counts as **received** what it has passed on to the region or holds for
-  the coming tick or behind a resume; a number not above that is dropped, one that leaves
-  a gap ends the link. A link that ends leaves what it had sent for the coming tick in
-  place, as it counts as received; only a higher start drops it (above).
+  in order. It counts as **received** what it has passed on to the region, into the
+  inputs of the coming tick; a number not above that is dropped, one that leaves a gap
+  ends the link. A link that ends leaves what it had sent for the coming tick in place,
+  as it counts as received; only a higher start drops it (above). What is held behind a
+  resume (below) is not received yet: if the link ends first, it is dropped, and the
+  edge sends it again.
 - **A resume holds the line.** After a `Hello`, nothing further from that link is passed
   on until the snapshots of the hello's chunks are out (or the chunk is unreadable), so
   that what the edge sends again acts on loaded chunks. Ordinary subscriptions do not
@@ -195,7 +200,13 @@ store's own record format and are applied to chunks by the store.
 - **Progress.** With each committed tick the runner tells each edge `Progress { applied,
   inputs }`: how far its messages are applied and durable, and for each of its players
   whose `last_input` changed, the new one.
-- **Edges that stay away.** An edge without a link for 30 seconds is `Gone`.
+- **Edges that stay away.** An edge without a link for 600 ticks, which is 30 seconds,
+  is `Gone`; counted in ticks, so that it is part of what a test can drive. After a
+  restore edges count from the restore.
+- **Departures nobody will pass on.** When a reset or `Gone` drops an outbox, the region
+  reports the entities of its departures removed where they were last seen, which is
+  beyond the region's end, where no link of it is subscribed. The runner sends those
+  removals to every link.
 - **Losing the store.** A region whose store handle is lost stops. Its worker closes the
   region's links, opens the region again when the store answers, and restores it. A
   region never carries on from memory after a commit went unanswered. If the store
@@ -220,16 +231,21 @@ store's own record format and are applied to chunks by the store.
   link to an owner with an older epoch than the table's is closed.
 - **Resuming**, on a new link to a region:
   1. `Hello` with the players it believes to be in that region and every chunk of that
-     region in its replica, including those whose snapshot never came; then at once every
-     kept numbered message for that region. The region drops what it has received already.
+     region in its replica, including those whose snapshot never came. What it kept for
+     the region it sends only once the region has answered with its welcome: a region
+     that has forgotten the edge expects numbers from 1, and would end the link over the
+     gap before its welcome could say so. What players do meanwhile is kept with the
+     rest.
   2. From the region come, in this order: the welcome; the outbox entries above `seen`;
      the presence answers; then ticks as usual, with the snapshots of the hello's chunks
      among them.
-  3. `Welcome::Unknown` to an edge that had seen entries of that region, or trimmed
-     messages for it, means the region has forgotten it: the edge disconnects the
-     players it believed to be there, gives up what it kept for that region (a remote
-     action given up is acknowledged to its player, who sees the block as the region has
-     it), and numbers from 1 again with `seen` at 0.
+  3. After `Welcome::Resumed` the edge sends every kept numbered message, in order; the
+     region drops what it has received already. `Welcome::Unknown` to an edge that had
+     seen entries of that region, or had messages reported applied by it, means the
+     region has forgotten it: the edge disconnects the players it believed to be there,
+     gives up what it kept for that region (a remote action given up is acknowledged to
+     its player, who sees the block as the region has it), and numbers from 1 again with
+     `seen` at 0.
   4. An outbox entry with a number the edge has seen is ignored. Others are handled as the
      messages they replace were, and confirmed. Because they come before the presence
      answers, a `Departed` that was committed but never delivered is passed on before the
@@ -244,9 +260,11 @@ store's own record format and are applied to chunks by the store.
   6. A snapshot of a chunk the edge already shows is reconciled: clients are sent the
      blocks that differ, entities in it are added, moved or removed. An entity of one of
      the edge's own players is never removed by this.
-- An `EntityRemoved` removes an entity only from what the edge shows of the region that
-  sent it. An entity that departed and lives on in another region is not taken off the
-  screens by its old region forgetting it.
+- The edge remembers which region last introduced each entity it shows (reported it
+  spawned, or had it in a snapshot), and takes moves and removals of an entity only
+  from that region. An entity that departed and lives on in another region is not taken
+  off the screens by its old region forgetting it, while one that never arrived
+  anywhere is.
 - What a region sends is tagged with the epoch of the link it came over; what comes from
   a link that is no longer the region's is dropped.
 - The limit of 128 kept inputs per player goes; the 20-second rule replaces it.
@@ -332,6 +350,13 @@ found that a reset reported the entity of a `Departed` removed even when its pla
 come back and lived on in the region, and left open what an arrival of a player who is
 there, a join through an unknown edge and `handled` on entering anew do; all of that is
 in section 2 now.
+
+Building the worker (A3) and the edge (A4) found that item 3 above was not fixed by
+what the record said: an edge that sent what it kept right after its hello had its link
+ended over the gap before the welcome saying `Unknown` could reach it, for ever. The edge
+now waits for the welcome. They also found that the removal of a departure nobody will
+pass on reached no link, and that an edge which resumes and sends only what the region
+has was never told to let go of it; sections 4 and 5 say what is done about each.
 
 Building the coordinator (A5) found one more: vouching was defined by a commit confirmed
 within the lease, which an idle region, which commits nothing, never has; it would have
