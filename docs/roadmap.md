@@ -147,6 +147,7 @@ does not answer within the lease is treated as dead, which is the same as a cras
 
 | # | Scope | Verified by | Status |
 |---|---|---|---|
+| B0 | ADR-0009 reviewed; its messages on the wire, refused or ignored by everyone | All existing tests | done |
 | B1 | Release and assign; `clustine move` to ask for it | Move under bot load: nobody disconnected, pause measured and bounded | to do |
 | B2 | A worker asked to terminate hands its region over first | Rolling restart of all workers under bots, as processes | to do |
 | B3 | ADR-0009, docs | CI | to do |
@@ -277,9 +278,25 @@ Left for a later cleanup: `Assignment::entity_ids`, which the coordinator fills 
 nothing reads; and the `WorkerToEdge` messages `Remote`, `RemoteDone` and the
 `Departed` and `Refused` player events, which regions say through their outbox now.
 
-Next: phase B, live migration (the table above). Its plan is the three rows B1 to B3;
-before B1 is built, how release and assign fit ADR-0008 is written down as ADR-0009 and
-gone over by an independent reviewer, as for phase A.
+Phase B, live migration, has begun. [ADR-0009](adr/0009-moving-a-region.md) is its plan:
+a move is a crash that the old owner prepares and announces. An independent reviewer
+went over it against the code and found eleven defects, worked in and listed at its
+end. Its messages are in `clustine-rpc`; nobody acts on them yet.
+
+Next, in this order:
+
+1. In parallel, each in a crate of its own: the coordinator (`services/coordinator`:
+   releases with a reserved target, leaving workers, `Move` and its answers, sections 1
+   to 4 of the record) and the runner's release (`services/worker`: the checkpoint while
+   ticking, stopping, waiting for commits, publishing, the last checkpoint, closing).
+2. The worker process and `clustine move` (`bin/clustine`): release in every phase,
+   dropping a region that is taken without exiting, leaving on SIGTERM, listening only
+   once registered; and the edge's link-keeper, which has to try each region by itself
+   and at once. That is the edge's side and not delegated.
+3. Tests by someone who wrote none of it: a move under the ledger bots with the pause
+   measured at the bots (view distance 8, between processes, fails above 3 seconds),
+   every failure of section 2 of the record, a rolling restart of all workers as
+   processes and on kind.
 
 ### After M3, as the owner asked on 2026-10-08
 

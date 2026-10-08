@@ -285,7 +285,14 @@ impl RoutingWatch {
         match self.link.recv().await {
             Some(FromCoordinator::Routing(table)) => Ok(table),
             Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
-            Some(FromCoordinator::Assigned { .. }) => Err(unexpected("orders to an edge")),
+            Some(FromCoordinator::Assigned { .. } | FromCoordinator::Release { .. }) => {
+                Err(unexpected("orders to an edge"))
+            }
+            Some(
+                FromCoordinator::MoveRefused { .. }
+                | FromCoordinator::MoveBegun { .. }
+                | FromCoordinator::MoveDone { .. },
+            ) => Err(unexpected("word of a move nobody asked for")),
             None => Err(ClientError::Lost),
         }
     }
@@ -311,6 +318,14 @@ fn orders_from(message: Option<FromCoordinator>) -> Result<Orders, ClientError> 
         }),
         Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
         Some(FromCoordinator::Routing(_)) => Err(unexpected("a routing table to a worker")),
+        // No coordinator asks a worker to release anything yet; see
+        // docs/adr/0009-moving-a-region.md.
+        Some(FromCoordinator::Release { .. }) => Err(unexpected("a release")),
+        Some(
+            FromCoordinator::MoveRefused { .. }
+            | FromCoordinator::MoveBegun { .. }
+            | FromCoordinator::MoveDone { .. },
+        ) => Err(unexpected("word of a move nobody asked for")),
         None => Err(ClientError::Lost),
     }
 }

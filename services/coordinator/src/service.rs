@@ -275,6 +275,10 @@ impl Service {
                     ToCoordinator::Heartbeat { .. } => "a heartbeat",
                     ToCoordinator::EpochRefused { .. } => "a refused epoch",
                     ToCoordinator::WatchRouting => "a request for the routing table",
+                    // Nothing is moved yet; see docs/adr/0009-moving-a-region.md.
+                    ToCoordinator::Released { .. } => "that it released a region",
+                    ToCoordinator::Leaving => "that it is leaving",
+                    ToCoordinator::Move { .. } => "a request to move a region",
                 };
                 warn!(
                     connection = id,

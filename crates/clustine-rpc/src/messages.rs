@@ -370,6 +370,22 @@ pub enum ToCoordinator {
     /// An edge wants the routing table, now and whenever it changes. Answered with
     /// [`FromCoordinator::Routing`].
     WatchRouting,
+    /// A worker has let go of `region`, which it held with `epoch`: in answer to
+    /// [`FromCoordinator::Release`], or by itself because it is about to stop. The
+    /// region is closed at the world store and can be given to another worker at once.
+    /// See `docs/adr/0009-moving-a-region.md`.
+    Released { region: RegionId, epoch: u64 },
+    /// A worker has been told to stop. It is given nothing new, and what it runs is
+    /// moved to workers that wait, as far as there are any. The coordinator closes the
+    /// connection once the worker owns nothing any more.
+    Leaving,
+    /// Whoever operates the cluster wants `region` moved: to the worker named `to`, or
+    /// to any worker that waits. Answered with [`FromCoordinator::MoveRefused`], or with
+    /// [`FromCoordinator::MoveBegun`] and later [`FromCoordinator::MoveDone`].
+    Move {
+        region: RegionId,
+        to: Option<String>,
+    },
 }
 
 /// Why a worker vouches for a region it holds.
@@ -396,4 +412,20 @@ pub enum FromCoordinator {
     Refused { reason: String },
     /// To an edge: the current routing table.
     Routing(RoutingTable),
+    /// To a worker: let go of `region`, which you hold with `epoch`, so that another
+    /// worker can carry on with it. Answered with [`ToCoordinator::Released`].
+    Release { region: RegionId, epoch: u64 },
+    /// To whoever asked for a move: it is not done, for the reason given.
+    MoveRefused { reason: String },
+    /// To whoever asked for a move: the worker `from` has been asked to release the
+    /// region for the worker `to`.
+    MoveBegun { from: String, to: String },
+    /// To whoever asked for a move: the region is the worker `to`'s now, with `epoch`.
+    /// `released` says whether its old owner let go of it, or did not answer in time
+    /// and was taken for dead. `to` need not be the worker the move began for.
+    MoveDone {
+        to: String,
+        epoch: u64,
+        released: bool,
+    },
 }
