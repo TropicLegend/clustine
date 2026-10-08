@@ -219,6 +219,11 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
                 // Said as it is, so that the owner can tell being replaced from
                 // anything else.
                 StoreError::EpochRefused { seen, .. } => StoreWelcome::EpochRefused { seen },
+                // Not said at all: the connection is closed without a welcome, which
+                // whoever said hello takes for a store that cannot be reached, and
+                // tries again. It is no fault of theirs, and after a failed write of
+                // the log it is the workers that were just lost that meet it.
+                StoreError::Io(_) => return,
                 error => StoreWelcome::Refused {
                     reason: error.to_string(),
                 },
@@ -517,7 +522,9 @@ impl StoreHandle {
     /// Waits for the store's answer. If the store refuses the hello for its epoch, the
     /// error is [`StoreError::EpochRefused`]; if it refuses it otherwise, it is
     /// [`StoreError::Refused`] with the reason the store gave; if the store cannot be
-    /// reached or does not answer, it is [`StoreError::Io`].
+    /// reached, does not answer, or closes the connection without an answer because it
+    /// could not read or write what the hello takes, it is [`StoreError::Io`], and
+    /// worth trying again.
     pub fn connect(
         address: &str,
         hello: RegionHello,

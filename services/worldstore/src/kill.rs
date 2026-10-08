@@ -391,9 +391,17 @@ fn operations() -> u64 {
     disk.operations() + 10
 }
 
+/// Every way a crash can leave what was not durable.
+const SURVIVALS: [Survival; 4] = [
+    Survival::Nothing,
+    Survival::Torn,
+    Survival::Everything,
+    Survival::Untruncated,
+];
+
 #[test]
 fn nothing_goes_wrong_without_a_fault() {
-    for survival in [Survival::Nothing, Survival::Torn, Survival::Everything] {
+    for survival in SURVIVALS {
         the_restored_world_holds_everything_confirmed(Fault::Fail(u64::MAX), survival);
     }
 }
@@ -401,7 +409,7 @@ fn nothing_goes_wrong_without_a_fault() {
 #[test]
 fn a_store_that_stops_at_any_point_restores_everything_confirmed() {
     for n in 1..=operations() {
-        for survival in [Survival::Nothing, Survival::Torn, Survival::Everything] {
+        for survival in SURVIVALS {
             the_restored_world_holds_everything_confirmed(Fault::Stop(n), survival);
         }
     }
@@ -410,7 +418,7 @@ fn a_store_that_stops_at_any_point_restores_everything_confirmed() {
 #[test]
 fn a_store_that_fails_once_at_any_point_restores_everything_confirmed() {
     for n in 1..=operations() {
-        for survival in [Survival::Nothing, Survival::Torn, Survival::Everything] {
+        for survival in SURVIVALS {
             the_restored_world_holds_everything_confirmed(Fault::Fail(n), survival);
         }
     }

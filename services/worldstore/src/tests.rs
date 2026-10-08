@@ -15,7 +15,7 @@ use clustine_world::{BlockPos, Chunk, ChunkPos, EntityIds};
 use clustine_worldgen::FlatGenerator;
 
 use super::*;
-use crate::disk::MemoryDisk;
+use crate::disk::{Fault, MemoryDisk, Survival};
 
 pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
@@ -1238,6 +1238,8 @@ fn a_commit_whose_sync_fails_is_not_answered_and_loses_the_handle() {
     let bystander = open(&store, hello(0, 1));
     log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
     committed(&owner, 1);
+    let segment = Path::new("/world/log/00000000000000000001.wal");
+    let durable = disk.read(segment).unwrap().unwrap().len();
 
     disk.failing_syncs.store(true, Ordering::SeqCst);
     disk.synced.lock().unwrap().clear();
@@ -1248,9 +1250,10 @@ fn a_commit_whose_sync_fails_is_not_answered_and_loses_the_handle() {
     save(&owner, origin, &saved);
     owner.flush();
     assert!(owner.is_lost());
-    // A region that wrote nothing in that group is none the worse for it.
+    // A region that wrote nothing in that group is lost as well: what it asked for in
+    // it may have gone with it unanswered (ADR-0011, section 4.1).
     bystander.flush();
-    assert!(!bystander.is_lost());
+    assert!(bystander.is_lost());
     disk.failing_syncs.store(false, Ordering::SeqCst);
 
     let (again, restored) = store.open_region(hello(1, 1)).unwrap();
@@ -1259,12 +1262,18 @@ fn a_commit_whose_sync_fails_is_not_answered_and_loses_the_handle() {
     expected.set(3, -61, 4, blocks::AIR);
     assert_eq!(load(&again, origin), expected);
 
-    // The sync that failed is not tried again: what follows goes to another segment.
+    // The sync that failed is not tried again for what it was to make durable. The
+    // segment is synced once more, after it was cut back, so that what was cut off is
+    // gone for good: it is no longer than what was durable, and what follows goes to
+    // another segment.
     log(&again, 2, &[(3, 100, 4, blocks::GLASS)]);
     committed(&again, 2);
+    assert_eq!(disk.read(segment).unwrap().unwrap().len(), durable);
     let synced = disk.synced.lock().unwrap().clone();
-    assert!(synced.len() > 1);
-    assert!(synced[1..].iter().all(|path| *path != synced[0]));
+    assert_eq!(synced[0], segment);
+    let last = synced.iter().rposition(|path| path == segment).unwrap();
+    assert!(last > 0, "{synced:?}");
+    assert!(last + 1 < synced.len(), "{synced:?}");
 }
 
 /// A hello that arrives while commits of the old owner wait for their sync is looked at
@@ -1290,15 +1299,18 @@ fn a_new_owner_is_restored_only_with_what_is_durable() {
     disk.failing_syncs.store(true, Ordering::SeqCst);
     disk.held.wait();
 
-    let (opened, restored) = answered.recv().unwrap().unwrap();
-    assert_eq!(deltas(&restored), [(1, delta(1))]);
+    // The hello is looked at while syncs still fail: what was cut off the log is not
+    // durably gone, and until it is nobody is given a region (ADR-0011, section 4.1).
+    assert!(matches!(answered.recv().unwrap(), Err(StoreError::Io(_))));
     // The first commit was answered before the old owner was lost, the second never is.
     // Its answers end once the store has let go of it.
     let replies: Vec<_> = old.replies.iter().collect();
     assert_eq!(replies, [StoreReply::Committed { tick: 1 }]);
     assert!(old.is_lost());
     disk.failing_syncs.store(false, Ordering::SeqCst);
-    drop(StoreHandle::local(opened, store.messages.clone()));
+    let (new, restored) = store.open_region(hello(1, 2)).unwrap();
+    assert_eq!(deltas(&restored), [(1, delta(1))]);
+    drop(new);
     let (_, again) = store.open_region(hello(1, 3)).unwrap();
     assert_eq!(again.deltas, restored.deltas);
 }
@@ -1321,7 +1333,11 @@ fn a_commit_that_cannot_be_written_is_cut_off_and_loses_the_handle() {
     disk.failing_appends.store(false, Ordering::SeqCst);
     assert_eq!(disk.read(segment).unwrap().unwrap().len(), length);
 
-    // Others commit on, and so does the owner once it has opened its region again.
+    // The other region is lost too, and both commit on once they have opened their
+    // regions again.
+    other.flush();
+    assert!(other.is_lost());
+    let other = open(&store, hello(0, 1));
     log(&other, 1, &[(-3, -61, 4, blocks::AIR)]);
     committed(&other, 1);
     let (again, restored) = store.open_region(hello(1, 1)).unwrap();
@@ -1331,6 +1347,263 @@ fn a_commit_that_cannot_be_written_is_cut_off_and_loses_the_handle() {
     drop((owner, other, again));
     let (_, restored) = store.open_region(hello(1, 2)).unwrap();
     assert_eq!(deltas(&restored), [(1, delta(1)), (2, delta(2))]);
+}
+
+/// F1 of ADR-0011: after a sync of the log has failed, every handle is lost, also that
+/// of a region that asked for nothing, and nothing of that group is answered.
+#[test]
+fn a_failed_sync_loses_every_handle_and_answers_nothing_of_its_group() {
+    let (store, disk) = switched();
+    let owner = open(&store, hello(1, 1));
+    let bystander = open(&store, hello(0, 1));
+    // The sync of the first commit is held, so that what follows is one group.
+    disk.holding_syncs.store(true, Ordering::SeqCst);
+    log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
+    disk.held.wait();
+    log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
+    owner.request(StoreRequest::Flush);
+    // A hello ends the group, and is looked at when the group's sync has failed.
+    let neighbour = open_later(&store, hello(0, 2));
+    disk.failing_syncs.store(true, Ordering::SeqCst);
+    disk.held.wait();
+
+    // The hello ended the group and met a log that could not be cut back for good.
+    assert!(matches!(neighbour.recv().unwrap(), Err(StoreError::Io(_))));
+    let replies: Vec<_> = owner.replies.iter().collect();
+    assert_eq!(replies, [StoreReply::Committed { tick: 1 }]);
+    assert!(owner.is_lost());
+    // The bystander asked for nothing at all.
+    assert_eq!(bystander.replies.iter().count(), 0);
+    assert!(bystander.is_lost());
+    disk.failing_syncs.store(false, Ordering::SeqCst);
+
+    // The same for a group that a commit and a flush of two regions are in.
+    let owner = open(&store, hello(1, 1));
+    let other = open(&store, hello(0, 2));
+    disk.holding_syncs.store(true, Ordering::SeqCst);
+    log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
+    disk.held.wait();
+    log(&other, 1, &[(-3, 100, 4, blocks::GLASS)]);
+    other.request(StoreRequest::Flush);
+    owner.request(StoreRequest::Flush);
+    disk.failing_syncs.store(true, Ordering::SeqCst);
+    disk.held.wait();
+    let replies: Vec<_> = owner.replies.iter().collect();
+    assert_eq!(replies, [StoreReply::Committed { tick: 2 }]);
+    assert_eq!(other.replies.iter().count(), 0);
+    assert!(owner.is_lost() && other.is_lost());
+    disk.failing_syncs.store(false, Ordering::SeqCst);
+    let (_, restored) = store.open_region(hello(0, 2)).unwrap();
+    assert_eq!(restored.deltas, []);
+    let (_, restored) = store.open_region(hello(1, 1)).unwrap();
+    assert_eq!(deltas(&restored), [(1, delta(1)), (2, delta(2))]);
+}
+
+/// Says hello without waiting for the answer, which arrives on what is returned.
+#[allow(clippy::type_complexity)]
+fn open_later(
+    store: &Store,
+    hello: RegionHello,
+) -> Receiver<Result<(Opened, Restored), StoreError>> {
+    let (answer, answered) = mpsc::channel();
+    let open = Message::Open {
+        hello,
+        reply_to: store.messages.clone(),
+        answer,
+    };
+    store.messages.send(open).unwrap();
+    answered
+}
+
+/// F1 of ADR-0011, for a record that cannot be written: every handle is lost, also
+/// that of the region whose record it was not, and nothing of the group is answered.
+#[test]
+fn a_failed_append_loses_every_handle_and_answers_nothing_of_its_group() {
+    let (store, disk) = switched();
+    let owner = open(&store, hello(1, 1));
+    let other = open(&store, hello(0, 1));
+    disk.holding_syncs.store(true, Ordering::SeqCst);
+    log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
+    disk.held.wait();
+    // One group: a commit that cannot be written, and what the other region asks for
+    // behind it.
+    log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
+    log(&other, 1, &[(-3, 100, 4, blocks::GLASS)]);
+    other.request(StoreRequest::Flush);
+    disk.failing_appends.store(true, Ordering::SeqCst);
+    disk.held.wait();
+
+    let replies: Vec<_> = owner.replies.iter().collect();
+    assert_eq!(replies, [StoreReply::Committed { tick: 1 }]);
+    assert_eq!(other.replies.iter().count(), 0);
+    assert!(owner.is_lost() && other.is_lost());
+    disk.failing_appends.store(false, Ordering::SeqCst);
+    let (_, restored) = store.open_region(hello(0, 1)).unwrap();
+    assert_eq!(restored.deltas, []);
+    let (_, restored) = store.open_region(hello(1, 1)).unwrap();
+    assert_eq!(deltas(&restored), [(1, delta(1))]);
+}
+
+/// A store on what a crash leaves of `disk`.
+fn restarted(disk: &MemoryDisk, survival: Survival) -> Store {
+    let left = Arc::new(disk.crashed(survival));
+    let chunks = FileChunks::new(left.clone(), Path::new("/world"));
+    start(left, Path::new("/world"), Box::new(chunks), generator()).unwrap()
+}
+
+/// F2 of ADR-0011: once the store has welcomed a hello after a failed sync, the segment
+/// is durably no longer than it was when it was last synced with success, also on a
+/// machine that loses a truncation it was not made to write out.
+#[test]
+fn what_a_failed_sync_left_in_the_log_is_durably_gone_before_anyone_is_welcomed() {
+    let (store, disk) = switched();
+    let segment = Path::new("/world/log/00000000000000000001.wal");
+    let owner = open(&store, hello(1, 1));
+    log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
+    committed(&owner, 1);
+    let durable = disk.read(segment).unwrap().unwrap().len();
+
+    disk.failing_syncs.store(true, Ordering::SeqCst);
+    log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
+    owner.flush();
+    assert!(owner.is_lost());
+    // Cut back, but not for good: a crash now can bring the second commit back.
+    assert_eq!(disk.read(segment).unwrap().unwrap().len(), durable);
+    let left = disk.disk.crashed(Survival::Untruncated);
+    assert!(left.read(segment).unwrap().unwrap().len() > durable);
+    assert!(matches!(
+        store.open_region(hello(1, 2)),
+        Err(StoreError::Io(_))
+    ));
+    let left = disk.disk.crashed(Survival::Untruncated);
+    assert!(left.read(segment).unwrap().unwrap().len() > durable);
+
+    disk.failing_syncs.store(false, Ordering::SeqCst);
+    let (_new, restored) = store.open_region(hello(1, 2)).unwrap();
+    assert_eq!(deltas(&restored), [(1, delta(1))]);
+    for survival in [
+        Survival::Nothing,
+        Survival::Torn,
+        Survival::Everything,
+        Survival::Untruncated,
+    ] {
+        let left = disk.disk.crashed(survival);
+        let length = left.read(segment).unwrap().unwrap().len();
+        assert_eq!(length, durable, "{survival:?}");
+        // And a store that starts on it has the first commit and not the second.
+        let (_, restored) = restarted(&disk.disk, survival)
+            .open_region(hello(1, 3))
+            .unwrap();
+        assert_eq!(deltas(&restored), [(1, delta(1))], "{survival:?}");
+    }
+}
+
+/// F3 of ADR-0011: while the segment cannot be cut back and synced, every hello is
+/// answered with an I/O error, in this process and over a connection, which is closed
+/// without a welcome; once it can, the next hello is welcomed and restored with exactly
+/// what was confirmed.
+#[test]
+fn nobody_is_served_while_the_log_cannot_be_cut_back_for_good() {
+    let (store, disk) = switched();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = serve(store.clone(), listener).unwrap();
+    let address = server.local_addr().to_string();
+    let owner = open(&store, hello(1, 1));
+    let bystander = open(&store, hello(0, 1));
+    log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
+    committed(&owner, 1);
+
+    disk.failing_syncs.store(true, Ordering::SeqCst);
+    log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
+    owner.flush();
+    assert!(owner.is_lost() && bystander.is_lost());
+    // Whichever region is asked for, with whatever epoch, and however often.
+    for _ in 0..2 {
+        for hello in [hello(1, 1), hello(0, 9), hello(1, 2)] {
+            let Err(error) = store.open_region(hello) else {
+                panic!("{hello:?} was welcomed");
+            };
+            assert!(matches!(error, StoreError::Io(_)), "{error}");
+            let Err(error) = StoreHandle::connect(&address, hello) else {
+                panic!("{hello:?} was welcomed over a connection");
+            };
+            assert!(matches!(error, StoreError::Io(_)), "{error}");
+        }
+    }
+    // The connection ends without a word.
+    let mut connection = std::net::TcpStream::connect(&address).unwrap();
+    clustine_rpc::wire::blocking::write(&mut connection, &hello(1, 2)).unwrap();
+    let said: Option<clustine_rpc::StoreWelcome> =
+        clustine_rpc::wire::blocking::read(&mut connection).unwrap();
+    assert_eq!(said, None);
+
+    disk.failing_syncs.store(false, Ordering::SeqCst);
+    let (remote, restored) = StoreHandle::connect(&address, hello(1, 2)).unwrap();
+    assert_eq!(restored.state, None);
+    assert_eq!(deltas(&restored), [(1, delta(1))]);
+    log(&remote, 2, &[(3, 100, 4, blocks::GLASS)]);
+    committed(&remote, 2);
+    let (_, restored) = store.open_region(hello(0, 1)).unwrap();
+    assert_eq!((restored.state, restored.deltas), (None, Vec::new()));
+}
+
+/// F3 of ADR-0011 with faults that end by themselves: the sync of a group fails, and
+/// with it the next changes and syncs, which are those that cut the segment back. Each
+/// hello that meets one is answered with an I/O error; the first that meets none is
+/// welcomed and restored with exactly what was confirmed.
+#[test]
+fn hellos_fail_until_cutting_the_log_back_succeeds() {
+    // How many changes and syncs there are up to the commit that is to fail.
+    let before = {
+        let disk = Arc::new(MemoryDisk::default());
+        let store = store_on_memory(&disk);
+        let owner = open(&store, hello(1, 1));
+        log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
+        committed(&owner, 1);
+        disk.operations()
+    };
+    for count in 1..=5 {
+        // The append of the second commit works, its sync and what follows do not.
+        let disk = Arc::new(MemoryDisk::failing(Fault::Fails(before + 2, count)));
+        let store = store_on_memory(&disk);
+        let owner = open(&store, hello(1, 1));
+        log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
+        committed(&owner, 1);
+        log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
+        owner.flush();
+        assert!(owner.is_lost(), "{count}");
+
+        let mut refused = 0;
+        let restored = loop {
+            match store.open_region(hello(1, 2)) {
+                Ok((_, restored)) => break restored,
+                Err(StoreError::Io(_)) => refused += 1,
+                Err(error) => panic!("{count}: {error}"),
+            }
+            assert!(refused <= count, "{count}");
+        };
+        // The sync of the group and the first attempt to cut it back take two faults;
+        // each further one is met by a hello.
+        assert_eq!(refused, count.saturating_sub(2), "{count}");
+        assert_eq!(deltas(&restored), [(1, delta(1))], "{count}");
+        // And that is what is on the disk, whatever a crash keeps.
+        for survival in [Survival::Nothing, Survival::Untruncated] {
+            let (_, restored) = restarted(&disk, survival).open_region(hello(1, 3)).unwrap();
+            assert_eq!(deltas(&restored), [(1, delta(1))], "{count}, {survival:?}");
+        }
+    }
+}
+
+/// A store on `disk` that keeps its chunks in memory, so that the only changes and
+/// syncs of the disk are those of the commit thread.
+fn store_on_memory(disk: &Arc<MemoryDisk>) -> Store {
+    start(
+        disk.clone(),
+        Path::new("/world"),
+        Box::new(chunks::MemoryChunks::default()),
+        generator(),
+    )
+    .unwrap()
 }
 
 /// A checkpoint waits for the saves asked for before it, and is not put in place by an

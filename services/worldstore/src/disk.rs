@@ -60,20 +60,29 @@ pub(crate) fn parent(path: &Path) -> &Path {
 #[derive(Default)]
 pub(crate) struct OsDisk {
     /// Files that are appended to, kept open so that a commit does not open its log.
-    appending: Mutex<BTreeMap<PathBuf, Arc<File>>>,
+    appending: Mutex<BTreeMap<PathBuf, Appended>>,
+}
+
+/// A file that is appended to.
+#[derive(Clone)]
+struct Appended {
+    file: Arc<File>,
+    /// Whether the file was cut back since it was last synced. Its length having shrunk
+    /// is metadata that syncing its data need not write.
+    truncated: bool,
 }
 
 impl OsDisk {
-    fn appending(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Arc<File>>> {
-        // Whoever holds the lock only adds or removes a file, so the map is in order
-        // even after a panic.
+    fn appending(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Appended>> {
+        // Whoever holds the lock only adds, removes or marks a file, so the map is in
+        // order even after a panic.
         self.appending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The open file at `path` if it is appended to.
-    fn appended(&self, path: &Path) -> Option<Arc<File>> {
+    fn appended(&self, path: &Path) -> Option<Appended> {
         self.appending().get(path).cloned()
     }
 }
@@ -129,11 +138,15 @@ impl Disk for OsDisk {
 
     fn append(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         let file = match self.appended(path) {
-            Some(file) => file,
+            Some(appended) => appended.file,
             None => {
                 let file = OpenOptions::new().create(true).append(true).open(path)?;
                 let file = Arc::new(file);
-                self.appending().insert(path.to_owned(), Arc::clone(&file));
+                let appended = Appended {
+                    file: Arc::clone(&file),
+                    truncated: false,
+                };
+                self.appending().insert(path.to_owned(), appended);
                 file
             }
         };
@@ -141,8 +154,13 @@ impl Disk for OsDisk {
     }
 
     fn truncate(&self, path: &Path, length: u64) -> io::Result<()> {
-        match self.appended(path) {
-            Some(file) => file.set_len(length),
+        let mut appending = self.appending();
+        match appending.get_mut(path) {
+            Some(appended) => {
+                // Noted even if cutting fails: it may have been done in part.
+                appended.truncated = true;
+                appended.file.set_len(length)
+            }
             None => OpenOptions::new().write(true).open(path)?.set_len(length),
         }
     }
@@ -150,7 +168,22 @@ impl Disk for OsDisk {
     fn sync(&self, path: &Path) -> io::Result<()> {
         match self.appended(path) {
             // The length changes with every append, and is part of what is synced.
-            Some(file) => file.sync_data(),
+            Some(Appended {
+                file,
+                truncated: false,
+            }) => file.sync_data(),
+            // A length that has shrunk is not: all of the file's metadata is synced,
+            // so that what was cut off is no part of the file after a crash.
+            Some(Appended {
+                file,
+                truncated: true,
+            }) => {
+                file.sync_all()?;
+                if let Some(appended) = self.appending().get_mut(path) {
+                    appended.truncated = false;
+                }
+                Ok(())
+            }
             None => File::open(path)?.sync_all(),
         }
     }
@@ -204,6 +237,9 @@ struct Content {
     data: Vec<u8>,
     /// What a crash would leave of `data`.
     synced: Vec<u8>,
+    /// What the file had before it was first cut back since it was last synced, if it
+    /// was: what a crash leaves if cutting it back never reached the disk.
+    untruncated: Option<Vec<u8>>,
 }
 
 /// Something going wrong at the `n`th change or sync, counted from 1.
@@ -214,6 +250,9 @@ pub(crate) enum Fault {
     /// That one fails; an append or a write puts half of what it was given in place
     /// first. What follows works again.
     Fail(u64),
+    /// As many as the second number says fail, from that one on, each as
+    /// [`Fault::Fail`] makes one fail. What follows them works again.
+    Fails(u64, u64),
     /// That one and everything after it fails without doing anything, as if the
     /// machine had stopped there.
     Stop(u64),
@@ -230,6 +269,10 @@ pub(crate) enum Survival {
     Torn,
     /// All of it, as if the system had written everything out just before.
     Everything,
+    /// All of it but that files were cut back: a file that was cut back and not synced
+    /// since is as it was before. It is what a machine finds whose truncation never
+    /// reached the disk.
+    Untruncated,
 }
 
 impl MemoryDisk {
@@ -258,7 +301,7 @@ impl MemoryDisk {
     pub(crate) fn crashed(&self, survival: Survival) -> MemoryDisk {
         let memory = self.memory();
         let names = match survival {
-            Survival::Everything => &memory.names,
+            Survival::Everything | Survival::Untruncated => &memory.names,
             Survival::Nothing | Survival::Torn => &memory.durable,
         };
         let mut left = Memory::default();
@@ -266,6 +309,10 @@ impl MemoryDisk {
             let content = &memory.files[file];
             let data = match survival {
                 Survival::Everything => content.data.clone(),
+                Survival::Untruncated => content
+                    .untruncated
+                    .clone()
+                    .unwrap_or_else(|| content.data.clone()),
                 Survival::Nothing => content.synced.clone(),
                 Survival::Torn => {
                     let mut data = content.synced.clone();
@@ -282,6 +329,7 @@ impl MemoryDisk {
                 Content {
                     synced: data.clone(),
                     data,
+                    untruncated: None,
                 },
             );
             left.names.insert(path.clone(), number);
@@ -300,6 +348,9 @@ impl Memory {
         self.operations += 1;
         match self.fault {
             Some(Fault::Fail(n)) if self.operations == n => Err(Failure::Partly),
+            Some(Fault::Fails(n, count)) if self.operations >= n && self.operations - n < count => {
+                Err(Failure::Partly)
+            }
             Some(Fault::Stop(n)) if self.operations >= n => Err(Failure::Entirely),
             _ => Ok(()),
         }
@@ -414,7 +465,12 @@ impl Disk for MemoryDisk {
     fn truncate(&self, path: &Path, length: u64) -> io::Result<()> {
         let mut memory = self.memory();
         memory.operate().map_err(|_| injected())?;
-        memory.content(path)?.data.truncate(length as usize);
+        let content = memory.content(path)?;
+        let length = length as usize;
+        if length < content.data.len() && content.untruncated.is_none() {
+            content.untruncated = Some(content.data.clone());
+        }
+        content.data.truncate(length);
         Ok(())
     }
 
@@ -423,6 +479,7 @@ impl Disk for MemoryDisk {
         memory.operate().map_err(|_| injected())?;
         let content = memory.content(path)?;
         content.synced = content.data.clone();
+        content.untruncated = None;
         Ok(())
     }
 
@@ -512,6 +569,101 @@ mod tests {
         assert!(disk.sync(&path("log")).is_err());
         assert_eq!(disk.read(&path("log")).unwrap().unwrap(), b"ab");
         assert_eq!(disk.operations(), 3);
+    }
+
+    /// Cutting a file back is not durable before the file is synced: until then a crash
+    /// can leave it as it was before, with whatever was cut off.
+    #[test]
+    fn a_truncation_is_durable_once_the_file_is_synced() {
+        let disk = MemoryDisk::default();
+        let log = path("log");
+        let read = |disk: &MemoryDisk| disk.read(&path("log")).unwrap().unwrap();
+        disk.append(&log, b"abcd").unwrap();
+        disk.sync(&log).unwrap();
+        disk.sync_directory(Path::new("/world")).unwrap();
+        disk.append(&log, b"efgh").unwrap();
+        disk.truncate(&log, 4).unwrap();
+        assert_eq!(read(&disk), b"abcd");
+        assert_eq!(read(&disk.crashed(Survival::Everything)), b"abcd");
+        assert_eq!(read(&disk.crashed(Survival::Untruncated)), b"abcdefgh");
+        assert_eq!(read(&disk.crashed(Survival::Nothing)), b"abcd");
+
+        // What was there before the first cut counts, not what a second one found.
+        disk.truncate(&log, 2).unwrap();
+        assert_eq!(read(&disk.crashed(Survival::Untruncated)), b"abcdefgh");
+        disk.sync(&log).unwrap();
+        for survival in [
+            Survival::Nothing,
+            Survival::Torn,
+            Survival::Everything,
+            Survival::Untruncated,
+        ] {
+            assert_eq!(read(&disk.crashed(survival)), b"ab", "{survival:?}");
+        }
+        // Cutting to the length the file has, or a greater one, notes nothing.
+        disk.truncate(&log, 2).unwrap();
+        disk.truncate(&log, 9).unwrap();
+        disk.append(&log, b"x").unwrap();
+        assert_eq!(read(&disk.crashed(Survival::Untruncated)), b"abx");
+        // A file that was never cut back is as with everything kept, name and all.
+        disk.write(&path("other"), b"y").unwrap();
+        let left = disk.crashed(Survival::Untruncated);
+        assert_eq!(left.read(&path("other")).unwrap().unwrap(), b"y");
+        // What a crash left has nothing cut back that could come back.
+        left.truncate(&log, 1).unwrap();
+        left.sync(&log).unwrap();
+        assert_eq!(read(&left.crashed(Survival::Untruncated)), b"a");
+    }
+
+    #[test]
+    fn several_faults_in_a_row_come_where_they_were_set_and_then_end() {
+        let disk = MemoryDisk::failing(Fault::Fails(2, 3));
+        let log = path("log");
+        disk.append(&log, b"ab").unwrap();
+        // Each fails as a single fault does: an append puts half in place first.
+        assert!(disk.append(&log, b"cdef").is_err());
+        assert!(disk.truncate(&log, 2).is_err());
+        assert!(disk.sync(&log).is_err());
+        assert_eq!(disk.read(&log).unwrap().unwrap(), b"abcd");
+        assert_eq!(disk.crashed(Survival::Nothing).read(&log).unwrap(), None);
+        disk.truncate(&log, 2).unwrap();
+        disk.sync(&log).unwrap();
+        assert_eq!(disk.read(&log).unwrap().unwrap(), b"ab");
+        assert_eq!(disk.operations(), 6);
+
+        // One fault is several of which there is one.
+        for fault in [Fault::Fail(2), Fault::Fails(2, 1)] {
+            let disk = MemoryDisk::failing(fault);
+            disk.append(&log, b"ab").unwrap();
+            assert!(disk.append(&log, b"cdef").is_err());
+            disk.append(&log, b"g").unwrap();
+            assert_eq!(disk.read(&log).unwrap().unwrap(), b"abcdg");
+        }
+        let disk = MemoryDisk::failing(Fault::Fails(1, 0));
+        disk.append(&log, b"ab").unwrap();
+    }
+
+    /// That the length of a file that was cut back is durable after a sync cannot be
+    /// seen on a real file system without taking its power away. What can be seen is
+    /// that a file that is appended to is cut back and synced, more than once, in the
+    /// way that writes its length out, and that appending goes on after it.
+    #[test]
+    fn the_local_file_system_cuts_back_and_syncs_a_file_it_appends_to() {
+        let directory = tempfile::tempdir().unwrap();
+        let disk = OsDisk::default();
+        let log = directory.path().join("log");
+        disk.append(&log, b"abcdef").unwrap();
+        disk.sync(&log).unwrap();
+        for length in [4, 2] {
+            disk.truncate(&log, length).unwrap();
+            assert!(disk.appended(&log).unwrap().truncated);
+            disk.sync(&log).unwrap();
+            assert!(!disk.appended(&log).unwrap().truncated);
+            assert_eq!(fs::metadata(&log).unwrap().len(), length);
+        }
+        disk.append(&log, b"x").unwrap();
+        disk.sync(&log).unwrap();
+        assert_eq!(disk.read(&log).unwrap().unwrap(), b"abx");
     }
 
     #[test]

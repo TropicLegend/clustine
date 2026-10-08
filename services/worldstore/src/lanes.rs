@@ -10,6 +10,11 @@
 //! ends before a hello is looked at, so that what the previous owner was told is
 //! committed is on disk, and read, when the new owner is restored.
 //!
+//! A group that cannot be written or made durable is cut off the log again, and every
+//! region loses its owner, whether it wrote in the group or not. Until what was cut off
+//! is durably gone, nobody is served: see `Log::settle`, and section 4.1 of
+//! `docs/adr/0011-the-world-store-and-regions.md`.
+//!
 //! ```text
 //! log/<n>.wal          the log, in segments numbered in the order they were begun
 //! regions/<r>.region   per region, its highest epoch and its entity ids
@@ -166,6 +171,7 @@ impl Lanes {
             segments: BTreeSet::new(),
             active: None,
             next: 1,
+            unsettled: None,
         };
         let mut segments: Vec<u64> = disk
             .list(&log.directory)?
@@ -285,7 +291,12 @@ impl Lanes {
                 tick,
                 temporary,
             } => self.install(session, tick, &temporary),
-            Message::Flushed(peer) => self.group.flushes.push(peer),
+            // What a handle that has been lost since asked for is not answered.
+            Message::Flushed(peer) => {
+                if !peer.is_lost() {
+                    self.group.flushes.push(peer);
+                }
+            }
         }
     }
 
@@ -396,7 +407,9 @@ impl Lanes {
         }
         if let Err(error) = self.log.sync() {
             error!(%error, "the log could not be made durable");
+            // Nothing of the group is answered or finished, and nobody is left to be.
             self.fail_log();
+            return;
         }
         let group = mem::take(&mut self.group);
 
@@ -452,13 +465,17 @@ impl Lanes {
     }
 
     /// After a failed write or sync of the log: what was written in this group is cut
-    /// off, and every region that wrote to it loses its owner, which is not answered.
+    /// off, and every region loses its owner. Nothing of the group is answered.
+    ///
+    /// Also a region that wrote nothing in the group: what it asked for in it may have
+    /// no answer by which it could learn that it was undone, and what it was answered
+    /// may have rested on what another region wrote in it.
     fn fail_log(&mut self) {
         let Some((segment, durable)) = self.log.fail() else {
             return;
         };
-        for region in mem::take(&mut self.group.regions) {
-            let lane = self.regions.get_mut(&region).expect("a group is of lanes");
+        self.group = Group::default();
+        for lane in self.regions.values_mut() {
             lane.live
                 .retain(|entry| entry.segment != segment || entry.offset < durable);
             lose(lane);
@@ -513,6 +530,14 @@ impl Lanes {
         // What the previous owner was told is committed has to be on disk, and in the
         // live entries, before the region is read for the new one.
         self.end_group();
+        // What a failed group left in the log has to be durably gone before anyone is
+        // told anything again: a crash could bring it back otherwise, beside what was
+        // written since.
+        if let Err(error) = self.log.settle() {
+            warn!(region = %hello.region, %error, "a hello is not answered while the log cannot be cut back");
+            let _ = answer.send(Err(StoreError::Io(error)));
+            return;
+        }
         match self.admit(hello, reply_to) {
             Ok((opened, restored, changes, tick, peer)) => {
                 let _ = self.jobs.send(Job::Restore {
@@ -826,6 +851,9 @@ struct Log {
     active: Option<Active>,
     /// The number of the next segment.
     next: u64,
+    /// The segment a write or a sync of which failed, and how much of it is good, for as
+    /// long as cutting it back to that is not durable.
+    unsettled: Option<(u64, u64)>,
 }
 
 struct Active {
@@ -846,6 +874,13 @@ impl Log {
 
     /// Appends a framed record. Returns the segment and the offset it went to.
     fn append(&mut self, record: &[u8]) -> io::Result<(u64, u64)> {
+        if self.unsettled.is_some() {
+            // Nobody is served meanwhile, so nothing gets here; were it written, a
+            // crash could leave it beside what was cut off before it.
+            return Err(io::Error::other(
+                "a segment of the log is not durably cut back",
+            ));
+        }
         let active = match &mut self.active {
             Some(active) => active,
             None => {
@@ -899,11 +934,32 @@ impl Log {
     /// is good.
     fn fail(&mut self) -> Option<(u64, u64)> {
         let active = self.active.take()?;
-        let path = self.path(active.number);
-        if let Err(error) = self.disk.truncate(&path, active.durable) {
-            warn!(%error, "a segment of the log could not be cut back");
+        self.unsettled = Some((active.number, active.durable));
+        if let Err(error) = self.settle() {
+            warn!(%error, "a segment of the log could not be cut back; nobody is served until it is");
         }
         Some((active.number, active.durable))
+    }
+
+    /// Cuts the segment a write or a sync of which failed back to what was durable, and
+    /// makes that durable, if it is not yet. Until it is, a crash can leave what was cut
+    /// off, which was never answered and must not count beside what is written later.
+    ///
+    /// The sync here does not try again what failed: nothing is done to make the group
+    /// durable after all. It is of the file's new length.
+    fn settle(&mut self) -> io::Result<()> {
+        let Some((segment, durable)) = self.unsettled else {
+            return Ok(());
+        };
+        let path = self.path(segment);
+        // A segment whose first append failed before there was a file has nothing to
+        // cut back.
+        if self.disk.exists(&path)? {
+            self.disk.truncate(&path, durable)?;
+            self.disk.sync(&path)?;
+        }
+        self.unsettled = None;
+        Ok(())
     }
 
     /// Appends go to a new segment from now on. Only for a segment that is durable.

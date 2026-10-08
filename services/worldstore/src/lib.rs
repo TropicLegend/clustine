@@ -228,6 +228,10 @@ impl Store {
     /// from then on: what it asks for is not done and it is not answered. A hello with a
     /// lower epoch than the highest the region has been opened with is refused, also
     /// after the store was started again.
+    ///
+    /// After a write or a sync of the log has failed, every region has lost its owner,
+    /// and a hello is answered with [`StoreError::Io`] for as long as what was cut off
+    /// the log is not durably gone. It is worth saying again.
     pub fn open_region(&self, hello: RegionHello) -> Result<(StoreHandle, Restored), StoreError> {
         let (answer, answered) = mpsc::channel();
         // The store runs for as long as there is a `Store`, so it is still there.
