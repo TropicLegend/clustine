@@ -147,6 +147,135 @@ mod tests {
         assert_eq!(read::<RegionHello>(&mut reader).await.unwrap(), None);
     }
 
+    /// The messages of regions that hold chunks and merge and split, which nobody
+    /// sends yet, come out as they went in.
+    #[test]
+    fn the_messages_of_regions_that_follow_players_round_trip() {
+        use clustine_region::RegionId;
+        use clustine_world::{ChunkArea, ChunkPos};
+
+        use crate::{
+            ChunkBox, EdgeToWorker, FromCoordinator, RegionInfo, RegionList, SplitPart, StoreReply,
+            StoreRequest, ToCoordinator, WorkerToEdge,
+        };
+
+        fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(message: T) {
+            // Without the length that goes before a message on a stream.
+            let decoded: T = decode(&encode(&message)[4..]).unwrap();
+            assert_eq!(decoded, message);
+        }
+
+        let chunks = vec![ChunkPos::new(-3, 7), ChunkPos::new(4, -1)];
+        let region = RegionId(9);
+        for request in [
+            StoreRequest::Claim {
+                tick: 12,
+                chunks: chunks.clone(),
+            },
+            StoreRequest::Return {
+                chunks: chunks.clone(),
+            },
+            StoreRequest::AbsorbCommit {
+                absorbed: region,
+                tick: 13,
+                state: vec![1, 2],
+            },
+            StoreRequest::SplitCommit {
+                tick: 14,
+                state: vec![3],
+                part: SplitPart {
+                    chunks: chunks.clone(),
+                    state: vec![4, 5],
+                },
+                as_epoch: 77,
+            },
+        ] {
+            round_trip(request);
+        }
+        for reply in [
+            StoreReply::Claimed {
+                granted: chunks[..1].to_vec(),
+                foreign: vec![(chunks[1], region)],
+            },
+            StoreReply::Absorbed {
+                absorbed: region,
+                chunks: chunks.clone(),
+            },
+            StoreReply::Split { region },
+            StoreReply::Declined {
+                reason: "the log of the absorbed region is not empty".to_owned(),
+            },
+        ] {
+            round_trip(reply);
+        }
+        round_trip(RegionList {
+            home: RegionId(0),
+            regions: vec![RegionInfo {
+                region,
+                epoch: 5,
+                bounds: Some(ChunkBox {
+                    min: chunks[0],
+                    max: chunks[1],
+                }),
+                pinned: Some(ChunkArea {
+                    min_x: Some(4),
+                    max_x: None,
+                }),
+            }],
+            absorbed: vec![(RegionId(3), region)],
+        });
+        round_trip(EdgeToWorker::SubscribeAsGuest {
+            chunks: chunks.clone(),
+        });
+        round_trip(WorkerToEdge::Elsewhere {
+            chunk: chunks[0],
+            region,
+        });
+        round_trip(WorkerToEdge::NotMine { chunk: chunks[1] });
+        for said in [
+            ToCoordinator::Players {
+                regions: vec![(region, vec![(chunks[0], 3)])],
+            },
+            ToCoordinator::Merge {
+                survivor: RegionId(0),
+                absorbed: region,
+            },
+            ToCoordinator::Split {
+                region,
+                chunks: chunks.clone(),
+            },
+            ToCoordinator::AbsorbEnded {
+                region: RegionId(0),
+                absorbed: region,
+                done: true,
+            },
+            ToCoordinator::SplitEnded {
+                region,
+                part: Some(RegionId(10)),
+            },
+        ] {
+            round_trip(said);
+        }
+        for said in [
+            FromCoordinator::Absorb {
+                region: RegionId(0),
+                epoch: 4,
+                absorbed: region,
+                as_epoch: 5,
+            },
+            FromCoordinator::SplitOff {
+                region,
+                epoch: 4,
+                chunks,
+                as_epoch: 6,
+            },
+            FromCoordinator::Asked(Ok(region)),
+            FromCoordinator::Asked(Err("no such region".to_owned())),
+        ] {
+            round_trip(said);
+        }
+    }
+
     /// What the world store answers a hello and a commit with comes out as it went in.
     #[test]
     fn the_messages_of_the_world_store_round_trip() {
@@ -159,6 +288,7 @@ mod tests {
         };
 
         let restored = Restored {
+            held: Vec::new(),
             entity_ids: EntityIds::block(3).unwrap(),
             state: Some(TickState {
                 tick: 7,
@@ -242,6 +372,7 @@ mod tests {
         // A region that has never committed anything is restored up to tick 0, and one
         // with a state and no commits after it up to the state's tick.
         let mut fresh = Restored {
+            held: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
             state: None,
             deltas: Vec::new(),

@@ -187,7 +187,7 @@ differently, so that each leaves everything working.
 
 | # | Scope | Verified by | Status |
 |---|---|---|---|
-| C0 | The messages and types of ADR-0010, refused or ignored by everyone | All existing tests | to do |
+| C0 | The messages and types of ADR-0010, refused or ignored by everyone | All existing tests | done |
 | C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | to do |
 | C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | to do |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos | Hand-over, block, takeover, chaos and move tests on two pinned regions | to do |
@@ -371,8 +371,15 @@ workers for two regions, so one is to spare):
 
 What to say if it is not so: which step, what was seen, and the logs of the terminals.
 
-Phase C is next. [ADR-0010](adr/0010-regions-that-follow-players.md) is its plan,
-accepted after an independent review that found 21 defects; nothing of it is built.
+Phase C has begun. [ADR-0010](adr/0010-regions-that-follow-players.md) is its plan,
+accepted after an independent review that found 21 defects. C0 is done: what the record
+adds is in `clustine-rpc` and `clustine-sim`, and everyone passes over it or refuses it.
+`RegionId` is in `clustine-world` now, so that the sim can name regions.
+
+What C0 left to the steps that use it, because it changes what exists instead of adding
+to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
+and in hellos, the welcome saying how many entries follow (all C2b); how `Restored::held`
+and the list of regions travel between the store and others (C1).
 
 ### After M3, as the owner asked on 2026-10-08
 

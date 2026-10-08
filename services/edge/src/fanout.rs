@@ -640,6 +640,10 @@ impl Fanout {
     /// has to stop, if it has to.
     async fn handle_region(&mut self, from: RegionId, message: WorkerToEdge) -> Option<Stopped> {
         match message {
+            // Of regions that hold chunks (ADR-0010), which no region does yet.
+            message @ (WorkerToEdge::Elsewhere { .. } | WorkerToEdge::NotMine { .. }) => {
+                error!(%from, ?message, "a region said what this edge does not act on yet");
+            }
             WorkerToEdge::Welcome(welcome) => return self.welcomed(from, welcome).await,
             WorkerToEdge::ToPlayer {
                 player,
@@ -731,6 +735,13 @@ impl Fanout {
                 }
             }
             Durable::RemoteDone { player, sequence } => self.arrived(player, sequence).await,
+            // Of regions that hold chunks and merge and split, which no region does yet
+            // (ADR-0010). It is confirmed like any other, so that it does not come back.
+            entry @ (Durable::NotMine { .. }
+            | Durable::Absorbed { .. }
+            | Durable::SplitOff { .. }) => {
+                error!(%from, ?entry, "a region said what this edge does not act on yet");
+            }
         }
         // Only now: what the entry led to is kept for the regions it concerns, so the
         // region may forget the entry.

@@ -987,6 +987,9 @@ impl Seen {
                 Durable::Refused { .. } => self.refusals += 1,
                 Durable::Remote(_) => self.remote += 1,
                 Durable::RemoteDone { .. } => self.remote_done += 1,
+                Durable::NotMine { .. } | Durable::Absorbed { .. } | Durable::SplitOff { .. } => {
+                    panic!("a region made {entry:?}, which none does yet")
+                }
             }
         }
         for event in &output.events {

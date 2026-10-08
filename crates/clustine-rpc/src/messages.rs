@@ -6,7 +6,9 @@ use clustine_sim::api::{
     Durable, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
-use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3};
+use clustine_world::{
+    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3,
+};
 use serde::{Deserialize, Serialize};
 
 /// A message of an edge to the worker that owns a region, with its number.
@@ -82,6 +84,12 @@ pub enum EdgeToWorker {
     Subscribe { chunks: Vec<ChunkPos> },
     /// The edge no longer needs these chunks.
     Unsubscribe { chunks: Vec<ChunkPos> },
+    /// Like [`EdgeToWorker::Subscribe`], for chunks that a viewer of another region
+    /// sees: the region serves those it holds and answers [`WorkerToEdge::NotMine`] for
+    /// the others, and does not claim a chunk because a guest asks for it. See
+    /// `docs/adr/0010-regions-that-follow-players.md`, section 3. No edge says this
+    /// yet, and a worker ignores it.
+    SubscribeAsGuest { chunks: Vec<ChunkPos> },
 }
 
 impl EdgeToWorker {
@@ -97,7 +105,8 @@ impl EdgeToWorker {
             Self::Hello { .. }
             | Self::Confirm { .. }
             | Self::Subscribe { .. }
-            | Self::Unsubscribe { .. } => false,
+            | Self::Unsubscribe { .. }
+            | Self::SubscribeAsGuest { .. } => false,
         }
     }
 }
@@ -143,6 +152,13 @@ pub enum WorkerToEdge {
         applied: u64,
         inputs: Vec<(PlayerId, u64)>,
     },
+    /// The region `region` holds `chunk`, which the edge is subscribed to here or has
+    /// asked for: the edge subscribes there as a guest. See ADR-0010, section 3. No
+    /// worker says this yet, and an edge ignores it.
+    Elsewhere { chunk: ChunkPos, region: RegionId },
+    /// This region does not hold `chunk` and does not know who does. The edge asks the
+    /// viewer's region again.
+    NotMine { chunk: ChunkPos },
 }
 
 /// What a region answers an edge that has said hello.
@@ -209,6 +225,44 @@ pub enum StoreRequest {
     Checkpoint { tick: u64, state: Vec<u8> },
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
+    /// Grant the region these chunks, as of its tick `tick`. Each is granted unless
+    /// another region holds it. Answered with [`StoreReply::Claimed`] once the grants
+    /// are on disk. See ADR-0010, section 1. The store does not keep grants yet, and
+    /// passes over this and the three requests below.
+    Claim { tick: u64, chunks: Vec<ChunkPos> },
+    /// The region gives these chunks back. Every change it made to them is in a save
+    /// asked for before this; the chunks are free once those saves are on disk. Not
+    /// answered.
+    Return { chunks: Vec<ChunkPos> },
+    /// The merge of ADR-0010, section 4: `state` is this region's whole state after
+    /// `tick` with the region `absorbed` taken in, whose chunks are this region's from
+    /// that tick. The same worker has `absorbed` open, with nothing in its log.
+    /// Answered with [`StoreReply::Absorbed`] once it is on disk, or with
+    /// [`StoreReply::Declined`].
+    AbsorbCommit {
+        absorbed: RegionId,
+        tick: u64,
+        state: Vec<u8>,
+    },
+    /// The split of ADR-0010, section 5: `state` is this region's whole state after
+    /// `tick` without the part, and `part` becomes a new region, opened by this
+    /// worker with `as_epoch`. Answered with [`StoreReply::Split`] once it is on disk,
+    /// or with [`StoreReply::Declined`].
+    SplitCommit {
+        tick: u64,
+        state: Vec<u8>,
+        part: SplitPart,
+        as_epoch: u64,
+    },
+}
+
+/// What a split makes a new region of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitPart {
+    /// The chunks the new region holds, all of which the old one held.
+    pub chunks: Vec<ChunkPos>,
+    /// The new region's whole state.
+    pub state: Vec<u8>,
 }
 
 /// What the world store answers.
@@ -228,6 +282,28 @@ pub enum StoreReply {
         tick: u64,
     },
     Flushed,
+    /// The answer to [`StoreRequest::Claim`]: the chunks the region holds from the
+    /// claim's tick on, and those of the claim that another region holds.
+    Claimed {
+        granted: Vec<ChunkPos>,
+        foreign: Vec<(ChunkPos, RegionId)>,
+    },
+    /// The merge asked for with [`StoreRequest::AbsorbCommit`] has happened. `chunks`
+    /// are those the region holds through it.
+    Absorbed {
+        absorbed: RegionId,
+        chunks: Vec<ChunkPos>,
+    },
+    /// The split asked for with [`StoreRequest::SplitCommit`] has happened, and
+    /// `region` is the new region. The worker opens it with the epoch it named.
+    Split {
+        region: RegionId,
+    },
+    /// A merge or a split was not done, for the reason given. Nothing has changed, and
+    /// the handle is as it was.
+    Declined {
+        reason: String,
+    },
 }
 
 /// What the world store has of a region, as it hands it to the owner that opens it.
@@ -241,6 +317,10 @@ pub struct Restored {
     /// The state of each commit after that checkpoint, in the order of their ticks.
     /// The block changes of those commits are in the stored chunks already.
     pub deltas: Vec<TickState>,
+    /// The chunks the region holds, each with the tick of the region at which it was
+    /// granted (ADR-0010, section 1). Empty as long as the store keeps no grants: a
+    /// region of a stripe has every chunk of its area.
+    pub held: Vec<(ChunkPos, u64)>,
 }
 
 impl Restored {
@@ -311,6 +391,45 @@ pub enum RestoredItem {
     /// One of [`Restored::deltas`].
     Delta,
 }
+
+/// The regions of a world as the world store has them, for the coordinator. See
+/// ADR-0010, section 6. Nothing asks for it yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionList {
+    /// The region that holds the chunk players enter the world in.
+    pub home: RegionId,
+    /// Every region that exists, in the order of their ids.
+    pub regions: Vec<RegionInfo>,
+    /// The regions that were absorbed, each with the region it went into, which may
+    /// have been absorbed since.
+    pub absorbed: Vec<(RegionId, RegionId)>,
+}
+
+/// What the coordinator learns of a region from the world store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionInfo {
+    pub region: RegionId,
+    /// The highest epoch the region was opened with; 0 if it never was.
+    pub epoch: u64,
+    /// The smallest box of chunks that has every chunk the region holds, if it holds
+    /// any.
+    pub bounds: Option<ChunkBox>,
+    /// The area the region is pinned to, if it is: it holds every chunk of it that no
+    /// other region was granted.
+    pub pinned: Option<ChunkArea>,
+}
+
+/// A box of chunks, with both corners in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkBox {
+    pub min: ChunkPos,
+    pub max: ChunkPos,
+}
+
+/// The chunks of a region that have players in them, each with how many: what a worker
+/// tells the coordinator, which merges and splits regions by it. See ADR-0010,
+/// section 7.
+pub type Crowds = Vec<(ChunkPos, u32)>;
 
 /// What a service says first on a connection to a worker or to the world store: which
 /// region the connection is about and who the service takes its owner to be.
@@ -386,6 +505,36 @@ pub enum ToCoordinator {
         region: RegionId,
         to: Option<String>,
     },
+    /// A worker says where the players of its regions are. Sent with heartbeats. See
+    /// ADR-0010, section 7. No worker says this yet, and the coordinator ignores it,
+    /// as it does the four below.
+    Players { regions: Vec<(RegionId, Crowds)> },
+    /// Whoever operates the cluster wants `absorbed` merged into `survivor`. Answered
+    /// with [`FromCoordinator::Asked`].
+    Merge {
+        survivor: RegionId,
+        absorbed: RegionId,
+    },
+    /// Whoever operates the cluster wants the players in `chunks`, and what is around
+    /// them, split off `region` as a region of its own. Answered with
+    /// [`FromCoordinator::Asked`].
+    Split {
+        region: RegionId,
+        chunks: Vec<ChunkPos>,
+    },
+    /// A worker says what came of [`FromCoordinator::Absorb`]: whether `region` has
+    /// absorbed `absorbed`. If not, both are as they were.
+    AbsorbEnded {
+        region: RegionId,
+        absorbed: RegionId,
+        done: bool,
+    },
+    /// A worker says what came of [`FromCoordinator::SplitOff`]: the new region, which
+    /// it runs with the epoch it was told, or `None` if the region is as it was.
+    SplitEnded {
+        region: RegionId,
+        part: Option<RegionId>,
+    },
 }
 
 /// Why a worker vouches for a region it holds.
@@ -428,4 +577,26 @@ pub enum FromCoordinator {
         epoch: u64,
         released: bool,
     },
+    /// To a worker: have `region`, which you hold with `epoch`, absorb the region
+    /// `absorbed`, which nobody runs; open that one with `as_epoch`. Answered with
+    /// [`ToCoordinator::AbsorbEnded`]. See ADR-0010, section 4. The coordinator does
+    /// not say this yet, and a worker ignores it, as it does the next.
+    Absorb {
+        region: RegionId,
+        epoch: u64,
+        absorbed: RegionId,
+        as_epoch: u64,
+    },
+    /// To a worker: split the players standing in `chunks` off `region`, which you
+    /// hold with `epoch`, as a region of its own, and run that with `as_epoch`.
+    /// Answered with [`ToCoordinator::SplitEnded`]. See ADR-0010, section 5.
+    SplitOff {
+        region: RegionId,
+        epoch: u64,
+        chunks: Vec<ChunkPos>,
+        as_epoch: u64,
+    },
+    /// To whoever asked for a merge or a split: what came of it. `region` is the
+    /// region that absorbed the other or the one that was split off.
+    Asked(Result<RegionId, String>),
 }

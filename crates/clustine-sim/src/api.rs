@@ -4,10 +4,10 @@
 //! serialisable and free of anything specific to the Minecraft protocol.
 
 use clustine_data::BlockState;
-use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::state::StateDelta;
+use crate::state::{PlayerState, StateDelta};
 
 /// Where an entity is and how it is oriented.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -250,6 +250,55 @@ pub enum Durable {
     /// player can now be told so, as with [`PlayerEvent::Acknowledged`]; what it changed
     /// has been reported among the tick's events.
     RemoteDone { player: PlayerId, sequence: i32 },
+    /// An arrival or a remote action reached this region for a chunk it does not hold.
+    /// It goes to `holder`, the region this one knows to hold the chunk, or else back
+    /// to the region that sent it, which is told to ask again who holds the chunk. See
+    /// `docs/adr/0010-regions-that-follow-players.md`, sections 2 and 3. No region
+    /// makes this yet.
+    NotMine {
+        what: Misdirected,
+        holder: Option<RegionId>,
+    },
+    /// This region has absorbed `region`, and what follows in the outbox, as far as
+    /// `numbers` reaches, is what that region had in its outbox for the edge, under
+    /// new numbers. See ADR-0010, section 4. No region makes this yet.
+    Absorbed {
+        region: RegionId,
+        /// Whether the absorbed region knew the edge. If not, it has forgotten whatever
+        /// the edge kept for it.
+        knew: bool,
+        /// The number of the last message of the edge that the absorbed region applied.
+        applied: u64,
+        /// The numbers that the entries behind this one had in the absorbed region's
+        /// outbox, in order. The edge passes over those it had seen there already.
+        numbers: Vec<u64>,
+        /// The edge's players that came from the absorbed region, as they are.
+        players: Vec<(PlayerId, PlayerState)>,
+    },
+    /// A part of this region has become the region `region`. The players named are in
+    /// it from now on, and so are the chunks. See ADR-0010, section 5. No region makes
+    /// this yet.
+    SplitOff {
+        region: RegionId,
+        /// The number of the last message of the edge that this region applied before
+        /// the split: what the edge sent after it and concerns the part goes to the
+        /// new region.
+        applied: u64,
+        players: Vec<PlayerId>,
+        chunks: Vec<ChunkPos>,
+    },
+}
+
+/// What a [`Durable::NotMine`] sends on its way again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Misdirected {
+    /// A player who was let go to this region, as in [`PlayerChange::Arrive`].
+    Arrival {
+        player: PlayerId,
+        transfer: PlayerTransfer,
+    },
+    /// A remote action that was passed on to this region.
+    Remote(RemoteAction),
 }
 
 /// Something the runner tells the region about an edge. See
@@ -313,6 +362,15 @@ pub struct TickInputs {
     pub tickets_removed: Vec<ChunkPos>,
     /// Chunks that storage delivered in answer to earlier [`TickOutput::chunk_requests`].
     pub chunks_loaded: Vec<(ChunkPos, Chunk)>,
+    /// Chunks the world store has granted the region in answer to earlier
+    /// [`TickOutput::claims`]: the region holds them from this tick on. See ADR-0010,
+    /// section 2. Nothing passes these in yet, and a region ignores them.
+    pub granted: Vec<ChunkPos>,
+    /// Chunks the region claimed that another region holds, with that region.
+    pub foreign: Vec<(ChunkPos, RegionId)>,
+    /// Chunks of which the region is to forget whom it believes to hold them, and to
+    /// claim again if it needs them: what it sent to that holder came back.
+    pub unbelieve: Vec<ChunkPos>,
 }
 
 impl TickInputs {
@@ -444,6 +502,13 @@ pub struct TickOutput {
     ///
     /// [`EdgeState::sent`]: crate::EdgeState::sent
     pub durable: Vec<(EdgeId, u64, Durable)>,
+    /// Chunks the region asks the world store to grant it, answered through
+    /// [`TickInputs::granted`] and [`TickInputs::foreign`]. See ADR-0010, section 2. No
+    /// region asks yet.
+    pub claims: Vec<ChunkPos>,
+    /// Chunks the region no longer needs and gives back to the world store. Every
+    /// change it made to them is in a save it asked for before.
+    pub returns: Vec<ChunkPos>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,
 }

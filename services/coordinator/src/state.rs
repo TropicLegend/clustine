@@ -1044,6 +1044,8 @@ impl Coordinator {
             })
             .collect();
         RoutingTable {
+            home: None,
+            absorbed: Vec::new(),
             version: self.version,
             layout: self.config.layout.clone(),
             spawn: self.config.spawn,

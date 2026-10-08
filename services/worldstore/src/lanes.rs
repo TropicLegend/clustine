@@ -357,6 +357,15 @@ impl Lanes {
             },
             StoreRequest::Checkpoint { tick, state } => Job::Checkpoint { tick, state, peer },
             StoreRequest::Flush => Job::Flush { peer },
+            // Of regions that hold chunks and merge and split (ADR-0010), which the
+            // store does not keep yet. No worker asks for these.
+            request @ (StoreRequest::Claim { .. }
+            | StoreRequest::Return { .. }
+            | StoreRequest::AbsorbCommit { .. }
+            | StoreRequest::SplitCommit { .. }) => {
+                error!(region = %session.region, ?request, "asked for what the store does not do yet");
+                return;
+            }
         };
         if owner.unsynced.is_empty() && owner.held.is_empty() {
             let _ = self.jobs.send(job);
@@ -647,6 +656,7 @@ impl Lanes {
             entity_ids,
             state: state.map(|StateFile { tick, state }| TickState { tick, state }),
             deltas,
+            held: Vec::new(),
         };
         let opened = Opened {
             session,

@@ -582,6 +582,13 @@ impl RegionRunner {
                 }
                 StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
                 StoreReply::Flushed => self.flushes_answered += 1,
+                // Answers to what no runner asks for yet (ADR-0010).
+                reply @ (StoreReply::Claimed { .. }
+                | StoreReply::Absorbed { .. }
+                | StoreReply::Split { .. }
+                | StoreReply::Declined { .. }) => {
+                    error!(?reply, "the world store answered what was not asked");
+                }
             }
         }
         // Looked at after the answers: a handle that is lost has none, so nothing
@@ -1498,7 +1505,8 @@ impl RegionRunner {
             EdgeToWorker::Hello { .. }
             | EdgeToWorker::Confirm { .. }
             | EdgeToWorker::Subscribe { .. }
-            | EdgeToWorker::Unsubscribe { .. } => {}
+            | EdgeToWorker::Unsubscribe { .. }
+            | EdgeToWorker::SubscribeAsGuest { .. } => {}
         }
     }
 
@@ -4233,6 +4241,7 @@ mod tests {
     #[test]
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
+            held: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
             state,
             deltas,

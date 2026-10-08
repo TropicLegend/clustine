@@ -625,6 +625,9 @@ struct Witness {
 impl Witness {
     fn absorb(&mut self, message: &WorkerToEdge) {
         match message {
+            WorkerToEdge::Elsewhere { .. } | WorkerToEdge::NotMine { .. } => {
+                panic!("a region said {message:?}, which none does yet")
+            }
             WorkerToEdge::ChunkSnapshot { entities, .. } => {
                 for entity in entities {
                     self.entities.insert(entity.entity, entity.pose);

@@ -324,6 +324,13 @@ impl Service {
                     ToCoordinator::Released { .. } => "that it released a region",
                     ToCoordinator::Leaving => "that it is leaving",
                     ToCoordinator::Move { .. } => "a request to move a region",
+                    // Of regions that merge and split (ADR-0010), which the
+                    // coordinator does not do yet.
+                    ToCoordinator::Players { .. } => "where its players are",
+                    ToCoordinator::Merge { .. } => "a request to merge regions",
+                    ToCoordinator::Split { .. } => "a request to split a region",
+                    ToCoordinator::AbsorbEnded { .. } => "what came of a merge",
+                    ToCoordinator::SplitEnded { .. } => "what came of a split",
                 };
                 warn!(
                     connection = id,
@@ -1933,6 +1940,8 @@ mod tests {
         );
 
         let table = RoutingTable {
+            home: None,
+            absorbed: Vec::new(),
             version: 7,
             layout: Layout::new(vec![-8, 8]).unwrap(),
             spawn: SPAWN,

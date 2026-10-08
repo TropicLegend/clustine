@@ -11,7 +11,8 @@ pub mod tcp;
 pub mod wire;
 
 pub use messages::{
-    Assignment, EdgeMessage, EdgeToWorker, FromCoordinator, Presence, RegionHello, RegionWelcome,
-    Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest, StoreWelcome,
-    TickState, ToCoordinator, Vouch, Welcome, WorkerToEdge,
+    Assignment, ChunkBox, Crowds, EdgeMessage, EdgeToWorker, FromCoordinator, Presence,
+    RegionHello, RegionInfo, RegionList, RegionWelcome, Restored, RestoredItem, RestoredPart,
+    RestoredPiece, SplitPart, StoreReply, StoreRequest, StoreWelcome, TickState, ToCoordinator,
+    Vouch, Welcome, WorkerToEdge,
 };

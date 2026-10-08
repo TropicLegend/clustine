@@ -15,8 +15,8 @@ mod region;
 mod state;
 
 pub use api::{
-    Durable, EdgeEvent, PlayerChange, PlayerEvent, PlayerJoin, PlayerTransfer, RemoteAction,
-    RemoteStep, TickInputs, TickOutput,
+    Durable, EdgeEvent, Misdirected, PlayerChange, PlayerEvent, PlayerJoin, PlayerTransfer,
+    RemoteAction, RemoteStep, TickInputs, TickOutput,
 };
 pub use region::{Region, RegionConfig};
 pub use state::{EdgeDelta, EdgeState, PlayerState, RegionState, StateDelta};

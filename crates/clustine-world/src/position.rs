@@ -82,6 +82,18 @@ pub struct EntityId(pub i32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub Uuid);
 
+/// Identifies a region. Within a layout of stripes the regions are numbered from west
+/// to east; from `docs/adr/0010-regions-that-follow-players.md` on the world store gives
+/// a region its id, which is never used again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RegionId(pub u32);
+
+impl std::fmt::Display for RegionId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// Identifies an edge across its restarts. It follows from the edge's name, which stays
 /// the same when the edge starts again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

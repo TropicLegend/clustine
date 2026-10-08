@@ -278,6 +278,8 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
 /// that has stopped reading must not hold on to a thread and a region for ever.
 fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Result<()> {
     let Restored {
+        // Not sent yet: the store keeps no grants, so there are none (ADR-0010).
+        held: _,
         entity_ids,
         state,
         deltas,
@@ -395,6 +397,7 @@ impl Arriving {
     fn new(entity_ids: EntityIds) -> Self {
         Self {
             restored: Restored {
+                held: Vec::new(),
                 entity_ids,
                 state: None,
                 deltas: Vec::new(),
@@ -822,6 +825,7 @@ mod tests {
             refused.err()
         );
         let expected = Restored {
+            held: Vec::new(),
             entity_ids,
             state: Some(TickState {
                 tick: 5,
@@ -1537,6 +1541,7 @@ mod tests {
     fn what_a_region_is_restored_with_is_cut_into_bounded_parts_that_fit_together_again() {
         let entity_ids = EntityIds::block(2).unwrap();
         let restored = |state: Option<usize>, deltas: &[usize]| Restored {
+            held: Vec::new(),
             entity_ids,
             state: state.map(|length| tick_state(7, length)),
             deltas: (8..)
@@ -1654,6 +1659,7 @@ mod tests {
             },
         ];
         let expected = Restored {
+            held: Vec::new(),
             entity_ids,
             state: Some(TickState {
                 tick: 4,
@@ -1875,6 +1881,7 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         // Far more than the system takes for a connection that nobody reads from.
         let restored = Restored {
+            held: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
             state: None,
             deltas: vec![TickState {

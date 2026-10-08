@@ -4,18 +4,9 @@
 //! into stripes along the x axis. Regions that follow where players are, and merge and
 //! split as they move, will replace this.
 
+pub use clustine_world::RegionId;
 use clustine_world::{ChunkArea, ChunkPos, Vec3};
 use serde::{Deserialize, Serialize};
-
-/// Identifies a region within a [`Layout`]: regions are numbered from west to east.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct RegionId(pub u32);
-
-impl std::fmt::Display for RegionId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
 
 /// Why a list of boundaries does not describe a layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -116,6 +107,13 @@ pub struct RoutingTable {
     pub spawn: Vec3,
     /// The regions that have an owner, in ascending order of their ids.
     pub routes: Vec<RegionRoute>,
+    /// The region players enter the world in, once regions are sets of chunks that the
+    /// world store grants (`docs/adr/0010-regions-that-follow-players.md`, section 3).
+    /// `None` as long as the world is divided by a layout.
+    pub home: Option<RegionId>,
+    /// The regions that were absorbed of late, each with the region it went into. What
+    /// names an absorbed region means the one it went into. Empty for now.
+    pub absorbed: Vec<(RegionId, RegionId)>,
 }
 
 impl RoutingTable {
@@ -210,6 +208,8 @@ mod tests {
             address: format!("worker-{region}:25601"),
         };
         let mut table = RoutingTable {
+            home: None,
+            absorbed: Vec::new(),
             version: 1,
             layout: Layout::new(vec![0]).unwrap(),
             spawn: Vec3::new(0.5, -60.0, 0.5),

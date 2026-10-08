@@ -361,6 +361,11 @@ impl RoutingWatch {
                 | FromCoordinator::MoveBegun { .. }
                 | FromCoordinator::MoveDone { .. },
             ) => Err(unexpected("word of a move nobody asked for")),
+            Some(
+                FromCoordinator::Absorb { .. }
+                | FromCoordinator::SplitOff { .. }
+                | FromCoordinator::Asked(_),
+            ) => Err(unexpected("word of a merge or a split")),
             None => Err(ClientError::Lost),
         }
     }
@@ -436,6 +441,11 @@ impl Mover {
             Some(FromCoordinator::Routing(_)) => Err(unexpected(
                 "a routing table to somebody who asked for a move",
             )),
+            Some(
+                FromCoordinator::Absorb { .. }
+                | FromCoordinator::SplitOff { .. }
+                | FromCoordinator::Asked(_),
+            ) => Err(unexpected("word of a merge or a split")),
             None => Err(ClientError::Lost),
         }
     }
@@ -479,6 +489,12 @@ fn event_from(message: Option<FromCoordinator>) -> Result<WorkerEvent, ClientErr
             | FromCoordinator::MoveBegun { .. }
             | FromCoordinator::MoveDone { .. },
         ) => Err(unexpected("word of a move nobody asked for")),
+        // The coordinator has no worker merge or split a region yet (ADR-0010).
+        Some(
+            FromCoordinator::Absorb { .. }
+            | FromCoordinator::SplitOff { .. }
+            | FromCoordinator::Asked(_),
+        ) => Err(unexpected("word of a merge or a split")),
         None => Err(ClientError::Lost),
     }
 }
@@ -560,6 +576,8 @@ mod tests {
 
     fn table(version: u64) -> RoutingTable {
         RoutingTable {
+            home: None,
+            absorbed: Vec::new(),
             version,
             layout: Layout::new(vec![0]).unwrap(),
             spawn: Vec3::new(0.5, -60.0, 0.5),

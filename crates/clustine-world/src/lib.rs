@@ -10,7 +10,9 @@ mod section;
 
 pub use chunk::{Chunk, ChunkGenerator};
 pub use light::{LIGHT_ARRAY_LENGTH, SectionLight, sky_light};
-pub use position::{BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3};
+pub use position::{
+    BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId, Vec3,
+};
 pub use section::{Biome, Section};
 
 /// Blocks along each edge of a section.
