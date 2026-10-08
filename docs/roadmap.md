@@ -148,11 +148,12 @@ does not answer within the lease is treated as dead, which is the same as a cras
 | # | Scope | Verified by | Status |
 |---|---|---|---|
 | B0 | ADR-0009 reviewed; its messages on the wire, refused or ignored by everyone | All existing tests | done |
-| B1 | Release and assign; `clustine move` to ask for it | Move under bot load: nobody disconnected, pause measured and bounded | built; its tests to come |
-| B2 | A worker asked to terminate hands its region over first | Rolling restart of all workers under bots, as processes | to do |
-| B3 | ADR-0009, docs | CI | to do |
+| B1 | Release and assign; `clustine move` to ask for it | Move under bot load: nobody disconnected, pause measured and bounded | done |
+| B2 | A worker asked to terminate hands its region over first | Rolling restart of all workers under bots, as processes and on kind | done |
+| B3 | ADR-0009, docs | CI | done |
 
-Then stop for the owner's check: `clustine move` and restarting workers while playing.
+What the owner is to try is under "Where M3 stands": `clustine move` and restarting
+workers while playing.
 
 ### Phase C: regions that follow players
 
@@ -248,8 +249,8 @@ meanwhile, as asked:
    target/debug/clustine edge
    ```
    Join with one or two clients at `localhost:25565`. The regions meet at block x = 64.
-2. Stand in one region, build something, and stop the worker that runs it with Ctrl-C
-   or `kill -9` (the coordinator's log says which worker has which region). Expected:
+2. Stand in one region, build something, and kill the worker that runs it with
+   `kill -9` (the coordinator's log says which worker has which region). Expected:
    everyone in that region stands still for five to seven seconds, the blocks of the
    last moments are all there, nobody is disconnected, and then everything goes on;
    what was done while standing still takes effect. A second client in the other region
@@ -288,31 +289,90 @@ Left for a later cleanup: `Assignment::entity_ids`, which the coordinator fills 
 nothing reads; and the `WorkerToEdge` messages `Remote`, `RemoteDone` and the
 `Departed` and `Refused` player events, which regions say through their outbox now.
 
-Phase B, live migration, has begun. [ADR-0009](adr/0009-moving-a-region.md) is its plan:
-a move is a crash that the old owner prepares and announces. An independent reviewer
-went over it against the code and found eleven defects, worked in and listed at its
-end. Its messages are in `clustine-rpc`; nobody acts on them yet.
+**Phase B is done.** A region can be moved to another worker on purpose, and a worker
+that is told to stop hands its region over first. Players of the region stand still for
+most of a second and notice nothing else.
 
-Next, in this order:
+How it works is in [ADR-0009](adr/0009-moving-a-region.md): a move is a crash that the
+old owner prepares and announces. It checkpoints while it still ticks, stops, waits
+until the store has everything, lets go and says so; the coordinator gives the region
+to a worker it had reserved, at once; that worker restores the region and the edge
+resumes with it, as after a crash. An independent reviewer went over the record against
+the code before it was built and found eleven defects; the tests found two more, listed
+at its end.
 
-1. Tests by someone who wrote none of it: a move under the ledger bots with the pause
-   measured at the bots (view distance 8, between processes, bots spread out, fails
-   above 3 seconds), every failure of section 2 of the record between processes, and a
-   rolling restart of all workers as processes and on kind.
-2. B3: the docs, and what to try with real clients.
+What checks it, besides the coordinator's and the worker's own tests:
 
-What is built: the coordinator notes releases with a reserved target, takes `Released`
-and `Leaving`, answers `Move` (`services/coordinator`); the runner releases a region
-(`Worker::begin_release`, `RegionStatus::ended`; a `stop` during a release abandons it);
-the worker process releases in every phase, lets go of a region that is taken from it
-and waits for another, says that it is leaving when told to stop and exits when the
-coordinator has let it go, and listens for edges only once it has registered;
-`clustine move --region R [--to worker]` asks for a move and says what came of it.
+- `bin/clustine/tests/moves.rs`, written from the record by someone who wrote none of
+  the code: a cluster of processes under the ledger bots at view distance 8, bots 320
+  blocks apart. Regions are moved one after the other with the pause measured at the
+  bots; moved while a bot crosses the boundary and while the new owner still opens the
+  region; refused for every reason the record names; with the old owner killed or
+  frozen, the new owner killed, the world store killed and the coordinator killed in
+  the middle; a worker told to stop with and without a spare; every worker replaced one
+  after the other. `CLUSTINE_MOVES_SOAK` adds the worker that gives up after 20 seconds.
+- `deploy/kind/test.sh`: `kubectl rollout restart statefulset/clustine-worker` under the
+  ledger bots; no lease may run out.
 
-A first try by hand, five moves under the ledger bots between processes at view
-distance 8: each took about 100 milliseconds from asking to the new assignment, and the
-longest any bot waited for an acknowledgement was 0.4 seconds. That is four bots close
-together; the test is to say what it is with players spread out.
+What it measured, with unoptimised builds on one machine:
+
+- **The pause at a move**, as the longest any bot waited for an acknowledgement:
+  between 0.74 and 1.27 seconds over 80 moves, 0.85 in the middle. Bots in other
+  regions wait as long as when nothing happens, about a tenth of a second.
+- Where it goes: the last checkpoint 4 to 126 ms, the assignment 1 ms, restoring 5 to
+  46 ms, linking up to 100 ms (the edge retried every 100 ms then, and every 20 ms
+  now), and **the resume about 0.75 seconds**: the new owner loads and sends again
+  every chunk the region's players see before it takes what they did.
+- `clustine move` itself takes about 90 ms, most of it the first checkpoint, during
+  which the region still ticks.
+- Replacing every worker takes 1.6 to 1.8 seconds for three, each exiting within half a
+  second of being told; the longest wait of a bot was 1.3 to 1.5 seconds, as a region
+  can move twice in a row.
+- A move in which the old or the new owner dies ends like a crash, 5 seconds later.
+
+The record says that the resume is to hold only what acts on chunks not there yet if
+the pause is above about a second. It is at that mark with unoptimised builds, so this
+is not done yet; phase C changes what a resume sends, and it is decided there (C3) with
+a measurement of an optimised build.
+
+Two faults the tests found, both fixed, neither particular to moves: the edge found a
+new coordinator only by chance while it was trying to link to a region, so players
+stood still for up to 18 seconds and were disconnected once; and a region released
+while the coordinator was away waited out the new coordinator's grace period.
+
+Seen and left as it is:
+
+- For a few milliseconds after a release the old owner still welcomes links, and the
+  edge links to it up to six times before it finds the new one. No harm was seen.
+- When the target of a move is told to stop in the middle of it, the region is without
+  an owner for about a second, until the old owner is given it again.
+- Not tried: a release that goes unanswered while its owner still heartbeats (nothing
+  outside the process can produce it), optimised builds, more than two regions.
+
+**For the owner to try with real clients**, with the cluster of processes above (three
+workers for two regions, so one is to spare):
+
+1. Stand in one region and build. In another terminal:
+   ```bash
+   target/debug/clustine move --region 1
+   ```
+   (`--region 0` is west of x = 64; `--to c` names the worker.) Expected: the command
+   says who has the region now and that it was released by its owner; everyone in the
+   region stands still for about a second, with a client that sees far perhaps longer,
+   and then everything goes on. Nobody is disconnected and nothing is lost. Do it
+   again and again, while walking, building, and crossing x = 64.
+2. Stop the worker that runs your region with Ctrl-C (once). Expected: the same short
+   pause, the worker exits within a second, and the spare runs the region. Start it
+   again and stop the next one. With no spare running, Ctrl-C makes the worker wait
+   20 seconds for one before it stops; a second Ctrl-C stops it at once, and the region
+   stands still until a worker is started.
+3. Stop the coordinator and play: nothing changes, and `clustine move` cannot reach
+   it. Start it again: within a few seconds moves work again.
+
+What to say if it is not so: which step, what was seen, and the logs of the terminals.
+
+Phase C is next. [ADR-0010](adr/0010-regions-that-follow-players.md) is its plan,
+accepted after an independent review that found 21 defects; nothing of it is built.
 
 ### After M3, as the owner asked on 2026-10-08
 

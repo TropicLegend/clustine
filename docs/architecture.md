@@ -21,7 +21,7 @@ Where the implementation is simpler than the design below:
 | Regions of nearby active chunks that merge, split and migrate | Fixed stripes along the x axis, set when the cluster is started; see [ADR-0006](adr/0006-static-regions-and-handoff.md) |
 | Boundaries only run through inactive gaps | A boundary can run past players. What they do to blocks on its other side is passed on to the region that has them and takes effect a tick or two later |
 | Coordinator replicated with Raft, leases fenced everywhere | One coordinator with its state in memory; only the world store acts on epochs; see [ADR-0007](adr/0007-coordinator-scope.md) |
-| Losing a worker is recovered from by migration | A waiting worker is given the region once the dead one's lease of 5 seconds is over and restores it from the world store; the region's players stand still meanwhile and stay connected. A region cannot be moved on purpose yet |
+| Losing a worker is recovered from by migration | A waiting worker is given the region once the dead one's lease of 5 seconds is over and restores it from the world store; the region's players stand still meanwhile and stay connected. A region is moved on purpose the same way, with the old owner letting go first, so that nobody waits for the lease (`clustine move`, and every worker that is told to stop) |
 | An edge can be lost without its players noticing | An edge that dies takes its players with it |
 | Several edges | One edge; the workers can serve several, but there is no shared player list yet |
 | Protobuf over gRPC, QUIC | One message format over TCP for everything |

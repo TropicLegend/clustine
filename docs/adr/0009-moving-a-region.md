@@ -1,7 +1,8 @@
 # ADR-0009: Moving a region on purpose
 
-- Status: **Accepted**; being implemented (milestone M3, phase B)
-- Date: 2026-10-08; revised the same day after an independent review (see the end)
+- Status: **Accepted**; implemented (milestone M3, phase B)
+- Date: 2026-10-08; revised the same day after an independent review, and again after
+  the tests (see the end)
 
 ## Context
 
@@ -61,7 +62,13 @@ from; the rest of this record is about not turning it into one needlessly.
    a worker that is asked to stop with nobody to hand over to says it by itself), and
    whatever the grace period of a new coordinator says: the owner itself says that the
    region is free. If there is no target, the region is without an owner and is given
-   to the first worker that waits, as ever.
+   to the first worker that waits, at the next tick, also during a grace period.
+   A new coordinator usually hears `Released` from a worker that registered holding
+   nothing, because letting go takes a tenth of a second and finding the coordinator a
+   second. So a region that nobody owns, released by a registered worker with an epoch
+   not below the last one the coordinator knows of the region, is free in the same way.
+   The coordinator cannot check that this worker was the last owner; if it was not,
+   the store fences whoever still runs the region, as after a crash.
 5. The target opens `R` at the store, restores it, runs it and takes links. Edges see
    the new route, link, say hello and resume.
 
@@ -83,8 +90,8 @@ from; the rest of this record is about not turning it into one needlessly.
   among its orders, for whichever reason, drops the region (it stops the runner as it
   is, without the steps above: another worker may have the region already, and the
   store fences this one), and is a waiting worker. It no longer exits with an error.
-- A `Released` from a worker that does not own that region with that epoch is ignored
-  but for a log line.
+- A `Released` for a region that someone else owns, or with an epoch below the
+  region's, is ignored but for a log line.
 
 ### 3. A worker that is told to stop
 
@@ -215,3 +222,19 @@ this record, all worked in above:
 11. A second Ctrl-C did nothing, a worker that could not reach the coordinator waited
     20 seconds for nothing, and a worker without a connection could be picked as a
     target.
+
+The tests of phase B, written from this record by someone who wrote none of the code,
+found two more, in what happens when the coordinator dies in the middle of a move:
+
+12. A region released while the coordinator was away waited out the new coordinator's
+    grace period, against item 6: the old owner had let go before it found the new
+    coordinator, registered holding nothing, and its `Released` was ignored (section 1,
+    step 4, as it is now).
+13. The edge looked for a new coordinator with a wait that began anew whenever an
+    attempt to link to a region ended, so while a link was down it found the
+    coordinator only by chance: players stood still for up to 18 seconds. That fault
+    was in the code, not in this record.
+
+They measured the pause of section 5 at 0.74 to 1.27 seconds with unoptimised builds,
+about 0.75 seconds of it the resume. The edge tries a new owner every 20 milliseconds
+at first since then, not every 100.
