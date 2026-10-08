@@ -637,7 +637,18 @@ impl Region {
             .filter(|(_, player)| player.edge == id)
             .map(|(player, _)| *player)
             .collect();
-        let mut reported = BTreeSet::new();
+        // What an earlier edge event of this tick reported removed is not reported
+        // again: one entity can be on its way in the outboxes of two edges, or in one
+        // edge's outbox and under a player of another, and both can be dropped in one
+        // tick, as when edges lose their links together.
+        let mut reported: BTreeSet<_> = output
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RegionEvent::EntityRemoved { entity, .. } => Some(*entity),
+                _ => None,
+            })
+            .collect();
         for player in players {
             if let Some(entity) = self.players.get(&player).map(|player| player.entity_id) {
                 reported.insert(entity);

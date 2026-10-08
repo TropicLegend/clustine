@@ -1592,6 +1592,33 @@ And what the record left to the reader, which the tests and the code read alike:
 Left for step C3, which is the first to make such states: what presence says after
 `Unknown` when the state has a player of the edge and nothing received.
 
+## Found by the tests of C2b.2
+
+Written from this record by someone who had not seen the sim's code: the scenarios S1
+to S18 and more, every tick beside a second implementation of section 1.3, and
+generated runs (`crates/clustine-sim/tests/chunks.rs`). One fault in the code:
+
+- **An entity was reported removed twice in a tick in which two outboxes were
+  dropped**, when it was on its way in both, or in one and under a player of the other
+  edge. Section 2.2 says once in a tick; the sim kept that per outbox. It is what
+  ADR-0008 says of `Departed` as well, so the fault is older than this step. Two edges
+  that lose their links together are gone in one tick.
+
+And what the record left to the reader, which the tests and the code read alike:
+
+- A ticket added and taken back within one tick does not begin the time before a
+  return anew; nor does a `granted` for a chunk that is held, which changes nothing.
+- `foreign` and `unbelieve` for one chunk naming the same region in one tick: by the
+  order of section 2.1 the chunk is asked about again.
+- A chunk that storage delivers for a chunk that is loaded and was not asked of it is
+  dropped.
+- An arrival through an edge the region does not know, for a chunk it believes
+  another's: the entity is reported removed and no entry is made.
+- With the store answering into the next tick, a player who steps into another
+  region's chunk without a viewer's ticket on it is let go one tick after the step.
+- An acknowledgement can be for a player who is let go in the same tick (ADR-0008,
+  section 4).
+
 ## Changed by ADR-0013
 
 [ADR-0013](0013-the-edge-without-a-layout.md) designs the edge against section 5, and

@@ -2418,7 +2418,6 @@ fn times_removed(output: &TickOutput, entity: EntityId) -> usize {
 }
 
 #[test]
-#[ignore = "finding: an entity on its way in two outboxes dropped in one tick is reported twice"]
 fn two_outboxes_dropped_in_one_tick_report_an_entity_on_its_way_in_both_removed_once() {
     // The arrival reached the region through both edges, and went on from both. An
     // entity is reported if "it has not been reported in that tick" (section 2.2).
@@ -2440,7 +2439,6 @@ fn two_outboxes_dropped_in_one_tick_report_an_entity_on_its_way_in_both_removed_
 }
 
 #[test]
-#[ignore = "finding: an entity on its way in two outboxes dropped in one tick is reported twice"]
 fn two_outboxes_dropped_in_one_tick_report_a_departed_entity_in_both_removed_once() {
     for events in both_dropped() {
         // Player 1 steps across and is let go through `E`, comes back through `F` and
@@ -2469,7 +2467,6 @@ fn two_outboxes_dropped_in_one_tick_report_a_departed_entity_in_both_removed_onc
 }
 
 #[test]
-#[ignore = "finding: an entity removed with its player is reported again for another outbox"]
 fn an_entity_removed_with_its_players_edge_is_not_reported_again_for_another_outbox_of_the_tick() {
     // The player came back through `F` while the entry for their first arrival waits
     // in `E`'s outbox, and both edges are dropped in one tick, in either order: with
@@ -4111,10 +4108,9 @@ impl Wander {
                 inputs.edges.push(started(edge, 10));
             }
         } else {
-            // At most one outbox is dropped in a tick. With two, an entity on its way
-            // in both is reported removed twice, which is the finding of
-            // `two_outboxes_dropped_in_one_tick_report_an_entity_on_its_way_in_both_removed_once`;
-            // this run is to go on past it.
+            // Both outboxes can be dropped in one tick, and are now and then: an entity
+            // on its way in both was once reported removed twice then
+            // (`two_outboxes_dropped_in_one_tick_report_an_entity_on_its_way_in_both_removed_once`).
             let mut dropped = false;
             for edge in [E, F] {
                 if let Some(known) = state.edges.get(&edge)
@@ -4124,10 +4120,8 @@ impl Wander {
                     inputs.edges.push(EdgeEvent::Confirmed { edge, number });
                 }
                 let start = self.starts.get_mut(&edge).expect("both edges have started");
-                if dropped {
-                    continue;
-                }
-                if random.once_in(60) {
+                // The second goes with the first every other time.
+                if (dropped && random.once_in(2)) || random.once_in(60) {
                     *start += 1;
                     inputs.edges.push(started(edge, *start));
                     dropped = true;
