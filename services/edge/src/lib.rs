@@ -18,11 +18,11 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clustine_region::Layout;
 use clustine_rpc::link::EdgeEnd;
-use clustine_world::Vec3;
+use clustine_world::{EdgeId, Vec3};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -67,14 +67,51 @@ impl EdgeConfig {
     pub const DEFAULT_COMPRESSION_THRESHOLD: usize = 256;
 }
 
+/// Who an edge is to the regions it talks to; see
+/// `docs/adr/0008-durable-regions-and-resuming.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeIdentity {
+    /// Follows from the edge's name, which stays the same across its restarts.
+    pub edge: EdgeId,
+    /// Which start of the edge this is: the milliseconds since the Unix epoch when it
+    /// started, so that each start has a higher number than the one before.
+    pub start: u64,
+}
+
+impl EdgeIdentity {
+    /// The edge called `name`, starting now.
+    pub fn starting_now(name: &str) -> Self {
+        // A clock before 1970 is as good as one at it: a later start still has a higher
+        // number once the clock has been put right.
+        let since_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        Self {
+            edge: EdgeId::from_name(name),
+            start: u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
 /// How the world is divided into regions and how the edge reaches each of them.
 #[derive(Debug)]
 pub struct Routing {
     pub layout: Layout,
     /// Where players enter the world.
     pub spawn: Vec3,
-    /// The edge's ends of its links to the regions of the layout, from west to east.
-    pub links: Vec<EdgeEnd>,
+    /// Who this edge is to the regions.
+    pub identity: EdgeIdentity,
+    /// The edge's links to the regions of the layout, from west to east.
+    pub links: Vec<RegionLink>,
+}
+
+/// The edge's end of a link to a region, and the epoch of the region's owner at the
+/// other end. What comes over a link to an owner that is no longer the region's is
+/// dropped.
+#[derive(Debug)]
+pub struct RegionLink {
+    pub epoch: u64,
+    pub end: EdgeEnd,
 }
 
 /// State shared by all connections of one edge.

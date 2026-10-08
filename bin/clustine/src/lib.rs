@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clustine_data::items;
 pub use clustine_edge::EdgeConfig;
-use clustine_edge::{Edge, Routing};
+use clustine_edge::{Edge, EdgeIdentity, RegionLink, Routing};
 use clustine_region::Layout;
 use clustine_rpc::{RegionHello, link};
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
@@ -173,7 +173,11 @@ impl Server {
                 entity_ids: EntityIds::block(region.0).context("too many regions")?,
                 starting_hotbar: starting_hotbar(),
             });
-            links.push(edge_end);
+            links.push(RegionLink {
+                // Nobody else ever runs a region of this process's world.
+                epoch: 1,
+                end: edge_end,
+            });
             runners.push(
                 RegionRunner::new(state, worker_end, store)
                     .with_checkpoint_interval(checkpoint_interval),
@@ -191,6 +195,7 @@ impl Server {
         let routing = Routing {
             layout,
             spawn,
+            identity: EdgeIdentity::starting_now("edge"),
             links,
         };
         let edge = Edge::bind(config.bind, edge_config, routing)

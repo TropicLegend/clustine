@@ -144,6 +144,10 @@ enum Service {
     },
     /// Lets players in and shows them the world the workers simulate.
     Edge {
+        /// Name of this edge, by which regions know it again after a restart.
+        #[arg(long, default_value = "edge")]
+        name: String,
+
         /// Host and port of the coordinator.
         #[arg(long, default_value_t = format!("127.0.0.1:{COORDINATOR_PORT}"))]
         coordinator: String,
@@ -200,11 +204,13 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Service::Edge {
+            name,
             coordinator,
             bind,
             players,
         }) => {
             cluster::edge(EdgeArgs {
+                name,
                 coordinator,
                 bind,
                 edge: players.edge_config(),

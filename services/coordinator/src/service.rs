@@ -245,7 +245,9 @@ impl Service {
                     layout,
                 },
             ) if role.admits(&name) => self.register(now, id, name, &address, &holding, layout),
-            (Role::Worker(name), ToCoordinator::Heartbeat) => {
+            // Which regions the worker vouches for is not looked at yet: a worker that is
+            // heard from keeps all of them.
+            (Role::Worker(name), ToCoordinator::Heartbeat { .. }) => {
                 if !self.coordinator.heartbeat(now, name) {
                     // The worker has to register again, and nothing but the end of its
                     // connection can tell it so. A lease and the connection of a silent
@@ -259,10 +261,15 @@ impl Service {
                     self.close(id);
                 }
             }
+            // Raising the epochs above it comes with vouching for regions one by one.
+            (Role::Worker(name), ToCoordinator::EpochRefused { region, seen }) => {
+                info!(worker = %name, %region, seen, "the world store refused an epoch");
+            }
             (role, message) => {
                 let said = match message {
                     ToCoordinator::RegisterWorker { .. } => "a registration",
-                    ToCoordinator::Heartbeat => "a heartbeat",
+                    ToCoordinator::Heartbeat { .. } => "a heartbeat",
+                    ToCoordinator::EpochRefused { .. } => "a refused epoch",
                     ToCoordinator::WatchRouting => "a request for the routing table",
                 };
                 warn!(
@@ -964,7 +971,12 @@ mod tests {
 
         // Only a worker that has registered sends heartbeats.
         let mut hasty = served.connect().await;
-        hasty.send(ToCoordinator::Heartbeat).await.unwrap();
+        hasty
+            .send(ToCoordinator::Heartbeat {
+                regions: Vec::new(),
+            })
+            .await
+            .unwrap();
         assert_eq!(within(hasty.recv()).await, None);
 
         // A length, and then something that is no message.
@@ -1019,7 +1031,11 @@ mod tests {
             within(edge.recv()).await,
             Some(FromCoordinator::Routing(table))
         );
-        edge.send(ToCoordinator::Heartbeat).await.unwrap();
+        edge.send(ToCoordinator::Heartbeat {
+            regions: Vec::new(),
+        })
+        .await
+        .unwrap();
         assert_eq!(within(edge.recv()).await, None);
     }
 
@@ -1134,7 +1150,12 @@ mod tests {
         worker.send(registration("a", &[held])).await.unwrap();
         hear_next(&mut service, start).await;
         let heard = start + LEASE / 2;
-        worker.send(ToCoordinator::Heartbeat).await.unwrap();
+        worker
+            .send(ToCoordinator::Heartbeat {
+                regions: Vec::new(),
+            })
+            .await
+            .unwrap();
         hear_next(&mut service, heard).await;
 
         // Silence for exactly a lease is not too long. A moment more is.

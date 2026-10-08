@@ -18,9 +18,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clustine_coordinator::{ClientError, CoordinatorConfig, Orders, RoutingWatch, WorkerClient};
-use clustine_edge::{Edge, EdgeConfig, Routing};
+use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Routing};
 use clustine_region::{Layout, RoutingTable};
-use clustine_rpc::{Assignment, EdgeToWorker, RegionHello, WorkerToEdge, tcp};
+use clustine_rpc::{Assignment, EdgeMessage, RegionHello, WorkerToEdge, tcp};
 use clustine_sim::{Region, RegionConfig};
 use clustine_worker::{Links, RegionRunner, RegionStatus, Worker};
 use clustine_worldstore::{Store, StoreError, StoreHandle};
@@ -318,7 +318,7 @@ async fn greet_edge(stream: TcpStream, region: RegionHello, links: Links) -> Res
         );
     }
     let link = incoming
-        .welcome::<WorkerToEdge, EdgeToWorker>(LINK_CAPACITY)
+        .welcome::<WorkerToEdge, EdgeMessage>(LINK_CAPACITY)
         .await?;
     links.attach(link);
     Ok(true)
@@ -327,6 +327,8 @@ async fn greet_edge(stream: TcpStream, region: RegionHello, links: Links) -> Res
 /// Settings of an edge process.
 #[derive(Debug, Clone)]
 pub struct EdgeArgs {
+    /// Name of this edge, by which regions know it again after a restart.
+    pub name: String,
     /// Host and port of the coordinator.
     pub coordinator: String,
     /// The address players connect to.
@@ -373,6 +375,9 @@ async fn serve_players(args: &EdgeArgs) -> Result<&'static str> {
     }
 
     let layout = table.layout.fingerprint();
+    // The players and everything the edge knew are gone when it starts over, and what
+    // it sends to regions is numbered anew; to the regions that is a new start.
+    let identity = EdgeIdentity::starting_now(&args.name);
     let mut links = Vec::new();
     // The routes of a complete table are the regions of the layout in their order.
     for route in &table.routes {
@@ -381,16 +386,20 @@ async fn serve_players(args: &EdgeArgs) -> Result<&'static str> {
             epoch: route.epoch,
             layout,
         };
-        let link = tcp::connect::<EdgeToWorker, WorkerToEdge>(&route.address, hello, LINK_CAPACITY)
+        let link = tcp::connect::<EdgeMessage, WorkerToEdge>(&route.address, hello, LINK_CAPACITY)
             .await
             .with_context(|| {
                 format!("connecting to region {} at {}", route.region, route.address)
             })?;
-        links.push(link);
+        links.push(RegionLink {
+            epoch: route.epoch,
+            end: link,
+        });
     }
     let routing = Routing {
         layout: table.layout.clone(),
         spawn: table.spawn,
+        identity,
         links,
     };
     let edge = Edge::bind(args.bind, args.edge.clone(), routing)

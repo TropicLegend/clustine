@@ -521,11 +521,11 @@ impl Service {
                     chunk: stored.unwrap_or_else(|| self.generator.generate(position)),
                 }),
                 // Generating the chunk instead would look fine at first and then
-                // overwrite what players built once it is saved. Not answering leaves a
+                // overwrite what players built once it is saved. The region leaves a
                 // hole in the world that someone can look into.
                 Err(error) => {
                     error!(?position, %error, "a stored chunk cannot be read");
-                    None
+                    Some(StoreReply::Unreadable { position })
                 }
             },
             StoreRequest::Save {
@@ -538,18 +538,27 @@ impl Service {
                 }
                 None
             }
-            StoreRequest::Log { tick, changes } => {
-                let record = BlockChanges {
-                    tick,
-                    epoch,
-                    changes,
-                };
-                if let Err(error) = self.backend.log(region, &record) {
-                    error!(%region, %error, "block changes could not be logged");
+            // The state of the region is not kept yet, and the answer does not wait for
+            // the disk yet either; see docs/adr/0008-durable-regions-and-resuming.md for
+            // what a commit is to become.
+            StoreRequest::Commit {
+                tick,
+                changes,
+                state: _,
+            } => {
+                if !changes.is_empty() {
+                    let record = BlockChanges {
+                        tick,
+                        epoch,
+                        changes,
+                    };
+                    if let Err(error) = self.backend.log(region, &record) {
+                        error!(%region, %error, "block changes could not be logged");
+                    }
                 }
-                None
+                Some(StoreReply::Committed { tick })
             }
-            StoreRequest::Checkpoint => {
+            StoreRequest::Checkpoint { .. } => {
                 if let Err(error) = self.backend.checkpoint(region) {
                     error!(%region, %error, "the log could not be emptied");
                 }
@@ -591,10 +600,12 @@ mod tests {
         Arc::new(FlatGenerator::classic())
     }
 
-    /// Waits for the next answer to `store`.
+    /// Waits for the next answer to `store` other than that a commit is done, which the
+    /// tests here do not look at.
     pub(crate) fn reply(store: &StoreHandle) -> StoreReply {
         for _ in 0..30_000 {
             match store.try_reply() {
+                Some(StoreReply::Committed { .. }) => {}
                 Some(reply) => return reply,
                 None => thread::sleep(Duration::from_millis(1)),
             }
@@ -613,7 +624,7 @@ mod tests {
                 assert_eq!(loaded, position);
                 chunk
             }
-            StoreReply::Flushed => panic!("unexpected flush"),
+            other => panic!("expected the chunk, got {other:?}"),
         }
     }
 
@@ -679,6 +690,24 @@ mod tests {
         }
     }
 
+    /// Generating the chunk instead would overwrite what was built there once it is
+    /// saved, and saying nothing would leave the region waiting for it.
+    #[test]
+    fn a_stored_chunk_that_cannot_be_read_is_answered_as_unreadable() {
+        let directory = tempfile::tempdir().unwrap();
+        let position = ChunkPos::new(3, 4);
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        save(&store, position, &edited());
+        store.flush();
+        let manifest = directory
+            .path()
+            .join("manifests/overworld/0.0/3.4.manifest");
+        std::fs::write(&manifest, b"not a manifest").unwrap();
+
+        store.request(StoreRequest::Load { position });
+        assert_eq!(reply(&store), StoreReply::Unreadable { position });
+    }
+
     #[test]
     fn a_world_on_disk_outlives_the_store() {
         let directory = tempfile::tempdir().unwrap();
@@ -733,7 +762,8 @@ mod tests {
         tick: u64,
         changes: &[(i32, i32, i32, clustine_data::BlockState)],
     ) {
-        store.request(StoreRequest::Log {
+        store.request(StoreRequest::Commit {
+            state: Vec::new(),
             tick,
             changes: changes
                 .iter()
@@ -807,7 +837,10 @@ mod tests {
         store.flush();
         assert!(!fs::read(&wal).unwrap().is_empty());
 
-        store.request(StoreRequest::Checkpoint);
+        store.request(StoreRequest::Checkpoint {
+            tick: 0,
+            state: Vec::new(),
+        });
         store.flush();
         assert_eq!(fs::read(&wal).unwrap(), b"");
 
@@ -888,7 +921,10 @@ mod tests {
 
             // The west saves what it changed and makes a checkpoint.
             save(&west, west_chunk, &dug);
-            west.request(StoreRequest::Checkpoint);
+            west.request(StoreRequest::Checkpoint {
+                tick: 0,
+                state: Vec::new(),
+            });
             west.flush();
             assert_eq!(fs::read(&logs[0]).unwrap(), b"");
             assert_eq!(fs::read(&logs[1]).unwrap(), logged[1]);
@@ -1147,7 +1183,10 @@ mod tests {
         let meddle = |old: &StoreHandle| {
             save(old, origin, &overwritten);
             log(old, 9, &[(5, 100, 5, blocks::STONE)]);
-            old.request(StoreRequest::Checkpoint);
+            old.request(StoreRequest::Checkpoint {
+                tick: 0,
+                state: Vec::new(),
+            });
             old.request(StoreRequest::Load { position: origin });
         };
 

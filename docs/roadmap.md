@@ -126,7 +126,7 @@ from disk when the store is back.
 
 | # | Scope | Verified by | Status |
 |---|---|---|---|
-| A0 | Numbers and ids on the wire at both ends, snapshots taken at tick time, epoch tags at the edge; no change in behaviour | All existing tests | next |
+| A0 | Numbers and ids on the wire at both ends, snapshots taken at tick time, epoch tags at the edge; no change in behaviour | All existing tests | done |
 | A1 | Store and format: commit lane and `Committed`, state records and state file, restored state on opening, epochs and id blocks on disk, no folding at start | Store tests: kill at every point of a commit, a checkpoint and a recovery; latency of commits while chunks are saved | to do |
 | A2 | Sim: export and restore of state, per-tick state changes, outbox, inbox numbers | Unit tests; restore then the kept messages equals the uninterrupted run up to the commit followed by the rest in one tick | to do |
 | A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | to do |
@@ -187,20 +187,39 @@ Then stop for the owner's check: two clients walking towards and away from each 
 
 ### Where M3 stands
 
-Nothing of phase A is built yet. ADR-0008 has been gone over by an independent reviewer
-against the code; the fourteen defects found are worked into it and listed at its end.
+ADR-0008 has been gone over by an independent reviewer against the code; the fourteen
+defects found are worked into it and listed at its end. A0 is done: the messages of
+ADR-0008 are on the wire, handled the way things were done before. What each side does
+with them so far:
+
+- Edge to worker: every message is an `EdgeMessage`; the edge numbers per region and
+  says `Hello` first on each link, and the worker closes a link whose numbers have a gap
+  or are where none belong. It does nothing else with the hello yet, and ignores
+  `Confirm`.
+- Worker to edge: `Welcome`, `Outbox`, `Presence` and `Progress` exist and are never
+  sent; the edge ignores them. What a tick produced is made ready in full, as of the end
+  of the tick, before any of it is published (`Outgoing`, `RegionRunner::publish_all`).
+- Store: `Commit` replaces `Log` and is answered with `Committed` without waiting for the
+  disk, and is sent only for ticks with block changes; `Checkpoint` carries a tick and an
+  empty state; an unreadable chunk is answered with `Unreadable`.
+- Coordinator: a heartbeat names every region the worker was told to run as
+  `Vouch::Committed`, which is not looked at; `EpochRefused` is logged.
+- Edge identity: `--name` on the edge (default `edge`). Until A4 the edge starts over
+  with a new `Fanout` whenever a region is lost, which numbers anew, so each of those
+  takes a new start; the regions are told by the start alone.
+- `Durable` is in the sim's API, `EdgeId` in `clustine-world`. The sim's own types of
+  ADR-0008 (`RegionState`, `StateDelta`, `EdgeEvent`, the new inputs and outputs) are
+  A2's to define, as only A3 uses them and comes after it.
 
 Next, in this order:
 
-1. A0, by whoever leads: the shared types and messages, with everything still passing.
-   The notes below say what they are.
-2. Then in parallel, each in a crate of its own: A1 (`services/worldstore`,
+1. In parallel, each in a crate of its own: A1 (`services/worldstore`,
    `crates/clustine-format`) and A2 (`crates/clustine-sim`); after those A3
    (`services/worker`), tests for A2 written from ADR-0008 alone, and A5
    (`services/coordinator`); then A4 (`services/edge`), which is where ordering mistakes
    hide and should not be delegated; then A6.
 
-Notes for A0 and after, which the ADR does not spell out:
+Notes for what follows A0, which the ADR does not spell out:
 
 - Numbered messages travel in an envelope on the edge-to-worker link,
   `EdgeMessage { number: Option<u64>, body: EdgeToWorker }`, with numbers on join, leave,

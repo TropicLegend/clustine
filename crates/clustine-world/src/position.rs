@@ -82,6 +82,30 @@ pub struct EntityId(pub i32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub Uuid);
 
+/// Identifies an edge across its restarts. It follows from the edge's name, which stays
+/// the same when the edge starts again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct EdgeId(pub u64);
+
+impl EdgeId {
+    /// The id of the edge called `name`. It is a 64-bit FNV-1a hash of the name, which,
+    /// unlike the hashers of the standard library, is the same in every build and on
+    /// every machine.
+    pub const fn from_name(name: &str) -> Self {
+        const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+        let bytes = name.as_bytes();
+        let mut hash = OFFSET_BASIS;
+        let mut index = 0;
+        while index < bytes.len() {
+            hash ^= bytes[index] as u64;
+            hash = hash.wrapping_mul(PRIME);
+            index += 1;
+        }
+        Self(hash)
+    }
+}
+
 /// A block of entity ids: `first` up to, but not including, `end`.
 ///
 /// Ids must be unique within a world, so everything that hands them out gets a block of
@@ -169,6 +193,15 @@ mod tests {
         let last = EntityIds::block(EntityIds::BLOCK_COUNT - 1).unwrap();
         assert!(last.end.0 > last.first.0);
         assert_eq!(EntityIds::block(EntityIds::BLOCK_COUNT), None);
+    }
+
+    #[test]
+    fn an_edge_id_is_the_fnv_1a_hash_of_the_name() {
+        // The published test vectors of 64-bit FNV-1a.
+        assert_eq!(EdgeId::from_name(""), EdgeId(0xcbf2_9ce4_8422_2325));
+        assert_eq!(EdgeId::from_name("a"), EdgeId(0xaf63_dc4c_8601_ec8c));
+        assert_eq!(EdgeId::from_name("foobar"), EdgeId(0x8594_4171_f739_67e8));
+        assert_ne!(EdgeId::from_name("edge-0"), EdgeId::from_name("edge-1"));
     }
 
     #[test]

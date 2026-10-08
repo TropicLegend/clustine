@@ -7,9 +7,9 @@
 use std::io;
 use std::time::Duration;
 
-use clustine_region::{Layout, RoutingTable};
+use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_rpc::link::End;
-use clustine_rpc::{Assignment, FromCoordinator, ToCoordinator, tcp};
+use clustine_rpc::{Assignment, FromCoordinator, ToCoordinator, Vouch, tcp};
 use clustine_world::Vec3;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -114,12 +114,13 @@ impl WorkerClient {
             .await
             .map_err(|_| ClientError::Lost)?;
         let first = orders_from(link.recv().await)?;
+        let regions = first.assignments.iter().map(|held| held.region).collect();
 
         // The task must never wait for the worker, or the heartbeats would stop while
         // the worker is busy; hence a queue without a limit. It stays short all the
         // same: the coordinator only speaks when the worker's orders change.
         let (sender, orders) = mpsc::unbounded_channel();
-        tokio::spawn(keep_registered(link, heartbeat, sender));
+        tokio::spawn(keep_registered(link, heartbeat, regions, sender));
         Ok((Self { orders }, first))
     }
 
@@ -138,9 +139,14 @@ impl WorkerClient {
 /// Holds a worker's connection: tells the coordinator every `heartbeat` that the worker
 /// is there and passes on the orders that come, until the connection is lost or the
 /// worker's client is dropped.
+///
+/// The worker vouches for every region it has been told to run, which is what a worker
+/// that is heard from did before regions were vouched for one by one. `regions` are
+/// those of the first orders.
 async fn keep_registered(
     mut link: CoordinatorEnd,
     heartbeat: Duration,
+    mut regions: Vec<RegionId>,
     orders: mpsc::UnboundedSender<Result<Orders, ClientError>>,
 ) {
     // An interval cannot be zero.
@@ -153,6 +159,7 @@ async fn keep_registered(
         tokio::select! {
             message = link.recv() => match orders_from(message) {
                 Ok(new) => {
+                    regions = new.assignments.iter().map(|held| held.region).collect();
                     if orders.send(Ok(new)).is_err() {
                         return;
                     }
@@ -162,7 +169,11 @@ async fn keep_registered(
             _ = beats.tick() => {
                 // A queue full of heartbeats means that none has been written for
                 // hundreds of intervals. The lease is long over then.
-                if link.try_send(ToCoordinator::Heartbeat).is_err() {
+                let regions = regions.iter().map(|region| (*region, Vouch::Committed));
+                let beat = ToCoordinator::Heartbeat {
+                    regions: regions.collect(),
+                };
+                if link.try_send(beat).is_err() {
                     break ClientError::Lost;
                 }
             }
@@ -365,24 +376,35 @@ mod tests {
         let coordinator = tokio::spawn(async move {
             let mut link = accept(&listener).await;
             assert!(within(link.recv()).await.is_some());
-            link.send(assigned(&[])).await.unwrap();
+            link.send(assigned(&[assignment(2, 7)])).await.unwrap();
             link
         });
         let started = Instant::now();
         let (client, _) = register(&address).await.unwrap();
         let mut link = coordinator.await.unwrap();
+        // The worker vouches for what it has been told to run.
+        let beat = ToCoordinator::Heartbeat {
+            regions: vec![(RegionId(2), Vouch::Committed)],
+        };
 
         // Nobody waits for orders, and the heartbeats come all the same.
         for _ in 0..5 {
-            assert_eq!(within(link.recv()).await, Some(ToCoordinator::Heartbeat));
+            assert_eq!(within(link.recv()).await, Some(beat.clone()));
         }
         // The first of them an interval after registering, then one per interval.
         assert!(started.elapsed() >= 5 * HEARTBEAT);
 
+        // New orders, and the heartbeats follow them.
+        link.send(assigned(&[])).await.unwrap();
+        let quiet = ToCoordinator::Heartbeat {
+            regions: Vec::new(),
+        };
+        while within(link.recv()).await != Some(quiet.clone()) {}
+
         drop(client);
         // One or two may have been on their way.
         while let Some(message) = within(link.recv()).await {
-            assert_eq!(message, ToCoordinator::Heartbeat);
+            assert_eq!(message, quiet);
         }
     }
 

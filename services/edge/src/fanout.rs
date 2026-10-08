@@ -30,7 +30,7 @@ use clustine_protocol::packets::play::{
 use clustine_protocol::packets::{self, Packet};
 use clustine_region::{Layout, RegionId};
 use clustine_rpc::link;
-use clustine_rpc::{EdgeToWorker, WorkerToEdge};
+use clustine_rpc::{EdgeMessage, EdgeToWorker, WorkerToEdge};
 use clustine_sim::api::{
     EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, RegionEvent,
@@ -40,9 +40,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
 
-use crate::Routing;
 use crate::encode::chunk_packet;
 use crate::login::Profile;
+use crate::{EdgeIdentity, Routing};
 
 const OVERWORLD: &str = "minecraft:overworld";
 
@@ -197,8 +197,16 @@ pub(crate) struct Fanout {
     layout: Layout,
     /// The region players enter the world in.
     spawn_region: RegionId,
+    /// Who this edge is to the regions.
+    identity: EdgeIdentity,
     /// Where to send what is meant for each region, by region id.
-    regions: Vec<link::Sender<EdgeToWorker>>,
+    regions: Vec<link::Sender<EdgeMessage>>,
+    /// The number of the last numbered message sent to each region, by region id.
+    numbered: Vec<u64>,
+    /// The epoch of the owner each region's link goes to, by region id. What a region
+    /// sends is tagged with the epoch of the link it came over, and dropped if that is
+    /// not the region's link any more.
+    epochs: Vec<u64>,
     /// Where each region's messages arrive, until [`Fanout::run`] starts reading them.
     receivers: Vec<link::Receiver<WorkerToEdge>>,
     commands: mpsc::Receiver<Command>,
@@ -226,12 +234,20 @@ impl Fanout {
         let spawn_region = routing
             .layout
             .region_of(ChunkPos::containing(spawn.x, spawn.z));
-        let (regions, receivers) = routing.links.into_iter().map(link::End::split).unzip();
+        let epochs = routing.links.iter().map(|link| link.epoch).collect();
+        let (regions, receivers): (Vec<_>, _) = routing
+            .links
+            .into_iter()
+            .map(|link| link.end.split())
+            .unzip();
         Self {
             config,
             layout: routing.layout,
             spawn_region,
+            identity: routing.identity,
+            numbered: vec![0; regions.len()],
             regions,
+            epochs,
             receivers,
             commands,
             players: BTreeMap::new(),
@@ -251,17 +267,34 @@ impl Fanout {
         let mut readers = JoinSet::new();
         for (index, mut receiver) in std::mem::take(&mut self.receivers).into_iter().enumerate() {
             let region = RegionId(index as u32);
+            let epoch = self.epochs[index];
             let queue = queue.clone();
             readers.spawn(async move {
                 while let Some(message) = receiver.recv().await {
-                    if queue.send((region, Some(message))).await.is_err() {
+                    if queue.send((region, epoch, Some(message))).await.is_err() {
                         return;
                     }
                 }
-                let _ = queue.send((region, None)).await;
+                let _ = queue.send((region, epoch, None)).await;
             });
         }
         drop(queue);
+
+        // A link begins with saying who this edge is. Nothing is resumed yet: this edge
+        // has not been in touch with any region before.
+        for index in 0..self.regions.len() {
+            let hello = EdgeToWorker::Hello {
+                edge: self.identity.edge,
+                start: self.identity.start,
+                seen: 0,
+                players: Vec::new(),
+                chunks: Vec::new(),
+            };
+            if !self.send_to_region(RegionId(index as u32), hello).await {
+                warn!(region = index, "a region is gone");
+                return;
+            }
+        }
 
         loop {
             let alive = tokio::select! {
@@ -270,8 +303,12 @@ impl Fanout {
                     None => false,
                 },
                 message = messages.recv() => match message {
-                    Some((region, Some(message))) => self.handle_region(region, message).await,
-                    Some((region, None)) => {
+                    Some((region, epoch, _)) if self.epochs.get(region.0 as usize) != Some(&epoch) => {
+                        debug!(%region, epoch, "dropped a message from a former owner");
+                        true
+                    }
+                    Some((region, _, Some(message))) => self.handle_region(region, message).await,
+                    Some((region, _, None)) => {
                         // Without one of its regions the world has a hole; there is no
                         // carrying on until someone runs that region again.
                         warn!(%region, "a region is gone");
@@ -464,6 +501,14 @@ impl Fanout {
                 for event in events {
                     self.handle_event(event).await;
                 }
+            }
+            // No region resumes with this edge or keeps an outbox yet; see
+            // docs/adr/0008-durable-regions-and-resuming.md.
+            message @ (WorkerToEdge::Welcome(_)
+            | WorkerToEdge::Outbox { .. }
+            | WorkerToEdge::Presence { .. }
+            | WorkerToEdge::Progress { .. }) => {
+                debug!(%from, ?message, "ignored what a region said about resuming");
             }
         }
         true
@@ -1049,11 +1094,17 @@ impl Fanout {
     }
 
     /// Returns false if the region can no longer be reached.
-    async fn send_to_region(&mut self, region: RegionId, message: EdgeToWorker) -> bool {
-        match self.regions.get(region.0 as usize) {
-            Some(link) => link.send(message).await.is_ok(),
-            None => false,
-        }
+    async fn send_to_region(&mut self, region: RegionId, body: EdgeToWorker) -> bool {
+        let index = region.0 as usize;
+        let (Some(link), Some(numbered)) = (self.regions.get(index), self.numbered.get_mut(index))
+        else {
+            return false;
+        };
+        let number = body.is_numbered().then(|| {
+            *numbered += 1;
+            *numbered
+        });
+        link.send(EdgeMessage { number, body }).await.is_ok()
     }
 }
 

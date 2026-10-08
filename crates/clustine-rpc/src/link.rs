@@ -13,12 +13,12 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::{EdgeToWorker, WorkerToEdge, wire};
+use crate::{EdgeMessage, WorkerToEdge, wire};
 
 /// The edge's end of its link to a worker.
-pub type EdgeEnd = End<EdgeToWorker, WorkerToEdge>;
+pub type EdgeEnd = End<EdgeMessage, WorkerToEdge>;
 /// The worker's end of its link to an edge.
-pub type WorkerEnd = End<WorkerToEdge, EdgeToWorker>;
+pub type WorkerEnd = End<WorkerToEdge, EdgeMessage>;
 
 /// Messages that are waiting to be written are written together, up to about this many
 /// bytes at a time.
@@ -203,14 +203,16 @@ async fn read_messages<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
+    use clustine_sim::api::Durable;
     use clustine_sim::api::{
         EntityKind, EntityState, Face, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
         PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
     };
-    use clustine_world::{Biome, BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+    use clustine_world::{Biome, BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
     use uuid::Uuid;
 
     use super::*;
+    use crate::{EdgeToWorker, Presence, Welcome};
 
     fn links() -> [(EdgeEnd, WorkerEnd); 2] {
         [in_process(8), framed(8)]
@@ -230,6 +232,14 @@ mod tests {
                 block: blocks::GLASS,
                 placer: Vec3::new(17.5, -60.0, 2.5),
             },
+        }
+    }
+
+    /// A message that changes nothing, as the tests below need one.
+    fn leave() -> EdgeMessage {
+        EdgeMessage {
+            number: Some(1),
+            body: EdgeToWorker::PlayerLeave { player: player() },
         }
     }
 
@@ -257,7 +267,15 @@ mod tests {
 
     #[tokio::test]
     async fn every_message_survives_both_kinds_of_link() {
-        let to_worker = vec![
+        let to_worker = [
+            EdgeToWorker::Hello {
+                edge: EdgeId::from_name("edge-0"),
+                start: 1_791_000_000_000,
+                seen: 41,
+                players: vec![player()],
+                chunks: vec![ChunkPos::new(0, -1)],
+            },
+            EdgeToWorker::Confirm { number: 41 },
             EdgeToWorker::PlayerJoin(PlayerJoin {
                 player: player(),
                 name: "Notch".to_owned(),
@@ -305,6 +323,15 @@ mod tests {
             },
             EdgeToWorker::Remote(remote()),
         ];
+        // Numbered and not, as both occur.
+        let to_worker: Vec<_> = to_worker
+            .into_iter()
+            .zip(1..)
+            .map(|(body, number)| EdgeMessage {
+                number: (number % 2 == 0).then_some(number),
+                body,
+            })
+            .collect();
         let to_edge = vec![
             WorkerToEdge::TickDelta {
                 tick: 3,
@@ -360,10 +387,54 @@ mod tests {
                     chunk: ChunkPos::new(3, -4),
                 }],
             },
+            WorkerToEdge::Welcome(Welcome::Resumed),
+            WorkerToEdge::Welcome(Welcome::Unknown),
+            WorkerToEdge::Welcome(Welcome::Superseded),
+            WorkerToEdge::Outbox {
+                number: 42,
+                entry: Durable::Departed {
+                    player: player(),
+                    transfer: transfer(),
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 43,
+                entry: Durable::Refused { player: player() },
+            },
+            WorkerToEdge::Outbox {
+                number: 44,
+                entry: Durable::Remote(remote()),
+            },
+            WorkerToEdge::Outbox {
+                number: 45,
+                entry: Durable::RemoteDone {
+                    player: player(),
+                    sequence: 9,
+                },
+            },
+            WorkerToEdge::Presence {
+                player: player(),
+                answer: Presence::Present {
+                    entity: EntityId(5),
+                    pose: Pose::at(Vec3::new(1.5, -60.0, 2.5)),
+                    hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
+                    selected_slot: 2,
+                    last_input: 77,
+                    handled: Some(12),
+                },
+            },
+            WorkerToEdge::Presence {
+                player: player(),
+                answer: Presence::Absent,
+            },
+            WorkerToEdge::Progress {
+                applied: 17,
+                inputs: vec![(player(), 77)],
+            },
         ];
 
         // Everything is sent before anything is received, so the queues have to hold it.
-        let links: [(EdgeEnd, WorkerEnd); 2] = [in_process(16), framed(16)];
+        let links: [(EdgeEnd, WorkerEnd); 2] = [in_process(32), framed(32)];
         for (mut edge, mut worker) in links {
             for message in &to_worker {
                 edge.send(message.clone()).await.unwrap();
@@ -384,10 +455,7 @@ mod tests {
     async fn a_split_end_still_sends_and_receives() {
         for (edge, mut worker) in links() {
             let (sender, mut receiver) = edge.split();
-            sender
-                .send(EdgeToWorker::PlayerLeave { player: player() })
-                .await
-                .unwrap();
+            sender.send(leave()).await.unwrap();
             assert!(worker.recv().await.is_some());
             worker
                 .send(WorkerToEdge::TickDelta {
@@ -409,9 +477,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_one_end_closes_the_other() {
         for (edge, mut worker) in links() {
-            edge.send(EdgeToWorker::PlayerLeave { player: player() })
-                .await
-                .unwrap();
+            edge.send(leave()).await.unwrap();
             drop(edge);
             // What was sent before still arrives.
             assert!(worker.recv().await.is_some());
@@ -425,10 +491,9 @@ mod tests {
 
     #[tokio::test]
     async fn try_recv_distinguishes_empty_from_closed() {
-        let (edge, mut worker) = in_process::<EdgeToWorker, WorkerToEdge>(8);
+        let (edge, mut worker) = in_process::<EdgeMessage, WorkerToEdge>(8);
         assert_eq!(worker.try_recv(), Ok(None));
-        edge.try_send(EdgeToWorker::PlayerLeave { player: player() })
-            .unwrap();
+        edge.try_send(leave()).unwrap();
         assert!(matches!(worker.try_recv(), Ok(Some(_))));
         drop(edge);
         assert_eq!(worker.try_recv(), Err(LinkError::Closed));
@@ -436,25 +501,19 @@ mod tests {
 
     #[tokio::test]
     async fn try_send_reports_a_full_queue_instead_of_waiting() {
-        let (edge, _worker) = in_process::<EdgeToWorker, WorkerToEdge>(1);
-        let message = EdgeToWorker::PlayerLeave { player: player() };
+        let (edge, _worker) = in_process::<EdgeMessage, WorkerToEdge>(1);
+        let message = leave();
         assert_eq!(edge.try_send(message.clone()), Ok(()));
         assert_eq!(edge.try_send(message), Err(LinkError::Full));
     }
 
     #[tokio::test]
     async fn senders_can_be_cloned() {
-        let (edge, mut worker) = in_process::<EdgeToWorker, WorkerToEdge>(8);
+        let (edge, mut worker) = in_process::<EdgeMessage, WorkerToEdge>(8);
         let first = edge.sender();
         let second = first.clone();
-        first
-            .send(EdgeToWorker::PlayerLeave { player: player() })
-            .await
-            .unwrap();
-        second
-            .send(EdgeToWorker::PlayerLeave { player: player() })
-            .await
-            .unwrap();
+        first.send(leave()).await.unwrap();
+        second.send(leave()).await.unwrap();
         assert!(worker.recv().await.is_some());
         assert!(worker.recv().await.is_some());
     }

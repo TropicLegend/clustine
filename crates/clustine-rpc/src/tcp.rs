@@ -117,7 +117,7 @@ mod tests {
 
     use super::*;
     use crate::link::{EdgeEnd, WorkerEnd};
-    use crate::{EdgeToWorker, WorkerToEdge};
+    use crate::{EdgeMessage, EdgeToWorker, WorkerToEdge};
 
     fn hello() -> RegionHello {
         RegionHello {
@@ -150,26 +150,25 @@ mod tests {
         // Many small messages and a large one, which the writing side batches.
         for round in 0..50 {
             let player = PlayerId(Uuid::from_u128(round));
-            edge.send(EdgeToWorker::PlayerLeave { player })
-                .await
-                .unwrap();
+            let leave = EdgeMessage {
+                number: Some(round as u64 + 1),
+                body: EdgeToWorker::PlayerLeave { player },
+            };
+            edge.send(leave).await.unwrap();
         }
-        edge.send(EdgeToWorker::Subscribe {
+        let subscribe = EdgeMessage::unnumbered(EdgeToWorker::Subscribe {
             chunks: chunks.clone(),
-        })
-        .await
-        .unwrap();
+        });
+        edge.send(subscribe.clone()).await.unwrap();
         for round in 0..50 {
             let player = PlayerId(Uuid::from_u128(round));
-            assert_eq!(
-                worker.recv().await,
-                Some(EdgeToWorker::PlayerLeave { player })
-            );
+            let leave = EdgeMessage {
+                number: Some(round as u64 + 1),
+                body: EdgeToWorker::PlayerLeave { player },
+            };
+            assert_eq!(worker.recv().await, Some(leave));
         }
-        assert_eq!(
-            worker.recv().await,
-            Some(EdgeToWorker::Subscribe { chunks })
-        );
+        assert_eq!(worker.recv().await, Some(subscribe));
 
         let delta = WorkerToEdge::TickDelta {
             tick: 9,

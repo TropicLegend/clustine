@@ -3,15 +3,56 @@
 use clustine_data::BlockState;
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_sim::api::{
-    EntityState, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, RegionEvent, RemoteAction,
+    Durable, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput, PlayerJoin,
+    PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, EntityIds, PlayerId, Vec3};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3};
 use serde::{Deserialize, Serialize};
+
+/// A message of an edge to the worker that owns a region, with its number.
+///
+/// What changes the region (joining, leaving, arriving, discarding, inputs and remote
+/// actions) is numbered from 1 per edge and region, so that it can be sent again after a
+/// link was lost without any of it being applied twice; see
+/// `docs/adr/0008-durable-regions-and-resuming.md`. The rest has no number.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeMessage {
+    pub number: Option<u64>,
+    pub body: EdgeToWorker,
+}
+
+impl EdgeMessage {
+    /// A message that is not numbered.
+    pub fn unnumbered(body: EdgeToWorker) -> Self {
+        Self { number: None, body }
+    }
+}
 
 /// What an edge tells the worker that owns a region. See
 /// `docs/adr/0005-edge-worker-interface.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EdgeToWorker {
+    /// The first message on a link: which edge this is and what it knows of the region,
+    /// so that the region can tell it what it has missed. Answered with
+    /// [`WorkerToEdge::Welcome`].
+    Hello {
+        edge: EdgeId,
+        /// Which start of the edge this is. Each start of an edge has a higher number
+        /// than the one before.
+        start: u64,
+        /// The number of the last outbox entry the edge has got from this region; 0 if
+        /// none.
+        seen: u64,
+        /// The players the edge believes to be in this region. Each is answered with
+        /// [`WorkerToEdge::Presence`].
+        players: Vec<PlayerId>,
+        /// Every chunk of this region that the edge shows or has asked for. The link is
+        /// subscribed to them.
+        chunks: Vec<ChunkPos>,
+    },
+    /// The edge has handled the outbox entries up to this number; see
+    /// [`WorkerToEdge::Outbox`].
+    Confirm { number: u64 },
     /// A player has logged in and wants to enter the world.
     PlayerJoin(PlayerJoin),
     /// A player's connection has ended.
@@ -43,6 +84,24 @@ pub enum EdgeToWorker {
     Unsubscribe { chunks: Vec<ChunkPos> },
 }
 
+impl EdgeToWorker {
+    /// Whether a message of this kind is numbered; see [`EdgeMessage`].
+    pub fn is_numbered(&self) -> bool {
+        match self {
+            Self::PlayerJoin(_)
+            | Self::PlayerLeave { .. }
+            | Self::PlayerArrive { .. }
+            | Self::Discard { .. }
+            | Self::Input { .. }
+            | Self::Remote(_) => true,
+            Self::Hello { .. }
+            | Self::Confirm { .. }
+            | Self::Subscribe { .. }
+            | Self::Unsubscribe { .. } => false,
+        }
+    }
+}
+
 /// What a worker tells an edge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorkerToEdge {
@@ -70,6 +129,51 @@ pub enum WorkerToEdge {
     /// was reported before, in the [`WorkerToEdge::TickDelta`] of the same tick, so the
     /// player can now be told that their action with this sequence number was handled.
     RemoteDone { player: PlayerId, sequence: i32 },
+    /// The answer to [`EdgeToWorker::Hello`], before anything else on the link.
+    Welcome(Welcome),
+    /// An entry of the region's outbox for this edge, with its number. It is sent again
+    /// on every new link until the edge has confirmed it with [`EdgeToWorker::Confirm`].
+    Outbox { number: u64, entry: Durable },
+    /// Whether a player named in [`EdgeToWorker::Hello`] is in the region.
+    Presence { player: PlayerId, answer: Presence },
+    /// How far the edge's messages have been applied and made durable: up to `applied`.
+    /// `inputs` has, for each of the edge's players whose last applied input changed,
+    /// the number of that input. What the edge keeps to send again it trims on this.
+    Progress {
+        applied: u64,
+        inputs: Vec<(PlayerId, u64)>,
+    },
+}
+
+/// What a region answers an edge that has said hello.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Welcome {
+    /// The region knew the edge with this start and carries on where it was.
+    Resumed,
+    /// The region did not know the edge with this start: it is new, or the region has
+    /// forgotten it. What the edge believed to be in the region is not there.
+    Unknown,
+    /// The region knows a later start of this edge, so this one has been replaced. The
+    /// link is closed.
+    Superseded,
+}
+
+/// What a region says about a player an edge believes to be in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Presence {
+    /// The player is in the region, as of a tick that is durable.
+    Present {
+        entity: EntityId,
+        pose: Pose,
+        hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+        selected_slot: u8,
+        /// The number of the last input applied.
+        last_input: u64,
+        /// The highest sequence number of the player's own actions on blocks of this
+        /// region that has been handled, if any.
+        handled: Option<i32>,
+    },
+    Absent,
 }
 
 /// What a worker asks of the world store. Requests are handled in the order they are made.
@@ -84,15 +188,19 @@ pub enum StoreRequest {
         tick: u64,
         chunk: Chunk,
     },
-    /// Record the block changes of `tick`, so that they are not lost if the process dies
-    /// before the chunks they are in have been saved. Not answered.
-    Log {
+    /// Record the block changes of `tick` and what else changed in the region's state,
+    /// so that neither is lost if the process dies before the chunks they are in have
+    /// been saved. `state` is the region's own record of its changes, which the store
+    /// keeps as it is. Answered with [`StoreReply::Committed`] once it is on disk.
+    Commit {
         tick: u64,
         changes: Vec<(BlockPos, BlockState)>,
+        state: Vec<u8>,
     },
-    /// Every change logged so far is contained in a chunk saved before this request, so
-    /// the log can be emptied. Not answered.
-    Checkpoint,
+    /// Every change committed up to `tick` is contained in a chunk saved before this
+    /// request, and `state` is the region's whole state after `tick`, so the records up
+    /// to `tick` can be dropped. Not answered.
+    Checkpoint { tick: u64, state: Vec<u8> },
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
 }
@@ -100,7 +208,19 @@ pub enum StoreRequest {
 /// What the world store answers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StoreReply {
-    Loaded { position: ChunkPos, chunk: Chunk },
+    Loaded {
+        position: ChunkPos,
+        chunk: Chunk,
+    },
+    /// The stored chunk cannot be read. It is not generated instead, which would look
+    /// fine at first and then overwrite what players built once it is saved.
+    Unreadable {
+        position: ChunkPos,
+    },
+    /// The commit of `tick` is on disk, and so is every one before it.
+    Committed {
+        tick: u64,
+    },
     Flushed,
 }
 
@@ -151,11 +271,26 @@ pub enum ToCoordinator {
         holding: Vec<Assignment>,
         layout: Option<u64>,
     },
-    /// The worker is still there. A worker that is silent for too long loses its regions.
-    Heartbeat,
+    /// The worker is still there, and vouches for the regions it names. A worker that is
+    /// silent for too long loses its regions, and so does a region it holds and does not
+    /// vouch for.
+    Heartbeat { regions: Vec<(RegionId, Vouch)> },
+    /// The world store refused to let the worker open `region`, because it has seen an
+    /// owner with epoch `seen`, higher than the worker's. The coordinator issues epochs
+    /// above it from then on.
+    EpochRefused { region: RegionId, seen: u64 },
     /// An edge wants the routing table, now and whenever it changes. Answered with
     /// [`FromCoordinator::Routing`].
     WatchRouting,
+}
+
+/// Why a worker vouches for a region it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Vouch {
+    /// A commit of the region has been confirmed within the lease.
+    Committed,
+    /// The region waits for the world store to answer.
+    WaitingForStore,
 }
 
 /// What the coordinator tells a worker or an edge.

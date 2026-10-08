@@ -218,6 +218,25 @@ pub enum RemoteOutcome {
     Next(RemoteAction),
 }
 
+/// Something a region tells an edge that must reach it even if the region's owner dies
+/// right after: an entry of the region's outbox for that edge. It stays in the outbox, and
+/// is sent again on every new link, until the edge has confirmed it. See
+/// `docs/adr/0008-durable-regions-and-resuming.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Durable {
+    /// The player has been let go to another region; see [`PlayerEvent::Departed`].
+    Departed {
+        player: PlayerId,
+        transfer: PlayerTransfer,
+    },
+    /// The player could not enter the world; see [`PlayerEvent::Refused`].
+    Refused { player: PlayerId },
+    /// What is left of an action concerns another region; see [`RemoteAction`].
+    Remote(RemoteAction),
+    /// A remote action has been dealt with; see [`RemoteOutcome::Done`].
+    RemoteDone { player: PlayerId, sequence: i32 },
+}
+
 /// Everything that happened since the previous tick.
 ///
 /// A tick applies all of `player_changes` and then all of `inputs`. What players did

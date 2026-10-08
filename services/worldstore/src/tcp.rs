@@ -523,7 +523,10 @@ mod tests {
                 &[(3, -61, 4, blocks::AIR), (3, 100, 4, blocks::GLASS)],
             );
             save(&remote, origin, &edited());
-            remote.request(StoreRequest::Checkpoint);
+            remote.request(StoreRequest::Checkpoint {
+                tick: 0,
+                state: Vec::new(),
+            });
             log(&remote, 6, &[(40, -61, 4, blocks::AIR)]);
             remote.flush();
 
