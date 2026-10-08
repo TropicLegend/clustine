@@ -147,6 +147,12 @@ pub struct Config {
     /// they walk, and what they do to blocks on the other side of a boundary is passed
     /// on to the region that has them. Empty for a world that is one region.
     pub boundaries: Vec<i32>,
+    /// Whether each region takes the stripes of the layout as given, its own and the
+    /// others', in place of asking the world store which chunks it holds. With `false`
+    /// a region knows of a chunk only what the store has answered, as it will when
+    /// regions are no longer stripes. A switch for as long as the edge still divides
+    /// the world by a layout; see `docs/adr/0012-the-tick-on-chunks.md`, section 8.
+    pub presumed: bool,
 }
 
 /// A running server. Dropping it without calling [`Server::stop`] leaves it running
@@ -170,6 +176,8 @@ struct Regions {
     /// Ticks between two checkpoints.
     checkpoint_interval: u64,
     serialise_link: bool,
+    /// [`Config::presumed`].
+    presumed: bool,
 }
 
 impl Regions {
@@ -250,7 +258,11 @@ impl Regions {
             spawn: self.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            presumed: presumed(&self.layout, region),
+            presumed: if self.presumed {
+                presumed(&self.layout, region)
+            } else {
+                Vec::new()
+            },
         };
         let runner = RegionRunner::restore(config, store, restored)
             .with_context(|| format!("restoring region {region}"))?
@@ -283,6 +295,7 @@ impl Server {
             spawn,
             checkpoint_interval: config.checkpoint_interval.as_millis() as u64 / 50,
             serialise_link: config.serialise_link,
+            presumed: config.presumed,
         };
 
         let mut links = Vec::new();

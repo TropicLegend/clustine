@@ -123,6 +123,11 @@ pub struct WorkerArgs {
     pub name: String,
     /// How often every changed chunk that is still loaded is saved.
     pub checkpoint_interval: Duration,
+    /// Whether the regions take nothing of the layout as given and ask the world store
+    /// which chunks they hold, as they will when regions are no longer stripes. A
+    /// switch for as long as the edge still divides the world by a layout; see
+    /// `docs/adr/0012-the-tick-on-chunks.md`, section 8.
+    pub ask_the_store: bool,
 }
 
 /// A region the coordinator has given this worker, and what it takes to run it.
@@ -470,7 +475,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                         }
                         let mut failed = None;
                         for assignment in offered {
-                            let held = match hold(&next, assignment) {
+                            let held = match hold(&next, assignment, args.ask_the_store) {
                                 Ok(held) => held,
                                 Err(error) => {
                                     failed = Some(error);
@@ -642,8 +647,9 @@ async fn told_again(again: &mut Option<Pin<Box<dyn Future<Output = ()> + Send>>>
     }
 }
 
-/// What it takes to run the region of `assignment` under `orders`.
-fn hold(orders: &Orders, assignment: Assignment) -> Result<Held> {
+/// What it takes to run the region of `assignment` under `orders`. The region takes the
+/// stripes of the layout as given unless it is to `ask_the_store`.
+fn hold(orders: &Orders, assignment: Assignment, ask_the_store: bool) -> Result<Held> {
     // Such a region would take the whole world to be its neighbours'.
     if orders.layout.area(assignment.region).is_none() {
         bail!("the coordinator named a region that its layout does not have");
@@ -660,7 +666,11 @@ fn hold(orders: &Orders, assignment: Assignment) -> Result<Held> {
             spawn: orders.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            presumed: presumed(&orders.layout, assignment.region),
+            presumed: if ask_the_store {
+                Vec::new()
+            } else {
+                presumed(&orders.layout, assignment.region)
+            },
         },
     })
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
-use super::{VIEW_DISTANCE, free_address};
+use super::{VIEW_DISTANCE, ask_the_store, free_address};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -144,6 +144,10 @@ impl Cluster {
             "--name",
             &name,
         ];
+        // As the servers of the other tests are made: see `ask_the_store`.
+        if ask_the_store() {
+            arguments.push("--ask-the-store");
+        }
         arguments.extend(self.worker_arguments.iter().map(String::as_str));
         let worker = self.spawn(&name, &arguments);
         self.workers[number].1 = Some(worker);
