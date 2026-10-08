@@ -45,7 +45,10 @@ CLUSTINE_TEST_BOUNDARIES=0,4 cargo test -p clustine --locked
 
 The last line runs the end-to-end tests on a world divided into three regions. CI runs all
 four, and names failed tests on the run's summary page (readable without signing in
-through the check run's annotations).
+through the check run's annotations). `tools/check.sh` runs the four, the two test runs
+at the same time, and says which failed; that takes about ten minutes on six processors.
+The tests that start clusters of processes run several at a time
+(`CLUSTINE_TEST_CLUSTERS`, by default one for every two processors).
 
 - **Comparisons with the official server** (`#[ignore]` tests): need Java and the jar that
   `cargo datagen` downloads. `CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace
