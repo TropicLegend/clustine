@@ -58,7 +58,6 @@ fn config_a() -> RegionConfig {
         spawn: Vec3::new(14.5, 64.0, 8.5),
         starting_hotbar: hotbar(),
         return_after: 0,
-        presumed: Vec::new(),
     }
 }
 
@@ -80,7 +79,6 @@ fn config_b() -> RegionConfig {
         spawn: Vec3::new(24.5, 64.0, 8.5),
         starting_hotbar: hotbar(),
         return_after: 0,
-        presumed: Vec::new(),
     }
 }
 

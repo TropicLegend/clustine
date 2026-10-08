@@ -649,7 +649,6 @@ fn hold(orders: &Orders, assignment: Assignment) -> Held {
             spawn: orders.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            presumed: Vec::new(),
         },
     }
 }

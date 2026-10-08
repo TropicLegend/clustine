@@ -28,16 +28,6 @@ pub struct RegionConfig {
     /// How many ticks a chunk the region holds outside its pinned areas may be without
     /// use before the region gives it back.
     pub return_after: u64,
-    /// Areas whose holder the region takes as given, `None` for itself, in place of
-    /// asking the world store. A chunk in one of them is [`Knowledge::Held`] or
-    /// [`Knowledge::Foreign`] from the start, is never claimed, returned or forgotten,
-    /// and `granted`, `foreign` and `unbelieve` for it are ignored. Of areas that
-    /// overlap, the first counts.
-    ///
-    /// A scaffold for as long as the processes divide the world by a layout, which goes
-    /// when the edge has stopped doing so: `docs/adr/0012-the-tick-on-chunks.md`,
-    /// section 8.
-    pub presumed: Vec<(ChunkArea, Option<RegionId>)>,
 }
 
 /// What the world store says of a region's chunks when the region is opened.
@@ -113,33 +103,17 @@ impl Tickets {
 /// What the region knows of who holds which chunk.
 #[derive(Debug, Clone, PartialEq)]
 struct Land {
-    /// [`RegionConfig::presumed`].
-    presumed: Vec<(ChunkArea, Option<RegionId>)>,
     /// [`Holdings::pinned`].
     pinned: Vec<ChunkArea>,
     /// The chunk [`RegionConfig::spawn`] is in.
     home: ChunkPos,
-    /// The chunks outside the presumed areas that the region knows something of. A
-    /// chunk is in one condition at a time, which is why this is one collection and
-    /// not three.
+    /// The chunks the region knows something of. A chunk is in one condition at a
+    /// time, which is why this is one collection and not three.
     known: BTreeMap<ChunkPos, Known>,
 }
 
 impl Land {
-    /// Who is taken as given to hold `position`: `Some(None)` for the region itself.
-    fn presumed(&self, position: ChunkPos) -> Option<Option<RegionId>> {
-        self.presumed
-            .iter()
-            .find(|(area, _)| area.contains(position))
-            .map(|(_, holder)| *holder)
-    }
-
     fn knowledge(&self, position: ChunkPos) -> Knowledge {
-        match self.presumed(position) {
-            Some(None) => return Knowledge::Held,
-            Some(Some(region)) => return Knowledge::Foreign(region),
-            None => {}
-        }
         match self.known.get(&position) {
             Some(Known::Held { .. }) => Knowledge::Held,
             Some(Known::Asked) => Knowledge::Asked,
@@ -257,18 +231,13 @@ impl Region {
             .map(|(id, player)| (id, Player::from_state(player)))
             .collect();
         let mut land = Land {
-            presumed: config.presumed.clone(),
             pinned: holdings.pinned,
             home: ChunkPos::containing(config.spawn.x, config.spawn.z),
             known: BTreeMap::new(),
         };
         for position in holdings.held {
-            // What is presumed is not kept chunk by chunk, so that nothing can make the
-            // region give it back.
-            if land.presumed(position).is_none() {
-                land.known
-                    .insert(position, Known::Held { used: state.tick });
-            }
+            land.known
+                .insert(position, Known::Held { used: state.tick });
         }
         Self {
             config,
@@ -306,8 +275,6 @@ impl Region {
     }
 
     /// The number of chunks the store has granted the region and it has not given back.
-    /// Chunks it takes as given to be its own ([`RegionConfig::presumed`]) are not
-    /// counted: there is no end of them.
     pub fn held_chunk_count(&self) -> usize {
         let held = |known: &&Known| matches!(known, Known::Held { .. });
         self.land.known.values().filter(held).count()
@@ -1014,10 +981,10 @@ impl Region {
     fn update_chunks(&mut self, inputs: &TickInputs, output: &mut TickOutput) {
         // The store's answers are believed whatever the region knew, except that it
         // does not unlearn that it holds a chunk: the store never says `foreign` of a
-        // chunk the region holds. What is presumed is not the store's to say.
+        // chunk the region holds.
         for position in &inputs.granted {
             let held = matches!(self.land.known.get(position), Some(Known::Held { .. }));
-            if self.land.presumed(*position).is_none() && !held {
+            if !held {
                 // The ticks before the grant count as ticks in which the chunk was used.
                 let used = self.tick - 1;
                 self.land.known.insert(*position, Known::Held { used });
@@ -1025,7 +992,7 @@ impl Region {
         }
         for (position, region) in &inputs.foreign {
             let held = matches!(self.land.known.get(position), Some(Known::Held { .. }));
-            if self.land.presumed(*position).is_none() && !held {
+            if !held {
                 // Believed until the end of the tick even if nothing wants the chunk any
                 // more, so that a player who stands in it is let go in this very tick.
                 self.land.known.insert(*position, Known::Foreign(*region));
@@ -1134,7 +1101,6 @@ impl Region {
         let claims: BTreeSet<ChunkPos> = standing
             .iter()
             .chain(ticketed)
-            .filter(|position| land.presumed(**position).is_none())
             .filter(|position| !land.known.contains_key(*position))
             .copied()
             .collect();
@@ -1328,14 +1294,12 @@ mod tests {
     const WEST_OF_MIDDLE: RegionId = RegionId(0);
     const EAST_OF_MIDDLE: RegionId = RegionId(2);
 
-    /// What a region is created with. It takes nothing as given, and gives back at once
-    /// what nothing uses.
+    /// What a region is created with. It gives back at once what nothing uses.
     fn config() -> RegionConfig {
         RegionConfig {
             spawn: SPAWN,
             starting_hotbar: hotbar(),
             return_after: 0,
-            presumed: Vec::new(),
         }
     }
 
@@ -1590,7 +1554,6 @@ mod tests {
                 !matches!(known, Known::Foreign(_)) || wanted(position),
                 "tick {tick}: {position:?} is believed another's and not wanted"
             );
-            assert_eq!(region.land.presumed(*position), None, "tick {tick}");
         }
         // A loaded chunk is held and has a ticket, and so has one asked of storage.
         for position in region.chunks.keys().chain(&region.requested) {
@@ -2783,81 +2746,6 @@ mod tests {
         quiet(&mut region, 4);
         assert_eq!(idle(&mut region).returns, [position]);
         assert_eq!(region.tick_number(), 3 + 5);
-    }
-
-    /// The scaffold of the time in which the processes still divide the world by a
-    /// layout: `docs/adr/0012-the-tick-on-chunks.md`, section 8.
-    #[test]
-    fn what_a_region_presumes_it_never_asks_about_gives_back_or_forgets() {
-        let other = RegionId(1);
-        let config = RegionConfig {
-            presumed: vec![(WEST, Some(other)), (EAST, None)],
-            ..config()
-        };
-        // What the store says the region holds of a presumed area does not count.
-        let mut region = asking_with(config, &[EAST_CHUNK, WEST_CHUNK], &[]);
-        assert_eq!(region.held_chunk_count(), 0);
-        let (own, far) = (ChunkPos::new(30, 7), ChunkPos::new(-30, 7));
-        let as_presumed = |region: &Region| {
-            for position in [EAST_CHUNK, own] {
-                assert_eq!(region.knowledge(position), Knowledge::Held);
-            }
-            for position in [WEST_CHUNK, far] {
-                assert_eq!(region.knowledge(position), Knowledge::Foreign(other));
-            }
-            assert_eq!(region.held_chunk_count(), 0);
-        };
-        as_presumed(&region);
-
-        // Nothing is asked or given back, neither without use nor with it, and a chunk
-        // of the region's own is asked of storage with its first ticket.
-        let output = idle(&mut region);
-        assert!(output.claims.is_empty() && output.returns.is_empty());
-        let all = vec![
-            (own, Ticket::Viewer),
-            (far, Ticket::Viewer),
-            (far, Ticket::Guest),
-            (EAST_CHUNK, Ticket::Guest),
-        ];
-        let output = checked(
-            &mut region,
-            &TickInputs {
-                tickets_added: all.clone(),
-                player_changes: vec![join(1)],
-                ..TickInputs::default()
-            },
-        );
-        assert!(output.claims.is_empty() && output.returns.is_empty());
-        assert_eq!(output.chunk_requests, [EAST_CHUNK, own]);
-
-        // What the store says of such a chunk changes nothing.
-        let output = checked(
-            &mut region,
-            &TickInputs {
-                granted: vec![far, WEST_CHUNK],
-                foreign: vec![(own, RegionId(5)), (EAST_CHUNK, RegionId(5))],
-                unbelieve: vec![(far, other), (WEST_CHUNK, other)],
-                ..TickInputs::default()
-            },
-        );
-        assert!(output.claims.is_empty() && output.returns.is_empty());
-        assert!(output.chunk_requests.is_empty());
-        as_presumed(&region);
-
-        // A player who steps across is let go in that tick, to the region presumed.
-        let output = checked(&mut region, &moves(vec![walk(1, -0.5, 0.5)]));
-        assert_eq!(let_go(&output), [(player(1), other)]);
-        // With nobody there and nothing watched, all of it is known as before.
-        let output = checked(
-            &mut region,
-            &TickInputs {
-                tickets_removed: all,
-                ..TickInputs::default()
-            },
-        );
-        assert!(output.claims.is_empty() && output.returns.is_empty());
-        assert!(idle(&mut region).returns.is_empty());
-        as_presumed(&region);
     }
 
     #[test]

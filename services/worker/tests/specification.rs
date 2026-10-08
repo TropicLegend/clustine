@@ -97,15 +97,13 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     hotbar
 }
 
-/// The region takes nothing as given: of every chunk it asks the store, which is
-/// divided into the stripes of the layout, whether it is its own
-/// (`docs/adr/0012-the-tick-on-chunks.md`, section 8).
+/// Of every chunk the region asks the store, which is divided into the stripes of the
+/// layout, whether it is its own (`docs/adr/0012-the-tick-on-chunks.md`, section 1).
 fn config() -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after: 0,
-        presumed: Vec::new(),
     }
 }
 

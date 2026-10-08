@@ -117,13 +117,12 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     hotbar
 }
 
-/// The region takes nothing as given: of every chunk it asks the store.
+/// Of every chunk the region asks the store whether it is its own.
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
-        presumed: Vec::new(),
     }
 }
 

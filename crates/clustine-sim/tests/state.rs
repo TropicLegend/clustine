@@ -45,7 +45,6 @@ fn config() -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar,
         return_after: 0,
-        presumed: Vec::new(),
     }
 }
 

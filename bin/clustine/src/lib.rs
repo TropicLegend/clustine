@@ -229,7 +229,6 @@ impl Regions {
             spawn: self.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            presumed: Vec::new(),
         };
         let runner = RegionRunner::restore(config, store, restored)
             .with_context(|| format!("restoring region {region}"))?

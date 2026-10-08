@@ -92,9 +92,10 @@ pub struct RegionStatus {
     pub chunks: AtomicU64,
     /// How many chunks the region held after that tick by the world store's word: what
     /// the store told it it holds when it was opened or has granted it since, and it
-    /// has not given back. A chunk the region takes as given to be its own
-    /// (`RegionConfig::presumed`) is not among them, as the region has never asked for
-    /// it: a region that presumes its stripe shows 0 here, whatever it has loaded.
+    /// has not given back. A chunk of an area the region is pinned to counts from the
+    /// store's answer to the region's claim of it, and the store does not name it when
+    /// the region is opened: the count of a pinned region begins anew with every owner
+    /// and rises as its edges ask for chunks.
     pub held: AtomicU64,
     /// How many players have come in from other regions.
     pub arrivals: AtomicU64,
@@ -2550,7 +2551,6 @@ mod tests {
             spawn: SPAWN,
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
-            presumed: Vec::new(),
         }
     }
 
