@@ -422,6 +422,14 @@ and work as before. What the builder decided where the record was silent is at t
 record's end. The scenarios of its section 9 are being written by someone else from
 the record alone.
 
+C2b.2 is built: the sim has no area any more. A region knows of each chunk whether it
+holds it, has asked for it, believes another region to hold it, or knows nothing; it
+claims what its viewers and players need, gives back what nobody has used for a while,
+lets a player go to the region the store names, and names the region an action or a
+player goes to in its outbox entries. Until the runner asks the store (C2b.3) the
+processes tell each region the stripes as given (`presumed`), so nothing changes for a
+cluster yet. Its scenarios are being written by someone else from the record.
+
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
 and in hellos, the welcome saying how many entries follow (all C2b); how `Restored::held`
