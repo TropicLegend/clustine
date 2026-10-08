@@ -1174,16 +1174,18 @@ impl Player {
             if gone.kind != entity_types::PLAYER || !name.starts_with(&others) {
                 continue;
             }
-            // One that is still on its way to its lane goes faster than anyone walks, up
-            // to half a chunk a tick. When the server falls a few ticks behind, as on a
-            // small machine at the start, it leaves the view between two of the places
-            // it is seen in, and where it was seen last says nothing.
-            let on_its_way = name
+            // Two bots whose lanes are further apart than either sees have each other in
+            // view only on the way to their lanes, on which a bot goes faster than
+            // anyone walks, up to half a chunk a tick. When the server falls a few ticks
+            // behind, as on a small machine at the start, such a bot leaves the view
+            // between two of the places it is seen in, and where it was seen last says
+            // nothing. Once both are on their lanes neither sees the other at all.
+            let lane_of_the_other = name
                 .strip_prefix(&others)
                 .and_then(|number| number.parse::<usize>().ok())
-                .and_then(|number| self.progress.bots().get(number).map(|bot| !bot.playing))
-                .unwrap_or(false);
-            if on_its_way && self.ledger.to_the_lane > 1.0 {
+                .map(|number| f64::from(lane_block(&self.ledger, number)));
+            let view = f64::from(view_distance * 16);
+            if lane_of_the_other.is_some_and(|lane| (lane - self.lane).abs() > view + 16.0) {
                 continue;
             }
             let (x, _, z) = gone.position;
