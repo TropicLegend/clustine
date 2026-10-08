@@ -23,12 +23,15 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clustine_coordinator::{ClientError, CoordinatorConfig, Orders, RoutingWatch, WorkerClient};
+use clustine_coordinator::{
+    ClientError, CoordinatorConfig, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
+    WorkerEvent,
+};
 use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_rpc::{Assignment, EdgeMessage, RegionHello, Restored, Vouch, WorkerToEdge, tcp};
 use clustine_sim::RegionConfig;
-use clustine_worker::{Links, RegionRunner, RegionStatus, Worker};
+use clustine_worker::{Ended, Links, RegionRunner, RegionStatus, Worker};
 use clustine_worldstore::{Store, StoreError, StoreHandle};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
@@ -126,11 +129,19 @@ struct Held {
 
 type Opening = Pin<Box<dyn Future<Output = Result<(StoreHandle, Restored), StoreError>> + Send>>;
 
+/// How often a worker that is releasing a region looks whether the release is done.
+/// The region's players stand still meanwhile, so this is not left to [`LOOK`].
+const RELEASE_LOOK: Duration = Duration::from_millis(5);
+
+/// How long a worker that has been told to stop waits for its region to be handed to
+/// another worker before it stops anyway. Kubernetes gives it 30 seconds in all.
+const LEAVE_WITHIN: Duration = Duration::from_secs(20);
+
 /// What a worker is doing about its region.
 enum Phase {
-    /// It has none. `refused` is the assignment the world store did not let it open, if
-    /// that is why: the coordinator's next orders are waited for, and that assignment is
-    /// not taken up again.
+    /// It has none. `refused` is an assignment it is not to take up again: the world
+    /// store did not let it open the region, it released the region, or the region was
+    /// taken from it. The coordinator's next orders are waited for.
     Idle { refused: Option<Assignment> },
     /// It waits for the world store to open the region, for the first time or again.
     Opening { held: Held, opening: Opening },
@@ -142,6 +153,13 @@ enum Phase {
         /// The region's tick at the last look, and when it was last seen to have changed.
         tick: u64,
         ticked: Instant,
+    },
+    /// The coordinator asked for the region to be released, and the runner is at it;
+    /// see `docs/adr/0009-moving-a-region.md`.
+    Releasing {
+        held: Held,
+        running: Worker,
+        status: Arc<RegionStatus>,
     },
 }
 
@@ -157,17 +175,53 @@ impl Phase {
             // A region that has stopped ticking is not vouched for: the store does not
             // confirm what it does, and yet has not let go of it.
             Phase::Running { .. } => Vec::new(),
+            // It stops ticking on purpose, and the coordinator knows.
+            Phase::Releasing { .. } => Vec::new(),
         }
     }
 
-    /// Resolves when the world store has answered the opening of the region, and never
-    /// in another phase. The phase has to be left once it has resolved.
-    async fn opened(&mut self) -> Result<(StoreHandle, Restored), StoreError> {
+    /// The assignment the worker holds in this phase, if any.
+    fn held(&self) -> Option<Assignment> {
         match self {
-            Phase::Opening { opening, .. } => opening.as_mut().await,
+            Phase::Idle { .. } => None,
+            Phase::Opening { held, .. }
+            | Phase::Running { held, .. }
+            | Phase::Releasing { held, .. } => Some(held.assignment),
+        }
+    }
+
+    /// Resolves when what the worker waits for in this phase has come about: the world
+    /// store has answered the opening of the region, or a release has ended. Never in
+    /// another phase. The phase has to be left once this has resolved.
+    async fn settled(&mut self) -> Settled {
+        match self {
+            Phase::Opening { opening, .. } => Settled::Opened(opening.as_mut().await),
+            Phase::Releasing { status, .. } => loop {
+                if let Some(ended) = status.ended() {
+                    return Settled::Released(ended);
+                }
+                sleep(RELEASE_LOOK).await;
+            },
             _ => std::future::pending().await,
         }
     }
+}
+
+/// What a worker waited for and got; see [`Phase::settled`].
+enum Settled {
+    Opened(Result<(StoreHandle, Restored), StoreError>),
+    Released(Ended),
+}
+
+/// What the task that holds the connection to the coordinator passes on.
+enum Word {
+    /// New orders, or a region to release.
+    Event(WorkerEvent),
+    /// The coordinator refuses the worker, for the reason given.
+    Refused(String),
+    /// A worker that is leaving may exit: the coordinator has closed its connection, or
+    /// cannot be reached.
+    Dismissed,
 }
 
 /// Runs a worker until the process is asked to stop: registers with the coordinator,
@@ -177,36 +231,46 @@ impl Phase {
 /// A worker that loses the world store keeps its region: it closes the region's links,
 /// opens the region again when the store answers and carries on with what the store
 /// has. If the store says that the region has had a later owner, the worker tells the
-/// coordinator and waits for its next orders. Fails if the coordinator gives the region
-/// to another worker; the process is then meant to be started again, to register afresh.
+/// coordinator and waits for its next orders. It releases its region when the
+/// coordinator asks for that, and drops it when the coordinator has given it to another
+/// worker; either way it waits to be given a region again.
+///
+/// Asked to stop, it tells the coordinator that it is leaving and goes on until the
+/// coordinator has moved its region to another worker and closed the connection, for
+/// [`LEAVE_WITHIN`] at most. A second signal stops it at once.
 pub async fn worker(args: WorkerArgs) -> Result<()> {
-    let listener = TcpListener::bind(args.listen)
-        .await
-        .with_context(|| format!("listening on {}", args.listen))?;
-
     let stop = crate::stop_signal();
     tokio::pin!(stop);
     let (coordinator, first) = tokio::select! {
         registered = register(&args) => registered?,
         _ = &mut stop => return Ok(()),
     };
+    // Only now, so that whoever takes "it listens" for "it is ready", as Kubernetes
+    // does, takes a worker for ready that the coordinator knows.
+    let listener = TcpListener::bind(args.listen)
+        .await
+        .with_context(|| format!("listening on {}", args.listen))?;
 
     // What the task that holds the connection to the coordinator is told, and tells.
     let (vouches, vouched) = watch::channel(Vec::new());
     let (holding, held) = watch::channel(None);
+    let (leaving, left) = watch::channel(false);
     let (refusals, refused) = mpsc::unbounded_channel();
-    let (orders_in, mut orders) = mpsc::unbounded_channel();
+    let (releases, released) = mpsc::unbounded_channel();
+    let (words_in, mut words) = mpsc::unbounded_channel();
     // The receiver is right here.
-    let _ = orders_in.send(Ok(first));
+    let _ = words_in.send(Word::Event(WorkerEvent::Orders(first)));
     let registered = tokio::spawn(stay_registered(
         coordinator,
         args.clone(),
         Reports {
             vouched,
             held,
+            left,
             refused,
+            released,
         },
-        orders_in,
+        words_in,
     ));
     // Edges are let in only while there is a restored region to link them to.
     let (serving, served) = watch::channel(None);
@@ -215,108 +279,225 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     let checkpoint_interval =
         (args.checkpoint_interval.as_millis() / clustine_worker::TICK.as_millis()) as u64;
     let mut phase = Phase::Idle { refused: None };
+    // The assignment this worker released last, to say so again if the coordinator has
+    // not heard.
+    let mut let_go: Option<Assignment> = None;
     let mut look = tokio::time::interval(LOOK);
+    // Set when the worker has been told to stop: when it stops waiting, and what
+    // listens for its being told again.
+    let mut leave_by: Option<Instant> = None;
+    let mut again: Option<Pin<Box<dyn Future<Output = ()> + Send>>> = None;
     let outcome = loop {
         tokio::select! {
-            _ = &mut stop => break Ok(()),
-            next = orders.recv() => {
-                let next = match next {
-                    Some(Ok(next)) => next,
-                    Some(Err(reason)) => break Err(anyhow!("the coordinator refused: {reason}")),
+            _ = &mut stop, if leave_by.is_none() => {
+                info!("told to stop; asking for what this worker runs to be moved first");
+                leave_by = Some(Instant::now() + LEAVE_WITHIN);
+                again = Some(Box::pin(crate::stop_signal()));
+                leaving.send_replace(true);
+            }
+            () = told_again(&mut again), if again.is_some() => {
+                info!("told to stop again; stopping at once");
+                break Ok(());
+            }
+            () = sleep_until_some(leave_by), if leave_by.is_some() => {
+                warn!("nobody took over in time; stopping with what this worker runs");
+                break Ok(());
+            }
+            word = words.recv() => {
+                let event = match word {
+                    Some(Word::Event(event)) => event,
+                    Some(Word::Refused(reason)) => {
+                        break Err(anyhow!("the coordinator refused: {reason}"));
+                    }
+                    Some(Word::Dismissed) => break Ok(()),
                     None => break Err(anyhow!("lost the coordinator for good")),
                 };
-                match &phase {
-                    Phase::Idle { refused } => {
-                        // A worker runs one region for now.
-                        let offered = next
-                            .assignments
-                            .iter()
-                            .find(|offered| Some(**offered) != *refused);
-                        let Some(assignment) = offered else {
-                            info!("registered; waiting to be given a region");
-                            continue;
+                match event {
+                    WorkerEvent::Release { region, epoch } => {
+                        let asked = |held: &Held| {
+                            (held.assignment.region, held.assignment.epoch) == (region, epoch)
                         };
-                        let held = match hold(&next, *assignment) {
-                            Ok(held) => held,
-                            Err(error) => break Err(error),
-                        };
-                        info!(
-                            region = %assignment.region,
-                            epoch = assignment.epoch,
-                            "given a region"
-                        );
-                        holding.send_replace(Some((held.assignment, held.hello.layout)));
-                        let opening = Box::pin(open_region(args.store.clone(), held.hello));
-                        phase = Phase::Opening { held, opening };
+                        match mem::replace(&mut phase, Phase::Idle { refused: None }) {
+                            Phase::Running { held, running, status, .. } if asked(&held) => {
+                                info!(%region, epoch, "asked to release the region");
+                                running.begin_release();
+                                phase = Phase::Releasing { held, running, status };
+                            }
+                            // The region is not open yet, so there is nothing to bring
+                            // up to date. Should the store still answer, the handle is
+                            // dropped with the future, which closes the region.
+                            Phase::Opening { held, .. } if asked(&held) => {
+                                info!(%region, epoch, "asked to release the region while opening it");
+                                let _ = releases.send((region, epoch));
+                                holding.send_replace(None);
+                                let_go = Some(held.assignment);
+                                phase = Phase::Idle { refused: Some(held.assignment) };
+                            }
+                            // Under way already, or not this worker's: then it is as
+                            // released as it can be, and the coordinator is told so.
+                            other => {
+                                let releasing = matches!(&other, Phase::Releasing { held, .. } if asked(held));
+                                phase = other;
+                                if !releasing {
+                                    let _ = releases.send((region, epoch));
+                                }
+                            }
+                        }
                         vouches.send_replace(phase.vouches());
                     }
-                    Phase::Opening { held, .. } | Phase::Running { held, .. } => {
-                        if !next.assignments.contains(&held.assignment) {
-                            break Err(anyhow!(
-                                "the coordinator has given region {} to another worker",
-                                held.assignment.region
-                            ));
+                    WorkerEvent::Orders(next) => {
+                        // The coordinator still believes this worker to have what it
+                        // has released: the word of it was lost.
+                        if let Some(released) = let_go
+                            && phase.held().is_none()
+                            && next.assignments.contains(&released)
+                        {
+                            let _ = releases.send((released.region, released.epoch));
+                        }
+                        match phase.held() {
+                            None => {
+                                let Phase::Idle { refused } = &phase else {
+                                    unreachable!("only an idle worker holds nothing");
+                                };
+                                // A worker runs one region for now, and one that is
+                                // leaving takes up none.
+                                let offered = next
+                                    .assignments
+                                    .iter()
+                                    .find(|offered| Some(**offered) != *refused)
+                                    .filter(|_| leave_by.is_none());
+                                let Some(assignment) = offered else {
+                                    info!("registered; waiting to be given a region");
+                                    continue;
+                                };
+                                let held = match hold(&next, *assignment) {
+                                    Ok(held) => held,
+                                    Err(error) => break Err(error),
+                                };
+                                info!(
+                                    region = %assignment.region,
+                                    epoch = assignment.epoch,
+                                    "given a region"
+                                );
+                                holding.send_replace(Some((held.assignment, held.hello.layout)));
+                                let opening = Box::pin(open_region(args.store.clone(), held.hello));
+                                phase = Phase::Opening { held, opening };
+                                vouches.send_replace(phase.vouches());
+                            }
+                            Some(assignment) if next.assignments.contains(&assignment) => {}
+                            // The region is another worker's now, or nobody's. That is
+                            // not this worker's fault, and the store sees to it that it
+                            // can do no harm; it lets go and waits for a region again.
+                            Some(assignment) => {
+                                warn!(
+                                    region = %assignment.region,
+                                    epoch = assignment.epoch,
+                                    "the coordinator has taken the region; letting go of it"
+                                );
+                                serving.send_replace(None);
+                                holding.send_replace(None);
+                                let dropped = mem::replace(
+                                    &mut phase,
+                                    Phase::Idle { refused: Some(assignment) },
+                                );
+                                if let Phase::Running { running, .. }
+                                | Phase::Releasing { running, .. } = dropped
+                                {
+                                    // As it is: saved if the store still listens to
+                                    // this worker, and left to the next owner if not.
+                                    let stopped =
+                                        tokio::task::spawn_blocking(move || running.stop()).await;
+                                    if let Err(error) = stopped {
+                                        break Err(error.into());
+                                    }
+                                }
+                                vouches.send_replace(phase.vouches());
+                            }
                         }
                     }
                 }
             }
-            opened = phase.opened() => {
-                let Phase::Opening { held, .. } =
-                    mem::replace(&mut phase, Phase::Idle { refused: None })
-                else {
-                    unreachable!("only an opening resolves");
-                };
-                let region = held.assignment.region;
-                match opened {
-                    Ok((store, restored)) => {
-                        let tick = restored.tick();
-                        let runner = match RegionRunner::restore(held.config.clone(), store, restored) {
-                            Ok(runner) => runner.with_checkpoint_interval(checkpoint_interval),
-                            Err(error) => {
-                                let context = format!("restoring region {region}");
-                                break Err(anyhow::Error::new(error).context(context));
-                            }
-                        };
-                        let status = runner.status();
-                        serving.send_replace(Some((held.hello, runner.links())));
-                        let running = Worker::spawn(runner);
-                        info!(
-                            %region,
-                            epoch = held.assignment.epoch,
-                            tick,
-                            address = %args.advertise,
-                            "running a region"
-                        );
-                        phase = Phase::Running {
-                            held,
-                            running,
-                            status,
-                            tick,
-                            // A region that has just been restored is as good as one
-                            // that has just ticked.
-                            ticked: Instant::now(),
-                        };
+            settled = phase.settled() => match settled {
+                Settled::Opened(opened) => {
+                    let Phase::Opening { held, .. } =
+                        mem::replace(&mut phase, Phase::Idle { refused: None })
+                    else {
+                        unreachable!("only an opening resolves");
+                    };
+                    let region = held.assignment.region;
+                    match opened {
+                        Ok((store, restored)) => {
+                            let tick = restored.tick();
+                            let runner = match RegionRunner::restore(held.config.clone(), store, restored) {
+                                Ok(runner) => runner.with_checkpoint_interval(checkpoint_interval),
+                                Err(error) => {
+                                    let context = format!("restoring region {region}");
+                                    break Err(anyhow::Error::new(error).context(context));
+                                }
+                            };
+                            let status = runner.status();
+                            serving.send_replace(Some((held.hello, runner.links())));
+                            let running = Worker::spawn(runner);
+                            info!(
+                                %region,
+                                epoch = held.assignment.epoch,
+                                tick,
+                                address = %args.advertise,
+                                "running a region"
+                            );
+                            phase = Phase::Running {
+                                held,
+                                running,
+                                status,
+                                tick,
+                                // A region that has just been restored is as good as one
+                                // that has just ticked.
+                                ticked: Instant::now(),
+                            };
+                        }
+                        Err(StoreError::EpochRefused { seen, .. }) => {
+                            warn!(
+                                %region,
+                                epoch = held.assignment.epoch,
+                                seen,
+                                "the world store has seen a later owner of the region; dropping it"
+                            );
+                            // The task tells the coordinator, which is still there.
+                            let _ = refusals.send((region, seen));
+                            holding.send_replace(None);
+                            phase = Phase::Idle { refused: Some(held.assignment) };
+                        }
+                        Err(error) => {
+                            let context =
+                                format!("opening region {region} at the world store {}", args.store);
+                            break Err(anyhow::Error::new(error).context(context));
+                        }
                     }
-                    Err(StoreError::EpochRefused { seen, .. }) => {
-                        warn!(
-                            %region,
-                            epoch = held.assignment.epoch,
-                            seen,
-                            "the world store has seen a later owner of the region; dropping it"
-                        );
-                        // The task tells the coordinator, which is still there.
-                        let _ = refusals.send((region, seen));
-                        holding.send_replace(None);
-                        phase = Phase::Idle { refused: Some(held.assignment) };
-                    }
-                    Err(error) => {
-                        let context =
-                            format!("opening region {region} at the world store {}", args.store);
-                        break Err(anyhow::Error::new(error).context(context));
-                    }
+                    vouches.send_replace(phase.vouches());
                 }
-                vouches.send_replace(phase.vouches());
-            }
+                Settled::Released(ended) => {
+                    let Phase::Releasing { held, running, .. } =
+                        mem::replace(&mut phase, Phase::Idle { refused: None })
+                    else {
+                        unreachable!("only a release ends");
+                    };
+                    let (region, epoch) = (held.assignment.region, held.assignment.epoch);
+                    serving.send_replace(None);
+                    // The region's thread has ended by itself; this only waits for it to
+                    // be gone.
+                    if let Err(error) = tokio::task::spawn_blocking(move || running.stop()).await {
+                        break Err(error.into());
+                    }
+                    // With the store lost on the way the region is as released as it can
+                    // be: what was confirmed the store has, and the rest was never shown.
+                    info!(%region, epoch, ?ended, "released the region");
+                    let _ = releases.send((region, epoch));
+                    holding.send_replace(None);
+                    let_go = Some(held.assignment);
+                    phase = Phase::Idle { refused: Some(held.assignment) };
+                    vouches.send_replace(phase.vouches());
+                }
+            },
             _ = look.tick() => {
                 let lost = match &mut phase {
                     Phase::Running { status, tick, ticked, .. } => {
@@ -356,11 +537,20 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     info!("shutting down");
     accepting.abort();
     registered.abort();
-    if let Phase::Running { running, .. } = phase {
-        // Waits for the current tick and for the world store to have what changed.
+    if let Phase::Running { running, .. } | Phase::Releasing { running, .. } = phase {
+        // Waits for the current tick and for the world store to have what changed. A
+        // release that is under way is let go of as it is.
         tokio::task::spawn_blocking(move || running.stop()).await?;
     }
     outcome
+}
+
+/// Resolves when the process is told to stop once more, if `again` listens for that.
+async fn told_again(again: &mut Option<Pin<Box<dyn Future<Output = ()> + Send>>>) {
+    match again {
+        Some(again) => again.as_mut().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// What it takes to run the region of `assignment` under `orders`.
@@ -429,37 +619,63 @@ struct Reports {
     /// The region the worker holds, if any, and the fingerprint of the layout it is
     /// part of.
     held: watch::Receiver<Option<(Assignment, u64)>>,
+    /// Whether the worker has been told to stop.
+    left: watch::Receiver<bool>,
     /// Regions the world store did not let the worker open, with the epoch it has seen.
     refused: mpsc::UnboundedReceiver<(RegionId, u64)>,
+    /// Regions the worker has let go of, with the epoch it held them with.
+    released: mpsc::UnboundedReceiver<(RegionId, u64)>,
 }
 
-/// Holds the worker's connection to the coordinator: says what the worker vouches for
-/// and what the store refused, and passes on the coordinator's orders, or last of all
-/// why it refuses the worker.
+/// Holds the worker's connection to the coordinator: says what the worker vouches for,
+/// what the store refused, what the worker released and that it is leaving, and passes
+/// on what the coordinator says, or last of all why it refuses the worker.
 ///
 /// A coordinator that goes away knows nothing when it is back, so the worker registers
 /// again and tells it what it holds. The region keeps running meanwhile. A new
-/// connection vouches for nothing by itself, so what the worker vouches for is said
+/// connection vouches for nothing by itself and knows of no leaving, so both are said
 /// again on it.
+///
+/// A worker that is leaving does not register again: the coordinator closes the
+/// connection of one that owns nothing any more, which is how the worker knows that it
+/// may exit, and if the coordinator cannot be reached there is nobody to hand anything
+/// to.
 async fn stay_registered(
     mut coordinator: WorkerClient,
     args: WorkerArgs,
     mut reports: Reports,
-    orders: mpsc::UnboundedSender<Result<Orders, String>>,
+    words: mpsc::UnboundedSender<Word>,
 ) {
     coordinator.vouch(reports.vouched.borrow_and_update().clone());
+    if *reports.left.borrow_and_update() {
+        coordinator.leaving();
+    }
     loop {
         tokio::select! {
-            next = coordinator.next() => match next {
-                Ok(next) => {
-                    if orders.send(Ok(next)).is_err() {
+            next = coordinator.event() => match next {
+                Ok(event) => {
+                    if words.send(Word::Event(event)).is_err() {
                         return;
                     }
+                }
+                Err(_) if *reports.left.borrow() => {
+                    info!("the coordinator has let this worker go");
+                    let _ = words.send(Word::Dismissed);
+                    return;
                 }
                 Err(error) => {
                     warn!(%error, "lost the coordinator; carrying on and registering again");
                     coordinator = loop {
-                        sleep(RETRY).await;
+                        // Told to stop meanwhile: nobody is there to take anything over.
+                        tokio::select! {
+                            () = sleep(RETRY) => {}
+                            changed = reports.left.changed() => {
+                                if changed.is_err() || *reports.left.borrow() {
+                                    let _ = words.send(Word::Dismissed);
+                                    return;
+                                }
+                            }
+                        }
                         let held = *reports.held.borrow();
                         let holding: Vec<_> = held.iter().map(|(held, _)| *held).collect();
                         let registered = WorkerClient::register(
@@ -473,13 +689,13 @@ async fn stay_registered(
                             Ok((coordinator, next)) => {
                                 info!("registered again");
                                 coordinator.vouch(reports.vouched.borrow_and_update().clone());
-                                if orders.send(Ok(next)).is_err() {
+                                if words.send(Word::Event(WorkerEvent::Orders(next))).is_err() {
                                     return;
                                 }
                                 break coordinator;
                             }
                             Err(ClientError::Refused(reason)) => {
-                                let _ = orders.send(Err(reason));
+                                let _ = words.send(Word::Refused(reason));
                                 return;
                             }
                             Err(error) => debug!(%error, "the coordinator cannot be reached"),
@@ -493,8 +709,19 @@ async fn stay_registered(
                 }
                 coordinator.vouch(reports.vouched.borrow_and_update().clone());
             }
+            changed = reports.left.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                if *reports.left.borrow_and_update() {
+                    coordinator.leaving();
+                }
+            }
             Some((region, seen)) = reports.refused.recv() => {
                 coordinator.epoch_refused(region, seen);
+            }
+            Some((region, epoch)) = reports.released.recv() => {
+                coordinator.released(region, epoch);
             }
         }
     }
@@ -819,4 +1046,57 @@ async fn sleep_until_some(when: Option<Instant>) {
 /// The next routing table, or `None` if the connection to the coordinator is lost.
 async fn next_table(watch: &mut Option<RoutingWatch>) -> Option<RoutingTable> {
     watch.as_mut()?.next().await.ok()
+}
+
+/// Settings of `clustine move`.
+#[derive(Debug, Clone)]
+pub struct MoveArgs {
+    /// Host and port of the coordinator.
+    pub coordinator: String,
+    pub region: RegionId,
+    /// The worker to move the region to, or any worker that waits.
+    pub to: Option<String>,
+}
+
+/// Asks the coordinator to move a region and says what came of it; see
+/// `docs/adr/0009-moving-a-region.md`. Fails if the move is refused or the coordinator
+/// goes away before it says how it ended.
+///
+/// The time it prints is from asking to the region being another worker's. How long
+/// players stood still it cannot know: that also takes the new owner restoring the
+/// region and the edges resuming with it.
+pub async fn move_region(args: MoveArgs) -> Result<()> {
+    let asked = Instant::now();
+    let mut mover = Mover::ask(&args.coordinator, args.region, args.to.as_deref())
+        .await
+        .with_context(|| format!("reaching the coordinator at {}", args.coordinator))?;
+    loop {
+        let answer = mover
+            .next()
+            .await
+            .context("the coordinator went away before it said what came of the move")?;
+        match answer {
+            MoveAnswer::Refused { reason } => bail!("the coordinator refused: {reason}"),
+            MoveAnswer::Begun { from, to } => {
+                println!("{from} is releasing region {} for {to}", args.region);
+            }
+            MoveAnswer::Done {
+                to,
+                epoch,
+                released,
+            } => {
+                let how = if released {
+                    "released by its owner"
+                } else {
+                    "taken from its owner, which did not release it in time"
+                };
+                println!(
+                    "region {} is run by {to} with epoch {epoch} now, {how}, {} ms after asking",
+                    args.region,
+                    asked.elapsed().as_millis()
+                );
+                return Ok(());
+            }
+        }
+    }
 }

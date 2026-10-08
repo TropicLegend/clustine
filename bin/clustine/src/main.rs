@@ -8,9 +8,11 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 use clustine::cluster::{
-    self, COORDINATOR_PORT, CoordinatorArgs, EdgeArgs, WORKER_PORT, WORLDSTORE_PORT, WorkerArgs,
+    self, COORDINATOR_PORT, CoordinatorArgs, EdgeArgs, MoveArgs, WORKER_PORT, WORLDSTORE_PORT,
+    WorkerArgs,
 };
 use clustine::{Config, EdgeConfig, Server, stop_signal};
+use clustine_region::RegionId;
 use tracing::info;
 
 /// A Minecraft: Java Edition server. Without a subcommand, all of it in one process.
@@ -143,6 +145,22 @@ enum Service {
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
         checkpoint_interval: u64,
     },
+    /// Asks the coordinator to move a region to another worker while players stay in
+    /// it.
+    Move {
+        /// Host and port of the coordinator.
+        #[arg(long, default_value_t = format!("127.0.0.1:{COORDINATOR_PORT}"))]
+        coordinator: String,
+
+        /// The region to move: regions are numbered from 0, from west to east.
+        #[arg(long)]
+        region: u32,
+
+        /// Name of the worker to move it to, which has to be one that runs no region.
+        /// Without this, any such worker.
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Lets players in and shows them the world the workers simulate.
     Edge {
         /// Name of this edge, by which regions know it again after a restart.
@@ -201,6 +219,18 @@ async fn main() -> Result<()> {
                 advertise: advertise.unwrap_or_else(|| listen.to_string()),
                 name,
                 checkpoint_interval: Duration::from_secs(checkpoint_interval),
+            })
+            .await
+        }
+        Some(Service::Move {
+            coordinator,
+            region,
+            to,
+        }) => {
+            cluster::move_region(MoveArgs {
+                coordinator,
+                region: RegionId(region),
+                to,
             })
             .await
         }

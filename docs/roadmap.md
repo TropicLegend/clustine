@@ -148,7 +148,7 @@ does not answer within the lease is treated as dead, which is the same as a cras
 | # | Scope | Verified by | Status |
 |---|---|---|---|
 | B0 | ADR-0009 reviewed; its messages on the wire, refused or ignored by everyone | All existing tests | done |
-| B1 | Release and assign; `clustine move` to ask for it | Move under bot load: nobody disconnected, pause measured and bounded | to do |
+| B1 | Release and assign; `clustine move` to ask for it | Move under bot load: nobody disconnected, pause measured and bounded | built; its tests to come |
 | B2 | A worker asked to terminate hands its region over first | Rolling restart of all workers under bots, as processes | to do |
 | B3 | ADR-0009, docs | CI | to do |
 
@@ -285,18 +285,27 @@ end. Its messages are in `clustine-rpc`; nobody acts on them yet.
 
 Next, in this order:
 
-1. The coordinator (`services/coordinator`: releases with a reserved target, leaving
-   workers, `Move` and its answers, sections 1 to 4 of the record). The runner's release
-   is done: `Worker::begin_release`, `Worker::release` and `RegionStatus::ended` in
-   `services/worker`; a `stop` during a release abandons it (`Ended::Abandoned`).
-2. The worker process and `clustine move` (`bin/clustine`): release in every phase,
-   dropping a region that is taken without exiting, leaving on SIGTERM, listening only
-   once registered; and the edge's link-keeper, which has to try each region by itself
-   and at once. That is the edge's side and not delegated.
-3. Tests by someone who wrote none of it: a move under the ledger bots with the pause
-   measured at the bots (view distance 8, between processes, fails above 3 seconds),
-   every failure of section 2 of the record, a rolling restart of all workers as
-   processes and on kind.
+1. Tests by someone who wrote none of it: a move under the ledger bots with the pause
+   measured at the bots (view distance 8, between processes, bots spread out, fails
+   above 3 seconds), every failure of section 2 of the record between processes, and a
+   rolling restart of all workers as processes and on kind.
+2. B3: the docs, and what to try with real clients.
+
+What is built: the coordinator notes releases with a reserved target, takes `Released`
+and `Leaving`, answers `Move` (`services/coordinator`); the runner releases a region
+(`Worker::begin_release`, `RegionStatus::ended`; a `stop` during a release abandons it);
+the worker process releases in every phase, lets go of a region that is taken from it
+and waits for another, says that it is leaving when told to stop and exits when the
+coordinator has let it go, and listens for edges only once it has registered;
+`clustine move --region R [--to worker]` asks for a move and says what came of it.
+
+A first try by hand, five moves under the ledger bots between processes at view
+distance 8: each took about 100 milliseconds from asking to the new assignment, and the
+longest any bot waited for an acknowledgement was 0.4 seconds. That is four bots close
+together; the test is to say what it is with players spread out.
+
+For a later look: `assign` in the coordinator still gives a region without an owner to
+a waiting worker that has no connection, which costs a lease if that worker is dead.
 
 ### After M3, as the owner asked on 2026-10-08
 
