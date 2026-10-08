@@ -501,6 +501,24 @@ review first:
   official server) and **twelve questions for the owner** at its end, which the plan
   waits for.
 
+**What the owner answered on 2026-10-08**, to the questions that shape the two plans
+most (the other questions of both documents are still open and are asked with the
+plans):
+
+- *Replicas.* It has to survive the loss of a process at least, and preferably of a
+  node. Clustine may use the Kubernetes API (so a Kubernetes lease can elect a
+  coordinator; whether replicated storage may be relied on for the store's disk was not
+  asked in so many words and is asked with the plan, as surviving a node rests on it or
+  on a standby store). A disconnect when an edge dies unplanned is acceptable if the
+  player rejoins at once and is back in place. Keeping a player's place and hotbar
+  across leaving is part of that milestone.
+- *Terrain.* The goal is block for block equal to vanilla for a seed, or as near to it
+  as can be. Rust generated from Mojang's world-generation data may be committed, so a
+  build needs no jar (this goes beyond ADR-0004's "ids and names only" and gets a
+  record of its own with the plan). All dimensions are wanted, and a sensible way to
+  generate structures. A first look with Pumpkin as a dependency to be thrown away was
+  not asked for, and the plan goes straight to a generator of Clustine's own.
+
 The owner also asked for the work to go on without waiting for them: at each stop of M3
 what to try with real clients is written down here, and the next phase begins.
 
