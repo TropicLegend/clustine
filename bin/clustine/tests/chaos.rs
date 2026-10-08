@@ -34,7 +34,7 @@ use clustine_region::RegionId;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
-use common::processes::{Cluster, worker_name};
+use common::processes::{Cluster, Turn, turn, worker_name};
 use common::{VIEW_DISTANCE, config, start_with, view_area};
 
 /// How long the cluster may take to be whole again after a kill, and the bots to wind
@@ -49,19 +49,14 @@ const LONG_ABSENCE: Duration = Duration::from_secs(8);
 /// How often a state that is waited for is looked at.
 const LOOK: Duration = Duration::from_millis(20);
 
-/// Held by the test that is running. Each test is a cluster of processes with leases
-/// of a few seconds; several at once on a small machine starve each other until
-/// leases run out by themselves, which says nothing about the server.
-static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 /// What a region is called in the logs, by its number from west to east.
 type Region = usize;
 
 /// A cluster with one worker more than it has regions, bots playing the ledger
 /// scenario on it, and the means to kill its processes.
 struct Chaos {
-    /// Keeps the other tests waiting.
-    _alone: tokio::sync::MutexGuard<'static, ()>,
+    /// Its leave to run beside the other tests' clusters.
+    _turn: Turn,
     /// Where the world and the logs are; taken out when they are to be kept.
     directory: Option<TempDir>,
     cluster: Cluster,
@@ -136,7 +131,7 @@ impl Chaos {
         west: f64,
         east: f64,
     ) -> Self {
-        let alone = ONE_AT_A_TIME.lock().await;
+        let turn = turn().await;
         let seed = seed();
         println!("{test}: seed {seed} (set CLUSTINE_CHAOS_SEED={seed} to run it again)");
         let directory = tempfile::Builder::new()
@@ -169,7 +164,7 @@ impl Chaos {
             tokio::spawn(async move { ledger(&address, &scenario, &progress).await })
         };
         let mut chaos = Self {
-            _alone: alone,
+            _turn: turn,
             directory: Some(directory),
             cluster,
             seed,
@@ -1089,7 +1084,7 @@ async fn players_keep_playing_while_their_regions_change_hands_over_and_over() {
     if a_repetition() {
         return;
     }
-    let _alone = ONE_AT_A_TIME.lock().await;
+    let _turn = turn().await;
     let seed = seed();
     println!("changing hands: seed {seed} (set CLUSTINE_CHAOS_SEED={seed} to run it again)");
     let directory = tempfile::tempdir().unwrap();

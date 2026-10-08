@@ -264,3 +264,53 @@ impl Cluster {
         names
     }
 }
+
+/// A test's leave to run its cluster; the others that wait get theirs when it is
+/// dropped.
+#[allow(dead_code)] // Held, never looked at.
+pub struct Turn(tokio::sync::OwnedSemaphorePermit);
+
+/// How many test clusters run at the same time, and what hands out the turns.
+fn turns() -> &'static (std::sync::Arc<tokio::sync::Semaphore>, u32) {
+    static TURNS: std::sync::OnceLock<(std::sync::Arc<tokio::sync::Semaphore>, u32)> =
+        std::sync::OnceLock::new();
+    TURNS.get_or_init(|| {
+        // A cluster is half a dozen processes that mostly wait, for leases above all,
+        // so a test takes minutes and a fraction of a processor. One for every two
+        // processors leaves room for the moments in which a cluster does work: with
+        // more, clusters starve each other until leases run out by themselves, which
+        // says nothing about the server. `CLUSTINE_TEST_CLUSTERS` sets another number.
+        let processors = std::thread::available_parallelism().map_or(2, |count| count.get());
+        let asked = std::env::var("CLUSTINE_TEST_CLUSTERS").ok();
+        let count = asked
+            .and_then(|count| count.parse().ok())
+            .unwrap_or(processors / 2)
+            .clamp(1, 16) as u32;
+        (
+            std::sync::Arc::new(tokio::sync::Semaphore::new(count as usize)),
+            count,
+        )
+    })
+}
+
+/// Waits until this test may run its cluster beside those that run already.
+#[allow(dead_code)] // Not every test binary uses it.
+pub async fn turn() -> Turn {
+    let (turns, _) = turns();
+    Turn(turns.clone().acquire_owned().await.expect("never closed"))
+}
+
+/// Waits until this test may run its cluster with no other beside it, for a test that
+/// measures how long something takes. Those that asked before it finish first, and
+/// those that ask after it wait for it.
+#[allow(dead_code)] // Not every test binary uses it.
+pub async fn turn_alone() -> Turn {
+    let (turns, count) = turns();
+    Turn(
+        turns
+            .clone()
+            .acquire_many_owned(*count)
+            .await
+            .expect("never closed"),
+    )
+}

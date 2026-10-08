@@ -42,7 +42,7 @@ use tempfile::TempDir;
 use tokio::process::Child;
 use tokio::task::JoinHandle;
 
-use common::processes::{Cluster, worker_name};
+use common::processes::{Cluster, Turn, turn, turn_alone, worker_name};
 use common::{VIEW_DISTANCE, free_address, view_area};
 
 /// How long anything may take that is merely waited for. It only ever runs out when
@@ -77,11 +77,6 @@ const PULSE: u32 = 2;
 /// The view distance of the edge where the bots are spread out, in chunks: what a
 /// player usually has.
 const WIDE_VIEW: i32 = 8;
-
-/// Held by the test that is running. Each test is a cluster of processes with a lease
-/// of a few seconds; several at once on a small machine starve each other until leases
-/// run out by themselves, which says nothing about the server.
-static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// What a region is called in the logs, by its number from west to east.
 type Region = usize;
@@ -272,8 +267,8 @@ struct Moved {
 /// A cluster with bots playing the ledger scenario on it, and the means to move its
 /// regions and to do harm to its processes.
 struct Moves {
-    /// Keeps the other tests waiting.
-    _alone: tokio::sync::MutexGuard<'static, ()>,
+    /// Its leave to run, beside the other tests' clusters or alone.
+    _turn: Turn,
     /// Where the world and the logs are; taken out when they are to be kept.
     directory: Option<TempDir>,
     cluster: Cluster,
@@ -302,7 +297,13 @@ impl Moves {
     /// Starts a cluster and bots as `setup` says. Returns once every bot is on its lane
     /// and has been acknowledged, and the cluster is whole.
     async fn start(test: &str, setup: Setup) -> Self {
-        let alone = ONE_AT_A_TIME.lock().await;
+        // The clusters with a wide view are those whose pauses are measured and held to
+        // a bound, which other clusters on the machine must not lengthen.
+        let turn = if setup.wide {
+            turn_alone().await
+        } else {
+            turn().await
+        };
         let seed = seed();
         println!("{test}: seed {seed} (set CLUSTINE_MOVES_SEED={seed} to run it again)");
         let directory = tempfile::Builder::new()
@@ -372,7 +373,7 @@ impl Moves {
             tokio::spawn(async move { ledger(&address, &scenario, &progress).await })
         };
         let mut moves = Self {
-            _alone: alone,
+            _turn: turn,
             directory: Some(directory),
             cluster,
             seed,
