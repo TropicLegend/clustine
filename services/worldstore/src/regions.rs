@@ -2299,3 +2299,312 @@ fn the_file_of_a_region_a_split_made_is_written_at_the_next_start() {
         }
     }
 }
+
+// What merging and splitting ask of the store beyond the above:
+// `docs/adr/0014-merging-and-splitting.md`, section 9, and T1 to T3 of its section 10.
+
+/// Areas by their ends, in an order of their own: the records do not say in which
+/// order a region that absorbed another has its areas.
+type Ends = Vec<(Option<i32>, Option<i32>)>;
+
+fn in_order(areas: &[ChunkArea]) -> Ends {
+    let mut areas: Vec<_> = areas.iter().map(|area| (area.min_x, area.max_x)).collect();
+    areas.sort();
+    areas
+}
+
+/// The answer to a merge, taken apart: the region that was absorbed, the grants that
+/// moved, and the areas that came with it, in an order of their own.
+fn absorbed_with(reply: StoreReply) -> (u32, Vec<ChunkPos>, Ends) {
+    match reply {
+        StoreReply::Absorbed {
+            absorbed,
+            chunks,
+            pinned,
+        } => (absorbed.0, chunks, in_order(&pinned)),
+        other => panic!("expected the answer to a merge, got {other:?}"),
+    }
+}
+
+/// T1: the answer to a merge names the areas the absorbed region was pinned to, and
+/// none for one that was pinned to nothing; its chunks are the grants that moved, which
+/// are none for a region that held everything by being pinned.
+#[test]
+fn the_answer_to_a_merge_names_the_areas_the_absorbed_region_was_pinned_to() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (west, east) = (gap().pinned[0], gap().pinned[1]);
+    let (survivor, _) = opened(&store, 0, 1);
+    let (other, _) = opened(&store, 1, 1);
+    let (home, _) = opened(&store, 2, 1);
+
+    // The eastern region holds a chunk of its area, has asked the store about it and
+    // has built in it: all by being pinned, so it was granted nothing.
+    let inside = ChunkPos::new(20, 0);
+    assert_eq!(claim(&other, &[inside]), (vec![inside], Vec::new()));
+    save(&other, inside, &built(inside, blocks::GLASS));
+    checkpoint(&other, 2);
+    checkpoint(&survivor, 2);
+    let merged = absorbed_with(absorb(&survivor, 1, 1, 5));
+    assert_eq!(merged, (1, Vec::new(), in_order(&[east])));
+    // The chunk is the survivor's through the area that came to it: a claim is
+    // answered from the table, and the chunk is as the other region left it.
+    assert_eq!(claim(&survivor, &[inside]), (vec![inside], Vec::new()));
+    assert_eq!(load(&survivor, inside), built(inside, blocks::GLASS));
+    let list = store.regions().unwrap();
+    assert_eq!(in_order(&list.regions[0].pinned), in_order(&[west, east]));
+    assert_eq!(list.regions[0].bounds, None);
+
+    // A part is pinned to nothing, whether its chunks were granted to the region it
+    // was split off or held by that region's being pinned: no areas, and its chunks.
+    assert_eq!(claim(&survivor, &[FREE]), (vec![FREE], Vec::new()));
+    checkpoint(&survivor, 6);
+    let part = [FREE, WEST, inside];
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    assert_eq!(split(&survivor, 8, &part, 1, 3), done);
+    let (opened_part, held) = opened(&store, 3, 1);
+    assert_eq!(held, [(WEST, 8), (FREE, 8), (inside, 8)]);
+    let merged = absorbed_with(absorb(&survivor, 3, 1, 9));
+    assert_eq!(merged, (3, vec![WEST, FREE, inside], Vec::new()));
+    opened_part.flush();
+    assert!(opened_part.is_lost());
+
+    // A region that has come to several areas hands on all of them, with the grants
+    // it has: here to the home region, which is pinned to nothing itself.
+    checkpoint(&home, 2);
+    let merged = absorbed_with(absorb(&home, 0, 1, 5));
+    assert_eq!(
+        merged,
+        (0, vec![WEST, FREE, inside], in_order(&[west, east]))
+    );
+    survivor.flush();
+    assert!(survivor.is_lost() && !home.is_lost());
+    let list = store.regions().unwrap();
+    assert_eq!(list.regions.len(), 1);
+    assert_eq!(in_order(&list.regions[0].pinned), in_order(&[west, east]));
+    // What it was told is what it is restored with after a crash.
+    home.flush();
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let restored = restored_after(&disk, survival, 2, epoch);
+        assert_eq!(
+            in_order(&restored.pinned),
+            in_order(&[west, east]),
+            "{survival:?}"
+        );
+        let chunks: Vec<ChunkPos> = restored.held.iter().map(|(chunk, _)| *chunk).collect();
+        assert_eq!(chunks, [WEST, ORIGIN, FREE, inside], "{survival:?}");
+    }
+}
+
+/// How many records of the log in the world on `disk` say that a region was split.
+fn splits_in_the_log(disk: &MemoryDisk) -> usize {
+    let records = segments(disk).into_iter().flat_map(|number| {
+        let path = format!("/world/log/{number:020}.wal");
+        let bytes = disk.read(Path::new(&path)).unwrap().unwrap();
+        clustine_format::read_log(&bytes).unwrap().0
+    });
+    records
+        .filter(|record| matches!(record, LogRecord::Split { .. }))
+        .count()
+}
+
+/// T2: a split that names the next region id is done and answered with it. One that
+/// names another is declined with the next id and changes nothing, and the same split
+/// with that id and the same tick is then done.
+#[test]
+fn a_split_makes_the_region_it_names_only_under_the_next_id() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (region, _) = opened(&store, 0, 1);
+    assert_eq!(claim(&region, &[FREE]).0, [FREE]);
+    checkpoint(&region, 2);
+    let before = store.regions().unwrap();
+    assert_eq!(before.next, RegionId(3));
+    let part = [WEST, FREE];
+
+    // An id above the next one, the region's own, another living region's, and the
+    // highest there is: each is told the next id, and nothing has changed.
+    let not_next = declined(Decline::NotNext { next: RegionId(3) });
+    for named in [4, 0, 2, u32::MAX] {
+        assert_eq!(split(&region, 5, &part, 7, named), not_next, "{named}");
+    }
+    assert_eq!(store.regions().unwrap(), before);
+    assert!(!region.is_lost());
+    assert_eq!(splits_in_the_log(&disk), 0);
+    assert_eq!(table_file(&disk).next_region, 3);
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        assert_eq!(
+            listed(&store.regions().unwrap()),
+            listed(&before),
+            "{survival:?}"
+        );
+        assert_eq!(opened(&store, 0, epoch).1, [(FREE, 0)], "{survival:?}");
+    }
+
+    // The same split with the id it was told, and the tick it named before.
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    assert_eq!(split(&region, 5, &part, 7, 3), done);
+    let list = store.regions().unwrap();
+    assert_eq!(list.next, RegionId(4));
+    let made = &list.regions[3];
+    assert_eq!((made.region, made.epoch), (RegionId(3), 7));
+    assert_eq!(opened(&store, 3, 7).1, [(WEST, 5), (FREE, 5)]);
+
+    // The id that was the next one is not any more.
+    let other = ChunkPos::new(-5, 3);
+    let not_next = declined(Decline::NotNext { next: RegionId(4) });
+    assert_eq!(split(&region, 6, &[other], 1, 3), not_next);
+    assert_eq!(splits_in_the_log(&disk), 1);
+    let done = StoreReply::Split {
+        region: RegionId(4),
+    };
+    assert_eq!(split(&region, 6, &[other], 1, 4), done);
+    assert_eq!(store.regions().unwrap().next, RegionId(5));
+}
+
+/// T2, its last part: the id is looked at last. A split that names another id than the
+/// next and is wrong in another way as well is declined for that other reason, so that
+/// whoever is told the next id knows that nothing else stands in the way.
+#[test]
+fn a_split_that_names_another_id_is_declined_for_any_other_reason_first() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (region, _) = opened(&store, 0, 1);
+    let (home, _) = opened(&store, 2, 1);
+    assert_eq!(claim(&region, &[FREE]).0, [FREE]);
+    let before = store.regions().unwrap();
+    let part = [WEST, FREE];
+    // Not the next id, which is 3.
+    let wrong = 8;
+
+    // A commit behind the checkpoint.
+    log(&region, 1, &[]);
+    let uncheckpointed = Decline::Uncheckpointed {
+        region: RegionId(0),
+    };
+    assert_eq!(split(&region, 5, &part, 1, wrong), declined(uncheckpointed));
+    checkpoint(&region, 2);
+    // A tick that is not above one the session named.
+    let named = Decline::Tick { named: 2 };
+    assert_eq!(split(&region, 2, &part, 1, wrong), declined(named));
+    // No chunks, and an epoch nobody can say hello with.
+    let malformed = declined(Decline::Malformed);
+    assert_eq!(split(&region, 5, &[], 1, wrong), malformed);
+    assert_eq!(split(&region, 5, &part, 0, wrong), malformed);
+    // A chunk the region does not hold.
+    let nobodys = ChunkPos::new(6, 6);
+    let not_held = Decline::NotHeld { chunk: nobodys };
+    assert_eq!(
+        split(&region, 5, &[WEST, nobodys], 1, wrong),
+        declined(not_held)
+    );
+    // The home chunk.
+    assert_eq!(
+        split(&home, 5, &[ORIGIN], 1, wrong),
+        declined(Decline::Home)
+    );
+    // A state that no record of the log holds.
+    region.request(StoreRequest::SplitCommit {
+        tick: 5,
+        state: Vec::new(),
+        part: SplitPart {
+            chunks: part.to_vec(),
+            state: vec![0; clustine_format::MAX_RECORD_LENGTH],
+        },
+        as_epoch: 1,
+        region: RegionId(wrong),
+    });
+    assert_eq!(reply(&region), declined(Decline::TooLarge));
+
+    // With every other reason gone, the id is what is left, and then nothing is.
+    let not_next = declined(Decline::NotNext { next: RegionId(3) });
+    assert_eq!(split(&region, 5, &part, 1, wrong), not_next);
+    assert_eq!(store.regions().unwrap(), before);
+    assert_eq!(splits_in_the_log(&disk), 0);
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    assert_eq!(split(&region, 5, &part, 1, 3), done);
+}
+
+/// T3: the next region id of the list is above every living and every absorbed region,
+/// goes up by one with each split and with nothing else, and is the same after the
+/// store is started again.
+#[test]
+fn the_list_says_the_next_region_id_which_only_a_split_raises() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    // The list's next id is above every region it has, living or absorbed, and a
+    // store that starts on what a crash leaves of the world says the same list.
+    let next_is = |next: u32, case: &str| {
+        let list = store.regions().unwrap();
+        assert_eq!(list.next, RegionId(next), "{case}");
+        let living = list.regions.iter().map(|info| info.region);
+        let pairs = list.absorbed.iter();
+        let gone = pairs.flat_map(|(absorbed, into)| [*absorbed, *into]);
+        for region in living.chain(gone) {
+            assert!(region.0 < next, "{case}: {region} is not below {next}");
+        }
+        for survival in SURVIVALS {
+            let left = Arc::new(disk.crashed(survival));
+            let again = store_on(&left, &gap()).unwrap().regions().unwrap();
+            assert_eq!(listed(&again), listed(&list), "{case}, {survival:?}");
+        }
+    };
+    next_is(3, "a new world");
+
+    let (west, _) = opened(&store, 0, 1);
+    let (east, _) = opened(&store, 1, 1);
+    let chunks = [ChunkPos::new(-5, 0), ChunkPos::new(-5, 1), WEST];
+    let done = |part: u32| StoreReply::Split {
+        region: RegionId(part),
+    };
+    // Opening regions, claims, commits and checkpoints give out no id.
+    assert_eq!(claim(&west, &[FREE]).0, [FREE]);
+    checkpoint(&west, 2);
+    checkpoint(&east, 2);
+    next_is(3, "regions that were opened and have committed");
+
+    // A split that is declined gives out none either; one that is done, one.
+    let nobodys = ChunkPos::new(6, 6);
+    let not_held = Decline::NotHeld { chunk: nobodys };
+    assert_eq!(split(&west, 5, &[nobodys], 1, 3), declined(not_held));
+    next_is(3, "a split that was declined");
+    assert_eq!(split(&west, 5, &chunks[..1], 1, 3), done(3));
+    next_is(4, "one split");
+
+    // A merge gives out none, and the id of an absorbed region is not the next one:
+    // neither a region of the division's nor the one that was made last.
+    assert!(matches!(
+        absorb(&west, 1, 1, 6),
+        StoreReply::Absorbed { .. }
+    ));
+    west.flush();
+    next_is(4, "a merge");
+    assert_eq!(split(&west, 7, &chunks[1..2], 1, 4), done(4));
+    next_is(5, "a second split");
+    let (part, _) = opened(&store, 4, 1);
+    assert!(matches!(
+        absorb(&west, 4, 1, 8),
+        StoreReply::Absorbed { .. }
+    ));
+    west.flush();
+    next_is(5, "the region that was made last absorbed");
+
+    // The store that is started again makes the next region under that very id.
+    drop((west, east, part));
+    let left = Arc::new(disk.crashed(Survival::Nothing));
+    let again = store_on(&left, &gap()).unwrap();
+    assert_eq!(again.regions().unwrap().next, RegionId(5));
+    let (west, _) = opened(&again, 0, 2);
+    let not_next = declined(Decline::NotNext { next: RegionId(5) });
+    assert_eq!(split(&west, 9, &chunks[2..], 1, 4), not_next);
+    assert_eq!(split(&west, 9, &chunks[2..], 1, 5), done(5));
+    assert_eq!(again.regions().unwrap().next, RegionId(6));
+}
