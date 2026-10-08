@@ -53,6 +53,7 @@ impl Players {
             keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
             view_distance: self.view_distance,
             client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
+            region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
             compression_threshold: usize::try_from(self.compression_threshold).ok(),
         }
     }
@@ -230,6 +231,7 @@ async fn standalone(args: Standalone) -> Result<()> {
         keep_alive_interval: edge.keep_alive_interval,
         view_distance: edge.view_distance,
         client_timeout: edge.client_timeout,
+        region_patience: edge.region_patience,
         compression_threshold: edge.compression_threshold,
         world: Some(args.world),
         checkpoint_interval: Duration::from_secs(args.checkpoint_interval),

@@ -24,4 +24,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 clustine-botswarm.workspace = true
+# Tests of what the edge does after a time move the clock instead of waiting.
+tokio = { workspace = true, features = ["test-util"] }
 clustine-worldgen.workspace = true

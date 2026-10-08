@@ -227,7 +227,7 @@ for workload in \
   deployment/clustine-coordinator \
   statefulset/clustine-worldstore \
   statefulset/clustine-worker \
-  deployment/clustine-edge; do
+  statefulset/clustine-edge; do
   k rollout status "$workload" --timeout="${rollout_timeout}s"
 done
 

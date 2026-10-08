@@ -22,8 +22,12 @@ spec:
       port: 25565
       targetPort: minecraft
 ---
+# A StatefulSet because an edge needs a name that it keeps when its pod is replaced: the
+# regions know an edge by it, and tell a new start of an edge from another edge by it.
+# A StatefulSet also never runs two pods of one name at once, which two starts of one
+# edge would be: the regions would take the later for the edge and turn the other away.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: clustine-edge
   labels:
@@ -32,6 +36,7 @@ metadata:
     app.kubernetes.io/part-of: clustine
 spec:
   replicas: 1
+  serviceName: clustine-edge
   selector:
     matchLabels:
       app.kubernetes.io/name: clustine-edge
@@ -57,16 +62,25 @@ spec:
         - name: edge
           image: clustine:dev
           imagePullPolicy: IfNotPresent
+          env:
+            # clustine-edge-0: the same every time the pod starts.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           args:
             - edge
+            # Kubernetes puts the variable in before the program sees the argument.
+            - --name=$(POD_NAME)
             - --coordinator=clustine-coordinator:25600
             # Every address of the pod, but see the Service above: not beyond the cluster.
             - --bind=0.0.0.0:25565
           ports:
             - name: minecraft
               containerPort: 25565
-          # The edge starts to listen only once every region has a worker. Until then it
-          # is not ready and the Service sends it nobody, which is as it should be.
+          # The edge starts to listen only once every region has had a worker. Until then
+          # it is not ready and the Service sends it nobody, which is as it should be.
+          # From then on it keeps listening, also while a region changes hands.
           readinessProbe:
             tcpSocket:
               port: minecraft

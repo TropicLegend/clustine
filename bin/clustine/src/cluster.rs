@@ -6,11 +6,12 @@
 //! connects to all of them and then lets players in.
 //!
 //! A worker that loses the world store keeps its region and restores it from the store
-//! once that is back. The edge is not there yet: when a region's link ends, it closes
-//! every player's connection and starts over once the world is whole again. Nothing
-//! players were shown is lost, because a region shows nothing that the world store does
+//! once that is back. An edge whose link to a region ends keeps the region's players,
+//! links to whoever runs the region then and resumes with it. Nothing players were
+//! shown is lost on the way, because a region shows nothing that the world store does
 //! not have. A coordinator that goes away is merely missed until it is back.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::io;
 use std::mem;
@@ -23,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clustine_coordinator::{ClientError, CoordinatorConfig, Orders, RoutingWatch, WorkerClient};
-use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Routing};
+use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_rpc::{Assignment, EdgeMessage, RegionHello, Restored, Vouch, WorkerToEdge, tcp};
 use clustine_sim::RegionConfig;
@@ -31,7 +32,7 @@ use clustine_worker::{Links, RegionRunner, RegionStatus, Worker};
 use clustine_worldstore::{Store, StoreError, StoreHandle};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
 use crate::{LINK_CAPACITY, generator, spawn_point, starting_hotbar};
@@ -580,101 +581,160 @@ pub struct EdgeArgs {
     pub edge: EdgeConfig,
 }
 
-/// Runs an edge until the process is asked to stop. Players are let in while every
-/// region has a worker that the edge is connected to; whenever that ends, everyone is
-/// disconnected and the edge starts over.
+/// How long connecting to a worker may take before the edge tries again later. A
+/// worker that is gone may not refuse the connection but swallow it.
+const LINK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Runs an edge until the process is asked to stop. Players are let in once every
+/// region has had a worker, and stay when a region changes hands or cannot be reached
+/// for a while: the edge links to whoever runs it then and resumes.
+///
+/// Fails if another process has taken this edge's name.
 pub async fn edge(args: EdgeArgs) -> Result<()> {
     let stop = crate::stop_signal();
     tokio::pin!(stop);
-    loop {
-        tokio::select! {
-            _ = &mut stop => return Ok(()),
-            ended = serve_players(&args) => match ended {
-                Ok(reason) => warn!(reason, "disconnected everyone; starting over"),
-                Err(error) => info!(error = format!("{error:#}"), "the world is not whole yet"),
-            },
-        }
-        tokio::select! {
-            _ = &mut stop => return Ok(()),
-            _ = sleep(RETRY) => {}
-        }
-    }
-}
-
-/// Connects to every region and lets players in for as long as the regions stay with
-/// the workers they are with. Returns why that ended; an error means it did not get as
-/// far as letting players in.
-async fn serve_players(args: &EdgeArgs) -> Result<&'static str> {
-    let mut watch = RoutingWatch::connect(&args.coordinator)
-        .await
-        .with_context(|| format!("reaching the coordinator at {}", args.coordinator))?;
-    let mut table = watch.next().await?;
-    while !table.is_complete() {
-        info!(
-            with_worker = table.routes.len(),
-            regions = table.layout.region_count(),
-            "waiting for every region to have a worker"
-        );
-        table = watch.next().await?;
-    }
-
-    let layout = table.layout.fingerprint();
-    // The players and everything the edge knew are gone when it starts over, and what
-    // it sends to regions is numbered anew; to the regions that is a new start.
-    let identity = EdgeIdentity::starting_now(&args.name);
-    let mut links = Vec::new();
-    // The routes of a complete table are the regions of the layout in their order.
-    for route in &table.routes {
-        let hello = RegionHello {
-            region: route.region,
-            epoch: route.epoch,
-            layout,
-        };
-        let link = tcp::connect::<EdgeMessage, WorkerToEdge>(&route.address, hello, LINK_CAPACITY)
-            .await
-            .with_context(|| {
-                format!("connecting to region {} at {}", route.region, route.address)
-            })?;
-        links.push(RegionLink {
-            epoch: route.epoch,
-            end: link,
-        });
-    }
-    let routing = Routing {
-        layout: table.layout.clone(),
-        spawn: table.spawn,
-        identity,
-        links,
+    let (watch, table) = tokio::select! {
+        _ = &mut stop => return Ok(()),
+        table = whole_world(&args.coordinator) => table,
     };
+
+    // One start for as long as the process lives: what the edge keeps for the regions
+    // lives as long, and so do the numbers it gives its messages.
+    let identity = EdgeIdentity::starting_now(&args.name);
+    let (routing, relinks) = Routing::new(table.layout.clone(), table.spawn, identity, Vec::new());
     let edge = Edge::bind(args.bind, args.edge.clone(), routing)
         .await
         .with_context(|| format!("listening on {}", args.bind))?;
     info!(address = %edge.local_addr()?, regions = table.routes.len(), "listening");
 
-    // Dropping the edge's future, which happens when the other branch wins, closes
-    // every connection.
-    Ok(tokio::select! {
-        _ = edge.run() => "a region is gone",
-        _ = routes_change(&args.coordinator, watch, &table) => "a region has another worker now",
-    })
+    // Dropping the edge's future, which happens when another branch wins, closes every
+    // connection.
+    tokio::select! {
+        _ = &mut stop => Ok(()),
+        stopped = edge.run() => match stopped {
+            Stopped::Superseded => bail!(
+                "another edge runs under the name {}; this one must not come back as it",
+                args.name
+            ),
+            Stopped::Abandoned => bail!("the edge stopped unexpectedly"),
+        },
+        () = keep_linked(&args.coordinator, watch, table, relinks) => {
+            bail!("the edge is gone")
+        }
+    }
 }
 
-/// Resolves when the coordinator reports other routes than those of `table`. A
-/// coordinator that goes away is waited for: the regions are where they were.
-async fn routes_change(coordinator: &str, mut watch: RoutingWatch, table: &RoutingTable) {
+/// Waits until the coordinator has a worker for every region, trying until it can be
+/// reached. Returns the connection and the table.
+async fn whole_world(coordinator: &str) -> (RoutingWatch, RoutingTable) {
     loop {
-        match watch.next().await {
-            Ok(next) if next.routes == table.routes && next.layout == table.layout => {}
-            Ok(_) => return,
+        let watching = async {
+            let mut watch = RoutingWatch::connect(coordinator).await?;
+            loop {
+                let table = watch.next().await?;
+                if table.is_complete() {
+                    return Ok::<_, ClientError>((watch, table));
+                }
+                info!(
+                    with_worker = table.routes.len(),
+                    regions = table.layout.region_count(),
+                    "waiting for every region to have a worker"
+                );
+            }
+        };
+        match watching.await {
+            Ok(whole) => return whole,
             Err(error) => {
-                warn!(%error, "lost the coordinator; carrying on with the regions as they are");
-                watch = loop {
-                    sleep(RETRY).await;
-                    if let Ok(watch) = RoutingWatch::connect(coordinator).await {
-                        break watch;
-                    }
-                };
+                info!(%error, coordinator, "the coordinator cannot be reached yet");
+                sleep(RETRY).await;
             }
         }
     }
+}
+
+/// Keeps the edge linked to whoever runs each region, for as long as the edge is
+/// there: links to every region of `table`, and links again when the coordinator names
+/// another owner or the edge says that a link has ended. A worker that cannot be
+/// reached is tried again; a coordinator that goes away is waited for, with the regions
+/// where they were.
+async fn keep_linked(
+    coordinator: &str,
+    watch: RoutingWatch,
+    mut table: RoutingTable,
+    mut relinks: Relinks,
+) {
+    let layout = table.layout.fingerprint();
+    let mut watch = Some(watch);
+    // The epoch of the owner the edge has a link to, by region.
+    let mut linked: BTreeMap<RegionId, u64> = BTreeMap::new();
+    loop {
+        for route in &table.routes {
+            if linked.get(&route.region) == Some(&route.epoch) {
+                continue;
+            }
+            let hello = RegionHello {
+                region: route.region,
+                epoch: route.epoch,
+                layout,
+            };
+            let connecting =
+                tcp::connect::<EdgeMessage, WorkerToEdge>(&route.address, hello, LINK_CAPACITY);
+            match timeout(LINK_TIMEOUT, connecting).await {
+                Ok(Ok(end)) => {
+                    let link = RegionLink {
+                        region: route.region,
+                        epoch: route.epoch,
+                        end,
+                    };
+                    if !relinks.replace(link).await {
+                        return;
+                    }
+                    info!(region = %route.region, epoch = route.epoch, address = %route.address, "linked to a region");
+                    linked.insert(route.region, route.epoch);
+                }
+                // A worker that restores its region takes no links until it is done.
+                Ok(Err(error)) => {
+                    debug!(region = %route.region, address = %route.address, %error, "a region cannot be linked to yet");
+                }
+                Err(_) => {
+                    debug!(region = %route.region, address = %route.address, "a worker did not answer in time");
+                }
+            }
+        }
+
+        let whole = table
+            .routes
+            .iter()
+            .all(|route| linked.contains_key(&route.region));
+        tokio::select! {
+            ended = relinks.ended() => match ended {
+                // A link to an owner the edge has left behind already ended.
+                Some((region, epoch)) => {
+                    if linked.get(&region) == Some(&epoch) {
+                        linked.remove(&region);
+                    }
+                }
+                None => return,
+            },
+            next = next_table(&mut watch), if watch.is_some() => match next {
+                Some(next) if next.layout == table.layout => table = next,
+                Some(_) => warn!("the coordinator divides the world differently now; keeping to the layout this edge started with"),
+                None => {
+                    warn!("lost the coordinator; carrying on with the regions as they are");
+                    watch = None;
+                }
+            },
+            // A worker to try again, or a coordinator to look for.
+            () = sleep(RETRY), if !whole || watch.is_none() => {
+                if watch.is_none() {
+                    watch = RoutingWatch::connect(coordinator).await.ok();
+                }
+            }
+        }
+    }
+}
+
+/// The next routing table, or `None` if the connection to the coordinator is lost.
+async fn next_table(watch: &mut Option<RoutingWatch>) -> Option<RoutingTable> {
+    watch.as_mut()?.next().await.ok()
 }

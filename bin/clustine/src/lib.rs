@@ -18,8 +18,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clustine_data::items;
 pub use clustine_edge::EdgeConfig;
-use clustine_edge::{Edge, EdgeIdentity, RegionLink, Routing};
-use clustine_region::Layout;
+use clustine_edge::{Edge, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
+use clustine_region::{Layout, RegionId};
+use clustine_rpc::link::EdgeEnd;
 use clustine_rpc::{RegionHello, link};
 use clustine_sim::RegionConfig;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
@@ -111,6 +112,9 @@ pub struct Config {
     pub client_timeout: Duration,
     /// Packets of at least this many bytes are compressed. `None` turns compression off.
     pub compression_threshold: Option<usize>,
+    /// How long a player is kept while the region they are in does not confirm what
+    /// they do; see [`EdgeConfig::region_patience`].
+    pub region_patience: Duration,
     /// The directory the world is kept in. It is created if it does not exist. With
     /// `None` the world only lasts as long as the server runs.
     pub world: Option<PathBuf>,
@@ -131,9 +135,63 @@ pub struct Config {
 /// until the runtime shuts down.
 pub struct Server {
     address: SocketAddr,
-    edge: JoinHandle<()>,
-    /// One per region.
-    workers: Vec<Worker>,
+    edge: JoinHandle<Stopped>,
+    /// Gives the edge a new link to a region.
+    relinks: Relinks,
+    /// What it takes to run the regions, kept to run one of them anew.
+    regions: Regions,
+    /// The runner of each region and the epoch it runs it with, by region id.
+    workers: Vec<(u64, Worker)>,
+}
+
+/// What every region of the world is run with.
+struct Regions {
+    store: Store,
+    layout: Layout,
+    spawn: Vec3,
+    /// Ticks between two checkpoints.
+    checkpoint_interval: u64,
+    serialise_link: bool,
+}
+
+impl Regions {
+    /// Opens `region` at the store as its owner with `epoch`, restores it and starts
+    /// to run it. Returns the runner and the edge's end of a link to it.
+    ///
+    /// The region carries on with what the store has of it: for a world kept on disk
+    /// where the server before this one left it, and after a takeover where the store
+    /// had the previous runner.
+    fn run(&self, region: RegionId, epoch: u64) -> Result<(Worker, RegionLink)> {
+        let area = self
+            .layout
+            .area(region)
+            .with_context(|| format!("the world has no region {region}"))?;
+        let hello = RegionHello {
+            region,
+            epoch,
+            layout: self.layout.fingerprint(),
+        };
+        let (store, restored) = self
+            .store
+            .open_region(hello)
+            .with_context(|| format!("opening region {region}"))?;
+        let (end, worker_end): (EdgeEnd, _) = if self.serialise_link {
+            link::framed(LINK_CAPACITY)
+        } else {
+            link::in_process(LINK_CAPACITY)
+        };
+        let config = RegionConfig {
+            spawn: self.spawn,
+            area,
+            starting_hotbar: starting_hotbar(),
+        };
+        let runner = RegionRunner::restore(config, store, restored)
+            .with_context(|| format!("restoring region {region}"))?
+            .with_checkpoint_interval(self.checkpoint_interval);
+        runner.links().attach(worker_end);
+        let link = RegionLink { region, epoch, end };
+        Ok((Worker::spawn(runner), link))
+    }
 }
 
 impl Server {
@@ -148,42 +206,22 @@ impl Server {
                 .with_context(|| format!("opening the world in {}", directory.display()))?,
             None => Store::memory(Arc::clone(&generator)),
         };
-        let checkpoint_interval = config.checkpoint_interval.as_millis() as u64 / 50;
+        let regions = Regions {
+            store,
+            layout: layout.clone(),
+            spawn,
+            checkpoint_interval: config.checkpoint_interval.as_millis() as u64 / 50,
+            serialise_link: config.serialise_link,
+        };
 
         let mut links = Vec::new();
-        let mut runners = Vec::new();
-        for (region, area) in layout.regions() {
-            let hello = RegionHello {
-                region,
-                // Nobody else ever runs a region of this process's world.
-                epoch: 1,
-                layout: layout.fingerprint(),
-            };
-            // The region carries on with what the store has of it, which for a world kept
-            // on disk is where the server before this one left it.
-            let (store, restored) = store
-                .open_region(hello)
-                .with_context(|| format!("opening region {region}"))?;
-            let (edge_end, worker_end) = if config.serialise_link {
-                link::framed(LINK_CAPACITY)
-            } else {
-                link::in_process(LINK_CAPACITY)
-            };
-            let config = RegionConfig {
-                spawn,
-                area,
-                starting_hotbar: starting_hotbar(),
-            };
-            let runner = RegionRunner::restore(config, store, restored)
-                .with_context(|| format!("restoring region {region}"))?
-                .with_checkpoint_interval(checkpoint_interval);
-            runner.links().attach(worker_end);
-            links.push(RegionLink {
-                // Nobody else ever runs a region of this process's world.
-                epoch: 1,
-                end: edge_end,
-            });
-            runners.push(runner);
+        let mut workers = Vec::new();
+        for (region, _) in layout.regions() {
+            // Nobody else has run a region of this process's world before.
+            let epoch = 1;
+            let (worker, link) = regions.run(region, epoch)?;
+            links.push(link);
+            workers.push((epoch, worker));
         }
 
         let edge_config = EdgeConfig {
@@ -193,13 +231,10 @@ impl Server {
             view_distance: config.view_distance,
             client_timeout: config.client_timeout,
             compression_threshold: config.compression_threshold,
+            region_patience: config.region_patience,
         };
-        let routing = Routing {
-            layout,
-            spawn,
-            identity: EdgeIdentity::starting_now("edge"),
-            links,
-        };
+        let identity = EdgeIdentity::starting_now("edge");
+        let (routing, relinks) = Routing::new(layout, spawn, identity, links);
         let edge = Edge::bind(config.bind, edge_config, routing)
             .await
             .with_context(|| format!("listening on {}", config.bind))?;
@@ -207,8 +242,29 @@ impl Server {
         Ok(Self {
             address,
             edge: tokio::spawn(edge.run()),
-            workers: runners.into_iter().map(Worker::spawn).collect(),
+            relinks,
+            regions,
+            workers,
         })
+    }
+
+    /// Has `region` taken over by a new runner, as when another worker is given a
+    /// region whose owner is believed dead. The runner it had is not asked: the store
+    /// takes the region from it, so that it can make nothing durable any more and stops
+    /// without a word, and the new one carries on from what the store has. The edge is
+    /// given a link to the new runner and resumes with it; nobody is disconnected.
+    pub async fn take_over(&mut self, region: RegionId) -> Result<()> {
+        let index = region.0 as usize;
+        let epoch = match self.workers.get(index) {
+            Some((epoch, _)) => epoch + 1,
+            None => anyhow::bail!("the world has no region {region}"),
+        };
+        let (worker, link) = self.regions.run(region, epoch)?;
+        let (_, replaced) = std::mem::replace(&mut self.workers[index], (epoch, worker));
+        // It finds its store handle lost and ends by itself.
+        tokio::task::spawn_blocking(move || replaced.stop()).await?;
+        anyhow::ensure!(self.relinks.replace(link).await, "the edge is gone");
+        Ok(())
     }
 
     /// The address the server listens on.
@@ -231,7 +287,7 @@ impl Server {
         // Waits for the current ticks and for the world to be stored.
         let workers = self.workers;
         let stop = move || {
-            for worker in workers {
+            for (_, worker) in workers {
                 // A region that lost the store has stopped already and said so.
                 worker.stop();
             }

@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
 use clustine_data::{BlockState, entity_types, synced_registry};
@@ -30,7 +31,7 @@ use clustine_protocol::packets::play::{
 use clustine_protocol::packets::{self, Packet};
 use clustine_region::{Layout, RegionId};
 use clustine_rpc::link;
-use clustine_rpc::{EdgeMessage, EdgeToWorker, WorkerToEdge};
+use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
     Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
     PlayerJoin, PlayerTransfer, RegionEvent,
@@ -38,11 +39,12 @@ use clustine_sim::api::{
 use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
 use crate::encode::chunk_packet;
 use crate::login::Profile;
-use crate::{EdgeIdentity, Routing};
+use crate::{EdgeIdentity, RegionLink, Routing, Stopped};
 
 const OVERWORLD: &str = "minecraft:overworld";
 
@@ -52,11 +54,9 @@ const CREATIVE_ABILITIES: u8 = 0x01 | 0x04 | 0x08;
 /// Messages from the regions that may wait for the fan-out task.
 const REGION_QUEUE_CAPACITY: usize = 1024;
 
-/// How many of a player's latest inputs are kept in case they have to be sent again to
-/// the region the player walks into. That region needs the ones the old region had not
-/// got to when it let the player go, which is what arrived within a tick or so: a
-/// handful. A client sends some twenty to forty inputs per second.
-const KEPT_INPUTS: usize = 128;
+/// How often the fan-out task looks for players whose region has kept them waiting for
+/// too long.
+const PATIENCE_CHECK: Duration = Duration::from_secs(1);
 
 /// Chunks in the first batch a client is sent, as in vanilla.
 const INITIAL_BATCH_SIZE: usize = 9;
@@ -124,6 +124,8 @@ pub(crate) struct FanoutConfig {
     pub(crate) view_distance: i32,
     /// Where the number of players in the world is published.
     pub(crate) online: Arc<AtomicU32>,
+    /// See [`crate::EdgeConfig::region_patience`].
+    pub(crate) region_patience: Duration,
 }
 
 /// A chunk at least one player of this edge can see.
@@ -159,10 +161,16 @@ struct PlayerView {
     /// The region the player is in, as far as this task has been told. The region itself
     /// may already have let the player go, with the message saying so still on its way.
     region: RegionId,
+    /// When the player asked to enter the world, for as long as no region has placed
+    /// them.
+    joining_since: Option<Instant>,
     /// How many inputs of the player have been passed on. Inputs are numbered from 1.
     inputs_sent: u64,
-    /// The latest inputs with their numbers; see [`KEPT_INPUTS`].
-    kept_inputs: VecDeque<(u64, PlayerInput)>,
+    /// The inputs no region has reported as applied and durable yet, with their numbers
+    /// and when they were made. They are sent again to the region the player walks
+    /// into, which needs the ones the old region had not got to when it let the player
+    /// go.
+    kept_inputs: VecDeque<(u64, Instant, PlayerInput)>,
     /// The highest sequence number of the player's actions on blocks that has been
     /// reported as handled.
     handled: Option<i32>,
@@ -192,6 +200,40 @@ struct PlayerView {
     batch_size: usize,
 }
 
+/// The edge's link to a region.
+struct Link {
+    sender: link::Sender<EdgeMessage>,
+    /// The epoch of the region's owner at the other end.
+    epoch: u64,
+    /// Which of this edge's links it is. What a region sends is tagged with the link it
+    /// came over, and dropped if that is not the region's link any more.
+    id: u64,
+    /// Whether the region has said what it knows of this edge. Until then nothing that
+    /// was kept is sent again: a region that has forgotten the edge expects its
+    /// messages numbered from 1, and would close the link over the gap.
+    welcomed: bool,
+}
+
+/// What the edge keeps for a region, with or without a link to it; see
+/// `docs/adr/0008-durable-regions-and-resuming.md`.
+#[derive(Default)]
+struct RegionPort {
+    link: Option<Link>,
+    /// The number of the last numbered message made for the region.
+    numbered: u64,
+    /// The numbered messages the region has not reported as applied and durable, to be
+    /// sent again on a new link.
+    kept: VecDeque<(u64, EdgeToWorker)>,
+    /// Up to which number the region has reported the messages applied and durable.
+    applied: u64,
+    /// The number of the last outbox entry of the region that was handled.
+    seen: u64,
+}
+
+/// What reaches the fan-out task from a link to a region: a message, or `None` when the
+/// link has ended.
+type FromLink = (RegionId, u64, Option<WorkerToEdge>);
+
 pub(crate) struct Fanout {
     config: FanoutConfig,
     layout: Layout,
@@ -199,59 +241,82 @@ pub(crate) struct Fanout {
     spawn_region: RegionId,
     /// Who this edge is to the regions.
     identity: EdgeIdentity,
-    /// Where to send what is meant for each region, by region id.
-    regions: Vec<link::Sender<EdgeMessage>>,
-    /// The number of the last numbered message sent to each region, by region id.
-    numbered: Vec<u64>,
-    /// The number of the last outbox entry seen from each region, by region id.
-    seen: Vec<u64>,
-    /// The epoch of the owner each region's link goes to, by region id. What a region
-    /// sends is tagged with the epoch of the link it came over, and dropped if that is
-    /// not the region's link any more.
-    epochs: Vec<u64>,
-    /// Where each region's messages arrive, until [`Fanout::run`] starts reading them.
-    receivers: Vec<link::Receiver<WorkerToEdge>>,
+    /// What is kept for each region, by region id.
+    regions: Vec<RegionPort>,
+    /// The links to start with, until [`Fanout::run`] takes them up.
+    first_links: Vec<RegionLink>,
+    /// Where new links to regions arrive.
+    relinks: mpsc::Receiver<RegionLink>,
+    /// Where it is said that a link has ended, for whoever makes the links.
+    lost: mpsc::UnboundedSender<(RegionId, u64)>,
+    /// The number the next link gets.
+    next_link: u64,
+    /// Where the links' messages are put for this task; see [`Fanout::run`].
+    queue: mpsc::Sender<FromLink>,
+    /// Taken by [`Fanout::run`].
+    messages: Option<mpsc::Receiver<FromLink>>,
+    /// The tasks that read the links.
+    readers: JoinSet<()>,
     commands: mpsc::Receiver<Command>,
     players: BTreeMap<PlayerId, PlayerView>,
     /// Which player each player entity of this edge belongs to.
     entity_owners: BTreeMap<EntityId, PlayerId>,
     replica: BTreeMap<ChunkPos, ReplicaChunk>,
     /// The entities in the chunks of the replica.
-    entities: BTreeMap<EntityId, EntityState>,
+    entities: BTreeMap<EntityId, Shown>,
+}
+
+/// An entity the edge shows, and the region that last introduced it: reported it
+/// spawned, or had it in a snapshot. Moves and removals of the entity are taken from
+/// that region only. An entity that walks from one region into the next is introduced
+/// by the next one when it arrives, and what its old region says of it after that,
+/// such as that it has given up on a departure it believes nobody passed on, is about
+/// an entity that is the old region's no longer.
+///
+/// With several edges this needs more: what two regions say reaches an edge that is not
+/// the player's own in no order between them, so a late snapshot of the old region can
+/// be taken for the entity's latest introduction.
+#[derive(Debug, Clone)]
+struct Shown {
+    state: EntityState,
+    from: RegionId,
 }
 
 impl Fanout {
-    /// `routing` must have one link per region of its layout.
+    /// `routing` must not have a link to a region its layout does not have.
     pub(crate) fn new(
         config: FanoutConfig,
         routing: Routing,
         commands: mpsc::Receiver<Command>,
     ) -> Self {
-        assert_eq!(
-            routing.links.len(),
-            routing.layout.region_count(),
-            "one link per region"
+        let regions = routing.layout.region_count();
+        assert!(
+            routing
+                .links
+                .iter()
+                .all(|link| (link.region.0 as usize) < regions),
+            "a link to a region the layout does not have"
         );
         let spawn = routing.spawn;
         let spawn_region = routing
             .layout
             .region_of(ChunkPos::containing(spawn.x, spawn.z));
-        let epochs = routing.links.iter().map(|link| link.epoch).collect();
-        let (regions, receivers): (Vec<_>, _) = routing
-            .links
-            .into_iter()
-            .map(|link| link.end.split())
-            .unzip();
+        // The messages of all regions are read from one queue, each link's in the order
+        // they were sent.
+        let (queue, messages) = mpsc::channel(REGION_QUEUE_CAPACITY);
         Self {
             config,
             layout: routing.layout,
             spawn_region,
             identity: routing.identity,
-            numbered: vec![0; regions.len()],
-            seen: vec![0; regions.len()],
-            regions,
-            epochs,
-            receivers,
+            regions: (0..regions).map(|_| RegionPort::default()).collect(),
+            first_links: routing.links,
+            relinks: routing.relinks,
+            lost: routing.lost,
+            next_link: 0,
+            queue,
+            messages: Some(messages),
+            readers: JoinSet::new(),
             commands,
             players: BTreeMap::new(),
             entity_owners: BTreeMap::new(),
@@ -260,74 +325,213 @@ impl Fanout {
         }
     }
 
-    /// Serves until a region or the edge is gone. Every player is disconnected when this
-    /// returns, because their queues are dropped.
-    pub(crate) async fn run(mut self) {
-        // The messages of all regions are read from one queue, each region's in the
-        // order it sent them. `None` says that a region's link has ended. The tasks
-        // feeding the queue stop with this function, which owns them.
-        let (queue, mut messages) = mpsc::channel(REGION_QUEUE_CAPACITY);
-        let mut readers = JoinSet::new();
-        for (index, mut receiver) in std::mem::take(&mut self.receivers).into_iter().enumerate() {
-            let region = RegionId(index as u32);
-            let epoch = self.epochs[index];
-            let queue = queue.clone();
-            readers.spawn(async move {
-                while let Some(message) = receiver.recv().await {
-                    if queue.send((region, epoch, Some(message))).await.is_err() {
-                        return;
-                    }
-                }
-                let _ = queue.send((region, epoch, None)).await;
-            });
+    /// Serves until the edge has to stop. Every player is disconnected when this
+    /// returns, because their queues are dropped. A region whose link ends is waited
+    /// for: what its players do is kept and sent when there is a link to it again.
+    pub(crate) async fn run(mut self) -> Stopped {
+        let mut messages = self.messages.take().expect("the fan-out task runs once");
+        for link in std::mem::take(&mut self.first_links) {
+            self.take_link(link).await;
         }
-        drop(queue);
-
-        // A link begins with saying who this edge is. Nothing is resumed yet: this edge
-        // has not been in touch with any region before.
-        for index in 0..self.regions.len() {
-            let hello = EdgeToWorker::Hello {
-                edge: self.identity.edge,
-                start: self.identity.start,
-                seen: 0,
-                players: Vec::new(),
-                chunks: Vec::new(),
-            };
-            if !self.send_to_region(RegionId(index as u32), hello).await {
-                warn!(region = index, "a region is gone");
-                return;
-            }
-        }
+        let mut patience = tokio::time::interval(PATIENCE_CHECK);
+        patience.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
-            let alive = tokio::select! {
+            tokio::select! {
                 command = self.commands.recv() => match command {
                     Some(command) => self.handle_command(command).await,
-                    None => false,
+                    None => return Stopped::Abandoned,
                 },
-                message = messages.recv() => match message {
-                    Some((region, epoch, _)) if self.epochs.get(region.0 as usize) != Some(&epoch) => {
-                        debug!(%region, epoch, "dropped a message from a former owner");
-                        true
+                message = messages.recv() => {
+                    // The task holds a sender itself, so the queue never ends.
+                    let Some((region, link, message)) = message else {
+                        return Stopped::Abandoned;
+                    };
+                    let current = self.regions[region.0 as usize]
+                        .link
+                        .as_ref()
+                        .is_some_and(|current| current.id == link);
+                    match message {
+                        _ if !current => debug!(%region, "dropped what a former link delivered"),
+                        Some(message) => {
+                            if let Some(stopped) = self.handle_region(region, message).await {
+                                return stopped;
+                            }
+                        }
+                        None => self.lose_link(region),
                     }
-                    Some((region, _, Some(message))) => self.handle_region(region, message).await,
-                    Some((region, _, None)) => {
-                        // Without one of its regions the world has a hole; there is no
-                        // carrying on until someone runs that region again.
-                        warn!(%region, "a region is gone");
-                        false
-                    }
-                    None => false,
                 },
-            };
-            if !alive {
-                return;
+                // Whoever gives the edge links may go away; the links it has stay.
+                Some(link) = self.relinks.recv() => self.take_link(link).await,
+                _ = patience.tick() => self.drop_the_overdue().await,
             }
         }
     }
 
-    /// Returns false if a region can no longer be reached.
-    async fn handle_command(&mut self, command: Command) -> bool {
+    /// Notes that the link to `region` has ended. Its players stay, and what they do is
+    /// kept, until there is a link to the region again.
+    fn lose_link(&mut self, region: RegionId) {
+        if let Some(link) = self.regions[region.0 as usize].link.take() {
+            warn!(%region, epoch = link.epoch, "the link to a region ended; keeping its players");
+            // Nobody may be listening, which is fine.
+            let _ = self.lost.send((region, link.epoch));
+        }
+    }
+
+    /// Makes `link` the edge's link to its region and begins to resume with the region:
+    /// says who this edge is and what it knows of the region. What was kept for the
+    /// region is sent once the region has answered; see [`Fanout::welcomed`].
+    async fn take_link(&mut self, link: RegionLink) {
+        let RegionLink { region, epoch, end } = link;
+        let Some(port) = self.regions.get_mut(region.0 as usize) else {
+            warn!(%region, "a link to a region the layout does not have");
+            return;
+        };
+        if port
+            .link
+            .as_ref()
+            .is_some_and(|current| current.epoch > epoch)
+        {
+            debug!(%region, epoch, "not taking a link to a replaced owner");
+            return;
+        }
+        let id = self.next_link;
+        self.next_link += 1;
+        let (sender, mut receiver) = end.split();
+        let queue = self.queue.clone();
+        self.readers.spawn(async move {
+            while let Some(message) = receiver.recv().await {
+                if queue.send((region, id, Some(message))).await.is_err() {
+                    return;
+                }
+            }
+            let _ = queue.send((region, id, None)).await;
+        });
+
+        // Everyone the edge believes to be in the region, also those still entering
+        // the world there, and every chunk of it the edge shows or has asked for.
+        let players = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.region == region)
+            .map(|(player, _)| *player)
+            .collect();
+        let chunks = self
+            .replica
+            .keys()
+            .filter(|position| self.layout.region_of(**position) == region)
+            .copied()
+            .collect();
+        let hello = EdgeToWorker::Hello {
+            edge: self.identity.edge,
+            start: self.identity.start,
+            seen: port.seen,
+            players,
+            chunks,
+        };
+        info!(%region, epoch, kept = port.kept.len(), "linked to a region");
+        // A link that is gone already is noticed by its reader.
+        let _ = sender.send(EdgeMessage::unnumbered(hello)).await;
+        port.link = Some(Link {
+            sender,
+            epoch,
+            id,
+            welcomed: false,
+        });
+    }
+
+    /// The region `from` has said what it knows of this edge. Returns why the edge has
+    /// to stop, if it has to.
+    async fn welcomed(&mut self, from: RegionId, welcome: Welcome) -> Option<Stopped> {
+        let port = &self.regions[from.0 as usize];
+        match welcome {
+            Welcome::Superseded => {
+                error!(%from, "another edge has taken this one's name; stopping");
+                return Some(Stopped::Superseded);
+            }
+            Welcome::Resumed => {}
+            // To an edge that has had nothing to do with the region this is how
+            // everything begins.
+            Welcome::Unknown if port.applied == 0 && port.seen == 0 => {}
+            Welcome::Unknown => self.forget_region(from).await,
+        }
+        let port = &mut self.regions[from.0 as usize];
+        let link = port.link.as_mut()?;
+        link.welcomed = true;
+        // In the order they were made, which is the order of their numbers.
+        for (number, body) in &port.kept {
+            let message = EdgeMessage {
+                number: Some(*number),
+                body: body.clone(),
+            };
+            if link.sender.send(message).await.is_err() {
+                // Noticed by the link's reader, which makes room for the next link.
+                break;
+            }
+        }
+        None
+    }
+
+    /// The region `region` has forgotten this edge, which stayed away from it for too
+    /// long: the players the edge believed to be there are not, and what it kept for the
+    /// region means nothing to it any more.
+    async fn forget_region(&mut self, region: RegionId) {
+        warn!(%region, "a region has forgotten this edge; dropping what was kept for it");
+        let port = &mut self.regions[region.0 as usize];
+        let kept = std::mem::take(&mut port.kept);
+        port.numbered = 0;
+        port.applied = 0;
+        port.seen = 0;
+        // What players of other regions did to blocks of this one will never be
+        // answered. Their clients are told that it was handled, and see the blocks as
+        // the region has them.
+        for (_, body) in kept {
+            if let EdgeToWorker::Remote(action) = body {
+                self.arrived(action.player, action.sequence).await;
+            }
+        }
+        let lost: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.region == region)
+            .map(|(player, _)| *player)
+            .collect();
+        for player in lost {
+            if let Some(view) = self.players.get(&player) {
+                refuse(&view.outbound, "The server lost track of where you are.");
+            }
+            self.remove_player(player).await;
+        }
+    }
+
+    /// Disconnects the players whose region has not confirmed what they did, or has not
+    /// placed them, for longer than the edge is to wait.
+    async fn drop_the_overdue(&mut self) {
+        let patience = self.config.region_patience;
+        let overdue: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, view)| {
+                let waiting = view.kept_inputs.front().map(|(_, since, _)| *since);
+                let since = [view.joining_since, waiting].into_iter().flatten().min();
+                since.is_some_and(|since| since.elapsed() > patience)
+            })
+            .map(|(player, _)| *player)
+            .collect();
+        for player in overdue {
+            if let Some(view) = self.players.get(&player) {
+                warn!(
+                    name = %view.name,
+                    region = %view.region,
+                    "a player's region kept them waiting too long"
+                );
+                refuse(&view.outbound, "The server fell too far behind.");
+            }
+            self.remove_player(player).await;
+        }
+    }
+
+    async fn handle_command(&mut self, command: Command) {
         match command {
             Command::Join {
                 session,
@@ -339,7 +543,7 @@ impl Fanout {
                 let player = PlayerId(profile.uuid);
                 if self.players.contains_key(&player) {
                     refuse(&outbound, "You are already connected to this server.");
-                    return true;
+                    return;
                 }
                 let view_distance = requested_view_distance
                     .unwrap_or(self.config.view_distance)
@@ -353,6 +557,7 @@ impl Fanout {
                         awaiting_teleport,
                         entity: None,
                         region: self.spawn_region,
+                        joining_since: Some(Instant::now()),
                         inputs_sent: 0,
                         kept_inputs: VecDeque::new(),
                         handled: None,
@@ -374,7 +579,7 @@ impl Fanout {
                     name: profile.name,
                 };
                 self.send_to_region(self.spawn_region, EdgeToWorker::PlayerJoin(join))
-                    .await
+                    .await;
             }
             Command::Input {
                 session,
@@ -382,22 +587,20 @@ impl Fanout {
                 input,
             } => {
                 if !self.session_matches(player, session) {
-                    return true;
+                    return;
                 }
                 let view = self.players.get_mut(&player).expect("session matched");
                 view.inputs_sent += 1;
                 let number = view.inputs_sent;
-                if view.kept_inputs.len() == KEPT_INPUTS {
-                    view.kept_inputs.pop_front();
-                }
-                view.kept_inputs.push_back((number, input.clone()));
+                view.kept_inputs
+                    .push_back((number, Instant::now(), input.clone()));
                 let region = view.region;
                 let message = EdgeToWorker::Input {
                     player,
                     number,
                     input,
                 };
-                self.send_to_region(region, message).await
+                self.send_to_region(region, message).await;
             }
             Command::Handled {
                 session,
@@ -407,13 +610,11 @@ impl Fanout {
                 if self.session_matches(player, session) {
                     self.handled(player, sequence).await;
                 }
-                true
             }
             Command::Leave { session, player } => {
                 if self.session_matches(player, session) {
-                    return self.remove_player(player).await;
+                    self.remove_player(player).await;
                 }
-                true
             }
             Command::ChunkBatchReceived {
                 session,
@@ -429,17 +630,17 @@ impl Fanout {
                     } else {
                         view.batch_size = 1;
                     }
-                    return self.send_chunks(player).await;
+                    self.send_chunks(player).await;
                 }
-                true
             }
         }
     }
 
-    /// Handles what the region `from` sent. Returns false if a region can no longer be
-    /// reached.
-    async fn handle_region(&mut self, from: RegionId, message: WorkerToEdge) -> bool {
+    /// Handles what the region `from` sent over its current link. Returns why the edge
+    /// has to stop, if it has to.
+    async fn handle_region(&mut self, from: RegionId, message: WorkerToEdge) -> Option<Stopped> {
         match message {
+            WorkerToEdge::Welcome(welcome) => return self.welcomed(from, welcome).await,
             WorkerToEdge::ToPlayer {
                 player,
                 event:
@@ -458,73 +659,61 @@ impl Fanout {
                 player,
                 event: PlayerEvent::Acknowledged { sequence },
             } => self.handled(player, sequence).await,
-            WorkerToEdge::Outbox { number, entry } => {
-                // A region sends an entry again until it is confirmed, and each is
-                // handled once. Their numbers ascend, so the highest seen says which
-                // are new.
-                let Some(seen) = self.seen.get_mut(from.0 as usize) else {
-                    return true;
-                };
-                if number <= *seen {
-                    return true;
-                }
-                *seen = number;
-                return self.handle_entry(from, entry).await
-                    && self
-                        .send_to_region(from, EdgeToWorker::Confirm { number })
-                        .await;
+            WorkerToEdge::Outbox { number, entry } => self.outbox(from, number, entry).await,
+            WorkerToEdge::Presence { player, answer } => {
+                self.presence(from, player, answer).await;
             }
-            // What a region said before it kept an outbox, handled as the entries that
-            // have replaced it.
-            WorkerToEdge::Remote(action) => {
-                return self.handle_entry(from, Durable::Remote(action)).await;
-            }
-            WorkerToEdge::RemoteDone { player, sequence } => {
-                let entry = Durable::RemoteDone { player, sequence };
-                return self.handle_entry(from, entry).await;
-            }
-            WorkerToEdge::ToPlayer {
-                player,
-                event: PlayerEvent::Refused,
-            } => return self.handle_entry(from, Durable::Refused { player }).await,
-            WorkerToEdge::ToPlayer {
-                player,
-                event: PlayerEvent::Departed(transfer),
-            } => {
-                let entry = Durable::Departed { player, transfer };
-                return self.handle_entry(from, entry).await;
-            }
+            WorkerToEdge::Progress { applied, inputs } => self.progress(from, applied, &inputs),
             WorkerToEdge::ChunkSnapshot {
                 position,
                 chunk,
                 entities,
                 ..
-            } => {
-                self.store_chunk(position, chunk).await;
-                for state in entities {
-                    self.upsert_entity(state).await;
-                }
-            }
+            } => self.take_snapshot(from, position, chunk, entities).await,
             WorkerToEdge::TickDelta { events, .. } => {
                 for event in events {
-                    self.handle_event(event).await;
+                    self.handle_event(from, event).await;
                 }
             }
-            // This edge does not resume with a region yet; see
-            // docs/adr/0008-durable-regions-and-resuming.md.
-            message @ (WorkerToEdge::Welcome(_)
-            | WorkerToEdge::Presence { .. }
-            | WorkerToEdge::Progress { .. }) => {
-                debug!(%from, ?message, "ignored what a region said about resuming");
+            // A region says these through its outbox, so that they reach the edge even
+            // if the region's owner dies right after.
+            message @ (WorkerToEdge::Remote(_)
+            | WorkerToEdge::RemoteDone { .. }
+            | WorkerToEdge::ToPlayer {
+                event: PlayerEvent::Departed(_) | PlayerEvent::Refused,
+                ..
+            }) => {
+                error!(%from, ?message, "a region said outside its outbox what belongs in it");
             }
         }
-        true
+        None
     }
 
-    /// Handles an entry of the outbox that the region `from` keeps for this edge.
-    /// Returns false if a region can no longer be reached.
-    async fn handle_entry(&mut self, from: RegionId, entry: Durable) -> bool {
+    /// Handles an entry of the outbox of the region `from` and confirms it. An entry
+    /// that was handled before is one the region sends again because the confirmation
+    /// had not reached it, and is passed over.
+    async fn outbox(&mut self, from: RegionId, number: u64, entry: Durable) {
+        let port = &mut self.regions[from.0 as usize];
+        if number <= port.seen {
+            return;
+        }
+        port.seen = number;
         match entry {
+            Durable::Departed { player, transfer } => {
+                self.hand_over(player, from, transfer).await;
+            }
+            Durable::Refused { player } => {
+                // A player who has an entity is in the world through another way than
+                // the join that was refused, and stays.
+                let waiting = self
+                    .players
+                    .get(&player)
+                    .filter(|view| view.entity.is_none());
+                if let Some(view) = waiting {
+                    refuse(&view.outbound, "The world cannot take another player.");
+                    self.remove_player(player).await;
+                }
+            }
             Durable::Remote(action) => {
                 // The region that has the block the next step is about takes it.
                 let to = self.layout.region_of(action.step.concerns().chunk());
@@ -532,27 +721,116 @@ impl Fanout {
                 if let Some(view) = self.players.get_mut(&player) {
                     view.under_way.insert(sequence);
                 }
-                if to != from {
-                    return self.send_to_region(to, EdgeToWorker::Remote(action)).await;
+                if to == from {
+                    // The region passed on what, by this edge's layout, is its own to
+                    // do. Sending it back would have the two go round in circles.
+                    error!(%from, "a region passed on an action about one of its own blocks");
+                    self.arrived(player, sequence).await;
+                } else {
+                    self.send_to_region(to, EdgeToWorker::Remote(action)).await;
                 }
-                // The region passed on what, by this edge's layout, is its own to do.
-                // Sending it back would have the two go round in circles.
-                error!(%from, "a region passed on an action about one of its own blocks");
-                self.arrived(player, sequence).await;
-                true
             }
-            Durable::RemoteDone { player, sequence } => {
-                self.arrived(player, sequence).await;
-                true
-            }
-            Durable::Refused { player } => {
-                if let Some(view) = self.players.get(&player) {
-                    refuse(&view.outbound, "The world cannot take another player.");
+            Durable::RemoteDone { player, sequence } => self.arrived(player, sequence).await,
+        }
+        // Only now: what the entry led to is kept for the regions it concerns, so the
+        // region may forget the entry.
+        self.send_to_region(from, EdgeToWorker::Confirm { number })
+            .await;
+    }
+
+    /// The region `from` has said whether it has `player`, whom the edge named in its
+    /// hello as one it believes to be there. The entries of the region's outbox that the
+    /// edge had not seen came before this, so a player the region let go has been
+    /// handed on by now.
+    async fn presence(&mut self, from: RegionId, player: PlayerId, answer: Presence) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        if view.region != from {
+            return;
+        }
+        match answer {
+            Presence::Present {
+                entity,
+                pose,
+                hotbar,
+                selected_slot,
+                last_input,
+                handled,
+            } => {
+                while view
+                    .kept_inputs
+                    .front()
+                    .is_some_and(|(number, ..)| *number <= last_input)
+                {
+                    view.kept_inputs.pop_front();
                 }
-                self.remove_player(player).await;
-                true
+                match view.entity {
+                    // The region placed the player, and the word of it was lost with
+                    // the link.
+                    None => {
+                        let inventory = inventory_packets(&hotbar, selected_slot);
+                        self.spawn_player(player, entity, pose.position, inventory)
+                            .await;
+                    }
+                    Some(shown) if shown != entity => {
+                        error!(name = %view.name, %from, "a region has a player as another entity");
+                        refuse(&view.outbound, "The server lost track of where you are.");
+                        self.remove_player(player).await;
+                        return;
+                    }
+                    Some(_) => {}
+                }
+                // Through the same holding back as every acknowledgement: an action
+                // that is under way elsewhere holds back later ones.
+                if let Some(sequence) = handled {
+                    self.handled(player, sequence).await;
+                }
             }
-            Durable::Departed { player, transfer } => self.hand_over(player, from, transfer).await,
+            Presence::Absent => {
+                // A join or an arrival that the region has not applied yet is among
+                // what is sent to it again, and puts the player there.
+                let port = &self.regions[from.0 as usize];
+                let under_way = port.kept.iter().any(|(_, body)| match body {
+                    EdgeToWorker::PlayerJoin(join) => join.player == player,
+                    EdgeToWorker::PlayerArrive {
+                        player: arriving, ..
+                    } => *arriving == player,
+                    _ => false,
+                });
+                if !under_way {
+                    warn!(name = %view.name, %from, "a region does not have a player it should have");
+                    refuse(&view.outbound, "The server lost track of where you are.");
+                    self.remove_player(player).await;
+                }
+            }
+        }
+    }
+
+    /// The region `from` has applied this edge's messages up to `applied` and made that
+    /// durable, and with them the inputs of `inputs` up to the numbers given. None of
+    /// that has to be sent again.
+    fn progress(&mut self, from: RegionId, applied: u64, inputs: &[(PlayerId, u64)]) {
+        let port = &mut self.regions[from.0 as usize];
+        port.applied = port.applied.max(applied);
+        while port
+            .kept
+            .front()
+            .is_some_and(|(number, _)| *number <= applied)
+        {
+            port.kept.pop_front();
+        }
+        for (player, last_input) in inputs {
+            let Some(view) = self.players.get_mut(player) else {
+                continue;
+            };
+            while view
+                .kept_inputs
+                .front()
+                .is_some_and(|(number, ..)| number <= last_input)
+            {
+                view.kept_inputs.pop_front();
+            }
         }
     }
 
@@ -601,18 +879,12 @@ impl Fanout {
     }
 
     /// Passes a player whom the region `from` has let go on to the region they walked
-    /// into, together with what they have done since. Returns false if a region can no
-    /// longer be reached.
+    /// into, together with what they have done since.
     ///
     /// Nothing else is handled while this runs, so no input of the player can go to the
     /// old region after the ones sent again here have been picked, or to the new region
     /// before them.
-    async fn hand_over(
-        &mut self,
-        player: PlayerId,
-        from: RegionId,
-        transfer: PlayerTransfer,
-    ) -> bool {
+    async fn hand_over(&mut self, player: PlayerId, from: RegionId, transfer: PlayerTransfer) {
         let position = transfer.pose.position;
         let chunk = ChunkPos::containing(position.x, position.z);
         let to = self.layout.region_of(chunk);
@@ -631,71 +903,72 @@ impl Fanout {
             .get_mut(&player)
             .filter(|view| view.entity == Some(transfer.entity_id));
         let Some(view) = current else {
-            return self.send_to_region(to, discard).await;
+            self.send_to_region(to, discard).await;
+            return;
         };
         if to == from {
             // The region and this edge disagree about where the region ends. Sending
             // the player back would have them bounce between the two forever.
             error!(name = %view.name, %from, "a region let go of a player who is inside it");
             refuse(&view.outbound, "The server lost track of where you are.");
-            return self.send_to_region(to, discard).await && self.remove_player(player).await;
+            self.send_to_region(to, discard).await;
+            self.remove_player(player).await;
+            return;
         }
 
         // The old region ignored everything it was sent after letting the player go.
+        // What it had applied by then the player takes along; the rest is still kept,
+        // because nothing is dropped before a region has reported it applied.
         while view
             .kept_inputs
             .front()
-            .is_some_and(|(number, _)| *number <= transfer.last_input)
+            .is_some_and(|(number, ..)| *number <= transfer.last_input)
         {
             view.kept_inputs.pop_front();
         }
-        let missed = view.inputs_sent.saturating_sub(transfer.last_input);
-        if view.kept_inputs.len() as u64 != missed {
-            // The region was so far behind that some of what it missed is no longer
-            // kept. Carrying on would leave the player with, say, another item in hand
-            // than the server believes.
-            warn!(name = %view.name, missed, "too many inputs to send again");
-            refuse(&view.outbound, "The server fell too far behind.");
-            return self.send_to_region(to, discard).await && self.remove_player(player).await;
-        }
         view.region = to;
-        let again: Vec<_> = view.kept_inputs.iter().cloned().collect();
+        let again: Vec<_> = view
+            .kept_inputs
+            .iter()
+            .map(|(number, _, input)| (*number, input.clone()))
+            .collect();
         debug!(name = %view.name, %from, %to, inputs = again.len(), "handing a player over");
 
-        if !self
-            .send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
-            .await
-        {
-            return false;
-        }
+        self.send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
+            .await;
         for (number, input) in again {
             let message = EdgeToWorker::Input {
                 player,
                 number,
                 input,
             };
-            if !self.send_to_region(to, message).await {
-                return false;
-            }
+            self.send_to_region(to, message).await;
         }
         // Normally the view has followed the move already; this covers a player who was
         // let go without having been seen to move, such as one who joined right there.
         self.move_view(player, chunk).await;
-        true
     }
 
-    async fn handle_event(&mut self, event: RegionEvent) {
+    /// Handles something that happened in the region `from`.
+    async fn handle_event(&mut self, from: RegionId, event: RegionEvent) {
         match event {
-            RegionEvent::EntitySpawned(state) => self.upsert_entity(state).await,
-            RegionEvent::EntityRemoved { entity, .. } => self.remove_entity(entity).await,
+            RegionEvent::EntitySpawned(state) => self.upsert_entity(from, state).await,
+            RegionEvent::EntityRemoved { entity, .. } => {
+                if self.is_of(entity, from) {
+                    self.remove_entity(entity).await;
+                }
+            }
             RegionEvent::BlockChanged { position, state } => {
                 self.change_block(position, state).await;
             }
             RegionEvent::EntityMoved { entity, pose, .. } => {
+                if !self.is_of(entity, from) {
+                    return;
+                }
                 // A move of an entity the edge has not been told about yet is covered by
                 // the snapshot of the chunk it is in, which is still on its way.
-                if let Some(state) = self.entities.get_mut(&entity) {
-                    state.pose = pose;
+                if let Some(shown) = self.entities.get_mut(&entity) {
+                    shown.state.pose = pose;
                     self.refresh_entity(entity, true).await;
                 }
                 // The view of a player follows where the worker says the player is.
@@ -707,24 +980,34 @@ impl Fanout {
         }
     }
 
-    /// Takes in an entity the worker described, which may be new or already known.
-    async fn upsert_entity(&mut self, state: EntityState) {
+    /// Whether what the region `from` says of `entity` counts: the entity is one that
+    /// region introduced last, or one the edge does not show at all.
+    fn is_of(&self, entity: EntityId, from: RegionId) -> bool {
+        self.entities
+            .get(&entity)
+            .is_none_or(|shown| shown.from == from)
+    }
+
+    /// Takes in an entity the region `from` described, which may be new or already
+    /// known. The entity is that region's from now on.
+    async fn upsert_entity(&mut self, from: RegionId, state: EntityState) {
         if !self.replica.contains_key(&state.chunk()) {
             // Nobody watches where it is; this can be a snapshot that arrives late.
             return;
         }
         let entity = state.entity;
+        let pose = state.pose;
         let moved = self
             .entities
-            .insert(entity, state.clone())
-            .is_some_and(|known| known.pose != state.pose);
+            .insert(entity, Shown { state, from })
+            .is_some_and(|known| known.state.pose != pose);
         self.refresh_entity(entity, moved).await;
     }
 
     /// Brings every player's client up to date about one entity: shows it to those who
     /// have it in view, moves it if `moved`, and hides it from those who lost sight of it.
     async fn refresh_entity(&mut self, entity: EntityId, moved: bool) {
-        let Some(state) = self.entities.get(&entity).cloned() else {
+        let Some(state) = self.entities.get(&entity).map(|shown| shown.state.clone()) else {
             return;
         };
         let mut outgoing = Vec::new();
@@ -772,7 +1055,12 @@ impl Fanout {
             // The player left before the worker answered.
             return;
         };
+        if view.entity.is_some() {
+            // Told twice: once as it happened and once on resuming with the region.
+            return;
+        }
         view.entity = Some(entity_id);
+        view.joining_since = None;
         self.entity_owners.insert(entity_id, player);
         self.config.online.fetch_add(1, Ordering::Relaxed);
         info!(name = %view.name, entity_id = entity_id.0, "player joined");
@@ -899,12 +1187,12 @@ impl Fanout {
         view.center = center;
         view.wanted = wanted;
         // Entities in chunks that came into view appear, those left behind disappear.
-        for state in self.entities.values() {
-            packets.extend(view.update_visibility(state, false));
+        for shown in self.entities.values() {
+            packets.extend(view.update_visibility(&shown.state, false));
         }
         let replica = &self.replica;
         self.entities
-            .retain(|_, state| replica.contains_key(&state.chunk()));
+            .retain(|_, shown| replica.contains_key(&shown.state.chunk()));
 
         self.subscribe(subscribe).await;
         self.unsubscribe(unsubscribe).await;
@@ -913,26 +1201,63 @@ impl Fanout {
         }
     }
 
-    /// Takes a chunk the worker sent into the replica and offers it to its viewers.
-    async fn store_chunk(&mut self, position: ChunkPos, chunk: Chunk) {
+    /// Takes in a snapshot of a chunk: the chunk as a region has it, and the entities in
+    /// it.
+    ///
+    /// The first snapshot of a chunk is offered to its viewers. A later one comes when
+    /// the edge resumes with the region, after missing what happened meanwhile, and is
+    /// reconciled with what the edge shows: a chunk that differs is sent again, and an
+    /// entity the edge shows in the chunk that the region does not have there is
+    /// removed. The entity of one of this edge's own players is never removed by this:
+    /// what becomes of them the region says for each of them.
+    async fn take_snapshot(
+        &mut self,
+        from: RegionId,
+        position: ChunkPos,
+        chunk: Chunk,
+        entities: Vec<EntityState>,
+    ) {
         let Some(entry) = self.replica.get_mut(&position) else {
             // Nobody has the chunk in view any more.
             return;
         };
-        entry.chunk = Some(chunk);
-        entry.packet = None;
+        let shown_before = entry.chunk.is_some();
+        if entry.chunk.as_ref() != Some(&chunk) {
+            entry.chunk = Some(chunk);
+            entry.packet = None;
+            let viewers: Vec<_> = self
+                .players
+                .iter_mut()
+                .filter(|(_, view)| view.wanted.contains(&position))
+                .map(|(player, view)| {
+                    // A client takes a chunk it has already as the chunk's new content.
+                    view.sent.remove(&position);
+                    view.pending.insert(position);
+                    *player
+                })
+                .collect();
+            for player in viewers {
+                self.send_chunks(player).await;
+            }
+        }
 
-        let viewers: Vec<_> = self
-            .players
-            .iter_mut()
-            .filter(|(_, view)| view.wanted.contains(&position))
-            .map(|(player, view)| {
-                view.pending.insert(position);
-                *player
-            })
-            .collect();
-        for player in viewers {
-            self.send_chunks(player).await;
+        if shown_before {
+            let stale: Vec<_> = self
+                .entities
+                .iter()
+                .filter(|(id, shown)| {
+                    shown.state.chunk() == position
+                        && !self.entity_owners.contains_key(id)
+                        && entities.iter().all(|present| present.entity != **id)
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for entity in stale {
+                self.remove_entity(entity).await;
+            }
+        }
+        for state in entities {
+            self.upsert_entity(from, state).await;
         }
     }
 
@@ -971,7 +1296,7 @@ impl Fanout {
     }
 
     /// Sends the next batch of pending chunks, nearest first, unless the client still
-    /// has to confirm the previous batch. Returns false if the worker is unreachable.
+    /// has to confirm the previous batch. Returns false if the player was removed.
     async fn send_chunks(&mut self, player: PlayerId) -> bool {
         let Some(view) = self.players.get_mut(&player) else {
             return true;
@@ -1027,28 +1352,22 @@ impl Fanout {
         true
     }
 
-    /// Asks the regions the chunks belong to for them and for what happens in them.
-    /// Returns false if a region can no longer be reached, which ends the task shortly
-    /// after anyway.
-    async fn subscribe(&mut self, chunks: Vec<ChunkPos>) -> bool {
-        let mut reached = true;
+    /// Asks the regions the chunks belong to for them and for what happens in them. A
+    /// region without a link is asked when there is one again: the hello names every
+    /// chunk of the region that the edge shows or wants.
+    async fn subscribe(&mut self, chunks: Vec<ChunkPos>) {
         for (region, chunks) in self.by_region(chunks) {
-            reached &= self
-                .send_to_region(region, EdgeToWorker::Subscribe { chunks })
+            self.send_to_region(region, EdgeToWorker::Subscribe { chunks })
                 .await;
         }
-        reached
     }
 
     /// Tells the regions the chunks belong to that they are no longer needed here.
-    async fn unsubscribe(&mut self, chunks: Vec<ChunkPos>) -> bool {
-        let mut reached = true;
+    async fn unsubscribe(&mut self, chunks: Vec<ChunkPos>) {
         for (region, chunks) in self.by_region(chunks) {
-            reached &= self
-                .send_to_region(region, EdgeToWorker::Unsubscribe { chunks })
+            self.send_to_region(region, EdgeToWorker::Unsubscribe { chunks })
                 .await;
         }
-        reached
     }
 
     /// Sorts chunks by the region they belong to.
@@ -1064,10 +1383,10 @@ impl Fanout {
     }
 
     /// Forgets a player and releases what was held for them. Dropping their queue ends
-    /// their connection. Returns false if a region can no longer be reached.
-    async fn remove_player(&mut self, player: PlayerId) -> bool {
+    /// their connection.
+    async fn remove_player(&mut self, player: PlayerId) {
         let Some(view) = self.players.remove(&player) else {
-            return true;
+            return;
         };
         info!(name = %view.name, "player left");
         if let Some(entity) = view.entity {
@@ -1119,14 +1438,12 @@ impl Fanout {
         }
         let replica = &self.replica;
         self.entities
-            .retain(|_, state| replica.contains_key(&state.chunk()));
-        if !self.unsubscribe(unsubscribe).await {
-            return false;
-        }
+            .retain(|_, shown| replica.contains_key(&shown.state.chunk()));
+        self.unsubscribe(unsubscribe).await;
         // If that region has just let the player go, it ignores this, and the message
         // saying so, which is on its way, makes `hand_over` clean up.
         self.send_to_region(view.region, EdgeToWorker::PlayerLeave { player })
-            .await
+            .await;
     }
 
     fn session_matches(&self, player: PlayerId, session: SessionId) -> bool {
@@ -1135,18 +1452,41 @@ impl Fanout {
             .is_some_and(|view| view.session == session)
     }
 
-    /// Returns false if the region can no longer be reached.
-    async fn send_to_region(&mut self, region: RegionId, body: EdgeToWorker) -> bool {
-        let index = region.0 as usize;
-        let (Some(link), Some(numbered)) = (self.regions.get(index), self.numbered.get_mut(index))
-        else {
-            return false;
+    /// Sends `body` to a region, or keeps it for when the region can be reached.
+    ///
+    /// What changes the region is numbered and kept until the region reports it applied
+    /// and durable, so that it can be sent again on another link. The rest is only sent
+    /// if there is a link: a hello says anew what the edge wants to see and what it has
+    /// seen.
+    async fn send_to_region(&mut self, region: RegionId, body: EdgeToWorker) {
+        let Some(port) = self.regions.get_mut(region.0 as usize) else {
+            return;
         };
         let number = body.is_numbered().then(|| {
-            *numbered += 1;
-            *numbered
+            port.numbered += 1;
+            port.numbered
         });
-        link.send(EdgeMessage { number, body }).await.is_ok()
+        if let Some(number) = number {
+            port.kept.push_back((number, body.clone()));
+        }
+        let Some(link) = &port.link else {
+            return;
+        };
+        // Until the region has answered the hello, what is kept waits: it goes out in
+        // one piece, in order, once the region has said where it stands.
+        if number.is_some() && !link.welcomed {
+            return;
+        }
+        if link
+            .sender
+            .send(EdgeMessage { number, body })
+            .await
+            .is_err()
+        {
+            // The link's reader says so too, when it gets to it. Meanwhile nothing more
+            // is sent into the void.
+            self.lose_link(region);
+        }
     }
 }
 
@@ -1353,7 +1693,645 @@ fn login_packet(entity_id: EntityId, config: &FanoutConfig) -> Login {
 
 #[cfg(test)]
 mod tests {
+    use clustine_rpc::link::WorkerEnd;
+    use clustine_sim::api::{Pose, RemoteAction, RemoteStep};
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+    use uuid::Uuid;
+
     use super::*;
+    use crate::Relinks;
+
+    /// How long a test waits for something that has to happen.
+    const SOON: Duration = Duration::from_secs(10);
+
+    /// The world of these tests: a western region up to the chunks with x = 4, where
+    /// players enter the world, and an eastern one from there.
+    const WEST: RegionId = RegionId(0);
+    const EAST: RegionId = RegionId(1);
+
+    const IDENTITY: EdgeIdentity = EdgeIdentity {
+        edge: clustine_world::EdgeId(7),
+        start: 100,
+    };
+
+    /// A fan-out task with the regions played by the test.
+    struct Harness {
+        commands: mpsc::Sender<Command>,
+        relinks: Relinks,
+        /// The workers' ends of the links to the two regions.
+        regions: Vec<WorkerEnd>,
+        task: JoinHandle<Stopped>,
+        sessions: u64,
+        /// The number of the last outbox entry each region has made.
+        outbox: [u64; 2],
+    }
+
+    /// A link to `region` whose owner has `epoch`, and the worker's end of it.
+    fn link_to(region: RegionId, epoch: u64) -> (RegionLink, WorkerEnd) {
+        let (end, worker) = link::in_process(1024);
+        (RegionLink { region, epoch, end }, worker)
+    }
+
+    impl Harness {
+        /// An edge linked to both regions, each of which has been said hello to and has
+        /// answered that it does not know the edge, as at the start of everything.
+        async fn start() -> Self {
+            Self::start_with_patience(Duration::from_secs(3600)).await
+        }
+
+        async fn start_with_patience(region_patience: Duration) -> Self {
+            let layout = Layout::new(vec![4]).unwrap();
+            let (west, west_end) = link_to(WEST, 1);
+            let (east, east_end) = link_to(EAST, 1);
+            let spawn = Vec3::new(0.5, -60.0, 0.5);
+            let (routing, relinks) = Routing::new(layout, spawn, IDENTITY, vec![west, east]);
+            let config = FanoutConfig {
+                max_players: 20,
+                view_distance: 2,
+                online: Arc::default(),
+                region_patience,
+            };
+            let (commands, receiver) = mpsc::channel(64);
+            let task = tokio::spawn(Fanout::new(config, routing, receiver).run());
+            let mut harness = Self {
+                commands,
+                relinks,
+                regions: vec![west_end, east_end],
+                task,
+                sessions: 0,
+                outbox: [0; 2],
+            };
+            for region in [WEST, EAST] {
+                let hello = harness.next(region).await;
+                assert!(
+                    matches!(
+                        &hello.body,
+                        EdgeToWorker::Hello { seen: 0, players, chunks, .. }
+                            if players.is_empty() && chunks.is_empty()
+                    ),
+                    "{hello:?}"
+                );
+                harness.tell(region, WorkerToEdge::Welcome(Welcome::Unknown));
+            }
+            harness
+        }
+
+        /// What the edge sends `region` next.
+        async fn next(&mut self, region: RegionId) -> EdgeMessage {
+            timeout(SOON, self.regions[region.0 as usize].recv())
+                .await
+                .expect("the edge sent nothing")
+                .expect("the edge closed the link")
+        }
+
+        /// What the edge sends `region` next that is numbered, with its number.
+        async fn next_numbered(&mut self, region: RegionId) -> (u64, EdgeToWorker) {
+            loop {
+                let EdgeMessage { number, body } = self.next(region).await;
+                if let Some(number) = number {
+                    return (number, body);
+                }
+            }
+        }
+
+        /// Says something as `region`.
+        fn tell(&self, region: RegionId, message: WorkerToEdge) {
+            self.regions[region.0 as usize].try_send(message).unwrap();
+        }
+
+        /// Says `entry` as the next entry of the outbox of `region`. Returns its number.
+        fn say(&mut self, region: RegionId, entry: Durable) -> u64 {
+            let number = &mut self.outbox[region.0 as usize];
+            *number += 1;
+            let number = *number;
+            self.tell(region, WorkerToEdge::Outbox { number, entry });
+            number
+        }
+
+        /// Waits until the edge has handled everything `region` has said so far. The
+        /// edge takes what regions say, what players do and new links from different
+        /// queues, in no order between them, so a test that depends on the edge having
+        /// heard something makes sure of it with this.
+        async fn settle(&mut self, region: RegionId) {
+            // An entry about nobody, which the edge confirms like any other.
+            let nobody = Durable::RemoteDone {
+                player: player(u128::MAX),
+                sequence: 0,
+            };
+            let number = self.say(region, nobody);
+            loop {
+                let message = self.next(region).await;
+                if message.body == (EdgeToWorker::Confirm { number }) {
+                    return;
+                }
+            }
+        }
+
+        /// A player connects. Returns what their connection is sent.
+        async fn join(&mut self, player: PlayerId) -> mpsc::Receiver<Bytes> {
+            self.sessions += 1;
+            let (outbound, packets) = mpsc::channel(4096);
+            let join = Command::Join {
+                session: SessionId(self.sessions),
+                profile: Profile {
+                    uuid: player.0,
+                    name: format!("Player{}", self.sessions),
+                },
+                requested_view_distance: None,
+                outbound,
+                awaiting_teleport: Arc::new(AtomicI32::new(NO_TELEPORT)),
+            };
+            self.commands.send(join).await.unwrap();
+            packets
+        }
+
+        /// A player joins and the western region places them as `entity`. Everything
+        /// the edge sends the region for that has been received when this returns.
+        async fn joined(&mut self, player: PlayerId, entity: EntityId) -> mpsc::Receiver<Bytes> {
+            let packets = self.join(player).await;
+            let (_, join) = self.next_numbered(WEST).await;
+            assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+            self.tell(WEST, spawned(player, entity));
+            self.settle(WEST).await;
+            packets
+        }
+
+        /// Something the player with the latest session did.
+        async fn input(&mut self, player: PlayerId, input: PlayerInput) {
+            let command = Command::Input {
+                session: SessionId(self.sessions),
+                player,
+                input,
+            };
+            self.commands.send(command).await.unwrap();
+        }
+
+        /// Replaces the edge's link to `region` and returns the hello the edge says on
+        /// the new one.
+        async fn relink(&mut self, region: RegionId, epoch: u64) -> EdgeToWorker {
+            let (link, worker) = link_to(region, epoch);
+            self.regions[region.0 as usize] = worker;
+            assert!(self.relinks.replace(link).await);
+            self.next(region).await.body
+        }
+    }
+
+    fn player(number: u128) -> PlayerId {
+        PlayerId(Uuid::from_u128(number))
+    }
+
+    fn spawned(player: PlayerId, entity: EntityId) -> WorkerToEdge {
+        WorkerToEdge::ToPlayer {
+            player,
+            event: PlayerEvent::Spawned {
+                entity_id: entity,
+                position: Vec3::new(0.5, -60.0, 0.5),
+                hotbar: [None; HOTBAR_SLOTS],
+                selected_slot: 0,
+            },
+        }
+    }
+
+    fn step(x: f64) -> PlayerInput {
+        PlayerInput::Move {
+            position: Some(Vec3::new(x, -60.0, 0.5)),
+            rotation: None,
+            on_ground: true,
+        }
+    }
+
+    /// The player as the western region lets them go, standing in the eastern one.
+    fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
+        PlayerTransfer {
+            entity_id: entity,
+            name: "Player1".to_owned(),
+            pose: Pose::at(Vec3::new(64.5, -60.0, 0.5)),
+            hotbar: [None; HOTBAR_SLOTS],
+            selected_slot: 0,
+            last_input,
+        }
+    }
+
+    fn present(entity: EntityId, last_input: u64) -> Presence {
+        Presence::Present {
+            entity,
+            pose: Pose::at(Vec3::new(0.5, -60.0, 0.5)),
+            hotbar: [None; HOTBAR_SLOTS],
+            selected_slot: 0,
+            last_input,
+            handled: None,
+        }
+    }
+
+    /// Waits until the player's connection is ended by the edge.
+    async fn disconnected(packets: &mut mpsc::Receiver<Bytes>) {
+        let ended = async { while packets.recv().await.is_some() {} };
+        timeout(SOON, ended)
+            .await
+            .expect("the player was not disconnected");
+    }
+
+    /// Whether the edge still serves the player: their queue is open.
+    fn connected(packets: &mut mpsc::Receiver<Bytes>) -> bool {
+        loop {
+            match packets.try_recv() {
+                Ok(_) => {}
+                Err(mpsc::error::TryRecvError::Empty) => return true,
+                Err(mpsc::error::TryRecvError::Disconnected) => return false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn what_changes_a_region_is_numbered_from_one_per_region() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.joined(player(1), EntityId(5)).await;
+
+        edge.input(player(1), step(1.5)).await;
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert_eq!(number, 2);
+        assert!(
+            matches!(body, EdgeToWorker::Input { number: 1, .. }),
+            "{body:?}"
+        );
+
+        // The eastern region has been sent nothing numbered yet, so its first is 1.
+        let departed = Durable::Departed {
+            player: player(1),
+            transfer: transfer(EntityId(5), 1),
+        };
+        edge.say(WEST, departed);
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert_eq!(number, 1);
+        assert!(
+            matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{body:?}"
+        );
+    }
+
+    /// The heart of resuming: the players stay, the hello says what the edge believes
+    /// and has seen, and what the region has not reported applied is sent again with the
+    /// numbers it had, once the region has answered.
+    #[tokio::test]
+    async fn a_lost_link_keeps_the_players_and_a_new_one_resumes() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        // The join is applied and durable; two inputs follow that are not yet.
+        edge.tell(
+            WEST,
+            WorkerToEdge::Progress {
+                applied: 1,
+                inputs: Vec::new(),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.input(player(1), step(1.5)).await;
+        edge.input(player(1), step(2.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+
+        // The worker dies. An input made meanwhile is kept like the others.
+        let hello = {
+            let (link, worker) = link_to(WEST, 2);
+            drop(std::mem::replace(&mut edge.regions[0], worker));
+            edge.input(player(1), step(3.5)).await;
+            assert!(edge.relinks.replace(link).await);
+            edge.next(WEST).await.body
+        };
+        let EdgeToWorker::Hello {
+            edge: id,
+            start,
+            seen,
+            players,
+            chunks,
+        } = hello
+        else {
+            panic!("expected a hello, got {hello:?}");
+        };
+        // What it has seen of the region's outbox are the entries that settled it.
+        assert_eq!(
+            (id, start, seen),
+            (IDENTITY.edge, IDENTITY.start, edge.outbox[0])
+        );
+        assert_eq!(players, [player(1)]);
+        // Every chunk of the region that the edge shows or wants, and none of the other
+        // region's.
+        let layout = Layout::new(vec![4]).unwrap();
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|chunk| layout.region_of(*chunk) == WEST));
+        assert!(connected(&mut packets));
+
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        for expected in [2, 3, 4] {
+            let (number, body) = edge.next_numbered(WEST).await;
+            assert_eq!(number, expected);
+            assert!(matches!(body, EdgeToWorker::Input { .. }), "{body:?}");
+        }
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: present(EntityId(5), 0),
+            },
+        );
+
+        // What comes next carries on from there, and the player has stayed throughout.
+        edge.input(player(1), step(4.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 5);
+        assert!(connected(&mut packets));
+    }
+
+    #[tokio::test]
+    async fn what_a_region_reported_applied_is_not_sent_again() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.joined(player(1), EntityId(5)).await;
+        edge.input(player(1), step(1.5)).await;
+        edge.input(player(1), step(2.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        let progress = WorkerToEdge::Progress {
+            applied: 2,
+            inputs: vec![(player(1), 1)],
+        };
+        edge.tell(WEST, progress);
+        edge.settle(WEST).await;
+
+        edge.input(player(1), step(3.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 4);
+        let hello = edge.relink(WEST, 2).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        assert_eq!(edge.next_numbered(WEST).await.0, 4);
+    }
+
+    /// A region that has forgotten the edge expects its messages numbered from 1. The
+    /// edge must not send what it kept with the old numbers, which would close the
+    /// link, and the players it believed to be there are not.
+    #[tokio::test]
+    async fn a_region_that_forgot_the_edge_gets_nothing_that_was_kept() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        edge.tell(
+            WEST,
+            WorkerToEdge::Progress {
+                applied: 1,
+                inputs: Vec::new(),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+
+        let hello = edge.relink(WEST, 2).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Unknown));
+        disconnected(&mut packets).await;
+
+        // All the region hears is that the player is gone, numbered from 1 again.
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert_eq!(number, 1);
+        assert!(matches!(body, EdgeToWorker::PlayerLeave { .. }), "{body:?}");
+        // And a later hello claims nothing of the past.
+        let hello = edge.relink(WEST, 3).await;
+        assert!(
+            matches!(&hello, EdgeToWorker::Hello { seen: 0, players, .. } if players.is_empty()),
+            "{hello:?}"
+        );
+    }
+
+    /// An entry of a region's outbox is handled once, however often it is sent, and
+    /// confirmed after what it led to is kept for the region it concerns.
+    #[tokio::test]
+    async fn an_outbox_entry_is_handled_once_and_confirmed() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        let departed = || Durable::Departed {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0),
+        };
+
+        let number = edge.say(WEST, departed());
+        let (arrival, body) = edge.next_numbered(EAST).await;
+        assert_eq!(arrival, 1);
+        assert!(
+            matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{body:?}"
+        );
+        let confirm = loop {
+            let message = edge.next(WEST).await;
+            if matches!(message.body, EdgeToWorker::Confirm { .. }) {
+                break message;
+            }
+        };
+        assert_eq!(
+            confirm,
+            EdgeMessage::unnumbered(EdgeToWorker::Confirm { number })
+        );
+
+        // Sent again, as after a lost confirmation: nobody arrives a second time. The
+        // next numbered message the east gets is the player's next input.
+        edge.tell(
+            WEST,
+            WorkerToEdge::Outbox {
+                number,
+                entry: departed(),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.input(player(1), step(65.5)).await;
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert_eq!(number, 2);
+        assert!(matches!(body, EdgeToWorker::Input { .. }), "{body:?}");
+        assert!(connected(&mut packets));
+    }
+
+    /// The order of a resume matters: the outbox comes before the presence answers, so
+    /// a player the region let go while the link was down has been handed on by the
+    /// time the region says that it does not have them.
+    #[tokio::test]
+    async fn a_departure_missed_with_the_link_hands_the_player_on_before_presence_is_judged() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        edge.tell(
+            WEST,
+            WorkerToEdge::Progress {
+                applied: 1,
+                inputs: Vec::new(),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.input(player(1), step(64.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+
+        let hello = edge.relink(WEST, 2).await;
+        assert!(
+            matches!(&hello, EdgeToWorker::Hello { players, .. } if *players == [player(1)]),
+            "{hello:?}"
+        );
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        let departed = Durable::Departed {
+            player: player(1),
+            transfer: transfer(EntityId(5), 1),
+        };
+        edge.say(WEST, departed);
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: Presence::Absent,
+            },
+        );
+
+        let (_, body) = edge.next_numbered(EAST).await;
+        assert!(
+            matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{body:?}"
+        );
+        edge.settle(WEST).await;
+        assert!(connected(&mut packets));
+    }
+
+    #[tokio::test]
+    async fn a_player_a_region_does_not_have_is_disconnected_unless_they_are_on_their_way_there() {
+        let mut edge = Harness::start().await;
+        // The first is in the region as far as the edge knows, and the region has
+        // reported the join applied. The second has asked to join, which is still kept.
+        let mut settled = edge.joined(player(1), EntityId(5)).await;
+        edge.tell(
+            WEST,
+            WorkerToEdge::Progress {
+                applied: 1,
+                inputs: Vec::new(),
+            },
+        );
+        edge.settle(WEST).await;
+        let mut joining = edge.join(player(2)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+
+        let hello = edge.relink(WEST, 2).await;
+        assert!(
+            matches!(&hello, EdgeToWorker::Hello { players, .. } if players.len() == 2),
+            "{hello:?}"
+        );
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        for absent in [player(1), player(2)] {
+            edge.tell(
+                WEST,
+                WorkerToEdge::Presence {
+                    player: absent,
+                    answer: Presence::Absent,
+                },
+            );
+        }
+        disconnected(&mut settled).await;
+        edge.settle(WEST).await;
+        assert!(connected(&mut joining));
+    }
+
+    /// A player the region placed while the link was down is told so on resuming, from
+    /// what the region says of them.
+    #[tokio::test]
+    async fn a_player_placed_unnoticed_enters_the_world_on_resuming() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.join(player(1)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 1);
+
+        let hello = edge.relink(WEST, 2).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: present(EntityId(5), 0),
+            },
+        );
+
+        // Entering the world makes the edge ask for the chunks around.
+        loop {
+            let message = edge.next(WEST).await;
+            if matches!(message.body, EdgeToWorker::Subscribe { .. }) {
+                break;
+            }
+        }
+        assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
+        // The spawn the region may still report for them changes nothing.
+        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        edge.settle(WEST).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+        assert!(connected(&mut packets));
+    }
+
+    #[tokio::test]
+    async fn an_edge_that_has_been_superseded_stops() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        let hello = edge.relink(EAST, 2).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(EAST, WorkerToEdge::Welcome(Welcome::Superseded));
+        assert_eq!(
+            timeout(SOON, &mut edge.task).await.unwrap().unwrap(),
+            Stopped::Superseded
+        );
+        disconnected(&mut packets).await;
+    }
+
+    #[tokio::test]
+    async fn a_link_to_a_replaced_owner_is_not_taken() {
+        let mut edge = Harness::start().await;
+        let hello = edge.relink(WEST, 5).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Unknown));
+
+        // The link of an owner with a lower epoch is dropped, which closes it.
+        let (stale, mut worker) = link_to(WEST, 4);
+        assert!(edge.relinks.replace(stale).await);
+        assert_eq!(timeout(SOON, worker.recv()).await.unwrap(), None);
+        // The link the edge has is still the one it uses.
+        let _packets = edge.join(player(1)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 1);
+    }
+
+    /// What a player of one region does to blocks of another is passed on to the region
+    /// that has them.
+    #[tokio::test]
+    async fn a_remote_action_is_passed_on_to_the_region_that_has_the_block() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.joined(player(1), EntityId(5)).await;
+        let action = RemoteAction {
+            player: player(1),
+            sequence: 3,
+            step: RemoteStep::Break {
+                position: BlockPos::new(64, -61, 0),
+            },
+        };
+        edge.say(WEST, Durable::Remote(action.clone()));
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert_eq!((number, body), (1, EdgeToWorker::Remote(action)));
+    }
+
+    /// A player whose region does not confirm what they do is not kept for ever.
+    #[tokio::test(start_paused = true)]
+    async fn a_player_whose_region_stays_silent_is_disconnected_after_the_patience_is_over() {
+        let patience = Duration::from_secs(20);
+        let mut edge = Harness::start_with_patience(patience).await;
+        let mut waiting = edge.joined(player(1), EntityId(5)).await;
+        let mut content = edge.joined(player(2), EntityId(6)).await;
+        // One of them does something the region never reports applied.
+        edge.sessions = 1;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+
+        tokio::time::sleep(patience / 2).await;
+        assert!(connected(&mut waiting));
+        tokio::time::sleep(patience).await;
+        disconnected(&mut waiting).await;
+        // Who has nothing outstanding stays, however long the region is silent.
+        assert!(connected(&mut content));
+    }
 
     #[test]
     fn view_area_is_a_rounded_square() {

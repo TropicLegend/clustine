@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use clustine_region::Layout;
+use clustine_region::{Layout, RegionId};
 use clustine_rpc::link::EdgeEnd;
 use clustine_world::{EdgeId, Vec3};
 use tokio::net::TcpListener;
@@ -32,6 +32,10 @@ use crate::fanout::{Command, Fanout, FanoutConfig};
 
 /// Commands from connections that may wait for the fan-out task.
 const COMMAND_CAPACITY: usize = 1024;
+
+/// New links that may wait for the fan-out task. There is at most one per region under
+/// way at a time.
+const RELINK_CAPACITY: usize = 16;
 
 /// Settings of an edge.
 #[derive(Debug, Clone)]
@@ -51,6 +55,11 @@ pub struct EdgeConfig {
     pub client_timeout: Duration,
     /// Packets of at least this many bytes are compressed. `None` turns compression off.
     pub compression_threshold: Option<usize>,
+    /// How long a player is kept while the region they are in does not confirm what
+    /// they do: because nobody runs it, it cannot be reached, or it does not get
+    /// anything made durable. A player kept waiting longer is disconnected. It has to
+    /// stay below the time after which a region forgets an edge it has not heard from.
+    pub region_patience: Duration,
 }
 
 impl EdgeConfig {
@@ -65,6 +74,11 @@ impl EdgeConfig {
 
     /// The compression threshold of the vanilla server.
     pub const DEFAULT_COMPRESSION_THRESHOLD: usize = 256;
+
+    /// Long enough for another worker to take a region over, which takes the
+    /// coordinator's lease and a moment, and well below the 30 seconds after which a
+    /// region forgets an edge.
+    pub const DEFAULT_REGION_PATIENCE: Duration = Duration::from_secs(20);
 }
 
 /// Who an edge is to the regions it talks to; see
@@ -101,17 +115,82 @@ pub struct Routing {
     pub spawn: Vec3,
     /// Who this edge is to the regions.
     pub identity: EdgeIdentity,
-    /// The edge's links to the regions of the layout, from west to east.
+    /// The links the edge starts with. A region without one is waited for: what its
+    /// players do is kept until a link to it comes through `relinks`.
     pub links: Vec<RegionLink>,
+    /// New links to regions, which replace the ones the edge has: to a worker that has
+    /// taken a region over, or to the same worker after a connection was lost.
+    pub relinks: mpsc::Receiver<RegionLink>,
+    /// Where the edge says that its link to a region has ended, with the epoch of the
+    /// owner the link went to.
+    pub lost: mpsc::UnboundedSender<(RegionId, u64)>,
+}
+
+impl Routing {
+    /// The routing of an edge that starts with `links`, and the handle through which it
+    /// is given new ones while it runs.
+    pub fn new(
+        layout: Layout,
+        spawn: Vec3,
+        identity: EdgeIdentity,
+        links: Vec<RegionLink>,
+    ) -> (Self, Relinks) {
+        let (sender, relinks) = mpsc::channel(RELINK_CAPACITY);
+        // Without a limit, as nobody has to listen. It stays short: a link ends once.
+        let (lost, ended) = mpsc::unbounded_channel();
+        let routing = Self {
+            layout,
+            spawn,
+            identity,
+            links,
+            relinks,
+            lost,
+        };
+        (routing, Relinks { sender, ended })
+    }
+}
+
+/// Gives a running edge new links to regions, and hears from it which links have ended.
+#[derive(Debug)]
+pub struct Relinks {
+    sender: mpsc::Sender<RegionLink>,
+    ended: mpsc::UnboundedReceiver<(RegionId, u64)>,
+}
+
+impl Relinks {
+    /// Hands the edge a link that takes the place of the one it has to that region, if
+    /// it has one. Returns false if the edge is gone.
+    pub async fn replace(&self, link: RegionLink) -> bool {
+        self.sender.send(link).await.is_ok()
+    }
+
+    /// Waits until a link of the edge has ended, and returns the region it went to and
+    /// the epoch of the owner at its other end. `None` once the edge is gone.
+    ///
+    /// Nothing is lost if the returned future is dropped before it is done.
+    pub async fn ended(&mut self) -> Option<(RegionId, u64)> {
+        self.ended.recv().await
+    }
 }
 
 /// The edge's end of a link to a region, and the epoch of the region's owner at the
-/// other end. What comes over a link to an owner that is no longer the region's is
-/// dropped.
+/// other end. A link to an owner with a lower epoch than the one the edge is linked to
+/// is not taken: that owner has been replaced.
 #[derive(Debug)]
 pub struct RegionLink {
+    pub region: RegionId,
     pub epoch: u64,
     pub end: EdgeEnd,
+}
+
+/// Why an edge stopped serving players by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    /// A region knows a later start of an edge with this name: another process has
+    /// taken this one's place, and this one must not come back under the same name.
+    Superseded,
+    /// Whoever ran the edge dropped what it needs to go on.
+    Abandoned,
 }
 
 /// State shared by all connections of one edge.
@@ -141,7 +220,7 @@ impl Edge {
     ///
     /// # Panics
     ///
-    /// If `routing` does not have exactly one link per region of its layout.
+    /// If `routing` has a link to a region that its layout does not have.
     pub async fn bind(
         address: SocketAddr,
         config: EdgeConfig,
@@ -153,6 +232,7 @@ impl Edge {
             max_players: config.max_players,
             view_distance: config.view_distance,
             online: Arc::clone(&online),
+            region_patience: config.region_patience,
         };
         Ok(Self {
             listener: TcpListener::bind(address).await?,
@@ -172,16 +252,16 @@ impl Edge {
         self.listener.local_addr()
     }
 
-    /// Accepts and serves connections until a region is gone or the returned future is
-    /// dropped. Either way every open connection is closed.
-    pub async fn run(self) {
+    /// Accepts and serves connections until the edge has to stop, which it says why, or
+    /// the returned future is dropped. Either way every open connection is closed. A
+    /// region that goes away does not stop the edge: its players wait for it.
+    pub async fn run(self) -> Stopped {
         // Everything runs in this set, so dropping the future stops all of it.
         let mut connections = JoinSet::new();
-        let (fanout_running, mut fanout_stopped) = oneshot::channel::<()>();
+        let (fanout_running, mut fanout_stopped) = oneshot::channel();
         let fanout = self.fanout;
         connections.spawn(async move {
-            fanout.run().await;
-            drop(fanout_running);
+            let _ = fanout_running.send(fanout.run().await);
         });
         loop {
             // Reap finished connections so the set does not grow without bound.
@@ -190,7 +270,7 @@ impl Edge {
             let accepted = tokio::select! {
                 accepted = self.listener.accept() => accepted,
                 // Without the fan-out task nobody can play.
-                _ = &mut fanout_stopped => return,
+                stopped = &mut fanout_stopped => return stopped.unwrap_or(Stopped::Abandoned),
             };
             let (stream, peer) = match accepted {
                 Ok(accepted) => accepted,

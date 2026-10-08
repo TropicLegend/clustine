@@ -13,6 +13,7 @@ pub fn config() -> Config {
         // Small, so that tests do not wait for hundreds of chunks.
         view_distance: VIEW_DISTANCE,
         client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
+        region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
         compression_threshold: Some(EdgeConfig::DEFAULT_COMPRESSION_THRESHOLD),
         // Nothing is written to disk unless a test asks for it.
         world: None,
