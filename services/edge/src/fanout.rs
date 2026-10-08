@@ -225,6 +225,13 @@ struct Link {
     /// How many of the outbox entries the welcome announced are still to come; `None`
     /// until the welcome has been read.
     announced: Option<u32>,
+    /// How many of the presence answers the welcome announced are still to come;
+    /// `None` until the welcome has been read.
+    presences: Option<u32>,
+    /// The players this welcome itself made the region's and for whom no answer has
+    /// said that they are there. They are judged when the answers are through; see
+    /// `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 2.2.
+    brought: BTreeSet<PlayerId>,
     /// The number of the last subscription message sent over this link. A region takes
     /// them only in ascending order; see `docs/adr/0012-the-tick-on-chunks.md`,
     /// section 4.3.
@@ -614,6 +621,8 @@ impl Fanout {
             id,
             welcomed: false,
             announced: None,
+            presences: None,
+            brought: BTreeSet::new(),
             asked: 0,
         });
     }
@@ -655,15 +664,30 @@ impl Fanout {
             } => (entries, presences, applied),
             Welcome::Superseded => (0, 0, 0),
         };
-        // How many presence answers follow the entries, and how far the region has
-        // applied this edge's messages, are read and not acted on yet.
         debug!(%from, entries, presences, applied, "a region has welcomed this edge");
+        // How far the region had applied this edge's messages in the state its entries
+        // and its presence answers are made of. None of that is sent again, and what
+        // is still kept tells an answer about a player who is entering the world from
+        // one about who they were before: see `presence`.
+        self.progress(from, applied, &[]);
         let link = self.regions.entry(from).or_default().link.as_mut()?;
         link.announced = Some(entries);
+        link.presences = Some(presences);
         if entries == 0 {
-            self.send_kept(from).await;
+            self.entries_through(from).await;
         }
         None
+    }
+
+    /// The outbox entries that the welcome of the region `from` announced have all been
+    /// handled: what was kept for the region is sent, and if no presence answers are
+    /// to come, the region has said whom it has.
+    async fn entries_through(&mut self, from: RegionId) {
+        self.send_kept(from).await;
+        let link = self.regions.entry(from).or_default().link.as_ref();
+        if link.is_some_and(|link| link.presences == Some(0)) {
+            self.presence_through(from).await;
+        }
     }
 
     /// Sends the region `region` what was kept for it, now that it has said where it
@@ -700,7 +724,7 @@ impl Fanout {
         if let Some(left) = &mut link.announced {
             *left = left.saturating_sub(1);
             if *left == 0 {
-                self.send_kept(from).await;
+                self.entries_through(from).await;
             }
         }
     }
@@ -1047,84 +1071,206 @@ impl Fanout {
         }
     }
 
-    /// The region `from` has said whether it has `player`, whom the edge named in its
-    /// hello as one it believes to be there. The entries of the region's outbox that the
-    /// edge had not seen came before this, so a player the region let go has been
-    /// handed on by now.
+    /// Takes a presence answer of the region `from`, and counts it against what the
+    /// region's welcome announced: when the last has been read, the region has said
+    /// whom it has.
     async fn presence(&mut self, from: RegionId, player: PlayerId, answer: Presence) {
+        self.take_presence(from, player, answer).await;
+        let link = self.regions.entry(from).or_default().link.as_mut();
+        let Some(left) = link.and_then(|link| link.presences.as_mut()) else {
+            return;
+        };
+        // An answer beyond those announced is one too many, and ends nothing twice.
+        let last = *left == 1;
+        *left = left.saturating_sub(1);
+        if last {
+            self.presence_through(from).await;
+        }
+    }
+
+    /// The region `from` has said whether it has `player`: one the edge named in its
+    /// hello as one it believes to be there, or one the region has for this edge
+    /// whether the hello named them or not. The entries of the region's outbox that
+    /// the edge had not seen came before this, so a player the region let go has been
+    /// handed on by now.
+    ///
+    /// A region can have a stay the edge did not send it: one that came with a merge
+    /// or a split. So what it says is taken by the stay it names, the player with that
+    /// entity, and by where the edge has that stay; see
+    /// `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 2.1.
+    async fn take_presence(&mut self, from: RegionId, player: PlayerId, answer: Presence) {
+        let Presence::Present {
+            entity,
+            pose,
+            hotbar,
+            selected_slot,
+            last_input,
+            handled,
+        } = answer
+        else {
+            if self
+                .players
+                .get(&player)
+                .is_some_and(|view| view.region == from)
+            {
+                self.absent(from, player).await;
+            }
+            return;
+        };
+        let stay = self
+            .players
+            .get(&player)
+            .map(|view| (view.entity, view.region));
+        match stay {
+            // The stay the edge has, where it has it.
+            Some((Some(shown), region)) if shown == entity && region == from => {}
+            // The stay the edge has, under another region: it came here with a merge
+            // or a split that the edge has not caught up with, and is this region's.
+            Some((Some(shown), _)) if shown == entity => {
+                self.move_stay(player, from).await;
+            }
+            // A player who is entering the world. If their join is still among what is
+            // to be sent to the region again, the region had not applied it when it
+            // made this answer, which is then about who they were before: a stay the
+            // join will end. Taking it for them would put them into the world as
+            // their old self, with an entity the region removes a moment later.
+            Some((None, region)) if region == from => {
+                let port = &self.regions.entry(from).or_default();
+                let joining = port.kept.iter().any(|(_, body)| {
+                    matches!(body, EdgeToWorker::PlayerJoin(join) if join.player == player)
+                });
+                if joining {
+                    return;
+                }
+                // The region placed the player, and the word of it was lost with the
+                // link.
+                let inventory = inventory_packets(&hotbar, selected_slot);
+                self.spawn_player(player, entity, pose.position, inventory)
+                    .await;
+            }
+            // A stay the edge does not have: of a player it has given up, or has as
+            // another entity. It is the region's stay that ends, by a leave that names
+            // it, unless one is on its way already.
+            _ => {
+                let port = &self.regions.entry(from).or_default();
+                let leaving = port.kept.iter().any(|(_, body)| {
+                    matches!(
+                        body,
+                        EdgeToWorker::PlayerLeave { player: left, entity: named }
+                            if *left == player && *named == Some(entity)
+                    )
+                });
+                if !leaving {
+                    debug!(%from, entity = entity.0, "a region has a stay this edge does not; ending it");
+                    let leave = EdgeToWorker::PlayerLeave {
+                        player,
+                        entity: Some(entity),
+                    };
+                    self.send_to_region(from, leave).await;
+                }
+                return;
+            }
+        }
+        if let Some(link) = self.regions.entry(from).or_default().link.as_mut() {
+            link.brought.remove(&player);
+        }
         let Some(view) = self.players.get_mut(&player) else {
             return;
         };
-        if view.region != from {
+        while view
+            .kept_inputs
+            .front()
+            .is_some_and(|(number, ..)| *number <= last_input)
+        {
+            view.kept_inputs.pop_front();
+        }
+        // Through the same holding back as every acknowledgement: an action that is
+        // under way elsewhere holds back later ones.
+        if let Some(sequence) = handled {
+            self.handled(player, sequence).await;
+        }
+    }
+
+    /// Puts the stay of `player` under the region `to`, which has said that it has it
+    /// although the edge did not send it there: what the player sees is asked of `to`
+    /// from now on, and what they did that no region has reported applied is sent
+    /// there. There is no arrival: the region has the player whole.
+    async fn move_stay(&mut self, player: PlayerId, to: RegionId) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        let (from, Some(entity)) = (view.region, view.entity) else {
+            return;
+        };
+        if from == to {
             return;
         }
-        // The region speaks of the player as of the messages it has applied. If their
-        // leaving is still among what it is to be sent again, it speaks of who they
-        // were before they left: the player the edge has now joined afterwards, and is
-        // placed when the region has applied the leaving and the join behind it. Taking
-        // the answer for them would put them into the world as their old self, with an
-        // entity that the region removes a moment later.
-        let port = &self.regions.entry(from).or_default();
-        let left_since = port.kept.iter().any(
-            |(_, body)| matches!(body, EdgeToWorker::PlayerLeave { player: left, .. } if *left == player),
-        );
-        if left_since {
-            return;
+        debug!(name = %view.name, %from, %to, "a stay has moved without this edge");
+        view.region = to;
+        let again: Vec<_> = view
+            .kept_inputs
+            .iter()
+            .map(|(number, _, input)| (*number, input.clone()))
+            .collect();
+        // On the link to `to` this is before the inputs, as at a hand-over.
+        let seen: Vec<ChunkPos> = view.wanted.iter().copied().collect();
+        for chunk in &seen {
+            self.unwant(from, *chunk);
         }
-        match answer {
-            Presence::Present {
+        for chunk in &seen {
+            self.want(to, *chunk);
+        }
+        self.flush_asking().await;
+        for (number, input) in again {
+            let message = EdgeToWorker::Input {
+                player,
                 entity,
-                pose,
-                hotbar,
-                selected_slot,
-                last_input,
-                handled,
-            } => {
-                while view
-                    .kept_inputs
-                    .front()
-                    .is_some_and(|(number, ..)| *number <= last_input)
-                {
-                    view.kept_inputs.pop_front();
-                }
-                match view.entity {
-                    // The region placed the player, and the word of it was lost with
-                    // the link.
-                    None => {
-                        let inventory = inventory_packets(&hotbar, selected_slot);
-                        self.spawn_player(player, entity, pose.position, inventory)
-                            .await;
-                    }
-                    Some(shown) if shown != entity => {
-                        error!(name = %view.name, %from, "a region has a player as another entity");
-                        refuse(&view.outbound, "The server lost track of where you are.");
-                        self.remove_player(player).await;
-                        return;
-                    }
-                    Some(_) => {}
-                }
-                // Through the same holding back as every acknowledgement: an action
-                // that is under way elsewhere holds back later ones.
-                if let Some(sequence) = handled {
-                    self.handled(player, sequence).await;
-                }
-            }
-            Presence::Absent => {
-                // A join or an arrival that the region has not applied yet is among
-                // what is sent to it again, and puts the player there.
-                let port = &self.regions.entry(from).or_default();
-                let under_way = port.kept.iter().any(|(_, body)| match body {
-                    EdgeToWorker::PlayerJoin(join) => join.player == player,
-                    EdgeToWorker::PlayerArrive {
-                        player: arriving, ..
-                    } => *arriving == player,
-                    _ => false,
-                });
-                if !under_way {
-                    warn!(name = %view.name, %from, "a region does not have a player it should have");
-                    refuse(&view.outbound, "The server lost track of where you are.");
-                    self.remove_player(player).await;
-                }
+                number,
+                input,
+            };
+            self.send_to_region(to, message).await;
+        }
+    }
+
+    /// The region `from` does not have `player`, whom the edge has under it. A join or
+    /// an arrival that the region has not applied yet is among what is sent to it
+    /// again, and puts the player there; otherwise they are lost.
+    async fn absent(&mut self, from: RegionId, player: PlayerId) {
+        let port = &self.regions.entry(from).or_default();
+        let under_way = port.kept.iter().any(|(_, body)| match body {
+            EdgeToWorker::PlayerJoin(join) => join.player == player,
+            EdgeToWorker::PlayerArrive {
+                player: arriving, ..
+            } => *arriving == player,
+            _ => false,
+        });
+        if under_way {
+            return;
+        }
+        if let Some(view) = self.players.get(&player) {
+            warn!(name = %view.name, %from, "a region does not have a player it should have");
+            refuse(&view.outbound, "The server lost track of where you are.");
+        }
+        self.remove_player(player).await;
+    }
+
+    /// The region `from` has said whom it has for this edge. The players its welcome
+    /// itself made its own, and of whom it then said nothing, are not there. Nobody
+    /// else is judged: a player the hello named has had an answer of their own, and
+    /// one whom another region's word put under this region meanwhile may have been
+    /// sent on since.
+    async fn presence_through(&mut self, from: RegionId) {
+        let Some(link) = self.regions.entry(from).or_default().link.as_mut() else {
+            return;
+        };
+        let brought = std::mem::take(&mut link.brought);
+        for player in brought {
+            if self
+                .players
+                .get(&player)
+                .is_some_and(|view| view.region == from)
+            {
+                self.absent(from, player).await;
             }
         }
     }
@@ -3555,6 +3701,193 @@ mod tests {
         );
         edge.say(EAST, sends_on(WEST));
         disconnected(&mut packets).await;
+    }
+
+    /// A welcome that resumes, with `presences` answers behind it and the region
+    /// having applied this edge's messages up to `applied`.
+    fn resumed(presences: u32, applied: u64) -> WorkerToEdge {
+        WorkerToEdge::Welcome(Welcome::Resumed {
+            entries: 0,
+            presences,
+            applied,
+        })
+    }
+
+    fn says_present(player: PlayerId, entity: EntityId) -> WorkerToEdge {
+        WorkerToEdge::Presence {
+            player,
+            answer: present(entity, 0),
+        }
+    }
+
+    /// A region says every stay it has for the edge, also those the hello did not
+    /// name. One the edge does not have, of a player it has given up or has as another
+    /// entity, is ended by a leave that names it; the player the edge has is not
+    /// touched by that.
+    #[tokio::test]
+    async fn a_stay_a_region_has_and_the_edge_does_not_is_ended_by_a_leave_that_names_it() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed(2, 1));
+        edge.tell(WEST, says_present(player(1), EntityId(5)));
+        edge.tell(WEST, says_present(player(2), EntityId(9)));
+        let leave = EdgeToWorker::PlayerLeave {
+            player: player(2),
+            entity: Some(EntityId(9)),
+        };
+        assert_eq!(edge.next_numbered(WEST).await, (2, leave));
+
+        // The region has the player the edge has, as someone they were before.
+        edge.relink(WEST, 3).await;
+        edge.tell(WEST, resumed(1, 2));
+        edge.tell(WEST, says_present(player(1), EntityId(4)));
+        let leave = EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: Some(EntityId(4)),
+        };
+        assert_eq!(edge.next_numbered(WEST).await, (3, leave));
+        edge.settle(WEST).await;
+        assert!(connected(&mut packets));
+    }
+
+    /// A region that says it has a stay the edge has under another region has come by
+    /// it through a merge or a split. The stay is that region's from then on: it is
+    /// asked for what the player sees before it is sent anything they did, there is no
+    /// arrival, and what they do next goes there.
+    #[tokio::test]
+    async fn a_stay_the_edge_has_under_another_region_moves_to_the_one_that_says_it_has_it() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+
+        let hello = edge.relink(EAST, 2).await;
+        let EdgeToWorker::Hello { players, .. } = hello else {
+            panic!("{hello:?}");
+        };
+        assert_eq!(players, []);
+        let welcome = Welcome::Unknown {
+            since: 7,
+            entries: 0,
+            presences: 1,
+            applied: 0,
+        };
+        edge.tell(EAST, WorkerToEdge::Welcome(welcome));
+        edge.tell(EAST, says_present(player(1), EntityId(5)));
+
+        // What they see, as a viewer's, and only then what they did.
+        let EdgeMessage { number, body } = edge.next(EAST).await;
+        let EdgeToWorker::Subscribe { chunks, .. } = &body else {
+            panic!("{body:?}");
+        };
+        assert!(number.is_none() && chunks.contains(&SHARED), "{body:?}");
+        let (number, body) = edge.next_numbered(EAST).await;
+        let again = EdgeToWorker::Input {
+            player: player(1),
+            entity: EntityId(5),
+            number: 1,
+            input: step(1.5),
+        };
+        assert_eq!((number, body), (1, again));
+        // The region they were under is left a guest's subscription for what they
+        // still see.
+        let left = next_asked(&mut edge, WEST).await;
+        assert!(
+            matches!(&left, EdgeToWorker::SubscribeAsGuest { chunks, .. } if chunks.contains(&SHARED)),
+            "{left:?}"
+        );
+
+        edge.input(player(1), step(2.5)).await;
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::Input { number: 2, .. }),
+            "{body:?}"
+        );
+        assert!(connected(&mut packets));
+    }
+
+    /// A region's answer about a player who is entering the world is about the stay
+    /// their join made only if the region had applied the join, which its welcome
+    /// says. Otherwise it is about who they were before, and the join, sent again,
+    /// places them.
+    #[tokio::test]
+    async fn a_player_who_is_entering_the_world_is_placed_by_an_answer_only_if_their_join_was_applied()
+     {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.join(player(1)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 1);
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed(1, 1));
+        edge.tell(WEST, says_present(player(1), EntityId(5)));
+        assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
+        // The join is not sent again, and what they do names the stay they were told.
+        edge.settle(WEST).await;
+        edge.input(player(1), step(1.5)).await;
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2
+                && matches!(
+                    body,
+                    EdgeToWorker::Input {
+                        entity: EntityId(5),
+                        ..
+                    }
+                ),
+            "{number} {body:?}"
+        );
+
+        let mut edge = Harness::start().await;
+        let mut packets = edge.join(player(1)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 1);
+        edge.relink(WEST, 2).await;
+        // The region has them from before, by a way that left no leave with the edge.
+        edge.tell(WEST, resumed(1, 0));
+        edge.tell(WEST, says_present(player(1), EntityId(4)));
+        let (number, join) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 1 && matches!(join, EdgeToWorker::PlayerJoin(_)),
+            "{join:?}"
+        );
+        edge.settle(WEST).await;
+        assert_eq!(
+            packets.try_recv().err(),
+            Some(mpsc::error::TryRecvError::Empty)
+        );
+        edge.tell(WEST, spawned(player(1), EntityId(6)));
+        assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
+        edge.settle(WEST).await;
+        edge.input(player(1), step(1.5)).await;
+        let (_, body) = edge.next_numbered(WEST).await;
+        assert!(
+            matches!(
+                body,
+                EdgeToWorker::Input {
+                    entity: EntityId(6),
+                    ..
+                }
+            ),
+            "{body:?}"
+        );
+    }
+
+    /// What a welcome says the region had applied is not sent to it again.
+    #[tokio::test]
+    async fn what_a_welcome_says_was_applied_is_not_sent_again() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.joined(player(1), EntityId(5)).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed(1, 1));
+        edge.tell(WEST, says_present(player(1), EntityId(5)));
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::Input { .. }),
+            "{number} {body:?}"
+        );
     }
 
     /// A player whose region does not confirm what they do is not kept for ever.
