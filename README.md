@@ -72,8 +72,7 @@ cargo run -p clustine
 
 The world can be divided into regions that are simulated separately, each on a thread
 of its own, by naming the chunk x coordinates where they meet. Players are handed from
-region to region as they walk and do not notice, except that for now a block cannot be
-changed from the other side of such a boundary:
+region to region as they walk, and build across the boundaries, without noticing them:
 
 ```bash
 cargo run -p clustine -- --boundaries 4

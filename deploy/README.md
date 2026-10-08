@@ -7,7 +7,7 @@ cluster and lets bots walk from one worker to another.
 |---|---|
 | [`../Dockerfile`](../Dockerfile) | The image of every service: the `clustine` binary, whose subcommand says which service a container is, and the test client `clustine-botswarm` |
 | [`kubernetes/`](kubernetes) | A kustomize base in the namespace `clustine`: one coordinator, one world store with a volume, two workers and one edge |
-| [`kubernetes/test/bots.yaml`](kubernetes/test/bots.yaml) | A Job that lets bots walk across the boundary between the two workers |
+| [`kubernetes/test/bots.yaml`](kubernetes/test/bots.yaml) | A Job that lets bots walk and build across the boundary between the two workers |
 | [`kind/`](kind) | The scripts that run all of this on a cluster made with [kind](https://kind.sigs.k8s.io), which runs Kubernetes in Docker containers |
 
 ## Keep it inside the cluster
@@ -37,9 +37,11 @@ deploy/kind/test.sh
 It builds the image `clustine:dev`, creates the cluster `clustine-test`, loads the image
 into it, applies `kubernetes/`, waits until the services are ready and runs the bots.
 The world is divided at block x = 64, each worker runs one side, and the bots walk back
-and forth between x = 40.5 and x = 90.5. The test passes if no bot was disconnected, a
-watching bot saw each walker as exactly one entity the whole time, and each of the two
-workers logged players arriving from and departing to another region. If it fails, it
+and forth between x = 40.5 and x = 90.5, placing and breaking blocks at either end and,
+from either side, across the boundary. The test passes if no bot was disconnected, every
+block came and went, a watching bot saw each walker as exactly one entity the whole
+time, and each of the two workers logged players arriving from and departing to another
+region. If it fails, it
 prints the end of every pod's log, the events and the list of pods. The cluster is
 deleted at the end either way.
 

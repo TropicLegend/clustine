@@ -107,6 +107,13 @@ pub(crate) enum Command {
         player: PlayerId,
         input: PlayerInput,
     },
+    /// The player did something to blocks that no region needs to hear of, and their
+    /// client waits to be told that it was handled.
+    Handled {
+        session: SessionId,
+        player: PlayerId,
+        sequence: i32,
+    },
 }
 
 /// Settings of the fan-out task.
@@ -156,6 +163,17 @@ struct PlayerView {
     inputs_sent: u64,
     /// The latest inputs with their numbers; see [`KEPT_INPUTS`].
     kept_inputs: VecDeque<(u64, PlayerInput)>,
+    /// The highest sequence number of the player's actions on blocks that has been
+    /// reported as handled.
+    handled: Option<i32>,
+    /// The sequence numbers of actions that concern blocks of another region than the
+    /// player's and are on their way there. The client is not told that an action was
+    /// handled while an earlier one is among these: it would stop showing its own guess
+    /// of what the action did before the region that has the blocks has said what it
+    /// really did, and the block would flicker.
+    under_way: BTreeSet<i32>,
+    /// The highest sequence number the client has been told was handled.
+    acknowledged: Option<i32>,
     view_distance: i32,
     /// The chunks in view. Empty until the worker has placed the player.
     wanted: BTreeSet<ChunkPos>,
@@ -297,6 +315,9 @@ impl Fanout {
                         region: self.spawn_region,
                         inputs_sent: 0,
                         kept_inputs: VecDeque::new(),
+                        handled: None,
+                        under_way: BTreeSet::new(),
+                        acknowledged: None,
                         view_distance,
                         wanted: BTreeSet::new(),
                         center: ChunkPos::new(0, 0),
@@ -337,6 +358,16 @@ impl Fanout {
                     input,
                 };
                 self.send_to_region(region, message).await
+            }
+            Command::Handled {
+                session,
+                player,
+                sequence,
+            } => {
+                if self.session_matches(player, session) {
+                    self.handled(player, sequence).await;
+                }
+                true
             }
             Command::Leave { session, player } => {
                 if self.session_matches(player, session) {
@@ -386,9 +417,24 @@ impl Fanout {
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Acknowledged { sequence },
-            } => {
-                let packet = encoded(&AcknowledgeBlockChange { sequence });
-                self.send_to_player(player, [packet]).await;
+            } => self.handled(player, sequence).await,
+            WorkerToEdge::Remote(action) => {
+                // The region that has the block the next step is about takes it.
+                let to = self.layout.region_of(action.step.concerns().chunk());
+                let (player, sequence) = (action.player, action.sequence);
+                if let Some(view) = self.players.get_mut(&player) {
+                    view.under_way.insert(sequence);
+                }
+                if to != from {
+                    return self.send_to_region(to, EdgeToWorker::Remote(action)).await;
+                }
+                // The region passed on what, by this edge's layout, is its own to do.
+                // Sending it back would have the two go round in circles.
+                error!(%from, "a region passed on an action about one of its own blocks");
+                self.arrived(player, sequence).await;
+            }
+            WorkerToEdge::RemoteDone { player, sequence } => {
+                self.arrived(player, sequence).await;
             }
             WorkerToEdge::ToPlayer {
                 player,
@@ -421,6 +467,50 @@ impl Fanout {
             }
         }
         true
+    }
+
+    /// Notes that a region has handled everything `player` did to blocks up to
+    /// `sequence`, and tells the client as far as it may be told.
+    async fn handled(&mut self, player: PlayerId, sequence: i32) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        view.handled = view.handled.max(Some(sequence));
+        self.acknowledge(player).await;
+    }
+
+    /// Notes that an action of `player` that concerned another region's blocks has been
+    /// dealt with there, and tells the client as far as it may be told.
+    async fn arrived(&mut self, player: PlayerId, sequence: i32) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        // Otherwise it is of a connection the player had before.
+        if view.under_way.remove(&sequence) {
+            view.handled = view.handled.max(Some(sequence));
+            self.acknowledge(player).await;
+        }
+    }
+
+    /// Tells the client of `player` up to which sequence number its actions on blocks
+    /// have been handled, if that is further than it has been told: up to the highest
+    /// that a region has reported, but not beyond an action that is still under way.
+    async fn acknowledge(&mut self, player: PlayerId) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        let Some(handled) = view.handled else {
+            return;
+        };
+        let ready = match view.under_way.first() {
+            Some(first) => handled.min(first.saturating_sub(1)),
+            None => handled,
+        };
+        if Some(ready) > view.acknowledged {
+            view.acknowledged = Some(ready);
+            let packet = encoded(&AcknowledgeBlockChange { sequence: ready });
+            self.send_to_player(player, [packet]).await;
+        }
     }
 
     /// Passes a player whom the region `from` has let go on to the region they walked

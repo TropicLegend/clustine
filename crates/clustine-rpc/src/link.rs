@@ -205,7 +205,7 @@ mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
     use clustine_sim::api::{
         EntityKind, EntityState, Face, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
-        PlayerJoin, PlayerTransfer, Pose, RegionEvent,
+        PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
     };
     use clustine_world::{Biome, BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
     use uuid::Uuid;
@@ -218,6 +218,19 @@ mod tests {
 
     fn player() -> PlayerId {
         PlayerId(Uuid::from_u128(7))
+    }
+
+    fn remote() -> RemoteAction {
+        RemoteAction {
+            player: player(),
+            sequence: 31,
+            step: RemoteStep::PlaceAgainst {
+                against: BlockPos::new(16, -61, 2),
+                target: BlockPos::new(15, -61, 2),
+                block: blocks::GLASS,
+                placer: Vec3::new(17.5, -60.0, 2.5),
+            },
+        }
     }
 
     fn transfer() -> PlayerTransfer {
@@ -290,6 +303,7 @@ mod tests {
                 entity: EntityId(9),
                 chunk: ChunkPos::new(-3, 4),
             },
+            EdgeToWorker::Remote(remote()),
         ];
         let to_edge = vec![
             WorkerToEdge::TickDelta {
@@ -320,6 +334,11 @@ mod tests {
             WorkerToEdge::ToPlayer {
                 player: player(),
                 event: PlayerEvent::Refused,
+            },
+            WorkerToEdge::Remote(remote()),
+            WorkerToEdge::RemoteDone {
+                player: player(),
+                sequence: -4,
             },
             WorkerToEdge::ChunkSnapshot {
                 position: ChunkPos::new(3, -4),

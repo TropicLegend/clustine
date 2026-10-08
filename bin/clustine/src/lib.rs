@@ -122,8 +122,8 @@ pub struct Config {
     pub serialise_link: bool,
     /// The chunk x coordinates at which the world is divided into regions, ascending.
     /// Each region is simulated on its own; players are handed from one to the next as
-    /// they walk, but cannot change blocks on the other side of a boundary. Empty for a
-    /// world that is one region.
+    /// they walk, and what they do to blocks on the other side of a boundary is passed
+    /// on to the region that has them. Empty for a world that is one region.
     pub boundaries: Vec<i32>,
 }
 

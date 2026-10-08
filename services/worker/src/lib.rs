@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use clustine_rpc::link::WorkerEnd;
 use clustine_rpc::{EdgeToWorker, StoreReply, StoreRequest, WorkerToEdge};
 use clustine_sim::api::RegionEvent;
-use clustine_sim::{PlayerChange, PlayerEvent, Region, TickInputs};
+use clustine_sim::{PlayerChange, PlayerEvent, Region, RemoteOutcome, TickInputs};
 use clustine_world::{ChunkPos, PlayerId};
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
@@ -124,6 +124,9 @@ pub struct RegionRunner {
     players: BTreeMap<PlayerId, LinkId>,
     /// What the coming tick will be given.
     inputs: TickInputs,
+    /// The link each of the remote actions among those inputs came through, in the same
+    /// order. What becomes of an action is told to that link.
+    remote_from: Vec<LinkId>,
     /// Loaded chunks that have changed since they were loaded or last stored.
     unsaved: BTreeSet<ChunkPos>,
     /// How many ticks pass between two checkpoints.
@@ -152,6 +155,7 @@ impl RegionRunner {
             attach,
             players: BTreeMap::new(),
             inputs: TickInputs::default(),
+            remote_from: Vec::new(),
             unsaved: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             status: Arc::default(),
@@ -203,6 +207,7 @@ impl RegionRunner {
         // What is collected from here on is for the tick after this one: the players and
         // the chunks of a link that is lost while it is told what this tick did.
         let inputs = mem::take(&mut self.inputs);
+        let remote_from = mem::take(&mut self.remote_from);
         let output = self.region.tick(&inputs);
 
         for position in output.chunk_requests {
@@ -246,8 +251,27 @@ impl RegionRunner {
             }
         }
 
+        // What players did to blocks of other regions goes to their edge to be passed
+        // on, while it is still known which link they belong to: a player can be let go
+        // in the same tick.
+        for action in output.remote_requests {
+            if let Some(id) = self.players.get(&action.player).copied() {
+                self.publish(id, WorkerToEdge::Remote(action));
+            }
+        }
+
         // After the events, so that a player is told that their action was handled only
-        // once they have been told what it did.
+        // once they have been told what it did. That goes for players of other regions
+        // too, whose edge asked for what they did to be done here.
+        for (outcome, id) in output.remote_outcomes.into_iter().zip(remote_from) {
+            let message = match outcome {
+                RemoteOutcome::Done { player, sequence } => {
+                    WorkerToEdge::RemoteDone { player, sequence }
+                }
+                RemoteOutcome::Next(action) => WorkerToEdge::Remote(action),
+            };
+            self.publish(id, message);
+        }
         for (player, event) in output.player_events {
             self.tell(output.tick, player, event);
         }
@@ -381,6 +405,10 @@ impl RegionRunner {
                     );
                 }
                 self.inputs.change(PlayerChange::Arrive(player, transfer));
+            }
+            EdgeToWorker::Remote(action) => {
+                self.inputs.remote_actions.push(action);
+                self.remote_from.push(id);
             }
             EdgeToWorker::Discard { entity, chunk } => {
                 self.inputs.change(PlayerChange::Discard { entity, chunk });
@@ -594,7 +622,7 @@ mod tests {
     use clustine_sim::api::{
         EntityKind, EntityState, HOTBAR_SLOTS, PlayerInput, PlayerJoin, Pose, RegionEvent,
     };
-    use clustine_sim::{PlayerTransfer, RegionConfig};
+    use clustine_sim::{PlayerTransfer, RegionConfig, RemoteAction, RemoteStep};
     use clustine_world::{BlockPos, ChunkArea, EntityId, EntityIds, Vec3};
     use clustine_worldgen::FlatGenerator;
     use tokio::time::timeout;
@@ -801,6 +829,7 @@ mod tests {
                     WorkerToEdge::TickDelta { events, .. } => {
                         assert!(matches!(events[..], [RegionEvent::EntitySpawned(_)]));
                     }
+                    other => panic!("unexpected {other:?}"),
                 }
             }
             assert_eq!(
@@ -880,7 +909,7 @@ mod tests {
             seen.iter().all(|message| match message {
                 WorkerToEdge::ChunkSnapshot { entities, .. } => entities.is_empty(),
                 WorkerToEdge::ToPlayer { .. } => true,
-                WorkerToEdge::TickDelta { .. } => false,
+                _ => false,
             }),
             "{seen:?}"
         );
@@ -1656,6 +1685,127 @@ mod tests {
             // The region is done with the player, and nobody else was told anything.
             assert!(runner.players.is_empty());
             assert_eq!(bystander.try_recv(), Ok(None));
+        }
+    }
+
+    /// What a player does to a block of another region goes to the player's edge to be
+    /// passed on. What reaches this region that way is answered to the link it came
+    /// through, after the tick's changes: done, or with what is left for a third region.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn actions_on_blocks_of_other_regions_go_through_the_edges() {
+        for connect in KINDS {
+            let (mut edge, worker_end) = connect(256);
+            let (mut other, other_end) = connect(256);
+            let mut runner = runner_of(config(WEST), worker_end);
+            runner.links().attach(other_end);
+            let origin = ChunkPos::new(0, 0);
+            let subscribe = || EdgeToWorker::Subscribe {
+                chunks: vec![origin],
+            };
+
+            // A player of this region, close to where it ends at x = 16, breaks a block
+            // beyond that.
+            edge.send(join(player(), "Notch")).await.unwrap();
+            edge.send(subscribe()).await.unwrap();
+            other.send(subscribe()).await.unwrap();
+            step_until(&mut runner, |runner| {
+                runner.region().chunk(origin).is_some()
+            });
+            edge.send(walk(player(), 14.5)).await.unwrap();
+            step_until(&mut runner, |runner| {
+                runner
+                    .region()
+                    .player(player())
+                    .is_some_and(|(_, pose)| pose.position.x == 14.5)
+            });
+            // Whatever that was reported with has to have arrived before what follows
+            // is looked at, also over a link that takes its time.
+            for _ in 0..25 {
+                runner.step();
+                thread::sleep(Duration::from_millis(2));
+            }
+            received(&mut edge);
+            received(&mut other);
+            edge.send(dig_by(player(), 16, 7)).await.unwrap();
+            let request = RemoteAction {
+                player: player(),
+                sequence: 7,
+                step: RemoteStep::Break {
+                    position: BlockPos::new(16, -61, 0),
+                },
+            };
+            assert_eq!(
+                step_for(&mut runner, &mut edge),
+                WorkerToEdge::Remote(request)
+            );
+            // Nobody is told that it was handled, and the other edge hears nothing.
+            runner.step();
+            assert_eq!(received(&mut edge), []);
+            assert_eq!(received(&mut other), []);
+
+            // The other edge passes on what a player of another region did to a block
+            // of this one. It hears what that changed, then that it is done.
+            let block = BlockPos::new(15, -61, 0);
+            other
+                .send(EdgeToWorker::Remote(RemoteAction {
+                    player: other_player(),
+                    sequence: 3,
+                    step: RemoteStep::Break { position: block },
+                }))
+                .await
+                .unwrap();
+            let changed = [RegionEvent::BlockChanged {
+                position: block,
+                state: clustine_data::blocks::AIR,
+            }];
+            assert_eq!(events(step_for(&mut runner, &mut other)), changed);
+            assert_eq!(
+                step_for(&mut runner, &mut other),
+                WorkerToEdge::RemoteDone {
+                    player: other_player(),
+                    sequence: 3,
+                }
+            );
+            // The first edge watches the chunk too and is told of the change, but not
+            // that anything is done: it did not ask.
+            assert_eq!(events(step_for(&mut runner, &mut edge)), changed);
+            runner.step();
+            assert_eq!(received(&mut edge), []);
+
+            // A block to be placed beyond this region against one of this region's is
+            // found to have something to be placed against, and passed on.
+            let stone = clustine_data::blocks::STONE;
+            let against = BlockPos::new(15, -62, 0);
+            let target = BlockPos::new(16, -62, 0);
+            let placer = Vec3::new(17.5, -60.0, 0.5);
+            other
+                .send(EdgeToWorker::Remote(RemoteAction {
+                    player: other_player(),
+                    sequence: 4,
+                    step: RemoteStep::PlaceAgainst {
+                        against,
+                        target,
+                        block: stone,
+                        placer,
+                    },
+                }))
+                .await
+                .unwrap();
+            assert_eq!(
+                step_for(&mut runner, &mut other),
+                WorkerToEdge::Remote(RemoteAction {
+                    player: other_player(),
+                    sequence: 4,
+                    step: RemoteStep::Place {
+                        target,
+                        block: stone,
+                        placer,
+                    },
+                })
+            );
+            runner.step();
+            assert_eq!(received(&mut edge), []);
+            assert_eq!(received(&mut other), []);
         }
     }
 

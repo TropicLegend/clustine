@@ -157,6 +157,67 @@ pub enum PlayerInput {
     SetHotbarSlot { slot: u8, stack: Option<ItemStack> },
 }
 
+/// What is left to do of something a player did to blocks that the region the player is
+/// in does not have. It goes from region to region, each doing the part that concerns
+/// its own blocks, until it has been dealt with.
+///
+/// A region's players can reach a few blocks beyond where the region ends. What they do
+/// there is for the region that has those blocks to decide, as it alone knows them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteAction {
+    /// Who did it.
+    pub player: PlayerId,
+    /// The number the player's client gave the action. Nobody acknowledges it to the
+    /// player before the action has been dealt with; see [`RemoteOutcome::Done`].
+    pub sequence: i32,
+    pub step: RemoteStep,
+}
+
+/// The next step of a [`RemoteAction`]. The player's region has found the player to be
+/// within reach and, for placing, to hold the block.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum RemoteStep {
+    /// Break the block at `position`.
+    Break { position: BlockPos },
+    /// Place `block` at `target`, provided there is a block at `against` to place it
+    /// against. `placer` is where the player's feet are, who must not be built into.
+    PlaceAgainst {
+        against: BlockPos,
+        target: BlockPos,
+        block: BlockState,
+        placer: Vec3,
+    },
+    /// Place `block` at `target`, provided the spot is free. The block it is placed
+    /// against has been found to be there.
+    Place {
+        target: BlockPos,
+        block: BlockState,
+        placer: Vec3,
+    },
+}
+
+impl RemoteStep {
+    /// The block this step is about: the region that has it is the one to take the step.
+    pub fn concerns(&self) -> BlockPos {
+        match self {
+            Self::Break { position } => *position,
+            Self::PlaceAgainst { against, .. } => *against,
+            Self::Place { target, .. } => *target,
+        }
+    }
+}
+
+/// What became of a [`RemoteAction`] that a region was given.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum RemoteOutcome {
+    /// It has been dealt with, whether or not it changed anything. The player can now
+    /// be told so, as with [`PlayerEvent::Acknowledged`]; what it changed has been
+    /// reported among the tick's events.
+    Done { player: PlayerId, sequence: i32 },
+    /// What is left of it concerns yet another region.
+    Next(RemoteAction),
+}
+
 /// Everything that happened since the previous tick.
 ///
 /// A tick applies all of `player_changes` and then all of `inputs`. What players did
@@ -176,6 +237,10 @@ pub struct TickInputs {
     /// Only what a player did after the last of their changes in `player_changes`
     /// belongs here; see [`TickInputs::change`].
     pub inputs: Vec<(PlayerId, u64, PlayerInput)>,
+    /// What players of other regions did to blocks of this one, in the order it arrived.
+    /// It is applied after `player_changes` and before `inputs`, and answered one for
+    /// one in [`TickOutput::remote_outcomes`].
+    pub remote_actions: Vec<RemoteAction>,
     /// Chunks someone started to need. A chunk stays loaded while it has tickets.
     pub tickets_added: Vec<ChunkPos>,
     /// Chunks someone stopped needing; one entry releases one ticket.
@@ -291,4 +356,10 @@ pub struct TickOutput {
     /// Chunks that have to be fetched from storage and passed in through
     /// [`TickInputs::chunks_loaded`].
     pub chunk_requests: Vec<ChunkPos>,
+    /// What players of this region did to blocks of another, to be passed on to the
+    /// region that has the block [`RemoteStep::concerns`] names. Such an action is not
+    /// among the acknowledged ones of this tick.
+    pub remote_requests: Vec<RemoteAction>,
+    /// What became of each of [`TickInputs::remote_actions`], in the same order.
+    pub remote_outcomes: Vec<RemoteOutcome>,
 }

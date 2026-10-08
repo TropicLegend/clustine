@@ -16,7 +16,7 @@ Where the implementation is simpler than the design below:
 | Design | So far |
 |---|---|
 | Regions of nearby active chunks that merge, split and migrate | Fixed stripes along the x axis, set when the cluster is started; see [ADR-0006](adr/0006-static-regions-and-handoff.md) |
-| Boundaries only run through inactive gaps | A boundary can run past players, who cannot change blocks on its other side |
+| Boundaries only run through inactive gaps | A boundary can run past players. What they do to blocks on its other side is passed on to the region that has them and takes effect a tick or two later |
 | Coordinator replicated with Raft, leases fenced everywhere | One coordinator with its state in memory; only the world store acts on epochs; see [ADR-0007](adr/0007-coordinator-scope.md) |
 | Losing a worker is recovered from by migration | An edge that loses a region disconnects its players and starts over; the world is recovered from the logs |
 | Several edges | One edge; the workers can serve several, but there is no shared player list yet |

@@ -183,50 +183,126 @@ async fn a_watcher_sees_one_entity_cross_the_boundary() {
     server.stop().await;
 }
 
-/// A block in the other region is within reach but not to be changed from here: the
-/// attempt is acknowledged, which makes a client put the block back, and nothing
-/// changes. On one's own side of the boundary everything works as ever.
+/// Waits until the server has handled what `bot` did with `sequence`, and checks that it
+/// had said before what became of the block at `position`: a client shows its own guess
+/// until then and what the server said from then on, so the block would flicker if the
+/// two came the other way round.
+async fn settled(bot: &mut Bot, sequence: i32, position: (i32, i32, i32), state: Option<i32>) {
+    acknowledged(bot, sequence).await;
+    let (x, y, z) = position;
+    assert_eq!(
+        bot.block_at(x, y, z).unwrap(),
+        state,
+        "the block at {position:?} when sequence {sequence} was acknowledged"
+    );
+}
+
+/// Blocks within reach are broken and placed whichever region has them. The boundary
+/// runs between x = 15 and x = 16; the builder stands two blocks west of it, then two
+/// blocks east of it, and works across it in every way there is.
 #[tokio::test]
-async fn blocks_across_the_boundary_are_out_of_bounds() {
-    let (server, address) = start_with(divided()).await;
-    let mut builder = join(&address, "Builder").await;
-    let mut bystander = join(&address, "Bystander").await;
+async fn blocks_across_the_boundary_are_changed_like_any_other() {
+    for serialise_link in [false, true] {
+        let (server, address) = start_with(Config {
+            serialise_link,
+            ..divided()
+        })
+        .await;
+        let mut builder = join(&address, "Builder").await;
+        let mut bystander = join(&address, "Bystander").await;
+        builder.walk_to(14.5, 0.5, 0.5).await.unwrap();
+        // Glass.
+        builder.select_slot(7).await.unwrap();
 
-    // Two blocks west of the boundary, which runs between x = 15 and x = 16.
-    builder.walk_to(14.5, 0.5, 0.5).await.unwrap();
-    builder.select_slot(7).await.unwrap();
+        // Breaking a block of the other region.
+        let sequence = builder.dig(16, -61, 0).await.unwrap();
+        settled(&mut builder, sequence, (16, -61, 0), AIR).await;
+        sees_block(&mut bystander, (16, -61, 0), AIR).await;
 
-    let sequence = builder.dig(16, -61, 0).await.unwrap();
-    acknowledged(&mut builder, sequence).await;
-    let sequence = builder.use_item_on(16, -61, 1, face::TOP).await.unwrap();
-    acknowledged(&mut builder, sequence).await;
-    // Against a block on this side, into a spot on the other.
-    let sequence = builder.use_item_on(15, -60, 2, face::EAST).await.unwrap();
-    acknowledged(&mut builder, sequence).await;
+        // Placing on the other side, against a block of the other side.
+        let sequence = builder.use_item_on(16, -61, 1, face::TOP).await.unwrap();
+        settled(&mut builder, sequence, (16, -60, 1), GLASS).await;
+        sees_block(&mut bystander, (16, -60, 1), GLASS).await;
 
-    // On this side.
-    let sequence = builder.dig(15, -61, 0).await.unwrap();
-    sees_block(&mut builder, (15, -61, 0), AIR).await;
-    acknowledged(&mut builder, sequence).await;
-    sees_block(&mut bystander, (15, -61, 0), AIR).await;
-    for bot in [&builder, &bystander] {
-        assert_eq!(bot.block_at(16, -61, 0).unwrap(), GRASS);
-        assert_eq!(bot.block_at(16, -60, 1).unwrap(), AIR);
-        assert_eq!(bot.block_at(16, -60, 2).unwrap(), AIR);
+        // Placing on this side against that block: the other region has to say that the
+        // block is there, and this one whether the spot is free.
+        let sequence = builder.use_item_on(16, -60, 1, face::WEST).await.unwrap();
+        settled(&mut builder, sequence, (15, -60, 1), GLASS).await;
+        sees_block(&mut bystander, (15, -60, 1), GLASS).await;
+
+        // Placing on the other side against a block of this side.
+        let sequence = builder.use_item_on(15, -60, 1, face::TOP).await.unwrap();
+        settled(&mut builder, sequence, (15, -59, 1), GLASS).await;
+        let sequence = builder.use_item_on(15, -59, 1, face::EAST).await.unwrap();
+        settled(&mut builder, sequence, (16, -59, 1), GLASS).await;
+        sees_block(&mut bystander, (16, -59, 1), GLASS).await;
+
+        // What does not work on one's own side does not work across either, and is
+        // acknowledged all the same: breaking air, placing against air, placing where
+        // there is a block already, and placing where someone stands.
+        bystander.walk_to(17.5, 4.5, 0.5).await.unwrap();
+        sees_at(&mut builder, "Bystander", 17.5, 4.5).await;
+        for sequence in [
+            builder.dig(16, -60, 3).await.unwrap(),
+            builder.use_item_on(16, -60, 3, face::TOP).await.unwrap(),
+            builder.use_item_on(16, -62, 3, face::TOP).await.unwrap(),
+            builder.use_item_on(17, -61, 4, face::TOP).await.unwrap(),
+        ] {
+            acknowledged(&mut builder, sequence).await;
+        }
+        // Nor can the builder be built into from where they stand, astride the line.
+        builder.walk_to(15.8, 6.5, 0.5).await.unwrap();
+        let sequence = builder.use_item_on(16, -61, 6, face::TOP).await.unwrap();
+        acknowledged(&mut builder, sequence).await;
+        for bot in [&builder, &bystander] {
+            assert_eq!(bot.block_at(16, -60, 3).unwrap(), AIR);
+            assert_eq!(bot.block_at(16, -59, 3).unwrap(), AIR);
+            assert_eq!(bot.block_at(16, -61, 3).unwrap(), GRASS);
+            assert_eq!(bot.block_at(17, -60, 4).unwrap(), AIR);
+            assert_eq!(bot.block_at(16, -60, 6).unwrap(), AIR);
+        }
+
+        // The same from the other side: the builder crosses over and works westwards.
+        builder.walk_to(17.5, 9.5, 0.5).await.unwrap();
+        let sequence = builder.dig(15, -61, 9).await.unwrap();
+        settled(&mut builder, sequence, (15, -61, 9), AIR).await;
+        let sequence = builder.use_item_on(15, -61, 10, face::TOP).await.unwrap();
+        settled(&mut builder, sequence, (15, -60, 10), GLASS).await;
+        let sequence = builder.use_item_on(15, -60, 10, face::EAST).await.unwrap();
+        settled(&mut builder, sequence, (16, -60, 10), GLASS).await;
+        sees_block(&mut bystander, (15, -61, 9), AIR).await;
+        sees_block(&mut bystander, (15, -60, 10), GLASS).await;
+        sees_block(&mut bystander, (16, -60, 10), GLASS).await;
+
+        // Actions on both sides in quick succession are each acknowledged in turn, and
+        // none before what it did has been said.
+        let mut sequences = Vec::new();
+        for z in 12..16 {
+            sequences.push((builder.dig(15, -61, z).await.unwrap(), (15, -61, z)));
+            sequences.push((builder.dig(16, -61, z).await.unwrap(), (16, -61, z)));
+        }
+        for (sequence, position) in sequences {
+            settled(&mut builder, sequence, position, AIR).await;
+        }
+
+        // Someone who joins now is given all of it.
+        let newcomer = join(&address, "Newcomer").await;
+        for (position, state) in [
+            ((16, -61, 0), AIR),
+            ((16, -60, 1), GLASS),
+            ((15, -60, 1), GLASS),
+            ((16, -59, 1), GLASS),
+            ((15, -61, 9), AIR),
+            ((16, -60, 10), GLASS),
+            ((15, -61, 15), AIR),
+            ((16, -61, 15), AIR),
+        ] {
+            let (x, y, z) = position;
+            assert_eq!(newcomer.block_at(x, y, z).unwrap(), state, "{position:?}");
+        }
+
+        server.stop().await;
     }
-
-    // One step further east the same blocks are the builder's to change, and the one
-    // just broken no longer is.
-    builder.walk_to(16.5, 0.5, 0.5).await.unwrap();
-    let sequence = builder.dig(16, -61, 1).await.unwrap();
-    sees_block(&mut builder, (16, -61, 1), AIR).await;
-    acknowledged(&mut builder, sequence).await;
-    sees_block(&mut bystander, (16, -61, 1), AIR).await;
-    let sequence = builder.use_item_on(15, -62, 0, face::TOP).await.unwrap();
-    acknowledged(&mut builder, sequence).await;
-    assert_eq!(builder.block_at(15, -61, 0).unwrap(), AIR);
-
-    server.stop().await;
 }
 
 /// A player's connection can end at any moment of being handed over, and the player
@@ -461,11 +537,14 @@ async fn the_crossing_scenario_passes_on_a_divided_world() {
         west: 20.5,
         // As far east as the watcher at the spawn point sees with the tests' view distance.
         east: 70.5,
+        // Chunk 3 begins here.
+        line: Some(48),
         ..Crossing::default()
     };
     let report = cross(&address, &crossing).await.unwrap();
     assert_eq!(report.crossings, 20);
-    assert_eq!(report.blocks_built, 20);
+    // At either end and, from either side, across the boundary.
+    assert_eq!(report.blocks_built, 40);
     // Fifty blocks at up to a block per tick, twenty times.
     assert!(report.moves_seen > 1000, "{report:?}");
 
@@ -474,7 +553,7 @@ async fn the_crossing_scenario_passes_on_a_divided_world() {
         name_prefix: "Second".to_owned(),
         ..crossing
     };
-    assert_eq!(cross(&address, &again).await.unwrap().blocks_built, 20);
+    assert_eq!(cross(&address, &again).await.unwrap().blocks_built, 40);
 
     server.stop().await;
 }

@@ -200,10 +200,12 @@ async fn join(address: &str, name: &str) -> Bot {
 }
 
 /// Breaks a block west of the boundary and places one east of it, each from its own
-/// side, and waits until the server has confirmed both.
+/// side, and breaks one east of it from the west, which the two workers have to do
+/// together. Waits until the server has confirmed all of it.
 async fn build_on_both_sides(bot: &mut Bot) {
     bot.walk_to(45.5, 0.5, 0.5).await.unwrap();
     bot.dig(46, -61, 1).await.unwrap();
+    bot.dig(48, -61, 3).await.unwrap();
     bot.walk_to(49.5, 0.5, 0.5).await.unwrap();
     let last = bot.use_item_on(50, -61, 1, face::TOP).await.unwrap();
     bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= last)
@@ -214,6 +216,7 @@ async fn build_on_both_sides(bot: &mut Bot) {
 
 fn assert_built_on_both_sides(bot: &Bot) {
     assert_eq!(bot.block_at(46, -61, 1).unwrap(), AIR);
+    assert_eq!(bot.block_at(48, -61, 3).unwrap(), AIR);
     assert_eq!(bot.block_at(50, -60, 1).unwrap(), STONE);
 }
 
@@ -233,13 +236,16 @@ async fn a_cluster_of_processes_is_one_server() {
         west: 20.5,
         // As far east as the watcher at the spawn point sees with the tests' view distance.
         east: 70.5,
+        // Where the eastern worker's region begins. The bots build across it too, which
+        // takes both workers.
+        line: Some(48),
         ..Crossing::default()
     };
     let report = cross(&address, &crossing)
         .await
         .unwrap_or_else(|error| panic!("{error:#}\n{}", cluster.all_logs()));
     assert_eq!(report.crossings, 12);
-    assert_eq!(report.blocks_built, 12);
+    assert_eq!(report.blocks_built, 24);
     // Both workers took part: each let every walker go twice and took them in twice.
     for worker in ["worker-0", "worker-1"] {
         let log = cluster.log(worker);

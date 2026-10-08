@@ -3,7 +3,7 @@
 use clustine_data::BlockState;
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_sim::api::{
-    EntityState, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, RegionEvent,
+    EntityState, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, RegionEvent, RemoteAction,
 };
 use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, EntityIds, PlayerId, Vec3};
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,10 @@ pub enum EdgeToWorker {
         number: u64,
         input: PlayerInput,
     },
+    /// What is left to do of something a player of another region did to blocks of this
+    /// one; see [`RemoteAction`]. Answered with [`WorkerToEdge::RemoteDone`] or with
+    /// [`WorkerToEdge::Remote`] if yet another region has to take a step.
+    Remote(RemoteAction),
     /// The edge wants a snapshot of these chunks, followed by every later change to
     /// them. A subscription also keeps the chunk loaded.
     Subscribe { chunks: Vec<ChunkPos> },
@@ -57,6 +61,15 @@ pub enum WorkerToEdge {
         player: PlayerId,
         event: PlayerEvent,
     },
+    /// Something a player did concerns blocks of another region. The edge passes it on
+    /// to the region that has the block [`RemoteStep::concerns`] names.
+    ///
+    /// [`RemoteStep::concerns`]: clustine_sim::api::RemoteStep::concerns
+    Remote(RemoteAction),
+    /// A [`RemoteAction`] that reached this region has been dealt with. What it changed
+    /// was reported before, in the [`WorkerToEdge::TickDelta`] of the same tick, so the
+    /// player can now be told that their action with this sequence number was handled.
+    RemoteDone { player: PlayerId, sequence: i32 },
 }
 
 /// What a worker asks of the world store. Requests are handled in the order they are made.

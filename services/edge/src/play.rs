@@ -11,8 +11,8 @@ use bytes::Bytes;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
-    AcknowledgeBlockChange, ClientboundKeepAlive, Disconnect, PlayerAction, ServerboundPlay,
-    UseItemOn, face, inventory, movement_flags, player_action,
+    ClientboundKeepAlive, Disconnect, PlayerAction, ServerboundPlay, UseItemOn, face, inventory,
+    movement_flags, player_action,
 };
 use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput};
 use clustine_world::{BlockPos, PlayerId, Vec3};
@@ -137,10 +137,10 @@ async fn pump(
                         moved(shared, client, None, None, packet.flags).await?;
                     }
                     ServerboundPlay::PlayerAction(action) => {
-                        acted(connection, shared, client, action).await?;
+                        acted(shared, client, action).await?;
                     }
                     ServerboundPlay::UseItemOn(packet) => {
-                        used_item_on(connection, shared, client, packet).await?;
+                        used_item_on(shared, client, packet).await?;
                     }
                     ServerboundPlay::SetHeldItem(packet) => {
                         let Some(slot) = hotbar_slot(i32::from(packet.slot)) else {
@@ -230,7 +230,6 @@ async fn moved(
 
 /// Handles something the player did with their hands.
 async fn acted(
-    connection: &mut Connection,
     shared: &Shared,
     client: &Client,
     action: PlayerAction,
@@ -247,10 +246,7 @@ async fn acted(
         // The other ways of breaking a block only exist in survival mode. The client
         // still counts them among its guesses and waits to hear they were handled.
         player_action::ABORT_DESTROY_BLOCK | player_action::STOP_DESTROY_BLOCK => {
-            let acknowledgement = AcknowledgeBlockChange {
-                sequence: action.sequence,
-            };
-            connection.write(&acknowledgement).await
+            handled(shared, client, action.sequence).await
         }
         // Dropping and using items does not exist yet.
         _ => Ok(()),
@@ -275,9 +271,23 @@ async fn send_input(
         .map_err(|_| ConnectionError::ShuttingDown)
 }
 
+/// Has the client told that its action with this sequence number was handled, in its
+/// turn among what the regions report as handled.
+async fn handled(shared: &Shared, client: &Client, sequence: i32) -> Result<(), ConnectionError> {
+    let command = Command::Handled {
+        session: client.session,
+        player: client.player,
+        sequence,
+    };
+    shared
+        .fanout
+        .send(command)
+        .await
+        .map_err(|_| ConnectionError::ShuttingDown)
+}
+
 /// Handles the player using the item in their hand on a block.
 async fn used_item_on(
-    connection: &mut Connection,
     shared: &Shared,
     client: &Client,
     packet: UseItemOn,
@@ -303,12 +313,7 @@ async fn used_item_on(
             send_input(shared, client, input).await
         }
         // Nothing happens, but the client counts this among its guesses too.
-        _ => {
-            let acknowledgement = AcknowledgeBlockChange {
-                sequence: packet.sequence,
-            };
-            connection.write(&acknowledgement).await
-        }
+        _ => handled(shared, client, packet.sequence).await,
     }
 }
 

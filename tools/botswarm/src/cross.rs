@@ -3,8 +3,9 @@
 //!
 //! It is meant for a world that is divided into regions with a boundary between the two
 //! places, where it checks what a division must not change: nobody is disconnected or
-//! moved by the server, everybody can build wherever they are, and the watcher sees each
-//! walker as one entity that appears once and never vanishes.
+//! moved by the server, everybody can build wherever they are and, if told where the
+//! boundary is, across it, and the watcher sees each walker as one entity that appears
+//! once and never vanishes.
 
 use std::time::Duration;
 
@@ -32,6 +33,10 @@ pub struct Crossing {
     /// point, where the watcher stays.
     pub west: f64,
     pub east: f64,
+    /// The x coordinate of the first block east of a boundary between `west` and
+    /// `east`, if the walkers are to build across it as well: on their way they stop
+    /// short of it and place and break a block on its far side.
+    pub line: Option<i32>,
     /// Blocks per tick of the slowest walker; each further one is a little faster.
     pub speed: f64,
     /// What the names of the bots begin with.
@@ -45,6 +50,7 @@ impl Default for Crossing {
             rounds: 3,
             west: 40.5,
             east: 90.5,
+            line: None,
             speed: 0.5,
             name_prefix: String::new(),
         }
@@ -178,13 +184,25 @@ async fn walk(
     let z = number as f64 * 2.0 + 0.5 - crossing.walkers as f64;
     let speed = crossing.speed * (1.0 + number as f64 * 0.17);
 
+    // The row of blocks beside the lane, which nobody stands on.
+    let beside = z.floor() as i32 + 1;
     let mut built = 0;
     for _ in 0..crossing.rounds {
-        for x in [crossing.east, crossing.west] {
-            bot.walk_to(x, z, speed).await?;
-            build(&mut bot)
+        // Eastwards, then westwards. Each way the bot first stops a block and a half
+        // short of the boundary and builds on the first block beyond it, then walks on
+        // and builds next to where it ends up.
+        for (end, short, beyond) in [(crossing.east, -1.5, 0), (crossing.west, 1.5, -1)] {
+            if let Some(line) = crossing.line {
+                bot.walk_to(f64::from(line) + short, z, speed).await?;
+                build(&mut bot, line + beyond, beside)
+                    .await
+                    .with_context(|| format!("building across the boundary at x = {line}"))?;
+                built += 1;
+            }
+            bot.walk_to(end, z, speed).await?;
+            build(&mut bot, end.floor() as i32, beside)
                 .await
-                .with_context(|| format!("building at x = {x}"))?;
+                .with_context(|| format!("building at x = {end}"))?;
             built += 1;
         }
     }
@@ -222,16 +240,13 @@ async fn walk(
     Ok(())
 }
 
-/// Places a block next to where the bot stands and breaks it again, waiting each time
-/// for the server to report the change and to acknowledge the action. Only the region
-/// the bot is in can do that.
-async fn build(bot: &mut Bot) -> Result<()> {
-    let below = (
-        bot.location.0.floor() as i32,
-        GROUND - 1,
-        bot.location.2.floor() as i32 + 1,
-    );
-    let (x, y, z) = (below.0, GROUND, below.2);
+/// Places a block on the ground at `x` and `z`, which has to be within the bot's reach,
+/// and breaks it again, waiting each time for the server to report the change and to
+/// acknowledge the action. The region that has the spot has to do that, whether or not
+/// it is the one the bot is in.
+async fn build(bot: &mut Bot, x: i32, z: i32) -> Result<()> {
+    let below = (x, GROUND - 1, z);
+    let y = GROUND;
     let air = Some(i32::from(blocks::AIR.0));
 
     let sequence = bot

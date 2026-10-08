@@ -81,6 +81,10 @@ enum Scenario {
         west: f64,
         #[arg(long, default_value_t = Crossing::default().east, allow_negative_numbers = true)]
         east: f64,
+        /// The x coordinate of the first block east of a region boundary between the
+        /// two places. With it the bots also build across that boundary.
+        #[arg(long, allow_negative_numbers = true)]
+        line: Option<i32>,
         /// Blocks per tick of the slowest bot.
         #[arg(long, default_value_t = Crossing::default().speed)]
         speed: f64,
@@ -171,6 +175,7 @@ async fn main() -> Result<()> {
             rounds,
             west,
             east,
+            line,
             speed,
             name_prefix,
         } => {
@@ -179,6 +184,7 @@ async fn main() -> Result<()> {
                 rounds,
                 west,
                 east,
+                line,
                 speed,
                 name_prefix,
             };

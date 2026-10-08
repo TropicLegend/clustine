@@ -63,6 +63,7 @@ persistence and real world generation.
 | 2 | One world store for several regions, a log per region | Store tests for independent logs, recovery and ownership by epoch | done |
 | 3 | A worker that serves several edge links and survives losing one | Runner tests over both kinds of link | done |
 | 4 | The edge shows one world out of several regions and hands players over; `--boundaries` in the single binary | Bots cross both ways, watched; a crowd crossing; leaving in mid hand-over; restart and kill with two regions; the M1 end-to-end tests once more on a divided world | done |
+| 4a | Breaking and placing blocks across a boundary | Simulation tests comparing two regions with one; a bot working across the line in every combination | done |
 | 5 | Links over TCP; the world store as a service | Tests over real sockets | done |
 | 6 | The coordinator: its decisions as a state machine, and the service around it | State machine tests; service tests over real sockets | done |
 | 7 | `clustine coordinator`, `worldstore`, `worker`, `edge` | A test that starts the five processes, has bots cross between the workers, kills everything and finds the world again | done |
@@ -71,16 +72,21 @@ persistence and real world generation.
 The cluster test first passed on 2026-10-07, on a kind cluster with a coordinator, a
 world store, two workers and an edge: four bots walked back and forth across the
 boundary 24 times and built on both sides, a fifth saw each of them as one entity
-throughout, and each worker took players in and let them go twelve times. A check by
-hand with unmodified clients is still to come.
+throughout, and each worker took players in and let them go twelve times.
+
+A check by hand with unmodified clients on 2026-10-08 found building to work and to be
+seen by others, and blocks on the other side of a boundary to be out of reach, which was
+how it had been planned. That was changed the same day: what a player does to blocks of
+another region is now passed on to it.
 
 The design decisions are in [ADR-0006](adr/0006-static-regions-and-handoff.md) and
 [ADR-0007](adr/0007-coordinator-scope.md).
 
 Not in M2, and known to be missing:
 
-- Regions are fixed stripes; a block on the other side of a boundary cannot be changed,
-  and a player standing on a boundary is handed back and forth.
+- Regions are fixed stripes. A player standing on a boundary is handed back and forth,
+  and what a player does to blocks on the other side of one takes a tick or two longer,
+  with the small differences from one region that ADR-0006 lists.
 - Nothing survives the loss of a process without players being disconnected. The world
   itself does survive.
 - One edge. With several there is no shared player list and nothing stops an account

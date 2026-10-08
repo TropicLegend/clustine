@@ -53,8 +53,23 @@ and has the region the entity was heading for report it as removed. Besides, an 
 hides the entity of a leaving player at once and never shows a client two entities of
 one player.
 
-**Blocks across a boundary are out of reach.** A player's actions are judged by the
-region the player is in, which does not have the chunks beyond its stripe.
+**What a player does to another region's blocks is passed on to that region.** A player
+reaches a few blocks beyond the stripe they stand in. Their own region checks what only
+it knows, that they are within reach and what they hold, and passes the rest on through
+the player's edge to the region that has the block. Placing can need both regions: the
+one that has the block that was clicked says whether there is something to place
+against, and the one that has the spot next to it says whether it is free. The region
+that takes the last step reports the action as done, after the tick's changes.
+
+The edge tells a client that an action was handled only when no earlier action of that
+player is still on its way to another region. A client shows its own guess of what an
+action did until it is told that the action was handled, and what the server said from
+then on; told too early, it would show the old block again for a moment.
+
+This was added a day after the rest (2026-10-08). The first version judged every action
+in the player's region, which does not have the chunks beyond its stripe, so blocks
+across a boundary could not be changed. Trying it with real clients showed that to be
+a seam nobody would accept, also for a milestone.
 
 ## Alternatives considered
 
@@ -65,10 +80,13 @@ region the player is in, which does not have the chunks beyond its stripe.
   returned inputs arrive after newer ones that were already sent to the new region, so
   either the order is lost or the edge has to hold inputs back until the old region
   confirms it has nothing more to return, which delays every hand-over by a tick.
-- **Forwarding block changes to the region that owns the block.** Removes the seam, but
-  needs a second path for actions between regions, and placing a block needs to know who
-  stands there, which the owning region does not. With dynamic regions a boundary never
-  runs where players can reach it, so the path would be built to be removed.
+- **Leaving blocks across a boundary out of reach.** Needs no path for actions between
+  regions, and with dynamic regions a boundary will never run where players can reach
+  it. But until then every boundary is a line that building stops at.
+- **Regions keeping a copy of their neighbours' border chunks and players**, so that a
+  player's region can judge everything itself and only the write goes elsewhere. Closest
+  to what one region does, and what halo exchange would need anyway, but far more than
+  a boundary that is going to disappear is worth.
 
 ## Consequences
 
@@ -77,6 +95,14 @@ region the player is in, which does not have the chunks beyond its stripe.
   entity cannot arrive in the wrong order. With several edges they can, for the edges
   that only watch; versions on entity states will be needed then.
 - A player standing on a boundary can be handed back and forth every tick.
+- An action on another region's blocks takes effect a tick or two later than one on
+  the player's own. Two actions on the same block in quick succession, one that needs
+  two regions and one that does not, can therefore take effect in the other order than
+  they were made in.
+- A block is not placed where a player of the region that has the spot stands, nor
+  where the one who places it stands. A player of the other region who stands astride
+  the boundary, overlapping the spot, is not seen and can be built into by a few tenths
+  of a block.
 - A hand-over costs the others a tick or two in which the player does not move for them.
 - If a region is so far behind that the edge no longer keeps what it missed, the player
   is disconnected rather than left with a state the server does not share.

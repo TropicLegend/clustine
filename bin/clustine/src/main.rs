@@ -77,8 +77,8 @@ struct Standalone {
     checkpoint_interval: u64,
 
     /// Chunk x coordinates at which to divide the world into regions that are simulated
-    /// separately, in ascending order and separated by commas. Blocks cannot be changed
-    /// across such a boundary. Without this the world is one region.
+    /// separately, in ascending order and separated by commas. Without this the world
+    /// is one region.
     #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
     boundaries: Vec<i32>,
 }

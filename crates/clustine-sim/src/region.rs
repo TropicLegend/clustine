@@ -7,7 +7,8 @@ use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkPos, EntityId, EntityIds, 
 
 use crate::api::{
     EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerChange, PlayerEvent, PlayerInput,
-    PlayerTransfer, Pose, RegionEvent, TickInputs, TickOutput,
+    PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteOutcome, RemoteStep, TickInputs,
+    TickOutput,
 };
 
 /// What a region is created with.
@@ -222,6 +223,10 @@ impl Region {
             }
         }
 
+        for action in &inputs.remote_actions {
+            let outcome = self.apply_remote(action, &mut output);
+            output.remote_outcomes.push(outcome);
+        }
         for (id, number, input) in &inputs.inputs {
             self.apply_input(*id, *number, input, &mut output);
         }
@@ -307,15 +312,21 @@ impl Region {
                 }
             }
             PlayerInput::Dig { position, sequence } => {
+                let (position, sequence) = (*position, *sequence);
+                if player.can_reach(position) && !self.config.area.contains(position.chunk()) {
+                    // Within reach, but another region's block: that region decides,
+                    // and the player hears that it was handled when it has been.
+                    output.remote_requests.push(RemoteAction {
+                        player: id,
+                        sequence,
+                        step: RemoteStep::Break { position },
+                    });
+                    return;
+                }
                 // Acknowledged whatever comes of it, so the client stops guessing.
-                player.acknowledge(*sequence);
-                let reachable = player.can_reach(*position);
-                if reachable
-                    && self
-                        .block(*position)
-                        .is_some_and(|state| state != blocks::AIR)
-                {
-                    self.set_block(*position, blocks::AIR, output);
+                player.acknowledge(sequence);
+                if player.can_reach(position) {
+                    self.break_block(position, output);
                 }
             }
             PlayerInput::UseItemOn {
@@ -323,22 +334,133 @@ impl Region {
                 face,
                 sequence,
             } => {
-                player.acknowledge(*sequence);
-                let reachable = player.can_reach(*position);
+                let (against, sequence) = (*position, *sequence);
+                let target = face.neighbour(against);
+                let placer = player.pose.position;
                 // In creative mode placing does not use the item up.
-                let block = player.hotbar[usize::from(player.selected_slot)]
+                let held = player.hotbar[usize::from(player.selected_slot)]
                     .and_then(|stack| ITEMS.get(usize::try_from(stack.item).ok()?)?.block);
-                let target = face.neighbour(*position);
-                if let Some(block) = block
-                    && reachable
-                    // Placed against a block, into a free spot nobody stands in.
-                    && self.block(*position).is_some_and(|state| state != blocks::AIR)
-                    && self.block(target) == Some(blocks::AIR)
-                    && !self.players.values().any(|player| player.occupies(target))
-                {
-                    self.set_block(target, block, output);
+                let Some(block) = held.filter(|_| player.can_reach(against)) else {
+                    player.acknowledge(sequence);
+                    return;
+                };
+                // Placed against a block, into a free spot nobody stands in. Each of
+                // the two is for the region that has it to see to.
+                let area = self.config.area;
+                let step = if !area.contains(against.chunk()) {
+                    Some(RemoteStep::PlaceAgainst {
+                        against,
+                        target,
+                        block,
+                        placer,
+                    })
+                } else if !self.is_block(against) {
+                    None
+                } else if !area.contains(target.chunk()) {
+                    Some(RemoteStep::Place {
+                        target,
+                        block,
+                        placer,
+                    })
+                } else {
+                    self.place_block(target, block, None, output);
+                    None
+                };
+                match step {
+                    Some(step) => output.remote_requests.push(RemoteAction {
+                        player: id,
+                        sequence,
+                        step,
+                    }),
+                    None => {
+                        if let Some(player) = self.players.get_mut(&id) {
+                            player.acknowledge(sequence);
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    /// Takes the next step of something a player of another region did to blocks of
+    /// this one.
+    fn apply_remote(&mut self, action: &RemoteAction, output: &mut TickOutput) -> RemoteOutcome {
+        let done = RemoteOutcome::Done {
+            player: action.player,
+            sequence: action.sequence,
+        };
+        // A step about a block this region does not have changes nothing: the block is
+        // not loaded here. It is not passed on either, so that regions which disagree
+        // about who has what cannot pass an action back and forth for ever.
+        match action.step {
+            RemoteStep::Break { position } => {
+                self.break_block(position, output);
+                done
+            }
+            RemoteStep::PlaceAgainst {
+                against,
+                target,
+                block,
+                placer,
+            } => {
+                if !self.is_block(against) {
+                    done
+                } else if self.config.area.contains(target.chunk()) {
+                    self.place_block(target, block, Some(placer), output);
+                    done
+                } else {
+                    RemoteOutcome::Next(RemoteAction {
+                        step: RemoteStep::Place {
+                            target,
+                            block,
+                            placer,
+                        },
+                        ..action.clone()
+                    })
+                }
+            }
+            RemoteStep::Place {
+                target,
+                block,
+                placer,
+            } => {
+                self.place_block(target, block, Some(placer), output);
+                done
+            }
+        }
+    }
+
+    /// Whether there is a block at `position` that another can be placed against.
+    fn is_block(&self, position: BlockPos) -> bool {
+        self.block(position)
+            .is_some_and(|state| state != blocks::AIR)
+    }
+
+    /// Breaks the block at `position`, if there is one.
+    fn break_block(&mut self, position: BlockPos, output: &mut TickOutput) {
+        if self.is_block(position) {
+            self.set_block(position, blocks::AIR, output);
+        }
+    }
+
+    /// Places `block` at `target` if the spot is free and nobody stands in it: no player
+    /// of this region, and not the one who places it from another region with their
+    /// feet at `placer`.
+    fn place_block(
+        &mut self,
+        target: BlockPos,
+        block: BlockState,
+        placer: Option<Vec3>,
+        output: &mut TickOutput,
+    ) {
+        if self.block(target) == Some(blocks::AIR)
+            && !self
+                .players
+                .values()
+                .any(|player| occupies(player.pose.position, target))
+            && !placer.is_some_and(|feet| occupies(feet, target))
+        {
+            self.set_block(target, block, output);
         }
     }
 
@@ -393,6 +515,16 @@ impl Region {
     }
 }
 
+/// Whether the body of a player whose feet are at `feet` overlaps the block at `position`.
+fn occupies(feet: Vec3, position: BlockPos) -> bool {
+    let half = PLAYER_WIDTH / 2.0;
+    let overlaps =
+        |low: f64, high: f64, block: i32| low < f64::from(block) + 1.0 && high > f64::from(block);
+    overlaps(feet.x - half, feet.x + half, position.x)
+        && overlaps(feet.y, feet.y + PLAYER_HEIGHT, position.y)
+        && overlaps(feet.z - half, feet.z + half, position.z)
+}
+
 impl Player {
     /// The chunk the player stands in.
     fn chunk(&self) -> ChunkPos {
@@ -425,18 +557,6 @@ impl Player {
     /// Notes that everything up to `sequence` has been handled.
     fn acknowledge(&mut self, sequence: i32) {
         self.handled_sequence = self.handled_sequence.max(Some(sequence));
-    }
-
-    /// Whether the player's body overlaps the block at `position`.
-    fn occupies(&self, position: BlockPos) -> bool {
-        let feet = self.pose.position;
-        let half = PLAYER_WIDTH / 2.0;
-        let overlaps = |low: f64, high: f64, block: i32| {
-            low < f64::from(block) + 1.0 && high > f64::from(block)
-        };
-        overlaps(feet.x - half, feet.x + half, position.x)
-            && overlaps(feet.y, feet.y + PLAYER_HEIGHT, position.y)
-            && overlaps(feet.z - half, feet.z + half, position.z)
     }
 
     /// Whether the player's eyes are close enough to the block at `position` to work on it.
@@ -1640,49 +1760,782 @@ mod tests {
         assert_eq!(region.entities().count(), 2);
     }
 
+    /// The chunks that meet at the line between `WEST` and `EAST` where the players of
+    /// the tests below are.
+    const WEST_CHUNK: ChunkPos = ChunkPos::new(-1, 0);
+    const EAST_CHUNK: ChunkPos = ChunkPos::new(0, 0);
+
+    /// Where the feet of a player are who stands east of the line, a block and a half
+    /// from it and so with no part of them across it.
+    const FEET: Vec3 = Vec3::new(1.5, -60.0, 2.5);
+
+    const FACES: [Face; 6] = [
+        Face::Bottom,
+        Face::Top,
+        Face::North,
+        Face::South,
+        Face::West,
+        Face::East,
+    ];
+
+    /// Has `region` load a chunk with a floor at `position`, which its area has to contain.
+    fn lay_floor(region: &mut Region, position: ChunkPos) {
+        region.tick(&tickets(vec![position], vec![]));
+        region.tick(&TickInputs {
+            chunks_loaded: vec![(position, floor())],
+            ..TickInputs::default()
+        });
+    }
+
+    /// The region east of the line with player 1 standing on its floor at `FEET`, stone
+    /// in hand.
+    fn east_with_player() -> Region {
+        let mut region = on_floor_in(EAST, &[1]);
+        region.tick(&moves(vec![walk(1, FEET.x, FEET.z)]));
+        region
+    }
+
+    /// The region west of the line with a floor in the chunk at the line, which is as
+    /// far as the eastern one's players can reach, and nobody in it.
+    fn west_with_floor() -> Region {
+        let mut region = Region::new(RegionConfig {
+            entity_ids: EntityIds::block(1).unwrap(),
+            ..config(WEST)
+        });
+        lay_floor(&mut region, WEST_CHUNK);
+        region
+    }
+
+    /// `input`, which has to dig or place, with a sequence number of the test's choosing.
+    fn sequenced(chosen: i32, (player, number, mut input): Input) -> Input {
+        match &mut input {
+            PlayerInput::Dig { sequence, .. } | PlayerInput::UseItemOn { sequence, .. } => {
+                *sequence = chosen;
+            }
+            other => panic!("{other:?} has no sequence number"),
+        }
+        (player, number, input)
+    }
+
+    fn remote(number: u128, sequence: i32, step: RemoteStep) -> RemoteAction {
+        RemoteAction {
+            player: player(number),
+            sequence,
+            step,
+        }
+    }
+
+    fn remotely(remote_actions: Vec<RemoteAction>) -> TickInputs {
+        TickInputs {
+            remote_actions,
+            ..TickInputs::default()
+        }
+    }
+
+    fn done(number: u128, sequence: i32) -> RemoteOutcome {
+        RemoteOutcome::Done {
+            player: player(number),
+            sequence,
+        }
+    }
+
+    fn break_at(x: i32, y: i32, z: i32) -> RemoteStep {
+        RemoteStep::Break {
+            position: BlockPos::new(x, y, z),
+        }
+    }
+
+    /// The step that places `block` against `face` of the block at `x`, `y` and `z`.
+    fn place_against(
+        x: i32,
+        y: i32,
+        z: i32,
+        face: Face,
+        block: BlockState,
+        placer: Vec3,
+    ) -> RemoteStep {
+        let against = BlockPos::new(x, y, z);
+        RemoteStep::PlaceAgainst {
+            against,
+            target: face.neighbour(against),
+            block,
+            placer,
+        }
+    }
+
+    fn place_at(x: i32, y: i32, z: i32, block: BlockState, placer: Vec3) -> RemoteStep {
+        RemoteStep::Place {
+            target: BlockPos::new(x, y, z),
+            block,
+            placer,
+        }
+    }
+
+    fn is_block_change(event: &RegionEvent) -> bool {
+        matches!(event, RegionEvent::BlockChanged { .. })
+    }
+
     #[test]
-    fn blocks_outside_the_area_can_neither_be_dug_nor_placed() {
-        let west = ChunkPos::new(-1, 0);
+    fn blocks_outside_the_area_are_dug_and_placed_by_the_region_that_has_them() {
         // A player near the line works on blocks beyond it. The chunk there has been
         // asked for and has been offered, with a floor like the one the player stands on.
         let attempt = |area: ChunkArea| {
             let mut region = on_floor_in(area, &[1]);
-            region.tick(&tickets(vec![west], vec![]));
+            region.tick(&tickets(vec![WEST_CHUNK], vec![]));
             region.tick(&TickInputs {
-                chunks_loaded: vec![(west, floor())],
-                inputs: vec![walk(1, 1.5, 2.5)],
+                chunks_loaded: vec![(WEST_CHUNK, floor())],
+                inputs: vec![walk(1, FEET.x, FEET.z)],
                 ..TickInputs::default()
             });
             let outputs = [
                 // Break the floor right beyond the line.
                 dig(1, -1, -61, 2, 1),
                 // Put a block on the floor one block further out.
-                place(1, -2, -61, 2, Face::Top),
+                sequenced(2, place(1, -2, -61, 2, Face::Top)),
                 // Fill the hole again, against the side of a block that is in the area.
-                place(1, 0, -61, 2, Face::West),
+                sequenced(3, place(1, 0, -61, 2, Face::West)),
             ]
             .map(|input| region.tick(&moves(vec![input])));
             (region, outputs)
         };
+        let changes = [
+            changed(-1, -61, 2, blocks::AIR),
+            changed(-2, -60, 2, blocks::STONE),
+            changed(-1, -61, 2, blocks::STONE),
+        ];
 
-        // Where one region has the whole world, all of this works.
-        let (_, outputs) = attempt(ChunkArea::EVERYWHERE);
+        // Where one region has the whole world, it does all of this itself.
+        let (whole, outputs) = attempt(ChunkArea::EVERYWHERE);
+        for (output, sequence) in outputs.iter().zip(1..) {
+            assert_eq!(output.player_events, [acknowledged(1, sequence)]);
+            assert!(output.remote_requests.is_empty());
+        }
         assert_eq!(
             outputs.map(|output| output.events),
-            [
-                [changed(-1, -61, 2, blocks::AIR)],
-                [changed(-2, -60, 2, blocks::STONE)],
-                [changed(-1, -61, 2, blocks::STONE)],
-            ]
+            changes.clone().map(|change| [change])
         );
 
-        let (region, outputs) = attempt(EAST);
-        for output in outputs {
+        // The region east of the line changes nothing and tells the player nothing. It
+        // asks for each of the three to be done where the blocks are.
+        let (east, outputs) = attempt(EAST);
+        let requests = [
+            remote(1, 1, break_at(-1, -61, 2)),
+            remote(
+                1,
+                2,
+                place_against(-2, -61, 2, Face::Top, blocks::STONE, FEET),
+            ),
+            remote(1, 3, place_at(-1, -61, 2, blocks::STONE, FEET)),
+        ];
+        for output in &outputs {
             assert!(output.events.is_empty(), "{:?}", output.events);
-            assert_eq!(output.player_events, [acknowledged(1, 1)]);
+            assert!(output.player_events.is_empty(), "tick {}", output.tick);
         }
-        assert_eq!(region.chunk(west), None);
-        assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
+        assert_eq!(
+            outputs.map(|output| output.remote_requests),
+            requests.clone().map(|request| [request])
+        );
+        assert_eq!(east.chunk(WEST_CHUNK), None);
+        assert_eq!(east.chunk(EAST_CHUNK), Some(&floor()));
+
+        // The region west of the line does to its blocks what the single region did to
+        // them, and says so.
+        let mut west = west_with_floor();
+        for ((request, change), sequence) in requests.into_iter().zip(changes).zip(1..) {
+            let output = west.tick(&remotely(vec![request]));
+            assert_eq!(output.events, [change]);
+            assert_eq!(output.remote_outcomes, [done(1, sequence)]);
+        }
+        assert_eq!(west.chunk(WEST_CHUNK), whole.chunk(WEST_CHUNK));
+    }
+
+    #[test]
+    fn digging_beyond_the_area_within_reach_is_asked_of_the_region_that_has_the_block() {
+        let mut region = east_with_player();
+        let beyond = [
+            // Right beyond the line.
+            (-1, -61),
+            // As far beyond it as the player can reach: the block begins 5.5 blocks from
+            // their eyes horizontally and about 1.6 below.
+            (-5, -61),
+            // Thin air, which this region cannot know.
+            (-1, -60),
+        ];
+        for (sequence, (x, y)) in (1..).zip(beyond) {
+            let output = region.tick(&moves(vec![dig(1, x, y, 2, sequence)]));
+            assert_eq!(
+                output.remote_requests,
+                [remote(1, sequence, break_at(x, y, 2))]
+            );
+            assert!(output.events.is_empty(), "{:?}", output.events);
+            // The player is not told that it was handled: it has not been.
+            assert!(output.player_events.is_empty(), "sequence {sequence}");
+        }
+        // Not later either, as far as this region is concerned.
+        let output = region.tick(&TickInputs::default());
+        assert!(output.player_events.is_empty());
+        assert!(output.remote_requests.is_empty());
+        // The input counts as applied all the same: sent again, as it is to the region
+        // a player walks into, it asks for nothing a second time.
+        let again = dig(1, -1, -61, 2, 4);
+        let output = region.tick(&moves(vec![again.clone()]));
+        assert_eq!(output.remote_requests.len(), 1);
+        let output = region.tick(&moves(vec![again]));
+        assert!(output.remote_requests.is_empty());
+        assert!(output.player_events.is_empty());
+
+        // One block further out is out of reach, which this region can tell.
+        let output = region.tick(&moves(vec![dig(1, -6, -61, 2, 5)]));
+        assert!(output.remote_requests.is_empty());
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert_eq!(output.player_events, [acknowledged(1, 5)]);
+
+        // And a block of its own it breaks as ever, at the line as anywhere.
+        let output = region.tick(&moves(vec![dig(1, 0, -61, 2, 6)]));
+        assert!(output.remote_requests.is_empty());
+        assert_eq!(output.events, [changed(0, -61, 2, blocks::AIR)]);
+        assert_eq!(output.player_events, [acknowledged(1, 6)]);
+        assert_eq!(region.loaded_chunk_count(), 1);
+    }
+
+    #[test]
+    fn placing_against_a_block_beyond_the_area_is_asked_of_the_region_that_has_it() {
+        let mut region = east_with_player();
+        let clicks = [
+            // On the floor beyond the line, where the spot is the other region's too.
+            ((-2, -61, 2), Face::Top),
+            // Against the side of that floor into a spot of this region. That it is
+            // taken does not matter before the other region has found the block.
+            ((-1, -61, 2), Face::East),
+            // Against thin air, which this region cannot know.
+            ((-1, -60, 2), Face::West),
+            // As far out as the player can reach: what counts is the block they click,
+            // not the spot beyond it.
+            ((-5, -61, 2), Face::West),
+        ];
+        for (sequence, ((x, y, z), face)) in (1..).zip(clicks) {
+            let click = sequenced(sequence, place(1, x, y, z, face));
+            let output = region.tick(&moves(vec![click]));
+            let step = place_against(x, y, z, face, blocks::STONE, FEET);
+            assert_eq!(output.remote_requests, [remote(1, sequence, step)]);
+            assert!(output.events.is_empty(), "{:?}", output.events);
+            assert!(output.player_events.is_empty(), "sequence {sequence}");
+        }
+
+        // The block is the one the player holds and the placer is where they stand when
+        // they place it.
+        let output = region.tick(&moves(vec![
+            select(1, 1),
+            walk(1, 2.5, 3.5),
+            sequenced(5, place(1, -2, -61, 2, Face::North)),
+        ]));
+        let feet = Vec3::new(2.5, -60.0, 3.5);
+        let step = place_against(-2, -61, 2, Face::North, blocks::DIRT, feet);
+        assert_eq!(output.remote_requests, [remote(1, 5, step)]);
+        assert!(output.player_events.is_empty());
+        assert_eq!(region.chunk(EAST_CHUNK), Some(&floor()));
+    }
+
+    #[test]
+    fn placing_into_a_spot_beyond_the_area_is_asked_of_the_region_that_has_the_spot() {
+        let mut region = east_with_player();
+        // Against the western side of the floor at the line.
+        let click = sequenced(1, place(1, 0, -61, 2, Face::West));
+        let output = region.tick(&moves(vec![click]));
+        let step = place_at(-1, -61, 2, blocks::STONE, FEET);
+        assert_eq!(output.remote_requests, [remote(1, 1, step)]);
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(output.player_events.is_empty());
+
+        // Against thin air there is nothing to ask for: this region knows that no block
+        // is there.
+        let click = sequenced(2, place(1, 0, -60, 2, Face::West));
+        let output = region.tick(&moves(vec![click]));
+        assert!(output.remote_requests.is_empty());
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert_eq!(output.player_events, [acknowledged(1, 2)]);
+
+        // Nor against a chunk that is not loaded. The player walks to the end of the
+        // loaded one and clicks the floor of the next.
+        let feet = Vec3::new(1.5, -60.0, 14.5);
+        let output = region.tick(&moves(vec![
+            walk(1, feet.x, feet.z),
+            sequenced(3, place(1, 0, -61, 16, Face::West)),
+        ]));
+        assert!(output.remote_requests.is_empty());
+        assert_eq!(output.player_events, [acknowledged(1, 3)]);
+        // One block back there is a floor to place against.
+        let click = sequenced(4, place(1, 0, -61, 15, Face::West));
+        let output = region.tick(&moves(vec![click]));
+        let step = place_at(-1, -61, 15, blocks::STONE, feet);
+        assert_eq!(output.remote_requests, [remote(1, 4, step)]);
+        assert!(output.player_events.is_empty());
+        assert_eq!(region.chunk(EAST_CHUNK), Some(&floor()));
+    }
+
+    #[test]
+    fn placing_without_a_block_or_out_of_reach_is_acknowledged_whoever_has_the_blocks() {
+        let mut region = east_with_player();
+        let clicks = [
+            // The block clicked and the spot are both beyond the line.
+            ((-2, -61, 2), Face::Top),
+            // The block clicked is.
+            ((-1, -61, 2), Face::East),
+            // The spot is.
+            ((0, -61, 2), Face::West),
+            // Neither is.
+            ((2, -61, 2), Face::Top),
+        ];
+        let attempt = |region: &mut Region, hand: &str| {
+            for (sequence, ((x, y, z), face)) in (1..).zip(clicks) {
+                let click = sequenced(sequence, place(1, x, y, z, face));
+                let output = region.tick(&moves(vec![click]));
+                assert!(output.remote_requests.is_empty(), "{hand}, {sequence}");
+                assert!(output.events.is_empty(), "{hand}: {:?}", output.events);
+                assert_eq!(output.player_events, [acknowledged(1, sequence)], "{hand}");
+            }
+        };
+
+        // A stick, then an empty slot.
+        region.tick(&moves(vec![select(1, 2)]));
+        attempt(&mut region, "a stick");
+        region.tick(&moves(vec![select(1, 5)]));
+        attempt(&mut region, "nothing");
+        // Stone, but from eight blocks further east.
+        region.tick(&moves(vec![select(1, 0), walk(1, 9.5, 2.5)]));
+        attempt(&mut region, "too far");
+        assert_eq!(region.chunk(EAST_CHUNK), Some(&floor()));
+
+        // From where the player stood before, the last of these places a block.
+        let output = region.tick(&moves(vec![
+            walk(1, FEET.x, FEET.z),
+            place(1, 2, -61, 2, Face::Top),
+        ]));
+        assert!(output.events.contains(&changed(2, -60, 2, blocks::STONE)));
+    }
+
+    #[test]
+    fn what_is_asked_of_another_region_is_not_acknowledged_by_this_one() {
+        let mut region = east_with_player();
+        // A later action that this region handles itself is acknowledged with its own
+        // number. That number is above the one that waits, as numbers go; whoever passes
+        // it on to the player has to see to that.
+        let output = region.tick(&moves(vec![dig(1, -1, -61, 2, 1), dig(1, 2, -61, 2, 2)]));
+        assert_eq!(output.remote_requests, [remote(1, 1, break_at(-1, -61, 2))]);
+        assert_eq!(output.player_events, [acknowledged(1, 2)]);
+
+        // An earlier one is acknowledged with its number and no higher one.
+        let output = region.tick(&moves(vec![
+            dig(1, 2, -61, 3, 3),
+            dig(1, -1, -61, 3, 4),
+            sequenced(5, place(1, -2, -61, 3, Face::Top)),
+            sequenced(6, place(1, 0, -61, 3, Face::West)),
+        ]));
+        let asked: Vec<_> = output
+            .remote_requests
+            .iter()
+            .map(|action| action.sequence)
+            .collect();
+        assert_eq!(asked, [4, 5, 6]);
+        assert_eq!(output.player_events, [acknowledged(1, 3)]);
+        assert!(region.tick(&TickInputs::default()).player_events.is_empty());
+    }
+
+    #[test]
+    fn remote_requests_are_in_the_order_of_the_inputs_that_caused_them() {
+        let mut region = on_floor_in(EAST, &[1, 2]);
+        let other = Vec3::new(2.5, -60.0, 4.5);
+        region.tick(&moves(vec![
+            walk(1, FEET.x, FEET.z),
+            walk(2, other.x, other.z),
+        ]));
+        // Neither by player nor by kind: as they were made.
+        let output = region.tick(&moves(vec![
+            dig(2, -1, -61, 4, 1),
+            sequenced(1, place(1, -2, -61, 2, Face::Top)),
+            // This one the region handles itself.
+            dig(1, 3, -61, 2, 2),
+            sequenced(2, place(2, 0, -61, 4, Face::West)),
+            dig(1, -1, -61, 2, 3),
+        ]));
+        assert_eq!(
+            output.remote_requests,
+            [
+                remote(2, 1, break_at(-1, -61, 4)),
+                remote(
+                    1,
+                    1,
+                    place_against(-2, -61, 2, Face::Top, blocks::STONE, FEET)
+                ),
+                remote(2, 2, place_at(-1, -61, 4, blocks::STONE, other)),
+                remote(1, 3, break_at(-1, -61, 2)),
+            ]
+        );
+        assert_eq!(output.events, [changed(3, -61, 2, blocks::AIR)]);
+        assert_eq!(output.player_events, [acknowledged(1, 2)]);
+    }
+
+    #[test]
+    fn a_remote_break_removes_the_block_and_is_reported_as_done() {
+        let mut region = west_with_floor();
+        let output = region.tick(&remotely(vec![remote(1, 7, break_at(-2, -61, 3))]));
+        assert_eq!(output.events, [changed(-2, -61, 3, blocks::AIR)]);
+        assert_eq!(output.remote_outcomes, [done(1, 7)]);
+        let chunk = region.chunk(WEST_CHUNK).unwrap();
+        assert_eq!(chunk.get(14, -61, 3), Some(blocks::AIR));
+        assert_eq!(chunk.get(13, -61, 3), Some(blocks::STONE));
+
+        let nothing = [
+            // The hole, and the air above the floor.
+            break_at(-2, -61, 3),
+            break_at(-3, -60, 3),
+            // Below and above the world.
+            break_at(-2, -65, 3),
+            break_at(-2, 320, 3),
+            // In a chunk that is not loaded.
+            break_at(-20, -61, 3),
+            // In another region, whose blocks this one does not have.
+            break_at(0, -61, 3),
+        ];
+        let before = region.chunk(WEST_CHUNK).cloned();
+        for (sequence, step) in (8..).zip(nothing) {
+            let output = region.tick(&remotely(vec![remote(1, sequence, step.clone())]));
+            assert!(output.events.is_empty(), "{step:?}: {:?}", output.events);
+            // Done all the same.
+            assert_eq!(output.remote_outcomes, [done(1, sequence)], "{step:?}");
+        }
+        assert_eq!(region.chunk(WEST_CHUNK), before.as_ref());
+        assert_eq!(region.loaded_chunk_count(), 1);
+    }
+
+    #[test]
+    fn a_remote_placement_needs_a_block_of_this_region_to_place_against() {
+        let mut region = west_with_floor();
+        // On the floor: there is a block to place against, and the one that is placed is
+        // the one that was asked for.
+        let step = place_against(-2, -61, 2, Face::Top, blocks::DIRT, FEET);
+        let output = region.tick(&remotely(vec![remote(1, 1, step)]));
+        assert_eq!(output.events, [changed(-2, -60, 2, blocks::DIRT)]);
+        assert_eq!(output.remote_outcomes, [done(1, 1)]);
+
+        // Each of these would go into a free spot of this region, if only this region
+        // had a block to place it against. For the last two the spot is a hole in the
+        // floor, at the western end of the loaded chunk and at the line.
+        region.tick(&remotely(vec![
+            remote(1, 2, break_at(-16, -61, 2)),
+            remote(1, 3, break_at(-1, -61, 2)),
+        ]));
+        let nothing = [
+            // Thin air.
+            place_against(-3, -59, 2, Face::Bottom, blocks::STONE, FEET),
+            // Above the world.
+            place_against(-3, 320, 2, Face::Bottom, blocks::STONE, FEET),
+            // Where the floor of the next chunk would be, which is not loaded.
+            place_against(-17, -61, 2, Face::East, blocks::STONE, FEET),
+            // Where the floor of the next region is: that is not for this one to say.
+            place_against(0, -61, 2, Face::West, blocks::STONE, FEET),
+        ];
+        let before = region.chunk(WEST_CHUNK).cloned();
+        for (sequence, step) in (4..).zip(nothing) {
+            let output = region.tick(&remotely(vec![remote(1, sequence, step.clone())]));
+            assert!(output.events.is_empty(), "{step:?}: {:?}", output.events);
+            assert_eq!(output.remote_outcomes, [done(1, sequence)], "{step:?}");
+        }
+        assert_eq!(region.chunk(WEST_CHUNK), before.as_ref());
+    }
+
+    /// The two steps that place stone on the floor at `x` and `z` for a player whose
+    /// feet are at `placer`: against the floor, and with the floor found by another
+    /// region already.
+    fn onto_floor(x: i32, z: i32, placer: Vec3) -> [RemoteStep; 2] {
+        [
+            place_against(x, -61, z, Face::Top, blocks::STONE, placer),
+            place_at(x, -60, z, blocks::STONE, placer),
+        ]
+    }
+
+    #[test]
+    fn a_remote_placement_goes_into_a_free_spot_only() {
+        let region = west_with_floor();
+        for step in onto_floor(-2, 2, FEET) {
+            let mut region = region.clone();
+            let output = region.tick(&remotely(vec![remote(1, 1, step.clone())]));
+            assert_eq!(output.events, [changed(-2, -60, 2, blocks::STONE)]);
+            assert_eq!(output.remote_outcomes, [done(1, 1)]);
+
+            // A second block does not go where the first is, and does not replace it.
+            let again = match step {
+                RemoteStep::Place { target, placer, .. } => RemoteStep::Place {
+                    target,
+                    block: blocks::GLASS,
+                    placer,
+                },
+                _ => place_against(-2, -61, 2, Face::Top, blocks::GLASS, FEET),
+            };
+            let output = region.tick(&remotely(vec![remote(1, 2, again)]));
+            assert!(output.events.is_empty(), "{:?}", output.events);
+            assert_eq!(output.remote_outcomes, [done(1, 2)]);
+            let chunk = region.chunk(WEST_CHUNK).unwrap();
+            assert_eq!(chunk.get(14, -60, 2), Some(blocks::STONE));
+        }
+        // Nor does it go into the floor, or anywhere outside the world.
+        let taken = [
+            place_at(-2, -61, 2, blocks::GLASS, FEET),
+            place_against(-2, -61, 2, Face::South, blocks::GLASS, FEET),
+            place_at(-2, 320, 2, blocks::GLASS, FEET),
+            place_at(-2, -65, 2, blocks::GLASS, FEET),
+        ];
+        let mut region = region;
+        for (sequence, step) in (1..).zip(taken) {
+            let output = region.tick(&remotely(vec![remote(1, sequence, step.clone())]));
+            assert!(output.events.is_empty(), "{step:?}: {:?}", output.events);
+            assert_eq!(output.remote_outcomes, [done(1, sequence)], "{step:?}");
+        }
+        assert_eq!(region.chunk(WEST_CHUNK), Some(&floor()));
+    }
+
+    #[test]
+    fn a_remote_placement_does_not_build_into_a_player_of_the_region() {
+        let mut region = west_with_floor();
+        // Their feet are at x = -3.5 and z = 0.5, on the floor.
+        region.tick(&changes(vec![arrive(2, &transfer(2, 77, -3.5, 0))]));
+        for (sequence, step) in (1..).zip(onto_floor(-4, 0, FEET)) {
+            let output = region.tick(&remotely(vec![remote(1, sequence, step)]));
+            assert!(output.events.is_empty(), "{:?}", output.events);
+            assert_eq!(output.remote_outcomes, [done(1, sequence)]);
+        }
+        // Not at the height of their head either, but above it.
+        let output = region.tick(&remotely(vec![
+            remote(1, 3, place_at(-4, -59, 0, blocks::STONE, FEET)),
+            remote(1, 4, place_at(-4, -58, 0, blocks::STONE, FEET)),
+        ]));
+        assert_eq!(output.events, [changed(-4, -58, 0, blocks::STONE)]);
+        assert_eq!(output.remote_outcomes, [done(1, 3), done(1, 4)]);
+
+        // When the player has gone, the spot is free.
+        region.tick(&changes(vec![leave(2)]));
+        let [step, _] = onto_floor(-4, 0, FEET);
+        let output = region.tick(&remotely(vec![remote(1, 5, step)]));
+        assert_eq!(output.events, [changed(-4, -60, 0, blocks::STONE)]);
+    }
+
+    #[test]
+    fn a_remote_placement_does_not_build_into_the_one_who_places() {
+        let region = west_with_floor();
+        // The spot is the block above the floor right at the line, which a player east
+        // of the line reaches into from 0.3 blocks away, being 0.6 wide and 1.8 high.
+        let (x, z) = (-1, 2);
+        let placers = [
+            // Well clear of the line, as in the other tests.
+            (FEET, true),
+            // With a shoulder across the line, and just not.
+            (Vec3::new(0.2, -60.0, 2.5), false),
+            (Vec3::new(0.4, -60.0, 2.5), true),
+            // The same along the line, from the block to the south.
+            (Vec3::new(0.2, -60.0, 3.2), false),
+            (Vec3::new(0.2, -60.0, 3.4), true),
+            // From below: with the head in the spot, and just under it.
+            (Vec3::new(0.2, -61.7, 2.5), false),
+            (Vec3::new(0.2, -61.9, 2.5), true),
+            // From above: with the feet in the spot, and just over it.
+            (Vec3::new(0.2, -59.1, 2.5), false),
+            (Vec3::new(0.2, -58.9, 2.5), true),
+        ];
+        for (placer, free) in placers {
+            for step in onto_floor(x, z, placer) {
+                let mut region = region.clone();
+                let output = region.tick(&remotely(vec![remote(1, 1, step.clone())]));
+                let expected = if free {
+                    vec![changed(x, -60, z, blocks::STONE)]
+                } else {
+                    vec![]
+                };
+                assert_eq!(output.events, expected, "{step:?}");
+                // Done either way.
+                assert_eq!(output.remote_outcomes, [done(1, 1)], "{step:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_remote_placement_against_a_block_of_this_region_into_another_is_passed_on() {
+        let mut region = west_with_floor();
+        // Against the eastern side of the floor at the line, with a placer whom the
+        // next region has to hear of as well.
+        let placer = Vec3::new(0.2, -60.0, 2.5);
+        let step = place_against(-1, -61, 2, Face::East, blocks::DIRT, placer);
+        let output = region.tick(&remotely(vec![remote(3, 41, step)]));
+        // This region found the block to place against. The spot is the next one's.
+        let next = remote(3, 41, place_at(0, -61, 2, blocks::DIRT, placer));
+        assert_eq!(output.remote_outcomes, [RemoteOutcome::Next(next)]);
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(output.remote_requests.is_empty());
+        assert_eq!(region.chunk(WEST_CHUNK), Some(&floor()));
+
+        // Without a block to place against there is nothing to pass on.
+        let step = place_against(-1, -60, 2, Face::East, blocks::DIRT, placer);
+        let output = region.tick(&remotely(vec![remote(3, 42, step)]));
+        assert_eq!(output.remote_outcomes, [done(3, 42)]);
+    }
+
+    /// Two regions that disagree about who has a block must not pass an action back and
+    /// forth for ever, so the last step is never passed on.
+    #[test]
+    fn a_remote_placement_into_a_spot_of_another_region_is_dropped_and_not_passed_on() {
+        let mut region = west_with_floor();
+        let output = region.tick(&remotely(vec![
+            // The air above the floor east of the line, and that floor.
+            remote(1, 1, place_at(0, -60, 2, blocks::STONE, FEET)),
+            remote(1, 2, place_at(0, -61, 2, blocks::STONE, FEET)),
+            // Neither the block to place against nor the spot is this region's.
+            remote(
+                1,
+                3,
+                place_against(1, -61, 2, Face::West, blocks::STONE, FEET),
+            ),
+        ]));
+        assert_eq!(output.remote_outcomes, [done(1, 1), done(1, 2), done(1, 3)]);
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(output.remote_requests.is_empty());
+        assert_eq!(region.chunk(WEST_CHUNK), Some(&floor()));
+        assert_eq!(region.loaded_chunk_count(), 1);
+    }
+
+    #[test]
+    fn remote_actions_are_applied_in_order_and_answered_one_for_one() {
+        let mut region = west_with_floor();
+        let output = region.tick(&remotely(vec![
+            // Placed and broken again.
+            remote(1, 4, place_at(-2, -60, 2, blocks::STONE, FEET)),
+            remote(2, 9, break_at(-2, -60, 2)),
+            // Broken, though there is nothing yet, and placed.
+            remote(2, 10, break_at(-3, -60, 2)),
+            remote(1, 5, place_at(-3, -60, 2, blocks::DIRT, FEET)),
+            // Placed against the block that has just been placed.
+            remote(
+                3,
+                1,
+                place_against(-3, -60, 2, Face::Top, blocks::GLASS, FEET),
+            ),
+            // For another region to finish.
+            remote(
+                1,
+                6,
+                place_against(-1, -61, 2, Face::East, blocks::STONE, FEET),
+            ),
+            // Changes nothing.
+            remote(2, 11, break_at(-5, -60, 2)),
+        ]));
+        assert_eq!(
+            output.events,
+            [
+                changed(-2, -60, 2, blocks::STONE),
+                changed(-2, -60, 2, blocks::AIR),
+                changed(-3, -60, 2, blocks::DIRT),
+                changed(-3, -59, 2, blocks::GLASS),
+            ]
+        );
+        assert_eq!(
+            output.remote_outcomes,
+            [
+                done(1, 4),
+                done(2, 9),
+                done(2, 10),
+                done(1, 5),
+                done(3, 1),
+                RemoteOutcome::Next(remote(1, 6, place_at(0, -61, 2, blocks::STONE, FEET))),
+                done(2, 11),
+            ]
+        );
+        // A tick without remote actions has no outcomes.
+        let output = region.tick(&TickInputs::default());
+        assert!(output.remote_outcomes.is_empty());
+    }
+
+    #[test]
+    fn remote_actions_are_applied_after_player_changes_and_before_inputs() {
+        let mut region = west_with_floor();
+        // A player who arrives in this tick is in the way already. They stand at
+        // x = -3.5 and z = 0.5 and hold glass.
+        let output = region.tick(&TickInputs {
+            player_changes: vec![arrive(2, &transfer(2, 77, -3.5, 0))],
+            remote_actions: vec![remote(1, 1, place_at(-4, -60, 0, blocks::STONE, FEET))],
+            ..TickInputs::default()
+        });
+        assert!(!output.events.iter().any(is_block_change));
+        assert_eq!(output.remote_outcomes, [done(1, 1)]);
+
+        // What the region's own players do in the tick comes after. The player breaks
+        // the block that is placed in it,
+        let output = region.tick(&TickInputs {
+            remote_actions: vec![remote(1, 2, place_at(-3, -60, 2, blocks::STONE, FEET))],
+            inputs: vec![dig(2, -3, -60, 2, 1)],
+            ..TickInputs::default()
+        });
+        assert_eq!(
+            output.events,
+            [
+                changed(-3, -60, 2, blocks::STONE),
+                changed(-3, -60, 2, blocks::AIR),
+            ]
+        );
+        // finds nothing left to place a block against,
+        let output = region.tick(&TickInputs {
+            remote_actions: vec![remote(1, 3, break_at(-3, -61, 2))],
+            inputs: vec![place(2, -3, -61, 2, Face::Top)],
+            ..TickInputs::default()
+        });
+        assert_eq!(output.events, [changed(-3, -61, 2, blocks::AIR)]);
+        // and is not yet in the way where they walk to.
+        let output = region.tick(&TickInputs {
+            remote_actions: vec![remote(1, 4, place_at(-6, -60, 4, blocks::STONE, FEET))],
+            inputs: vec![walk(2, -5.5, 4.5)],
+            ..TickInputs::default()
+        });
+        assert!(output.events.contains(&changed(-6, -60, 4, blocks::STONE)));
+
+        // A player who leaves in this tick is in the way no longer.
+        let output = region.tick(&TickInputs {
+            player_changes: vec![leave(2)],
+            remote_actions: vec![remote(1, 5, place_at(-6, -59, 4, blocks::STONE, FEET))],
+            ..TickInputs::default()
+        });
+        assert!(output.events.contains(&changed(-6, -59, 4, blocks::STONE)));
+    }
+
+    #[test]
+    fn the_player_of_a_remote_action_is_told_nothing_by_the_region() {
+        let mut region = west_with_floor();
+        // As a rule the player is not in this region.
+        let output = region.tick(&remotely(vec![
+            remote(1, 7, break_at(-2, -61, 2)),
+            remote(1, 8, place_at(-2, -60, 2, blocks::STONE, FEET)),
+            remote(
+                1,
+                9,
+                place_against(-1, -61, 2, Face::East, blocks::STONE, FEET),
+            ),
+        ]));
+        assert_eq!(output.events.len(), 2);
+        assert!(output.player_events.is_empty());
+
+        // They may have walked over while the action was on its way. It is reported as
+        // done all the same, and to them only what they do here is acknowledged.
+        let output = region.tick(&TickInputs {
+            player_changes: vec![arrive(1, &transfer(1, 77, -3.5, 0))],
+            remote_actions: vec![remote(1, 10, break_at(-2, -61, 3))],
+            ..TickInputs::default()
+        });
+        assert_eq!(output.remote_outcomes, [done(1, 10)]);
+        assert!(output.player_events.is_empty());
+        let output = region.tick(&TickInputs {
+            remote_actions: vec![remote(1, 12, break_at(-2, -61, 4))],
+            inputs: vec![dig(1, -3, -61, 1, 11)],
+            ..TickInputs::default()
+        });
+        assert_eq!(output.events.len(), 2);
+        assert_eq!(output.remote_outcomes, [done(1, 12)]);
+        assert_eq!(output.player_events, [acknowledged(1, 11)]);
     }
 
     /// The entity of a player in `region` and what a handover has to preserve of them.
@@ -1984,6 +2837,829 @@ mod tests {
         assert_eq!(carried(&east, player(1)), carried(&reference, player(1)));
     }
 
+    /// A world divided at the line between `WEST` and `EAST` into two regions, with a
+    /// router that does what the edge does, beside a single region that has all of it
+    /// and is given the same inputs.
+    ///
+    /// The router sends each input to the region it believes the player to be in and
+    /// hands players over as in `two_regions_match_one`. What a region asks of another
+    /// or passes on, the router gives to the region that has the block concerned for
+    /// its next tick, so that an action takes a tick longer for each region it goes to.
+    struct Divided {
+        whole: Region,
+        /// West of the line and east of it.
+        regions: [Region; 2],
+        /// What the router has sent to each region since that region's last tick.
+        waiting: [TickInputs; 2],
+        routes: BTreeMap<PlayerId, Route>,
+        step: u64,
+        /// How many steps the router takes to hear that a region has let a player go.
+        lag: u64,
+        handovers: usize,
+        /// The sequence numbers the players gave to what they did to blocks.
+        made: Vec<(PlayerId, i32)>,
+        /// Those that the region the player was in acknowledged, and those that
+        /// another region reported as done.
+        acknowledged: Vec<(PlayerId, i32)>,
+        done: Vec<(PlayerId, i32)>,
+        /// What a player's region asked of the other one, and what a region passed on.
+        asked: Vec<RemoteAction>,
+        passed_on: Vec<RemoteAction>,
+        /// The changes of blocks in the single region and in the two, and how many of
+        /// the latter came of what a region was given by the other one.
+        whole_changes: Vec<RegionEvent>,
+        changes: Vec<RegionEvent>,
+        changed_for_others: usize,
+    }
+
+    impl Divided {
+        /// Both worlds with a floor on either side of the line and the given players at
+        /// the spawn point, which is east of it.
+        fn new(numbers: &[u128]) -> Self {
+            let mut whole = on_floor(numbers);
+            lay_floor(&mut whole, WEST_CHUNK);
+            let routes = numbers
+                .iter()
+                .map(|number| {
+                    let route = Route {
+                        region: 1,
+                        made: 0,
+                        east: true,
+                        kept: Vec::new(),
+                        departed: None,
+                    };
+                    (player(*number), route)
+                })
+                .collect();
+            Self {
+                whole,
+                regions: [west_with_floor(), on_floor_in(EAST, numbers)],
+                waiting: [TickInputs::default(), TickInputs::default()],
+                routes,
+                step: 0,
+                lag: 0,
+                handovers: 0,
+                made: Vec::new(),
+                acknowledged: Vec::new(),
+                done: Vec::new(),
+                asked: Vec::new(),
+                passed_on: Vec::new(),
+                whole_changes: Vec::new(),
+                changes: Vec::new(),
+                changed_for_others: 0,
+            }
+        }
+
+        /// The index of the region that has the block at `position`.
+        fn region_of(&self, position: BlockPos) -> usize {
+            let has = |region: &Region| region.area().contains(position.chunk());
+            self.regions.iter().position(has).unwrap()
+        }
+
+        /// The block at `position` in the divided world.
+        fn block(&self, position: BlockPos) -> Option<BlockState> {
+            self.regions[self.region_of(position)].block(position)
+        }
+
+        /// One step: the players make `made`, in this order, and every region ticks
+        /// once. The router numbers the inputs itself.
+        fn step(&mut self, made: Vec<Input>) {
+            let step = self.step;
+            let mut whole = TickInputs::default();
+            for (id, _, input) in made {
+                if let PlayerInput::Dig { sequence, .. } | PlayerInput::UseItemOn { sequence, .. } =
+                    &input
+                {
+                    self.made.push((id, *sequence));
+                }
+                let route = self.routes.get_mut(&id).unwrap();
+                route.made += 1;
+                let input = (id, route.made, input);
+                whole.inputs.push(input.clone());
+                self.waiting[route.region].inputs.push(input.clone());
+                route.kept.push(input);
+            }
+            let output = self.whole.tick(&whole);
+            // Having all the blocks, the single region asks nobody for anything.
+            assert!(output.remote_requests.is_empty(), "step {step}");
+            let changes = output.events.into_iter().filter(is_block_change);
+            self.whole_changes.extend(changes);
+
+            // Both regions tick with what they were sent before this step, so that what
+            // one of them leaves to the other is taken up in the other's next tick.
+            let given = std::mem::take(&mut self.waiting);
+            let outputs = [0, 1].map(|index| self.regions[index].tick(&given[index]));
+            for (from, (output, given)) in outputs.into_iter().zip(given).enumerate() {
+                assert_eq!(
+                    output.remote_outcomes.len(),
+                    given.remote_actions.len(),
+                    "step {step}"
+                );
+                let changes: Vec<_> = output.events.into_iter().filter(is_block_change).collect();
+                if given.inputs.is_empty() {
+                    self.changed_for_others += changes.len();
+                }
+                self.changes.extend(changes);
+                for (id, event) in output.player_events {
+                    match event {
+                        PlayerEvent::Acknowledged { sequence } => {
+                            self.acknowledged.push((id, sequence));
+                        }
+                        PlayerEvent::Departed(transfer) => {
+                            let route = self.routes.get_mut(&id).unwrap();
+                            assert_eq!(route.departed, None, "step {step}");
+                            route.departed = Some((step + self.lag, transfer));
+                            self.handovers += 1;
+                        }
+                        other => panic!("unexpected event {other:?} in step {step}"),
+                    }
+                }
+                // In the order the region got to them: what it was given by another
+                // region comes before what its own players did.
+                let mut onward = Vec::new();
+                for outcome in output.remote_outcomes {
+                    match outcome {
+                        RemoteOutcome::Done { player, sequence } => {
+                            self.done.push((player, sequence));
+                        }
+                        RemoteOutcome::Next(action) => {
+                            self.passed_on.push(action.clone());
+                            onward.push(action);
+                        }
+                    }
+                }
+                self.asked.extend(output.remote_requests.iter().cloned());
+                onward.extend(output.remote_requests);
+                for action in onward {
+                    let to = self.region_of(action.step.concerns());
+                    // What concerns its own blocks a region has to do itself.
+                    assert_ne!(to, from, "step {step}: {action:?}");
+                    self.waiting[to].remote_actions.push(action);
+                }
+            }
+            for (id, route) in &mut self.routes {
+                route.pass_on(*id, step, &mut self.waiting);
+            }
+            self.step += 1;
+        }
+
+        /// Whether nothing is on its way between the regions: no player and no action.
+        fn at_rest(&self) -> bool {
+            self.waiting == [TickInputs::default(), TickInputs::default()]
+                && self.routes.values().all(|route| route.departed.is_none())
+        }
+
+        /// Lets steps pass until nothing is on its way, so that everything that was
+        /// done so far has finished.
+        fn settle(&mut self) {
+            // A player is taken in a step after the router has heard that they were let
+            // go, which takes `lag` steps. An action goes to the other region and back
+            // at most, a step each. Whatever takes longer goes round in circles.
+            for _ in 0..8 {
+                if self.at_rest() {
+                    return;
+                }
+                self.step(vec![]);
+            }
+            panic!("not at rest in step {}: {:?}", self.step, self.waiting);
+        }
+
+        /// A step in which the players make `made`, with time for it to finish, after
+        /// which the two regions have to agree with the single one.
+        fn act(&mut self, made: Vec<Input>) {
+            self.step(made);
+            self.settle();
+            self.assert_agreement();
+        }
+
+        /// The blocks that the region that has them does not have as the single region
+        /// has them, with what is there in the single region and in the other.
+        fn differences(&self) -> Vec<(BlockPos, Option<BlockState>, Option<BlockState>)> {
+            let mut differences = Vec::new();
+            for (region, position) in self.regions.iter().zip([WEST_CHUNK, EAST_CHUNK]) {
+                if region.chunk(position) == self.whole.chunk(position) {
+                    continue;
+                }
+                let bottom = chunk().min_y();
+                for y in bottom..bottom + chunk().height() as i32 {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            let block = BlockPos::new(position.x * 16 + x, y, position.z * 16 + z);
+                            let (whole, part) = (self.whole.block(block), region.block(block));
+                            if whole != part {
+                                differences.push((block, whole, part));
+                            }
+                        }
+                    }
+                }
+            }
+            differences
+        }
+
+        /// Checks that each player is in one of the two regions as they are in the
+        /// single region. That holds at rest only.
+        fn assert_same_players(&self) {
+            let step = self.step;
+            for (id, route) in &self.routes {
+                let here = carried(&self.regions[route.region], *id);
+                assert!(here.is_some(), "step {step}");
+                assert_eq!(here, carried(&self.whole, *id), "step {step}");
+                let other = &self.regions[1 - route.region];
+                assert_eq!(other.player(*id), None, "step {step}");
+            }
+        }
+
+        /// Checks that the two regions together have the blocks of the single region,
+        /// and the players as well. That holds at rest only.
+        fn assert_agreement(&self) {
+            let differences = self.differences();
+            assert!(
+                differences.is_empty(),
+                "step {}: {differences:?}",
+                self.step
+            );
+            self.assert_same_players();
+        }
+
+        /// Checks that everything a player did to a block has been handled exactly
+        /// once: its number was either acknowledged by the region the player was in or
+        /// reported as done by the region that took the last step.
+        ///
+        /// An acknowledgement covers every number up to its own. So this holds only
+        /// where a player's region acknowledges one action at a time, and not if it
+        /// acknowledged a number it has asked the other region about.
+        fn assert_each_handled_once(&self) {
+            let mut handled = [self.acknowledged.as_slice(), &self.done].concat();
+            handled.sort_unstable();
+            let mut made = self.made.clone();
+            made.sort_unstable();
+            assert_eq!(handled, made);
+        }
+    }
+
+    /// The sequence numbers of what was handled, in the order it was.
+    fn numbers(handled: &[(PlayerId, i32)]) -> Vec<i32> {
+        handled.iter().map(|(_, sequence)| *sequence).collect()
+    }
+
+    /// How many of `actions` break a block, place one against a block that is yet to be
+    /// found, and place one into a spot.
+    fn kinds<'a>(actions: impl IntoIterator<Item = &'a RemoteAction>) -> [usize; 3] {
+        let mut kinds = [0; 3];
+        for action in actions {
+            let kind = match action.step {
+                RemoteStep::Break { .. } => 0,
+                RemoteStep::PlaceAgainst { .. } => 1,
+                RemoteStep::Place { .. } => 2,
+            };
+            kinds[kind] += 1;
+        }
+        kinds
+    }
+
+    /// One of the six faces for a number below eight. The two that look across the line
+    /// come up twice as often as the others.
+    fn across_more_often(number: u64) -> Face {
+        FACES[[0, 1, 2, 3, 4, 4, 5, 5][number as usize]]
+    }
+
+    #[test]
+    fn two_regions_change_blocks_across_the_line_as_one_region_does() {
+        let mut world = Divided::new(&[1]);
+        let script = [
+            // The player stands east of the line, a block and a half from it, and breaks
+            // the floor on their own side and beyond the line.
+            walk(1, FEET.x, FEET.z),
+            dig(1, 2, -61, 2, 1),
+            dig(1, -1, -61, 2, 2),
+            // They place a block on their own side,
+            sequenced(3, place(1, 2, -61, 3, Face::Top)),
+            // from their own side into the hole beyond the line,
+            sequenced(4, place(1, 0, -61, 2, Face::West)),
+            // on the floor beyond the line,
+            sequenced(5, place(1, -2, -61, 2, Face::Top)),
+            // and from beyond the line into a hole on their own side, for which the
+            // action goes there and comes back.
+            dig(1, 0, -61, 4, 6),
+            sequenced(7, place(1, -1, -61, 4, Face::East)),
+            // What comes to nothing: against thin air beyond the line, into a spot
+            // that is taken there, and against thin air on their own side.
+            sequenced(8, place(1, -2, -59, 2, Face::Top)),
+            sequenced(9, place(1, -2, -61, 2, Face::Top)),
+            sequenced(10, place(1, 0, -60, 2, Face::West)),
+            // Dirt against the block they placed beyond the line, which they then break.
+            select(1, 1),
+            sequenced(11, place(1, -2, -60, 2, Face::South)),
+            dig(1, -2, -60, 2, 12),
+            // With a stick in hand, and from too far away.
+            select(1, 2),
+            sequenced(13, place(1, -3, -61, 2, Face::Top)),
+            dig(1, -9, -61, 2, 14),
+            // Then they walk across the line and do the like from the west.
+            select(1, 0),
+            walk(1, -1.5, 6.5),
+            dig(1, -3, -61, 6, 15),
+            dig(1, 0, -61, 6, 16),
+            sequenced(17, place(1, -3, -61, 7, Face::Top)),
+            sequenced(18, place(1, -1, -61, 6, Face::East)),
+            sequenced(19, place(1, 1, -61, 6, Face::Top)),
+            dig(1, -1, -61, 8, 20),
+            sequenced(21, place(1, 0, -61, 8, Face::West)),
+        ];
+        for input in script {
+            world.act(vec![input]);
+        }
+
+        world.assert_each_handled_once();
+        // The player's region handled what was about its own blocks only, and what it
+        // could tell to be in vain. The rest was for the other region to finish, or,
+        // for the two placements that went there and back, for itself.
+        assert_eq!(
+            numbers(&world.acknowledged),
+            [1, 3, 6, 10, 13, 14, 15, 17, 20]
+        );
+        assert_eq!(
+            numbers(&world.done),
+            [2, 4, 5, 7, 8, 9, 11, 12, 16, 18, 19, 21]
+        );
+        assert_eq!(kinds(&world.asked), [3, 7, 2]);
+        let passed_on: Vec<_> = world
+            .passed_on
+            .iter()
+            .map(|action| action.sequence)
+            .collect();
+        assert_eq!(passed_on, [7, 21]);
+        assert_eq!(world.handovers, 1);
+        // Block for block the same happened in the same order.
+        assert_eq!(world.changes, world.whole_changes);
+        assert_eq!(world.changes.len(), 16);
+        assert_eq!(world.changed_for_others, 10);
+    }
+
+    /// The same for a player who does at random what can be done near the line: digs,
+    /// places against any face with a block in hand or without, changes what they hold
+    /// and moves about, now and then across the line or to where they stand astride it.
+    ///
+    /// They do one thing at a time, and the next when all that came of it has finished.
+    /// Without that the two worlds differ, which is a known limit: see
+    /// `a_placement_by_way_of_another_region_is_overtaken_by_a_dig_of_its_spot`.
+    #[test]
+    fn two_regions_change_blocks_as_one_region_does_whatever_a_player_does() {
+        const ROUNDS: usize = 3000;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+
+        let mut world = Divided::new(&[1]);
+        let mut sequence = 0;
+        for _ in 0..ROUNDS {
+            // A block within four blocks of the line, more often than not right at it:
+            // of the floor for the most part, else right below it or in the two layers
+            // above. One row in seven lies north of the loaded chunks. A player clicks
+            // what they see, so it is tried a few times to hit a block that is there.
+            let mut position = BlockPos::new(0, 0, 0);
+            for _ in 0..4 {
+                position = BlockPos::new(
+                    [-4, -3, -2, -1, -1, 0, 0, 1, 2, 3][random(10) as usize],
+                    [-62, -61, -61, -61, -60, -60, -59][random(7) as usize],
+                    random(7) as i32 - 1,
+                );
+                if world.whole.is_block(position) {
+                    break;
+                }
+            }
+            let input = match random(10) {
+                // Stone or dirt in hand, at times a stick or nothing.
+                0 => PlayerInput::SelectSlot {
+                    slot: [0, 0, 0, 1, 1, 1, 2, 3][random(8) as usize],
+                },
+                // Up to three blocks from the line on either side, on the floor or in
+                // the air above it.
+                1 | 2 => PlayerInput::Move {
+                    position: Some(Vec3::new(
+                        random(61) as f64 / 10.0 - 3.0,
+                        [-60.0, -60.0, -60.0, -59.5, -58.8][random(5) as usize],
+                        1.0 + random(40) as f64 / 10.0,
+                    )),
+                    rotation: None,
+                    on_ground: true,
+                },
+                3 | 4 => {
+                    sequence += 1;
+                    PlayerInput::Dig { position, sequence }
+                }
+                // More is placed than dug, or nothing would be left to work on.
+                _ => {
+                    sequence += 1;
+                    PlayerInput::UseItemOn {
+                        position,
+                        face: across_more_often(random(8)),
+                        sequence,
+                    }
+                }
+            };
+            // The router hears that the player was let go at once or up to two steps
+            // later.
+            world.lag = random(3);
+            world.act(vec![numbered(player(1), input)]);
+        }
+
+        world.assert_each_handled_once();
+        assert_eq!(world.changes, world.whole_changes);
+        // The run did something worth comparing: blocks changed on the player's side
+        // and on the other, by actions of every kind and by such as went there and back,
+        // and the player crossed the line.
+        let [breaks, against, into] = kinds(&world.asked);
+        assert!(breaks > 100, "{breaks} breaks");
+        assert!(against > 200, "{against} placements against");
+        assert!(into > 10, "{into} placements into");
+        let passed_on = world.passed_on.len();
+        assert!(passed_on > 10, "{passed_on} passed on");
+        assert!(world.changes.len() > 500, "{}", world.changes.len());
+        let for_others = world.changed_for_others;
+        assert!(for_others > 200, "{for_others} changes for others");
+        let acknowledged = world.acknowledged.len();
+        assert!(acknowledged > 500, "{acknowledged} acknowledged");
+        assert!(world.handovers > 200, "{} handovers", world.handovers);
+    }
+
+    /// This documents a limit and not what is wanted: whoever lifts it has to turn this
+    /// test round.
+    ///
+    /// What a player does to blocks of another region takes effect a tick later than in
+    /// a single region, and two ticks later if it comes back to the player's own. What
+    /// they do right afterwards to the same block can therefore take effect first. The
+    /// smallest case is a block placed against one beyond the line into a spot on the
+    /// player's own side and broken again at once: divided, the world keeps the block.
+    #[test]
+    fn a_placement_by_way_of_another_region_is_overtaken_by_a_dig_of_its_spot() {
+        let mut world = Divided::new(&[1]);
+        let spot = BlockPos::new(0, -61, 2);
+        // A hole in the floor on the player's side, right at the line.
+        world.act(vec![walk(1, FEET.x, FEET.z), dig(1, 0, -61, 2, 1)]);
+
+        // The player fills it against the side of the floor beyond the line and breaks
+        // the block again.
+        world.step(vec![
+            sequenced(2, place(1, -1, -61, 2, Face::East)),
+            dig(1, 0, -61, 2, 3),
+        ]);
+        // In the single region that is a block placed and broken.
+        assert_eq!(
+            world.whole_changes[1..],
+            [
+                changed(0, -61, 2, blocks::STONE),
+                changed(0, -61, 2, blocks::AIR),
+            ]
+        );
+        assert_eq!(world.whole.block(spot), Some(blocks::AIR));
+
+        // Divided, the dig comes first and finds nothing to break. The placement is with
+        // the western region for a tick, which finds the block to place against,
+        assert_eq!(world.block(spot), Some(blocks::AIR));
+        assert_eq!(numbers(&world.acknowledged), [1, 3]);
+        world.step(vec![]);
+        assert_eq!(world.block(spot), Some(blocks::AIR));
+        assert!(world.done.is_empty());
+        // and comes back to the eastern one, which finds the spot free.
+        world.step(vec![]);
+        assert_eq!(world.block(spot), Some(blocks::STONE));
+        assert_eq!(numbers(&world.done), [2]);
+        assert!(world.at_rest());
+        world.assert_each_handled_once();
+    }
+
+    /// However quickly players act, nothing they do to blocks is lost or handled twice,
+    /// though the blocks are then not always those of a single region, as the test
+    /// above shows. Two players dig, place and walk back and forth across the line, up
+    /// to three times in a tick between them, and the router is slow to hear of it.
+    #[test]
+    fn nothing_done_to_blocks_is_lost_or_handled_twice_however_quickly_players_act() {
+        const STEPS: usize = 3000;
+        let mut state = 0xD1B5_4A32_D192_ED03u64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+
+        let mut world = Divided::new(&[1, 2]);
+        let mut sequences = [0; 2];
+        for _ in 0..STEPS {
+            let mut made = Vec::new();
+            for _ in 0..random(4) {
+                let index = random(2) as usize;
+                // A block within four blocks of the line that is likely to be there.
+                let mut position = BlockPos::new(0, 0, 0);
+                for _ in 0..4 {
+                    position = BlockPos::new(
+                        random(8) as i32 - 4,
+                        [-61, -61, -60, -59][random(4) as usize],
+                        random(6) as i32,
+                    );
+                    if world.whole.is_block(position) {
+                        break;
+                    }
+                }
+                let input = match random(8) {
+                    0 => PlayerInput::SelectSlot {
+                        slot: random(3) as u8,
+                    },
+                    // Up to three blocks from the line, on either side of it.
+                    1..=3 => PlayerInput::Move {
+                        position: Some(Vec3::new(
+                            random(61) as f64 / 10.0 - 3.0,
+                            -60.0,
+                            1.0 + random(40) as f64 / 10.0,
+                        )),
+                        rotation: None,
+                        on_ground: true,
+                    },
+                    4 => {
+                        sequences[index] += 1;
+                        PlayerInput::Dig {
+                            position,
+                            sequence: sequences[index],
+                        }
+                    }
+                    _ => {
+                        sequences[index] += 1;
+                        PlayerInput::UseItemOn {
+                            position,
+                            face: across_more_often(random(8)),
+                            sequence: sequences[index],
+                        }
+                    }
+                };
+                made.push(numbered(player(1 + index as u128), input));
+            }
+            world.lag = random(3);
+            world.step(made);
+        }
+        // A player may have crossed the line several times since the router last got
+        // round to passing them on, so it takes a while for everything to come to rest.
+        for _ in 0..100 {
+            if !world.at_rest() {
+                world.step(vec![]);
+            }
+        }
+        assert!(world.at_rest());
+        world.assert_same_players();
+
+        // What a player's region asked of the other one it asked once, and it has been
+        // reported as done once.
+        let mut asked: Vec<_> = world
+            .asked
+            .iter()
+            .map(|action| (action.player, action.sequence))
+            .collect();
+        asked.sort_unstable();
+        assert!(asked.windows(2).all(|pair| pair[0] < pair[1]));
+        let mut done = world.done.clone();
+        done.sort_unstable();
+        assert_eq!(done, asked);
+        // Everything else the region the player was in handled itself. It acknowledged
+        // nothing but that, each number once and in order, and the last of it.
+        for id in [player(1), player(2)] {
+            let of_player = |handled: &[(PlayerId, i32)]| -> Vec<i32> {
+                let own = handled.iter().filter(|(player, _)| *player == id);
+                own.map(|(_, sequence)| *sequence).collect()
+            };
+            let mut handled_there = of_player(&world.made);
+            handled_there.retain(|sequence| asked.binary_search(&(id, *sequence)).is_err());
+            let acknowledged = of_player(&world.acknowledged);
+            assert!(acknowledged.windows(2).all(|pair| pair[0] < pair[1]));
+            for sequence in &acknowledged {
+                assert!(handled_there.contains(sequence), "{sequence}");
+            }
+            assert_eq!(acknowledged.last(), handled_there.last());
+            // The run was quick enough for some acknowledgements to cover more than
+            // one action.
+            let (covering, covered) = (acknowledged.len(), handled_there.len());
+            assert!(covering > 300, "{covering} acknowledgements");
+            assert!(covering < covered - 50, "{covering} for {covered}");
+        }
+        // And it did something worth checking otherwise.
+        assert!(asked.len() > 500, "{} asked for", asked.len());
+        let passed_on = world.passed_on.len();
+        assert!(passed_on > 10, "{passed_on} passed on");
+        assert!(world.handovers > 500, "{} handovers", world.handovers);
+    }
+
+    /// Two players, one on either side of the line, each of whom works for the most part
+    /// on the blocks of the other's side, both in the same tick.
+    #[test]
+    fn two_regions_serve_players_on_either_side_of_the_line_as_one_region_does() {
+        const ROUNDS: i32 = 1500;
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+
+        let mut world = Divided::new(&[1, 2]);
+        // Player 1 stays east of the line and player 2 goes west of it. Each clicks
+        // blocks of a strip of their own, which reaches from the second block on their
+        // side of the line to the third beyond it and is two blocks wide. What they
+        // place goes one block further at most, and the strips are three blocks apart:
+        // the two never work on the same block, so it does not matter who is first.
+        // Neither stands in the other's strip.
+        world.act(vec![walk(1, 2.5, 1.5), walk(2, -2.5, 6.5)]);
+        for sequence in 1..=ROUNDS {
+            let mut made = Vec::new();
+            // A player, their strip from west to east with the blocks at the line twice,
+            // and its northern row.
+            let strips = [
+                (1, [-3, -2, -1, -1, 0, 0, 1], 1),
+                (2, [-2, -1, -1, 0, 0, 1, 2], 6),
+            ];
+            for (number, strip, north) in strips {
+                // A player clicks what they see, so it is tried a few times to hit a
+                // block that is there.
+                let mut position = BlockPos::new(0, 0, 0);
+                for _ in 0..4 {
+                    position = BlockPos::new(
+                        strip[random(7) as usize],
+                        [-62, -61, -61, -61, -60, -60, -59][random(7) as usize],
+                        north + random(2) as i32,
+                    );
+                    if world.whole.is_block(position) {
+                        break;
+                    }
+                }
+                let input = match random(8) {
+                    // Stone or dirt in hand, at times a stick.
+                    0 => PlayerInput::SelectSlot {
+                        slot: [0, 0, 1, 1, 2][random(5) as usize],
+                    },
+                    1 => PlayerInput::Dig { position, sequence },
+                    // Far more is placed than dug, much of it in vain: a strip is
+                    // small, and once it is empty there is nothing left to click.
+                    _ => PlayerInput::UseItemOn {
+                        position,
+                        face: across_more_often(random(8)),
+                        sequence,
+                    },
+                };
+                made.push(numbered(player(number), input));
+            }
+            world.act(made);
+        }
+
+        world.assert_each_handled_once();
+        // The same blocks changed in the same way. Those of one strip changed in the
+        // same order too, or the worlds would not have agreed after each round.
+        let sorted = |changes: &[RegionEvent]| {
+            let mut changes: Vec<_> = changes
+                .iter()
+                .map(|event| match event {
+                    RegionEvent::BlockChanged { position, state } => (*position, *state),
+                    other => panic!("unexpected event {other:?}"),
+                })
+                .collect();
+            changes.sort_unstable();
+            changes
+        };
+        assert_eq!(sorted(&world.changes), sorted(&world.whole_changes));
+        // The run did something worth comparing: each player had the other's region
+        // do things of every kind, and some of them came back.
+        for number in [1, 2] {
+            let own = |action: &&RemoteAction| action.player == player(number);
+            let [breaks, against, into] = kinds(world.asked.iter().filter(own));
+            let passed_on = world.passed_on.iter().filter(own).count();
+            assert!(breaks > 50, "{breaks} breaks of player {number}");
+            assert!(against > 200, "{against} placements against");
+            assert!(into > 30, "{into} placements into");
+            assert!(passed_on > 30, "{passed_on} passed on");
+        }
+        assert!(world.changes.len() > 500, "{}", world.changes.len());
+        let for_others = world.changed_for_others;
+        assert!(for_others > 300, "{for_others} changes for others");
+        assert_eq!(world.handovers, 1);
+    }
+
+    #[test]
+    fn nobody_is_built_into_across_the_line_whom_the_region_of_the_spot_knows_of() {
+        let mut world = Divided::new(&[1, 2]);
+        let (shoulder, other) = (BlockPos::new(-1, -60, 2), BlockPos::new(-3, -60, 4));
+        // Player 1 stands east of the line with a shoulder across it. They cannot place
+        // a block into themselves there, as the western region is told where they
+        // stand, nor into player 2, who is in the western region.
+        world.act(vec![walk(1, 0.2, 2.5), walk(2, -2.5, 4.5)]);
+        let attempts = |first: i32| {
+            [
+                sequenced(first, place(1, -1, -61, 2, Face::Top)),
+                sequenced(first + 1, place(1, -3, -61, 4, Face::Top)),
+            ]
+        };
+        for attempt in attempts(1) {
+            world.act(vec![attempt]);
+        }
+        assert_eq!(world.block(shoulder), Some(blocks::AIR));
+        assert_eq!(world.block(other), Some(blocks::AIR));
+        assert_eq!(numbers(&world.done), [1, 2]);
+        assert!(world.changes.is_empty(), "{:?}", world.changes);
+
+        // Nothing else was in the way: when both have stepped aside, the blocks are
+        // placed.
+        world.act(vec![walk(1, FEET.x, FEET.z), walk(2, -4.5, 6.5)]);
+        for attempt in attempts(3) {
+            world.act(vec![attempt]);
+        }
+        assert_eq!(world.block(shoulder), Some(blocks::STONE));
+        assert_eq!(world.block(other), Some(blocks::STONE));
+
+        // Nor can player 1 place a block into themselves on their own side by way of
+        // the western region: against the block at the line into the spot east of it.
+        let own = BlockPos::new(0, -60, 2);
+        world.act(vec![walk(1, 0.5, 2.5)]);
+        world.act(vec![sequenced(5, place(1, -1, -60, 2, Face::East))]);
+        assert_eq!(world.block(own), Some(blocks::AIR));
+        world.act(vec![walk(1, FEET.x, FEET.z)]);
+        world.act(vec![sequenced(6, place(1, -1, -60, 2, Face::East))]);
+        assert_eq!(world.block(own), Some(blocks::STONE));
+
+        assert_eq!(numbers(&world.done), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(world.passed_on.len(), 2);
+        assert_eq!(world.changes, world.whole_changes);
+        assert_eq!(world.changes.len(), 3);
+    }
+
+    /// Where the one who places a block stood when they did it goes with the action, so
+    /// that it still counts when the action comes back to a region they have left.
+    #[test]
+    fn a_placement_that_comes_back_does_not_build_into_where_the_placer_stood() {
+        let mut world = Divided::new(&[1]);
+        let spot = BlockPos::new(0, -60, 2);
+        // A block on the floor beyond the line, and the player beside it on their own
+        // side of the line.
+        world.act(vec![walk(1, FEET.x, FEET.z)]);
+        world.act(vec![sequenced(1, place(1, -1, -61, 2, Face::Top))]);
+        world.act(vec![walk(1, 0.5, 2.5)]);
+
+        // They place a block against it into the spot they stand in, and in the next
+        // tick walk round it and across the line.
+        world.step(vec![sequenced(2, place(1, -1, -60, 2, Face::East))]);
+        world.step(vec![walk(1, -0.5, 4.5)]);
+        world.settle();
+        // The eastern region had nobody left to stand in the spot when the placement
+        // came back to it.
+        assert_eq!(numbers(&world.done), [1, 2]);
+        assert_eq!(world.regions[1].player_count(), 0);
+        assert_eq!(world.block(spot), Some(blocks::AIR));
+        world.assert_agreement();
+
+        // With nobody near the spot, the same click places the block.
+        world.act(vec![sequenced(3, place(1, -1, -60, 2, Face::East))]);
+        assert_eq!(world.block(spot), Some(blocks::STONE));
+        world.assert_each_handled_once();
+    }
+
+    /// This documents a limit and not what is wanted: whoever lifts it has to turn this
+    /// test round.
+    ///
+    /// A region knows its own players and, of a player who places a block from another
+    /// region, where they stand. It does not know who else stands in another region
+    /// close enough to the line to reach across it with a part of their body, and
+    /// places blocks into them.
+    #[test]
+    fn a_player_astride_the_line_is_built_into_by_the_region_they_are_not_in() {
+        let mut world = Divided::new(&[1, 2, 3]);
+        // Player 1 stands east of the line with a shoulder across it. Player 2 is west
+        // of the line and player 3 east of it, both clear of it.
+        world.act(vec![
+            walk(1, 0.2, 2.5),
+            walk(2, -2.5, 2.5),
+            walk(3, 2.5, 5.5),
+        ]);
+
+        // Player 2 places a block in their own region where that shoulder is.
+        let spot = BlockPos::new(-1, -60, 2);
+        world.step(vec![place(2, -1, -61, 2, Face::Top)]);
+        world.settle();
+        assert_eq!(world.whole.block(spot), Some(blocks::AIR));
+        assert_eq!(world.block(spot), Some(blocks::STONE));
+
+        // Player 3 does the like from the region player 1 is in, further along the line:
+        // the western region is told where the one who places stands, and of nobody else.
+        let spot = BlockPos::new(-1, -60, 5);
+        world.step(vec![walk(1, 0.2, 5.5)]);
+        world.step(vec![place(3, -1, -61, 5, Face::Top)]);
+        world.settle();
+        assert_eq!(world.whole.block(spot), Some(blocks::AIR));
+        assert_eq!(world.block(spot), Some(blocks::STONE));
+
+        assert!(world.whole_changes.is_empty());
+        assert_eq!(world.changes.len(), 2);
+    }
+
     /// The same inputs always lead to the same region and the same outputs: a recorded
     /// run can be replayed.
     #[test]
@@ -2185,5 +3861,118 @@ mod tests {
                 .any(|output| !output.chunk_requests.is_empty())
         );
         assert_eq!(region.tick_number(), 600);
+    }
+
+    /// And for a region whose players work on blocks at either end of its area and
+    /// beyond, and which is given what players of other regions do to blocks there.
+    #[test]
+    fn a_recorded_run_with_remote_actions_replays_identically() {
+        let mut state = 0xD1B5_4A32_D192_ED03u64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        // Numbered here for the reason given in the test above.
+        let mut made = 0u64;
+
+        let mut recorded = Vec::new();
+        for _ in 0..1500 {
+            let mut inputs = TickInputs::default();
+            for _ in 0..random(4) {
+                let number = u128::from(random(4));
+                made += 1;
+                // Chunks -1 to 2, of which 0 and 1 are in the area.
+                let position = ChunkPos::new(random(4) as i32 - 1, 0);
+                // A block within two blocks of either end of the area, of the floor or
+                // at times right above it, and a player who stands within two blocks
+                // of it.
+                let x = [-2, -1, 0, 1, 30, 31, 32, 33][random(8) as usize];
+                let (y, z) = ([-61, -61, -61, -60][random(4) as usize], random(4) as i32);
+                let feet = Vec3::new(
+                    f64::from(x) + random(40) as f64 / 10.0 - 2.0,
+                    -60.0,
+                    random(40) as f64 / 10.0,
+                );
+                let face = across_more_often(random(8));
+                let block = [blocks::STONE, blocks::DIRT, blocks::GLASS][random(3) as usize];
+                let sequence = random(1000) as i32;
+                match random(20) {
+                    0 => inputs.player_changes.push(join(number)),
+                    1 => inputs.tickets_added.push(position),
+                    2 => inputs.chunks_loaded.push((position, floor())),
+                    3..=5 => {
+                        let step = walk(number, feet.x, feet.z);
+                        inputs.inputs.push(with_number(made, step));
+                    }
+                    6 | 7 => {
+                        let block = dig(number, x, y, z, sequence);
+                        inputs.inputs.push(with_number(made, block));
+                    }
+                    8..=11 => {
+                        let block = sequenced(sequence, place(number, x, y, z, face));
+                        inputs.inputs.push(with_number(made, block));
+                    }
+                    12 => {
+                        // Stone or dirt in hand, at times a stick.
+                        let slot = select(number, [0, 0, 1, 2][random(4) as usize]);
+                        inputs.inputs.push(with_number(made, slot));
+                    }
+                    13 | 14 => {
+                        let action = remote(number, sequence, break_at(x, y, z));
+                        inputs.remote_actions.push(action);
+                    }
+                    15..=17 => {
+                        let step = place_against(x, y, z, face, block, feet);
+                        inputs.remote_actions.push(remote(number, sequence, step));
+                    }
+                    _ => {
+                        let step = place_at(x, y, z, block, feet);
+                        inputs.remote_actions.push(remote(number, sequence, step));
+                    }
+                }
+            }
+            recorded.push(inputs);
+        }
+
+        let replay = || {
+            let mut region = Region::new(config(MIDDLE));
+            let outputs: Vec<_> = recorded.iter().map(|inputs| region.tick(inputs)).collect();
+            (region, outputs)
+        };
+        let (region, outputs) = replay();
+        assert_eq!(replay(), (region.clone(), outputs.clone()));
+
+        // The run did something worth comparing. The region asked for actions of every
+        // kind to be done elsewhere,
+        let asked = outputs.iter().flat_map(|output| &output.remote_requests);
+        let [breaks, against, into] = kinds(asked);
+        assert!(breaks > 0 && against > 0 && into > 0);
+        // answered what it was asked for, some of which it passed on,
+        let outcomes: Vec<_> = outputs
+            .iter()
+            .flat_map(|output| &output.remote_outcomes)
+            .collect();
+        let given: usize = recorded
+            .iter()
+            .map(|inputs| inputs.remote_actions.len())
+            .sum();
+        assert_eq!(outcomes.len(), given);
+        let passed_on = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, RemoteOutcome::Next(_)))
+            .count();
+        assert!(passed_on > 0);
+        // and changed blocks in ticks in which none of its own players did anything.
+        let for_others = recorded
+            .iter()
+            .zip(&outputs)
+            .filter(|(inputs, _)| inputs.inputs.is_empty())
+            .flat_map(|(_, output)| &output.events)
+            .filter(|event| is_block_change(event))
+            .count();
+        assert!(for_others > 0);
+        assert_eq!(region.tick_number(), 1500);
     }
 }

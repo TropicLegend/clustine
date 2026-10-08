@@ -57,6 +57,9 @@ spec:
             # so walking between these two places crosses from one worker to the other.
             - --west=40.5
             - --east=90.5
+            # The first block of the eastern region. With it the bots also place and
+            # break blocks across the boundary, which the two workers do together.
+            - --line=64
           resources:
             requests:
               cpu: 100m
