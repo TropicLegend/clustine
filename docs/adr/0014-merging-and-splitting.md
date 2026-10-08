@@ -1,9 +1,10 @@
 # ADR-0014: Merging and splitting
 
-- Status: **Proposed**; the design of step C3 of milestone M3, phase C, for the
+- Status: **Accepted**; the design of step C3 of milestone M3, phase C, for the
   simulation, the region runner, the worker process and the coordinator, and the
   contract the edge's part of the step is designed against. Revised after an
-  independent review against the code (see "Review"). Not built.
+  independent review against the code (see "Review"). Not built. The edge's part is
+  ADR-0015, designed against section 8 of this one.
 - Date: 2026-10-08
 
 ## Context

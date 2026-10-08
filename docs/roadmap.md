@@ -191,7 +191,7 @@ differently, so that each leaves everything working.
 | C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each. Designed in [ADR-0011](adr/0011-the-world-store-and-regions.md), in steps C1.1 to C1.7 | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | done |
 | C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | done |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos. Designed in [ADR-0012](adr/0012-the-tick-on-chunks.md), in steps C2b.1 to C2b.5 | Hand-over, block, takeover, chaos and move tests on two pinned regions | done |
-| C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | to do |
+| C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | designed in [ADR-0014](adr/0014-merging-and-splitting.md) and reviewed; to build |
 | C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | to do |
 | C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | to do |
 | C6 | Docs; what to try with real clients | CI | to do |
@@ -466,6 +466,17 @@ seed, the pause at a move is 0.95 seconds in the middle with regions that ask an
 with the stripes given (both within one hour; the 0.8 above was measured at another
 time, on a machine less busy): asking costs about a tick there, and taking the given
 stripes out changed nothing.
+
+C3 has its design in [ADR-0014](adr/0014-merging-and-splitting.md), reviewed against
+the code like the others (fourteen defects). What the review changed most: a merge and
+a split close the region's links, as ADR-0010 had it, so that an edge meets what they
+did in one place only, among the entries of a welcome; at every hello a region says
+every player it has for the edge, and the edge ends those it does not know; and what
+an edge says about a player names the stay it means, by its entity, so that what an
+earlier stay sent can never be taken for a later one. The pause at a move, which the
+record for phase B left to be judged here with an optimised build, is 0.36 to 0.40
+seconds in the middle (0.9 unoptimised), most of it the move itself, so the resume is
+left as it is. The edge's part is designed next (ADR-0015), by whoever builds it.
 
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
