@@ -1737,3 +1737,98 @@ region knows of chunks sound. What it changed:
 The review could not verify the timings under "Consequences", and counted five to six
 ticks where the first version said "two or three ticks after the near half"; both
 counts are there now, and neither is measured.
+
+## Found while building
+
+### Step C2b.2
+
+Nothing in sections 1 to 3 had to be decided differently. What the record did not say,
+or said otherwise than the code needed:
+
+1. **A router that sends an action without a region "to the region that holds the
+   chunk" goes round for ever** (section 6, "How the sim's fixtures play the store",
+   and S18). A pinned region that has not asked for a chunk of its own area holds it by
+   the store's table and knows nothing of it, so by section 2.4 it passes the action on
+   without a region, as it came; the router sends it there again. The existing test
+   `two_regions_change_blocks_as_one_region_does_whatever_a_player_does` clicks one row
+   in seven north of the chunks anyone has loaded, and showed it as soon as its regions
+   were not told about each other's chunks. The router of the tests does what section
+   5.6, rule 26 says of the edge: an action without a region goes to the region that
+   serves the chunk, which is one that holds it and knows so, and never to the region
+   the entry came from; if there is none, the router ends the action as handled. With
+   that the second half of S18 holds on four of the existing tests that run two regions
+   against one, block for block where they compare blocks.
+2. **A recorded run has to have the store's answers in it.** Section 6 lists
+   `a_recorded_run_of_a_bounded_region_replays_identically` among the tests that only
+   need viewer's tickets on the neighbours' chunks at the start. Its run takes tickets
+   on those chunks away at random, and with the last of them what the region believes;
+   the region asks again with the next ticket and is never answered, and no player
+   who arrived was let go any more. The run is recorded with the store in the loop, so
+   `granted` and `foreign` are part of what is replayed.
+3. **Existing tests that change their point and were not named** in section 6:
+   - `a_remote_break_removes_the_block_and_is_reported_as_done` and
+     `a_remote_placement_needs_a_block_of_this_region_to_place_against` (`region.rs`)
+     each had, among steps that change nothing and are reported done, one about a block
+     of the next region. Such a step is answered `NotMine`, or `Remote` without a
+     region. Both cases are now in
+     `a_remote_action_about_a_chunk_the_region_does_not_hold_goes_on_as_it_came`, which
+     took the place of
+     `a_remote_placement_into_a_spot_of_another_region_is_dropped_and_not_passed_on`.
+   - `a_restored_region_keeps_unconfirmed_entries_and_numbers_on`
+     (`tests/specification.rs`) gave a restored region a remote break of its
+     neighbour's block and expected `RemoteDone` as the fourth entry. A restored region
+     has not heard again whose that chunk is: the fourth entry is a `Remote` without a
+     region, which is the difference section 1.4 names.
+   - `states_and_deltas_survive_serialisation` (`tests/state.rs`) makes its run up from
+     the region's state as it goes, and wants a state with players and an outbox in
+     more than half of 300 ticks. With an arrival for a neighbour's chunk sent on
+     instead of taken in for a tick, the run takes another course: 146 ticks with the
+     seed it had, and from 113 to 192 with the seeds 1 to 16. It has another seed now.
+     Nothing about serialisation changed.
+   - The two recorded runs of a bounded region end two ticks later, the two in which
+     their fixture learns its neighbours.
+4. **An arrival for a chunk believed another's is not the region's for the rest of the
+   tick.** Until now such a player was taken in and let go at the end of the tick, so a
+   `Leave` behind the arrival in the same tick removed them and no `Departed` was made.
+   By section 2.2 the `NotMine` is made when the arrival is applied and stays in the
+   outbox, and the leave finds nobody. The edge ends it as rule 20 of section 5.5 has
+   it, with a `Discard` to the holder for a player it no longer has.
+5. **What `presumed` leaves open** (section 8). A chunk of a presumed area that
+   `Holdings::held` names is not kept as held chunk by chunk, so that nothing can make
+   the region give it back. `Region::held_chunk_count` counts what the store has
+   granted and not what is presumed, of which there is no end: it is 0 in a region
+   that presumes its stripe, and stays so in the presumed run of step C2b.3.
+6. **`hold` still looks the region up in the layout** (sections 7 and 8), and so does
+   the single process. Section 7 takes the lookup away because the store refuses a
+   region it does not have. This step leaves it, as it changes the processes only
+   where it has to: a region the layout does not have would take the whole world to
+   be its neighbours'. The lookup goes with `presumed` in C2b.5.
+7. **The runner passes no holdings yet.** `RegionRunner::restore` makes the region with
+   empty `Holdings`, whatever `Restored::held` and `Restored::pinned` say: what is
+   presumed needs neither. Step C2b.3 fills them, as section 8 has it. Likewise
+   `orphaned` in the runner does not have the entity of a `NotMine` for an arrival
+   before C2b.3, so the removal that `Region::drop_edge` reports for one reaches no
+   link until then; with presumed stripes no such entry is made.
+8. **A ticket of a kind that was never counted on a chunk** is not released, and does
+   not take one of the other kind with it. The record does not say; it is what a region
+   did with a ticket outside its area.
+9. **The bytes written out in the worker's test** had a `Departed` and neither a
+   `Remote` nor a `NotMine`, so the test would have failed for one of the three shapes
+   this step changes. Its state and delta now have all three.
+
+For step C2b.3, seen here and not decided:
+
+- **A chunk that storage delivers is matched to a request by its position alone**, as
+  today. A region can ask storage for a chunk, drop the request with the last ticket,
+  give the chunk back, be granted it again and ask again; what was read for the first
+  request then counts as the answer to the second, if it has not arrived by then. Today
+  that is the same chunk. From C2b.3 on another region can have held and changed it in
+  between. It takes a load that is answered later than a return, a neighbour's whole
+  use of the chunk and a second grant, which is 30 seconds and more with the
+  `return_after` of the processes, and a few ticks with the 0 of the tests.
+- **A `NotMine` for a remote action is still not acted on by the edge**, which logs it
+  and confirms it, as section 8 leaves it for this step. The region used to end such an
+  action itself with `RemoteDone`. Should a region and an edge ever disagree about a
+  chunk while the edge is as it is, the player's action would not be acknowledged, and
+  none of theirs after it. Regions that presume the layout the edge has cannot
+  disagree with it.

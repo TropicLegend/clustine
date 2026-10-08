@@ -4614,19 +4614,43 @@ mod tests {
                 name: "Alex".to_owned(),
             },
         ));
-        // A step out of the area: the player is let go, which is an outbox entry.
-        inputs.input(
-            edge,
-            player(),
-            1,
-            PlayerInput::Move {
-                position: Some(Vec3::new(40.5, -60.0, 0.5)),
-                rotation: None,
-                on_ground: true,
-            },
-        );
+        // One who arrives for a chunk of the neighbour and is sent on to it, which is
+        // an outbox entry: a `NotMine`.
+        let beyond = Vec3::new(40.5, -60.0, 0.5);
+        let arriving = PlayerTransfer {
+            entity_id: EntityId(77),
+            name: "Notch".to_owned(),
+            pose: Pose::at(beyond),
+            hotbar: [None; HOTBAR_SLOTS],
+            selected_slot: 0,
+            last_input: 5,
+        };
+        inputs.change(PlayerChange::Arrive(edge, third_player(), arriving));
+        // A step out of the area: the player is let go, which is a `Departed`.
+        let walk = |x| PlayerInput::Move {
+            position: Some(Vec3::new(x, -60.0, 0.5)),
+            rotation: None,
+            on_ground: true,
+        };
+        inputs.input(edge, player(), 1, walk(beyond.x));
+        // The one who stays walks up to the neighbour and breaks a block of it, which
+        // is passed on: a `Remote`.
+        inputs.input(edge, other_player(), 1, walk(14.5));
+        let dig = PlayerInput::Dig {
+            position: BlockPos::new(16, -61, 0),
+            sequence: 9,
+        };
+        inputs.input(edge, other_player(), 2, dig);
         let output = region.tick(&inputs);
-        assert_eq!(output.durable.len(), 1, "{:?}", output.durable);
+        // The three entries whose shapes say where something goes.
+        let kinds = output.durable.iter().map(|(_, _, entry)| match entry {
+            Durable::NotMine { .. } => "not mine",
+            Durable::Remote { .. } => "remote",
+            Durable::Departed { .. } => "departed",
+            _ => "another",
+        });
+        let kinds: Vec<_> = kinds.collect();
+        assert_eq!(kinds, ["not mine", "remote", "departed"]);
         (region.state(), output.delta)
     }
 
@@ -4644,20 +4668,25 @@ mod tests {
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "0002020280808001060110000000000000000000000000000000020404416c6578000000000000e0",
-                "3f0000000000004ec0000000000000e03f0000000000000000000000000000000000000000000701",
-                "07030102010101001000000000000000000000000000000001020553746576650000000000404440",
-                "0000000000004ec0000000000000e03f000000000000000001000000000000000000000101",
+                "0002020280808001060110000000000000000000000000000000020404416c65780000000000002d",
+                "400000000000004ec0000000000000e03f0000000000000000010000000000000000000002000701",
+                "07030102030301040010000000000000000000000000000000039a01054e6f746368000000000040",
+                "44400000000000004ec0000000000000e03f00000000000000000000000000000000000000050102",
+                "02100000000000000000000000000000000212002079000101030010000000000000000000000000",
+                "000000010205537465766500000000004044400000000000004ec0000000000000e03f0000000000",
+                "00000001000000000000000000000101",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
                 "00020201060210000000000000000000000000000000010010000000000000000000000000000000",
-                "02010404416c6578000000000000e03f0000000000004ec0000000000000e03f0000000000000000",
-                "00000000000000000000000000070107010301020100000101001000000000000000000000000000",
-                "0000010205537465766500000000004044400000000000004ec0000000000000e03f000000000000",
-                "000001000000000000000000000101",
+                "02010404416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
+                "01000000000000000000000200070107010301020300000301040010000000000000000000000000",
+                "000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f00000000",
+                "00000000000000000000000000000005010202100000000000000000000000000000000212002079",
+                "00010103001000000000000000000000000000000001020553746576650000000000404440000000",
+                "0000004ec0000000000000e03f000000000000000001000000000000000000000101",
             )
         );
     }

@@ -1101,13 +1101,14 @@ impl Region {
         // claim takes nothing from anyone. A guest's ticket elsewhere is no reason to
         // claim.
         let pinned = &land.pinned;
+        let wanted_for = |position: &ChunkPos, tickets: &Tickets| {
+            tickets.viewers > 0
+                || (tickets.guests > 0 && pinned.iter().any(|area| area.contains(*position)))
+        };
         let wanted = |position: &ChunkPos| {
+            let ticketed = tickets.get(position);
             standing.contains(position)
-                || tickets.get(position).is_some_and(|tickets| {
-                    tickets.viewers > 0
-                        || (tickets.guests > 0
-                            && pinned.iter().any(|area| area.contains(*position)))
-                })
+                || ticketed.is_some_and(|tickets| wanted_for(position, tickets))
         };
         // A belief is kept only while it is wanted, so that what a region believes
         // follows from what it holds, its tickets and the store's answers alone.
@@ -1115,10 +1116,13 @@ impl Region {
             .retain(|position, known| !matches!(known, Known::Foreign(_)) || wanted(position));
         // What is wanted and unknown is claimed, once: it is asked until the answer
         // comes.
+        let ticketed = tickets
+            .iter()
+            .filter(|(position, tickets)| wanted_for(position, tickets))
+            .map(|(position, _)| position);
         let claims: BTreeSet<ChunkPos> = standing
             .iter()
-            .chain(tickets.keys())
-            .filter(|position| wanted(position))
+            .chain(ticketed)
             .filter(|position| land.presumed(**position).is_none())
             .filter(|position| !land.known.contains_key(*position))
             .copied()
