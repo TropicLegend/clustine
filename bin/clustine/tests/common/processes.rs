@@ -31,6 +31,11 @@ pub struct Cluster {
     boundaries: String,
     /// What every worker is started with besides what it needs to find the others.
     pub worker_arguments: Vec<String>,
+    /// The largest view distance the edge grants, in chunks.
+    pub view_distance: i32,
+    /// The coordinator's lease in seconds, or `None` for the one it has when it is not
+    /// told any.
+    pub lease_seconds: Option<u64>,
 }
 
 impl Cluster {
@@ -52,6 +57,10 @@ impl Cluster {
             edge: (free_address().await, None),
             boundaries: boundaries.to_owned(),
             worker_arguments: Vec::new(),
+            view_distance: VIEW_DISTANCE,
+            // The shortest there is. It is also how long a new coordinator waits before
+            // it gives regions away.
+            lease_seconds: Some(3),
         }
     }
 
@@ -85,7 +94,7 @@ impl Cluster {
                 "--bind",
                 &self.edge.0,
                 "--view-distance",
-                &VIEW_DISTANCE.to_string(),
+                &self.view_distance.to_string(),
             ],
         );
         self.edge.1 = Some(edge);
@@ -106,20 +115,18 @@ impl Cluster {
 
     /// Starts the coordinator.
     pub fn start_coordinator(&mut self) {
-        let coordinator = self.spawn(
+        let lease = self.lease_seconds.map(|seconds| seconds.to_string());
+        let mut arguments = vec![
             "coordinator",
-            &[
-                "coordinator",
-                "--listen",
-                &self.coordinator.0,
-                "--boundaries",
-                &self.boundaries,
-                // The shortest there is. It is also how long a new coordinator waits
-                // before it gives regions away.
-                "--lease-seconds",
-                "3",
-            ],
-        );
+            "--listen",
+            &self.coordinator.0,
+            "--boundaries",
+            &self.boundaries,
+        ];
+        if let Some(lease) = &lease {
+            arguments.extend(["--lease-seconds", lease]);
+        }
+        let coordinator = self.spawn("coordinator", &arguments);
         self.coordinator.1 = Some(coordinator);
     }
 
@@ -155,6 +162,23 @@ impl Cluster {
             ],
         );
         self.store.1 = Some(store);
+    }
+
+    /// The command that asks the coordinator to move `region`, to the worker called `to`
+    /// or to any: `clustine move`, as whoever operates the cluster runs it. What it
+    /// prints is for the caller to read.
+    pub fn move_command(&self, region: usize, to: Option<&str>) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_clustine"));
+        command
+            .args(["move", "--coordinator", &self.coordinator.0, "--region"])
+            .arg(region.to_string())
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        if let Some(to) = to {
+            command.args(["--to", to]);
+        }
+        command
     }
 
     /// Waits until the process `name` has logged `message` at least `times` times.
