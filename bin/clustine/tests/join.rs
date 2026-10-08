@@ -150,14 +150,18 @@ async fn players_get_distinct_entity_ids() {
 
 #[tokio::test]
 async fn bot_that_answers_keep_alives_stays_connected() {
+    // A client has until the next keep-alive to answer, so the interval is the most the
+    // test may stall at any moment. The short one of the other tests was once exceeded
+    // on a busy runner, which disconnected a bot that did nothing wrong.
+    let interval = Duration::from_millis(500);
     let (server, address) = start_with(Config {
-        keep_alive_interval: SHORT_KEEP_ALIVE,
+        keep_alive_interval: interval,
         ..config()
     })
     .await;
 
     let mut bot = Bot::join(&address, "Patient").await.unwrap();
-    bot.idle(SHORT_KEEP_ALIVE * 10).await.unwrap();
+    bot.idle(interval * 10).await.unwrap();
     assert!(
         bot.stats.keep_alives_answered >= 5,
         "{}",
