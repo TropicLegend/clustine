@@ -760,6 +760,19 @@ impl Fanout {
         if view.region != from {
             return;
         }
+        // The region speaks of the player as of the messages it has applied. If their
+        // leaving is still among what it is to be sent again, it speaks of who they
+        // were before they left: the player the edge has now joined afterwards, and is
+        // placed when the region has applied the leaving and the join behind it. Taking
+        // the answer for them would put them into the world as their old self, with an
+        // entity that the region removes a moment later.
+        let port = &self.regions[from.0 as usize];
+        let left_since = port.kept.iter().any(
+            |(_, body)| matches!(body, EdgeToWorker::PlayerLeave { player: left } if *left == player),
+        );
+        if left_since {
+            return;
+        }
         match answer {
             Presence::Present {
                 entity,
@@ -2273,6 +2286,91 @@ mod tests {
         edge.settle(WEST).await;
         edge.input(player(1), step(1.5)).await;
         assert_eq!(edge.next_numbered(WEST).await.0, 2);
+        assert!(connected(&mut packets));
+    }
+
+    /// A player leaves and joins again while the region has not yet applied their
+    /// leaving, as when its worker has just died. What the region then says of the
+    /// player is about who they were; the one who joined again is placed by the join.
+    #[tokio::test]
+    async fn what_a_region_says_of_a_player_who_left_and_came_back_since_is_not_taken_for_them() {
+        let mut edge = Harness::start().await;
+        let _old = edge.joined(player(1), EntityId(5)).await;
+        let leave = Command::Leave {
+            session: SessionId(edge.sessions),
+            player: player(1),
+        };
+        edge.commands.send(leave).await.unwrap();
+        let (number, left) = edge.next_numbered(WEST).await;
+        assert_eq!(
+            (number, left),
+            (2, EdgeToWorker::PlayerLeave { player: player(1) })
+        );
+        let mut packets = edge.join(player(1)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        // The first join is durable; the leaving and the second join are not yet.
+        edge.tell(
+            WEST,
+            WorkerToEdge::Progress {
+                applied: 1,
+                inputs: Vec::new(),
+            },
+        );
+        edge.settle(WEST).await;
+
+        // The region's owner is replaced by one that has applied neither, and still
+        // has the player as they were.
+        let hello = edge.relink(WEST, 2).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: present(EntityId(5), 40),
+            },
+        );
+        let (number, left) = edge.next_numbered(WEST).await;
+        assert_eq!(
+            (number, left),
+            (2, EdgeToWorker::PlayerLeave { player: player(1) })
+        );
+        let (number, join) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 3 && matches!(join, EdgeToWorker::PlayerJoin(_)),
+            "{join:?}"
+        );
+        edge.settle(WEST).await;
+        // They have not been put into the world as who they were.
+        assert_eq!(
+            packets.try_recv().err(),
+            Some(mpsc::error::TryRecvError::Empty)
+        );
+
+        // The region applies both and places them anew.
+        edge.tell(WEST, spawned(player(1), EntityId(6)));
+        assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
+        edge.tell(
+            WEST,
+            WorkerToEdge::Progress {
+                applied: 3,
+                inputs: Vec::new(),
+            },
+        );
+        edge.settle(WEST).await;
+
+        // And it is as that entity that the edge knows them from then on.
+        let hello = edge.relink(WEST, 3).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: present(EntityId(6), 0),
+            },
+        );
+        edge.settle(WEST).await;
         assert!(connected(&mut packets));
     }
 
