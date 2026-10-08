@@ -381,7 +381,10 @@ joins again under its name at the default settings. Looking for it found that th
 took what a region said of a player who had left and joined again since for the player
 as they are now, and put them into the world as their old self; that is fixed
 (`what_a_region_says_of_a_player_who_left_and_came_back_since_is_not_taken_for_them`).
-Whether it is what the owner saw is open until they have tried again or sent the logs.
+The owner tried again and could join. The bots now fail when they are shown their own
+player as another entity or when their own entity is removed, which is what a client
+would have met here and what the bots used to pass over; with that the test of joining
+again while the region has no worker fails without the fix.
 
 Phase C has begun. [ADR-0010](adr/0010-regions-that-follow-players.md) is its plan,
 accepted after an independent review that found 21 defects. C0 is done: what the record

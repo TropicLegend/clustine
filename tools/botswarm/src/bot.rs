@@ -634,6 +634,15 @@ impl Bot {
                     "player entity {} spawned before its player list entry",
                     packet.entity_id
                 );
+                // A client is its own entity and is never shown it: a server that does
+                // has lost track of who the player is.
+                ensure!(
+                    packet.entity_id != self.info.login.entity_id
+                        && packet.uuid != self.info.profile.uuid,
+                    "the bot was shown its own player as entity {} (it is entity {})",
+                    packet.entity_id,
+                    self.info.login.entity_id
+                );
                 // Nor does a server show the same entity twice.
                 ensure!(
                     !self.entities.contains_key(&packet.entity_id),
@@ -676,6 +685,11 @@ impl Bot {
                 }
             }
             ClientboundPlay::RemoveEntities(packet) => {
+                ensure!(
+                    !packet.entity_ids.contains(&self.info.login.entity_id),
+                    "the bot's own entity {} was removed",
+                    self.info.login.entity_id
+                );
                 for entity in packet.entity_ids {
                     if let Some(gone) = self.entities.remove(&entity) {
                         self.stats.entities_removed += 1;
