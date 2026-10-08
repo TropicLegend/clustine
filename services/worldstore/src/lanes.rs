@@ -30,7 +30,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use clustine_data::BlockState;
-use clustine_format::{LogRecord, Logged, RegionFile, StateFile, read_log, read_log_with_offsets};
+use clustine_format::{
+    FormatError, LogRecord, Logged, RegionFile, StateFile, read_log, read_log_with_offsets,
+};
 use clustine_region::RegionId;
 use clustine_rpc::{RegionHello, Restored, StoreReply, StoreRequest, TickState};
 use clustine_world::{BlockPos, EntityIds};
@@ -212,6 +214,18 @@ impl Lanes {
                             ?path,
                             "a record of a world from before regions had a state is passed over"
                         );
+                    }
+                    // Of regions that hold chunks and merge and split (ADR-0011), which
+                    // the store does not keep yet: to it they are what they were before
+                    // the format had them, records of no kind it knows.
+                    LogRecord::Granted { .. }
+                    | LogRecord::Returned { .. }
+                    | LogRecord::Absorbed { .. }
+                    | LogRecord::Split { .. } => {
+                        return Err(StoreError::Damaged {
+                            path,
+                            error: FormatError::Corrupt("record kind"),
+                        });
                     }
                 }
             }
