@@ -49,6 +49,17 @@ and were told was handled (`kubernetes/test/ledger.yaml`). That part passes if n
 was disconnected, every acknowledged block is there for a bot that joins at the end,
 nobody was seen twice or vanished, every pod is another one than before, and two of
 the new workers run a region, which they can only have restored from the world store.
+
+
+Last it has Kubernetes replace every worker in turn
+(`kubectl rollout restart statefulset/clustine-worker`) under such bots
+(`kubernetes/test/rollout.yaml`). A worker that is told to stop hands its region to the
+worker that waits before it goes. That part passes if no bot was disconnected, the
+ledger holds, every worker's pod is another one than before, at least two regions were
+released by their workers, and the coordinator took no region from a worker whose
+lease ran out. The bots print how long each of them waited at most for an
+acknowledgement, which is how long it stood still when its region moved.
+
 If the test fails, it
 prints the end of every pod's log, the events and the list of pods. The cluster is
 deleted at the end either way.

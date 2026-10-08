@@ -39,13 +39,25 @@ metadata:
     app.kubernetes.io/part-of: clustine
 spec:
   # One for each region and one to spare: `--boundaries=4` in coordinator.yaml makes
-  # two regions. The spare waits, and is given the region of a worker that died once
-  # that worker's lease is over; the players of the region stay connected meanwhile.
+  # two regions. The spare waits. A worker that is told to stop hands its region to it
+  # before it goes, and the players of the region stand still for a moment; a worker
+  # that died is found out when its lease is over, and its region goes to the spare
+  # then. The players stay connected either way. Without a spare a worker that is
+  # replaced has nobody to hand its region to, and its players wait until its pod is
+  # back.
   replicas: 3
   serviceName: clustine-worker
   # All at once instead of one after the other in the order of their numbers. No worker
   # depends on the one before it, and the edge waits for all of them anyway.
   podManagementPolicy: Parallel
+  # A new version is rolled out one worker at a time, and the next one goes only when
+  # the pod that took the last one's place is ready: by then its worker has registered
+  # with the coordinator (see the readiness probe), so there is always a worker for
+  # the next one to hand its region to. This is what a StatefulSet does unless told
+  # otherwise; it is written down because moving regions without a pause for the
+  # lease depends on it.
+  updateStrategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app.kubernetes.io/name: clustine-worker
@@ -56,7 +68,12 @@ spec:
         app.kubernetes.io/component: worker
         app.kubernetes.io/part-of: clustine
     spec:
-      # On SIGTERM a worker saves what is not yet on disk; this is how long it has.
+      # On SIGTERM a worker asks the coordinator to move its region to a worker that
+      # waits, and goes when that is done, which takes a moment. With nobody to take
+      # the region it gives up after 20 seconds, saves what is not yet on disk and
+      # goes with the region. This has to be longer than those 20 seconds and the
+      # saving: a worker that is killed in the middle of it is a crash, which loses
+      # nothing but costs the players the coordinator's lease.
       terminationGracePeriodSeconds: 30
       # The service does not talk to the Kubernetes API, so it gets no token for it.
       automountServiceAccountToken: false
@@ -92,6 +109,9 @@ spec:
           ports:
             - name: worker
               containerPort: 25601
+          # A worker listens on this port only once it has registered with the
+          # coordinator, so a pod that is ready is a worker that a region can be moved
+          # to. A rollout waits for that before it tells the next worker to stop.
           readinessProbe:
             tcpSocket:
               port: worker

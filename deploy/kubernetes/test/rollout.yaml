@@ -1,0 +1,89 @@
+# The third test of a deployed cluster: bots that keep a ledger of everything they did
+# and were told was handled, while deploy/kind/test.sh has Kubernetes replace every
+# worker in turn (`kubectl rollout restart`). A worker that is told to stop hands its
+# region to the worker that waits before it goes, so nobody is to stand still for as
+# long as the coordinator's lease. The Job succeeds only if no bot was disconnected,
+# every acknowledged block is there, also for a bot that joins at the end, and nobody
+# was seen twice or vanished. At the end it prints how long each bot waited at most
+# for an acknowledgement, which is how long it stood still when its region moved.
+#
+# Not in the kustomization one directory up, because it is a test and not part of the
+# deployment.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clustine-rollout
+  namespace: clustine
+  labels:
+    app.kubernetes.io/name: clustine-rollout
+    app.kubernetes.io/component: test
+    app.kubernetes.io/part-of: clustine
+spec:
+  # One attempt. Whether the scenario held is the exit status of that attempt, and a
+  # second one after a failure would cover it up.
+  backoffLimit: 0
+  # In case the bots get stuck: a run that works is over long before.
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clustine-rollout
+        app.kubernetes.io/component: test
+        app.kubernetes.io/part-of: clustine
+    spec:
+      restartPolicy: Never
+      # The bots have nothing to save when they are told to stop.
+      terminationGracePeriodSeconds: 5
+      automountServiceAccountToken: false
+      # See ../coordinator.yaml.
+      enableServiceLinks: false
+      securityContext:
+        # The user the Dockerfile creates.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bots
+          image: clustine:dev
+          imagePullPolicy: IfNotPresent
+          # `command` and not `args`, since the image's entry point is the server.
+          command:
+            - clustine-botswarm
+            - ledger
+            - clustine-edge:25565
+            # A pod that has just become ready is not reached through its Service at
+            # once. A client would try again, and so do the bots before they begin.
+            - --wait-for-server=60
+            - --bots=4
+            # Longer than it takes to replace three workers one after the other; the
+            # test fails if the bots are done before the workers are. See
+            # deploy/kind/test.sh.
+            - --seconds=180
+            # As for the other bots: the regions meet at block x = 64.
+            - --west=40.5
+            - --east=90.5
+            - --line=64
+            # Every other tick each bot sends something that its region acknowledges
+            # and that changes nothing, so that the longest wait printed at the end is
+            # also that of a bot that happened to be only walking when its region
+            # moved.
+            - --pulse=2
+            # How long an action may wait for its acknowledgement before the run fails.
+            # Nobody is to wait even for the lease of 5 seconds; this is only to end a
+            # run in which something hangs.
+            - --patience=30
+            # Other names than the bots of the test before, to tell the two apart in the
+            # logs of the services.
+            - --name-prefix=Rollout
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

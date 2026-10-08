@@ -72,7 +72,7 @@ jobs:
         run: |
           {
             # Each step of the test, what it counted, the bots' verdicts and its own.
-            grep -a -E '^==> |^test\.sh: |bots with seed|^Error|disconnected|logged "|workers that run|before "' cluster.log || true
+            grep -a -E '^==> |^test\.sh: |bots with seed|^Error|disconnected|logged "|workers that run|before "|waited .* at most|released by their workers|lease' cluster.log || true
           } | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-900 | tail -n 45 |
             while IFS= read -r line; do
               echo "::error::${line}"

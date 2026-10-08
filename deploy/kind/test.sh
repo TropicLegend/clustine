@@ -6,7 +6,10 @@
 # watching bot saw each walker as exactly one entity throughout, and two workers handed
 # players over. Then it deletes the pods of the workers and of the world store, one
 # after the other, under bots that keep a ledger of everything they did: nobody may be
-# disconnected, and nothing they were told was handled may be missing afterwards.
+# disconnected, and nothing they were told was handled may be missing afterwards. Last
+# it has Kubernetes replace every worker in turn under such bots, as a new version of
+# the server would be rolled out: each worker has to hand its region to the one that
+# waits before it goes, so that the coordinator never waits for a lease.
 #
 # Usage: deploy/kind/test.sh [--reuse]
 #
@@ -376,4 +379,85 @@ running="$(running_regions)"
 printf 'workers that run a region: %s\n' "$running"
 if ! [ "$running" -ge 2 ]; then
   die "fewer than two of the new workers run a region"
+fi
+
+step "Replacing every worker in turn under bots that keep a ledger"
+k delete job clustine-rollout --ignore-not-found --cascade=foreground --wait --timeout=60s
+k apply --filename "${root}/deploy/kubernetes/test/rollout.yaml"
+# The bots are to be playing when the first worker is told to stop.
+k wait --for=jsonpath='{.status.ready}'=1 job/clustine-rollout --timeout=120s
+
+# What the coordinator has logged up to here is about the pods that were deleted
+# without warning above, whose leases did run out. Only what it logs from here on is
+# about the rollout. Counted in lines and not by the clock, so that it does not matter
+# whose clock the log goes by.
+k logs deployment/clustine-coordinator >"${scratch}/coordinator-before.log"
+logged_before="$(wc -l <"${scratch}/coordinator-before.log")"
+
+for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2; do
+  before[$pod]="$(created "$pod")"
+done
+
+# One worker after the other, each told to stop with the time to hand its region over
+# (see worker.yaml), and the next one only when the pod that took its place is ready,
+# which is when its worker has registered with the coordinator and can be handed a
+# region in its turn.
+k rollout restart statefulset/clustine-worker
+k rollout status statefulset/clustine-worker --timeout="$((3 * rollout_timeout))s"
+
+# Bots that were done before the last worker was replaced were not tried by all of it.
+conditions="$(k get job clustine-rollout \
+  --output 'jsonpath={range .status.conditions[*]}{.type}={.status}{"\n"}{end}')"
+if grep -Fqx 'Complete=True' <<<"$conditions"; then
+  step "Log of clustine-rollout"
+  k logs job/clustine-rollout || true
+  die "the bots were done before every worker was replaced; they have to play for longer (--seconds in deploy/kubernetes/test/rollout.yaml)"
+fi
+
+# Whole again before the bots draw their conclusions: both regions are run by pods
+# that say so in the logs they have now.
+deadline=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$deadline" ] && [ "$(running_regions)" -lt 2 ]; do
+  sleep 1
+done
+
+wait_for_job clustine-rollout
+
+step "Checking that every worker was replaced and handed its region over"
+for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2; do
+  now="$(created "$pod")"
+  printf '%s: before "%s", now "%s"\n' "$pod" "${before[$pod]}" "$now"
+  if [ -z "$now" ] || [ "$now" = "${before[$pod]}" ]; then
+    die "${pod} was not replaced by the rollout"
+  fi
+done
+running="$(running_regions)"
+printf 'workers that run a region: %s\n' "$running"
+if ! [ "$running" -ge 2 ]; then
+  die "fewer than two of the new workers run a region"
+fi
+
+k logs deployment/clustine-coordinator >"${scratch}/coordinator.log"
+tail -n "+$((logged_before + 1))" "${scratch}/coordinator.log" >"${scratch}/coordinator-rollout.log"
+printf 'What the coordinator did during the rollout:\n'
+grep -F -e 'a worker is leaving' -e 'a region is to be released' \
+  -e 'a worker released a region' -e 'a region was assigned' -e 'a region lost its owner' \
+  -e 'the lease of a worker ran out' -e 'was not released within the lease' \
+  "${scratch}/coordinator-rollout.log" || true
+
+# The bots would be content, if later, with regions that were taken from workers found
+# dead. A region that the coordinator took from a worker for being silent, or for not
+# releasing it in time, was not handed over, and its players waited for the lease.
+if grep -q -F -e 'the lease of a worker ran out' -e 'was not released within the lease' \
+  "${scratch}/coordinator-rollout.log"; then
+  die "during the rollout the coordinator took a region from a worker whose lease ran out, so a worker did not hand its region over"
+fi
+# Nor is it a hand-over if a worker goes with its region and the pod that takes its
+# place is back within the lease and is given the region again: nothing in the log
+# speaks of a lease then, and yet the players stood still until the pod was back. Each
+# of the two workers that ran a region has to have released it.
+released="$(grep -c -F 'a worker released a region' "${scratch}/coordinator-rollout.log" || true)"
+printf 'regions released by their workers during the rollout: %s\n' "$released"
+if ! [ "$released" -ge 2 ]; then
+  die "fewer than two regions were released by their workers during the rollout, so a worker went without handing its region over"
 fi
