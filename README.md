@@ -4,11 +4,13 @@ A from-scratch Minecraft: Java Edition server that simulates **one world across 
 instances**. Adding instances adds compute and memory to the same world rather than
 creating more separate servers.
 
-> **Status: pre-alpha.** Two milestones are done. Players walk around a flat creative
-> world, see each other and build; and that world can be simulated by several worker
-> processes, with players handed from one to the next as they walk. The parts of the
-> world each worker has are still fixed, and nothing survives the loss of a process
-> without players being disconnected. See the [roadmap](docs/roadmap.md).
+> **Status: pre-alpha.** Players walk around a flat creative world, see each other and
+> build; that world can be simulated by several worker processes, with players handed
+> from one to the next as they walk; and a worker or the world store can die without
+> anyone being disconnected or losing anything they were shown: another worker carries
+> on with the region from what is on disk. The parts of the world each worker has are
+> still fixed, and there is one edge and one coordinator. See the
+> [roadmap](docs/roadmap.md).
 
 ## Goals
 

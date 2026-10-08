@@ -23,7 +23,10 @@ The decision records in `docs/adr/` say why things are the way they are.
 - **Do not defer what a player would notice within minutes.** The owner judges by playing
   with real clients. A gap that shows only under rare timing or only in operation can
   wait; a seam in ordinary play cannot, whatever a later milestone will do about it.
-- **M3 stops after each of its three phases** for the owner to try it with real clients.
+- **After each of M3's three phases the owner tries it with real clients.** Since
+  2026-10-08 the work does not wait for that: what to try is written into the roadmap
+  ("Where M3 stands") and the next phase begins. The owner asked for as much as
+  possible to be done without them.
 - Ask before downloading anything. On the owner's machine the Mojang server jar (for the
   comparisons below; the owner has agreed to the Minecraft EULA for that), kind and the
   container images of the cluster test are approved. Anywhere else, ask again.
@@ -77,5 +80,12 @@ through the check run's annotations).
 - `cargo fmt` rewrites files, so scripted replacements have to match the formatted text.
 - `git push` once failed repeatedly with "Internal Server Error" while everything else
   worked; `git push --no-thin` went through.
+- A machine with defective memory. A store test failed with one bit wrong in 17 MB, and
+  the Rust compiler had crashed twice that day. A program that fills memory with a
+  pattern and reads it back found single physical pages with a bit stuck at zero; the
+  kernel retires such a page when its address is written to
+  `/sys/devices/system/memory/hard_offline_page`, until the next boot. A failure that
+  does not come again after that is still looked into, but compiler crashes and
+  single wrong bits are the machine's. GitHub's machines are the judge then.
 - GitHub's job logs cannot be read without being signed in; the annotations of a check
   run can (`/repos/<owner>/<repo>/check-runs/<job id>/annotations`).

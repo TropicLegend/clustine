@@ -1,6 +1,7 @@
 # ADR-0007: A single coordinator without storage, for now
 
-- Status: **Accepted** for milestone M2; superseded when regions can move (M3)
+- Status: **Accepted** for milestone M2; superseded when regions can move (M3). What
+  [ADR-0008](0008-durable-regions-and-resuming.md) changed already is noted below
 - Date: 2026-10-07
 
 ## Context
@@ -45,3 +46,17 @@ things that only M3's migrating regions can inform.
   holder itself gives up in time, which comes with M3.
 - A coordinator whose clock was set back across a restart could issue an epoch that is
   not above every earlier one, unless a running worker reports a higher one.
+
+## Since ADR-0008
+
+- Being heard from no longer keeps a region: its owner has to vouch for it in its
+  heartbeats, and the lease is 5 seconds.
+- Entity ids are issued by the world store, once per region and for good. The
+  coordinator still fills in `Assignment::entity_ids`, which nothing reads.
+- When a worker dies, players are no longer disconnected: the edge keeps them and
+  resumes with the worker that is given the region.
+- A worker that is cut off rather than dead can show nobody anything: it gets nothing
+  confirmed by the world store once the newer owner has opened the region, and what is
+  not confirmed is not published.
+- The world store keeps the highest epoch of each region on disk, refuses a lower one
+  and says which it has seen; the coordinator issues above that from then on.

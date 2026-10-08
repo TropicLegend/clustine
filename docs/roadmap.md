@@ -132,10 +132,11 @@ from disk when the store is back.
 | A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | done, with tests from the ADR by someone who had not seen the code |
 | A4 | Edge: name and start count, outbox per region, kept inputs per player, resume and reconciliation, living through the loss of a region | E2E in one process: a region is torn down without warning and rebuilt while bots walk, build, hand over and watch | done |
 | A5 | Coordinator: lease 5 s, per-region vouching, table changes that edges live through | State machine and service tests | done (the worker reports real vouches in A3; edges living through a change of owner is A4) |
-| A6 | Chaos tests: workers and the world store killed at random under bots that keep a ledger of everything acknowledged; on kind by deleting pods; in CI | No disconnect, ledger equals world, one entity per player throughout, repeatedly | to do |
-| A7 | Docs | CI | to do |
+| A6 | Chaos tests: workers and the world store killed at random under bots that keep a ledger of everything acknowledged; on kind by deleting pods; in CI | No disconnect, ledger equals world, one entity per player throughout, repeatedly | done |
+| A7 | Docs | CI | done |
 
-Then stop for the owner's check: kill a worker while playing.
+Then the owner's check: kill a worker while playing. What to try is under "Where M3
+stands".
 
 ### Phase B: live migration
 
@@ -187,115 +188,98 @@ Then stop for the owner's check: two clients walking towards and away from each 
 
 ### Where M3 stands
 
-ADR-0008 has been gone over by an independent reviewer against the code; the fourteen
-defects found are worked into it and listed at its end. A0 is done: the messages of
-ADR-0008 are on the wire, handled the way things were done before. What each side does
-with them so far:
+**Phase A is done.** A worker or the world store can die without anyone being
+disconnected or losing anything they were shown.
 
-- Edge to worker: every message is an `EdgeMessage`; the edge numbers per region and
-  says `Hello` first on each link, and the worker closes a link whose numbers have a gap
-  or are where none belong. It does nothing else with the hello yet, and ignores
-  `Confirm`.
-- Worker to edge: `Welcome`, `Outbox`, `Presence` and `Progress` exist and are never
-  sent; the edge ignores them. What a tick produced is made ready in full, as of the end
-  of the tick, before any of it is published (`Outgoing`, `RegionRunner::publish_all`).
-- Store: `Commit` replaces `Log` and is answered with `Committed` without waiting for the
-  disk, and is sent only for ticks with block changes; `Checkpoint` carries a tick and an
-  empty state; an unreadable chunk is answered with `Unreadable`.
-- Coordinator: a heartbeat names every region the worker was told to run as
-  `Vouch::Committed`, which is not looked at; `EpochRefused` is logged.
-- Edge identity: `--name` on the edge (default `edge`). Until A4 the edge starts over
-  with a new `Fanout` whenever a region is lost, which numbers anew, so each of those
-  takes a new start; the regions are told by the start alone.
-- A5 is done too: the coordinator takes a region whose owner has not vouched for it
-  within the lease (a new owner has its first lease), keeps one whose owner waits for
-  the store for up to 30 s, and raises its epochs above one the store refused.
-  `WorkerClient::vouch` and `WorkerClient::epoch_refused` are what A3 calls; until the
-  worker calls `vouch`, heartbeats vouch `Committed` for everything it was told to run.
-  Nothing the coordinator decides depends on entity ids any more; it still fills in
-  `Assignment::entity_ids`, which goes once the worker takes its block from the store.
-- A1 is done: commits are answered once on disk, in one log shared by all regions and
-  synced once per group; saving and loading chunks is on a thread of its own; opening is
-  fenced and returns a `Restored` (entity ids, state file, later state deltas, by tick);
-  checkpoints keep later records, in log segments; a failed write or sync loses the
-  handles of the group. `Store::open_region` and `StoreHandle::connect` return
-  `(StoreHandle, Restored)`. Worlds of A0 are carried over. Until A3 restores the
-  region's tick, the worker numbers its ticks on from `Restored::tick()`
-  (`RegionRunner::continuing_from`), as the store orders records by tick.
-- A `Restored` crosses TCP in parts of at most a megabyte, a single large state or
-  delta in as many pieces as it takes, so that a busy region, which holds tens of
-  megabytes of deltas by its five-minute checkpoint, can be opened by another worker.
-- `Durable` is in the sim's API, `EdgeId` in `clustine-world`.
-- A2 is done: `RegionState`, `StateDelta` and `RegionState::apply` in
-  `crates/clustine-sim/src/state.rs`; `Region::new(config, entity_ids)`,
-  `Region::restore(config, state)` and `Region::state()`; `TickInputs::edges` and
-  `applied`; joins, arrivals, leaves, remote actions and inputs carry their edge (an
-  input from another edge than the player's is ignored, and so is whatever names an
-  edge the region does not know); `TickOutput::durable` and `delta` in place of the
-  departures, refusals, remote requests and remote outcomes. Until A3 the worker turns
-  outbox entries back into the messages the edge knows and confirms each one itself in
-  the next tick. When an edge says hello again with a higher start, the old start's last
-  message number can become the edge's `applied`; A3 drops the old start's messages.
+How it works is in [ADR-0008](adr/0008-durable-regions-and-resuming.md), which was gone
+over by an independent reviewer before anything was built and corrected as the building
+and the tests found more; the list is at its end. In short:
 
-A0 to A5 are on `main`, with the tests for A2 written from ADR-0008 alone
-(`crates/clustine-sim/tests/specification.rs`) and those for A3 from its section 4
-(`services/worker/tests/specification.rs`). A worker restores its region from the
-store, holds what a tick produced until the tick is committed, and answers a hello with
-the resume. The edge keeps a region's players when its link ends, links to whoever runs
-the region then and resumes; in a cluster it follows the routing table for that and
-never starts over. **This is what a player notices: a worker that dies no longer
-disconnects anyone.** Players of its region stand still until another worker has it.
+- The world store answers a commit once it is on disk, keeps each region's state beside
+  its chunks and hands both to whoever opens the region, and lets only the latest owner
+  commit.
+- A worker restores its region from the store, shows nothing of a tick before the tick
+  is committed, and answers an edge's hello with what the edge missed. When it loses
+  the store it stops the region and opens it again once the store is back.
+- The edge keeps a region's players when its link ends, links to whoever runs the
+  region then and resumes; a player whose region stays silent for 20 seconds is
+  disconnected. In a cluster it follows the coordinator's routing table and never
+  starts over.
+- The coordinator gives a region to a waiting worker when its owner has not vouched for
+  it for the lease of 5 seconds.
 
-In the single process, `Server::take_over(region)` hands a region to a new runner the
-way the coordinator hands it to another worker; `bin/clustine/tests/takeover.rs` plays
-through it under bots.
+What checks it:
 
-Next, in this order:
+- Tests of the sim and of the worker written from the record alone by someone who had
+  not seen the code (`crates/clustine-sim/tests/specification.rs`,
+  `services/worker/tests/specification.rs`); the store killed at every write and sync
+  (`services/worldstore/src/kill.rs`); the edge against scripted regions
+  (`services/edge/src/fanout.rs`).
+- `bin/clustine/tests/takeover.rs`: regions taken over in the single process under bots.
+- `bin/clustine/tests/chaos.rs`: a cluster of processes with workers and the world store
+  killed from a seeded sequence under bots that keep a ledger of everything
+  acknowledged (`CLUSTINE_CHAOS_SEED`, printed with every run; `CLUSTINE_CHAOS_KILLS`
+  for a soak).
+- `deploy/kind/test.sh`: the same bots on Kubernetes while the pods of the workers and
+  of the world store are deleted.
 
-1. The rest of A6: the same on kind, by deleting pods under the ledger bots
-   (`clustine-botswarm ledger`), with a spare worker in the StatefulSet.
-2. A7, the docs; then what to try with real clients is written down and phase B begins.
+**For the owner to try with real clients**, whenever there is time; phase B has begun
+meanwhile, as asked:
 
-The chaos tests as processes are in `bin/clustine/tests/chaos.rs`: workers and the world
-store killed with SIGKILL from a seeded sequence (`CLUSTINE_CHAOS_SEED`, printed with
-every run; `CLUSTINE_CHAOS_KILLS` for a soak), also in the middle of a crossing, a worker
-frozen and woken, the coordinator killed, players joining and leaving while their
-region has no worker, and forty takeovers in the single process. The bots keep a ledger
-of everything acknowledged; nobody may be disconnected, every acknowledged block has
-to be there for someone who joins afterwards and after everything was killed and
-started again, and nobody may be seen twice or vanish. They found two defects, both
-fixed with them: a worker that hangs rather than dies kept its link open, and the edge
-then never tried the region's new owner again; and the single process could not start
-on a world whose region had had a later owner.
+1. A cluster as processes, each in a terminal of its own, with one worker to spare:
+   ```bash
+   cargo build -p clustine
+   target/debug/clustine coordinator --boundaries 4
+   target/debug/clustine worldstore --world world
+   target/debug/clustine worker --name a --listen 127.0.0.1:25611
+   target/debug/clustine worker --name b --listen 127.0.0.1:25612
+   target/debug/clustine worker --name c --listen 127.0.0.1:25613
+   target/debug/clustine edge
+   ```
+   Join with one or two clients at `localhost:25565`. The regions meet at block x = 64.
+2. Stand in one region, build something, and stop the worker that runs it with Ctrl-C
+   or `kill -9` (the coordinator's log says which worker has which region). Expected:
+   everyone in that region stands still for five to seven seconds, the blocks of the
+   last moments are all there, nobody is disconnected, and then everything goes on;
+   what was done while standing still takes effect. A second client in the other region
+   notices nothing but the first one standing still.
+3. Start that worker again (it is the spare now) and kill the other one. Walk across
+   x = 64 while a worker is being killed.
+4. Kill the world store and start it again within twenty seconds. Expected: everyone
+   stands still while it is away and nobody is disconnected; away for longer, players
+   are disconnected with "The server fell too far behind", and can join again.
+5. With one client, break and place blocks quickly while killing the worker: no block
+   may come back or vanish afterwards, also not after leaving and joining again.
 
-Not covered by tests in A3, for A6 to cover: the worker's path for an epoch the store
-refuses, registering again with the coordinator while a region runs, and `Superseded`
-over a link between processes.
+Anything else than expected is a defect of phase A; the seed-driven tests above are
+where to reproduce it.
 
-Notes for what follows A0, which the ADR does not spell out:
+**One failure is unexplained.** On the machine phase A was finished on, the hand-over
+test `a_watcher_sees_one_entity_cross_the_boundary` failed once: the watcher saw the
+walker's entity removed and shown again. It did not fail again in 54 runs under load,
+and no path in the code was found that hides an entity whose position stays in view.
+That machine had defective memory, found the same day (see `CLAUDE.md`), which flips
+single bits, and a flipped bit in a position does exactly this; but that is not proof.
+If this test ever fails on GitHub's machines, it is a race in the hand-over as phase A
+changed it, and has to be found.
 
-- Numbered messages travel in an envelope on the edge-to-worker link,
-  `EdgeMessage { number: Option<u64>, body: EdgeToWorker }`, with numbers on join, leave,
-  arrive, discard, input and remote action, and none on hello, subscribe, unsubscribe and
-  confirm. Presence is part of `Hello`, not a message of its own.
-- The edge a join, an arrival, a leave or a remote action came from is added by the runner
-  to the tick's inputs; it is not on the wire. Leaving no longer needs an entity.
-  `Assignment` loses `entity_ids`, which the store issues instead, and `RegionConfig`
-  loses them too.
-- An edge trims what it keeps only on `Progress`. `Welcome` says only whether the region
-  knew the edge (or that the edge has been superseded), not how far it got.
-- `RegionRunner::send_snapshots` reads live state when it sends, and the fallback in
-  `RegionRunner::tell` sends an `EntityRemoved` outside the tick's outputs. Both have to
-  go behind the commit; the fallback becomes the reset of section 2 of the ADR.
-- `Fanout::hand_over` treats a transfer to the region it came from as an error and
-  disconnects. From phase C on that is an ordinary case after a merge.
-- The store thread today syncs logs, saves chunks and recovers on one thread
-  (`services/worldstore/src/lib.rs`), answers also when a write failed, empties the log
-  with `set_len(0)` and does not sync the directory after renaming a file. A1 changes all
-  four. Its latency test runs on a real disk, during a checkpoint of many chunks.
-- The heartbeat gains a payload (section 6 of the ADR), and the worker reports an epoch
-  the store refused.
-- Kubernetes: the edge becomes a StatefulSet, so that its name survives a restart (A4).
+Not covered by tests yet:
+
+- The worker's path for an epoch the store refuses, between processes (the worker hears
+  from the coordinator first in every scenario tried).
+- `Superseded` over a link between processes; it needs a second edge with the same
+  name.
+- Failed writes and syncs between processes; the store's own tests inject them.
+- Commit latency on a real disk during a large checkpoint; the store's tests show that
+  commits do not wait for saves, not how long they take.
+
+Left for a later cleanup: `Assignment::entity_ids`, which the coordinator fills in and
+nothing reads; and the `WorkerToEdge` messages `Remote`, `RemoteDone` and the
+`Departed` and `Refused` player events, which regions say through their outbox now.
+
+Next: phase B, live migration (the table above). Its plan is the three rows B1 to B3;
+before B1 is built, how release and assign fit ADR-0008 is written down as ADR-0009 and
+gone over by an independent reviewer, as for phase A.
 
 ### After M3, as the owner asked on 2026-10-08
 

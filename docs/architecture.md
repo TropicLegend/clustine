@@ -6,10 +6,13 @@ come.
 
 ## What exists so far
 
-After milestone M2 the edge, the worker, the world store and the coordinator exist and
-run either in one process or as processes of their own, on Kubernetes or without. World
-generation is a flat world inside the world store; `playerdata` and the operator do not
-exist yet.
+The edge, the worker, the world store and the coordinator exist and run either in one
+process or as processes of their own, on Kubernetes or without. Since the first phase of
+milestone M3 a region is durable: its worker shows players nothing that the world store
+does not have on disk, another worker can carry on with it from there, and the edge
+keeps its players meanwhile and resumes with whoever runs the region then; see
+[ADR-0008](adr/0008-durable-regions-and-resuming.md). World generation is a flat world
+inside the world store; `playerdata` and the operator do not exist yet.
 
 Where the implementation is simpler than the design below:
 
@@ -18,7 +21,8 @@ Where the implementation is simpler than the design below:
 | Regions of nearby active chunks that merge, split and migrate | Fixed stripes along the x axis, set when the cluster is started; see [ADR-0006](adr/0006-static-regions-and-handoff.md) |
 | Boundaries only run through inactive gaps | A boundary can run past players. What they do to blocks on its other side is passed on to the region that has them and takes effect a tick or two later |
 | Coordinator replicated with Raft, leases fenced everywhere | One coordinator with its state in memory; only the world store acts on epochs; see [ADR-0007](adr/0007-coordinator-scope.md) |
-| Losing a worker is recovered from by migration | An edge that loses a region disconnects its players and starts over; the world is recovered from the logs |
+| Losing a worker is recovered from by migration | A waiting worker is given the region once the dead one's lease of 5 seconds is over and restores it from the world store; the region's players stand still meanwhile and stay connected. A region cannot be moved on purpose yet |
+| An edge can be lost without its players noticing | An edge that dies takes its players with it |
 | Several edges | One edge; the workers can serve several, but there is no shared player list yet |
 | Protobuf over gRPC, QUIC | One message format over TCP for everything |
 | Trained zstd dictionaries, object storage | Plain zstd on the local file system |
