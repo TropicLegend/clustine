@@ -102,7 +102,7 @@ enum Service {
         /// make themselves heard once a second, so this has to be several seconds. A
         /// coordinator also waits this long after it has started before it gives any
         /// region away, so that workers that are running can say what they run.
-        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(3..))]
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(3..))]
         lease_seconds: u64,
     },
     /// Keeps the world on disk for the workers.

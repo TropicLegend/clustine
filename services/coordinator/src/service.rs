@@ -35,10 +35,11 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 const SHORTEST_TICK: Duration = Duration::from_millis(50);
 
 impl CoordinatorConfig {
-    /// The lease of a coordinator that is not told another. Workers send a heartbeat
-    /// every [`crate::HEARTBEAT_INTERVAL`], so most of them have to get lost before a
-    /// worker that is there loses its regions.
-    pub const DEFAULT_LEASE: Duration = Duration::from_secs(10);
+    /// The lease of a coordinator that is not told another: how long the players of a
+    /// worker that died stand still before another takes over (ADR-0008). Workers send a
+    /// heartbeat every [`crate::HEARTBEAT_INTERVAL`], so several of them have to get lost
+    /// in a row before a worker that is there loses its regions.
+    pub const DEFAULT_LEASE: Duration = Duration::from_secs(5);
 }
 
 /// The service's end of the connection to a client.
@@ -245,10 +246,8 @@ impl Service {
                     layout,
                 },
             ) if role.admits(&name) => self.register(now, id, name, &address, &holding, layout),
-            // Which regions the worker vouches for is not looked at yet: a worker that is
-            // heard from keeps all of them.
-            (Role::Worker(name), ToCoordinator::Heartbeat { .. }) => {
-                if !self.coordinator.heartbeat(now, name) {
+            (Role::Worker(name), ToCoordinator::Heartbeat { regions }) => {
+                if !self.coordinator.heartbeat(now, name, &regions) {
                     // The worker has to register again, and nothing but the end of its
                     // connection can tell it so. A lease and the connection of a silent
                     // worker end at the same tick, so it should not come to this; if it
@@ -261,9 +260,14 @@ impl Service {
                     self.close(id);
                 }
             }
-            // Raising the epochs above it comes with vouching for regions one by one.
             (Role::Worker(name), ToCoordinator::EpochRefused { region, seen }) => {
                 info!(worker = %name, %region, seen, "the world store refused an epoch");
+                let name = name.clone();
+                let changes = self.coordinator.epoch_refused(now, &name, region, seen);
+                // The region the worker dropped has gone to a waiting worker, unless
+                // there is none or the coordinator is new; then it is without an owner
+                // until a tick gives it away.
+                self.announce(&changes, None);
             }
             (role, message) => {
                 let said = match message {
@@ -517,7 +521,7 @@ mod tests {
     use std::future::Future;
 
     use clustine_region::{Layout, RegionId, RegionRoute};
-    use clustine_rpc::link;
+    use clustine_rpc::{Vouch, link};
     use clustine_world::{EntityIds, Vec3};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -1152,7 +1156,7 @@ mod tests {
         let heard = start + LEASE / 2;
         worker
             .send(ToCoordinator::Heartbeat {
-                regions: Vec::new(),
+                regions: vec![(held.region, Vouch::Committed)],
             })
             .await
             .unwrap();
@@ -1180,6 +1184,143 @@ mod tests {
             let routes = Vec::from_iter(owner.map(|name| route(held, name)));
             assert_eq!(table.routes, routes);
         }
+    }
+
+    /// A service whose coordinator started at `start`, an edge that has asked it for the
+    /// table and been sent the first, and the workers `a`, which reports that it runs
+    /// `held`, and `b`, which runs nothing; both have been told so. All of it at `start`.
+    async fn two_workers(
+        start: Instant,
+        first: u64,
+        held: Assignment,
+    ) -> (Service, RawEnd, RawEnd, RawEnd) {
+        let mut service = Service::new(config(&[]), start, first);
+        let (mut edge, end) = link::in_process(8);
+        service.attach(end, start);
+        edge.send(ToCoordinator::WatchRouting).await.unwrap();
+        hear_next(&mut service, start).await;
+        assert_eq!(next_table(&mut edge).await.unwrap().version, first);
+
+        let layout = Layout::single();
+        let mut workers = Vec::new();
+        for (name, holding) in [("a", vec![held]), ("b", Vec::new())] {
+            let (mut worker, end) = link::in_process(8);
+            service.attach(end, start);
+            worker.send(registration(name, &holding)).await.unwrap();
+            hear_next(&mut service, start).await;
+            let told = within(worker.recv()).await;
+            assert_eq!(told, Some(assigned(&layout, &holding)));
+            workers.push(worker);
+        }
+        let table = next_table(&mut edge).await.unwrap();
+        assert_eq!(table.routes, [route(held, "a")]);
+        let b = workers.pop().unwrap();
+        let a = workers.pop().unwrap();
+        (service, edge, a, b)
+    }
+
+    fn heartbeat(regions: &[(RegionId, Vouch)]) -> ToCoordinator {
+        ToCoordinator::Heartbeat {
+            regions: regions.to_vec(),
+        }
+    }
+
+    /// The times are made up, as in the coordinator's own tests.
+    #[tokio::test]
+    async fn a_region_its_worker_no_longer_vouches_for_goes_to_another_while_both_are_heard_from() {
+        const FIRST: u64 = 1000;
+        let start = Instant::now();
+        let held = assignment(0, 5, 0);
+        let (mut service, mut edge, mut a, mut b) = two_workers(start, FIRST, held).await;
+
+        // Both say that they are there, every quarter of a lease; `a` names its region
+        // once, at the first of them, and then no more.
+        let mut now = start;
+        for step in 0..=4 {
+            now = start + LEASE / 4 * step;
+            let vouches: &[_] = if step == 0 {
+                &[(held.region, Vouch::Committed)]
+            } else {
+                &[]
+            };
+            a.send(heartbeat(vouches)).await.unwrap();
+            hear_next(&mut service, now).await;
+            b.send(heartbeat(&[])).await.unwrap();
+            hear_next(&mut service, now).await;
+            service.tick(now);
+        }
+        // A lease after the vouch the region is still `a`'s; a moment later it is not.
+        let later = now + Duration::from_millis(1);
+        for worker in [&a, &b] {
+            worker.send(heartbeat(&[])).await.unwrap();
+            hear_next(&mut service, later).await;
+        }
+        service.tick(later);
+
+        let layout = Layout::single();
+        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[])));
+        let taken = assignment(0, FIRST + 1, 1);
+        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[taken])));
+        let table = next_table(&mut edge).await.unwrap();
+        assert_eq!(table.version, FIRST + 2);
+        assert_eq!(table.routes, [route(taken, "b")]);
+        // Nobody was cut off: `a` is still there, and waits.
+        assert_eq!(service.connections.len(), 3);
+        assert_eq!(service.workers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refused_epoch_takes_the_region_from_its_worker_and_it_comes_back_above_it() {
+        const FIRST: u64 = 1000;
+        let start = Instant::now();
+        let held = assignment(0, 5, 0);
+        let (mut service, mut edge, mut a, mut b) = two_workers(start, FIRST, held).await;
+
+        // The store has seen an owner with an epoch far above anything the coordinator
+        // knows of. The coordinator is new, so the region is without an owner for now.
+        let seen = 5000;
+        let refused = ToCoordinator::EpochRefused {
+            region: held.region,
+            seen,
+        };
+        a.send(refused).await.unwrap();
+        hear_next(&mut service, start).await;
+        let layout = Layout::single();
+        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[])));
+        let table = next_table(&mut edge).await.unwrap();
+        assert_eq!(table.version, FIRST + 2);
+        assert!(table.routes.is_empty());
+
+        // Once the coordinator has been there for a lease, the region goes to the
+        // worker that registered first, which is the same one, above the epoch seen.
+        service.tick(start + LEASE);
+        let again = assignment(0, seen + 1, 1);
+        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[again])));
+        let table = next_table(&mut edge).await.unwrap();
+        assert_eq!(table.routes, [route(again, "a")]);
+        // `b` was told nothing beyond its first answer.
+        drop(service);
+        assert_eq!(within(b.recv()).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_worker_whose_client_vouches_for_nothing_loses_its_region_to_one_that_waits() {
+        let served = Served::start(&[]).await;
+        let mut watch = served.watch().await;
+        let (mut a, _) = served.worker("a", &[]).await;
+        let held = next_region(&mut a).await;
+        let (mut b, orders) = served.worker("b", &[]).await;
+        assert_eq!(orders, served.orders(&[]));
+        let table = table_where(&mut watch, |table| !table.routes.is_empty()).await;
+        assert_eq!(table.routes, [route(held, "a")]);
+
+        // The worker is there, but cannot vouch for its region.
+        a.vouch(Vec::new());
+        let taken = next_region(&mut b).await;
+        assert!(taken.epoch > held.epoch);
+        assert_eq!(within(a.next()).await.unwrap(), served.orders(&[]));
+        let expected = [route(taken, "b")];
+        table_where(&mut watch, |table| table.routes == expected).await;
     }
 
     #[test]
@@ -1212,9 +1353,10 @@ mod tests {
 
     #[test]
     fn the_coordinator_looks_at_its_leases_four_times_per_lease_but_not_all_the_time() {
+        assert_eq!(CoordinatorConfig::DEFAULT_LEASE, Duration::from_secs(5));
         assert_eq!(
             tick_interval(CoordinatorConfig::DEFAULT_LEASE),
-            Duration::from_millis(2500)
+            Duration::from_millis(1250)
         );
         assert_eq!(tick_interval(LEASE), Duration::from_millis(150));
         assert_eq!(

@@ -12,7 +12,7 @@ use clustine_rpc::link::End;
 use clustine_rpc::{Assignment, FromCoordinator, ToCoordinator, Vouch, tcp};
 use clustine_world::Vec3;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::QUEUE;
@@ -56,14 +56,21 @@ pub struct Orders {
 /// A worker's connection to the coordinator.
 ///
 /// For as long as it exists, the coordinator is told every [`HEARTBEAT_INTERVAL`] that
-/// the worker is there, whether or not anybody is waiting in [`WorkerClient::next`].
-/// Dropping it ends the connection. The worker then keeps its regions until its lease
-/// runs out, and for good if it registers again before that.
+/// the worker is there, whether or not anybody is waiting in [`WorkerClient::next`],
+/// and what it vouches for; see [`WorkerClient::vouch`]. Dropping it ends the
+/// connection. The worker then keeps its regions until its lease runs out, and for good
+/// if it registers again before that.
 #[derive(Debug)]
 pub struct WorkerClient {
     /// The orders that came after the first and, last of all, why no more will come.
     /// From the task that holds the connection.
     orders: mpsc::UnboundedReceiver<Result<Orders, ClientError>>,
+    /// What the worker last said it vouches for, which every heartbeat says; `None`
+    /// until it says anything.
+    vouches: watch::Sender<Option<Vec<(RegionId, Vouch)>>>,
+    /// What the worker has to tell the coordinator besides heartbeats, for the task to
+    /// send.
+    reports: mpsc::UnboundedSender<ToCoordinator>,
 }
 
 impl WorkerClient {
@@ -120,8 +127,49 @@ impl WorkerClient {
         // the worker is busy; hence a queue without a limit. It stays short all the
         // same: the coordinator only speaks when the worker's orders change.
         let (sender, orders) = mpsc::unbounded_channel();
-        tokio::spawn(keep_registered(link, heartbeat, regions, sender));
-        Ok((Self { orders }, first))
+        let (vouches, vouched) = watch::channel(None);
+        let (reports, reported) = mpsc::unbounded_channel();
+        let task = Task {
+            link,
+            heartbeat,
+            regions,
+            vouched,
+            reported,
+            orders: sender,
+        };
+        tokio::spawn(task.keep_registered());
+        let client = Self {
+            orders,
+            vouches,
+            reports,
+        };
+        Ok((client, first))
+    }
+
+    /// Says what the worker vouches for in each heartbeat from now on: the regions it
+    /// names, each with why. A region the worker was told to run and does not name is
+    /// not vouched for, and loses its owner once it has gone a lease without being
+    /// vouched for (see [`crate::Coordinator`]). What is said last counts, until it is
+    /// said again; it is not sent before the next heartbeat.
+    ///
+    /// Until this is first called, the worker vouches [`Vouch::Committed`] for every
+    /// region of its latest orders. A client made by registering again starts that way
+    /// too, so a worker that registers again says once more what it vouches for.
+    pub fn vouch(&self, regions: Vec<(RegionId, Vouch)>) {
+        // The task holds the other end for as long as the connection lasts, and after
+        // that there is nobody to tell.
+        self.vouches.send_replace(Some(regions));
+    }
+
+    /// Tells the coordinator that the world store refused to let the worker open
+    /// `region`, because it has seen an owner with the epoch `seen`. The worker has
+    /// dropped the region; the coordinator issues epochs above `seen` from now on.
+    /// Sent at once, ahead of the next heartbeat. If the connection is lost, nothing is
+    /// sent, and [`WorkerClient::next`] says that the connection is lost.
+    pub fn epoch_refused(&self, region: RegionId, seen: u64) {
+        let _ = self
+            .reports
+            .send(ToCoordinator::EpochRefused { region, seen });
     }
 
     /// Waits until the coordinator changes what the worker is to run, and returns the new
@@ -136,52 +184,80 @@ impl WorkerClient {
     }
 }
 
-/// Holds a worker's connection: tells the coordinator every `heartbeat` that the worker
-/// is there and passes on the orders that come, until the connection is lost or the
-/// worker's client is dropped.
-///
-/// The worker vouches for every region it has been told to run, which is what a worker
-/// that is heard from did before regions were vouched for one by one. `regions` are
-/// those of the first orders.
-async fn keep_registered(
-    mut link: CoordinatorEnd,
+/// What holds a worker's connection, in a task of its own.
+struct Task {
+    link: CoordinatorEnd,
+    /// How often the worker says that it is there.
     heartbeat: Duration,
-    mut regions: Vec<RegionId>,
+    /// The regions of the latest orders.
+    regions: Vec<RegionId>,
+    /// What the worker vouches for, if it has said.
+    vouched: watch::Receiver<Option<Vec<(RegionId, Vouch)>>>,
+    /// What the worker has to tell besides heartbeats.
+    reported: mpsc::UnboundedReceiver<ToCoordinator>,
+    /// Where the orders go.
     orders: mpsc::UnboundedSender<Result<Orders, ClientError>>,
-) {
-    // An interval cannot be zero.
-    let heartbeat = heartbeat.max(Duration::from_millis(1));
-    // To register was to be heard from, so the first heartbeat is due an interval later.
-    let mut beats = tokio::time::interval_at(Instant::now() + heartbeat, heartbeat);
-    // After a stall one heartbeat says all that the missed ones would have said.
-    beats.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let ended = loop {
-        tokio::select! {
-            message = link.recv() => match orders_from(message) {
-                Ok(new) => {
-                    regions = new.assignments.iter().map(|held| held.region).collect();
-                    if orders.send(Ok(new)).is_err() {
-                        return;
+}
+
+impl Task {
+    /// Tells the coordinator every `heartbeat` that the worker is there, passes on what
+    /// else the worker reports and the orders that come, until the connection is lost
+    /// or the worker's client is dropped.
+    ///
+    /// Until the worker says what it vouches for, it vouches for every region it has
+    /// been told to run, which is what a worker that is heard from did before regions
+    /// were vouched for one by one.
+    async fn keep_registered(mut self) {
+        // An interval cannot be zero.
+        let heartbeat = self.heartbeat.max(Duration::from_millis(1));
+        // To register was to be heard from, so the first heartbeat is due an interval
+        // later.
+        let mut beats = tokio::time::interval_at(Instant::now() + heartbeat, heartbeat);
+        // After a stall one heartbeat says all that the missed ones would have said.
+        beats.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let ended = loop {
+            tokio::select! {
+                message = self.link.recv() => match orders_from(message) {
+                    Ok(new) => {
+                        self.regions = new.assignments.iter().map(|held| held.region).collect();
+                        if self.orders.send(Ok(new)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) => break error,
+                },
+                Some(report) = self.reported.recv() => {
+                    if self.link.try_send(report).is_err() {
+                        break ClientError::Lost;
                     }
                 }
-                Err(error) => break error,
-            },
-            _ = beats.tick() => {
-                // A queue full of heartbeats means that none has been written for
-                // hundreds of intervals. The lease is long over then.
-                let regions = regions.iter().map(|region| (*region, Vouch::Committed));
-                let beat = ToCoordinator::Heartbeat {
-                    regions: regions.collect(),
-                };
-                if link.try_send(beat).is_err() {
-                    break ClientError::Lost;
+                _ = beats.tick() => {
+                    // A queue full of heartbeats means that none has been written for
+                    // hundreds of intervals. The lease is long over then.
+                    let beat = ToCoordinator::Heartbeat {
+                        regions: self.vouches(),
+                    };
+                    if self.link.try_send(beat).is_err() {
+                        break ClientError::Lost;
+                    }
                 }
+                // The worker's client was dropped.
+                () = self.orders.closed() => return,
             }
-            // The worker's client was dropped.
-            () = orders.closed() => return,
+        };
+        let _ = self.orders.send(Err(ended));
+    }
+
+    /// What the next heartbeat vouches for.
+    fn vouches(&self) -> Vec<(RegionId, Vouch)> {
+        match &*self.vouched.borrow() {
+            Some(said) => said.clone(),
+            None => {
+                let regions = self.regions.iter();
+                regions.map(|region| (*region, Vouch::Committed)).collect()
+            }
         }
-    };
-    let _ = orders.send(Err(ended));
+    }
 }
 
 /// An edge's connection to the coordinator.
@@ -405,6 +481,86 @@ mod tests {
         // One or two may have been on their way.
         while let Some(message) = within(link.recv()).await {
             assert_eq!(message, quiet);
+        }
+    }
+
+    #[tokio::test]
+    async fn heartbeats_vouch_for_what_the_worker_last_said_once_it_has_said_anything() {
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let mut link = accept(&listener).await;
+            assert!(within(link.recv()).await.is_some());
+            link.send(assigned(&[assignment(0, 7), assignment(1, 8)]))
+                .await
+                .unwrap();
+            link
+        });
+        let (client, _) = register(&address).await.unwrap();
+        let mut link = coordinator.await.unwrap();
+        let everything = ToCoordinator::Heartbeat {
+            regions: vec![
+                (RegionId(0), Vouch::Committed),
+                (RegionId(1), Vouch::Committed),
+            ],
+        };
+        assert_eq!(within(link.recv()).await, Some(everything.clone()));
+
+        // What the worker says replaces that, and each heartbeat says the latest.
+        let said = [
+            vec![(RegionId(1), Vouch::WaitingForStore)],
+            vec![
+                (RegionId(0), Vouch::Committed),
+                (RegionId(1), Vouch::WaitingForStore),
+            ],
+            Vec::new(),
+        ];
+        for regions in said {
+            client.vouch(regions.clone());
+            let beat = ToCoordinator::Heartbeat { regions };
+            // One that was on its way may still say what was said before.
+            while within(link.recv()).await != Some(beat.clone()) {}
+            assert_eq!(within(link.recv()).await, Some(beat));
+        }
+
+        // Even when the orders change: the worker says what it vouches for.
+        link.send(assigned(&[assignment(2, 9)])).await.unwrap();
+        let quiet = ToCoordinator::Heartbeat {
+            regions: Vec::new(),
+        };
+        let mut client = client;
+        assert_eq!(
+            within(client.next()).await.unwrap(),
+            orders(&[assignment(2, 9)])
+        );
+        for _ in 0..3 {
+            assert_eq!(within(link.recv()).await, Some(quiet.clone()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_epoch_is_reported_between_the_heartbeats() {
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let mut link = accept(&listener).await;
+            assert!(within(link.recv()).await.is_some());
+            link.send(assigned(&[assignment(3, 7)])).await.unwrap();
+            link
+        });
+        let (client, _) = register(&address).await.unwrap();
+        let mut link = coordinator.await.unwrap();
+        client.epoch_refused(RegionId(3), 99);
+        let refused = ToCoordinator::EpochRefused {
+            region: RegionId(3),
+            seen: 99,
+        };
+        loop {
+            match within(link.recv()).await {
+                Some(ToCoordinator::Heartbeat { .. }) => {}
+                other => {
+                    assert_eq!(other, Some(refused));
+                    break;
+                }
+            }
         }
     }
 

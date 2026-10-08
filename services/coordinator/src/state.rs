@@ -9,8 +9,8 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use clustine_region::{Layout, RegionId, RegionRoute, RoutingTable};
-use clustine_rpc::Assignment;
-use clustine_world::{EntityIds, Vec3};
+use clustine_rpc::{Assignment, Vouch};
+use clustine_world::{EntityId, EntityIds, Vec3};
 use tracing::{info, warn};
 
 /// What a coordinator is created with.
@@ -20,8 +20,10 @@ pub struct CoordinatorConfig {
     pub layout: Layout,
     /// Where players enter the world.
     pub spawn: Vec3,
-    /// How long a worker may be silent before it loses its regions. A new coordinator
-    /// also waits this long before it gives any region away; see [`Coordinator::new`].
+    /// How long a worker may be silent before it loses its regions, and how long a
+    /// region may go without being vouched for before it loses its owner. A new
+    /// coordinator also waits this long before it gives any region away; see
+    /// [`Coordinator::new`].
     pub lease: Duration,
 }
 
@@ -72,8 +74,63 @@ struct Region {
 struct Owner {
     /// The name of the worker.
     worker: String,
-    /// The entity ids the region hands out while this worker runs it.
+    /// The entity ids the region hands out while this worker runs it. They are only
+    /// passed on: nothing the coordinator decides depends on them, as the world store
+    /// issues entity ids from now on, and they go once nothing reads them any more.
     entity_ids: EntityIds,
+    /// The latest time at which the region was vouched for: by being assigned or
+    /// reported at a registration, or by a heartbeat that names it and counts.
+    vouched: Instant,
+    /// When the owner began to say that the region waits for the world store, if that
+    /// is what it has said since: the earliest heartbeat of the run of
+    /// [`Vouch::WaitingForStore`] that no [`Vouch::Committed`] has ended.
+    waiting_since: Option<Instant>,
+}
+
+impl Owner {
+    /// The worker `name` starts to run a region at `now`, which counts as being vouched
+    /// for: a new owner has a lease to open and restore it before it has to say more.
+    fn new(name: &str, entity_ids: EntityIds, now: Instant) -> Self {
+        Self {
+            worker: name.to_owned(),
+            entity_ids,
+            vouched: now,
+            waiting_since: None,
+        }
+    }
+
+    /// The owner says at `now` what it vouches for the region with.
+    fn vouch(&mut self, now: Instant, vouch: Vouch) {
+        match vouch {
+            Vouch::Committed => {
+                self.waiting_since = None;
+                self.vouched = self.vouched.max(now);
+            }
+            Vouch::WaitingForStore => {
+                // Times need not come in order, so the run began at the earliest of them.
+                let since = self.waiting_since.map_or(now, |since| since.min(now));
+                self.waiting_since = Some(since);
+                if now.saturating_duration_since(since) <= Coordinator::STORE_PATIENCE {
+                    self.vouched = self.vouched.max(now);
+                }
+            }
+        }
+    }
+
+    /// Why the owner is not to run the region any longer as of `now`, although it is
+    /// heard from, if there is a reason.
+    fn unvouched(&self, now: Instant, lease: Duration) -> Option<&'static str> {
+        if now.saturating_duration_since(self.vouched) > lease {
+            return Some("the region was not vouched for within the lease");
+        }
+        let waited = self
+            .waiting_since
+            .map(|since| now.saturating_duration_since(since));
+        if waited.is_some_and(|waited| waited > Coordinator::STORE_PATIENCE) {
+            return Some("the region has waited for the world store for too long");
+        }
+        None
+    }
 }
 
 /// The owner of a region as workers and edges get to see it. What a call changed is the
@@ -106,10 +163,27 @@ impl Holder {
 /// way for a worker to leave: it falls silent. The times that are passed in need not be
 /// in order; a worker was last heard from at the latest of them.
 ///
-/// Whatever workers report and in whatever order, two things never happen. A region
-/// never has two owners and never goes back to an epoch below one it has had, because
-/// storage and peers tell the current owner from a replaced one by the epoch alone. And
-/// no two regions hand out the same entity ids.
+/// Being heard from is not enough to keep a region, though: a worker that is there but
+/// cannot get anything of the region made durable shows its players nothing. So each
+/// region has to be **vouched for** by its owner. A region is vouched for at the time
+///
+/// - at which it was assigned, or reported by its owner at a registration: a new owner
+///   needs a lease to open and restore it before it can say more;
+/// - of a heartbeat in which its owner names it with [`Vouch::Committed`];
+/// - of a heartbeat in which its owner names it with [`Vouch::WaitingForStore`], if that
+///   is no more than [`Coordinator::STORE_PATIENCE`] after the first heartbeat of the
+///   run of such vouches that this one belongs to. Only a `Committed` ends a run.
+///
+/// At a tick, a region loses its owner if the latest time it was vouched for is more than
+/// a lease before, or if its owner has been waiting for the store for longer than
+/// `STORE_PATIENCE`: at that point, rather than a lease after the last vouch that
+/// counted, so that a worker cut off from the store keeps the region no longer than that.
+/// The owner stays registered and goes to the back of the waiting workers, so that
+/// another one gets the region if there is one.
+///
+/// Whatever workers report and in whatever order, a region never has two owners and
+/// never goes back to an epoch below one it has had, because storage and peers tell the
+/// current owner from a replaced one by the epoch alone.
 #[derive(Debug, Clone)]
 pub struct Coordinator {
     config: CoordinatorConfig,
@@ -126,13 +200,19 @@ pub struct Coordinator {
     regions: BTreeMap<RegionId, Region>,
     /// The highest epoch issued or reported so far.
     last_epoch: u64,
-    /// The indices of the entity id blocks issued or reported so far.
+    /// The indices of the entity id blocks issued or reported so far, from which
+    /// [`Assignment::entity_ids`] is filled in.
     used_blocks: BTreeSet<u32>,
     /// The version of the routing table.
     version: u64,
 }
 
 impl Coordinator {
+    /// How long a region counts as vouched for while its owner says that it waits for
+    /// the world store. Moving a region would not help while nobody can reach the store;
+    /// after this long the store is likely fine and the owner cut off from it.
+    pub const STORE_PATIENCE: Duration = Duration::from_secs(30);
+
     /// A coordinator that knows of no worker yet.
     ///
     /// Every epoch it issues is above `first_epoch`, and the version of its routing
@@ -180,9 +260,12 @@ impl Coordinator {
     ///
     /// - the layout has no such region,
     /// - another worker owns the region: whoever reports a region first keeps it,
-    ///   whatever the epochs,
-    /// - the region has had an owner with a higher epoch, so this one was replaced, or
-    /// - another region uses some of the entity ids.
+    ///   whatever the epochs, or
+    /// - the region has had an owner with a higher epoch, so this one was replaced.
+    ///
+    /// A region the worker reports and goes on running counts as vouched for at `now`.
+    /// That does not end a run of [`Vouch::WaitingForStore`]: a worker that lost its
+    /// connection while it waited for the store is waiting still.
     ///
     /// The worker's assignments after the call tell it what became of its holdings: it
     /// has to stop running whatever is not among them.
@@ -224,22 +307,85 @@ impl Coordinator {
             }
         }
         for holding in holding {
-            self.report(name, holding);
+            self.report(now, name, holding);
         }
         Ok(self.changes_since(&before))
     }
 
-    /// A worker says that it is still there. Returns whether the coordinator knows the
-    /// worker: one it does not know, because it was silent for too long or because this
-    /// is a new coordinator, has to register again.
-    pub fn heartbeat(&mut self, now: Instant, name: &str) -> bool {
-        match self.workers.get_mut(name) {
-            Some(worker) => {
-                worker.heard = worker.heard.max(now);
-                true
+    /// A worker says that it is still there, and vouches for the regions it names, in
+    /// order; see [`Coordinator`] for what counts. Returns whether the coordinator knows
+    /// the worker: one it does not know, because it was silent for too long or because
+    /// this is a new coordinator, has to register again.
+    ///
+    /// A region the worker does not own is passed over, as is every region if the
+    /// worker is not known. Nothing changes owner here; that is left to the next tick.
+    pub fn heartbeat(&mut self, now: Instant, name: &str, regions: &[(RegionId, Vouch)]) -> bool {
+        let Some(worker) = self.workers.get_mut(name) else {
+            return false;
+        };
+        worker.heard = worker.heard.max(now);
+        for (id, vouch) in regions {
+            let owner = self
+                .regions
+                .get_mut(id)
+                .and_then(|region| region.owner.as_mut())
+                .filter(|owner| owner.worker == name);
+            if let Some(owner) = owner {
+                owner.vouch(now, *vouch);
             }
-            None => false,
         }
+        true
+    }
+
+    /// The world store refused to let the worker `name` open `region`, because it has
+    /// seen an owner of the region with the epoch `seen`.
+    ///
+    /// No epoch issued from now on is at or below `seen`: epochs come from the clock of
+    /// the coordinator when it starts, and the store's record of them may be ahead of
+    /// it. If `name` owns the region with an epoch below `seen`, the worker has dropped
+    /// it, as it cannot run a region the store does not let it open. The region is
+    /// without an owner then, and no holding with an epoch below `seen` is honoured for
+    /// it any more. A worker that owns the region with an epoch at or above `seen` was
+    /// refused under an earlier assignment, and keeps it. Nor does the word of one
+    /// worker take a region from another.
+    ///
+    /// To be refused is to be heard from, if the worker is registered. The call ends
+    /// like a [`Coordinator::tick`] at `now`, so that a region the worker dropped goes
+    /// to a waiting worker at once, with an epoch above `seen`, and edges see it change
+    /// hands in one new routing table. The waiting worker may be the same one: being
+    /// refused says nothing against it.
+    pub fn epoch_refused(
+        &mut self,
+        now: Instant,
+        name: &str,
+        region: RegionId,
+        seen: u64,
+    ) -> Changes {
+        // Whoever reports it, the store has seen the epoch, and issuing it again would
+        // make the region impossible to open.
+        self.last_epoch = self.last_epoch.max(seen);
+        if let Some(worker) = self.workers.get_mut(name) {
+            worker.heard = worker.heard.max(now);
+        }
+        let before = self.holders();
+        if let Some(state) = self.regions.get_mut(&region) {
+            let epoch = state.epoch;
+            let dropped = |owner: &mut Owner| owner.worker == name && epoch < seen;
+            if let Some(owner) = state.owner.take_if(dropped) {
+                warn!(
+                    %region,
+                    worker = %owner.worker,
+                    epoch,
+                    seen,
+                    "the world store refused the epoch of a region's owner"
+                );
+            }
+            if state.owner.is_none() {
+                state.epoch = state.epoch.max(seen);
+            }
+        }
+        self.settle(now);
+        self.changes_since(&before)
     }
 
     /// Forgets the workers whose lease has run out and hands out regions; to be called
@@ -255,11 +401,16 @@ impl Coordinator {
     /// no worker is waiting, or if epochs or entity ids have run out.
     pub fn tick(&mut self, now: Instant) -> Changes {
         let before = self.holders();
+        self.settle(now);
+        self.changes_since(&before)
+    }
+
+    /// What a tick at `now` does.
+    fn settle(&mut self, now: Instant) {
         self.expire(now);
         if now.saturating_duration_since(self.started) >= self.config.lease {
-            self.assign();
+            self.assign(now);
         }
-        self.changes_since(&before)
     }
 
     /// What `name` is to run, in ascending order of the regions. Nothing, if no such
@@ -300,10 +451,11 @@ impl Coordinator {
 
     /// Takes note of a region that `name` says it runs, and lets the worker go on
     /// running it if nothing speaks against that.
-    fn report(&mut self, name: &str, holding: &Assignment) {
+    fn report(&mut self, now: Instant, name: &str, holding: &Assignment) {
         // Some coordinator issued this. Whether or not it still counts, nothing that is
         // issued from now on may be mistaken for it.
         self.last_epoch = self.last_epoch.max(holding.epoch);
+        // Only so that the entity ids filled in from now on stay clear of these.
         self.used_blocks.extend(block_indices(holding.entity_ids));
 
         if let Some(objection) = self.objection(name, holding) {
@@ -316,18 +468,19 @@ impl Coordinator {
             );
             return;
         }
-        let owner = Owner {
-            worker: name.to_owned(),
-            entity_ids: holding.entity_ids,
-        };
-        // The layout has the region, or there would have been an objection.
-        self.regions.insert(
-            holding.region,
-            Region {
-                owner: Some(owner),
-                epoch: holding.epoch,
-            },
-        );
+        let region = self
+            .regions
+            .get_mut(&holding.region)
+            .expect("the layout has the region, or there would have been an objection");
+        region.epoch = holding.epoch;
+        match &mut region.owner {
+            // The worker's own region, so a run of waiting for the store goes on.
+            Some(owner) => {
+                owner.entity_ids = holding.entity_ids;
+                owner.vouched = owner.vouched.max(now);
+            }
+            None => region.owner = Some(Owner::new(name, holding.entity_ids, now)),
+        }
     }
 
     /// What speaks against `name` going on to run `holding`, if anything does.
@@ -346,19 +499,12 @@ impl Coordinator {
         if holding.epoch < region.epoch {
             return Some("the region has had an owner with a higher epoch");
         }
-        let ids_in_use = self.regions.iter().any(|(id, other)| {
-            let owner = other.owner.as_ref();
-            *id != holding.region
-                && owner.is_some_and(|owner| overlap(owner.entity_ids, holding.entity_ids))
-        });
-        if ids_in_use {
-            return Some("another region uses some of its entity ids");
-        }
         None
     }
 
-    /// Forgets the workers that have been silent for longer than a lease. What they ran
-    /// is without an owner again.
+    /// Forgets the workers that have been silent for longer than a lease, and takes
+    /// regions from owners that no longer vouch for them. Those regions are without an
+    /// owner again.
     fn expire(&mut self, now: Instant) {
         let lease = self.config.lease;
         self.workers.retain(|name, worker| {
@@ -377,12 +523,36 @@ impl Coordinator {
                     epoch = region.epoch,
                     "a region lost its owner"
                 );
+                continue;
             }
+            let reason = region
+                .owner
+                .as_ref()
+                .and_then(|owner| owner.unvouched(now, lease));
+            let Some(reason) = reason else {
+                continue;
+            };
+            let owner = region.owner.take().expect("only an owner can be unvouched");
+            warn!(
+                region = %id,
+                worker = %owner.worker,
+                epoch = region.epoch,
+                reason,
+                "a region was taken from its owner"
+            );
+            // Whatever keeps the worker from vouching may well keep it from running the
+            // region again, so a waiting worker that has not failed gets it first.
+            let worker = self
+                .workers
+                .get_mut(&owner.worker)
+                .expect("the owner of a region is a registered worker");
+            worker.arrival = self.arrivals;
+            self.arrivals += 1;
         }
     }
 
-    /// Gives the regions without an owner to the waiting workers.
-    fn assign(&mut self) {
+    /// Gives the regions without an owner to the waiting workers, as of `now`.
+    fn assign(&mut self, now: Instant) {
         let busy: BTreeSet<&str> = self
             .regions
             .values()
@@ -397,28 +567,55 @@ impl Coordinator {
             .collect();
         waiting.sort_unstable();
 
-        let unowned = self
+        let unowned: Vec<RegionId> = self
             .regions
-            .iter_mut()
-            .filter(|(_, region)| region.owner.is_none());
-        for ((id, region), (_, name)) in unowned.zip(waiting) {
-            // Neither epochs nor entity ids come back once they have run out, so there
-            // is nothing to assign the other regions with either.
+            .iter()
+            .filter(|(_, region)| region.owner.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        let pairs: Vec<(RegionId, String)> = unowned
+            .into_iter()
+            .zip(waiting)
+            .map(|(id, (_, name))| (id, name.to_owned()))
+            .collect();
+        for (id, name) in pairs {
+            // Epochs do not come back once they have run out, so there is nothing to
+            // assign the other regions with either.
             let Some(epoch) = self.last_epoch.checked_add(1) else {
                 break;
             };
-            let Some((index, entity_ids)) = unused_block(&self.used_blocks) else {
-                break;
-            };
             self.last_epoch = epoch;
-            self.used_blocks.insert(index);
+            let entity_ids = self.fill_entity_ids();
+            let region = self
+                .regions
+                .get_mut(&id)
+                .expect("the region is one of the layout's");
             region.epoch = epoch;
-            region.owner = Some(Owner {
-                worker: name.to_owned(),
-                entity_ids,
-            });
-            info!(region = %id, worker = name, epoch, "a region was assigned");
+            region.owner = Some(Owner::new(&name, entity_ids, now));
+            info!(region = %id, worker = %name, epoch, "a region was assigned");
         }
+    }
+
+    /// The entity ids of a new assignment: the first block that was never issued or
+    /// reported, as before the world store issued them. Once those have run out, the
+    /// first block that no owner has, and after that none at all. Entity ids never stop
+    /// a region from being assigned.
+    fn fill_entity_ids(&mut self) -> EntityIds {
+        if let Some((index, entity_ids)) = unused_block(&self.used_blocks) {
+            self.used_blocks.insert(index);
+            return entity_ids;
+        }
+        let held: BTreeSet<u32> = self
+            .regions
+            .values()
+            .filter_map(|region| region.owner.as_ref())
+            .flat_map(|owner| block_indices(owner.entity_ids))
+            .collect();
+        let none = EntityIds {
+            first: EntityId(1),
+            end: EntityId(1),
+        };
+        unused_block(&held).map_or(none, |(_, entity_ids)| entity_ids)
     }
 
     /// The owner of every region that has one.
@@ -470,11 +667,6 @@ impl Coordinator {
             routing,
         }
     }
-}
-
-/// Whether some entity id is in both blocks.
-fn overlap(a: EntityIds, b: EntityIds) -> bool {
-    a.first.max(b.first) < a.end.min(b.end)
 }
 
 /// The indices of the blocks [`EntityIds::block`] makes that share an id with `ids`.
@@ -601,11 +793,32 @@ mod tests {
             result
         }
 
+        /// A heartbeat that vouches for everything the worker owns as committed, which
+        /// is what a worker that is in order says.
         fn heartbeat(&mut self, at: u64, name: &str) -> bool {
+            let regions: Vec<(RegionId, Vouch)> = self
+                .assignments(name)
+                .iter()
+                .map(|held| (held.region, Vouch::Committed))
+                .collect();
+            self.heartbeat_with(at, name, &regions)
+        }
+
+        fn heartbeat_with(&mut self, at: u64, name: &str, regions: &[(RegionId, Vouch)]) -> bool {
             let before = self.view();
-            let known = self.coordinator.heartbeat(self.at(at), name);
+            let known = self.coordinator.heartbeat(self.at(at), name, regions);
             assert_eq!(self.view(), before, "a heartbeat changed something");
             known
+        }
+
+        fn epoch_refused(&mut self, at: u64, name: &str, region: u32, seen: u64) -> Changes {
+            let before = self.view();
+            let now = self.at(at);
+            let changes = self
+                .coordinator
+                .epoch_refused(now, name, RegionId(region), seen);
+            self.verify(&before, &changes);
+            changes
         }
 
         fn tick(&mut self, at: u64) -> Changes {
@@ -671,11 +884,6 @@ mod tests {
                 assert!(self.layout.area(one.region).is_some(), "{one:?}");
                 for other in &live[index + 1..] {
                     assert_ne!(one.region, other.region, "a region has two owners");
-                    let (a, b) = (one.entity_ids, other.entity_ids);
-                    assert!(
-                        a.end <= b.first || b.end <= a.first,
-                        "{one:?} and {other:?} share entity ids"
-                    );
                 }
             }
         }
@@ -871,6 +1079,311 @@ mod tests {
         assert_eq!(
             cluster.assignments("b"),
             [assignment(0, FIRST_EPOCH + 2, 1)]
+        );
+    }
+
+    /// The store waits of the tests, in the milliseconds the tests give times in.
+    const PATIENCE: u64 = Coordinator::STORE_PATIENCE.as_millis() as u64;
+
+    const COMMITTED: [(RegionId, Vouch); 1] = [(RegionId(0), Vouch::Committed)];
+    const WAITING: [(RegionId, Vouch); 1] = [(RegionId(0), Vouch::WaitingForStore)];
+
+    /// A world of one region, which `a` runs from `LEASE` on with the epoch after the
+    /// first, and `b`, which waits. Both are heard from at `LEASE`.
+    fn a_runs_and_b_waits() -> Cluster {
+        let mut cluster = Cluster::new(&[]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        assert_eq!(
+            cluster.assignments("a"),
+            [assignment(0, FIRST_EPOCH + 1, 0)]
+        );
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat_with(LEASE, name, &[]));
+        }
+        cluster
+    }
+
+    #[test]
+    fn a_region_not_vouched_for_loses_its_owner_a_lease_after_the_last_vouch() {
+        let mut cluster = a_runs_and_b_waits();
+        assert!(cluster.heartbeat_with(LEASE + 3000, "a", &COMMITTED));
+
+        // Both go on being heard from, but `a` no longer names the region.
+        let mut now = LEASE + 3000;
+        while now < 2 * LEASE + 3000 {
+            now += 1000;
+            for name in ["a", "b"] {
+                assert!(cluster.heartbeat_with(now, name, &[]));
+            }
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+        }
+        // A lease after the vouch is not too long; a moment more is.
+        assert_eq!(cluster.tick(2 * LEASE + 3001), changes(&["a", "b"], true));
+        assert!(cluster.assignments("a").is_empty());
+        assert_eq!(
+            cluster.assignments("b"),
+            [assignment(0, FIRST_EPOCH + 2, 1)]
+        );
+        // The worker that lost it is still registered, and waits.
+        assert!(cluster.heartbeat_with(2 * LEASE + 3001, "a", &COMMITTED));
+        assert!(cluster.assignments("a").is_empty());
+    }
+
+    #[test]
+    fn a_freshly_assigned_region_is_not_taken_away_within_its_first_lease() {
+        let mut cluster = a_runs_and_b_waits();
+        // The new owner is opening and restoring the region, and says nothing of it.
+        for now in [LEASE + 1, LEASE + LEASE / 2, 2 * LEASE - 1, 2 * LEASE] {
+            for name in ["a", "b"] {
+                assert!(cluster.heartbeat_with(now, name, &[]));
+            }
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+        }
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a", "b"], true));
+    }
+
+    #[test]
+    fn a_region_reported_at_a_registration_counts_as_vouched_for_then() {
+        let mut cluster = Cluster::new(&[]);
+        let held = assignment(0, 7, 0);
+        cluster.register(0, "a", "a:25601", &[held]);
+        cluster.register(3000, "a", "a:25601", &[held]);
+        assert!(cluster.heartbeat_with(LEASE + 3000, "a", &[]));
+        assert_eq!(cluster.tick(LEASE + 3000), Changes::default());
+        assert_eq!(cluster.tick(LEASE + 3001), changes(&["a"], true));
+    }
+
+    #[test]
+    fn waiting_for_the_store_keeps_a_region_for_thirty_seconds_and_no_longer() {
+        let mut cluster = a_runs_and_b_waits();
+        // The run begins with the first heartbeat that says so, and every one of them
+        // until thirty seconds after it counts, however long that is in leases.
+        let start = LEASE + 2000;
+        let mut now = start;
+        while now <= start + PATIENCE {
+            assert!(cluster.heartbeat_with(now, "a", &WAITING));
+            assert!(cluster.heartbeat_with(now, "b", &[]));
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+            now += LEASE / 2;
+        }
+        assert!(cluster.heartbeat_with(start + PATIENCE, "a", &WAITING));
+        assert_eq!(cluster.tick(start + PATIENCE), Changes::default());
+
+        // After that the region goes, although `a` still says it waits.
+        assert!(cluster.heartbeat_with(start + PATIENCE + 1, "a", &WAITING));
+        assert!(cluster.heartbeat_with(start + PATIENCE + 1, "b", &[]));
+        assert_eq!(
+            cluster.tick(start + PATIENCE + 1),
+            changes(&["a", "b"], true)
+        );
+        assert_eq!(
+            cluster.assignments("b"),
+            [assignment(0, FIRST_EPOCH + 2, 1)]
+        );
+    }
+
+    #[test]
+    fn a_committed_vouch_ends_a_run_of_waiting_for_the_store() {
+        let mut cluster = a_runs_and_b_waits();
+        let start = LEASE + 2000;
+        let mut now = start;
+        let beat = |cluster: &mut Cluster, now: u64, vouches: &[(RegionId, Vouch)]| {
+            assert!(cluster.heartbeat_with(now, "a", vouches));
+            assert!(cluster.heartbeat_with(now, "b", &[]));
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+        };
+        while now < start + PATIENCE - 5000 {
+            beat(&mut cluster, now, &WAITING);
+            now += 5000;
+        }
+        // The store answers for a moment, and then the worker waits again.
+        beat(&mut cluster, now, &COMMITTED);
+        let again = now + 5000;
+        now = again;
+        while now <= again + PATIENCE {
+            beat(&mut cluster, now, &WAITING);
+            now += 5000;
+        }
+        assert!(cluster.heartbeat_with(again + PATIENCE + 1, "b", &[]));
+        assert_eq!(
+            cluster.tick(again + PATIENCE + 1),
+            changes(&["a", "b"], true)
+        );
+    }
+
+    #[test]
+    fn registering_again_does_not_end_a_run_of_waiting_for_the_store() {
+        let mut cluster = a_runs_and_b_waits();
+        let held = cluster.assignments("a");
+        let start = LEASE + 2000;
+        assert!(cluster.heartbeat_with(start, "a", &WAITING));
+        // The worker lost its connection while it waited, and is back.
+        cluster.register(start + PATIENCE - 1, "a", "a:25601", &held);
+        assert!(cluster.heartbeat_with(start + PATIENCE, "a", &WAITING));
+        assert!(cluster.heartbeat_with(start + PATIENCE, "b", &[]));
+        assert_eq!(cluster.tick(start + PATIENCE), Changes::default());
+        assert_eq!(
+            cluster.tick(start + PATIENCE + 1),
+            changes(&["a", "b"], true)
+        );
+    }
+
+    #[test]
+    fn a_silent_worker_loses_its_regions_after_a_lease_however_it_vouched() {
+        for vouches in [COMMITTED, WAITING] {
+            let mut cluster = a_runs_and_b_waits();
+            assert!(cluster.heartbeat_with(LEASE + 1000, "a", &vouches));
+            assert!(cluster.heartbeat_with(2 * LEASE + 1000, "b", &[]));
+            assert_eq!(cluster.tick(2 * LEASE + 1000), Changes::default());
+            assert_eq!(cluster.tick(2 * LEASE + 1001), changes(&["a", "b"], true));
+            // It is forgotten, not just left waiting.
+            assert!(!cluster.heartbeat_with(2 * LEASE + 1001, "a", &vouches));
+        }
+    }
+
+    #[test]
+    fn a_vouch_for_a_region_of_another_worker_does_nothing() {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        // `b` runs region 1 and names region 0 as well, as does a worker of a world
+        // with another layout.
+        let both = [
+            (RegionId(0), Vouch::Committed),
+            (RegionId(1), Vouch::Committed),
+            (RegionId(9), Vouch::Committed),
+        ];
+        assert!(cluster.heartbeat_with(2 * LEASE, "a", &[]));
+        assert!(cluster.heartbeat_with(2 * LEASE, "b", &both));
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a"], true));
+        assert_eq!(
+            cluster.assignments("b"),
+            [assignment(1, FIRST_EPOCH + 2, 1)]
+        );
+        // And it is given to `a` again, which waits alone.
+        assert_eq!(
+            cluster.assignments("a"),
+            [assignment(0, FIRST_EPOCH + 3, 2)]
+        );
+    }
+
+    #[test]
+    fn a_worker_that_lost_a_region_for_not_vouching_waits_behind_the_others() {
+        let mut cluster = Cluster::new(&[]);
+        for name in ["a", "b", "c"] {
+            cluster.register(0, name, &format!("{name}:25601"), &[]);
+        }
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        // Each owner in turn stops vouching, and the region goes to the worker that
+        // has waited longest without failing: `b` and `c` before `a` gets it again.
+        let mut now = LEASE;
+        for (lost, next) in [("a", "b"), ("b", "c"), ("c", "a")] {
+            now += LEASE + 1;
+            for name in ["a", "b", "c"] {
+                assert!(cluster.heartbeat_with(now, name, &[]));
+            }
+            let mut told = [lost, next];
+            told.sort_unstable();
+            assert_eq!(cluster.tick(now), changes(&told, true));
+            assert_eq!(cluster.assignments(next).len(), 1, "{next}");
+        }
+    }
+
+    #[test]
+    fn a_refused_epoch_raises_later_epochs_above_it_and_the_region_is_reassigned() {
+        let mut cluster = a_runs_and_b_waits();
+        let stale = cluster.assignments("a");
+        let version = cluster.table().version;
+        let seen = FIRST_EPOCH + 50;
+
+        // The worker has dropped the region, which goes at once to the worker that has
+        // waited longest, with an epoch above the one the store has seen. Being refused
+        // says nothing against a worker, so that is the same one, as it registered
+        // first. Edges see one new table.
+        assert_eq!(
+            cluster.epoch_refused(LEASE + 100, "a", 0, seen),
+            changes(&["a"], true)
+        );
+        let again = assignment(0, seen + 1, 1);
+        assert_eq!(cluster.assignments("a"), [again]);
+        assert!(cluster.assignments("b").is_empty());
+        assert_eq!(cluster.table().version, version + 1);
+        assert_eq!(cluster.table().routes, [route(0, seen + 1, "a:25601")]);
+        // What it held before is not honoured again: the store has seen a later owner.
+        assert_eq!(
+            cluster.register(LEASE + 100, "a", "a:25601", &stale),
+            Changes::default()
+        );
+        assert_eq!(cluster.assignments("a"), [again]);
+
+        // Again, with the epoch the store has seen in the meantime.
+        assert_eq!(
+            cluster.epoch_refused(LEASE + 300, "a", 0, seen + 9),
+            changes(&["a"], true)
+        );
+        assert_eq!(cluster.assignments("a"), [assignment(0, seen + 10, 2)]);
+        // The new owner has its first lease to open the region.
+        assert!(cluster.heartbeat_with(2 * LEASE + 300, "a", &[]));
+        assert!(cluster.heartbeat_with(2 * LEASE + 300, "b", &[]));
+        assert_eq!(cluster.tick(2 * LEASE + 300), Changes::default());
+    }
+
+    #[test]
+    fn a_region_dropped_for_a_refused_epoch_waits_for_the_grace_period_to_end() {
+        let mut cluster = Cluster::new(&[]);
+        let held = assignment(0, 5, 0);
+        cluster.register(0, "a", "a:25601", &[held]);
+        assert_eq!(cluster.epoch_refused(1, "a", 0, 77), changes(&["a"], true));
+        assert!(cluster.table().routes.is_empty());
+        assert_eq!(cluster.tick(LEASE - 1), Changes::default());
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        assert_eq!(
+            cluster.assignments("a"),
+            [assignment(0, FIRST_EPOCH + 1, 1)]
+        );
+    }
+
+    #[test]
+    fn a_refusal_takes_nothing_from_an_owner_it_does_not_concern_but_raises_epochs() {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        let held = cluster.assignments("a");
+        let epoch = held[0].epoch;
+
+        // A refusal under an earlier assignment of the same worker, of a region that
+        // another worker runs or nobody does, from a worker that is not registered,
+        // and of a region the layout does not have.
+        let refusals = [
+            ("a", 0, epoch),
+            ("a", 0, epoch - 1),
+            ("b", 0, epoch + 5),
+            ("a", 1, epoch + 20),
+            ("nobody", 1, epoch + 30),
+            ("a", 7, epoch + 40),
+        ];
+        for (name, region, seen) in refusals {
+            assert_eq!(
+                cluster.epoch_refused(LEASE, name, region, seen),
+                Changes::default(),
+                "{name} {region} {seen}"
+            );
+            assert_eq!(cluster.assignments("a"), held);
+        }
+        // Every one of them counts for what is issued from now on.
+        cluster.register(LEASE, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["b"], true));
+        assert_eq!(cluster.assignments("b")[0].epoch, epoch + 41);
+
+        // A region nobody runs does not go back below what the store has seen.
+        let mut cluster = Cluster::new(&[]);
+        assert_eq!(cluster.epoch_refused(0, "a", 0, 77), Changes::default());
+        assert_eq!(
+            cluster.register(0, "a", "a:25601", &[assignment(0, 76, 0)]),
+            Changes::default()
         );
     }
 
@@ -1105,41 +1618,27 @@ mod tests {
     }
 
     #[test]
-    fn a_holding_with_entity_ids_another_region_uses_is_not_honoured() {
+    fn a_holding_is_honoured_whatever_entity_ids_it_has() {
+        // The world store issues entity ids now: the coordinator only passes on what it
+        // is told, and decides nothing by it.
         let mut cluster = Cluster::new(&[0]);
         let held = assignment(0, 3, 4);
         cluster.register(0, "a", "a:25601", &[held]);
-
-        // Be it the whole block or a few ids of it.
         let few = EntityIds {
             first: EntityId(ids(4).first.0 + 5),
             end: EntityId(ids(4).first.0 + 10),
         };
-        for entity_ids in [ids(4), few] {
-            let claim = Assignment {
-                region: RegionId(1),
-                epoch: 4,
-                entity_ids,
-            };
-            assert_eq!(
-                cluster.register(1, "b", "b:25601", &[claim]),
-                Changes::default()
-            );
-            assert!(cluster.assignments("b").is_empty());
-        }
-        // The worker is given the region with ids of its own instead.
-        assert_eq!(cluster.tick(LEASE), changes(&["b"], true));
+        let claim = Assignment {
+            region: RegionId(1),
+            epoch: 4,
+            entity_ids: few,
+        };
         assert_eq!(
-            cluster.assignments("b"),
-            [assignment(1, FIRST_EPOCH + 1, 0)]
-        );
-
-        // A region's own ids do not stand in its way.
-        assert_eq!(
-            cluster.register(LEASE, "a", "a:25601", &[held]),
-            Changes::default()
+            cluster.register(1, "b", "b:25601", &[claim]),
+            changes(&["b"], true)
         );
         assert_eq!(cluster.assignments("a"), [held]);
+        assert_eq!(cluster.assignments("b"), [claim]);
     }
 
     #[test]
@@ -1243,9 +1742,18 @@ mod tests {
         assert_eq!(cluster.assignments("a"), held);
         assert_eq!(cluster.table(), table);
 
-        // To register is to be heard from.
-        assert_eq!(cluster.tick(2 * LEASE + 2), Changes::default());
+        // To register is to be heard from, but only a region it reports is vouched for.
+        // So the region goes a lease after it was last reported, and as nobody else is
+        // waiting, it comes back to the same worker with a new epoch.
+        assert_eq!(cluster.tick(2 * LEASE + 1), Changes::default());
+        assert_eq!(cluster.tick(2 * LEASE + 2), changes(&["a"], true));
+        assert_eq!(
+            cluster.assignments("a"),
+            [assignment(0, FIRST_EPOCH + 2, 1)]
+        );
+        // The worker was last heard from when it registered.
         assert_eq!(cluster.tick(2 * LEASE + 3), changes(&["a"], true));
+        assert!(cluster.assignments("a").is_empty());
     }
 
     #[test]
@@ -1315,21 +1823,41 @@ mod tests {
     }
 
     #[test]
-    fn a_region_stays_without_an_owner_when_the_entity_ids_run_out() {
-        let mut cluster = Cluster::new(&[]);
+    fn a_region_is_assigned_all_the_same_when_the_entity_ids_run_out() {
+        let mut cluster = Cluster::new(&[0]);
         let mut now = LEASE;
-        // Workers come, get the region and are lost, and each uses up a block.
-        for block in 0..EntityIds::BLOCK_COUNT {
+        // Region 1 keeps the last block; region 0 goes from worker to worker, and each
+        // uses up another.
+        let kept = assignment(1, 5, EntityIds::BLOCK_COUNT - 1);
+        cluster.register(0, "keeps", "keeps:25601", &[kept]);
+        for block in 0..EntityIds::BLOCK_COUNT - 1 {
             cluster.register(now, "a", "a:25601", &[]);
+            assert!(cluster.heartbeat(now, "keeps"));
             assert_eq!(cluster.tick(now), changes(&["a"], true));
             assert_eq!(cluster.assignments("a")[0].entity_ids, ids(block));
             now += LEASE + 1;
+            assert!(cluster.heartbeat(now, "keeps"));
             assert_eq!(cluster.tick(now), changes(&["a"], true));
         }
+        // Then a block no owner has is filled in, and when there is none, no ids at all.
         cluster.register(now, "a", "a:25601", &[]);
-        assert_eq!(cluster.tick(now), Changes::default());
-        assert!(cluster.assignments("a").is_empty());
-        assert!(cluster.table().routes.is_empty());
+        assert_eq!(cluster.tick(now), changes(&["a"], true));
+        assert_eq!(cluster.assignments("a")[0].entity_ids, ids(0));
+        assert_eq!(cluster.assignments("keeps"), [kept]);
+    }
+
+    #[test]
+    fn no_entity_ids_are_filled_in_when_every_block_has_an_owner() {
+        let mut coordinator = coordinator(&Layout::single(), Instant::now(), FIRST_EPOCH);
+        coordinator.used_blocks = (0..EntityIds::BLOCK_COUNT).collect();
+        let everything = EntityIds {
+            first: EntityId(1),
+            end: EntityId(i32::MAX),
+        };
+        let region = coordinator.regions.get_mut(&RegionId(0)).unwrap();
+        region.owner = Some(Owner::new("a", everything, Instant::now()));
+        let none = coordinator.fill_entity_ids();
+        assert_eq!(none.first, none.end);
     }
 
     #[test]
@@ -1418,7 +1946,7 @@ mod tests {
     fn epochs_only_rise_and_nothing_is_shared_whatever_workers_do() {
         const WORKERS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
         let (mut issued, mut resumed, mut turned_away, mut lost) = (0, 0, 0, 0);
-        let (mut refused, mut restarts) = (0, 0);
+        let (mut refused, mut restarts, mut dropped) = (0, 0, 0);
 
         for seed in 1..=24_u64 {
             let mut random = Generator(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
@@ -1443,8 +1971,21 @@ mod tests {
                 let before = cluster.view();
                 let roll = random.below(100);
                 if roll < 30 {
-                    cluster.heartbeat(now, name);
-                } else if roll < 62 {
+                    // The worker vouches for what it believes it runs, mostly as being
+                    // committed, now and then as waiting for the store, or not at all.
+                    let mut vouches = Vec::new();
+                    for held in running.get(name).into_iter().flatten() {
+                        match random.below(8) {
+                            0 => {}
+                            1 => vouches.push((held.region, Vouch::WaitingForStore)),
+                            _ => vouches.push((held.region, Vouch::Committed)),
+                        }
+                    }
+                    if !honest && random.once_in(8) {
+                        vouches.push((RegionId(random.below(6) as u32), Vouch::Committed));
+                    }
+                    cluster.heartbeat_with(now, name, &vouches);
+                } else if roll < 60 {
                     let mut holding = running.get(name).cloned().unwrap_or_default();
                     if !honest && random.once_in(4) {
                         // Something made up: any region, even one that does not exist,
@@ -1491,17 +2032,17 @@ mod tests {
                     if !random.once_in(4) {
                         running.insert(name.to_owned(), has);
                     }
-                } else if roll < 92 {
+                } else if roll < 88 {
                     let changes = cluster.tick(now);
                     let mut new = Vec::new();
                     for worker in WORKERS {
                         let had = before.assignments(worker);
                         let has = cluster.assignments(worker);
                         if has.iter().any(|assignment| !had.contains(assignment)) {
-                            // Only a worker that had nothing is given a region, and
-                            // only one.
-                            assert!(had.is_empty(), "{worker} had {had:?}");
-                            assert_eq!(has.len(), 1);
+                            // Only a worker that had nothing, or lost all it had in
+                            // this tick, is given a region, and only one.
+                            assert_eq!(has.len(), 1, "{worker} has {has:?}");
+                            assert!(!had.contains(&has[0]), "{worker} had {had:?}");
                             new.push(has[0]);
                         } else {
                             lost += had.len() - has.len();
@@ -1525,10 +2066,62 @@ mod tests {
                             running.insert(worker, has);
                         }
                     }
-                } else if roll < 95 {
+                } else if roll < 91 {
+                    // The store refuses to let the worker open one of its regions: it
+                    // has seen a higher epoch, which some coordinator issued.
+                    let held = running.get(name).and_then(|held| held.first()).copied();
+                    let (region, epoch) = match held {
+                        Some(held) => (held.region, held.epoch),
+                        None => (RegionId(random.below(6) as u32), highest_epoch - 3),
+                    };
+                    let seen = if honest {
+                        if epoch >= highest_epoch {
+                            continue;
+                        }
+                        epoch + 1 + random.below(highest_epoch - epoch)
+                    } else {
+                        highest_epoch - 3 + random.below(7)
+                    };
+                    let owned = before
+                        .assignments(name)
+                        .iter()
+                        .any(|held| held.region == region && held.epoch < seen);
+                    cluster.epoch_refused(now, name, region.0, seen);
+                    highest_epoch = highest_epoch.max(seen);
+                    let has = cluster.assignments(name);
+                    assert!(
+                        !has.iter()
+                            .any(|held| held.region == region && held.epoch < seen)
+                    );
+                    if owned {
+                        dropped += 1;
+                    }
+                    // A region that was dropped may have been given away at once.
+                    let mut new: Vec<Assignment> = WORKERS
+                        .iter()
+                        .flat_map(|worker| {
+                            let had = before.assignments(worker).to_vec();
+                            let has = cluster.assignments(worker);
+                            has.into_iter().filter(move |gained| !had.contains(gained))
+                        })
+                        .collect();
+                    new.sort_by_key(|assignment| assignment.region);
+                    for gained in new {
+                        assert!(now >= grace_ends, "assigned during the grace period");
+                        assert!(gained.epoch > highest_epoch, "{gained:?}");
+                        highest_epoch = gained.epoch;
+                        let block = gained.entity_ids.first.0 / EntityIds::BLOCK_SIZE;
+                        assert!(used_blocks.insert(block), "{gained:?}");
+                        issued += 1;
+                    }
+                    // The worker has dropped the region.
+                    if let Some(held) = running.get_mut(name) {
+                        held.retain(|held| held.region != region);
+                    }
+                } else if roll < 94 {
                     // The worker catches up with what it is to run.
                     running.insert(name.to_owned(), cluster.assignments(name));
-                } else if roll < 98 {
+                } else if roll < 97 {
                     // The worker's process is replaced by a new one, which runs nothing.
                     running.remove(name);
                 } else if random.once_in(3) {
@@ -1559,7 +2152,15 @@ mod tests {
         }
 
         // All of it has in fact happened, and often.
-        let counts = [issued, resumed, turned_away, lost, refused, restarts];
+        let counts = [
+            issued,
+            resumed,
+            turned_away,
+            lost,
+            refused,
+            restarts,
+            dropped,
+        ];
         assert!(counts.iter().all(|count| *count >= 100), "{counts:?}");
     }
 }

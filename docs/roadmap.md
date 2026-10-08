@@ -131,7 +131,7 @@ from disk when the store is back.
 | A2 | Sim: export and restore of state, per-tick state changes, outbox, inbox numbers | Unit tests; restore then the kept messages equals the uninterrupted run up to the commit followed by the rest in one tick | to do |
 | A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | to do |
 | A4 | Edge: name and start count, outbox per region, kept inputs per player, resume and reconciliation, living through the loss of a region | E2E in one process: a region is torn down without warning and rebuilt while bots walk, build, hand over and watch | to do |
-| A5 | Coordinator: lease 5 s, per-region vouching, table changes that edges live through | State machine and service tests | to do |
+| A5 | Coordinator: lease 5 s, per-region vouching, table changes that edges live through | State machine and service tests | done (the worker reports real vouches in A3; edges living through a change of owner is A4) |
 | A6 | Chaos tests: workers and the world store killed at random under bots that keep a ledger of everything acknowledged; on kind by deleting pods; in CI | No disconnect, ledger equals world, one entity per player throughout, repeatedly | to do |
 | A7 | Docs | CI | to do |
 
@@ -207,6 +207,13 @@ with them so far:
 - Edge identity: `--name` on the edge (default `edge`). Until A4 the edge starts over
   with a new `Fanout` whenever a region is lost, which numbers anew, so each of those
   takes a new start; the regions are told by the start alone.
+- A5 is done too: the coordinator takes a region whose owner has not vouched for it
+  within the lease (a new owner has its first lease), keeps one whose owner waits for
+  the store for up to 30 s, and raises its epochs above one the store refused.
+  `WorkerClient::vouch` and `WorkerClient::epoch_refused` are what A3 calls; until the
+  worker calls `vouch`, heartbeats vouch `Committed` for everything it was told to run.
+  Nothing the coordinator decides depends on entity ids any more; it still fills in
+  `Assignment::entity_ids`, which goes once the worker takes its block from the store.
 - `Durable` is in the sim's API, `EdgeId` in `clustine-world`. The sim's own types of
   ADR-0008 (`RegionState`, `StateDelta`, `EdgeEvent`, the new inputs and outputs) are
   A2's to define, as only A3 uses them and comes after it.

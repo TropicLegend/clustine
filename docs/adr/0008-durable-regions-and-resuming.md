@@ -239,8 +239,13 @@ store's own record format and are applied to chunks by the store.
 ### 6. The coordinator
 
 - The lease is 5 seconds by default.
-- A worker's heartbeat names, for each region it holds, whether it has had a commit
-  confirmed for it within the lease, or is waiting for the world store to answer.
+- A worker's heartbeat names, for each region it holds, whether it vouches for it as
+  `Committed` or as `WaitingForStore`. It vouches `Committed` for a region that has
+  ticked within the last second: a region whose commits go unanswered stops within
+  eight ticks (section 4), so ticking is what shows that its commits are confirmed, also
+  for an idle region that has nothing to commit. A region whose handle is lost and which
+  waits to open it again is `WaitingForStore`. The worker does not need to know the
+  lease for this.
 - A region the worker holds but does not vouch for loses its owner like one whose worker
   fell silent. A region counts as vouched for during the first lease after it was
   assigned, so that a new owner has time to open and restore it. A region whose owner is
@@ -306,3 +311,7 @@ this record, all worked in above:
 13. A worker could not open its region again with its own epoch while the store still
     had its old session, and did not tell being replaced from the store being away.
 14. Epochs kept on disk and epochs from the coordinator's clock could disagree for good.
+
+Building the coordinator (A5) found one more: vouching was defined by a commit confirmed
+within the lease, which an idle region, which commits nothing, never has; it would have
+moved every lease. Vouching now rests on the region ticking.
