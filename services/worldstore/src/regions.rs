@@ -2221,3 +2221,63 @@ fn the_list_of_regions_is_read_over_a_connection() {
     drop(listener);
     assert!(matches!(regions(&address), Err(StoreError::Io(_))));
 }
+
+/// The row "Split" of section 4.3: a store that dies once the record of a split is
+/// durable and before the new region's file is has split all the same, and the next
+/// start writes the file with the epoch the record has, so that nobody with a lower
+/// one opens the region.
+#[test]
+fn the_file_of_a_region_a_split_made_is_written_at_the_next_start() {
+    let world = {
+        let disk = Arc::new(MemoryDisk::default());
+        let store = store_on(&disk, &gap()).unwrap();
+        let (old, _) = opened(&store, 0, 1);
+        old.flush();
+        disk.crashed(Survival::Everything)
+    };
+    // A store on that world with the region opened, and nothing left to be synced.
+    let prepared = |disk: &Arc<MemoryDisk>| {
+        let store = store_on(disk, &gap()).unwrap();
+        let (old, _) = opened(&store, 0, 2);
+        old.flush();
+        (store, old)
+    };
+    let before = {
+        let disk = Arc::new(world.crashed(Survival::Everything));
+        let _prepared = prepared(&disk);
+        disk.operations()
+    };
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    // The split appends its record and syncs it, and then writes the region file,
+    // syncs it, renames it and syncs the directory: the disk stops at each of the four.
+    for step in 3..=6 {
+        let fault = Fault::Stop(before + step);
+        let disk = Arc::new(world.crashed(Survival::Everything).with(fault));
+        let (store, old) = prepared(&disk);
+        // Answered although the file could not be written: the record is durable.
+        assert_eq!(split(&old, 5, &[WEST], 7), done, "step {step}");
+        drop((old, store));
+        for survival in SURVIVALS {
+            let case = format!("step {step}, {survival:?}");
+            let left = Arc::new(disk.crashed(survival));
+            let store = store_on(&left, &gap()).unwrap();
+            let list = store.regions().unwrap();
+            assert_eq!(list.regions[3].epoch, 7, "{case}");
+            let refused = store.open_region(hello_of(&gap(), 3, 6));
+            assert!(
+                matches!(refused, Err(StoreError::EpochRefused { seen: 7, .. })),
+                "{case}: {:?}",
+                refused.err()
+            );
+            // The file is there for good by the time the store has started.
+            let durable = left.crashed(Survival::Nothing);
+            let file = durable.read(Path::new("/world/regions/3.region")).unwrap();
+            let file = RegionFile::decode(&file.expect(&case)).unwrap();
+            assert_eq!(file.epoch, 7, "{case}");
+            let (_, held) = opened(&store, 3, 7);
+            assert_eq!(held, [(WEST, 5)], "{case}");
+        }
+    }
+}

@@ -1,7 +1,8 @@
 # ADR-0011: The world store and regions
 
 - Status: **Accepted**; the design of step C1 of milestone M3, phase C. Revised after an
-  independent review against the code (see the end). Not built yet.
+  independent review against the code (see "Review"). Built in the steps of section
+  9; what turned out otherwise is under "Found while building" at the end.
 - Date: 2026-10-08
 
 ## Context
@@ -1318,3 +1319,41 @@ what was decided. None of it changes what section 4.3 guarantees.
    `a_region_whose_owner_went_away_while_it_was_restored_is_opened_again_with_everything`
    say and expect `StoreHello::Region` now. What they assert is as it was. Section 9
    does not name them; section 5 implies them.
+
+### C1.7
+
+1. **Faults in a row found a defect in the chunk store that is older than this
+   record.** `FileChunks` writes the section files of a chunk, syncs their
+   directories, and removes what it wrote if that fails, so that a section file which
+   is there without being durable is not taken for a stored one by the next chunk that
+   has the section. With `Fault::Fails(n, 2)` the sync of the directory fails and then
+   the removal does: the file stayed, the next save of a chunk with that section named
+   it in its manifest without writing it, the manifest was made durable, and after a
+   crash the chunk could not be read. The store now remembers a section file it could
+   neither make durable nor remove, and writes it again when a chunk has it. The kill
+   tests of section 4.3 did not pass without this; a test of its own is beside them.
+2. **Section 4.3 does not say when the disk is looked at after a fault that ends.** At
+   the end of the scenario, as `kill.rs` does it, the segment a failed group was cut
+   off from has usually gone with a later table file, and with it what the truncation
+   was to keep from coming back. The tests look at the end with every survival, and
+   once more on the way: at the scenario's first step after the fault is over, with
+   nothing kept and with truncations lost. Without that second look, a store that did
+   not sync the truncated segment passed them.
+3. **"A second start … killed at every point of its own"** is done for every crash
+   that is looked at: the start of a store on what the crash left is stopped at each
+   of its changes and syncs, and a store on what each of those leaves, with every
+   survival, has to say the same of the world as one that started undisturbed. Most
+   such starts change nothing on the disk, and then there is no point to stop at; they
+   do when a split's region file is missing, files of an absorbed region are left, or
+   the table is new.
+4. **What "the same result" and "its region's `held`" are checked as**: two starts
+   agree if the list of regions and what each living region is restored with are
+   equal. A claim that was answered counts as kept if the chunk is granted to its
+   region, to the region that absorbed that one, or to the part of a split, unless the
+   region asked to give the chunk back and was not granted it again since.
+5. **The scenario of the kill tests has a step section 4.3 does not ask for**: the
+   region that claimed the returned chunk builds over what the first built and gives
+   it back, and the first claims it again with its own change still in its log. It is
+   what makes "no block that a later holder set is as an earlier holder left it" fail
+   when the tick of a grant is ignored at a replay, which the listed steps alone did
+   not.

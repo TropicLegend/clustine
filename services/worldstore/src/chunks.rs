@@ -65,6 +65,10 @@ pub(crate) struct FileChunks {
     root: PathBuf,
     /// Directories that a manifest has been put in since they were last synced.
     unsynced: BTreeSet<PathBuf>,
+    /// Section files that may be there without being durably so: their directory could
+    /// not be synced, and then they could not be removed either. They are written
+    /// again by the next chunk that has them, instead of being taken for stored.
+    unsure: BTreeSet<PathBuf>,
 }
 
 impl FileChunks {
@@ -73,6 +77,7 @@ impl FileChunks {
             disk,
             root: root.to_owned(),
             unsynced: BTreeSet::new(),
+            unsure: BTreeSet::new(),
         }
     }
 
@@ -89,13 +94,13 @@ impl FileChunks {
     }
 
     /// Writes the sections that are not stored yet, and makes them durable.
-    fn store_sections(&self, sections: Vec<(Hash, Vec<u8>)>) -> Result<(), StoreError> {
+    fn store_sections(&mut self, sections: Vec<(Hash, Vec<u8>)>) -> Result<(), StoreError> {
         let mut created = Vec::new();
         let stored = (|| -> Result<(), StoreError> {
             let mut directories = BTreeSet::new();
             for (hash, canonical) in sections {
                 let path = self.blob_path(&hash);
-                if self.disk.exists(&path)? {
+                if self.disk.exists(&path)? && !self.unsure.contains(&path) {
                     continue;
                 }
                 let directory = parent(&path).to_owned();
@@ -109,12 +114,22 @@ impl FileChunks {
             }
             Ok(())
         })();
-        if stored.is_err() {
+        match &stored {
+            Ok(()) => {
+                for path in &created {
+                    self.unsure.remove(path);
+                }
+            }
             // A section file that is there but perhaps not durably so would be taken
             // for a stored one by the next chunk that has it, whose manifest could then
-            // name a section that a crash takes away.
-            for path in created {
-                let _ = self.disk.remove(&path);
+            // name a section that a crash takes away. If it cannot be removed, it is
+            // remembered as that.
+            Err(_) => {
+                for path in created {
+                    if self.disk.remove(&path).is_err() {
+                        self.unsure.insert(path);
+                    }
+                }
             }
         }
         stored
