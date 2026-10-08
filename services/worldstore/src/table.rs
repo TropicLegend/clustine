@@ -447,6 +447,7 @@ impl Table {
                 })
                 .collect(),
             absorbed: self.absorbed.iter().copied().collect(),
+            next: RegionId(self.next_region),
         }
     }
 }

@@ -589,9 +589,20 @@ fn join(id: PlayerId) -> EdgeToWorker {
     })
 }
 
-fn input(id: PlayerId, number: u64, input: PlayerInput) -> EdgeToWorker {
+/// The entity of the `n`th player to enter the region of a [`World`], counted from 1,
+/// with everyone who entered it anew. The region is the only one its store has opened,
+/// so it gives out the first block of entity ids, in order. An edge names the entity
+/// in a player's inputs once it was told that the player spawned; a test that sends
+/// inputs behind a join without waiting for that knows the entity this way.
+fn nth_entity(n: i32) -> EntityId {
+    let ids = clustine_world::EntityIds::block(0).expect("the first block");
+    EntityId(ids.first.0 + n - 1)
+}
+
+fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> EdgeToWorker {
     EdgeToWorker::Input {
         player: id,
+        entity,
         number,
         input,
     }
@@ -1061,16 +1072,19 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
         3,
         "an edge shows everyone at home"
     );
+    // The entities the edges were told their players have, which their inputs name.
+    let (first, second) = (e.witness.own[&one], e.witness.own[&two]);
+    let third = f.witness.own[&three];
 
-    e.send(input(one, 1, move_to(12.5)));
-    f.send(input(three, 1, PlayerInput::SelectSlot { slot: 3 }));
+    e.send(input(one, first, 1, move_to(12.5)));
+    f.send(input(three, third, 1, PlayerInput::SelectSlot { slot: 3 }));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert_eq!(
         e.witness.entities[&e.witness.own[&one]].position.x, 12.5,
         "the move was shown"
     );
 
-    e.send(input(one, 2, dig(near, 1)));
+    e.send(input(one, first, 2, dig(near, 1)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert_eq!(e.witness.blocks.get(&near), Some(&blocks::AIR));
     assert_eq!(f.witness.blocks.get(&near), Some(&blocks::AIR));
@@ -1078,7 +1092,7 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
 
     // A block of the next region: an outbox entry that names that region, as the
     // region has asked whose the chunk is, and nothing acknowledged.
-    e.send(input(one, 3, dig(BEYOND, 2)));
+    e.send(input(one, first, 3, dig(BEYOND, 2)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert_eq!(e.witness.outbox.len(), 1);
     assert!(matches!(
@@ -1090,7 +1104,7 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
     ));
 
     // Out through the eastern end.
-    e.send(input(two, 1, move_to(16.5)));
+    e.send(input(two, second, 1, move_to(16.5)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert!(matches!(
         e.witness.outbox.get(&2),
@@ -1098,7 +1112,10 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
     ));
     assert_eq!(e.witness.own.len(), 1);
 
-    f.send(EdgeToWorker::PlayerLeave { player: three });
+    f.send(EdgeToWorker::PlayerLeave {
+        player: three,
+        entity: None,
+    });
     f.send(remote_break(player(9), 5, BlockPos::new(11, GROUND, 9)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert!(f.witness.own.is_empty());
@@ -1136,8 +1153,8 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
 
     // What the edge sends again of the player's inputs is applied from where the other
     // region got to.
-    e.send(input(two, 4, move_to(10.5)));
-    e.send(input(two, 5, move_to(14.5)));
+    e.send(input(two, second, 4, move_to(10.5)));
+    e.send(input(two, second, 5, move_to(14.5)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert_eq!(
         runner.region().player(two).map(|(_, pose)| pose.position.x),
@@ -1373,15 +1390,22 @@ fn busy_region(runner: &mut RegionRunner) -> (Link, Link, EntityId) {
     let entity = join_and_wait(runner, &mut e, 1, player(1));
     join_and_wait(runner, &mut e, 2, player(2));
     join_and_wait(runner, &mut f, 1, player(3));
-    e.numbered(3, input(player(1), 1, PlayerInput::SelectSlot { slot: 4 }));
-    e.numbered(4, input(player(1), 2, move_to(12.5)));
-    e.numbered(5, input(player(1), 3, dig(BlockPos::new(12, GROUND, 9), 1)));
-    e.numbered(6, input(player(1), 4, dig(BEYOND, 2)));
-    e.numbered(7, input(player(2), 1, move_to(16.5)));
+    e.numbered(
+        3,
+        input(player(1), entity, 1, PlayerInput::SelectSlot { slot: 4 }),
+    );
+    e.numbered(4, input(player(1), entity, 2, move_to(12.5)));
+    e.numbered(
+        5,
+        input(player(1), entity, 3, dig(BlockPos::new(12, GROUND, 9), 1)),
+    );
+    e.numbered(6, input(player(1), entity, 4, dig(BEYOND, 2)));
+    e.numbered(7, input(player(2), nth_entity(2), 1, move_to(16.5)));
     e.numbered(
         8,
         input(
             player(1),
+            entity,
             5,
             PlayerInput::SetHotbarSlot {
                 slot: 2,
@@ -1566,8 +1590,8 @@ fn nothing_of_a_tick_before_the_hellos_arrives_on_the_new_link_in(mut world: Wor
 
     // One tick takes these in: a change at home with its acknowledgement, and an outbox
     // entry. Whether the store has confirmed that tick when the hello comes is open.
-    old.numbered(2, input(player(1), 1, dig(near, 1)));
-    old.numbered(3, input(player(1), 2, dig(BEYOND, 2)));
+    old.numbered(2, input(player(1), nth_entity(1), 1, dig(near, 1)));
+    old.numbered(3, input(player(1), nth_entity(1), 2, dig(BEYOND, 2)));
     runner.step();
     let before = runner.region().tick_number();
 
@@ -1722,15 +1746,20 @@ fn after_a_restore_what_is_sent_again_is_not_applied_twice() {
 
     // Each of these would show if it were applied a second time: a leave removes the
     // player who came back, a join after it issues a new entity, a remote action makes
-    // another outbox entry, and a dig breaks what was placed since.
+    // another outbox entry, and a dig breaks what was placed since. The inputs are of
+    // the stay the second join begins, with the second entity the region gives out.
     let messages = [
         join(player(1)),
-        EdgeToWorker::PlayerLeave { player: player(1) },
+        EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: None,
+        },
         join(player(1)),
         remote_break(stranger, 4, far),
-        input(player(1), 1, dig(near, 1)),
+        input(player(1), nth_entity(2), 1, dig(near, 1)),
         input(
             player(1),
+            nth_entity(2),
             2,
             PlayerInput::UseItemOn {
                 position: near.offset(0, -1, 0),
@@ -1738,7 +1767,7 @@ fn after_a_restore_what_is_sent_again_is_not_applied_twice() {
                 sequence: 2,
             },
         ),
-        input(player(1), 3, dig(BEYOND, 3)),
+        input(player(1), nth_entity(2), 3, dig(BEYOND, 3)),
     ];
     for (index, message) in messages.iter().enumerate() {
         e.numbered(index as u64 + 1, message.clone());
@@ -1871,7 +1900,7 @@ fn a_resume_holds_what_follows_until_the_hellos_chunks_are_out_in(mut world: Wor
     // chunk that is not loaded it would change nothing.
     let mut e = Link::attach(&runner);
     e.hello(E, 5, 0, vec![player(1)], chunks.clone());
-    e.numbered(2, input(player(1), 1, dig(near, 1)));
+    e.numbered(2, input(player(1), nth_entity(1), 1, dig(near, 1)));
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     sync(&mut runner, &mut [&mut e], 0);
     let log = &e.log;
@@ -1917,7 +1946,7 @@ fn an_ordinary_subscription_holds_nothing() {
     // The chunk has to come from the store, which cannot have answered within the tick
     // that takes the move in.
     e.subscribe(vec![elsewhere]);
-    e.numbered(2, input(player(1), 1, move_to(12.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(12.5)));
     run_until(
         &mut runner,
         &mut [&mut e],
@@ -2010,6 +2039,7 @@ fn three_entries(runner: &mut RegionRunner) -> Link {
             2 + index,
             input(
                 player(1),
+                nth_entity(1),
                 1 + index,
                 dig(BEYOND.offset(0, 0, index as i32), 1 + index as i32),
             ),
@@ -2088,9 +2118,17 @@ fn progress_says_how_far_an_edges_messages_are_and_each_players_last_input() {
 
     e.numbered(1, join(player(1)));
     e.numbered(2, join(player(2)));
-    e.numbered(3, input(player(1), 1, move_to(12.5)));
-    e.numbered(4, input(player(1), 2, PlayerInput::SelectSlot { slot: 2 }));
-    e.numbered(5, input(player(2), 1, move_to(11.5)));
+    e.numbered(3, input(player(1), nth_entity(1), 1, move_to(12.5)));
+    e.numbered(
+        4,
+        input(
+            player(1),
+            nth_entity(1),
+            2,
+            PlayerInput::SelectSlot { slot: 2 },
+        ),
+    );
+    e.numbered(5, input(player(2), nth_entity(2), 1, move_to(11.5)));
     wait_applied(&mut runner, &mut [&mut e, &mut f], 0, 5);
     sync(&mut runner, &mut [&mut e, &mut f], 0);
 
@@ -2149,7 +2187,7 @@ fn a_progress_comes_with_the_tick_of_every_hello() {
     );
 
     join_and_wait(&mut runner, &mut first, 1, player(1));
-    first.numbered(2, input(player(1), 1, move_to(12.5)));
+    first.numbered(2, input(player(1), nth_entity(1), 1, move_to(12.5)));
     wait_applied(&mut runner, &mut [&mut first], 0, 2);
 
     let second = resumed(&mut runner, E, 5, 0, vec![player(1)]);
@@ -2191,17 +2229,17 @@ fn what_a_tick_produced_arrives_in_the_agreed_order() {
 fn what_a_tick_produced_arrives_in_the_agreed_order_in(mut world: World) {
     let mut runner = world.open();
     let mut e = established(&mut runner, E, 5);
-    join_and_wait(&mut runner, &mut e, 1, player(1));
-    join_and_wait(&mut runner, &mut e, 2, player(3));
+    let one = join_and_wait(&mut runner, &mut e, 1, player(1));
+    let three = join_and_wait(&mut runner, &mut e, 2, player(3));
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     let start = e.log.len();
     let near = BlockPos::new(12, GROUND, 9);
 
     // All of these are there when the runner next looks, so one tick takes them in.
     e.numbered(3, join(player(2)));
-    e.numbered(4, input(player(1), 1, dig(near, 1)));
-    e.numbered(5, input(player(1), 2, dig(BEYOND, 2)));
-    e.numbered(6, input(player(3), 1, move_to(16.5)));
+    e.numbered(4, input(player(1), one, 1, dig(near, 1)));
+    e.numbered(5, input(player(1), one, 2, dig(BEYOND, 2)));
+    e.numbered(6, input(player(3), three, 1, move_to(16.5)));
     wait_applied(&mut runner, &mut [&mut e], 0, 6);
     sync(&mut runner, &mut [&mut e], 0);
     let log = &e.log[start..];
@@ -2448,7 +2486,7 @@ fn a_runner_that_lost_its_store_stops_and_shows_nothing_more() {
     let e_seen = e.log.len();
     let watcher_seen = watcher.log.len();
     e.numbered(2, join(player(2)));
-    e.numbered(3, input(player(1), 1, move_to(12.5)));
+    e.numbered(3, input(player(1), nth_entity(1), 1, move_to(12.5)));
     run_until(
         &mut runner,
         &mut [&mut e, &mut watcher],
@@ -2506,7 +2544,12 @@ fn a_runner_does_not_run_far_ahead_of_a_store_that_no_longer_answers() {
         // The link may be closed by now, which is the runner noticing.
         let _ = e.end.try_send(EdgeMessage {
             number: Some(2 + index),
-            body: input(player(1), 1 + index, move_to(12.5 - index as f64 * 0.01)),
+            body: input(
+                player(1),
+                nth_entity(1),
+                1 + index,
+                move_to(12.5 - index as f64 * 0.01),
+            ),
         });
         runner.step();
         e.drain();
@@ -2611,7 +2654,7 @@ fn a_stopped_worker_has_stored_everything_and_closed_its_links() {
     wait_for(&mut e, "the player entering the world", |link| {
         spawned(&link.log, player(1)).is_some()
     });
-    e.numbered(2, input(player(1), 1, dig(near, 1)));
+    e.numbered(2, input(player(1), nth_entity(1), 1, dig(near, 1)));
     wait_for(&mut e, "the dig being acknowledged", |link| {
         acknowledged(&link.log, player(1), 1).is_some()
     });
@@ -2704,7 +2747,7 @@ fn a_link_that_ends_does_not_make_its_players_leave() {
         presence(&back.log, player(1)),
         Some((_, Presence::Present { entity: present, .. })) if *present == entity
     ));
-    back.numbered(2, input(player(1), 1, move_to(12.5)));
+    back.numbered(2, input(player(1), entity, 1, move_to(12.5)));
     run_until(
         &mut runner,
         &mut [&mut watcher, &mut back],
@@ -2764,7 +2807,7 @@ fn with_an_unconfirmed_departure(runner: &mut RegionRunner) -> (Link, Link, Enti
     let mut watcher = established(runner, F, 5);
     let stays = join_and_wait(runner, &mut e, 1, player(1));
     let leaves = join_and_wait(runner, &mut e, 2, player(2));
-    e.numbered(3, input(player(2), 1, move_to(16.5)));
+    e.numbered(3, input(player(2), nth_entity(2), 1, move_to(16.5)));
     wait_applied(runner, &mut [&mut e, &mut watcher], 0, 3);
     // Nobody had asked about the chunk the player stepped into: they are let go when
     // the store has said whose it is.
@@ -2903,7 +2946,13 @@ fn what_a_new_link_sends_again_is_dropped_and_the_link_stays() {
     let mut e = established(&mut runner, E, 5);
     let mut watcher = established(&mut runner, F, 5);
     let one = join_and_wait(&mut runner, &mut e, 1, player(1));
-    e.numbered(2, EdgeToWorker::PlayerLeave { player: player(1) });
+    e.numbered(
+        2,
+        EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: None,
+        },
+    );
     wait_applied(&mut runner, &mut [&mut e, &mut watcher], 0, 2);
     e.numbered(3, join(player(1)));
     wait_applied(&mut runner, &mut [&mut e, &mut watcher], 0, 3);
@@ -2919,7 +2968,13 @@ fn what_a_new_link_sends_again_is_dropped_and_the_link_stays() {
     let mut back = resumed(&mut runner, E, 5, 0, vec![player(1)]);
     assert_eq!(applied(&back.log), Some(3));
     back.numbered(1, join(player(1)));
-    back.numbered(2, EdgeToWorker::PlayerLeave { player: player(1) });
+    back.numbered(
+        2,
+        EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: None,
+        },
+    );
     back.numbered(3, join(player(1)));
     back.numbered(4, join(player(2)));
     wait_applied(&mut runner, &mut [&mut back, &mut watcher], 0, 4);
@@ -3015,7 +3070,7 @@ fn what_the_old_link_sent_as_the_new_one_said_hello_is_answered_on_the_new_link_
     // it in, its link is gone by the time that tick is published. What the region has
     // to tell the edge goes to the new link.
     old.numbered(2, join(player(2)));
-    old.numbered(3, input(player(1), 1, dig(BEYOND, 1)));
+    old.numbered(3, input(player(1), nth_entity(1), 1, dig(BEYOND, 1)));
     let mut new = Link::attach(&runner);
     new.hello(E, 5, 0, vec![player(1), player(2)], vec![HOME]);
     run_until(
@@ -3104,10 +3159,13 @@ fn a_snapshot_is_of_its_tick_whatever_happened_before_it_could_be_published() {
     // tick after it changes the chunk and moves the player.
     let mut f = Link::attach(&runner);
     f.hello(F, 1, 0, Vec::new(), vec![HOME]);
-    e.numbered(2, input(player(1), 1, PlayerInput::SelectSlot { slot: 1 }));
+    e.numbered(
+        2,
+        input(player(1), entity, 1, PlayerInput::SelectSlot { slot: 1 }),
+    );
     runner.step();
-    e.numbered(3, input(player(1), 2, dig(near, 1)));
-    e.numbered(4, input(player(1), 3, move_to(12.5)));
+    e.numbered(3, input(player(1), entity, 2, dig(near, 1)));
+    e.numbered(4, input(player(1), entity, 3, move_to(12.5)));
     runner.step();
     wait_applied(&mut runner, &mut [&mut e, &mut f], 0, 4);
     sync(&mut runner, &mut [&mut f, &mut e], 0);
@@ -3149,8 +3207,11 @@ fn a_higher_start_is_told_nothing_of_what_the_old_start_was_owed_in(mut world: W
 
     // A tick of the old start with an outbox entry, an acknowledgement and progress,
     // which may still be held when the new start says hello.
-    old.numbered(2, input(player(1), 1, dig(BlockPos::new(12, GROUND, 9), 1)));
-    old.numbered(3, input(player(1), 2, dig(BEYOND, 2)));
+    old.numbered(
+        2,
+        input(player(1), entity, 1, dig(BlockPos::new(12, GROUND, 9), 1)),
+    );
+    old.numbered(3, input(player(1), entity, 2, dig(BEYOND, 2)));
     runner.step();
 
     let mut new = Link::attach(&runner);
@@ -3215,7 +3276,7 @@ fn a_tick_with_nothing_to_commit_does_not_overtake_the_tick_before_it() {
 
     // A tick with a block change, and then one in which nothing changes but which has a
     // snapshot to publish.
-    e.numbered(2, input(player(1), 1, dig(near, 1)));
+    e.numbered(2, input(player(1), nth_entity(1), 1, dig(near, 1)));
     runner.step();
     e.subscribe(vec![other]);
     runner.step();
@@ -3358,21 +3419,24 @@ fn a_released_region_is_restored_from_its_state_alone_with_all_its_edges_were_to
     settle(&mut runner, &mut [&mut e, &mut f]);
     assert_eq!(runner.ended(), None);
     assert_eq!(status.ended(), None);
+    // The entities the edges were told their players have, which their inputs name.
+    let (first, second) = (e.witness.own[&one], e.witness.own[&two]);
+    let third = f.witness.own[&three];
 
     // A block here, a block of the next region, a step out of the region and a step
     // within it are on their way when the release begins, and more comes while it is
     // under way. How much of it the region still takes is up to the store's pace.
     let (mut kept_e, mut kept_f) = (Vec::new(), Vec::new());
-    send_and_keep(&mut e, &mut kept_e, input(one, 1, dig(near, 1)));
-    send_and_keep(&mut e, &mut kept_e, input(one, 2, dig(BEYOND, 2)));
-    send_and_keep(&mut e, &mut kept_e, input(two, 1, move_to(16.5)));
-    send_and_keep(&mut f, &mut kept_f, input(three, 1, move_to(12.5)));
+    send_and_keep(&mut e, &mut kept_e, input(one, first, 1, dig(near, 1)));
+    send_and_keep(&mut e, &mut kept_e, input(one, first, 2, dig(BEYOND, 2)));
+    send_and_keep(&mut e, &mut kept_e, input(two, second, 1, move_to(16.5)));
+    send_and_keep(&mut f, &mut kept_f, input(three, third, 1, move_to(12.5)));
     runner.begin_release();
-    send_and_keep(&mut e, &mut kept_e, input(one, 3, move_to(11.5)));
+    send_and_keep(&mut e, &mut kept_e, input(one, first, 3, move_to(11.5)));
     send_and_keep(
         &mut f,
         &mut kept_f,
-        input(three, 2, PlayerInput::SelectSlot { slot: 3 }),
+        input(three, third, 2, PlayerInput::SelectSlot { slot: 3 }),
     );
     let ended = run_to_the_end(&mut runner, &mut [&mut e.link, &mut f.link]);
     assert_eq!(ended, Ended::Released);
@@ -3444,7 +3508,7 @@ fn a_release_of_a_region_that_another_owner_has_taken_ends_as_lost_and_shows_not
     let e_seen = e.log.len();
     let watcher_seen = watcher.log.len();
     e.numbered(2, join(player(2)));
-    e.numbered(3, input(player(1), 1, move_to(12.5)));
+    e.numbered(3, input(player(1), nth_entity(1), 1, move_to(12.5)));
     runner.begin_release();
     let ended = run_to_the_end(&mut runner, &mut [&mut e, &mut watcher]);
     assert_eq!(ended, Ended::StoreLost);
@@ -3482,7 +3546,7 @@ fn a_runner_that_has_released_its_region_ticks_no_more_and_closes_a_link_that_co
 
     let mut late = Link::attach(&runner);
     late.hello(E, 5, 0, vec![player(1)], vec![HOME]);
-    late.numbered(2, input(player(1), 1, move_to(12.5)));
+    late.numbered(2, input(player(1), nth_entity(1), 1, move_to(12.5)));
     run_until(
         &mut runner,
         &mut [&mut late],
@@ -3531,7 +3595,7 @@ fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links(
     wait_for(&mut e, "the player entering the world", |link| {
         spawned(&link.log, player(1)).is_some()
     });
-    e.numbered(2, input(player(1), 1, dig(near, 1)));
+    e.numbered(2, input(player(1), nth_entity(1), 1, dig(near, 1)));
     wait_for(&mut e, "the dig being acknowledged", |link| {
         acknowledged(&link.log, player(1), 1).is_some()
     });
@@ -3649,7 +3713,9 @@ fn welcomed(log: &[WorkerToEdge]) -> Welcome {
 /// and has nothing in its outbox for it.
 fn unknown_since(log: &[WorkerToEdge]) -> u64 {
     match welcomed(log) {
-        Welcome::Unknown { since, entries: 0 } => since,
+        Welcome::Unknown {
+            since, entries: 0, ..
+        } => since,
         other => panic!(
             "welcomed {other:?}, not as unknown without entries: {}",
             brief(log)
@@ -3659,14 +3725,27 @@ fn unknown_since(log: &[WorkerToEdge]) -> u64 {
 
 /// Holds the beginning of a link's log to the order of section 5.2: the welcome, then
 /// exactly as many outbox entries as it announced, in ascending order of their numbers,
-/// then one presence answer for each player of the hello, and none after those. Returns
-/// the welcome and the numbers of its entries.
+/// then one presence answer for each player of the hello, which is how many the
+/// welcome announced, and none after those. Returns the welcome and the numbers of its
+/// entries.
 fn resume_of(log: &[WorkerToEdge], named: &[PlayerId]) -> (Welcome, Vec<u64>) {
     let welcome = welcomed(log);
-    let entries = match welcome {
-        Welcome::Resumed { entries } | Welcome::Unknown { entries, .. } => entries as usize,
+    let (entries, presences) = match welcome {
+        Welcome::Resumed {
+            entries, presences, ..
+        }
+        | Welcome::Unknown {
+            entries, presences, ..
+        } => (entries as usize, presences as usize),
         Welcome::Superseded => panic!("superseded: {}", brief(log)),
     };
+    assert_eq!(
+        presences,
+        named.len(),
+        "{welcome:?} for a hello that named {} players: {}",
+        named.len(),
+        brief(log)
+    );
     assert!(
         log.len() > entries + named.len(),
         "{welcome:?} for {} players, and the link has less than that: {}",
@@ -3787,7 +3866,12 @@ fn a_first_hello_is_welcomed_unknown_with_the_since_of_its_tick_and_that_since_i
     let (welcome, _) = resume_of(&first.log, &[player(1)]);
     assert_eq!(
         welcome,
-        Welcome::Unknown { since, entries: 0 },
+        Welcome::Unknown {
+            since,
+            entries: 0,
+            presences: 1,
+            applied: 0
+        },
         "{}",
         brief(&first.log)
     );
@@ -3798,7 +3882,11 @@ fn a_first_hello_is_welcomed_unknown_with_the_since_of_its_tick_and_that_since_i
     let second = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&second.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 0
+        },
         "{}",
         brief(&second.log)
     );
@@ -3834,7 +3922,12 @@ fn a_hello_with_another_since_or_none_before_the_edge_sent_anything_is_told_the_
         let link = greeted(&mut runner, E, 5, said, 3, vec![player(1)]);
         assert_eq!(
             resume_of(&link.log, &[player(1)]).0,
-            Welcome::Unknown { since, entries: 0 },
+            Welcome::Unknown {
+                since,
+                entries: 0,
+                presences: 1,
+                applied: 0
+            },
             "said {said}: {}",
             brief(&link.log)
         );
@@ -3871,7 +3964,11 @@ fn a_hello_with_another_since_or_none_before_the_edge_sent_anything_is_told_the_
     let back = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&back.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&back.log)
     );
@@ -3910,7 +4007,10 @@ fn a_hello_with_another_since_after_a_join_was_applied_resets_the_edge_in(mut wo
             },
         );
         let (welcome, _) = resume_of(&new.log, &[player(1)]);
-        let Welcome::Unknown { since, entries: 0 } = welcome else {
+        let Welcome::Unknown {
+            since, entries: 0, ..
+        } = welcome
+        else {
             panic!("said {said}, welcomed {welcome:?}: {}", brief(&new.log));
         };
         assert!(
@@ -3955,7 +4055,11 @@ fn a_hello_with_another_since_after_a_join_was_applied_resets_the_edge_in(mut wo
     let back = greeted(&mut runner, E, 5, known, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&back.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&back.log)
     );
@@ -3971,7 +4075,11 @@ fn a_hello_with_another_since_after_a_join_was_applied_resets_the_edge_in(mut wo
     let back = greeted(&mut next, E, 5, known, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&back.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&back.log)
     );
@@ -4021,7 +4129,9 @@ fn a_hello_without_a_since_while_the_first_links_join_is_held_is_told_the_same_s
         resume_of(&second.log, &[player(1)]).0,
         Welcome::Unknown {
             since: made,
-            entries: 0
+            entries: 0,
+            presences: 1,
+            applied: 0,
         },
         "{}",
         brief(&second.log)
@@ -4081,7 +4191,10 @@ fn what_an_edge_that_lost_its_since_had_held_behind_its_resume_is_dropped_in(mut
     sync(&mut runner, &mut [&mut new, &mut old], 0);
 
     let (welcome, _) = resume_of(&new.log, &[player(1)]);
-    let Welcome::Unknown { since, entries: 0 } = welcome else {
+    let Welcome::Unknown {
+        since, entries: 0, ..
+    } = welcome
+    else {
         panic!("welcomed {welcome:?}: {}", brief(&new.log));
     };
     assert!(since > first, "{since} after {first}");
@@ -4183,7 +4296,7 @@ fn a_message_numbered_1_right_behind_the_hello_of_an_edge_that_lost_its_since_is
     let mut watcher = established(&mut runner, F, 1);
     let first = told(E);
     let entity = join_and_wait(&mut runner, &mut old, 1, player(1));
-    old.numbered(2, input(player(1), 1, move_to(12.5)));
+    old.numbered(2, input(player(1), entity, 1, move_to(12.5)));
     wait_applied(&mut runner, &mut [&mut old, &mut watcher], 0, 2);
 
     // The region has received two messages. It counts from nothing received from the
@@ -4205,7 +4318,10 @@ fn a_message_numbered_1_right_behind_the_hello_of_an_edge_that_lost_its_since_is
     sync(&mut runner, &mut [&mut new, &mut watcher], 0);
 
     let (welcome, _) = resume_of(&new.log, &[player(1)]);
-    let Welcome::Unknown { since, entries: 0 } = welcome else {
+    let Welcome::Unknown {
+        since, entries: 0, ..
+    } = welcome
+    else {
         panic!("welcomed {welcome:?}: {}", brief(&new.log));
     };
     assert!(since > first, "{since} after {first}");
@@ -4261,7 +4377,9 @@ fn of_two_hellos_at_once_of_an_edge_that_lost_its_since_the_link_that_stays_is_t
         welcomed(&other.log),
         Welcome::Unknown {
             since: made,
-            entries: 0
+            entries: 0,
+            presences: 0,
+            applied: 0,
         },
         "{}",
         brief(&other.log)
@@ -4275,7 +4393,11 @@ fn of_two_hellos_at_once_of_an_edge_that_lost_its_since_the_link_that_stays_is_t
     let back = greeted(&mut runner, E, 5, made, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&back.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&back.log)
     );
@@ -4312,7 +4434,10 @@ fn an_edge_that_lost_its_since_is_reset_before_its_join_is_published_in(mut worl
     sync(&mut runner, &mut [&mut new, &mut watcher, &mut old], 0);
 
     let (welcome, _) = resume_of(&new.log, &[player(1)]);
-    let Welcome::Unknown { since, entries: 0 } = welcome else {
+    let Welcome::Unknown {
+        since, entries: 0, ..
+    } = welcome
+    else {
         panic!("welcomed {welcome:?}: {}", brief(&new.log));
     };
     assert!(since > first, "{since} after {first}");
@@ -4379,7 +4504,10 @@ fn an_edge_that_lost_its_since_is_reset_with_its_outbox_and_its_departures_in(mu
     sync(&mut runner, &mut [&mut new, &mut watcher, &mut old], 0);
 
     let (welcome, _) = resume_of(&new.log, &named);
-    let Welcome::Unknown { since, entries: 0 } = welcome else {
+    let Welcome::Unknown {
+        since, entries: 0, ..
+    } = welcome
+    else {
         panic!("welcomed {welcome:?}: {}", brief(&new.log));
     };
     assert!(since > first, "{since} after {first}");
@@ -4431,7 +4559,10 @@ fn a_higher_start_is_unknown_whatever_since_it_says_and_the_old_start_is_superse
         |_, links| answered(links, 0) && removal(&links[2].log, entity).is_some(),
     );
     let (welcome, _) = resume_of(&new.log, &[player(1)]);
-    let Welcome::Unknown { since, entries: 0 } = welcome else {
+    let Welcome::Unknown {
+        since, entries: 0, ..
+    } = welcome
+    else {
         panic!("welcomed {welcome:?}: {}", brief(&new.log));
     };
     assert!(since > first, "{since} after {first}");
@@ -4489,7 +4620,10 @@ fn an_edge_that_was_forgotten_and_says_the_since_it_had_is_unknown_with_a_new_on
     // region has a state for it again, and it is another.
     let mut back = greeted(&mut runner, E, 5, first, 0, vec![player(1)]);
     let (welcome, _) = resume_of(&back.log, &[player(1)]);
-    let Welcome::Unknown { since, entries: 0 } = welcome else {
+    let Welcome::Unknown {
+        since, entries: 0, ..
+    } = welcome
+    else {
         panic!("welcomed {welcome:?}: {}", brief(&back.log));
     };
     assert!(since > first, "{since} after {first}");
@@ -4502,7 +4636,11 @@ fn an_edge_that_was_forgotten_and_says_the_since_it_had_is_unknown_with_a_new_on
     let resumed = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&resumed.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&resumed.log)
     );
@@ -4534,7 +4672,11 @@ fn after_a_restore_a_hello_is_held_to_the_since_the_store_gave_back_in(mut world
     let back = greeted(&mut next, E, 5, first, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&back.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&back.log)
     );
@@ -4553,7 +4695,10 @@ fn after_a_restore_a_hello_is_held_to_the_since_the_store_gave_back_in(mut world
         |_, links| answered(links, 0) && removal(&links[1].log, entity).is_some(),
     );
     let (welcome, _) = resume_of(&lost.log, &[player(1)]);
-    let Welcome::Unknown { since, entries: 0 } = welcome else {
+    let Welcome::Unknown {
+        since, entries: 0, ..
+    } = welcome
+    else {
         panic!("welcomed {welcome:?}: {}", brief(&lost.log));
     };
     assert!(since > first, "{since} after {first}");
@@ -4600,7 +4745,9 @@ fn after_a_restore_an_edge_the_region_took_nothing_from_is_told_the_same_since_a
         resume_of(&unread.log, &[player(1)]).0,
         Welcome::Unknown {
             since: first,
-            entries: 0
+            entries: 0,
+            presences: 1,
+            applied: 0,
         },
         "{}",
         brief(&unread.log)
@@ -4609,7 +4756,11 @@ fn after_a_restore_an_edge_the_region_took_nothing_from_is_told_the_same_since_a
     let mut back = greeted(&mut next, E, 5, first, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&back.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 0
+        },
         "{}",
         brief(&back.log)
     );
@@ -4659,7 +4810,11 @@ fn of_two_hellos_of_an_edge_at_once_the_link_that_stays_is_told_the_since_the_re
     let third = greeted(&mut runner, E, 5, since, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&third.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&third.log)
     );
@@ -4688,7 +4843,9 @@ fn the_entries_of_a_resumed_welcome_are_the_outbox_above(mut world: World, seen:
     assert_eq!(
         welcome,
         Welcome::Resumed {
-            entries: above.len() as u32
+            entries: above.len() as u32,
+            presences: named.len() as u32,
+            applied: 4,
         },
         "with {seen} seen: {}",
         brief(&link.log)
@@ -4709,7 +4866,9 @@ fn the_entries_of_a_resumed_welcome_are_the_outbox_above(mut world: World, seen:
     assert_eq!(
         welcome,
         Welcome::Resumed {
-            entries: above.len() as u32
+            entries: above.len() as u32,
+            presences: named.len() as u32,
+            applied: 4,
         },
         "with {seen} seen, by the next owner: {}",
         brief(&again.log)
@@ -4734,7 +4893,7 @@ fn an_entry_of_a_tick_before_the_hellos_is_among_the_welcomes_entries_and_comes_
 
     // A tick makes the entry; whether the store has confirmed that tick when the hello
     // comes is open.
-    old.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    old.numbered(2, input(player(1), nth_entity(1), 1, dig(BEYOND, 1)));
     runner.step();
     let mut new = Link::attach(&runner);
     new.hello(E, 5, 0, vec![player(1)], vec![HOME]);
@@ -4749,7 +4908,11 @@ fn an_entry_of_a_tick_before_the_hellos_is_among_the_welcomes_entries_and_comes_
     let (welcome, numbers) = resume_of(&new.log, &[player(1)]);
     assert_eq!(
         welcome,
-        Welcome::Resumed { entries: 1 },
+        Welcome::Resumed {
+            entries: 1,
+            presences: 1,
+            applied: 2
+        },
         "{}",
         brief(&new.log)
     );
@@ -4772,7 +4935,7 @@ fn an_entry_made_in_the_tick_of_the_hello_is_not_among_the_welcomes_entries_in(m
 
     // The dig is received on the old link as the new one says hello, so its entry is
     // made by the tick of the hello or a later one: the state before has none.
-    old.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    old.numbered(2, input(player(1), nth_entity(1), 1, dig(BEYOND, 1)));
     let mut new = Link::attach(&runner);
     new.hello(E, 5, 0, vec![player(1)], vec![HOME]);
     run_until(
@@ -4786,7 +4949,11 @@ fn an_entry_made_in_the_tick_of_the_hello_is_not_among_the_welcomes_entries_in(m
     let (welcome, numbers) = resume_of(&new.log, &[player(1)]);
     assert_eq!(
         welcome,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&new.log)
     );
@@ -5025,7 +5192,9 @@ fn after_unknown_every_entry_follows_and_the_hellos_seen_drops_none_in(mut world
             welcome,
             Welcome::Unknown {
                 since: 9,
-                entries: 3
+                entries: 3,
+                presences: named.len() as u32,
+                applied: 0,
             },
             "said {said}: {}",
             brief(&link.log)
@@ -5056,7 +5225,11 @@ fn after_unknown_every_entry_follows_and_the_hellos_seen_drops_none_in(mut world
     let (welcome, numbers) = resume_of(&link.log, &named);
     assert_eq!(
         welcome,
-        Welcome::Resumed { entries: 1 },
+        Welcome::Resumed {
+            entries: 1,
+            presences: named.len() as u32,
+            applied: 0
+        },
         "{}",
         brief(&link.log)
     );
@@ -5182,7 +5355,11 @@ fn a_region_stored_before_there_was_a_format_is_restored_empty_at_its_last_tick_
     let back = resumed(&mut next, E, 5, 0, vec![player(1)]);
     assert_eq!(
         resume_of(&back.log, &[player(1)]).0,
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1
+        },
         "{}",
         brief(&back.log)
     );
@@ -5236,7 +5413,11 @@ fn deltas_of_this_build_behind_what_is_from_before_are_applied_in(mut world: Wor
     let (welcome, numbers) = resume_of(&link.log, &[player(1)]);
     assert_eq!(
         welcome,
-        Welcome::Resumed { entries: 1 },
+        Welcome::Resumed {
+            entries: 1,
+            presences: 1,
+            applied: 2
+        },
         "{}",
         brief(&link.log)
     );

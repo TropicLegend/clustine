@@ -111,7 +111,7 @@ impl Incoming {
 #[cfg(test)]
 mod tests {
     use clustine_region::RegionId;
-    use clustine_world::{ChunkPos, PlayerId};
+    use clustine_world::{ChunkPos, EntityId, PlayerId};
     use tokio::net::TcpListener;
     use uuid::Uuid;
 
@@ -152,7 +152,10 @@ mod tests {
             let player = PlayerId(Uuid::from_u128(round));
             let leave = EdgeMessage {
                 number: Some(round as u64 + 1),
-                body: EdgeToWorker::PlayerLeave { player },
+                body: EdgeToWorker::PlayerLeave {
+                    player,
+                    entity: Some(EntityId(round as i32 + 1)),
+                },
             };
             edge.send(leave).await.unwrap();
         }
@@ -165,7 +168,10 @@ mod tests {
             let player = PlayerId(Uuid::from_u128(round));
             let leave = EdgeMessage {
                 number: Some(round as u64 + 1),
-                body: EdgeToWorker::PlayerLeave { player },
+                body: EdgeToWorker::PlayerLeave {
+                    player,
+                    entity: Some(EntityId(round as i32 + 1)),
+                },
             };
             assert_eq!(worker.recv().await, Some(leave));
         }

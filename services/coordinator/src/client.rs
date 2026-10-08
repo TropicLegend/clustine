@@ -364,6 +364,7 @@ impl RoutingWatch {
             Some(
                 FromCoordinator::Absorb { .. }
                 | FromCoordinator::SplitOff { .. }
+                | FromCoordinator::Prepare { .. }
                 | FromCoordinator::Asked(_),
             ) => Err(unexpected("word of a merge or a split")),
             None => Err(ClientError::Lost),
@@ -444,6 +445,7 @@ impl Mover {
             Some(
                 FromCoordinator::Absorb { .. }
                 | FromCoordinator::SplitOff { .. }
+                | FromCoordinator::Prepare { .. }
                 | FromCoordinator::Asked(_),
             ) => Err(unexpected("word of a merge or a split")),
             None => Err(ClientError::Lost),
@@ -493,6 +495,7 @@ fn event_from(message: Option<FromCoordinator>) -> Result<WorkerEvent, ClientErr
         Some(
             FromCoordinator::Absorb { .. }
             | FromCoordinator::SplitOff { .. }
+            | FromCoordinator::Prepare { .. }
             | FromCoordinator::Asked(_),
         ) => Err(unexpected("word of a merge or a split")),
         None => Err(ClientError::Lost),

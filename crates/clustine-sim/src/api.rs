@@ -7,7 +7,7 @@ use clustine_data::BlockState;
 use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::state::{PlayerState, StateDelta};
+use crate::state::StateDelta;
 
 /// Where an entity is and how it is oriented.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -107,9 +107,15 @@ pub enum PlayerChange {
     /// region does not know is ignored.
     Join(EdgeId, PlayerJoin),
     /// A player's connection through the edge has ended. It removes the player only if
-    /// they are that edge's, whatever their entity: what another edge says is about an
-    /// earlier connection, which must not end the current one.
-    Leave(EdgeId, PlayerId),
+    /// they are that edge's: what another edge says is about an earlier connection,
+    /// which must not end the current one.
+    ///
+    /// The entity names the stay that has ended, a stay being a player's time in the
+    /// world from one join to the leave that ends it; with none, the leave is for the
+    /// player whatever their entity. The region does not look at it yet, and removes
+    /// the player either way. See `docs/adr/0014-merging-and-splitting.md`, section
+    /// 2.1.
+    Leave(EdgeId, PlayerId, Option<EntityId>),
     /// A player comes in from another region, as that region let them go with
     /// [`Durable::Departed`], and is the edge's from then on. A player the region has
     /// already stays as they are, and the entity that was on its way is reported removed
@@ -273,31 +279,32 @@ pub enum Durable {
     NotMine { what: Misdirected, holder: RegionId },
     /// This region has absorbed `region`, and what follows in the outbox, as far as
     /// `numbers` reaches, is what that region had in its outbox for the edge, under
-    /// new numbers. See ADR-0010, section 4. No region makes this yet.
+    /// new numbers. It names no players: the presence answers that follow every
+    /// welcome say whom the region has. See
+    /// `docs/adr/0014-merging-and-splitting.md`, section 2.3. No region makes this yet.
     Absorbed {
         region: RegionId,
-        /// Whether the absorbed region knew the edge. If not, it has forgotten whatever
-        /// the edge kept for it.
-        knew: bool,
-        /// The number of the last message of the edge that the absorbed region applied.
+        /// The `since` a welcome of the absorbed region would have said to the edge:
+        /// its word for the numbering the two shared. 0 if the absorbed region did not
+        /// know the edge, or knew it with a lower start than this region does: it has
+        /// then forgotten whatever the edge kept for it.
+        since: u64,
+        /// The number of the last message of the edge that the absorbed region
+        /// applied; 0 likewise.
         applied: u64,
         /// The numbers that the entries behind this one had in the absorbed region's
-        /// outbox, in order. The edge passes over those it had seen there already.
+        /// outbox, in ascending order; none likewise. The edge passes over those it
+        /// had seen there already.
         numbers: Vec<u64>,
-        /// The edge's players that came from the absorbed region, as they are.
-        players: Vec<(PlayerId, PlayerState)>,
     },
-    /// A part of this region has become the region `region`. The players named are in
-    /// it from now on, and so are the chunks. See ADR-0010, section 5. No region makes
-    /// this yet.
+    /// A part of this region has become the region `region`, and the stays named are
+    /// in it from now on: those of the edge's players who went, each with their
+    /// entity, in ascending order. Which chunks went is said on the link, anew on
+    /// every link. See `docs/adr/0014-merging-and-splitting.md`, section 2.4. No region
+    /// makes this yet.
     SplitOff {
         region: RegionId,
-        /// The number of the last message of the edge that this region applied before
-        /// the split: what the edge sent after it and concerns the part goes to the
-        /// new region.
-        applied: u64,
-        players: Vec<PlayerId>,
-        chunks: Vec<ChunkPos>,
+        players: Vec<(PlayerId, EntityId)>,
     },
 }
 
@@ -361,9 +368,15 @@ pub struct TickInputs {
     /// Each names the edge it came through. Only the edge a player belongs to acts for
     /// them: an input through another edge is ignored.
     ///
+    /// Each names, between the player and the number, the entity of the stay it is of:
+    /// an edge numbers a player's inputs from 1 with every connection, so the number
+    /// alone does not say which of two stays an input belongs to. The region does not
+    /// look at the entity yet. See `docs/adr/0014-merging-and-splitting.md`, section
+    /// 2.1.
+    ///
     /// Only what a player did after the last of their changes in `player_changes`
     /// belongs here; see [`TickInputs::change`].
-    pub inputs: Vec<(EdgeId, PlayerId, u64, PlayerInput)>,
+    pub inputs: Vec<(EdgeId, PlayerId, EntityId, u64, PlayerInput)>,
     /// What players of other regions did to blocks of this one, in the order it arrived,
     /// each with the edge that passed it on. It is applied after `player_changes` and
     /// before `inputs`, and answered one for one with a [`Durable::RemoteDone`], a
@@ -433,7 +446,7 @@ impl TickInputs {
             | PlayerChange::Arrive(_, player, _) => {
                 self.inputs.retain(|(_, actor, ..)| actor != player);
             }
-            PlayerChange::Leave(edge, player) => {
+            PlayerChange::Leave(edge, player, _) => {
                 self.inputs
                     .retain(|(from, actor, ..)| !(actor == player && from == edge));
             }
@@ -442,10 +455,17 @@ impl TickInputs {
         self.player_changes.push(change);
     }
 
-    /// Adds something a player did, as passed on by `edge`, which came after everything
-    /// added so far.
-    pub fn input(&mut self, edge: EdgeId, player: PlayerId, number: u64, input: PlayerInput) {
-        self.inputs.push((edge, player, number, input));
+    /// Adds something a player did while they had `entity`, as passed on by `edge`,
+    /// which came after everything added so far.
+    pub fn input(
+        &mut self,
+        edge: EdgeId,
+        player: PlayerId,
+        entity: EntityId,
+        number: u64,
+        input: PlayerInput,
+    ) {
+        self.inputs.push((edge, player, entity, number, input));
     }
 }
 

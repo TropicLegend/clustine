@@ -734,11 +734,21 @@ fn check(log: &[WorkerToEdge], book: &mut Book) {
                 context()
             );
             let (entries, answers) = match welcome {
-                Welcome::Resumed { entries } | Welcome::Unknown { entries, .. } => {
-                    (*entries as usize, book.named)
+                Welcome::Resumed {
+                    entries, presences, ..
                 }
+                | Welcome::Unknown {
+                    entries, presences, ..
+                } => (*entries as usize, *presences as usize),
                 Welcome::Superseded => (0, 0),
             };
+            // One for each player the hello named, and for nobody else yet.
+            assert!(
+                matches!(welcome, Welcome::Superseded) || answers == book.named,
+                "a welcome that announces {answers} presence answers for {} players named: {}",
+                book.named,
+                context()
+            );
             book.welcome = Some((index, entries, answers));
             if let (Welcome::Unknown { since, .. }, Some(edge)) = (welcome, book.edge) {
                 SINCE.with(|told| told.borrow_mut().insert(edge, *since));
@@ -1170,9 +1180,19 @@ fn join(id: PlayerId) -> EdgeToWorker {
     })
 }
 
-fn input(id: PlayerId, number: u64, input: PlayerInput) -> EdgeToWorker {
+/// The entity of the `n`th player to enter the region of `runner`, counted from 1, with
+/// everyone who entered it anew: a region gives out the ids of its block in order. An
+/// edge names the entity in a player's inputs once it was told that the player
+/// spawned; a test that sends inputs behind a join without waiting for that knows the
+/// entity this way.
+fn nth_entity(runner: &RegionRunner, n: i32) -> EntityId {
+    EntityId(runner.region().state().entity_ids.first.0 + n - 1)
+}
+
+fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> EdgeToWorker {
     EdgeToWorker::Input {
         player: id,
+        entity,
         number,
         input,
     }
@@ -1386,7 +1406,7 @@ fn no_event_of_a_chunk_comes_after_its_elsewhere() {
     // A player walks into the chunk. Whoever sees the chunk they come from sees the
     // step; the link that was told the chunk is elsewhere sees nothing of it.
     let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     run_until(
         &mut runner,
         &mut [&mut e, &mut watcher],
@@ -1492,7 +1512,10 @@ fn a_link_told_elsewhere_hears_nothing_of_a_chunk_the_region_came_to_hold_until_
 
     // Something happens in the chunk, which the first link's own player does.
     join_and_wait(&mut runner, &mut first, 1, player(1));
-    first.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    first.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+    );
     run_until(
         &mut runner,
         &mut [&mut first, &mut second],
@@ -1522,7 +1545,10 @@ fn a_link_told_elsewhere_hears_nothing_of_a_chunk_the_region_came_to_hold_until_
     let (_, _, chunk, _) = snapshot(&first.log, NEXT).expect("waited for it");
     assert_eq!(block_in(chunk, BEYOND), blocks::AIR);
     let further = BEYOND.offset(0, 0, 1);
-    first.numbered(3, input(player(1), 2, dig(further, 2)));
+    first.numbered(
+        3,
+        input(player(1), nth_entity(&runner, 1), 2, dig(further, 2)),
+    );
     run_until(
         &mut runner,
         &mut [&mut first, &mut second],
@@ -1831,7 +1857,10 @@ fn a_chunk_granted_for_a_viewer_stays_served_and_the_regions_for_as_long_as_a_gu
         assert_eq!(runner.region().knowledge(NEXT), Knowledge::Held);
         assert_eq!(neighbour.claim(NEXT), Err(world.region()));
     }
-    e.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+    );
     run_until(
         &mut runner,
         &mut [&mut e],
@@ -1963,7 +1992,10 @@ fn a_chunk_that_leaves_the_region_is_loaded_by_the_next_holder_with_the_block_br
     let neighbour = world.neighbour();
     let mut runner = world.open();
     let (mut e, _) = granted_for_a_viewer(&mut runner);
-    e.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+    );
     run_until(
         &mut runner,
         &mut [&mut e],
@@ -1995,7 +2027,10 @@ fn a_change_of_the_tick_before_the_last_ticket_goes_is_in_the_chunk_the_next_hol
     let neighbour = world.neighbour();
     let mut runner = world.open();
     let (mut e, _) = granted_for_a_viewer(&mut runner);
-    e.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+    );
     one_tick(&mut runner, &mut [&mut e]);
     assert_eq!(
         runner
@@ -2027,7 +2062,10 @@ fn a_dig_in_the_tick_that_takes_the_last_ticket_changes_nothing_and_the_chunk_le
     let mut runner = world.open();
     let (mut e, _) = granted_for_a_viewer(&mut runner);
     let mut watcher = established(&mut runner, F, 5);
-    e.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+    );
     e.unsubscribe(vec![NEXT]);
     run_until(
         &mut runner,
@@ -2078,7 +2116,12 @@ fn a_chunk_that_is_let_go_of_and_asked_for_again_comes_back_with_every_change_in
         let sequence = 1 + round as i32;
         e.numbered(
             2 + round as u64,
-            input(player(1), 1 + round as u64, dig(*block, sequence)),
+            input(
+                player(1),
+                nth_entity(&runner, 1),
+                1 + round as u64,
+                dig(*block, sequence),
+            ),
         );
         run_until(
             &mut runner,
@@ -2159,7 +2202,10 @@ fn after_a_crash_behind_the_unsubscribe_whoever_holds_the_chunk_loads_it_with_th
             let neighbour = world.neighbour();
             let mut runner = world.open();
             let (mut e, _) = granted_for_a_viewer(&mut runner);
-            e.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+            e.numbered(
+                2,
+                input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+            );
             run_until(
                 &mut runner,
                 &mut [&mut e],
@@ -2195,7 +2241,10 @@ fn after_a_crash_the_stored_chunk_agrees_with_what_the_restored_region_has_handl
             let neighbour = world.neighbour();
             let mut runner = world.open();
             let (mut e, _) = granted_for_a_viewer(&mut runner);
-            e.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+            e.numbered(
+                2,
+                input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+            );
             one_tick(&mut runner, &mut [&mut e]);
             e.unsubscribe(vec![NEXT]);
             ticks(&mut runner, &mut [&mut e], ticks_behind);
@@ -2238,7 +2287,7 @@ fn a_player_who_walks_into_a_chunk_believed_the_neighbours_is_let_go_in_the_tick
     assert_eq!(e.answers(NEXT), vec![(0, Answer::Elsewhere(NEIGHBOUR))]);
     let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
 
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     let (at, to, transfer) = departure(&e.log, player(1))
         .unwrap_or_else(|| panic!("not let go in the tick of the step: {}", brief(&e.log)));
@@ -2266,7 +2315,7 @@ fn a_player_who_walks_into_the_other_stripe_is_let_go_also_when_nothing_had_aske
     let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
     assert_eq!(runner.region().knowledge(NEXT), Knowledge::Unknown);
 
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     run_until(
         &mut runner,
         &mut [&mut e],
@@ -2413,7 +2462,10 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
 
     // Right after joining: the join and the dig are taken by one tick.
     e.numbered(1, join(player(1)));
-    e.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+    );
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     let told = progress_to(&e.log, 2).expect("waited for it");
     let entries = outbox(&e.log);
@@ -2441,7 +2493,10 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
         Answer::Elsewhere(NEIGHBOUR)
     );
     let further = BEYOND.offset(0, 0, 1);
-    e.numbered(3, input(player(1), 2, dig(further, 2)));
+    e.numbered(
+        3,
+        input(player(1), nth_entity(&runner, 1), 2, dig(further, 2)),
+    );
     wait_applied(&mut runner, &mut [&mut e], 0, 3);
     let told = progress_to(&e.log, 3).expect("waited for it");
     let entries = outbox(&e.log);
@@ -2621,7 +2676,12 @@ fn an_edge_reset_for_a_lost_since_is_held_until_its_hello_is_answered_and_then_t
 
     let log = &second.log;
     match welcomed(log) {
-        Welcome::Unknown { since, entries: 0 } => assert!(since > told),
+        Welcome::Unknown {
+            since,
+            entries: 0,
+            presences: 1,
+            applied: 0,
+        } => assert!(since > told),
         other => panic!("welcomed {other:?}: {}", brief(log)),
     }
     assert_eq!(presence(log, player(1)), Some(&Presence::Absent));
@@ -2838,23 +2898,23 @@ fn elsewhere_and_not_mine_come_at_their_place_in_their_tick_between_the_ticks_ar
     wait_applied(&mut runner, &mut [&mut e, &mut believer], 0, 2);
 
     // The tick before: a step.
-    e.numbered(3, input(player(1), 1, move_to(13.0)));
+    e.numbered(3, input(player(1), digger, 1, move_to(13.0)));
     let before = one_tick(&mut runner, &mut [&mut e, &mut believer]);
 
     // The tick in question takes all of this. It has a commit, events, a player who
     // enters the world, an action that is passed on, an acknowledgement, a departure,
     // and an answer to each of two subscriptions.
     e.numbered(4, join(player(2)));
-    e.numbered(5, input(player(1), 2, dig(NEAR, 1)));
-    e.numbered(6, input(player(1), 3, dig(BEYOND, 2)));
-    e.numbered(7, input(player(3), 1, move_to(16.5)));
+    e.numbered(5, input(player(1), digger, 2, dig(NEAR, 1)));
+    e.numbered(6, input(player(1), digger, 3, dig(BEYOND, 2)));
+    e.numbered(7, input(player(3), walker, 1, move_to(16.5)));
     let elsewhere = e.subscribe(vec![NEXT]);
     let not_mine = e.subscribe_as_guest(vec![OTHER]);
     let tick = one_tick(&mut runner, &mut [&mut e, &mut believer]);
     assert_eq!(tick, before + 1);
 
     // The tick after: another step.
-    e.numbered(8, input(player(1), 4, move_to(12.0)));
+    e.numbered(8, input(player(1), digger, 4, move_to(12.0)));
     let after = one_tick(&mut runner, &mut [&mut e, &mut believer]);
     wait_applied(&mut runner, &mut [&mut e, &mut believer], 0, 8);
     settle(&mut runner, &mut [&mut e, &mut believer]);
@@ -3040,7 +3100,10 @@ fn an_elsewhere_of_a_tick_without_a_commit_does_not_overtake_the_tick_before_it_
     let elsewhere = e.subscribe(vec![NEXT]);
     let not_mine = e.subscribe_as_guest(vec![OTHER]);
     one_tick(&mut runner, &mut [&mut e, &mut believer]);
-    e.numbered(2, input(player(1), 1, move_to(13.0)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, move_to(13.0)),
+    );
     let moved = one_tick(&mut runner, &mut [&mut e, &mut believer]);
     wait_applied(&mut runner, &mut [&mut e, &mut believer], 0, 2);
     settle(&mut runner, &mut [&mut e, &mut believer]);
@@ -3162,14 +3225,18 @@ fn after_a_crash_a_hello_with_the_same_chunks_is_answered_as_before_and_the_play
         vec![HOME, OWN, NEXT],
         vec![OWN_TOO, OTHER],
     );
-    again.numbered(2, input(player(1), 1, move_to(12.5)));
+    again.numbered(2, input(player(1), entity, 1, move_to(12.5)));
     wait_applied(&mut next, &mut [&mut again], 0, 2);
     settle(&mut next, &mut [&mut again]);
 
     let log = &again.log;
     assert_eq!(
         welcomed(log),
-        Welcome::Resumed { entries: 0 },
+        Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1,
+        },
         "{}",
         brief(log)
     );
@@ -3476,7 +3543,7 @@ fn with_an_unconfirmed_departure(runner: &mut RegionRunner) -> (Link, Link, Enti
     let mut bystander = linked(runner, F, 5);
     let stays = join_and_wait(runner, &mut e, 1, player(1));
     let leaves = join_and_wait(runner, &mut e, 2, player(2));
-    e.numbered(3, input(player(2), 1, move_to(16.5)));
+    e.numbered(3, input(player(2), leaves, 1, move_to(16.5)));
     run_until(
         runner,
         &mut [&mut e, &mut bystander],
@@ -3652,7 +3719,7 @@ fn once_the_region_holds_the_chunk_the_removal_of_a_departed_entity_goes_to_its_
     let mut e = greeted(&mut runner, E, 5, Vec::new(), vec![HOME, NEXT], Vec::new());
     assert_eq!(e.answers(NEXT), vec![(0, Answer::Elsewhere(NEIGHBOUR))]);
     let leaves = join_and_wait(&mut runner, &mut e, 1, player(1));
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), leaves, 1, move_to(16.5)));
     run_until(
         &mut runner,
         &mut [&mut e],
@@ -3736,7 +3803,10 @@ fn when_a_link_ends_the_regions_granted_chunks_without_a_player_are_returned_in(
     // A guest of a free chunk is told that it is not the region's, and has no ticket.
     assert_eq!(e.answers(FREE_FAR), vec![(0, Answer::NotMine)]);
     join_and_wait(&mut runner, &mut e, 1, player(1));
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, move_to(16.5)),
+    );
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     assert!(departure(&e.log, player(1)).is_none());
 
@@ -3907,7 +3977,7 @@ fn a_guest_is_served_a_chunk_the_region_holds_because_a_player_stands_in_it_and_
         Answer::NotMine
     );
 
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     wait_knowledge(
         &mut runner,
         &mut [&mut guest, &mut e],
@@ -3928,7 +3998,7 @@ fn a_guest_is_served_a_chunk_the_region_holds_because_a_player_stands_in_it_and_
     assert!(entities.iter().any(|state| state.entity == entity));
 
     // The player walks home. The guest's ticket is what keeps the chunk now.
-    e.numbered(3, input(player(1), 2, move_to(13.5)));
+    e.numbered(3, input(player(1), entity, 2, move_to(13.5)));
     wait_applied(&mut runner, &mut [&mut guest, &mut e], 1, 3);
     for _ in 0..10 {
         one_tick(&mut runner, &mut [&mut guest, &mut e]);
@@ -3955,7 +4025,7 @@ fn when_an_edge_is_gone_the_chunk_that_only_its_player_kept_is_returned() {
     let mut e = established(&mut runner, E, 5);
     let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
     let mut watcher = greeted(&mut runner, F, 5, Vec::new(), vec![HOME], Vec::new());
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     wait_knowledge(
         &mut runner,
         &mut [&mut e, &mut watcher],
@@ -4279,7 +4349,7 @@ impl Pacer {
     fn tick(&mut self, runner: &mut RegionRunner, links: &mut [&mut Link]) -> (u64, f64) {
         let (message, number) = self.next();
         let x = self.west + (number % 4) as f64 * 0.25;
-        links[0].numbered(message, input(self.id, number, move_to(x)));
+        links[0].numbered(message, input(self.id, self.entity, number, move_to(x)));
         (one_tick(runner, links), x)
     }
 
@@ -4345,9 +4415,15 @@ fn a_change_of_kind_between_the_tick_that_made_the_snapshot_and_its_publication_
 
     // It is served as a guest's: events come, and the chunk is kept.
     let (message, number) = pacer.next();
-    e.numbered(message, input(pacer.id, number, move_to(13.5)));
+    e.numbered(
+        message,
+        input(pacer.id, pacer.entity, number, move_to(13.5)),
+    );
     let (message, number) = pacer.next();
-    e.numbered(message, input(pacer.id, number, dig(BEYOND, 1)));
+    e.numbered(
+        message,
+        input(pacer.id, pacer.entity, number, dig(BEYOND, 1)),
+    );
     run_until(
         &mut runner,
         &mut [&mut e],
@@ -4724,7 +4800,7 @@ fn stepping_across_with_a_subscribe(runner: &mut RegionRunner) -> (Link, EntityI
     let entity = join_and_wait(runner, &mut e, 1, player(1));
     wait_applied(runner, &mut [&mut e], 0, 1);
     assert_eq!(runner.region().knowledge(NEXT), Knowledge::Unknown);
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     let ask = e.subscribe(vec![NEXT]);
     (e, entity, ask)
 }
@@ -4858,7 +4934,7 @@ fn events_come_for_a_waiting_subscription_to_a_chunk_the_region_does_not_hold_in
     // One tick takes the step into the chunk and the subscription to it. The region
     // knows nothing of the chunk; the subscription waits, and the step is an event of
     // the chunk.
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     let ask = watcher.subscribe(vec![NEXT]);
     assert_eq!(
         wait_answer(&mut runner, &mut [&mut watcher, &mut e], 0, NEXT, ask),
@@ -4896,7 +4972,7 @@ fn with_the_gap_a_chunks_events_come_while_it_is_waited_for_and_its_snapshot_has
     let mut watcher = linked(&mut runner, F, 5);
     settle(&mut runner, &mut [&mut e, &mut watcher]);
 
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(2, input(player(1), entity, 1, move_to(16.5)));
     let ask = watcher.subscribe(vec![NEXT]);
     assert_eq!(
         wait_answer(&mut runner, &mut [&mut watcher, &mut e], 0, NEXT, ask),
@@ -5174,7 +5250,10 @@ fn a_chunk_that_a_viewer_and_a_guest_of_two_links_see_stays_served_until_both_ha
     ticks(&mut runner, &mut [&mut guest, &mut viewer], 5);
     assert_eq!(runner.region().knowledge(NEXT), Knowledge::Held);
     assert_eq!(neighbour.claim(NEXT), Err(world.region()));
-    viewer.numbered(2, input(player(1), 1, dig(BEYOND, 1)));
+    viewer.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
+    );
     run_until(
         &mut runner,
         &mut [&mut guest, &mut viewer],
@@ -5207,7 +5286,10 @@ fn the_status_counts_the_chunks_the_store_has_granted_and_says_where_the_players
 
     // The player walks into the chunk east of home, and the link lets go of it: the
     // player standing there keeps it.
-    e.numbered(2, input(player(1), 1, move_to(16.5)));
+    e.numbered(
+        2,
+        input(player(1), nth_entity(&runner, 1), 1, move_to(16.5)),
+    );
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     assert_eq!(status.crowds(), vec![(NEXT, 1)]);
     e.unsubscribe(vec![NEXT]);
@@ -5215,7 +5297,10 @@ fn the_status_counts_the_chunks_the_store_has_granted_and_says_where_the_players
     assert_eq!(status.held.load(Ordering::SeqCst), 2);
 
     // Back home, nothing uses the chunk, and it goes.
-    e.numbered(3, input(player(1), 2, move_to(13.5)));
+    e.numbered(
+        3,
+        input(player(1), nth_entity(&runner, 1), 2, move_to(13.5)),
+    );
     wait_applied(&mut runner, &mut [&mut e], 0, 3);
     ticks(&mut runner, &mut [&mut e], 2);
     assert_eq!(status.held.load(Ordering::SeqCst), 1);
@@ -5660,7 +5745,10 @@ fn a_generated_run(shape: Shape, on_disk: bool, seed: u64, beside_a_neighbour: b
             sequence += 1;
             let (message, number) = pacer.next();
             eprintln!("before tick {coming}: the player digs {block:?}");
-            links[0].numbered(message, input(pacer.id, number, dig(block, sequence)));
+            links[0].numbered(
+                message,
+                input(pacer.id, pacer.entity, number, dig(block, sequence)),
+            );
         }
         let walks = wanders && dice.below(3) == 0;
         if walks {
@@ -5674,7 +5762,10 @@ fn a_generated_run(shape: Shape, on_disk: bool, seed: u64, beside_a_neighbour: b
                 "before tick {coming}: the player steps to x = {}",
                 spots[spot]
             );
-            links[0].numbered(message, input(pacer.id, number, move_to(spots[spot])));
+            links[0].numbered(
+                message,
+                input(pacer.id, pacer.entity, number, move_to(spots[spot])),
+            );
         }
         let mut all: Vec<&mut Link> = links.iter_mut().collect();
         // A player who stays in the home chunk paces in most ticks, so that they have a
@@ -5855,7 +5946,10 @@ fn a_generated_run(shape: Shape, on_disk: bool, seed: u64, beside_a_neighbour: b
     while spot > 0 {
         spot -= 1;
         let (message, number) = pacer.next();
-        links[0].numbered(message, input(pacer.id, number, move_to(spots[spot])));
+        links[0].numbered(
+            message,
+            input(pacer.id, pacer.entity, number, move_to(spots[spot])),
+        );
         wait_applied(&mut runner, &mut [&mut links[0]], 0, message);
     }
     links[0].unsubscribe(chunks.to_vec());

@@ -590,7 +590,8 @@ impl Lanes {
                 state,
                 part,
                 as_epoch,
-            } => return self.split(session, tick, state, part, as_epoch),
+                region,
+            } => return self.split(session, tick, state, part, as_epoch, region),
             request => request,
         };
         let Some(lane) = self.regions.get_mut(&session.region) else {
@@ -1295,6 +1296,10 @@ impl Lanes {
             return;
         };
 
+        // Read before the table makes them the survivor's, which then cannot tell them
+        // from its own: the survivor is not opened anew, and nothing else tells it
+        // the areas it is pinned to from now on.
+        let pinned = self.table.pinned(absorbed).to_vec();
         let chunks = self
             .table
             .absorb(region, absorbed, tick)
@@ -1328,7 +1333,11 @@ impl Lanes {
         lane.latest = tick;
         lane.named = tick;
         info!(%region, %absorbed, tick, "a region has absorbed another");
-        peer.answer(StoreReply::Absorbed { absorbed, chunks });
+        peer.answer(StoreReply::Absorbed {
+            absorbed,
+            chunks,
+            pinned,
+        });
     }
 
     /// Whether the region `region` may absorb `absorbed` now, with the record made for
@@ -1378,8 +1387,11 @@ impl Lanes {
     }
 
     /// The split of section 3.7 of ADR-0011: the chunks of `part` leave the region of
-    /// `session` for a new region, which is made with `as_epoch` as the highest epoch
-    /// it was opened with. It is one record of the log, as a merge is.
+    /// `session` for the new region `new`, which is made with `as_epoch` as the
+    /// highest epoch it was opened with. It is one record of the log, as a merge is.
+    ///
+    /// Whoever asks names the new region, as the state it hands in names it to edges;
+    /// the store only holds it to the next id (ADR-0014, section 9).
     fn split(
         &mut self,
         session: Session,
@@ -1387,13 +1399,13 @@ impl Lanes {
         state: Vec<u8>,
         part: SplitPart,
         as_epoch: u64,
+        new: RegionId,
     ) {
         self.end_group();
         let region = session.region;
         let Some((peer, epoch)) = self.owner_of(session) else {
             return;
         };
-        let new = RegionId(self.table.next_region);
         let SplitPart {
             chunks,
             state: part_state,
@@ -1415,8 +1427,12 @@ impl Lanes {
             part_state,
         }
         .encode();
+        let next = RegionId(self.table.next_region);
         let declined = match self.may_split(region, tick, &chunks, as_epoch) {
             Ok(()) if record.len() > MAX_RECORD_LENGTH => Err(Decline::TooLarge),
+            // Looked at last, so that whoever is told the next id knows that nothing
+            // else stands in the way of the same split with it.
+            Ok(()) if new != next => Err(Decline::NotNext { next }),
             other => other,
         };
         if let Err(reason) = declined {
@@ -1430,7 +1446,7 @@ impl Lanes {
 
         self.table
             .split(region, new, tick, &chunks)
-            .expect("a new id and chunks the region holds, as was looked at above");
+            .expect("the next id and chunks the region holds, as was looked at above");
         self.table_last = Some(entry.segment);
         let lane = self
             .regions
@@ -1467,7 +1483,7 @@ impl Lanes {
     }
 
     /// Whether the region `region` may be split now, apart from how long the record of
-    /// it would be. Nothing is changed.
+    /// it would be and from the id the new region is to have. Nothing is changed.
     fn may_split(
         &self,
         region: RegionId,

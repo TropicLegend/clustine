@@ -194,7 +194,7 @@ fn depart(region: &mut Region) -> PlayerTransfer {
     let output = tick(
         region,
         &TickInputs {
-            inputs: vec![(A, player(1), 1, walk(20.5))],
+            inputs: vec![(A, player(1), EntityId(1), 1, walk(20.5))],
             ..TickInputs::default()
         },
     );
@@ -306,7 +306,7 @@ fn a_higher_start_resets_the_edge_and_removes_whatever_of_it_is_shown() {
         &mut region,
         &TickInputs {
             player_changes: vec![join(A, 4)],
-            inputs: vec![(A, player(4), 1, walk(-20.5))],
+            inputs: vec![(A, player(4), EntityId(4), 1, walk(-20.5))],
             ..TickInputs::default()
         },
     );
@@ -427,10 +427,10 @@ fn confirmed_entries_are_dropped_from_the_outbox_and_only_those() {
         &mut region,
         &TickInputs {
             inputs: vec![
-                (B, player(2), 1, walk(14.5)),
-                (B, player(2), 2, dig(16, 1)),
-                (B, player(2), 3, dig(17, 2)),
-                (B, player(2), 4, dig(18, 3)),
+                (B, player(2), EntityId(2), 1, walk(14.5)),
+                (B, player(2), EntityId(2), 2, dig(16, 1)),
+                (B, player(2), EntityId(2), 3, dig(17, 2)),
+                (B, player(2), EntityId(2), 4, dig(18, 3)),
             ],
             ..TickInputs::default()
         },
@@ -485,8 +485,8 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
     let output = tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(B, player(1))],
-            inputs: vec![(B, player(1), 1, walk(5.5))],
+            player_changes: vec![PlayerChange::Leave(B, player(1), None)],
+            inputs: vec![(B, player(1), EntityId(1), 1, walk(5.5))],
             ..TickInputs::default()
         },
     );
@@ -496,7 +496,7 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
     let output = tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(A, player(1))],
+            player_changes: vec![PlayerChange::Leave(A, player(1), None)],
             ..TickInputs::default()
         },
     );
@@ -507,17 +507,17 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
 #[test]
 fn a_leave_through_another_edge_keeps_what_the_players_edge_passed_on() {
     let mut inputs = TickInputs::default();
-    inputs.input(A, player(1), 1, walk(3.5));
-    inputs.change(PlayerChange::Leave(B, player(1)));
-    inputs.input(B, player(1), 2, walk(4.5));
-    inputs.change(PlayerChange::Leave(B, player(1)));
-    assert_eq!(inputs.inputs, [(A, player(1), 1, walk(3.5))]);
-    inputs.change(PlayerChange::Leave(A, player(1)));
+    inputs.input(A, player(1), EntityId(1), 1, walk(3.5));
+    inputs.change(PlayerChange::Leave(B, player(1), None));
+    inputs.input(B, player(1), EntityId(1), 2, walk(4.5));
+    inputs.change(PlayerChange::Leave(B, player(1), None));
+    assert_eq!(inputs.inputs, [(A, player(1), EntityId(1), 1, walk(3.5))]);
+    inputs.change(PlayerChange::Leave(A, player(1), None));
     assert!(inputs.inputs.is_empty());
 
     // A join or an arrival ends whatever came before, through any edge.
-    inputs.input(A, player(1), 1, walk(3.5));
-    inputs.input(B, player(1), 2, walk(4.5));
+    inputs.input(A, player(1), EntityId(1), 1, walk(3.5));
+    inputs.input(B, player(1), EntityId(1), 2, walk(4.5));
     inputs.change(join(B, 1));
     assert!(inputs.inputs.is_empty());
 }
@@ -555,7 +555,7 @@ fn a_join_through_another_edge_replaces_the_player() {
     tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(A, player(1))],
+            player_changes: vec![PlayerChange::Leave(A, player(1), None)],
             ..TickInputs::default()
         },
     );
@@ -583,7 +583,10 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
     tick(
         &mut region,
         &TickInputs {
-            inputs: vec![(B, player(2), 1, walk(14.5)), (B, player(2), 2, dig(16, 1))],
+            inputs: vec![
+                (B, player(2), EntityId(2), 1, walk(14.5)),
+                (B, player(2), EntityId(2), 2, dig(16, 1)),
+            ],
             ..TickInputs::default()
         },
     );
@@ -618,8 +621,8 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
                 ),
             ],
             inputs: vec![
-                (B, player(2), 3, dig(17, 2)),
-                (A, player(1), 1, walk(-20.5)),
+                (B, player(2), EntityId(2), 3, dig(17, 2)),
+                (A, player(1), EntityId(1), 1, walk(-20.5)),
             ],
             ..TickInputs::default()
         },
@@ -767,7 +770,10 @@ fn handled_covers_the_players_own_actions_on_blocks_of_the_region_only() {
     tick(
         &mut region,
         &TickInputs {
-            inputs: vec![(A, player(1), 1, dig(2, 4)), (A, player(1), 2, walk(14.5))],
+            inputs: vec![
+                (A, player(1), EntityId(1), 1, dig(2, 4)),
+                (A, player(1), EntityId(1), 2, walk(14.5)),
+            ],
             ..TickInputs::default()
         },
     );
@@ -776,7 +782,7 @@ fn handled_covers_the_players_own_actions_on_blocks_of_the_region_only() {
     let output = tick(
         &mut region,
         &TickInputs {
-            inputs: vec![(A, player(1), 3, dig(16, 9))],
+            inputs: vec![(A, player(1), EntityId(1), 3, dig(16, 9))],
             ..TickInputs::default()
         },
     );
@@ -786,7 +792,7 @@ fn handled_covers_the_players_own_actions_on_blocks_of_the_region_only() {
     let output = tick(
         &mut region,
         &TickInputs {
-            inputs: vec![(A, player(1), 4, dig(12, 2))],
+            inputs: vec![(A, player(1), EntityId(1), 4, dig(12, 2))],
             ..TickInputs::default()
         },
     );
@@ -908,7 +914,7 @@ impl Scenario {
                         .get(&id)
                         .filter(|_| !random.once_in(4))
                         .map_or(edge, |player| player.edge);
-                    PlayerChange::Leave(edge, id)
+                    PlayerChange::Leave(edge, id, None)
                 }
                 7 | 8 if !self.departed.is_empty() => {
                     let index = random.below(self.departed.len() as u64) as usize;
@@ -991,7 +997,13 @@ impl Scenario {
                 self.next_input += 1;
                 self.next_input
             };
-            inputs.input(edge, id, number, input);
+            // With the entity the player has, as an edge names it. Of a player who is
+            // not there an edge knows none that the region could have.
+            let entity = state
+                .players
+                .get(&id)
+                .map_or(EntityId(0), |player| player.entity_id);
+            inputs.input(edge, id, entity, number, input);
         }
 
         for edge in edges {

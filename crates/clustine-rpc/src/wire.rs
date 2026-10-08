@@ -152,11 +152,12 @@ mod tests {
     #[test]
     fn the_messages_of_regions_that_follow_players_round_trip() {
         use clustine_region::RegionId;
-        use clustine_world::{ChunkArea, ChunkPos};
+        use clustine_sim::api::{Durable, PlayerInput};
+        use clustine_world::{ChunkArea, ChunkPos, EntityId, PlayerId};
 
         use crate::{
-            ChunkBox, Decline, EdgeToWorker, FromCoordinator, RegionInfo, RegionList, SplitPart,
-            StoreReply, StoreRequest, ToCoordinator, WorkerToEdge,
+            ChunkBox, Decline, EdgeMessage, EdgeToWorker, FromCoordinator, Off, RegionInfo,
+            RegionList, SplitPart, StoreReply, StoreRequest, ToCoordinator, Welcome, WorkerToEdge,
         };
 
         fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(message: T) {
@@ -167,6 +168,17 @@ mod tests {
 
         let chunks = vec![ChunkPos::new(-3, 7), ChunkPos::new(4, -1)];
         let region = RegionId(9);
+        let areas = vec![
+            ChunkArea {
+                min_x: Some(4),
+                max_x: None,
+            },
+            ChunkArea {
+                min_x: None,
+                max_x: Some(-9),
+            },
+        ];
+        let player = PlayerId(uuid::Uuid::from_u128(7));
         for request in [
             StoreRequest::Claim {
                 chunks: chunks.clone(),
@@ -188,6 +200,7 @@ mod tests {
                     state: vec![4, 5],
                 },
                 as_epoch: 77,
+                region: RegionId(10),
             },
         ] {
             round_trip(request);
@@ -200,8 +213,17 @@ mod tests {
             StoreReply::Absorbed {
                 absorbed: region,
                 chunks: chunks.clone(),
+                pinned: areas.clone(),
+            },
+            StoreReply::Absorbed {
+                absorbed: region,
+                chunks: Vec::new(),
+                pinned: Vec::new(),
             },
             StoreReply::Split { region },
+            StoreReply::Declined {
+                reason: Decline::NotNext { next: region },
+            },
             StoreReply::Declined {
                 reason: Decline::Uncheckpointed { region },
             },
@@ -234,19 +256,83 @@ mod tests {
                     min: chunks[0],
                     max: chunks[1],
                 }),
-                pinned: vec![
-                    ChunkArea {
-                        min_x: Some(4),
-                        max_x: None,
-                    },
-                    ChunkArea {
-                        min_x: None,
-                        max_x: Some(-9),
-                    },
-                ],
+                pinned: areas,
             }],
             absorbed: vec![(RegionId(3), region)],
+            next: RegionId(10),
         });
+        // What an edge says of a stay, with the entity that names it and without.
+        for body in [
+            EdgeToWorker::PlayerLeave {
+                player,
+                entity: Some(EntityId(41)),
+            },
+            EdgeToWorker::PlayerLeave {
+                player,
+                entity: None,
+            },
+            EdgeToWorker::Input {
+                player,
+                entity: EntityId(41),
+                number: 6,
+                input: PlayerInput::SelectSlot { slot: 3 },
+            },
+        ] {
+            assert!(body.is_numbered());
+            round_trip(EdgeMessage {
+                number: Some(12),
+                body,
+            });
+        }
+        // The welcomes that count their presence answers, and the two entries a merge
+        // and a split leave in an outbox.
+        for said in [
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 2,
+                presences: 3,
+                applied: 17,
+            }),
+            WorkerToEdge::Welcome(Welcome::Unknown {
+                since: 40,
+                entries: 0,
+                presences: u32::MAX,
+                applied: 0,
+            }),
+            WorkerToEdge::Welcome(Welcome::Unknown {
+                since: 41,
+                entries: 1,
+                presences: 0,
+                applied: u64::MAX,
+            }),
+            WorkerToEdge::Welcome(Welcome::Superseded),
+            WorkerToEdge::Outbox {
+                number: 5,
+                entry: Durable::Absorbed {
+                    region,
+                    since: 31,
+                    applied: 17,
+                    numbers: vec![2, 3, 8],
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 6,
+                entry: Durable::Absorbed {
+                    region,
+                    since: 0,
+                    applied: 0,
+                    numbers: Vec::new(),
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 7,
+                entry: Durable::SplitOff {
+                    region: RegionId(10),
+                    players: vec![(player, EntityId(41))],
+                },
+            },
+        ] {
+            round_trip(said);
+        }
         round_trip(EdgeToWorker::SubscribeAsGuest {
             ask: 7,
             chunks: chunks.clone(),
@@ -275,14 +361,40 @@ mod tests {
             ToCoordinator::AbsorbEnded {
                 region: RegionId(0),
                 absorbed: region,
-                done: true,
+                outcome: Ok(()),
             },
             ToCoordinator::SplitEnded {
                 region,
-                part: Some(RegionId(10)),
+                as_epoch: 6,
+                outcome: Ok(RegionId(10)),
             },
         ] {
             round_trip(said);
+        }
+        // Every reason a merge or a split can come to nothing for, as a worker says it
+        // of either.
+        for why in [
+            Off::NotRunning,
+            Off::Busy,
+            Off::Nobody,
+            Off::NothingStays,
+            Off::TooLarge,
+            Off::Declined(Decline::NotNext { next: RegionId(10) }),
+            Off::Declined(Decline::NotOpened { epoch: None }),
+            Off::StoreLost,
+            Off::Unreadable,
+            Off::Refused,
+        ] {
+            round_trip(ToCoordinator::AbsorbEnded {
+                region: RegionId(0),
+                absorbed: region,
+                outcome: Err(why),
+            });
+            round_trip(ToCoordinator::SplitEnded {
+                region,
+                as_epoch: 6,
+                outcome: Err(why),
+            });
         }
         for said in [
             FromCoordinator::Absorb {
@@ -296,6 +408,11 @@ mod tests {
                 epoch: 4,
                 chunks,
                 as_epoch: 6,
+                part: RegionId(10),
+            },
+            FromCoordinator::Prepare {
+                region: RegionId(0),
+                epoch: 4,
             },
             FromCoordinator::Asked(Ok(region)),
             FromCoordinator::Asked(Err("no such region".to_owned())),

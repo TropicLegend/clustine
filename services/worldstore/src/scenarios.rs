@@ -193,8 +193,10 @@ fn merge(handle: &StoreHandle, absorbed: u32, absorbed_epoch: u64, tick: u64) ->
     reply(handle)
 }
 
-/// The request to split `chunks` off, with the states "rest" and "part".
-fn split_of(tick: u64, chunks: &[ChunkPos], as_epoch: u64) -> StoreRequest {
+/// The request to split `chunks` off as the region `part`, with the states "rest" and
+/// "part". The store makes the region only under the next id, which a test knows from
+/// the regions its world began with and the splits it has made.
+fn split_of(tick: u64, chunks: &[ChunkPos], as_epoch: u64, part: u32) -> StoreRequest {
     StoreRequest::SplitCommit {
         tick,
         state: whole("rest", tick),
@@ -203,12 +205,20 @@ fn split_of(tick: u64, chunks: &[ChunkPos], as_epoch: u64) -> StoreRequest {
             state: whole("part", tick),
         },
         as_epoch,
+        region: RegionId(part),
     }
 }
 
-/// Splits `chunks` off the region of `handle`, and waits for the answer.
-fn split(handle: &StoreHandle, tick: u64, chunks: &[ChunkPos], as_epoch: u64) -> StoreReply {
-    handle.request(split_of(tick, chunks, as_epoch));
+/// Splits `chunks` off the region of `handle` as the region `part`, and waits for the
+/// answer.
+fn split(
+    handle: &StoreHandle,
+    tick: u64,
+    chunks: &[ChunkPos],
+    as_epoch: u64,
+    part: u32,
+) -> StoreReply {
+    handle.request(split_of(tick, chunks, as_epoch, part));
     reply(handle)
 }
 
@@ -897,7 +907,7 @@ fn a_split_whose_sync_failed_has_not_happened_and_the_next_one_takes_its_id() {
     west.flush();
 
     disk.failing_syncs.store(true, Ordering::SeqCst);
-    west.request(split_of(1, &[FREE], 4));
+    west.request(split_of(1, &[FREE], 4, 3));
     assert_eq!(answers_until_lost(&west), []);
     for survival in SURVIVALS {
         let case = format!("died before the cut was durable, {survival:?}");
@@ -934,7 +944,7 @@ fn a_split_whose_sync_failed_has_not_happened_and_the_next_one_takes_its_id() {
         })
     ));
     // Another part than the one that failed, with another epoch.
-    assert_eq!(split(&west, 1, &[WEST], 6), parted(3));
+    assert_eq!(split(&west, 1, &[WEST], 6, 3), parted(3));
     after_every_crash(&disk.disk, &gap(), "split anew", |store, case| {
         let list = store.regions().unwrap();
         let living: Vec<u32> = list.regions.iter().map(|info| info.region.0).collect();
@@ -2196,7 +2206,8 @@ fn a_merge_that_may_not_be_is_declined_with_its_reason_and_changes_nothing() {
         merge(&west, 1, 4, 7),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![FREE]
+            chunks: vec![FREE],
+            pinned: vec![east_area()],
         }
     );
 }
@@ -2219,7 +2230,7 @@ fn a_merge_or_a_split_is_declined_for_a_tick_that_a_checkpoint_under_way_has_nam
             declined(Decline::Tick { named: 7 })
         );
         assert_eq!(
-            split(&west, tick, &[WEST], 1),
+            split(&west, tick, &[WEST], 1, 3),
             declined(Decline::Tick { named: 7 })
         );
     }
@@ -2287,7 +2298,8 @@ fn a_merge_with_several_reasons_against_it_is_declined_for_the_first_of_them() {
         merge(&west, 1, 4, 2),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![]
+            chunks: vec![],
+            pinned: vec![east_area()],
         }
     );
 }
@@ -2322,7 +2334,8 @@ fn a_merge_gives_the_survivor_everything_the_absorbed_region_had() {
         merge(&west, 1, 4, 5),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![FREE, FREE_TOO]
+            chunks: vec![FREE, FREE_TOO],
+            pinned: vec![east_area()],
         }
     );
     assert!(east.is_lost());
@@ -2423,7 +2436,8 @@ fn a_hello_for_an_absorbed_region_is_refused_over_a_connection_with_the_survivor
         merge(&west, 1, 1, 3),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![FREE]
+            chunks: vec![FREE],
+            pinned: vec![east_area()],
         }
     );
 
@@ -2456,7 +2470,8 @@ fn commits_after_a_merge_are_deltas_on_the_merged_state_until_a_checkpoint() {
         merge(&west, 1, 1, 5),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![FREE]
+            chunks: vec![FREE],
+            pinned: vec![east_area()],
         }
     );
     // What came with the merge is held from its tick, or from the beginning: changes
@@ -2549,7 +2564,8 @@ fn a_checkpoint_with_the_tick_of_a_merge_or_a_split_is_not_put_in_place() {
         merge(&west, 1, 1, 5),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![]
+            chunks: vec![],
+            pinned: vec![east_area()],
         }
     );
     checkpoint(&west, 5, "impostor");
@@ -2566,7 +2582,7 @@ fn a_checkpoint_with_the_tick_of_a_merge_or_a_split_is_not_put_in_place() {
     merged(&store, "in the store that merged");
 
     let (west, _) = opened_gap(&store, 0, 3);
-    assert_eq!(split(&west, 6, &[WEST], 2), parted(3));
+    assert_eq!(split(&west, 6, &[WEST], 2, 3), parted(3));
     let (part, _) = opened_gap(&store, 3, 2);
     checkpoint(&west, 6, "impostor");
     checkpoint(&part, 6, "impostor");
@@ -2618,7 +2634,8 @@ fn a_checkpoint_of_the_survivor_under_way_when_the_merge_is_written_is_not_put_i
         merge(&west, 1, 1, 4),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![]
+            chunks: vec![],
+            pinned: vec![east_area()],
         }
     );
     gate.let_go();
@@ -2653,7 +2670,8 @@ fn a_checkpoint_of_the_absorbed_region_under_way_when_the_merge_is_written_is_no
         merge(&west, 1, 1, 4),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![]
+            chunks: vec![],
+            pinned: vec![east_area()],
         }
     );
     assert!(east.is_lost());
@@ -2687,7 +2705,7 @@ fn a_checkpoint_under_way_when_the_split_is_written_is_not_put_in_place_for_eith
     gate.hold_at(Stop::BeforeSync);
     checkpoint(&west, 3, "early");
     gate.wait_until_there();
-    assert_eq!(split(&west, 4, &[WEST], 2), parted(3));
+    assert_eq!(split(&west, 4, &[WEST], 2, 3), parted(3));
     let (part, restored) = opened_while_held(&store, 3, 2);
     assert_eq!(state_of(&restored), Some((4, whole("part", 4))));
     checkpoint(&part, 4, "impostor");
@@ -2725,7 +2743,7 @@ fn a_split_that_may_not_be_is_declined_with_its_reason_and_changes_nothing() {
 
     log(&west, 1, &[]);
     assert_eq!(
-        split(&west, 2, &[WEST], 1),
+        split(&west, 2, &[WEST], 1, 3),
         declined(Decline::Uncheckpointed {
             region: RegionId(0)
         })
@@ -2734,28 +2752,28 @@ fn a_split_that_may_not_be_is_declined_with_its_reason_and_changes_nothing() {
     west.flush();
     for tick in [0, 1] {
         assert_eq!(
-            split(&west, tick, &[WEST], 1),
+            split(&west, tick, &[WEST], 1, 3),
             declined(Decline::Tick { named: 1 })
         );
     }
-    assert_eq!(split(&west, 2, &[], 1), declined(Decline::Malformed));
-    assert_eq!(split(&west, 2, &[WEST], 0), declined(Decline::Malformed));
+    assert_eq!(split(&west, 2, &[], 1, 3), declined(Decline::Malformed));
+    assert_eq!(split(&west, 2, &[WEST], 0, 3), declined(Decline::Malformed));
     // A chunk of another region's area, one that is nobody's, one another region was
     // granted, and one among chunks it does hold.
     for chunk in [EAST, FREE_THREE, FREE_TOO] {
         assert_eq!(
-            split(&west, 2, &[chunk], 1),
+            split(&west, 2, &[chunk], 1, 3),
             declined(Decline::NotHeld { chunk })
         );
         assert_eq!(
-            split(&west, 2, &[WEST, chunk, FREE], 1),
+            split(&west, 2, &[WEST, chunk, FREE], 1, 3),
             declined(Decline::NotHeld { chunk })
         );
     }
     // The home chunk, by the region that holds it, alone or with another.
-    assert_eq!(split(&home, 1, &[ORIGIN], 1), declined(Decline::Home));
+    assert_eq!(split(&home, 1, &[ORIGIN], 1, 3), declined(Decline::Home));
     assert_eq!(
-        split(&home, 1, &[FREE_TOO, ORIGIN], 1),
+        split(&home, 1, &[FREE_TOO, ORIGIN], 1, 3),
         declined(Decline::Home)
     );
 
@@ -2771,8 +2789,8 @@ fn a_split_that_may_not_be_is_declined_with_its_reason_and_changes_nothing() {
         assert_eq!(state, Some((1, whole("west", 1))), "{case}");
     });
     // The handle is as it was, and no id was used up.
-    assert_eq!(split(&west, 2, &[WEST, FREE], 1), parted(3));
-    assert_eq!(split(&home, 1, &[FREE_TOO], 1), parted(4));
+    assert_eq!(split(&west, 2, &[WEST, FREE], 1, 3), parted(3));
+    assert_eq!(split(&home, 1, &[FREE_TOO], 1, 4), parted(4));
 }
 
 /// The record's order of the reasons ("Found while building", C1.5): a split that has
@@ -2786,7 +2804,7 @@ fn a_split_with_several_reasons_against_it_is_declined_for_the_first_of_them() {
     log(&west, 1, &[]);
     // A commit behind the checkpoint, before a tick that was named, no chunks, epoch 0.
     assert_eq!(
-        split(&west, 1, &[], 0),
+        split(&west, 1, &[], 0, 3),
         declined(Decline::Uncheckpointed {
             region: RegionId(0)
         })
@@ -2795,25 +2813,31 @@ fn a_split_with_several_reasons_against_it_is_declined_for_the_first_of_them() {
     west.flush();
     // The tick, before what is malformed, not held or home.
     assert_eq!(
-        split(&west, 1, &[], 0),
+        split(&west, 1, &[], 0, 3),
         declined(Decline::Tick { named: 1 })
     );
     assert_eq!(
-        split(&west, 1, &[EAST, ORIGIN], 1),
+        split(&west, 1, &[EAST, ORIGIN], 1, 3),
         declined(Decline::Tick { named: 1 })
     );
     // Malformed, before a chunk that is not held and the home chunk.
-    assert_eq!(split(&west, 2, &[EAST], 0), declined(Decline::Malformed));
-    assert_eq!(split(&west, 2, &[ORIGIN], 0), declined(Decline::Malformed));
-    assert_eq!(split(&home, 1, &[ORIGIN], 0), declined(Decline::Malformed));
+    assert_eq!(split(&west, 2, &[EAST], 0, 3), declined(Decline::Malformed));
+    assert_eq!(
+        split(&west, 2, &[ORIGIN], 0, 3),
+        declined(Decline::Malformed)
+    );
+    assert_eq!(
+        split(&home, 1, &[ORIGIN], 0, 3),
+        declined(Decline::Malformed)
+    );
     // The home chunk asked for by a region that does not hold it is a chunk not held.
     assert_eq!(
-        split(&west, 2, &[ORIGIN], 1),
+        split(&west, 2, &[ORIGIN], 1, 3),
         declined(Decline::NotHeld { chunk: ORIGIN })
     );
     // A chunk not held beside the home chunk, by the home region.
     assert_eq!(
-        split(&home, 1, &[ORIGIN, FREE], 1),
+        split(&home, 1, &[ORIGIN, FREE], 1, 3),
         declined(Decline::NotHeld { chunk: FREE })
     );
 
@@ -2826,6 +2850,7 @@ fn a_split_with_several_reasons_against_it_is_declined_for_the_first_of_them() {
             state: Vec::new(),
         },
         as_epoch: 1,
+        region: RegionId(3),
     };
     home.request(too_large(1, &[ORIGIN]));
     assert_eq!(reply(&home), declined(Decline::Home));
@@ -2842,9 +2867,10 @@ fn a_split_with_several_reasons_against_it_is_declined_for_the_first_of_them() {
             state: vec![0; 64 * 1024 * 1024],
         },
         as_epoch: 1,
+        region: RegionId(3),
     });
     assert_eq!(reply(&west), declined(Decline::TooLarge));
-    assert_eq!(split(&west, 2, &[WEST], 1), parted(3));
+    assert_eq!(split(&west, 2, &[WEST], 1, 3), parted(3));
 }
 
 /// Scenario 17, after `Split { region: N }`: `N` is higher than every id there was;
@@ -2868,7 +2894,7 @@ fn a_split_makes_a_region_of_the_part_that_only_its_epoch_opens() {
     west.flush();
     // Chunks of its area and one it was granted, not in their order and one twice.
     let part = [WEST_TOO, FREE, WEST, WEST_TOO];
-    assert_eq!(split(&west, 5, &part, 7), parted(3));
+    assert_eq!(split(&west, 5, &part, 7, 3), parted(3));
     assert!(!west.is_lost());
 
     let check = |store: &Store, epochs: [u64; 2], case: &str| {
@@ -2972,7 +2998,7 @@ fn the_part_of_a_split_is_opened_over_a_connection_with_its_epoch() {
     let server = serve(store.clone(), listener).unwrap();
     let address = server.local_addr().to_string();
     let (west, _) = opened_gap(&store, 0, 1);
-    assert_eq!(split(&west, 5, &[WEST, WEST_TOO], 7), parted(3));
+    assert_eq!(split(&west, 5, &[WEST, WEST_TOO], 7, 3), parted(3));
 
     let refused = StoreHandle::connect(&address, hello_of(&gap(), 3, 6));
     assert!(
@@ -3012,7 +3038,7 @@ fn a_hello_with_nothing_to_replay_is_answered_while_the_thread_for_chunks_is_hel
     save(&east, BUSY_EAST, &built(BUSY_EAST, &[]));
     gate.wait_until_there();
 
-    assert_eq!(split(&west, 1, &[WEST], 3), parted(3));
+    assert_eq!(split(&west, 1, &[WEST], 3, 3), parted(3));
     let (_part, restored) = opened_while_held(&store, 3, 3);
     assert_eq!(state_of(&restored), Some((1, whole("part", 1))));
     assert_eq!(restored.held, [(WEST, 1)]);
@@ -3110,7 +3136,7 @@ fn a_chunk_that_is_being_returned_goes_with_the_part_it_is_split_off_in() {
         gate.hold_at(stop);
         give_back(&owner, &[FREE, FREE_TOO]);
         gate.wait_until_there();
-        assert_eq!(split(&owner, 1, &[FREE], 4), parted(3), "{stop:?}");
+        assert_eq!(split(&owner, 1, &[FREE], 4, 3), parted(3), "{stop:?}");
         assert_eq!(holder(&other, 1, FREE), Some(RegionId(3)), "{stop:?}");
         assert_eq!(holder(&other, 1, FREE_TOO), Some(RegionId(0)), "{stop:?}");
         the_chunk_is_the_parts(&disk, FREE, 1, 4, &format!("held {stop:?}"));
@@ -3149,7 +3175,7 @@ fn a_chunk_returned_twice_and_then_split_off_stays_with_the_part() {
     gate.wait_until_there();
     assert_eq!(claim(&owner, &[FREE]), (vec![FREE], vec![]));
     give_back(&owner, &[FREE]);
-    assert_eq!(split(&owner, 1, &[FREE], 4), parted(3));
+    assert_eq!(split(&owner, 1, &[FREE], 4, 3), parted(3));
     owner.request(StoreRequest::Flush);
 
     for (stop, point) in [
@@ -3191,7 +3217,7 @@ fn a_chunk_split_off_while_it_was_being_returned_is_freed_only_by_the_part() {
     gate.hold_at(Stop::BeforeSync);
     give_back(&owner, &[FREE]);
     gate.wait_until_there();
-    assert_eq!(split(&owner, 1, &[FREE], 4), parted(3));
+    assert_eq!(split(&owner, 1, &[FREE], 4, 3), parted(3));
     let (part, restored) = opened_while_held(&store, 3, 4);
     assert_eq!(restored.held, [(FREE, 1)]);
     give_back(&part, &[FREE]);
@@ -3250,7 +3276,8 @@ fn a_chunk_that_is_being_returned_when_its_region_is_absorbed_goes_to_the_surviv
             merge(&west, 1, 5, 1),
             StoreReply::Absorbed {
                 absorbed: RegionId(1),
-                chunks: vec![FREE, FREE_TOO]
+                chunks: vec![FREE, FREE_TOO],
+                pinned: vec![east_area()],
             },
             "{stop:?}"
         );
@@ -3280,7 +3307,7 @@ fn a_chunk_that_is_being_returned_when_its_region_is_absorbed_goes_to_the_surviv
 fn a_part_that_is_returned_chunk_by_chunk_is_the_pinned_regions_again() {
     let (store, disk) = gap_store();
     let (west, _) = opened_gap(&store, 0, 1);
-    assert_eq!(split(&west, 1, &[WEST, WEST_TOO], 1), parted(3));
+    assert_eq!(split(&west, 1, &[WEST, WEST_TOO], 1, 3), parted(3));
     let (part, _) = opened_gap(&store, 3, 1);
     assert_eq!(holder(&west, 0, WEST), Some(RegionId(3)));
 
@@ -3333,7 +3360,7 @@ fn a_part_that_is_returned_chunk_by_chunk_is_the_pinned_regions_again() {
 fn a_part_absorbed_by_the_pinned_region_it_was_split_off_is_among_what_that_was_granted() {
     let (store, disk) = gap_store();
     let (west, _) = opened_gap(&store, 0, 1);
-    assert_eq!(split(&west, 1, &[WEST_TOO, WEST], 4), parted(3));
+    assert_eq!(split(&west, 1, &[WEST_TOO, WEST], 4, 3), parted(3));
     let (part, _) = opened_gap(&store, 3, 4);
     save(&part, WEST, &built(WEST, &[GLASS]));
     part.flush();
@@ -3343,7 +3370,8 @@ fn a_part_absorbed_by_the_pinned_region_it_was_split_off_is_among_what_that_was_
         merge(&west, 3, 4, 2),
         StoreReply::Absorbed {
             absorbed: RegionId(3),
-            chunks: vec![WEST, WEST_TOO]
+            chunks: vec![WEST, WEST_TOO],
+            pinned: vec![],
         }
     );
     assert!(part.is_lost());
@@ -3390,13 +3418,14 @@ fn the_id_of_an_absorbed_region_is_not_given_to_the_next_part() {
     for checkpointed in [false, true] {
         let (store, disk) = gap_store();
         let (west, _) = opened_gap(&store, 0, 1);
-        assert_eq!(split(&west, 1, &[WEST], 1), parted(3));
+        assert_eq!(split(&west, 1, &[WEST], 1, 3), parted(3));
         let (_part, _) = opened_gap(&store, 3, 1);
         assert_eq!(
             merge(&west, 3, 1, 2),
             StoreReply::Absorbed {
                 absorbed: RegionId(3),
-                chunks: vec![WEST]
+                chunks: vec![WEST],
+                pinned: vec![],
             }
         );
         if checkpointed {
@@ -3414,12 +3443,12 @@ fn the_id_of_an_absorbed_region_is_not_given_to_the_next_part() {
         after_every_crash(&disk, &gap(), "merged", |store, case| {
             let (west, restored) = opened_gap(store, 0, 2);
             let tick = restored.tick() + 1;
-            assert_eq!(split(&west, tick, &[WEST_TOO], 1), parted(4), "{case}");
-            assert_eq!(split(&west, tick + 1, &[WEST], 1), parted(5), "{case}");
+            assert_eq!(split(&west, tick, &[WEST_TOO], 1, 4), parted(4), "{case}");
+            assert_eq!(split(&west, tick + 1, &[WEST], 1, 5), parted(5), "{case}");
         });
         // The store that ran counts on as well.
         let tick = if checkpointed { 4 } else { 3 };
-        assert_eq!(split(&west, tick, &[WEST_TOO], 1), parted(4));
+        assert_eq!(split(&west, tick, &[WEST_TOO], 1, 4), parted(4));
     }
 }
 
@@ -3434,13 +3463,14 @@ fn the_id_of_an_absorbed_pinned_region_is_not_given_to_the_next_part() {
         merge(&west, 1, 1, 1),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![]
+            chunks: vec![],
+            pinned: vec![east_area()],
         }
     );
     west.flush();
     after_every_crash(&disk, &gap(), "merged", |store, case| {
         let (west, _) = opened_gap(store, 0, 2);
-        assert_eq!(split(&west, 2, &[EAST], 1), parted(3), "{case}");
+        assert_eq!(split(&west, 2, &[EAST], 1, 3), parted(3), "{case}");
         let living: Vec<u32> = store
             .regions()
             .unwrap()
@@ -3487,7 +3517,7 @@ fn the_region_file_of_a_part_that_could_not_be_written_is_written_later() {
         };
 
         disk.fail(op, ending);
-        assert_eq!(split(&west, 1, &[WEST], 6), parted(3), "{case}");
+        assert_eq!(split(&west, 1, &[WEST], 6, 3), parted(3), "{case}");
         assert!(disk.failures() > 0, "{case}: the file is written otherwise");
         lower_is_refused(&store, &case);
         // The store dies before the file is there: the next start writes it.
@@ -3551,13 +3581,14 @@ fn merged_and_split() -> (Arc<MemoryDisk>, [Restored; 2]) {
     east.flush();
 
     assert_eq!(claim(&west, &[FREE]), (vec![FREE], vec![]));
-    assert_eq!(split(&west, 1, &[WEST, FREE], 2), parted(3));
+    assert_eq!(split(&west, 1, &[WEST, FREE], 2, 3), parted(3));
     let (part, _) = opened_gap(&store, 3, 2);
     assert_eq!(
         merge(&west, 1, 5, 2),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![FREE_TOO]
+            chunks: vec![FREE_TOO],
+            pinned: vec![east_area()],
         }
     );
     log(
@@ -3656,7 +3687,7 @@ fn a_world_with_an_absorbed_region_and_a_part_is_made_over_for_another_division(
         let left = Arc::new(disk.crashed(survival));
         let store = store_on(&left, &division()).unwrap_or_else(|error| panic!("{case}: {error}"));
         let west = made_over(&store, &was, &case);
-        assert_eq!(split(&west, 1, &[WEST], 1), parted(4), "{case}");
+        assert_eq!(split(&west, 1, &[WEST], 1, 4), parted(4), "{case}");
         west.flush();
         drop((west, store));
 
@@ -3691,7 +3722,7 @@ fn a_world_with_an_absorbed_region_and_a_part_is_made_over_for_another_division(
         let (west, restored) = opened_gap(&store, 0, 200);
         assert_eq!((restored.state, restored.held), (None, vec![]), "{case}");
         assert_eq!(load(&west, WEST), built(WEST, &[GLASS]), "{case}");
-        assert_eq!(split(&west, 1, &[WEST], 1), parted(5), "{case}");
+        assert_eq!(split(&west, 1, &[WEST], 1, 5), parted(5), "{case}");
     }
 }
 
@@ -3719,7 +3750,7 @@ fn a_world_with_an_absorbed_region_and_a_part_is_made_over_at_every_kill_point()
             let store =
                 store_on(&left, &division()).unwrap_or_else(|error| panic!("{case}: {error}"));
             let west = made_over(&store, &was, &case);
-            assert_eq!(split(&west, 1, &[WEST], 1), parted(4), "{case}");
+            assert_eq!(split(&west, 1, &[WEST], 1, 4), parted(4), "{case}");
         }
     }
 }
@@ -3825,7 +3856,7 @@ fn a_world_with_an_absorbed_region_and_a_part_is_made_over_for_another_home_chun
         assert_eq!(load(&home, ORIGIN), built(ORIGIN, &[THIRD]), "{case}");
         assert_eq!(load(&home, FREE), built(FREE, &[OTHER]), "{case}");
         assert_eq!(load(&home, FREE_TOO), built(FREE_TOO, &[STONE]), "{case}");
-        assert_eq!(split(&west, 1, &[WEST], 1), parted(4), "{case}");
+        assert_eq!(split(&west, 1, &[WEST], 1, 4), parted(4), "{case}");
     }
 }
 
@@ -3903,7 +3934,7 @@ fn a_replaced_owner_has_what_it_claimed_before_the_hello_and_nothing_it_asks_aft
 
     let before = store.regions().unwrap();
     give_back(&old, &[FREE]);
-    old.request(split_of(2, &[WEST], 1));
+    old.request(split_of(2, &[WEST], 1, 3));
     old.request(StoreRequest::AbsorbCommit {
         absorbed: RegionId(1),
         absorbed_epoch: 1,
@@ -4029,7 +4060,7 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
     let (west, _) = opened_gap(&store, 0, 1);
     let (east, _) = opened_gap(&store, 1, 1);
     let (home, _) = opened_gap(&store, 2, 1);
-    assert_eq!(split(&west, 1, &[WEST], 1), parted(3));
+    assert_eq!(split(&west, 1, &[WEST], 1, 3), parted(3));
     let (part, _) = opened_gap(&store, 3, 1);
     assert_eq!(claim(&part, &[FREE]), (vec![FREE], vec![]));
     log(&part, 2, &[change(WEST, GLASS)]);
@@ -4040,7 +4071,8 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
         merge(&west, 3, 1, 2),
         StoreReply::Absorbed {
             absorbed: RegionId(3),
-            chunks: vec![WEST, FREE]
+            chunks: vec![WEST, FREE],
+            pinned: vec![],
         }
     );
     // The home region, which is pinned to nothing, absorbs the western one.
@@ -4048,12 +4080,13 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
         merge(&home, 0, 1, 4),
         StoreReply::Absorbed {
             absorbed: RegionId(0),
-            chunks: vec![WEST, FREE]
+            chunks: vec![WEST, FREE],
+            pinned: vec![west_area()],
         }
     );
     assert!(west.is_lost() && part.is_lost());
     assert_eq!(merge(&east, 2, 1, 1), declined(Decline::Home));
-    assert_eq!(split(&home, 5, &[ORIGIN], 1), declined(Decline::Home));
+    assert_eq!(split(&home, 5, &[ORIGIN], 1, 4), declined(Decline::Home));
     home.flush();
 
     let check = |store: &Store, epoch: u64, case: &str| {
@@ -4115,7 +4148,8 @@ fn the_entity_ids_of_an_absorbed_region_are_not_issued_again() {
         merge(&west, 1, 1, 1),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![]
+            chunks: vec![],
+            pinned: vec![east_area()],
         }
     );
     west.flush();
@@ -4318,7 +4352,8 @@ fn what_was_claimed_just_before_a_merge_or_a_split_is_part_of_it() {
         any_reply(&west),
         StoreReply::Absorbed {
             absorbed: RegionId(1),
-            chunks: vec![FREE]
+            chunks: vec![FREE],
+            pinned: vec![east_area()],
         }
     );
     assert_eq!(answers_until_lost(&east), [claimed(FREE)]);
@@ -4327,7 +4362,7 @@ fn what_was_claimed_just_before_a_merge_or_a_split_is_part_of_it() {
     west.request(StoreRequest::Claim {
         chunks: vec![FREE_THREE],
     });
-    west.request(split_of(2, &[FREE_THREE, FREE, FREE_TOO], 3));
+    west.request(split_of(2, &[FREE_THREE, FREE, FREE_TOO], 3, 3));
     assert_eq!(any_reply(&west), claimed(FREE_THREE));
     assert_eq!(any_reply(&west), parted(3));
     after_every_crash(&disk.disk, &gap(), "merged and split", |store, case| {
@@ -4351,7 +4386,7 @@ fn after_a_split_each_regions_commits_go_into_its_own_chunks_and_no_others() {
     let (store, disk) = gap_store();
     let (west, _) = opened_gap(&store, 0, 1);
     assert_eq!(claim(&west, &[FREE]), (vec![FREE], vec![]));
-    assert_eq!(split(&west, 1, &[WEST, FREE], 2), parted(3));
+    assert_eq!(split(&west, 1, &[WEST, FREE], 2, 3), parted(3));
     let (part, _) = opened_gap(&store, 3, 2);
     log(
         &part,
@@ -4477,13 +4512,14 @@ fn the_store_forgets_all_but_the_latest_4096_absorbed_regions() {
     for round in 0..rounds {
         let part = 3 + round;
         let tick = u64::from(round) * 2 + 1;
-        assert_eq!(split(&west, tick, &[WEST], 1), parted(part));
+        assert_eq!(split(&west, tick, &[WEST], 1, part), parted(part));
         let (_part, _) = opened_gap(&store, part, 1);
         assert_eq!(
             merge(&west, part, 1, tick + 1),
             StoreReply::Absorbed {
                 absorbed: RegionId(part),
-                chunks: vec![WEST]
+                chunks: vec![WEST],
+                pinned: vec![],
             }
         );
     }
@@ -4525,7 +4561,11 @@ fn the_store_forgets_all_but_the_latest_4096_absorbed_regions() {
         let (west, restored) = opened_gap(store, 0, 2);
         assert_eq!(restored.held, [(WEST, u64::from(rounds) * 2)], "{case}");
         let tick = restored.tick() + 1;
-        assert_eq!(split(&west, tick, &[WEST], 1), parted(3 + rounds), "{case}");
+        assert_eq!(
+            split(&west, tick, &[WEST], 1, 3 + rounds),
+            parted(3 + rounds),
+            "{case}"
+        );
     });
 }
 
@@ -4777,9 +4817,10 @@ fn a_merge_or_a_split_whose_record_was_cut_off_has_not_happened() {
             let absorbed = StoreReply::Absorbed {
                 absorbed: RegionId(1),
                 chunks: vec![FREE],
+                pinned: vec![east_area()],
             };
             assert_eq!(merge(&west, 1, 50, 1), absorbed, "{case}");
-            assert_eq!(split(&west, 2, &[FREE], 1), parted(3), "{case}");
+            assert_eq!(split(&west, 2, &[FREE], 1, 3), parted(3), "{case}");
             west.flush();
             after_every_crash(&left, &gap(), &case, |store, case| {
                 let list = store.regions().unwrap();

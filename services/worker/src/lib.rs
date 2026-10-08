@@ -239,7 +239,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 2;
+pub const STATE_FORMAT: u8 = 3;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -986,11 +986,27 @@ impl RegionRunner {
                 _ => Vec::new(),
             };
             let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+            // One presence answer follows for each player the hello names, and none
+            // for anyone else yet.
+            let presences = u32::try_from(resume.players.len()).unwrap_or(u32::MAX);
+            // How far the edge's messages are applied in the state that the entries
+            // and the presence answers are made from. A state that the coming tick
+            // makes, or makes anew, has applied none.
+            let applied = match (resume.answer, state) {
+                (Answer::Resumed | Answer::ToldAgain, Some(state)) => state.applied,
+                _ => 0,
+            };
             let welcome = match resume.answer {
-                Answer::Resumed => Welcome::Resumed { entries: count },
+                Answer::Resumed => Welcome::Resumed {
+                    entries: count,
+                    presences,
+                    applied,
+                },
                 Answer::ToldAgain | Answer::New => Welcome::Unknown {
                     since,
                     entries: count,
+                    presences,
+                    applied,
                 },
             };
             outgoing.push((*id, WorkerToEdge::Welcome(welcome)));
@@ -1874,7 +1890,7 @@ impl RegionRunner {
         self.discards.retain(|(from, ..)| *from != edge);
         self.inputs.player_changes.retain(|change| match change {
             PlayerChange::Join(from, _)
-            | PlayerChange::Leave(from, _)
+            | PlayerChange::Leave(from, ..)
             | PlayerChange::Arrive(from, ..) => *from != edge,
             PlayerChange::Discard { entity, chunk } => {
                 let found = discards.iter().position(|of| *of == (*entity, *chunk));
@@ -1892,8 +1908,9 @@ impl RegionRunner {
             EdgeToWorker::PlayerJoin(join) => {
                 self.inputs.change(PlayerChange::Join(edge, join));
             }
-            EdgeToWorker::PlayerLeave { player } => {
-                self.inputs.change(PlayerChange::Leave(edge, player));
+            EdgeToWorker::PlayerLeave { player, entity } => {
+                self.inputs
+                    .change(PlayerChange::Leave(edge, player, entity));
             }
             EdgeToWorker::PlayerArrive { player, transfer } => {
                 self.inputs
@@ -1908,11 +1925,12 @@ impl RegionRunner {
             }
             EdgeToWorker::Input {
                 player,
+                entity,
                 number,
                 input,
             } => {
                 // The region ignores what comes through another edge than the player's.
-                self.inputs.input(edge, player, number, input);
+                self.inputs.input(edge, player, entity, number, input);
             }
             // Not numbered; `accept` handles them.
             EdgeToWorker::Hello { .. }
@@ -2147,8 +2165,14 @@ mod tests {
     const UNKNOWN: WorkerToEdge = WorkerToEdge::Welcome(Welcome::Unknown {
         since: 0,
         entries: 0,
+        presences: 0,
+        applied: 0,
     });
-    const RESUMED: WorkerToEdge = WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 });
+    const RESUMED: WorkerToEdge = WorkerToEdge::Welcome(Welcome::Resumed {
+        entries: 0,
+        presences: 0,
+        applied: 0,
+    });
 
     /// An edge's end of a link that numbers what it sends, as an edge does.
     struct TestEdge {
@@ -2672,10 +2696,37 @@ mod tests {
         NEXT.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// The entity a player has in most of these tests, which their inputs name: the
+    /// players join a region that gives out the first block of entity ids, in the
+    /// order of [`player`], [`other_player`] and [`third_player`]. A test whose player
+    /// has another entity says so with [`of_entity`].
+    fn usual_entity(player: PlayerId) -> EntityId {
+        EntityId(i32::try_from(player.0.as_u128()).expect("a player of these tests"))
+    }
+
+    /// `input`, which has to be an input, as of the stay with `entity`.
+    fn of_entity(entity: EntityId, input: EdgeToWorker) -> EdgeToWorker {
+        match input {
+            EdgeToWorker::Input {
+                player,
+                number,
+                input,
+                ..
+            } => EdgeToWorker::Input {
+                player,
+                entity,
+                number,
+                input,
+            },
+            other => panic!("{other:?} is no input"),
+        }
+    }
+
     /// A step along the x axis as the input with the given number.
     fn walk_as(player: PlayerId, number: u64, x: f64) -> EdgeToWorker {
         EdgeToWorker::Input {
             player,
+            entity: usual_entity(player),
             number,
             input: PlayerInput::Move {
                 position: Some(Vec3::new(x, -60.0, 0.5)),
@@ -2692,6 +2743,7 @@ mod tests {
     fn dig_by(player: PlayerId, x: i32, sequence: i32) -> EdgeToWorker {
         EdgeToWorker::Input {
             player,
+            entity: usual_entity(player),
             number: next_number(),
             input: PlayerInput::Dig {
                 position: BlockPos::new(x, -61, 0),
@@ -2962,9 +3014,12 @@ mod tests {
             Ok(Some(WorkerToEdge::TickDelta { events, .. }))
                 if matches!(events[..], [RegionEvent::EntityMoved { .. }])
         ));
-        edge.send(EdgeToWorker::PlayerLeave { player: player() })
-            .await
-            .unwrap();
+        edge.send(EdgeToWorker::PlayerLeave {
+            player: player(),
+            entity: None,
+        })
+        .await
+        .unwrap();
         step(&mut runner);
         assert_eq!(edge.try_recv(), Ok(None));
     }
@@ -3652,7 +3707,10 @@ mod tests {
         // What the link they had still says about them no longer counts.
         first.send(walk(player(), 5.0)).await.unwrap();
         first
-            .send(EdgeToWorker::PlayerLeave { player: player() })
+            .send(EdgeToWorker::PlayerLeave {
+                player: player(),
+                entity: None,
+            })
             .await
             .unwrap();
         step(&mut runner);
@@ -3676,7 +3734,10 @@ mod tests {
         let (stranger, stranger_end) = in_process(256);
         let mut runner = runner(owner_end);
         runner.links().attach(stranger_end);
-        let leave = || EdgeToWorker::PlayerLeave { player: player() };
+        let leave = || EdgeToWorker::PlayerLeave {
+            player: player(),
+            entity: None,
+        };
 
         owner.send(join(player(), "Notch")).await.unwrap();
         step(&mut runner);
@@ -3704,9 +3765,12 @@ mod tests {
         step(&mut runner);
 
         edge.send(walk_as(player(), 900, 3.0)).await.unwrap();
-        edge.send(EdgeToWorker::PlayerLeave { player: player() })
-            .await
-            .unwrap();
+        edge.send(EdgeToWorker::PlayerLeave {
+            player: player(),
+            entity: None,
+        })
+        .await
+        .unwrap();
         edge.send(join(player(), "Notch")).await.unwrap();
         step(&mut runner);
         assert_eq!(
@@ -3714,8 +3778,10 @@ mod tests {
             Some((EntityId(2), Pose::at(SPAWN)))
         );
 
-        // Their new connection numbers what they do from the start again.
-        edge.send(walk_as(player(), 1, 4.0)).await.unwrap();
+        // Their new connection numbers what they do from the start again, and what
+        // they do is of the stay that began with the second join.
+        let anew = of_entity(EntityId(2), walk_as(player(), 1, 4.0));
+        edge.send(anew).await.unwrap();
         step(&mut runner);
         let (_, pose) = runner.region().player(player()).unwrap();
         assert_eq!(pose.position.x, 4.0);
@@ -3751,8 +3817,9 @@ mod tests {
 
             // The input the neighbour applied last is sent again and changes nothing;
             // the one after it takes the player back east.
-            edge.send(walk_as(player(), 7, 12.0)).await.unwrap();
-            edge.send(walk_as(player(), 8, 20.0)).await.unwrap();
+            let walk_to = |number, x| of_entity(entity, walk_as(player(), number, x));
+            edge.send(walk_to(7, 12.0)).await.unwrap();
+            edge.send(walk_to(8, 20.0)).await.unwrap();
             let message = step_for(&mut runner, &mut edge);
             let leaving = PlayerTransfer {
                 pose: Pose {
@@ -3929,7 +3996,10 @@ mod tests {
         let mut runner = runner(first_end);
         runner.links().attach(second_end);
         let status = runner.status();
-        let leave = || EdgeToWorker::PlayerLeave { player: player() };
+        let leave = || EdgeToWorker::PlayerLeave {
+            player: player(),
+            entity: None,
+        };
 
         first.send(join(player(), "Notch")).await.unwrap();
         step(&mut runner);
@@ -4092,7 +4162,9 @@ mod tests {
 
         // Both step out of the region; one of them comes back.
         edge.send(walk(player(), 20.0)).await.unwrap();
-        edge.send(walk_as(other_player(), 8, 20.0)).await.unwrap();
+        let arrived = EntityIds::block(3).unwrap().first;
+        let out = of_entity(arrived, walk_as(other_player(), 8, 20.0));
+        edge.send(out).await.unwrap();
         step(&mut runner);
         assert_eq!((population(), traffic()), ((0, 1), (1, 2)));
         edge.send(EdgeToWorker::PlayerArrive {
@@ -4463,7 +4535,7 @@ mod tests {
         runner.links().attach(worker_end);
         let asked = [player(), third_player(), other_player()];
         again.send(again.hello(1, &asked, &[])).await.unwrap();
-        let step_aside = walk(third_player(), 2.0);
+        let step_aside = of_entity(entity, walk(third_player(), 2.0));
         let EdgeToWorker::Input { number: input, .. } = step_aside else {
             unreachable!("a step is an input");
         };
@@ -4897,7 +4969,13 @@ mod tests {
         let mut runner = runner(worker_end);
         step(&mut runner);
         edge.everything();
-        let Some(Welcome::Unknown { since, entries: 0 }) = edge.welcomed else {
+        let Some(Welcome::Unknown {
+            since,
+            entries: 0,
+            presences: 0,
+            applied: 0,
+        }) = edge.welcomed
+        else {
             panic!("{:?}", edge.welcomed);
         };
         assert_eq!(since, runner.region().tick_number());
@@ -4911,10 +4989,13 @@ mod tests {
         step(&mut runner);
         step(&mut runner);
         unread.everything();
-        assert_eq!(
-            unread.welcomed,
-            Some(Welcome::Unknown { since, entries: 0 })
-        );
+        let again = Welcome::Unknown {
+            since,
+            entries: 0,
+            presences: 0,
+            applied: 0,
+        };
+        assert_eq!(unread.welcomed, Some(again));
         // What it sends from 1 is taken.
         unread.send(join(player(), "Notch")).await.unwrap();
         step(&mut runner);
@@ -4928,7 +5009,14 @@ mod tests {
         read.send(read.hello(0, &[player()], &[])).await.unwrap();
         step(&mut runner);
         read.everything();
-        assert_eq!(read.welcomed, Some(Welcome::Resumed { entries: 0 }));
+        // The one presence answer is for the player its hello named, and the one
+        // message the region has applied is the join.
+        let resumed = Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied: 1,
+        };
+        assert_eq!(read.welcomed, Some(resumed));
         assert!(runner.region().player(player()).is_some());
     }
 
@@ -4947,6 +5035,7 @@ mod tests {
             panic!("{:?}", edge.welcomed);
         };
         let (entity, _) = runner.region().player(player()).unwrap();
+        let before = runner.region().edge(edge.edge).unwrap().applied;
 
         let (edge_end, worker_end) = link::in_process(256);
         let mut lost = TestEdge::silent(edge_end, edge.edge, edge.start);
@@ -4959,9 +5048,13 @@ mod tests {
             runner.links.values().all(|link| link.hold.is_empty())
         });
         let told = lost.everything();
+        // The state the reset makes has applied nothing, whatever the one before had.
+        assert_eq!(before, 1);
         let Some(Welcome::Unknown {
             since: anew,
             entries: 0,
+            presences: 1,
+            applied: 0,
         }) = lost.welcomed
         else {
             panic!("{:?}", lost.welcomed);
@@ -5041,15 +5134,17 @@ mod tests {
             rotation: None,
             on_ground: true,
         };
-        inputs.input(edge, player(), 1, walk(beyond.x));
+        // The two who join in this tick get the first two ids of the block.
+        let (first, second) = (ids.first, EntityId(ids.first.0 + 1));
+        inputs.input(edge, player(), first, 1, walk(beyond.x));
         // The one who stays walks up to the neighbour and breaks a block of it, which
         // is passed on: a `Remote`.
-        inputs.input(edge, other_player(), 1, walk(14.5));
+        inputs.input(edge, other_player(), second, 1, walk(14.5));
         let dig = PlayerInput::Dig {
             position: BlockPos::new(16, -61, 0),
             sequence: 9,
         };
-        inputs.input(edge, other_player(), 2, dig);
+        inputs.input(edge, other_player(), second, 2, dig);
         let output = region.tick(&inputs);
         // The three entries whose shapes say where something goes.
         let kinds = output.durable.iter().map(|(_, _, entry)| match entry {
@@ -5060,7 +5155,36 @@ mod tests {
         });
         let kinds: Vec<_> = kinds.collect();
         assert_eq!(kinds, ["not mine", "remote", "departed"]);
-        (region.state(), output.delta)
+
+        // The two entries of a merge and of a split, which no tick makes yet
+        // (ADR-0014, section 9): they are put behind the others by hand, into the
+        // state's outbox and among what the delta adds, so that the delta still
+        // turns the state before the tick into this one.
+        let (mut state, mut delta) = (region.state(), output.delta);
+        let absorbed = Durable::Absorbed {
+            region: EAST,
+            since: 4,
+            applied: 6,
+            numbers: vec![1, 3],
+        };
+        let split_off = Durable::SplitOff {
+            region: RegionId(9),
+            players: vec![(third_player(), EntityId(77))],
+        };
+        let known = state
+            .edges
+            .get_mut(&edge)
+            .expect("the state knows the edge");
+        let change = delta.edges.iter_mut().find(|(id, _)| *id == edge);
+        let change = change.and_then(|(_, change)| change.as_mut());
+        let change = change.expect("the edge changed in the tick");
+        for entry in [absorbed, split_off] {
+            known.sent += 1;
+            known.outbox.insert(known.sent, entry.clone());
+            change.added.push((known.sent, entry));
+        }
+        change.sent = known.sent;
+        (state, delta)
     }
 
     /// What is stored of a region is read back by its first two bytes. Postcard writes
@@ -5073,29 +5197,31 @@ mod tests {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 2);
+        assert_eq!(STATE_FORMAT, 3);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "0002020280808001060110000000000000000000000000000000020404416c65780000000000002d",
+                "0003020280808001060110000000000000000000000000000000020404416c65780000000000002d",
                 "400000000000004ec0000000000000e03f0000000000000000010000000000000000000002000701",
-                "07030102030301040010000000000000000000000000000000039a01054e6f746368000000000040",
+                "07030102050501040010000000000000000000000000000000039a01054e6f746368000000000040",
                 "44400000000000004ec0000000000000e03f00000000000000000000000000000000000000050102",
                 "02100000000000000000000000000000000212002079000101030010000000000000000000000000",
                 "000000010205537465766500000000004044400000000000004ec0000000000000e03f0000000000",
-                "00000001000000000000000000000101",
+                "00000001000000000000000000000101040501040602010305060901100000000000000000000000",
+                "00000000039a01",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00020201060210000000000000000000000000000000010010000000000000000000000000000000",
+                "00030201060210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010404416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
-                "01000000000000000000000200070107010301020300000301040010000000000000000000000000",
+                "01000000000000000000000200070107010301020500000501040010000000000000000000000000",
                 "000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f00000000",
                 "00000000000000000000000000000005010202100000000000000000000000000000000212002079",
                 "00010103001000000000000000000000000000000001020553746576650000000000404440000000",
-                "0000004ec0000000000000e03f000000000000000001000000000000000000000101",
+                "0000004ec0000000000000e03f000000000000000001000000000000000000000101040501040602",
+                "01030506090110000000000000000000000000000000039a01",
             )
         );
     }

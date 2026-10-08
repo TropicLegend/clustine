@@ -199,10 +199,22 @@ fn changes(list: Vec<PlayerChange>) -> TickInputs {
     inputs
 }
 
-fn single_input(edge: EdgeId, id: PlayerId, number: u64, input: PlayerInput) -> TickInputs {
+fn single_input(
+    edge: EdgeId,
+    id: PlayerId,
+    entity: EntityId,
+    number: u64,
+    input: PlayerInput,
+) -> TickInputs {
     let mut inputs = TickInputs::default();
-    inputs.input(edge, id, number, input);
+    inputs.input(edge, id, entity, number, input);
     inputs
+}
+
+/// The entity of the `n`th player to enter a region that gives out [`ids`], counted
+/// from 1: what an edge is told when the player has spawned, and names in their inputs.
+fn entity(n: i32) -> EntityId {
+    EntityId(ids().first.0 + n - 1)
 }
 
 /// A step to the point with these x and z coordinates, on the stone.
@@ -685,7 +697,7 @@ impl World {
                 PlayerChange::Join(..) | PlayerChange::Leave(..) => {}
             }
         }
-        for (_, _, _, input) in &inputs.inputs {
+        for (_, _, _, _, input) in &inputs.inputs {
             match input {
                 PlayerInput::Move {
                     position: Some(position),
@@ -1664,7 +1676,7 @@ fn a_player_who_walks_into_an_unknown_chunk_stays_and_the_chunk_is_claimed_in_th
 {
     let mut world = on_open_land(0);
     assert_eq!(world.knowledge(EAST), Knowledge::Unknown);
-    let output = world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+    let output = world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
     assert_eq!(output.claims, [EAST]);
     assert!(output.durable.is_empty());
     assert_eq!(world.knowledge(EAST), Knowledge::Asked);
@@ -1672,8 +1684,8 @@ fn a_player_who_walks_into_an_unknown_chunk_stays_and_the_chunk_is_claimed_in_th
 
     // What they do next is applied: a step on, and a block of their region's own chunk
     // broken from where they stand.
-    let mut inputs = single_input(E, player(1), 2, move_to(18.5));
-    inputs.input(E, player(1), 3, dig(BORDER_BLOCK_A, 1));
+    let mut inputs = single_input(E, player(1), entity(1), 2, move_to(18.5));
+    inputs.input(E, player(1), entity(1), 3, dig(BORDER_BLOCK_A, 1));
     let output = world.tick(&inputs);
     assert_eq!(acknowledged(&output), [(player(1), 1)]);
     assert_eq!(block_changes(&output), [(BORDER_BLOCK_A, blocks::AIR)]);
@@ -1689,7 +1701,7 @@ fn a_player_who_walks_into_an_unknown_chunk_stays_and_the_chunk_is_claimed_in_th
         let output = world.idle();
         assert!(output.returns.is_empty() && output.durable.is_empty());
     }
-    world.tick(&single_input(E, player(1), 4, move_to(19.5)));
+    world.tick(&single_input(E, player(1), entity(1), 4, move_to(19.5)));
     assert_eq!(world.state_of(player(1)).pose.position.x, 19.5);
     // Standing in it loads nothing: that is for the ticket of their edge.
     assert!(world.region.chunk(EAST).is_none());
@@ -1698,8 +1710,8 @@ fn a_player_who_walks_into_an_unknown_chunk_stays_and_the_chunk_is_claimed_in_th
 #[test]
 fn a_player_in_a_chunk_that_turns_out_to_be_anothers_is_let_go_in_the_tick_of_the_answer() {
     let mut world = on_open_land(0);
-    world.tick(&single_input(E, player(1), 1, move_to(17.5)));
-    world.tick(&single_input(E, player(1), 2, move_to(18.5)));
+    world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
+    world.tick(&single_input(E, player(1), entity(1), 2, move_to(18.5)));
     assert!(world.idle().durable.is_empty(), "not before the answer");
     let before = world.state_of(player(1));
     assert_eq!((before.pose.position.x, before.last_input), (18.5, 2));
@@ -1709,15 +1721,21 @@ fn a_player_in_a_chunk_that_turns_out_to_be_anothers_is_let_go_in_the_tick_of_th
     // chunk, another slot in hand, a slot emptied, and a step back into the region's
     // chunk. None of it is applied.
     let mut inputs = foreign(&[(EAST, OTHER)]);
-    inputs.input(E, player(1), 3, move_to(19.5));
-    inputs.input(E, player(1), 4, dig(BORDER_BLOCK_A, 7));
-    inputs.input(E, player(1), 5, PlayerInput::SelectSlot { slot: 3 });
+    inputs.input(E, player(1), entity(1), 3, move_to(19.5));
+    inputs.input(E, player(1), entity(1), 4, dig(BORDER_BLOCK_A, 7));
+    inputs.input(
+        E,
+        player(1),
+        entity(1),
+        5,
+        PlayerInput::SelectSlot { slot: 3 },
+    );
     let emptied = PlayerInput::SetHotbarSlot {
         slot: 0,
         stack: None,
     };
-    inputs.input(E, player(1), 6, emptied);
-    inputs.input(E, player(1), 7, move_to(14.5));
+    inputs.input(E, player(1), entity(1), 6, emptied);
+    inputs.input(E, player(1), entity(1), 7, move_to(14.5));
     let output = world.tick(&inputs);
 
     assert_eq!(
@@ -1748,10 +1766,10 @@ fn a_player_in_a_chunk_that_turns_out_to_be_anothers_is_let_go_in_the_tick_of_th
 #[test]
 fn a_player_is_let_go_by_an_answer_that_comes_in_the_tick_after_the_step() {
     let mut world = on_open_land(0);
-    world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+    world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
     let before = world.state_of(player(1));
     let mut inputs = foreign(&[(EAST, REGION_B)]);
-    inputs.input(E, player(1), 2, move_to(12.5));
+    inputs.input(E, player(1), entity(1), 2, move_to(12.5));
     let output = world.tick(&inputs);
     assert_eq!(
         entries(&output),
@@ -1768,8 +1786,8 @@ fn a_player_is_let_go_by_an_answer_that_comes_in_the_tick_after_the_step() {
 fn a_player_who_has_walked_out_again_before_the_answer_stays_whatever_it_is() {
     // Another's: nobody stands in it any more, so nobody is let go.
     let mut world = on_open_land(0);
-    world.tick(&single_input(E, player(1), 1, move_to(17.5)));
-    world.tick(&single_input(E, player(1), 2, move_to(14.5)));
+    world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
+    world.tick(&single_input(E, player(1), entity(1), 2, move_to(14.5)));
     assert_eq!(world.knowledge(EAST), Knowledge::Asked);
     let output = world.tick(&foreign(&[(EAST, REGION_B)]));
     assert!(output.durable.is_empty());
@@ -1778,8 +1796,8 @@ fn a_player_who_has_walked_out_again_before_the_answer_stays_whatever_it_is() {
 
     // Granted: it is the region's, and nothing uses it.
     let mut world = on_open_land(0);
-    world.tick(&single_input(E, player(1), 1, move_to(17.5)));
-    world.tick(&single_input(E, player(1), 2, move_to(14.5)));
+    world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
+    world.tick(&single_input(E, player(1), entity(1), 2, move_to(14.5)));
     let output = world.tick(&granted(&[EAST]));
     assert_eq!(output.returns, [EAST]);
     assert!(world.region.player(player(1)).is_some());
@@ -1789,9 +1807,9 @@ fn a_player_who_has_walked_out_again_before_the_answer_stays_whatever_it_is() {
 fn a_player_who_walks_on_into_a_second_unknown_chunk_has_both_claimed() {
     let mut world = on_open_land(0);
     let further = ChunkPos::new(2, 0);
-    let output = world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+    let output = world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
     assert_eq!(output.claims, [EAST]);
-    let output = world.tick(&single_input(E, player(1), 2, move_to(33.5)));
+    let output = world.tick(&single_input(E, player(1), entity(1), 2, move_to(33.5)));
     assert_eq!(output.claims, [further]);
 
     // The first is another's, and nobody stands in it: the player stays. The second is
@@ -1810,12 +1828,17 @@ fn a_player_who_walks_on_into_a_second_unknown_chunk_has_both_claimed() {
     );
 }
 
+/// The entity ids region 1 of the stripes gives out.
+fn eastern_ids() -> EntityIds {
+    EntityIds::block(4).expect("block 4 exists")
+}
+
 /// Region 1 of the stripes. It has entity ids, and the chunk players enter the world in
 /// is not of its area.
 fn eastern() -> World {
     World::new(
         config(0),
-        EntityIds::block(4).expect("block 4 exists"),
+        eastern_ids(),
         Holdings {
             held: Vec::new(),
             pinned: vec![EASTERN],
@@ -1842,7 +1865,7 @@ fn a_player_who_joins_at_a_spawn_point_the_region_knows_nothing_of_stays_until_t
 
     // The store names the holder: they are let go to it in that tick, as they joined.
     let mut inputs = foreign(&[(HOME, REGION_A)]);
-    inputs.input(E, player(1), 1, move_to(13.5));
+    inputs.input(E, player(1), joined.entity_id, 1, move_to(13.5));
     let output = world.tick(&inputs);
     assert_eq!(
         output.durable,
@@ -1867,7 +1890,8 @@ fn a_player_who_joins_at_a_spawn_point_the_region_believes_anothers_is_let_go_at
     world.learn(HOME, REGION_A);
     world.tick(&edges(vec![started(E, 10)]));
     let mut inputs = changes(vec![join(E, player(1))]);
-    inputs.input(E, player(1), 1, move_to(20.5));
+    // The first to enter the region gets the first id of its block.
+    inputs.input(E, player(1), eastern_ids().first, 1, move_to(20.5));
     let output = world.tick(&inputs);
     match output.durable.as_slice() {
         [
@@ -1910,7 +1934,7 @@ fn a_player_who_joins_the_home_region_before_it_has_asked_for_its_spawn_chunk_st
         "a player loads no chunk by standing in it"
     );
     assert_eq!(world.knowledge(HOME), Knowledge::Held);
-    world.tick(&single_input(E, player(1), 1, move_to(13.5)));
+    world.tick(&single_input(E, player(1), entity(1), 1, move_to(13.5)));
     assert_eq!(world.state_of(player(1)).pose.position.x, 13.5);
 }
 
@@ -1927,12 +1951,24 @@ fn a_player_who_steps_into_a_chunk_believed_anothers_is_let_go_in_that_tick_to_t
     // A step within the region's own chunk and another slot in hand, the step across,
     // and behind it a block of the region's own chunk, a third slot and a step back,
     // which are for the next region to apply.
-    let mut inputs = single_input(E, player(1), 1, move_to(12.5));
-    inputs.input(E, player(1), 2, PlayerInput::SelectSlot { slot: 2 });
-    inputs.input(E, player(1), 3, move_to(17.5));
-    inputs.input(E, player(1), 4, dig(OWN_BLOCK, 1));
-    inputs.input(E, player(1), 5, PlayerInput::SelectSlot { slot: 6 });
-    inputs.input(E, player(1), 6, move_to(14.5));
+    let mut inputs = single_input(E, player(1), entity(1), 1, move_to(12.5));
+    inputs.input(
+        E,
+        player(1),
+        entity(1),
+        2,
+        PlayerInput::SelectSlot { slot: 2 },
+    );
+    inputs.input(E, player(1), entity(1), 3, move_to(17.5));
+    inputs.input(E, player(1), entity(1), 4, dig(OWN_BLOCK, 1));
+    inputs.input(
+        E,
+        player(1),
+        entity(1),
+        5,
+        PlayerInput::SelectSlot { slot: 6 },
+    );
+    inputs.input(E, player(1), entity(1), 6, move_to(14.5));
     let output = world.tick(&inputs);
 
     let expected = PlayerTransfer {
@@ -1973,7 +2009,7 @@ fn a_player_is_let_go_to_the_region_the_store_named_last() {
     // The answer that changes the holder comes in the tick of the step.
     let mut world = at_the_line();
     let mut inputs = foreign(&[(EAST, OTHER)]);
-    inputs.input(E, player(1), 1, move_to(17.5));
+    inputs.input(E, player(1), entity(1), 1, move_to(17.5));
     let output = world.tick(&inputs);
     assert!(matches!(
         output.durable.as_slice(),
@@ -1986,8 +2022,8 @@ fn a_player_who_steps_into_a_chunk_in_the_tick_it_is_called_anothers_is_let_go_i
     // `SOUTH` was asked for a viewer's ticket; the answer and the step come together.
     let mut world = at_the_line();
     let mut inputs = foreign(&[(SOUTH, OTHER)]);
-    inputs.input(E, player(1), 1, walk(8.5, 20.5));
-    inputs.input(E, player(1), 2, walk(8.5, 8.5));
+    inputs.input(E, player(1), entity(1), 1, walk(8.5, 20.5));
+    inputs.input(E, player(1), entity(1), 2, walk(8.5, 8.5));
     let output = world.tick(&inputs);
     match output.durable.as_slice() {
         [(E, 1, Durable::Departed { transfer, to, .. })] => {
@@ -2004,8 +2040,8 @@ fn a_player_who_steps_across_and_back_within_the_inputs_of_one_tick_is_let_go_at
     // What a player does while standing in a chunk believed another's is not applied,
     // so the step back is not, and they stand across at the end of the tick.
     let mut world = at_the_line();
-    let mut inputs = single_input(E, player(1), 1, move_to(16.5));
-    inputs.input(E, player(1), 2, move_to(14.5));
+    let mut inputs = single_input(E, player(1), entity(1), 1, move_to(16.5));
+    inputs.input(E, player(1), entity(1), 2, move_to(14.5));
     let output = world.tick(&inputs);
     match output.durable.as_slice() {
         [(E, 1, Durable::Departed { transfer, to, .. })] => {
@@ -2061,7 +2097,7 @@ fn an_arrival_for_an_unknown_chunk_is_taken_in_and_the_chunk_claimed() {
     assert_eq!(world.knowledge(NORTH), Knowledge::Asked);
 
     // They are the region's like any other player: what they do is applied.
-    world.tick(&single_input(F, player(5), 18, walk(8.5, -4.5)));
+    world.tick(&single_input(F, player(5), TRAVELLER, 18, walk(8.5, -4.5)));
     assert_eq!(world.state_of(player(5)).last_input, 18);
     // Once the store grants the chunk, as it does for a pinned region, they stay.
     let output = world.tick(&granted(&[NORTH]));
@@ -2199,7 +2235,7 @@ fn a_leave_behind_an_arrival_that_went_on_finds_nobody() {
     let arriving = transfer(TRAVELLER, 3, IN_EAST);
     let output = world.tick(&changes(vec![
         PlayerChange::Arrive(E, player(5), arriving.clone()),
-        PlayerChange::Leave(E, player(5)),
+        PlayerChange::Leave(E, player(5), None),
     ]));
     assert_eq!(
         entries(&output),
@@ -2321,7 +2357,7 @@ fn dropping_an_outbox_with_a_departure_and_an_arrival_that_went_on_reports_their
         // again, for the chunk across the line, and goes on.
         let mut world = at_the_line();
         let own = world.state_of(player(1)).entity_id;
-        let output = world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+        let output = world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
         let [(E, 1, Durable::Departed { transfer, .. })] = output.durable.as_slice() else {
             panic!("expected a departure, got {:?}", output.durable);
         };
@@ -2444,7 +2480,7 @@ fn two_outboxes_dropped_in_one_tick_report_a_departed_entity_in_both_removed_onc
         // steps across again: a departure of one entity in either outbox.
         let mut world = at_the_line();
         let own = world.state_of(player(1)).entity_id;
-        let output = world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+        let output = world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
         let [(E, 1, Durable::Departed { transfer, .. })] = output.durable.as_slice() else {
             panic!("expected a departure, got {:?}", output.durable);
         };
@@ -2453,7 +2489,7 @@ fn two_outboxes_dropped_in_one_tick_report_a_departed_entity_in_both_removed_onc
             ..transfer.clone()
         };
         world.tick(&arrive(F, player(1), back));
-        let output = world.tick(&single_input(F, player(1), 2, move_to(17.5)));
+        let output = world.tick(&single_input(F, player(1), entity(1), 2, move_to(17.5)));
         assert!(matches!(
             output.durable.as_slice(),
             [(F, 1, Durable::Departed { .. })]
@@ -2490,9 +2526,9 @@ fn an_arrival_that_is_taken_in_and_steps_across_in_the_same_tick_is_let_go_in_it
     // into a chunk believed another's lets the player go like any other.
     let mut world = at_the_line();
     let mut inputs = arrive(F, player(5), transfer(TRAVELLER, 17, IN_HOME));
-    inputs.input(F, player(5), 18, move_to(13.5));
-    inputs.input(F, player(5), 19, move_to(17.5));
-    inputs.input(F, player(5), 20, move_to(13.5));
+    inputs.input(F, player(5), TRAVELLER, 18, move_to(13.5));
+    inputs.input(F, player(5), TRAVELLER, 19, move_to(17.5));
+    inputs.input(F, player(5), TRAVELLER, 20, move_to(13.5));
     let output = world.tick(&inputs);
     match output.durable.as_slice() {
         [(F, 1, Durable::Departed { transfer, to, .. })] => {
@@ -2535,7 +2571,13 @@ fn break_at(position: BlockPos) -> RemoteStep {
 #[test]
 fn a_dig_at_a_block_of_a_chunk_believed_anothers_is_passed_on_with_that_region() {
     let mut world = at_the_line();
-    let output = world.tick(&single_input(E, player(1), 1, dig(BORDER_BLOCK_B, 5)));
+    let output = world.tick(&single_input(
+        E,
+        player(1),
+        entity(1),
+        1,
+        dig(BORDER_BLOCK_B, 5),
+    ));
     assert_eq!(
         output.durable,
         vec![(
@@ -2557,8 +2599,20 @@ fn a_dig_at_a_block_of_a_chunk_believed_anothers_is_passed_on_with_that_region()
 #[test]
 fn a_dig_at_a_block_of_a_chunk_the_region_has_asked_for_is_passed_on_without_a_region() {
     let mut world = at_the_line();
-    world.tick(&single_input(E, player(1), 1, walk(BY_SOUTH.x, BY_SOUTH.z)));
-    let output = world.tick(&single_input(E, player(1), 2, dig(SOUTH_BLOCK, 5)));
+    world.tick(&single_input(
+        E,
+        player(1),
+        entity(1),
+        1,
+        walk(BY_SOUTH.x, BY_SOUTH.z),
+    ));
+    let output = world.tick(&single_input(
+        E,
+        player(1),
+        entity(1),
+        2,
+        dig(SOUTH_BLOCK, 5),
+    ));
     assert_eq!(
         output.durable,
         vec![(
@@ -2581,8 +2635,8 @@ fn a_dig_at_a_block_of_a_chunk_the_region_has_asked_for_is_passed_on_without_a_r
 fn a_dig_at_a_block_of_an_unknown_chunk_is_passed_on_without_a_region_and_claims_nothing() {
     let mut world = at_the_line();
     // The step and the dig in one tick: the entry is of the tick of the input.
-    let mut inputs = single_input(E, player(1), 1, walk(BY_NORTH.x, BY_NORTH.z));
-    inputs.input(E, player(1), 2, dig(NORTH_BLOCK, 5));
+    let mut inputs = single_input(E, player(1), entity(1), 1, walk(BY_NORTH.x, BY_NORTH.z));
+    inputs.input(E, player(1), entity(1), 2, dig(NORTH_BLOCK, 5));
     let output = world.tick(&inputs);
     assert_eq!(
         output.durable,
@@ -2613,10 +2667,16 @@ fn a_dig_in_the_tick_its_chunk_is_called_anothers_names_that_region_although_not
     // Between a `foreign` and the end of its tick the chunk is believed that region's in
     // either case.
     let mut world = at_the_line();
-    world.tick(&single_input(E, player(1), 1, walk(BY_SOUTH.x, BY_SOUTH.z)));
+    world.tick(&single_input(
+        E,
+        player(1),
+        entity(1),
+        1,
+        walk(BY_SOUTH.x, BY_SOUTH.z),
+    ));
     world.tick(&remove(&[viewer(SOUTH)]));
     let mut inputs = foreign(&[(SOUTH, OTHER)]);
-    inputs.input(E, player(1), 2, dig(SOUTH_BLOCK, 5));
+    inputs.input(E, player(1), entity(1), 2, dig(SOUTH_BLOCK, 5));
     let output = world.tick(&inputs);
     assert_eq!(
         entries(&output),
@@ -2636,7 +2696,13 @@ fn a_dig_out_of_reach_is_acknowledged_and_nothing_else_whatever_the_chunk() {
         let known = world.knowledge(block.chunk());
         let number = index as u64 + 1;
         let sequence = index as i32 + 20;
-        let output = world.tick(&single_input(E, player(1), number, dig(block, sequence)));
+        let output = world.tick(&single_input(
+            E,
+            player(1),
+            entity(1),
+            number,
+            dig(block, sequence),
+        ));
         assert_eq!(acknowledged(&output), [(player(1), sequence)], "{block:?}");
         assert!(output.durable.is_empty(), "{block:?}");
         assert!(output.events.is_empty() && output.claims.is_empty());
@@ -2661,9 +2727,9 @@ fn a_dig_at_a_block_of_a_held_chunk_that_is_not_loaded_is_acknowledged_without_e
     assert_eq!(output.chunk_requests, [NORTH]);
     assert_eq!(world.knowledge(WEST), Knowledge::Held);
 
-    world.tick(&single_input(E, player(1), 1, walk(1.5, 1.5)));
-    let mut inputs = single_input(E, player(1), 2, dig(BlockPos::new(-1, 63, 1), 8));
-    inputs.input(E, player(1), 3, dig(BlockPos::new(1, 63, -1), 9));
+    world.tick(&single_input(E, player(1), entity(1), 1, walk(1.5, 1.5)));
+    let mut inputs = single_input(E, player(1), entity(1), 2, dig(BlockPos::new(-1, 63, 1), 8));
+    inputs.input(E, player(1), entity(1), 3, dig(BlockPos::new(1, 63, -1), 9));
     let output = world.tick(&inputs);
     assert_eq!(acknowledged(&output).last(), Some(&(player(1), 9)));
     assert!(output.durable.is_empty() && output.events.is_empty());
@@ -2695,14 +2761,26 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// nothing was placed or acknowledged and no chunk claimed for it.
 fn placed_from(from: Vec3, position: BlockPos, face: Face) -> Vec<(EdgeId, u64, Durable)> {
     let mut world = at_the_line();
-    world.tick(&single_input(E, player(1), 1, walk(from.x, from.z)));
+    world.tick(&single_input(
+        E,
+        player(1),
+        entity(1),
+        1,
+        walk(from.x, from.z),
+    ));
     let home = world.region.chunk(HOME).cloned();
     let known: Vec<Knowledge> = [HOME, EAST, SOUTH, NORTH]
         .iter()
         .map(|chunk| world.knowledge(*chunk))
         .collect();
 
-    let output = world.tick(&single_input(E, player(1), 2, use_on(position, face, 6)));
+    let output = world.tick(&single_input(
+        E,
+        player(1),
+        entity(1),
+        2,
+        use_on(position, face, 6),
+    ));
 
     assert!(block_changes(&output).is_empty(), "nothing is placed");
     assert_eq!(world.region.chunk(HOME).cloned(), home);
@@ -2812,7 +2890,7 @@ fn a_placement_without_a_block_in_hand_or_out_of_reach_is_acknowledged_whatever_
         let number = index as u64 + 1;
         let sequence = index as i32 + 30;
         let input = use_on(block, Face::Top, sequence);
-        let output = world.tick(&single_input(E, player(1), number, input));
+        let output = world.tick(&single_input(E, player(1), entity(1), number, input));
         assert_eq!(acknowledged(&output), [(player(1), sequence)], "{block:?}");
         assert!(output.durable.is_empty() && output.events.is_empty());
         assert!(output.claims.is_empty());
@@ -2821,6 +2899,7 @@ fn a_placement_without_a_block_in_hand_or_out_of_reach_is_acknowledged_whatever_
     world.tick(&single_input(
         E,
         player(1),
+        entity(1),
         10,
         PlayerInput::SelectSlot { slot: 4 },
     ));
@@ -2835,7 +2914,7 @@ fn a_placement_without_a_block_in_hand_or_out_of_reach_is_acknowledged_whatever_
         let number = index as u64 + 11;
         let sequence = index as i32 + 40;
         let input = use_on(block, face, sequence);
-        let output = world.tick(&single_input(E, player(1), number, input));
+        let output = world.tick(&single_input(E, player(1), entity(1), number, input));
         assert_eq!(acknowledged(&output), [(player(1), sequence)], "{block:?}");
         assert!(output.durable.is_empty() && output.events.is_empty());
     }
@@ -2847,7 +2926,13 @@ fn a_placement_against_no_block_of_a_held_chunk_is_acknowledged_and_goes_nowhere
     // the line: there is nothing to place against, so nothing is left to ask.
     let mut world = at_the_line();
     let air = BORDER_BLOCK_A.offset(0, 1, 0);
-    let output = world.tick(&single_input(E, player(1), 1, use_on(air, Face::East, 6)));
+    let output = world.tick(&single_input(
+        E,
+        player(1),
+        entity(1),
+        1,
+        use_on(air, Face::East, 6),
+    ));
     assert_eq!(acknowledged(&output), [(player(1), 6)]);
     assert!(output.durable.is_empty() && output.events.is_empty());
 }
@@ -2859,6 +2944,7 @@ fn a_placement_within_the_held_chunk_is_placed_and_acknowledged() {
     let output = world.tick(&single_input(
         E,
         player(1),
+        entity(1),
         1,
         use_on(spot.offset(0, -1, 0), Face::Top, 6),
     ));
@@ -3101,11 +3187,19 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
         join(E, player(8)),
     ]);
     inputs.remote_actions = vec![(F, done), (E, theirs.clone()), (F, nobodys.clone())];
-    inputs.input(F, player(4), 1, move_to(17.5));
-    inputs.input(E, player(1), 1, dig(BORDER_BLOCK_B, 11));
-    inputs.input(F, player(2), 1, use_on(BORDER_BLOCK_A, Face::East, 12));
-    inputs.input(E, player(3), 1, move_to(18.5));
-    inputs.input(E, player(3), 2, dig(BORDER_BLOCK_B, 13));
+    // The four entered in the order of their numbers and have the block's four ids.
+    let entity = |n: i32| EntityId(four.first.0 + n - 1);
+    inputs.input(F, player(4), entity(4), 1, move_to(17.5));
+    inputs.input(E, player(1), entity(1), 1, dig(BORDER_BLOCK_B, 11));
+    inputs.input(
+        F,
+        player(2),
+        entity(2),
+        1,
+        use_on(BORDER_BLOCK_A, Face::East, 12),
+    );
+    inputs.input(E, player(3), entity(3), 1, move_to(18.5));
+    inputs.input(E, player(3), entity(3), 2, dig(BORDER_BLOCK_B, 13));
     let output = world.tick(&inputs);
 
     let departed = |index: usize| match &output.durable[index].2 {
@@ -3249,7 +3343,7 @@ fn a_chunk_with_a_player_in_it_or_a_ticket_of_either_kind_is_not_given_back() {
         tickets_removed: vec![viewer(WEST)],
         ..TickInputs::default()
     });
-    let output = world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+    let output = world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
     assert_eq!(output.claims, [EAST]);
     world.tick(&granted(&[EAST]));
 
@@ -3269,7 +3363,7 @@ fn a_chunk_with_a_player_in_it_or_a_ticket_of_either_kind_is_not_given_back() {
     assert_eq!(output.returns, [SOUTH]);
     let output = world.tick(&remove(&[guest(WEST)]));
     assert_eq!(output.returns, [WEST]);
-    let output = world.tick(&single_input(E, player(1), 2, move_to(14.5)));
+    let output = world.tick(&single_input(E, player(1), entity(1), 2, move_to(14.5)));
     assert_eq!(output.returns, [EAST]);
     for chunk in [EAST, WEST, SOUTH] {
         assert_eq!(world.knowledge(chunk), Knowledge::Unknown);
@@ -3288,7 +3382,7 @@ fn the_chunk_of_the_spawn_point_is_never_given_back() {
 
         // Used and then left: the player walks off and the ticket goes.
         let mut world = on_open_land(return_after);
-        world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+        world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
         world.tick(&remove(&[viewer(HOME)]));
         world.tick(&granted(&[EAST]));
         for _ in 0..return_after + 12 {
@@ -3384,13 +3478,13 @@ fn a_ticket_that_comes_and_goes_within_one_tick_is_no_use_at_the_end_of_any() {
 #[test]
 fn a_player_who_passes_through_starts_the_time_before_a_return_anew() {
     let mut world = on_open_land(5);
-    let step = world.tick(&single_input(E, player(1), 1, move_to(17.5)));
+    let step = world.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
     assert_eq!(step.claims, [EAST]);
     world.tick(&granted(&[EAST]));
     for _ in 0..8 {
         assert!(world.idle().returns.is_empty(), "while they stand in it");
     }
-    let left = world.tick(&single_input(E, player(1), 2, move_to(14.5)));
+    let left = world.tick(&single_input(E, player(1), entity(1), 2, move_to(14.5)));
     assert!(left.returns.is_empty());
     assert_eq!(
         given_back(&mut world, EAST, left.tick + 20),
@@ -3591,7 +3685,7 @@ fn what_storage_delivers_for_a_chunk_that_was_not_asked_of_it_is_dropped() {
     // The chunk is loaded and has been changed since; a second delivery of it, which
     // nothing asked for, must not put the stored chunk in its place.
     let mut world = on_open_land(0);
-    world.tick(&single_input(E, player(1), 1, dig(OWN_BLOCK, 1)));
+    world.tick(&single_input(E, player(1), entity(1), 1, dig(OWN_BLOCK, 1)));
     assert_eq!(world.block(OWN_BLOCK), Some(blocks::AIR));
     world.tick(&delivered(&[HOME]));
     assert_eq!(world.block(OWN_BLOCK), Some(blocks::AIR));
@@ -3682,7 +3776,7 @@ fn a_restored_region_given_the_same_tickets_and_answers_believes_the_same() {
 /// player as they are.
 fn standing_in_east() -> (RegionState, PlayerState) {
     let mut original = on_open_land(0);
-    original.tick(&single_input(E, player(1), 1, move_to(17.5)));
+    original.tick(&single_input(E, player(1), entity(1), 1, move_to(17.5)));
     let state = original.region.state();
     let standing = state.players[&player(1)].clone();
     (state, standing)
@@ -3701,7 +3795,7 @@ fn a_restored_player_in_a_chunk_the_store_does_not_name_stays_and_the_chunk_is_c
 
     // The first tick claims the chunk, and what the player does in it is applied: the
     // region does not believe the chunk another's.
-    let output = world.tick(&single_input(E, player(1), 2, move_to(18.5)));
+    let output = world.tick(&single_input(E, player(1), entity(1), 2, move_to(18.5)));
     assert_eq!(output.claims, [EAST]);
     assert!(output.durable.is_empty() && output.returns.is_empty());
     let state = world.state_of(player(1));
@@ -4091,7 +4185,7 @@ impl Wander {
                         walk(position.x, position.z)
                     };
                     self.next_input += 1;
-                    inputs.input(present.edge, id, self.next_input, input);
+                    inputs.input(present.edge, id, present.entity_id, self.next_input, input);
                 }
             } else if let Some(index) = away {
                 if random.once_in(3) {
@@ -4331,8 +4425,8 @@ fn check_made_up_tick(
         made.push(Made::Entry(*edge, entry));
     }
 
-    // Step 6.
-    for (edge, id, number, input) in &inputs.inputs {
+    // Step 6. The entity an input names is not looked at yet.
+    for (edge, id, _, number, input) in &inputs.inputs {
         let Some(walker) = here.get_mut(id) else {
             continue;
         };
@@ -4569,9 +4663,9 @@ fn script() -> Vec<TickInputs> {
         ]),
     ];
     let mut inputs = TickInputs::default();
-    inputs.input(E, player(1), 1, dig(OWN_BLOCK, 1));
-    inputs.input(F, player(2), 1, dig(BORDER_BLOCK_B, 1));
-    inputs.input(E, player(3), 1, walk(BY_SOUTH.x, BY_SOUTH.z));
+    inputs.input(E, player(1), entity(1), 1, dig(OWN_BLOCK, 1));
+    inputs.input(F, player(2), entity(2), 1, dig(BORDER_BLOCK_B, 1));
+    inputs.input(E, player(3), entity(3), 1, walk(BY_SOUTH.x, BY_SOUTH.z));
     inputs.applied = vec![(E, 4), (F, 2)];
     script.push(inputs);
 
@@ -4583,21 +4677,33 @@ fn script() -> Vec<TickInputs> {
         ],
         ..TickInputs::default()
     };
-    inputs.input(E, player(3), 2, dig(SOUTH_BLOCK, 1));
-    inputs.input(E, player(3), 3, use_on(BY_SOUTH_BLOCK, Face::South, 2));
-    inputs.input(F, player(2), 2, use_on(BORDER_BLOCK_B, Face::Top, 2));
+    inputs.input(E, player(3), entity(3), 2, dig(SOUTH_BLOCK, 1));
+    inputs.input(
+        E,
+        player(3),
+        entity(3),
+        3,
+        use_on(BY_SOUTH_BLOCK, Face::South, 2),
+    );
+    inputs.input(
+        F,
+        player(2),
+        entity(2),
+        2,
+        use_on(BORDER_BLOCK_B, Face::Top, 2),
+    );
     script.push(inputs);
 
     // Player 3 walks into the chunk that is asked for, and player 1 across the line.
-    let mut inputs = single_input(E, player(3), 4, walk(8.5, 20.5));
-    inputs.input(E, player(1), 2, move_to(17.5));
-    inputs.input(E, player(1), 3, dig(OWN_BLOCK, 2));
+    let mut inputs = single_input(E, player(3), entity(3), 4, walk(8.5, 20.5));
+    inputs.input(E, player(1), entity(1), 2, move_to(17.5));
+    inputs.input(E, player(1), entity(1), 3, dig(OWN_BLOCK, 2));
     script.push(inputs);
     script.push(edges(vec![EdgeEvent::Confirmed { edge: E, number: 2 }]));
 
     // The store's answer for it, with more of player 3 behind.
     let mut inputs = foreign(&[(SOUTH, OTHER)]);
-    inputs.input(E, player(3), 5, walk(8.5, 8.5));
+    inputs.input(E, player(3), entity(3), 5, walk(8.5, 8.5));
     script.push(inputs);
 
     script.push(TickInputs {
@@ -4616,7 +4722,13 @@ fn script() -> Vec<TickInputs> {
         ..TickInputs::default()
     });
     script.push(delivered(&[NORTH, WEST]));
-    script.push(single_input(F, player(5), 4, dig(NORTH_BLOCK, 1)));
+    script.push(single_input(
+        F,
+        player(5),
+        TRAVELLER,
+        4,
+        dig(NORTH_BLOCK, 1),
+    ));
     script.push(edges(vec![started(E, 20), EdgeEvent::Gone { edge: F }]));
     script.push(TickInputs::default());
     script
@@ -4816,6 +4928,8 @@ struct Cluster {
     home: usize,
     /// The region the edge takes each player to be in.
     whereabouts: BTreeMap<PlayerId, usize>,
+    /// The entity each player has, as the home region said when they spawned.
+    entities: BTreeMap<PlayerId, EntityId>,
     /// Everything each player did, numbered from 1, to send again after a hand-over.
     made: BTreeMap<PlayerId, Vec<PlayerInput>>,
     /// The highest sequence number of each player's actions on blocks that a region
@@ -4895,6 +5009,7 @@ impl Cluster {
             sites,
             home,
             whereabouts: BTreeMap::new(),
+            entities: BTreeMap::new(),
             made: BTreeMap::new(),
             dealt_with: BTreeMap::new(),
             under_way: BTreeSet::new(),
@@ -4922,7 +5037,7 @@ impl Cluster {
         for (index, input) in made.iter().enumerate() {
             let number = index as u64 + 1;
             if number > transfer.last_input {
-                next.input(E, id, number, input.clone());
+                next.input(E, id, transfer.entity_id, number, input.clone());
             }
         }
     }
@@ -4950,7 +5065,8 @@ impl Cluster {
             made.push(input.clone());
             let number = made.len() as u64;
             let site = self.whereabouts[id];
-            self.sites[site].next.input(E, *id, number, input.clone());
+            let next = &mut self.sites[site].next;
+            next.input(E, *id, self.entities[id], number, input.clone());
         }
         let outputs: Vec<TickOutput> = self
             .sites
@@ -4975,6 +5091,11 @@ impl Cluster {
             }
             for (id, sequence) in acknowledged(output) {
                 self.done(id, sequence);
+            }
+            for (id, event) in &output.player_events {
+                if let PlayerEvent::Spawned { entity_id, .. } = event {
+                    self.entities.insert(*id, *entity_id);
+                }
             }
             for (edge, number, entry) in &output.durable {
                 assert_eq!(*edge, E);

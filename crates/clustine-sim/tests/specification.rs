@@ -299,10 +299,22 @@ fn changes(list: Vec<PlayerChange>) -> TickInputs {
     inputs
 }
 
-fn single_input(edge: EdgeId, id: PlayerId, number: u64, input: PlayerInput) -> TickInputs {
+fn single_input(
+    edge: EdgeId,
+    id: PlayerId,
+    entity: EntityId,
+    number: u64,
+    input: PlayerInput,
+) -> TickInputs {
     let mut inputs = TickInputs::default();
-    inputs.input(edge, id, number, input);
+    inputs.input(edge, id, entity, number, input);
     inputs
+}
+
+/// The entity of the `n`th player to enter a region that gives out [`ids`], counted
+/// from 1: what an edge is told when the player has spawned, and names in their inputs.
+fn entity(n: i32) -> EntityId {
+    EntityId(ids().first.0 + n - 1)
 }
 
 fn move_to(x: f64) -> PlayerInput {
@@ -381,7 +393,10 @@ fn handing_over() -> (Region, EntityId) {
         ]),
     );
     let departing = entity_of(&region, player(2));
-    let output = checked_tick(&mut region, &single_input(E, player(2), 1, move_to(17.5)));
+    let output = checked_tick(
+        &mut region,
+        &single_input(E, player(2), entity(2), 1, move_to(17.5)),
+    );
     assert!(region.player(player(2)).is_none(), "P2 has left region A");
     assert!(matches!(
         output.durable.as_slice(),
@@ -390,7 +405,7 @@ fn handing_over() -> (Region, EntityId) {
     ));
     let output = checked_tick(
         &mut region,
-        &single_input(E, player(1), 1, dig(BORDER_BLOCK_B, 1)),
+        &single_input(E, player(1), entity(1), 1, dig(BORDER_BLOCK_B, 1)),
     );
     assert!(matches!(
         output.durable.as_slice(),
@@ -477,9 +492,10 @@ fn entries_after_a_reset_are_numbered_from_one() {
     let (mut region, _) = handing_over();
     checked_tick(&mut region, &edges(vec![started(E, 20)]));
     checked_tick(&mut region, &changes(vec![join(E, player(1))]));
+    let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &single_input(E, player(1), 1, dig(BORDER_BLOCK_B, 1)),
+        &single_input(E, player(1), entity, 1, dig(BORDER_BLOCK_B, 1)),
     );
     assert!(matches!(
         output.durable.as_slice(),
@@ -509,7 +525,7 @@ fn an_equal_start_changes_nothing() {
 
     let output = checked_tick(
         &mut region,
-        &single_input(E, player(1), 2, dig(BORDER_BLOCK_B, 2)),
+        &single_input(E, player(1), entity(1), 2, dig(BORDER_BLOCK_B, 2)),
     );
     assert!(
         matches!(output.durable.as_slice(), [(E, 3, Durable::Remote { .. })]),
@@ -539,7 +555,7 @@ fn three_entries() -> Region {
     for n in 1..=3 {
         checked_tick(
             &mut region,
-            &single_input(E, player(1), n, dig(BORDER_BLOCK_B, n as i32)),
+            &single_input(E, player(1), entity(1), n, dig(BORDER_BLOCK_B, n as i32)),
         );
     }
     assert_eq!(outbox_numbers(&region, E), vec![1, 2, 3]);
@@ -584,7 +600,7 @@ fn entries_stay_in_the_outbox_until_confirmed() {
     assert_eq!(outbox_numbers(&region, E), vec![1, 2, 3]);
     let output = checked_tick(
         &mut region,
-        &single_input(E, player(1), 4, dig(BORDER_BLOCK_B, 4)),
+        &single_input(E, player(1), entity(1), 4, dig(BORDER_BLOCK_B, 4)),
     );
     assert!(matches!(
         output.durable.as_slice(),
@@ -654,9 +670,10 @@ fn an_edge_started_again_after_it_was_gone_starts_from_nothing() {
         })
     );
     checked_tick(&mut region, &changes(vec![join(E, player(1))]));
+    let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &single_input(E, player(1), 1, dig(BORDER_BLOCK_B, 1)),
+        &single_input(E, player(1), entity, 1, dig(BORDER_BLOCK_B, 1)),
     );
     assert!(matches!(
         output.durable.as_slice(),
@@ -754,7 +771,7 @@ fn a_leave_through_the_players_edge_removes_them() {
     let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &changes(vec![PlayerChange::Leave(E, player(1))]),
+        &changes(vec![PlayerChange::Leave(E, player(1), None)]),
     );
     assert_eq!(removed(&output), vec![entity]);
     assert!(region.player(player(1)).is_none());
@@ -767,7 +784,7 @@ fn a_leave_through_another_edge_does_not_end_the_current_connection() {
     let mut before = region.state();
     let output = checked_tick(
         &mut region,
-        &changes(vec![PlayerChange::Leave(F, player(1))]),
+        &changes(vec![PlayerChange::Leave(F, player(1), None)]),
     );
     assert!(output.events.is_empty());
     before.tick += 1;
@@ -780,7 +797,10 @@ fn a_leave_in_the_tick_of_the_join_removes_the_player() {
     checked_tick(&mut region, &edges(vec![started(E, 10)]));
     let output = checked_tick(
         &mut region,
-        &changes(vec![join(E, player(1)), PlayerChange::Leave(E, player(1))]),
+        &changes(vec![
+            join(E, player(1)),
+            PlayerChange::Leave(E, player(1), None),
+        ]),
     );
     assert!(region.player(player(1)).is_none());
     // Whatever was shown of the player within the tick is taken away again, so that
@@ -800,7 +820,7 @@ fn a_leave_of_a_player_the_edge_was_never_told_had_spawned_removes_them() {
     let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &changes(vec![PlayerChange::Leave(E, player(1))]),
+        &changes(vec![PlayerChange::Leave(E, player(1), None)]),
     );
     assert_eq!(removed(&output), vec![entity]);
     assert!(region.player(player(1)).is_none());
@@ -813,7 +833,10 @@ fn a_leave_of_the_earlier_connection_after_a_rejoin_in_the_same_tick_is_ignored(
     let mut region = one_player();
     let output = checked_tick(
         &mut region,
-        &changes(vec![join(F, player(1)), PlayerChange::Leave(E, player(1))]),
+        &changes(vec![
+            join(F, player(1)),
+            PlayerChange::Leave(E, player(1), None),
+        ]),
     );
     assert!(
         region.player(player(1)).is_some(),
@@ -830,7 +853,10 @@ fn a_leave_and_a_rejoin_through_the_same_edge_in_one_tick_enter_the_player_anew(
     let old = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &changes(vec![PlayerChange::Leave(E, player(1)), join(E, player(1))]),
+        &changes(vec![
+            PlayerChange::Leave(E, player(1), None),
+            join(E, player(1)),
+        ]),
     );
     assert!(removed(&output).contains(&old));
     assert_eq!(edge_of(&region, player(1)), E);
@@ -872,9 +898,15 @@ fn an_arrival_makes_the_player_the_edges() {
     assert_eq!(state.last_input, 17);
 
     // Only F acts for them now: an input through E is ignored, one through F is taken.
-    checked_tick(&mut region, &single_input(E, player(5), 18, move_to(10.5)));
+    checked_tick(
+        &mut region,
+        &single_input(E, player(5), entity, 18, move_to(10.5)),
+    );
     assert_eq!(region.state().players[&player(5)].last_input, 17);
-    checked_tick(&mut region, &single_input(F, player(5), 18, move_to(10.5)));
+    checked_tick(
+        &mut region,
+        &single_input(F, player(5), entity, 18, move_to(10.5)),
+    );
     assert_eq!(region.state().players[&player(5)].last_input, 18);
 }
 
@@ -897,9 +929,15 @@ fn an_arrival_through_an_unknown_edge_reports_the_entity_removed() {
 #[test]
 fn an_input_numbered_not_above_the_last_applied_one_is_ignored() {
     let mut region = one_player();
-    checked_tick(&mut region, &single_input(E, player(1), 5, move_to(12.5)));
+    checked_tick(
+        &mut region,
+        &single_input(E, player(1), entity(1), 5, move_to(12.5)),
+    );
     assert_eq!(region.state().players[&player(1)].last_input, 5);
-    checked_tick(&mut region, &single_input(E, player(1), 5, move_to(10.5)));
+    checked_tick(
+        &mut region,
+        &single_input(E, player(1), entity(1), 5, move_to(10.5)),
+    );
     assert_eq!(region.player(player(1)).map(|p| p.1.position.x), Some(12.5));
 }
 
@@ -911,7 +949,10 @@ fn departed_goes_to_the_outbox_of_the_players_edge() {
     checked_tick(&mut region, &edges(vec![started(E, 10), started(F, 10)]));
     checked_tick(&mut region, &changes(vec![join(F, player(1))]));
     let entity = entity_of(&region, player(1));
-    let output = checked_tick(&mut region, &single_input(F, player(1), 4, move_to(17.5)));
+    let output = checked_tick(
+        &mut region,
+        &single_input(F, player(1), entity, 4, move_to(17.5)),
+    );
     match output.durable.as_slice() {
         [
             (
@@ -965,7 +1006,7 @@ fn a_players_own_remote_action_goes_to_the_outbox_of_their_edge() {
     checked_tick(&mut region, &changes(vec![join(F, player(1))]));
     let output = checked_tick(
         &mut region,
-        &single_input(F, player(1), 1, dig(BORDER_BLOCK_B, 9)),
+        &single_input(F, player(1), entity(1), 1, dig(BORDER_BLOCK_B, 9)),
     );
     assert_eq!(
         output.durable,
@@ -1165,7 +1206,7 @@ fn handled_covers_only_the_players_own_actions_on_blocks_of_this_region() {
 
     let output = checked_tick(
         &mut region,
-        &single_input(E, player(1), 1, dig(OWN_BLOCK, 5)),
+        &single_input(E, player(1), entity(1), 1, dig(OWN_BLOCK, 5)),
     );
     assert_eq!(region.state().players[&player(1)].handled, Some(5));
     assert!(
@@ -1177,7 +1218,7 @@ fn handled_covers_only_the_players_own_actions_on_blocks_of_this_region() {
     // Passed on to region B: not handled here, and not acknowledged.
     let output = checked_tick(
         &mut region,
-        &single_input(E, player(1), 2, dig(BORDER_BLOCK_B, 6)),
+        &single_input(E, player(1), entity(1), 2, dig(BORDER_BLOCK_B, 6)),
     );
     assert_eq!(region.state().players[&player(1)].handled, Some(5));
     assert!(
@@ -1193,6 +1234,7 @@ fn handled_covers_only_the_players_own_actions_on_blocks_of_this_region() {
         &single_input(
             E,
             player(1),
+            entity(1),
             3,
             PlayerInput::UseItemOn {
                 position: BORDER_BLOCK_A,
@@ -1216,7 +1258,13 @@ fn handled_covers_only_the_players_own_actions_on_blocks_of_this_region() {
 
     checked_tick(
         &mut region,
-        &single_input(E, player(1), 4, dig(OWN_BLOCK.offset(0, -1, 0), 8)),
+        &single_input(
+            E,
+            player(1),
+            entity(1),
+            4,
+            dig(OWN_BLOCK.offset(0, -1, 0), 8),
+        ),
     );
     assert_eq!(region.state().players[&player(1)].handled, Some(8));
 }
@@ -1251,14 +1299,15 @@ fn a_player_who_enters_anew_starts_with_nothing_handled() {
     let mut region = one_player();
     checked_tick(
         &mut region,
-        &single_input(E, player(1), 1, dig(OWN_BLOCK, 40)),
+        &single_input(E, player(1), entity(1), 1, dig(OWN_BLOCK, 40)),
     );
     assert_eq!(region.state().players[&player(1)].handled, Some(40));
     checked_tick(&mut region, &changes(vec![join(F, player(1))]));
     assert_eq!(region.state().players[&player(1)].handled, None);
+    let anew = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &single_input(F, player(1), 1, dig(OWN_BLOCK.offset(0, -1, 0), 1)),
+        &single_input(F, player(1), anew, 1, dig(OWN_BLOCK.offset(0, -1, 0), 1)),
     );
     assert!(
         output
@@ -1344,8 +1393,9 @@ fn a_confirmation_before_a_reset_in_one_tick_leaves_the_new_start_clean() {
         started(E, 20),
     ]);
     inputs.change(join(E, player(1)));
-    inputs.input(E, player(1), 1, dig(BORDER_BLOCK_B, 1));
-    inputs.input(E, player(1), 2, dig(BORDER_BLOCK_B, 2));
+    // The join of this tick makes P1 the second player to enter the region.
+    inputs.input(E, player(1), entity(2), 1, dig(BORDER_BLOCK_B, 1));
+    inputs.input(E, player(1), entity(2), 2, dig(BORDER_BLOCK_B, 2));
     checked_tick(&mut region, &inputs);
     assert_eq!(outbox_numbers(&region, E), vec![1, 2]);
 }
@@ -1544,7 +1594,8 @@ fn a_confirmation_in_the_tick_of_a_reset_does_not_drop_the_new_entries() {
         EdgeEvent::Confirmed { edge: E, number: 1 },
     ]);
     inputs.change(join(E, player(1)));
-    inputs.input(E, player(1), 1, dig(BORDER_BLOCK_B, 1));
+    // The join of this tick makes P1 the fourth player to enter the region.
+    inputs.input(E, player(1), entity(4), 1, dig(BORDER_BLOCK_B, 1));
     let output = checked_tick(&mut region, &inputs);
     assert!(matches!(
         output.durable.as_slice(),
@@ -1558,7 +1609,7 @@ fn a_departure_in_the_tick_of_a_reset_survives_it() {
     // F's player walks out while E is reset: only E's outbox is dropped.
     let (mut region, _) = handing_over();
     let mut inputs = edges(vec![started(E, 20)]);
-    inputs.input(F, player(3), 1, move_to(17.5));
+    inputs.input(F, player(3), entity(3), 1, move_to(17.5));
     let output = checked_tick(&mut region, &inputs);
     assert!(matches!(
         output.durable.as_slice(),
@@ -1606,29 +1657,37 @@ fn scenario() -> Vec<TickInputs> {
         join(F, player(3)),
     ]));
     let mut inputs = TickInputs::default();
-    inputs.input(E, player(1), 1, dig(OWN_BLOCK, 1));
-    inputs.input(F, player(3), 1, dig(BORDER_BLOCK_B, 1));
+    inputs.input(E, player(1), entity(1), 1, dig(OWN_BLOCK, 1));
+    inputs.input(F, player(3), entity(3), 1, dig(BORDER_BLOCK_B, 1));
     inputs.applied = vec![(E, 4), (F, 2)];
     script.push(inputs);
     // P2 walks into region B and stays in E's outbox, unconfirmed.
-    script.push(single_input(E, player(2), 1, move_to(17.5)));
+    script.push(single_input(E, player(2), entity(2), 1, move_to(17.5)));
     let mut inputs = TickInputs {
         remote_actions: vec![(F, remote_break(player(9), 4, BORDER_BLOCK_A))],
         ..TickInputs::default()
     };
-    inputs.input(E, player(1), 2, move_to(12.5));
-    inputs.input(F, player(3), 2, PlayerInput::SelectSlot { slot: 3 });
+    inputs.input(E, player(1), entity(1), 2, move_to(12.5));
+    inputs.input(
+        F,
+        player(3),
+        entity(3),
+        2,
+        PlayerInput::SelectSlot { slot: 3 },
+    );
     script.push(inputs);
     script.push(TickInputs::default());
     script.push(edges(vec![EdgeEvent::Confirmed { edge: F, number: 1 }]));
     script.push(changes(vec![
         join(F, player(1)),
-        PlayerChange::Leave(E, player(1)),
+        PlayerChange::Leave(E, player(1), None),
     ]));
     let mut inputs = TickInputs::default();
+    // P1 was the fourth to enter the region when they joined through F.
     inputs.input(
         F,
         player(1),
+        entity(4),
         1,
         PlayerInput::UseItemOn {
             position: BORDER_BLOCK_A,
@@ -1636,12 +1695,19 @@ fn scenario() -> Vec<TickInputs> {
             sequence: 2,
         },
     );
-    inputs.input(F, player(3), 3, dig(OWN_BLOCK.offset(-1, 0, 0), 3));
+    inputs.input(
+        F,
+        player(3),
+        entity(3),
+        3,
+        dig(OWN_BLOCK.offset(-1, 0, 0), 3),
+    );
     script.push(inputs);
     script.push(edges(vec![started(F, 20)]));
     script.push(changes(vec![join(F, player(3)), join(E, player(4))]));
     script.push(edges(vec![EdgeEvent::Gone { edge: E }]));
-    script.push(single_input(F, player(3), 1, move_to(13.5)));
+    // After the reset, P3 was the fifth to enter the region.
+    script.push(single_input(F, player(3), entity(5), 1, move_to(13.5)));
     script.push(edges(vec![started(E, 30)]));
     script.push(changes(vec![join(E, player(2))]));
     script

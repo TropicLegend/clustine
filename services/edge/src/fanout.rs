@@ -641,10 +641,23 @@ impl Fanout {
                 self.regions.entry(from).or_default().since = since;
             }
         }
-        let entries = match welcome {
-            Welcome::Resumed { entries } | Welcome::Unknown { entries, .. } => entries,
-            Welcome::Superseded => 0,
+        let (entries, presences, applied) = match welcome {
+            Welcome::Resumed {
+                entries,
+                presences,
+                applied,
+            }
+            | Welcome::Unknown {
+                entries,
+                presences,
+                applied,
+                ..
+            } => (entries, presences, applied),
+            Welcome::Superseded => (0, 0, 0),
         };
+        // How many presence answers follow the entries, and how far the region has
+        // applied this edge's messages, are read and not acted on yet.
+        debug!(%from, entries, presences, applied, "a region has welcomed this edge");
         let link = self.regions.entry(from).or_default().link.as_mut()?;
         link.announced = Some(entries);
         if entries == 0 {
@@ -811,6 +824,17 @@ impl Fanout {
                     return;
                 }
                 let view = self.players.get_mut(&player).expect("session matched");
+                // An input names the stay it is of by its entity. Of a player who has
+                // not been placed in the world the edge knows none, and their client,
+                // which has not been put into the world, has nothing to say of what a
+                // player does there.
+                let Some(entity) = view.entity else {
+                    debug!(
+                        name = %view.name,
+                        "dropping an input of a player who has not been placed in the world"
+                    );
+                    return;
+                };
                 view.inputs_sent += 1;
                 let number = view.inputs_sent;
                 view.kept_inputs
@@ -818,6 +842,7 @@ impl Fanout {
                 let region = view.region;
                 let message = EdgeToWorker::Input {
                     player,
+                    entity,
                     number,
                     input,
                 };
@@ -1041,7 +1066,7 @@ impl Fanout {
         // entity that the region removes a moment later.
         let port = &self.regions.entry(from).or_default();
         let left_since = port.kept.iter().any(
-            |(_, body)| matches!(body, EdgeToWorker::PlayerLeave { player: left } if *left == player),
+            |(_, body)| matches!(body, EdgeToWorker::PlayerLeave { player: left, .. } if *left == player),
         );
         if left_since {
             return;
@@ -1248,11 +1273,15 @@ impl Fanout {
         }
         self.flush_asking().await;
 
+        // The entity of the player's view, as was looked at above: the inputs sent
+        // again are of the stay that is handed over.
+        let entity = transfer.entity_id;
         self.send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
             .await;
         for (number, input) in again {
             let message = EdgeToWorker::Input {
                 player,
+                entity,
                 number,
                 input,
             };
@@ -2026,9 +2055,13 @@ impl Fanout {
         }
         self.flush_asking().await;
         // If that region has just let the player go, it ignores this, and the message
-        // saying so, which is on its way, makes `hand_over` clean up.
-        self.send_to_region(view.region, EdgeToWorker::PlayerLeave { player })
-            .await;
+        // saying so, which is on its way, makes `hand_over` clean up. The leave names
+        // the entity the player had, if the edge was told of one.
+        let leave = EdgeToWorker::PlayerLeave {
+            player,
+            entity: view.entity,
+        };
+        self.send_to_region(view.region, leave).await;
     }
 
     fn session_matches(&self, player: PlayerId, session: SessionId) -> bool {
@@ -2367,6 +2400,8 @@ mod tests {
                     WorkerToEdge::Welcome(Welcome::Unknown {
                         since: 1,
                         entries: 0,
+                        presences: 0,
+                        applied: 0,
                     }),
                 );
             }
@@ -2737,7 +2772,14 @@ mod tests {
         assert!(guests.is_empty());
         assert!(connected(&mut packets));
 
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 0,
+                presences: 1,
+                applied: 1,
+            }),
+        );
         for expected in [2, 3, 4] {
             let (number, body) = edge.next_numbered(WEST).await;
             assert_eq!(number, expected);
@@ -2776,7 +2818,14 @@ mod tests {
         assert_eq!(edge.next_numbered(WEST).await.0, 4);
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 0,
+                presences: 1,
+                applied: 2,
+            }),
+        );
         assert_eq!(edge.next_numbered(WEST).await.0, 3);
         assert_eq!(edge.next_numbered(WEST).await.0, 4);
     }
@@ -2806,6 +2855,8 @@ mod tests {
             WorkerToEdge::Welcome(Welcome::Unknown {
                 since: 1,
                 entries: 0,
+                presences: 1,
+                applied: 0,
             }),
         );
         disconnected(&mut packets).await;
@@ -2892,7 +2943,14 @@ mod tests {
             matches!(&hello, EdgeToWorker::Hello { players, .. } if *players == [player(1)]),
             "{hello:?}"
         );
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 0,
+                presences: 1,
+                applied: 1,
+            }),
+        );
         let departed = Durable::Departed {
             player: player(1),
             transfer: transfer(EntityId(5), 1),
@@ -2938,7 +2996,14 @@ mod tests {
             matches!(&hello, EdgeToWorker::Hello { players, .. } if players.len() == 2),
             "{hello:?}"
         );
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 0,
+                presences: 2,
+                applied: 1,
+            }),
+        );
         for absent in [player(1), player(2)] {
             edge.tell(
                 WEST,
@@ -2963,7 +3028,14 @@ mod tests {
 
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 0,
+                presences: 1,
+                applied: 1,
+            }),
+        );
         edge.tell(
             WEST,
             WorkerToEdge::Presence {
@@ -3003,7 +3075,13 @@ mod tests {
         let (number, left) = edge.next_numbered(WEST).await;
         assert_eq!(
             (number, left),
-            (2, EdgeToWorker::PlayerLeave { player: player(1) })
+            (
+                2,
+                EdgeToWorker::PlayerLeave {
+                    player: player(1),
+                    entity: Some(EntityId(5)),
+                }
+            )
         );
         let mut packets = edge.join(player(1)).await;
         assert_eq!(edge.next_numbered(WEST).await.0, 3);
@@ -3021,7 +3099,14 @@ mod tests {
         // has the player as they were.
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 0,
+                presences: 1,
+                applied: 1,
+            }),
+        );
         edge.tell(
             WEST,
             WorkerToEdge::Presence {
@@ -3032,7 +3117,13 @@ mod tests {
         let (number, left) = edge.next_numbered(WEST).await;
         assert_eq!(
             (number, left),
-            (2, EdgeToWorker::PlayerLeave { player: player(1) })
+            (
+                2,
+                EdgeToWorker::PlayerLeave {
+                    player: player(1),
+                    entity: Some(EntityId(5)),
+                }
+            )
         );
         let (number, join) = edge.next_numbered(WEST).await;
         assert!(
@@ -3061,7 +3152,14 @@ mod tests {
         // And it is as that entity that the edge knows them from then on.
         let hello = edge.relink(WEST, 3).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 0,
+                presences: 1,
+                applied: 3,
+            }),
+        );
         edge.tell(
             WEST,
             WorkerToEdge::Presence {
@@ -3259,6 +3357,8 @@ mod tests {
         let welcome = Welcome::Unknown {
             since: 1,
             entries: 0,
+            presences: 0,
+            applied: 0,
         };
         worker.try_send(WorkerToEdge::Welcome(welcome)).unwrap();
         let kept = timeout(SOON, worker.recv()).await.unwrap().unwrap();
@@ -3278,7 +3378,14 @@ mod tests {
 
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 2 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 2,
+                presences: 1,
+                applied: 0,
+            }),
+        );
         let done = |sequence| Durable::RemoteDone {
             player: player(u128::MAX),
             sequence,
@@ -3323,6 +3430,8 @@ mod tests {
             WorkerToEdge::Welcome(Welcome::Unknown {
                 since: 1,
                 entries: 0,
+                presences: 0,
+                applied: 0,
             }),
         );
 
@@ -3543,6 +3652,9 @@ mod scenarios {
         subscriptions: BTreeMap<ChunkPos, (Role, u64)>,
         /// What the edge said that no test has looked at yet, in order.
         said: VecDeque<EdgeMessage>,
+        /// How many players the hello of the link named: as many presence answers as
+        /// a welcome on it announces.
+        named: u32,
     }
 
     impl Heard {
@@ -3668,6 +3780,8 @@ mod scenarios {
                     WorkerToEdge::Welcome(Welcome::Unknown {
                         since: 1,
                         entries: 0,
+                        presences: 0,
+                        applied: 0,
                     }),
                 );
             }
@@ -3941,6 +4055,7 @@ mod scenarios {
             };
             assert_eq!((edge, start), (IDENTITY.edge, IDENTITY.start));
             let heard = &mut self.heard[index];
+            heard.named = players.len() as u32;
             for chunk in &guests {
                 heard.subscriptions.insert(*chunk, (Role::Guest, 0));
             }
@@ -3977,10 +4092,13 @@ mod scenarios {
         /// The region answers a hello as one that knows the edge, with nothing in its
         /// outbox that the edge has not seen.
         fn resume(&mut self, region: RegionId) {
-            self.tell(
-                region,
-                WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }),
-            );
+            // No region of these tests has told the edge of any progress.
+            let welcome = Welcome::Resumed {
+                entries: 0,
+                presences: self.at(region).named,
+                applied: 0,
+            };
+            self.tell(region, WorkerToEdge::Welcome(welcome));
         }
 
         /// What the edge has said on its current link to `region`, as far as it was read.
@@ -5217,6 +5335,8 @@ mod scenarios {
         let unknown = Welcome::Unknown {
             since: 2,
             entries: 0,
+            presences: 1,
+            applied: 0,
         };
         edge.tell(WEST, WorkerToEdge::Welcome(unknown));
         first.disconnected().await;
@@ -5232,7 +5352,10 @@ mod scenarios {
     async fn a_region_that_forgot_the_edge_keeps_as_guests_what_other_regions_players_see() {
         let (mut edge, _first, mut second) = forgotten_by_the_west().await;
         let said = edge.said(WEST).await;
-        let left = EdgeToWorker::PlayerLeave { player: player(1) };
+        let left = EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: Some(EntityId(5)),
+        };
         assert_eq!(numbered(&said), [(1, left)]);
         assert!(edge.at(WEST).chunks(Role::Viewer).is_empty());
         let still_seen = both(&view(HOME), &view(EASTERN));
@@ -5366,7 +5489,14 @@ mod scenarios {
         assert_eq!(hello.players, [player(1)]);
         assert_eq!(set(&hello.chunks), view(HOME));
         assert!(hello.guests.is_empty(), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 1 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 1,
+                presences: 1,
+                applied: 0,
+            }),
+        );
         edge.say(WEST, departed(player(1), EntityId(5), EAST, EASTERN));
         edge.tell(
             WEST,
@@ -5970,6 +6100,8 @@ mod scenarios {
         let unknown = Welcome::Unknown {
             since: 1,
             entries: 0,
+            presences: 0,
+            applied: 0,
         };
         edge.tell(NORTH, WorkerToEdge::Welcome(unknown));
         let passed_on = EdgeToWorker::Remote(action.clone());
@@ -6011,6 +6143,8 @@ mod scenarios {
         let unknown = Welcome::Unknown {
             since: 1,
             entries: 0,
+            presences: 1,
+            applied: 0,
         };
         edge.tell(NORTH, WorkerToEdge::Welcome(unknown));
         let arrival = EdgeToWorker::PlayerArrive {
@@ -6149,7 +6283,14 @@ mod scenarios {
 
         let hello = edge.relink(WEST).await;
         assert_eq!(hello.seen, seen);
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 2 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 2,
+                presences: 1,
+                applied: 0,
+            }),
+        );
         // The first of the two is one the edge has handled.
         let nobody = Durable::RemoteDone {
             player: player(u128::MAX),
@@ -6202,7 +6343,14 @@ mod scenarios {
 
         let hello = edge.relink(WEST).await;
         assert_eq!(hello.players, [player(1)]);
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 1 }));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 1,
+                presences: 1,
+                applied: 0,
+            }),
+        );
         edge.say(WEST, departed(player(1), EntityId(5), EAST, EASTERN));
         edge.tell(
             WEST,
@@ -6547,6 +6695,9 @@ mod scenarios {
             since: u64,
             entries: Vec<Durable>,
             presences: Vec<WorkerToEdge>,
+            /// The number of the edge's last numbered message the region had taken
+            /// when it answered the hello.
+            applied: u64,
         },
     }
 
@@ -7064,7 +7215,7 @@ mod scenarios {
                         pose: Pose::at(SPAWN),
                     }));
                 }
-                EdgeToWorker::PlayerLeave { player } => {
+                EdgeToWorker::PlayerLeave { player, .. } => {
                     if let Some(resident) = self.played[index].residents.remove(&player) {
                         ticked.events.push(RegionEvent::EntityRemoved {
                             entity: resident.entity,
@@ -7128,6 +7279,7 @@ mod scenarios {
                     player,
                     number,
                     input,
+                    ..
                 } => {
                     let Some(resident) = self.played[index].residents.get_mut(&player) else {
                         // Not this region's: the edge sends it to the region that is
@@ -7682,6 +7834,7 @@ mod scenarios {
                     since,
                     entries,
                     presences,
+                    applied,
                 } => {
                     self.log.push(format!(
                         "{region:?} welcomes: resumed {resumed}, since {since}, {entries:?}, \
@@ -7696,14 +7849,21 @@ mod scenarios {
                             _ => "another entry among a welcome's entries",
                         });
                     }
+                    let answers = presences.len() as u32;
                     let welcome = if resumed {
-                        Welcome::Resumed { entries: count }
+                        Welcome::Resumed {
+                            entries: count,
+                            presences: answers,
+                            applied,
+                        }
                     } else {
                         // Its outbox begins anew with the edge it did not know.
                         self.edge.outbox[index] = 0;
                         Welcome::Unknown {
                             since,
                             entries: count,
+                            presences: answers,
+                            applied,
                         }
                     };
                     self.since[index] = since;
@@ -7865,6 +8025,7 @@ mod scenarios {
                 since: played.since,
                 entries,
                 presences,
+                applied: played.received,
             };
             played.out.push_back(welcome);
             self.sync().await;

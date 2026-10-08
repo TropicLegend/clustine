@@ -116,6 +116,7 @@ fn a_new_world_has_the_regions_of_its_division() {
             },
         ],
         absorbed: Vec::new(),
+        next: RegionId(3),
     };
     assert_eq!(store.regions().unwrap(), expected);
 
@@ -332,9 +333,11 @@ fn as_lived_in(store: &Store, epoch: u64, case: &str) {
 
 /// The world of [`lived_in`] made over for `told`: its regions are those of `told`
 /// and are restored with nothing, and what was built is in the chunks as their holders
-/// load them.
-fn as_made_over(store: &Store, told: &Division, epoch: u64, case: &str) {
-    let expected = table::Table::made_from(told, 0, 1).list(|_| 0);
+/// load them. `used` is the next region id of the table the world had, 0 if it had
+/// none: the ids below it are not given out again, so the list's next id is above
+/// them also where `told` has fewer regions.
+fn as_made_over(store: &Store, told: &Division, used: u32, epoch: u64, case: &str) {
+    let expected = table::Table::made_from(told, used, 1).list(|_| 0);
     let list = store.regions().unwrap();
     assert_eq!(listed(&list), listed(&expected), "{case}");
     let mut loaded = Vec::new();
@@ -428,8 +431,9 @@ fn a_store_started_with_another_division_makes_the_world_over() {
         moved_home,
         gap_at_the_east(),
     ] {
+        // The world that was lived in has a table, with two regions.
         started_at_every_kill_point(&disk, &told, |store, epoch, case| {
-            as_made_over(store, &told, epoch, case);
+            as_made_over(store, &told, 2, epoch, case);
         });
     }
 }
@@ -596,8 +600,9 @@ fn a_world_of_today_with_the_same_layout_keeps_its_regions() {
 fn a_world_of_today_with_another_layout_is_made_over() {
     let world = world_of_today();
     for told in [stripes(&[]), stripes(&[0, 16]), gap()] {
+        // A world of today has no table.
         started_at_every_kill_point(&world, &told, |store, epoch, case| {
-            as_made_over(store, &told, epoch, case);
+            as_made_over(store, &told, 0, epoch, case);
         });
     }
 }
@@ -1485,8 +1490,16 @@ fn absorb(handle: &StoreHandle, absorbed: u32, absorbed_epoch: u64, tick: u64) -
     reply(handle)
 }
 
-/// Splits `chunks` off the region of `handle`, and waits for the answer.
-fn split(handle: &StoreHandle, tick: u64, chunks: &[ChunkPos], as_epoch: u64) -> StoreReply {
+/// Splits `chunks` off the region of `handle` as the region `part`, and waits for the
+/// answer. The store makes the region only under the next id, which a test knows from
+/// the regions its world began with and the splits it has made.
+fn split(
+    handle: &StoreHandle,
+    tick: u64,
+    chunks: &[ChunkPos],
+    as_epoch: u64,
+    part: u32,
+) -> StoreReply {
     handle.request(StoreRequest::SplitCommit {
         tick,
         state: whole("rest", tick),
@@ -1495,6 +1508,7 @@ fn split(handle: &StoreHandle, tick: u64, chunks: &[ChunkPos], as_epoch: u64) ->
             state: whole("part", tick),
         },
         as_epoch,
+        region: RegionId(part),
     });
     reply(handle)
 }
@@ -1600,6 +1614,7 @@ fn a_merge_that_may_not_be_is_declined_with_its_reason() {
     let done = StoreReply::Absorbed {
         absorbed: RegionId(1),
         chunks: Vec::new(),
+        pinned: gap().pinned[1..].to_vec(),
     };
     assert_eq!(absorb(&survivor, 1, 5, 8), done);
 }
@@ -1624,6 +1639,7 @@ fn a_merge_gives_the_survivor_all_the_absorbed_region_had() {
     let done = StoreReply::Absorbed {
         absorbed: RegionId(1),
         chunks: vec![FREE],
+        pinned: gap().pinned[1..].to_vec(),
     };
     assert_eq!(absorb(&survivor, 1, 3, 10), done);
     // The other region is none any more: its handle is lost, and nobody opens it.
@@ -1795,25 +1811,25 @@ fn a_split_that_may_not_be_is_declined_with_its_reason() {
     let uncheckpointed = Decline::Uncheckpointed {
         region: RegionId(0),
     };
-    assert_eq!(split(&region, 5, &part, 1), declined(uncheckpointed));
+    assert_eq!(split(&region, 5, &part, 1, 3), declined(uncheckpointed));
     checkpoint(&region, 2);
     // A tick that is not above one the session named.
     for tick in [1, 2] {
         let named = Decline::Tick { named: 2 };
-        assert_eq!(split(&region, tick, &part, 1), declined(named));
+        assert_eq!(split(&region, tick, &part, 1, 3), declined(named));
     }
     // No chunks, and an epoch nobody can say hello with.
-    assert_eq!(split(&region, 5, &[], 1), declined(Decline::Malformed));
-    assert_eq!(split(&region, 5, &part, 0), declined(Decline::Malformed));
+    assert_eq!(split(&region, 5, &[], 1, 3), declined(Decline::Malformed));
+    assert_eq!(split(&region, 5, &part, 0, 3), declined(Decline::Malformed));
     // A chunk the region does not hold: another region's, and nobody's.
     for chunk in [ORIGIN, ChunkPos::new(20, 0), ChunkPos::new(6, 6)] {
         let not_held = Decline::NotHeld { chunk };
-        assert_eq!(split(&region, 5, &[WEST, chunk], 1), declined(not_held));
+        assert_eq!(split(&region, 5, &[WEST, chunk], 1, 3), declined(not_held));
     }
     // The home chunk never leaves the home region.
     assert_eq!(claim(&home, &[ChunkPos::new(1, 0)]).0.len(), 1);
     let with_home = [ChunkPos::new(1, 0), ORIGIN];
-    assert_eq!(split(&home, 5, &with_home, 1), declined(Decline::Home));
+    assert_eq!(split(&home, 5, &with_home, 1, 3), declined(Decline::Home));
     // A state that no record of the log holds.
     region.request(StoreRequest::SplitCommit {
         tick: 5,
@@ -1823,6 +1839,7 @@ fn a_split_that_may_not_be_is_declined_with_its_reason() {
             state: vec![0; clustine_format::MAX_RECORD_LENGTH],
         },
         as_epoch: 1,
+        region: RegionId(3),
     });
     assert_eq!(reply(&region), declined(Decline::TooLarge));
 
@@ -1834,7 +1851,7 @@ fn a_split_that_may_not_be_is_declined_with_its_reason() {
     let done = StoreReply::Split {
         region: RegionId(3),
     };
-    assert_eq!(split(&region, 5, &part, 1), done);
+    assert_eq!(split(&region, 5, &part, 1, 3), done);
 }
 
 /// Scenario 17: after a split the new region has an id above every id there was, is in
@@ -1857,7 +1874,7 @@ fn a_split_makes_a_region_of_the_part() {
     let done = StoreReply::Split {
         region: RegionId(3),
     };
-    assert_eq!(split(&old, 7, &[FREE, inside, FREE], 4), done);
+    assert_eq!(split(&old, 7, &[FREE, inside, FREE], 4, 3), done);
     let list = store.regions().unwrap();
     let made = RegionInfo {
         region: RegionId(3),
@@ -1936,7 +1953,7 @@ fn both_regions_go_on_from_the_states_of_their_split() {
     let store = store_on(&disk, &gap()).unwrap();
     let (old, _) = opened(&store, 0, 1);
     assert!(matches!(
-        split(&old, 7, &[WEST], 1),
+        split(&old, 7, &[WEST], 1, 3),
         StoreReply::Split { .. }
     ));
     let (part, _) = opened(&store, 3, 1);
@@ -1993,7 +2010,7 @@ fn a_hello_with_nothing_to_replay_does_not_wait_for_the_thread_for_chunks() {
 
     // None of these would return if it waited.
     assert!(matches!(
-        split(&old, 7, &[WEST], 1),
+        split(&old, 7, &[WEST], 1, 3),
         StoreReply::Split { .. }
     ));
     let (part, held) = opened(&store, 3, 1);
@@ -2041,7 +2058,7 @@ fn a_chunk_that_is_being_returned_goes_with_the_part_it_is_split_off_in() {
     let done = StoreReply::Split {
         region: RegionId(3),
     };
-    assert_eq!(split(&old, 5, &[FREE], 1), done);
+    assert_eq!(split(&old, 5, &[FREE], 1, 3), done);
     barrier.wait();
     old.flush();
 
@@ -2081,7 +2098,7 @@ fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
     let done = StoreReply::Split {
         region: RegionId(3),
     };
-    assert_eq!(split(&pinned, 5, &[first, second], 1), done);
+    assert_eq!(split(&pinned, 5, &[first, second], 1, 3), done);
     let (part, held) = opened(&store, 3, 1);
     assert_eq!(held, [(first, 5), (second, 5)]);
 
@@ -2094,6 +2111,7 @@ fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
     let merged = StoreReply::Absorbed {
         absorbed: RegionId(3),
         chunks: vec![second],
+        pinned: Vec::new(),
     };
     assert_eq!(absorb(&pinned, 3, 1, 6), merged);
     assert_eq!(load(&pinned, second), generator().generate(second));
@@ -2114,7 +2132,7 @@ fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
         let again = StoreReply::Split {
             region: RegionId(4),
         };
-        assert_eq!(split(&pinned, 9, &[first], 1), again, "{survival:?}");
+        assert_eq!(split(&pinned, 9, &[first], 1, 4), again, "{survival:?}");
     }
 }
 
@@ -2181,7 +2199,7 @@ fn the_list_of_regions_is_read_over_a_connection() {
         let split_off = StoreReply::Split {
             region: RegionId(3),
         };
-        assert_eq!(split(&first, 5, &[FREE, WEST], 7), split_off);
+        assert_eq!(split(&first, 5, &[FREE, WEST], 7, 3), split_off);
         assert!(matches!(
             absorb(&first, 1, 2, 6),
             StoreReply::Absorbed { .. }
@@ -2257,7 +2275,7 @@ fn the_file_of_a_region_a_split_made_is_written_at_the_next_start() {
         let disk = Arc::new(world.crashed(Survival::Everything).with(fault));
         let (store, old) = prepared(&disk);
         // Answered although the file could not be written: the record is durable.
-        assert_eq!(split(&old, 5, &[WEST], 7), done, "step {step}");
+        assert_eq!(split(&old, 5, &[WEST], 7, 3), done, "step {step}");
         drop((old, store));
         for survival in SURVIVALS {
             let case = format!("step {step}, {survival:?}");

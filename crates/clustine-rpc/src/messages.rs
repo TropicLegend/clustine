@@ -72,8 +72,14 @@ pub enum EdgeToWorker {
     Confirm { number: u64 },
     /// A player has logged in and wants to enter the world.
     PlayerJoin(PlayerJoin),
-    /// A player's connection has ended.
-    PlayerLeave { player: PlayerId },
+    /// A player's connection has ended. `entity` is the entity the edge was told the
+    /// player has, which names the stay that ends with the connection, or `None` if
+    /// the edge was told of none: the leave is then for the player whatever their
+    /// entity. See `docs/adr/0014-merging-and-splitting.md`, section 2.1.
+    PlayerLeave {
+        player: PlayerId,
+        entity: Option<EntityId>,
+    },
     /// A player has walked in from another region, which let them go with
     /// [`PlayerEvent::Departed`].
     PlayerArrive {
@@ -83,10 +89,13 @@ pub enum EdgeToWorker {
     /// The entity of a player who left while being handed over will not arrive. The
     /// region reports it as removed to those watching `chunk`, where it was seen last.
     Discard { entity: EntityId, chunk: ChunkPos },
-    /// Something a player did. An edge numbers the inputs of a player in ascending
-    /// order; see `TickInputs::inputs`.
+    /// Something a player did while they had `entity`. An edge numbers the inputs of
+    /// a player in ascending order, from 1 with every connection, so the entity says
+    /// which of the player's stays in the world the input is of; see
+    /// `TickInputs::inputs`.
     Input {
         player: PlayerId,
+        entity: EntityId,
         number: u64,
         input: PlayerInput,
     },
@@ -179,7 +188,8 @@ pub enum WorkerToEdge {
     /// An entry of the region's outbox for this edge, with its number. It is sent again
     /// on every new link until the edge has confirmed it with [`EdgeToWorker::Confirm`].
     Outbox { number: u64, entry: Durable },
-    /// Whether a player named in [`EdgeToWorker::Hello`] is in the region.
+    /// Whether a player named in [`EdgeToWorker::Hello`] is in the region. The welcome
+    /// says how many of these follow it.
     Presence { player: PlayerId, answer: Presence },
     /// How far the edge's messages have been applied and made durable: up to `applied`.
     /// `inputs` has, for each of the edge's players whose last applied input changed,
@@ -210,15 +220,36 @@ pub enum WorkerToEdge {
 pub enum Welcome {
     /// The region knew the edge with this start and with the `since` it said, and
     /// carries on where it was. `entries` outbox entries follow, those above the
-    /// hello's `seen`, before anything else.
-    Resumed { entries: u32 },
+    /// hello's `seen`, before anything else, and behind them `presences` presence
+    /// answers ([`WorkerToEdge::Presence`]): one for each player the hello named. The
+    /// count is there for an edge to know when it has heard them all; see
+    /// `docs/adr/0014-merging-and-splitting.md`, section 3.7.
+    ///
+    /// `applied` is the number of the edge's last numbered message that the region
+    /// has applied, as of the state the entries and the presence answers are made
+    /// from: the one before the tick that takes the hello. A [`WorkerToEdge::Progress`]
+    /// says it again later; the welcome says it so that the edge knows it before it
+    /// reads the presence answers.
+    Resumed {
+        entries: u32,
+        presences: u32,
+        applied: u64,
+    },
     /// The region does not share a numbering with the edge: it did not know the edge
     /// with this start, or has forgotten it, or knows it since another moment than the
     /// edge said. What the edge believed to be in the region is not there, nothing of
     /// the hello's `seen` was taken, and the edge numbers its messages from 1 again.
     /// `since` is what the edge says in its hellos from now on. `entries` outbox
-    /// entries follow, numbered from the region's own first.
-    Unknown { since: u64, entries: u32 },
+    /// entries follow, numbered from the region's own first, and behind them
+    /// `presences` presence answers, as after [`Welcome::Resumed`]. `applied` is as
+    /// there, and 0 where the tick that takes the hello makes the region's state for
+    /// the edge or resets it.
+    Unknown {
+        since: u64,
+        entries: u32,
+        presences: u32,
+        applied: u64,
+    },
     /// The region knows a later start of this edge, so this one has been replaced. The
     /// link is closed.
     Superseded,
@@ -318,6 +349,11 @@ pub enum StoreRequest {
         state: Vec<u8>,
         part: SplitPart,
         as_epoch: u64,
+        /// The id of the new region, which `state` names in what it tells edges of
+        /// the split, so whoever makes the state has to know it before. It has to be
+        /// the next id the store gives out, [`RegionList::next`]; the store declines
+        /// another with [`Decline::NotNext`].
+        region: RegionId,
     },
 }
 
@@ -357,15 +393,20 @@ pub enum StoreReply {
         foreign: Vec<(ChunkPos, RegionId)>,
     },
     /// The merge asked for with [`StoreRequest::AbsorbCommit`] has happened. `chunks`
-    /// are those the region holds through it.
+    /// are those the absorbed region was granted, which the region is granted through
+    /// it, in ascending order, and `pinned` the areas the absorbed region was pinned
+    /// to, which the region is pinned to as well from now on. A chunk of those areas
+    /// is not among `chunks` unless it was granted: the region finds out about it by
+    /// claiming it.
     Absorbed {
         absorbed: RegionId,
         chunks: Vec<ChunkPos>,
+        pinned: Vec<ChunkArea>,
     },
     /// The split asked for with [`StoreRequest::SplitCommit`] has happened, and
-    /// `region` is the new region. It is not opened by the split: the worker says an
-    /// ordinary hello for it with the epoch it named, which the store answers at once,
-    /// and runs it from what it has in memory meanwhile.
+    /// `region` is the new region, the one the request named. It is not opened by the
+    /// split: the worker says an ordinary hello for it with the epoch it named, which
+    /// the store answers at once, and runs it from what it has in memory meanwhile.
     Split {
         region: RegionId,
     },
@@ -403,6 +444,10 @@ pub enum Decline {
     Malformed,
     /// The record of it would be longer than a record of the log may be.
     TooLarge,
+    /// The split names another id for the new region than the next one, which is
+    /// `next`. The store looks at this last, so nothing else stands in the way of the
+    /// same split with that id.
+    NotNext { next: RegionId },
 }
 
 /// What the world store has of a region, as it hands it to the owner that opens it.
@@ -540,6 +585,10 @@ pub struct RegionList {
     /// The regions that were absorbed, each with the region it went into, which may
     /// have been absorbed since.
     pub absorbed: Vec<(RegionId, RegionId)>,
+    /// The id the next region gets, which a split has to name
+    /// ([`StoreRequest::SplitCommit`]). It is above every living and every absorbed
+    /// region.
+    pub next: RegionId,
 }
 
 /// What the coordinator learns of a region from the world store.
@@ -660,19 +709,45 @@ pub enum ToCoordinator {
         region: RegionId,
         chunks: Vec<ChunkPos>,
     },
-    /// A worker says what came of [`FromCoordinator::Absorb`]: whether `region` has
-    /// absorbed `absorbed`. If not, both are as they were.
+    /// A worker says what came of [`FromCoordinator::Absorb`]: that `region` has
+    /// absorbed `absorbed`, or why not. The store's list of regions decides what
+    /// happened; this only tells the coordinator to look.
     AbsorbEnded {
         region: RegionId,
         absorbed: RegionId,
-        done: bool,
+        outcome: Result<(), Off>,
     },
-    /// A worker says what came of [`FromCoordinator::SplitOff`]: the new region, which
-    /// it runs with the epoch it was told, or `None` if the region is as it was.
+    /// A worker says what came of the [`FromCoordinator::SplitOff`] that named
+    /// `as_epoch`: the new region, which it runs with that epoch, or why `region` was
+    /// not split.
     SplitEnded {
         region: RegionId,
-        part: Option<RegionId>,
+        as_epoch: u64,
+        outcome: Result<RegionId, Off>,
     },
+}
+
+/// Why a merge or a split came to nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Off {
+    /// The worker does not run the region with the epoch named.
+    NotRunning,
+    /// The region is in the middle of a release, a merge or a split.
+    Busy,
+    /// No player stands in a chunk named that the region holds.
+    Nobody,
+    /// Nobody would stay, and the region would hold nothing.
+    NothingStays,
+    /// What the store would have to be handed is longer than a request may be.
+    TooLarge,
+    /// The store declined.
+    Declined(Decline),
+    /// The store was lost on the way; what happened, the store's list says.
+    StoreLost,
+    /// The region to absorb could not be opened or read.
+    Unreadable,
+    /// The store has seen a later owner of the region to absorb.
+    Refused,
 }
 
 /// Why a worker vouches for a region it holds.
@@ -726,14 +801,22 @@ pub enum FromCoordinator {
         as_epoch: u64,
     },
     /// To a worker: split the players standing in `chunks` off `region`, which you
-    /// hold with `epoch`, as a region of its own, and run that with `as_epoch`.
-    /// Answered with [`ToCoordinator::SplitEnded`]. See ADR-0010, section 5.
+    /// hold with `epoch`, as the region `part`, and run that with `as_epoch`. `part`
+    /// is the next id of the store's list as the coordinator last read it. Answered
+    /// with [`ToCoordinator::SplitEnded`]. See ADR-0010, section 5.
     SplitOff {
         region: RegionId,
         epoch: u64,
         chunks: Vec<ChunkPos>,
         as_epoch: u64,
+        part: RegionId,
     },
+    /// To a worker: `region`, which you hold with `epoch`, is about to absorb a region
+    /// that is being released for it. Checkpoint it now, so that the merge finds less
+    /// to wait for. Not answered. See `docs/adr/0014-merging-and-splitting.md`,
+    /// sections 3.1 and 5.3. The coordinator does not say this yet, and a worker takes
+    /// it as it takes [`FromCoordinator::Absorb`].
+    Prepare { region: RegionId, epoch: u64 },
     /// To whoever asked for a merge or a split: what came of it. `region` is the
     /// region that absorbed the other or the one that was split off.
     Asked(Result<RegionId, String>),

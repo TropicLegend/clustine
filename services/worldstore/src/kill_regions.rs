@@ -422,6 +422,8 @@ fn scenario(store: &Store, seen: &mut dyn FnMut(&Told, u32)) -> Told {
             state: encode(&one.ledger),
         },
         as_epoch: 1,
+        // The world began with three regions, and none was made since.
+        region: RegionId(3),
     });
     told.split = Some(Split {
         answered: None,

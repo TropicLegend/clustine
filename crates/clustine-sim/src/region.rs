@@ -413,9 +413,10 @@ impl Region {
                     self.players.insert(join.player, player);
                     self.journal.players.insert(join.player);
                 }
-                PlayerChange::Leave(edge, id) => {
+                PlayerChange::Leave(edge, id, _) => {
                     // Whatever their entity: a player who quit while entering the world
-                    // has none yet that the edge knows of.
+                    // has none yet that the edge knows of. The entity a leave names is
+                    // not looked at yet.
                     if self
                         .players
                         .get(id)
@@ -494,7 +495,8 @@ impl Region {
             let answer = self.apply_remote(action, &mut output);
             self.send(*edge, answer, &mut output);
         }
-        for (edge, id, number, input) in &inputs.inputs {
+        // The entity an input names is not looked at yet: it is applied by its number.
+        for (edge, id, _, number, input) in &inputs.inputs {
             self.apply_input(*edge, *id, *number, input, &mut output);
         }
         // A player is let go only where the store has said that the chunk they stand in
@@ -1600,16 +1602,48 @@ mod tests {
     }
 
     /// An input as the edge passes it on: numbered in the order the inputs are made.
-    type Input = (EdgeId, PlayerId, u64, PlayerInput);
+    type Input = (EdgeId, PlayerId, EntityId, u64, PlayerInput);
 
-    fn numbered(player: PlayerId, input: PlayerInput) -> Input {
+    /// An input of the player with the number `number`, which names the entity with
+    /// that number. That is the entity the player has in most of these tests: players
+    /// join a region with the first block of entity ids in the order of their numbers,
+    /// from 1, and keep their entity wherever they walk. A test whose player has
+    /// another entity says so with [`as_entity`] or [`of_the_stay_in`].
+    fn numbered(number: u128, input: PlayerInput) -> Input {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        (EDGE, player, NEXT.fetch_add(1, Ordering::Relaxed), input)
+        let entity = EntityId(i32::try_from(number).expect("a small number"));
+        let next = NEXT.fetch_add(1, Ordering::Relaxed);
+        (EDGE, player(number), entity, next, input)
     }
 
     /// `input` with a number of the test's choosing in place of the next one.
-    fn with_number(number: u64, (edge, player, _, input): Input) -> Input {
-        (edge, player, number, input)
+    fn with_number(number: u64, (edge, player, entity, _, input): Input) -> Input {
+        (edge, player, entity, number, input)
+    }
+
+    /// `input` as of the stay with the entity `entity`, for a player who has another
+    /// entity than that of their number: one who arrived with it, or joined out of turn.
+    fn as_entity(entity: i32, (edge, player, _, number, input): Input) -> Input {
+        (edge, player, EntityId(entity), number, input)
+    }
+
+    /// `input` as an edge sends it that has been told of the player by `region`: with
+    /// the entity the player has there now. For a player who is not there it is left as
+    /// it is; the region has nobody to apply it to.
+    fn of_the_stay_in(region: &Region, input: Input) -> Input {
+        match region.player(input.1) {
+            Some((entity, _)) => as_entity(entity.0, input),
+            None => input,
+        }
+    }
+
+    /// Has every input of `inputs` name the entity its player has in `region`, which
+    /// is about to tick with them. The recorded runs make what players do without
+    /// knowing who has joined or arrived by then, and with which entity.
+    fn name_the_stays_in(region: &Region, inputs: &mut TickInputs) {
+        for input in &mut inputs.inputs {
+            *input = of_the_stay_in(region, input.clone());
+        }
     }
 
     /// What the players are told as a worker tells them, which is as a region told them
@@ -1729,7 +1763,7 @@ mod tests {
     }
 
     fn leave(number: u128) -> PlayerChange {
-        PlayerChange::Leave(EDGE, player(number))
+        PlayerChange::Leave(EDGE, player(number), None)
     }
 
     fn changes(player_changes: Vec<PlayerChange>) -> TickInputs {
@@ -1745,7 +1779,7 @@ mod tests {
             rotation: None,
             on_ground: true,
         };
-        numbered(player(number), input)
+        numbered(number, input)
     }
 
     fn moves(inputs: Vec<Input>) -> TickInputs {
@@ -2025,14 +2059,14 @@ mod tests {
             rotation: Some((90.0, -30.0)),
             on_ground: true,
         };
-        let output = region.tick(&moves(vec![numbered(player(1), turn.clone())]));
+        let output = region.tick(&moves(vec![numbered(1, turn.clone())]));
         let (_, pose) = region.player(player(1)).unwrap();
         assert_eq!(pose.position, SPAWN);
         assert_eq!((pose.yaw, pose.pitch, pose.on_ground), (90.0, -30.0, true));
         assert_eq!(output.events.len(), 1);
 
         // Repeating the same input changes nothing, so nothing is reported.
-        let output = region.tick(&moves(vec![numbered(player(1), turn)]));
+        let output = region.tick(&moves(vec![numbered(1, turn)]));
         assert!(output.events.is_empty());
     }
 
@@ -2072,7 +2106,7 @@ mod tests {
             rotation: Some((f32::NAN, 0.0)),
             on_ground: false,
         };
-        region.tick(&moves(vec![numbered(player(1), spin)]));
+        region.tick(&moves(vec![numbered(1, spin)]));
         assert_eq!(region.player(player(1)), before);
     }
 
@@ -2097,7 +2131,7 @@ mod tests {
             position: BlockPos::new(x, y, z),
             sequence,
         };
-        numbered(player(number), input)
+        numbered(number, input)
     }
 
     /// A chunk with a floor of stone right below where players stand.
@@ -2166,7 +2200,7 @@ mod tests {
             dig(1, -1, -61, 0, 5),
         ];
         for attempt in attempts {
-            let PlayerInput::Dig { sequence, .. } = attempt.3 else {
+            let PlayerInput::Dig { sequence, .. } = attempt.4 else {
                 unreachable!();
             };
             let output = region.tick(&moves(vec![attempt]));
@@ -2220,11 +2254,11 @@ mod tests {
             face,
             sequence: 1,
         };
-        numbered(player(number), input)
+        numbered(number, input)
     }
 
     fn select(number: u128, slot: u8) -> Input {
-        numbered(player(number), PlayerInput::SelectSlot { slot })
+        numbered(number, PlayerInput::SelectSlot { slot })
     }
 
     fn changed(x: i32, y: i32, z: i32, state: BlockState) -> RegionEvent {
@@ -2319,7 +2353,7 @@ mod tests {
     #[test]
     fn creative_players_fill_their_own_hotbar() {
         let mut region = on_floor(&[1]);
-        let set = |slot, stack| numbered(player(1), PlayerInput::SetHotbarSlot { slot, stack });
+        let set = |slot, stack| numbered(1, PlayerInput::SetHotbarSlot { slot, stack });
         let glass = ItemStack {
             item: items::GLASS,
             count: 1,
@@ -2379,7 +2413,7 @@ mod tests {
     };
 
     fn set_slot(number: u128, slot: u8, stack: Option<ItemStack>) -> Input {
-        numbered(player(number), PlayerInput::SetHotbarSlot { slot, stack })
+        numbered(number, PlayerInput::SetHotbarSlot { slot, stack })
     }
 
     /// What a region hands over when it lets a player go at `x` after their input
@@ -3139,13 +3173,16 @@ mod tests {
 
         // What the region the player came from had applied is not applied again.
         let output = region.tick(&moves(vec![
-            with_number(39, walk(1, 3.5, 0.5)),
-            with_number(40, select(1, 2)),
+            as_entity(77, with_number(39, walk(1, 3.5, 0.5))),
+            as_entity(77, with_number(40, select(1, 2))),
         ]));
         assert!(output.events.is_empty(), "{:?}", output.events);
         // What comes after that is. As it is a step out of the area, it shows that the
         // region kept everything else as it was handed over.
-        let output = region.tick(&moves(vec![with_number(41, walk(1, 33.5, 0.5))]));
+        let output = region.tick(&moves(vec![as_entity(
+            77,
+            with_number(41, walk(1, 33.5, 0.5)),
+        )]));
         let handed_on = PlayerTransfer {
             pose: Pose {
                 position: Vec3::new(33.5, -60.0, 0.5),
@@ -3474,14 +3511,14 @@ mod tests {
     }
 
     /// `input`, which has to dig or place, with a sequence number of the test's choosing.
-    fn sequenced(chosen: i32, (edge, player, number, mut input): Input) -> Input {
+    fn sequenced(chosen: i32, (edge, player, entity, number, mut input): Input) -> Input {
         match &mut input {
             PlayerInput::Dig { sequence, .. } | PlayerInput::UseItemOn { sequence, .. } => {
                 *sequence = chosen;
             }
             other => panic!("{other:?} has no sequence number"),
         }
-        (edge, player, number, input)
+        (edge, player, entity, number, input)
     }
 
     fn remote(number: u128, sequence: i32, step: RemoteStep) -> RemoteAction {
@@ -4195,7 +4232,7 @@ mod tests {
                 REMOTE,
                 remote(1, 2, place_at(-3, -60, 2, blocks::STONE, FEET)),
             )],
-            inputs: vec![dig(2, -3, -60, 2, 1)],
+            inputs: vec![as_entity(77, dig(2, -3, -60, 2, 1))],
             ..TickInputs::default()
         });
         assert_eq!(
@@ -4208,7 +4245,7 @@ mod tests {
         // finds nothing left to place a block against,
         let output = region.tick(&TickInputs {
             remote_actions: vec![(REMOTE, remote(1, 3, break_at(-3, -61, 2)))],
-            inputs: vec![place(2, -3, -61, 2, Face::Top)],
+            inputs: vec![as_entity(77, place(2, -3, -61, 2, Face::Top))],
             ..TickInputs::default()
         });
         assert_eq!(output.events, [changed(-3, -61, 2, blocks::AIR)]);
@@ -4218,7 +4255,7 @@ mod tests {
                 REMOTE,
                 remote(1, 4, place_at(-6, -60, 4, blocks::STONE, FEET)),
             )],
-            inputs: vec![walk(2, -5.5, 4.5)],
+            inputs: vec![as_entity(77, walk(2, -5.5, 4.5))],
             ..TickInputs::default()
         });
         assert!(output.events.contains(&changed(-6, -60, 4, blocks::STONE)));
@@ -4262,7 +4299,7 @@ mod tests {
         assert!(told(&output).is_empty());
         let output = region.tick(&TickInputs {
             remote_actions: vec![(REMOTE, remote(1, 12, break_at(-2, -61, 4)))],
-            inputs: vec![dig(1, -3, -61, 1, 11)],
+            inputs: vec![as_entity(77, dig(1, -3, -61, 1, 11))],
             ..TickInputs::default()
         });
         assert_eq!(output.events.len(), 2);
@@ -4310,7 +4347,7 @@ mod tests {
             };
             self.region = 1 - self.region;
             self.kept
-                .retain(|(_, _, number, _)| *number > transfer.last_input);
+                .retain(|(_, _, _, number, _)| *number > transfer.last_input);
             let inputs = &mut waiting[self.region];
             // In the order the region gets them: whatever was sent to it while the
             // player was away came before.
@@ -4385,7 +4422,10 @@ mod tests {
             if step < STEPS {
                 let mut made = TickInputs::default();
                 for _ in 0..random(6) {
-                    let id = player(u128::from(1 + random(3)));
+                    // Joined in this order, each has the entity of their number, in the
+                    // single region as in the two.
+                    let number = 1 + random(3);
+                    let (id, entity) = (player(u128::from(number)), EntityId(number as i32));
                     let route = routes.get_mut(&id).unwrap();
                     let input = match random(8) {
                         0 => PlayerInput::SelectSlot {
@@ -4424,7 +4464,7 @@ mod tests {
                         }
                     };
                     route.made += 1;
-                    let input = (EDGE, id, route.made, input);
+                    let input = (EDGE, id, entity, route.made, input);
                     made.inputs.push(input.clone());
                     waiting[route.region].inputs.push(input.clone());
                     route.kept.push(input);
@@ -4544,19 +4584,19 @@ mod tests {
         // region did not apply. In the west the player turns round at once.
         let mut for_west = TickInputs::default();
         for_west.change(arrive(1, &first));
-        for (edge, player, number, input) in made[1..].iter().cloned() {
-            for_west.input(edge, player, number, input);
+        for (edge, player, entity, number, input) in made[1..].iter().cloned() {
+            for_west.input(edge, player, entity, number, input);
         }
         let second = handed_over(west.tick(&for_west));
         assert_eq!(second.last_input, 2);
         // The eastern region has not ticked in the meantime, so the fourth input is
         // still waiting there when the third and the fourth are sent to it again.
         let mut for_east = TickInputs::default();
-        let (edge_4, player_4, number_4, input_4) = made[3].clone();
-        for_east.input(edge_4, player_4, number_4, input_4);
+        let (edge_4, player_4, entity_4, number_4, input_4) = made[3].clone();
+        for_east.input(edge_4, player_4, entity_4, number_4, input_4);
         for_east.change(arrive(1, &second));
-        for (edge, player, number, input) in made[2..].iter().cloned() {
-            for_east.input(edge, player, number, input);
+        for (edge, player, entity, number, input) in made[2..].iter().cloned() {
+            for_east.input(edge, player, entity, number, input);
         }
         assert_eq!(for_east.inputs, made[2..]);
         east.tick(&for_east);
@@ -4697,7 +4737,7 @@ mod tests {
         fn step(&mut self, made: Vec<Input>) {
             let step = self.step;
             let mut whole = TickInputs::default();
-            for (_, id, _, input) in made {
+            for (_, id, entity, _, input) in made {
                 if let PlayerInput::Dig { sequence, .. } | PlayerInput::UseItemOn { sequence, .. } =
                     &input
                 {
@@ -4705,7 +4745,7 @@ mod tests {
                 }
                 let route = self.routes.get_mut(&id).unwrap();
                 route.made += 1;
-                let input = (EDGE, id, route.made, input);
+                let input = (EDGE, id, entity, route.made, input);
                 whole.inputs.push(input.clone());
                 self.waiting[route.region].inputs.push(input.clone());
                 route.kept.push(input);
@@ -5111,7 +5151,7 @@ mod tests {
             // The router hears that the player was let go at once or up to two steps
             // later.
             world.lag = random(3);
-            world.act(vec![numbered(player(1), input)]);
+            world.act(vec![numbered(1, input)]);
         }
 
         world.assert_each_handled_once();
@@ -5257,7 +5297,7 @@ mod tests {
                         }
                     }
                 };
-                made.push(numbered(player(1 + index as u128), input));
+                made.push(numbered(1 + index as u128, input));
             }
             world.lag = random(3);
             world.step(made);
@@ -5378,7 +5418,7 @@ mod tests {
                         sequence,
                     },
                 };
-                made.push(numbered(player(number), input));
+                made.push(numbered(number, input));
             }
             world.act(made);
         }
@@ -5544,6 +5584,8 @@ mod tests {
         };
 
         let mut recorded = Vec::new();
+        // The region the run is recorded on, which says what entity a player has.
+        let mut recording = region();
         for _ in 0..300 {
             let mut inputs = TickInputs::default();
             for _ in 0..random(4) {
@@ -5583,6 +5625,8 @@ mod tests {
                     )),
                 }
             }
+            name_the_stays_in(&recording, &mut inputs);
+            recording.tick(&inputs);
             recorded.push(inputs);
         }
 
@@ -5612,11 +5656,12 @@ mod tests {
 
     /// What a region for `area` is given in a run in which edges give it `made`, tick by
     /// tick: the same with what the store answers to its claims, each in the tick after
-    /// the claim.
+    /// the claim, and with every input naming the entity its player has by then.
     fn with_the_stores_answers(area: ChunkArea, made: Vec<TickInputs>) -> Vec<TickInputs> {
         let mut served = Served::new(area, EntityIds::block(0).unwrap());
         let answered = made.into_iter().map(|inputs| {
-            let inputs = served.with_answers(inputs);
+            let mut inputs = served.with_answers(inputs);
+            name_the_stays_in(&served.region, &mut inputs);
             served.tick(&inputs);
             inputs
         });
@@ -5764,6 +5809,8 @@ mod tests {
         let mut made = 0u64;
 
         let mut recorded = Vec::new();
+        // The region the run is recorded on, which says what entity a player has.
+        let mut recording = region_in(MIDDLE);
         for _ in 0..1500 {
             let mut inputs = TickInputs::default();
             for _ in 0..random(4) {
@@ -5823,6 +5870,8 @@ mod tests {
                     }
                 }
             }
+            name_the_stays_in(&recording, &mut inputs);
+            recording.tick(&inputs);
             recorded.push(inputs);
         }
 
@@ -5979,6 +6028,7 @@ mod tests {
                 }
             }
 
+            name_the_stays_in(&region, &mut inputs);
             let output = checked(&mut region, &inputs);
             let (mut now_granted, mut now_foreign) = grants.answer(me, &output.claims);
             grants_made += now_granted.len();

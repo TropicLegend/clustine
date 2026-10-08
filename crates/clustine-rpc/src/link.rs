@@ -241,7 +241,10 @@ mod tests {
     fn leave() -> EdgeMessage {
         EdgeMessage {
             number: Some(1),
-            body: EdgeToWorker::PlayerLeave { player: player() },
+            body: EdgeToWorker::PlayerLeave {
+                player: player(),
+                entity: None,
+            },
         }
     }
 
@@ -298,6 +301,7 @@ mod tests {
             },
             EdgeToWorker::Input {
                 player: player(),
+                entity: EntityId(5),
                 number: 1,
                 input: PlayerInput::Move {
                     position: Some(Vec3::new(1.5, -60.0, 2.5)),
@@ -307,6 +311,7 @@ mod tests {
             },
             EdgeToWorker::Input {
                 player: player(),
+                entity: EntityId(5),
                 number: 2,
                 input: PlayerInput::UseItemOn {
                     position: BlockPos::new(1, -61, 2),
@@ -316,13 +321,21 @@ mod tests {
             },
             EdgeToWorker::Input {
                 player: player(),
+                entity: EntityId(i32::MAX),
                 number: u64::MAX,
                 input: PlayerInput::SetHotbarSlot {
                     slot: 8,
                     stack: None,
                 },
             },
-            EdgeToWorker::PlayerLeave { player: player() },
+            EdgeToWorker::PlayerLeave {
+                player: player(),
+                entity: Some(EntityId(5)),
+            },
+            EdgeToWorker::PlayerLeave {
+                player: player(),
+                entity: None,
+            },
             EdgeToWorker::PlayerArrive {
                 player: player(),
                 transfer: transfer(),
@@ -398,10 +411,16 @@ mod tests {
                     chunk: ChunkPos::new(3, -4),
                 }],
             },
-            WorkerToEdge::Welcome(Welcome::Resumed { entries: 3 }),
+            WorkerToEdge::Welcome(Welcome::Resumed {
+                entries: 3,
+                presences: 2,
+                applied: 9,
+            }),
             WorkerToEdge::Welcome(Welcome::Unknown {
                 since: 17,
                 entries: 0,
+                presences: 1,
+                applied: 0,
             }),
             WorkerToEdge::Welcome(Welcome::Superseded),
             WorkerToEdge::Outbox {
