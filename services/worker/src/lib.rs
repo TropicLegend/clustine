@@ -1718,14 +1718,20 @@ mod tests {
                     .player(player())
                     .is_some_and(|(_, pose)| pose.position.x == 14.5)
             });
-            // Whatever that was reported with has to have arrived before what follows
-            // is looked at, also over a link that takes its time.
-            for _ in 0..25 {
-                runner.step();
-                thread::sleep(Duration::from_millis(2));
+            // Both edges watch the chunk and so are told of that step. Once they have
+            // been, everything sent before it has arrived as well, however long a link
+            // takes over it, and what follows is all there is to come.
+            for link in [&mut edge, &mut other] {
+                loop {
+                    let WorkerToEdge::TickDelta { events, .. } = step_for(&mut runner, link) else {
+                        continue;
+                    };
+                    let there = |event: &RegionEvent| matches!(event, RegionEvent::EntityMoved { pose, .. } if pose.position.x == 14.5);
+                    if events.iter().any(there) {
+                        break;
+                    }
+                }
             }
-            received(&mut edge);
-            received(&mut other);
             edge.send(dig_by(player(), 16, 7)).await.unwrap();
             let request = RemoteAction {
                 player: player(),
