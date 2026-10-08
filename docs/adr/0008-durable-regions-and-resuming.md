@@ -186,8 +186,10 @@ store's own record format and are applied to chunks by the store.
   number per (edge, region), in an envelope `EdgeMessage { number: Option<u64>, body }`;
   hello, subscribe, unsubscribe and confirm carry none. The runner passes each on once,
   in order. It counts as **received** what it has passed on to the region, into the
-  inputs of the coming tick; a number not above that is dropped, one that leaves a gap
-  ends the link. A link that ends leaves what it had sent for the coming tick in place,
+  inputs of the coming tick. On a new link a number not above that is dropped: it is
+  what the edge sends again. One that leaves a gap ends the link, and so does one that
+  goes back on the link it came over: an edge sends what it kept once per link, in
+  order, so either is its mistake. A link that ends leaves what it had sent for the coming tick in place,
   as it counts as received; only a higher start drops it (above). What is held behind a
   resume (below) is not received yet: if the link ends first, it is dropped, and the
   edge sends it again.
@@ -207,6 +209,13 @@ store's own record format and are applied to chunks by the store.
   reports the entities of its departures removed where they were last seen, which is
   beyond the region's end, where no link of it is subscribed. The runner sends those
   removals to every link.
+- **Order on a link.** What a tick produced for an edge is published in this order: the
+  resume, if the tick took a hello; the tick's events; who entered the world; outbox
+  entries other than departures; acknowledgements; departures; snapshots; progress. A
+  player is told what their action did before being told that it was handled, and what
+  became of their actions before being told that they are another region's now. The
+  region numbers a tick's departures last, so outbox numbers ascend on a link, which the
+  edge relies on: it remembers only the highest it has seen.
 - **Losing the store.** A region whose store handle is lost stops. Its worker closes the
   region's links, opens the region again when the store answers, and restores it. A
   region never carries on from memory after a commit went unanswered. If the store
