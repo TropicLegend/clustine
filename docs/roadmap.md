@@ -156,36 +156,46 @@ Then stop for the owner's check: `clustine move` and restarting workers while pl
 
 ### Phase C: regions that follow players
 
-- A region is a set of chunks and the players standing in them. Which region has a chunk
-  is decided by the world store, which grants a chunk to the first region that needs it
-  and takes it back when that region no longer does. A dead region keeps its chunks
-  until it is restored. The stripes, `Layout` and `--boundaries` go.
-- An edge asks the viewer's region for a chunk; if another region has it, it is told
-  which and asks there. Hand-over and passing on of block actions work as in M2, on these
-  chunk sets; an action that reaches a region which no longer has the block comes back as
-  "not mine" and is sent on.
-- There is always a home region with the spawn chunk; players join there.
-- The coordinator hears where each region's players are and lists regions from the store,
-  so it finds regions nobody runs, also after its own restart. It orders a merge of
-  regions whose players come within a merge distance and a split of a region whose
-  players form groups further apart than a larger split distance.
-- Merge and split are one operation of the store each: absorbing takes another region's
-  stored state, chunks, outbox and message numbers into the survivor and retires the
-  other for good; splitting off writes part of a region as a new region with a fresh id.
-  Edges are told and move what they kept for the old region to the new one.
-- Workers run several regions and start and stop them while running.
-- The single process runs the same, with the coordinator's decisions made in-process.
+[ADR-0010](adr/0010-regions-that-follow-players.md) is the plan, gone over by an
+independent reviewer, whose twenty-one findings are worked into it. In short:
+
+- A region is a set of chunks and the players standing in them. The world store says
+  which region holds a chunk: it grants a chunk to the first region that asks and takes
+  it back when that region no longer needs it. A region nobody runs keeps its chunks.
+- An edge asks the viewer's region for a chunk; if another region holds it, it is told
+  which and asks there as a guest. Hand-over and passing on of block actions work as
+  before, on chunk sets, and name the region they go to; what reaches a region that no
+  longer holds the chunk comes back as "not mine".
+- There is always a home region with the chunk players enter the world in. It gives
+  out all entity ids and is never absorbed.
+- The coordinator hears where each region's players are and lists regions from the
+  store. It has regions merged whose players come within a merge distance and a region
+  split whose players form groups further apart than a larger split distance.
+- A merge and a split are one log record of the store each. No region just disappears:
+  a region ends by being absorbed. A region that is split off is run at once by the
+  worker that made it, and can be moved from there.
+- Workers run several regions. The single process runs the same, with the coordinator's
+  decisions made in-process.
+- For tests, regions can be pinned to an area, and merging and splitting can be asked
+  for by hand.
+
+Changed from what was first agreed, for the owner to know: regions do not carry entity
+ids of their own (the home region issues all), an empty region is absorbed rather than
+retired, a new region starts on the worker that made it, and the steps are cut
+differently, so that each leaves everything working.
 
 | # | Scope | Verified by | Status |
 |---|---|---|---|
-| C1 | Store: registry of regions, chunk grants, absorb and split-off as single operations | Store tests incl. kills at every point | to do |
-| C2 | Sim, worker, edge on chunk sets instead of stripes: grants, redirects, "not mine"; several regions per worker | Existing hand-over, block and chaos tests on the new model | to do |
-| C3 | Absorb and split-off through sim, worker and edge | Differential tests against one region; kills during merge and split | to do |
-| C4 | Coordinator: reports, regions from the store, merge and split decisions with hysteresis, placing new regions on the worker with the fewest | State machine tests with scripted and random movement | to do |
-| C5 | Stripes removed; single process and cluster on the new model | Bots meeting and parting; crowds; all chaos and migration tests again; kind | to do |
-| C6 | ADR-0010, architecture, roadmap | CI | to do |
+| C0 | The messages and types of ADR-0010, refused or ignored by everyone | All existing tests | to do |
+| C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | to do |
+| C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | to do |
+| C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos | Hand-over, block, takeover, chaos and move tests on two pinned regions | to do |
+| C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | to do |
+| C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | to do |
+| C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | to do |
+| C6 | Docs; what to try with real clients | CI | to do |
 
-Then stop for the owner's check: two clients walking towards and away from each other.
+Then the owner's check: two clients walking towards and away from each other.
 
 ### Where M3 stands
 
