@@ -1882,3 +1882,98 @@ For step C2b.3, seen here and not decided:
   chunk while the edge is as it is, the player's action would not be acknowledged, and
   none of theirs after it. Regions that presume the layout the edge has cannot
   disagree with it.
+
+### Step C2b.3
+
+Nothing in section 4 had to be decided differently. The two things the step before left
+for this one:
+
+1. **A stale delivery of a chunk.** The runner counts, per chunk, the loads it has asked
+   the store for and has not had answered (`RegionRunner::loads`), and hands the tick
+   only an answer that leaves none (`answers_the_latest_load`): the answer to the
+   latest request. That rests on the store answering the loads of one chunk in the
+   order they were asked, which ADR-0008, section 3, has, and on its answering each
+   once. An answer that comes before the region has asked again finds no request in
+   the sim, which drops it as before; so between them the two take only what was read
+   for the request that stands. `Unreadable` counts as an answer in the same way: one
+   for a request that was dropped says nothing of the chunk as it is now. The worker's
+   unit test of it holds the answers to loads back at a `Gate`, and fails without the
+   count.
+2. **`held_chunk_count` under `presumed`.** `RegionStatus::held` is
+   `Region::held_chunk_count` as it is: the chunks the store has said the region holds,
+   in `Restored::held` or by granting a claim, that it has not given back. A region
+   that presumes its stripe has asked for none of them, so it shows 0, whatever it has
+   loaded (`RegionStatus::chunks` says that). Nothing reads the number before step C4,
+   and `presumed` is gone by then. In a region that asks, a chunk of a pinned area
+   counts from the store's answer to its claim on, and `Restored::held` does not have
+   it: the count of a pinned region begins anew with every owner and rises as its
+   edges say hello. C4 has to take the number as "known to be held", or count
+   otherwise.
+
+What the record did not say, or said otherwise than the code needed:
+
+3. **The cluster tests that take minutes do not run in the second test run**
+   (section 8). `CLUSTINE_TEST_BOUNDARIES` is also how the tests of `chaos.rs` and
+   `moves.rs` tell a repetition, which they skip, as they divide their worlds
+   themselves. So in the run with both variables `--ask-the-store` reaches the workers
+   of the two tests of `tests/cluster.rs` only. The chaos and move tests run on
+   regions that ask when `CLUSTINE_TEST_ASK_THE_STORE` is set alone, which neither
+   `tools/check.sh` nor CI does.
+4. **`Config::presumed` has no flag on the command line.** Section 8 names
+   `clustine worker --ask-the-store` and, for the single process, the field. So the
+   single process as the owner starts it always presumes, and so do the two tests
+   that start it as a process of its own (`spawn_server`, in `handoff.rs` and
+   `persistence.rs`), in every run. Regions that ask are tried with real clients only
+   in a cluster.
+5. **What a subscription message's number has to be** (section 4.3). The first on a
+   link has to be above 0, with or without a hello before it, as 0 is the hello's. An
+   `Unsubscribe` is numbered and checked like the other two, also when it names
+   chunks the link has no subscription to. A hello that names no chunk leaves the
+   link's count alone, wherever it comes; one that names a chunk twice, or in both
+   lists, makes one subscription.
+6. **A chunk the store has said it cannot read does not hold a hello** that names it
+   later, as today; section 4.5 speaks only of the answer that comes while the link
+   is held.
+7. **`NotHeld` leaves the store handle open.** The runner stops as for a lost store,
+   but the store has not let go of the region: it is the worker process that drops the
+   runner, and with it the handle, and opens the region again with the same epoch,
+   which replaces the session (`cluster.rs`, as for a lost store). The single process
+   opens nothing again, as it does not for a lost store either; there a region that
+   was told `NotHeld` stays down until the process is started again.
+8. **`EdgeLink::awaiting_snapshot` is called `waiting`**, as what such a subscription
+   waits for is no longer a snapshot in every case.
+9. **The edge still says of `Elsewhere` and `NotMine` "which no region does yet"**, in
+   a comment and beside the error it logs (`Fanout::handle_region`). A region says
+   both now, to a link that asks for a chunk the region does not hold, which this edge
+   never does. The comment is left for the step that rebuilds the edge.
+10. **Existing tests that changed beyond their fixtures and were not named** in section
+    6:
+    - `a_link_that_sends_something_numbered_before_saying_hello_is_closed` (worker,
+      `lib.rs`) sends a `Subscribe` on a bare link, which needs a number above 0 now.
+    - `the_status_follows_the_region` also asserts what item 2 says, and the crowds.
+    - In `services/worker/tests/specification.rs`, on the real path as section 6 has
+      it: `Witness::absorb` no longer fails on an `Elsewhere`; the sessions of the
+      long scenarios (`everything_an_edge_was_told_survives_the_owner` and
+      `a_released_region_is_restored_from_its_state_alone_with_all_its_edges_were_told`)
+      name the first chunk of the next region in their hellos, as an edge whose viewer
+      sees across the line does, so that the region knows whose it is before anything
+      is applied, after every restore too; `busy_region` and
+      `with_an_unconfirmed_departure` ask nothing about that chunk and wait for the
+      departure, which comes with the store's answer, where they asserted it with the
+      progress of the step. The first has the dig passed on with region 1, the others
+      with none.
+    - `a_lost_link_keeps_the_players_and_a_new_one_resumes` in the edge's tests takes
+      the hello apart, which has `guests` now, and asserts them to be empty.
+
+**The run with regions that ask**, with the edge as it is: every end-to-end test passed.
+That is `cargo test -p clustine` with `CLUSTINE_TEST_BOUNDARIES=0,4` and
+`CLUSTINE_TEST_ASK_THE_STORE=1` (the 51 tests of blocks, cluster, hand-over, join,
+movement, persistence, players, status and takeover), and, with
+`CLUSTINE_TEST_ASK_THE_STORE` alone and run once by hand, the twelve chaos and the
+fourteen move tests on clusters of processes. The tests do not read the edge's log, so
+they do not show that no `Elsewhere` came; by section 8 none does.
+
+The worker's unit tests have one test and more for each rule of sections 4.2 to 4.8,
+on stores with a division (stripes at 1, and the gap), among them the three that need
+a `Gate`. They were written by whoever built the runner, and are no substitute for the
+scenarios R1 to R22.
