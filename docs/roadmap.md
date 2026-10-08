@@ -187,15 +187,14 @@ Then stop for the owner's check: two clients walking towards and away from each 
 
 ### Where M3 stands
 
-Nothing of phase A is built yet. ADR-0008 is written and has not been reviewed.
+Nothing of phase A is built yet. ADR-0008 has been gone over by an independent reviewer
+against the code; the fourteen defects found are worked into it and listed at its end.
 
 Next, in this order:
 
-1. Have ADR-0008 gone over by an independent reviewer against the code, as was done for
-   the plan (it found twelve defects there, all worked into this section and the ADR).
-2. A0, by whoever leads: the shared types and messages, with everything still passing.
+1. A0, by whoever leads: the shared types and messages, with everything still passing.
    The notes below say what they are.
-3. Then in parallel, each in a crate of its own: A1 (`services/worldstore`,
+2. Then in parallel, each in a crate of its own: A1 (`services/worldstore`,
    `crates/clustine-format`) and A2 (`crates/clustine-sim`); after those A3
    (`services/worker`), tests for A2 written from ADR-0008 alone, and A5
    (`services/coordinator`); then A4 (`services/edge`), which is where ordering mistakes
@@ -203,27 +202,28 @@ Next, in this order:
 
 Notes for A0 and after, which the ADR does not spell out:
 
-- The store does not need to understand a region's state: `Commit` and `Checkpoint` carry
-  it as bytes (postcard of `StateDelta` and of `RegionState`), and opening returns the
-  state file's bytes and the deltas' bytes for the worker to fold with
-  `RegionState::apply`. Block changes stay in the store's own record format and are
-  applied to chunks by the store as today.
-- Numbered messages need an envelope on the edge-to-worker link, for instance
+- Numbered messages travel in an envelope on the edge-to-worker link,
   `EdgeMessage { number: Option<u64>, body: EdgeToWorker }`, with numbers on join, leave,
-  arrive, discard, input and remote action, and none on hello, subscribe, unsubscribe,
-  presence and confirm.
-- `PlayerJoin` and arriving gain the edge; leaving gains the entity; remote actions come
-  with their edge; `Assignment` loses `entity_ids`, which the store issues instead.
-- An edge trims what it keeps only on `Progress`, never on `Welcome`: `Welcome.applied`
-  is what was committed, and the region itself ignores what it has applied in memory.
+  arrive, discard, input and remote action, and none on hello, subscribe, unsubscribe and
+  confirm. Presence is part of `Hello`, not a message of its own.
+- The edge a join, an arrival, a leave or a remote action came from is added by the runner
+  to the tick's inputs; it is not on the wire. Leaving no longer needs an entity.
+  `Assignment` loses `entity_ids`, which the store issues instead, and `RegionConfig`
+  loses them too.
+- An edge trims what it keeps only on `Progress`. `Welcome` says only whether the region
+  knew the edge (or that the edge has been superseded), not how far it got.
 - `RegionRunner::send_snapshots` reads live state when it sends, and the fallback in
   `RegionRunner::tell` sends an `EntityRemoved` outside the tick's outputs. Both have to
-  go behind the commit.
+  go behind the commit; the fallback becomes the reset of section 2 of the ADR.
 - `Fanout::hand_over` treats a transfer to the region it came from as an error and
   disconnects. From phase C on that is an ordinary case after a merge.
 - The store thread today syncs logs, saves chunks and recovers on one thread
-  (`services/worldstore/src/lib.rs`), and answers also when a write failed. Commits need
-  a lane of their own and an answer only on success.
+  (`services/worldstore/src/lib.rs`), answers also when a write failed, empties the log
+  with `set_len(0)` and does not sync the directory after renaming a file. A1 changes all
+  four. Its latency test runs on a real disk, during a checkpoint of many chunks.
+- The heartbeat gains a payload (section 6 of the ADR), and the worker reports an epoch
+  the store refused.
+- Kubernetes: the edge becomes a StatefulSet, so that its name survives a restart (A4).
 
 ### Known limits after M3
 
