@@ -225,7 +225,9 @@ struct Link {
 }
 
 /// What the edge keeps for a region, with or without a link to it; see
-/// `docs/adr/0008-durable-regions-and-resuming.md`.
+/// `docs/adr/0008-durable-regions-and-resuming.md`. A region gets one when the edge
+/// first has to do with it: when a link to it comes, or something is to be sent to it
+/// (`docs/adr/0013-the-edge-without-a-layout.md`, section 1).
 #[derive(Default)]
 struct RegionPort {
     link: Option<Link>,
@@ -257,7 +259,7 @@ pub(crate) struct Fanout {
     /// Who this edge is to the regions.
     identity: EdgeIdentity,
     /// What is kept for each region, by region id.
-    regions: Vec<RegionPort>,
+    regions: BTreeMap<RegionId, RegionPort>,
     /// The links to start with, until [`Fanout::run`] takes them up.
     first_links: Vec<RegionLink>,
     /// Where new links to regions arrive.
@@ -298,20 +300,11 @@ struct Shown {
 }
 
 impl Fanout {
-    /// `routing` must not have a link to a region its layout does not have.
     pub(crate) fn new(
         config: FanoutConfig,
         routing: Routing,
         commands: mpsc::Receiver<Command>,
     ) -> Self {
-        let regions = routing.layout.region_count();
-        assert!(
-            routing
-                .links
-                .iter()
-                .all(|link| (link.region.0 as usize) < regions),
-            "a link to a region the layout does not have"
-        );
         let spawn = routing.spawn;
         let spawn_region = routing
             .layout
@@ -324,7 +317,7 @@ impl Fanout {
             layout: routing.layout,
             spawn_region,
             identity: routing.identity,
-            regions: (0..regions).map(|_| RegionPort::default()).collect(),
+            regions: BTreeMap::new(),
             first_links: routing.links,
             relinks: routing.relinks,
             lost: routing.lost,
@@ -362,7 +355,7 @@ impl Fanout {
                     let Some((region, link, message)) = message else {
                         return Stopped::Abandoned;
                     };
-                    let current = self.regions[region.0 as usize]
+                    let current = self.regions.entry(region).or_default()
                         .link
                         .as_ref()
                         .is_some_and(|current| current.id == link);
@@ -386,7 +379,7 @@ impl Fanout {
     /// Notes that the link to `region` has ended. Its players stay, and what they do is
     /// kept, until there is a link to the region again.
     fn lose_link(&mut self, region: RegionId) {
-        if let Some(link) = self.regions[region.0 as usize].link.take() {
+        if let Some(link) = self.regions.entry(region).or_default().link.take() {
             warn!(%region, epoch = link.epoch, "the link to a region ended; keeping its players");
             // Nobody may be listening, which is fine.
             let _ = self.lost.send((region, link.epoch));
@@ -398,10 +391,7 @@ impl Fanout {
     /// region is sent once the region has answered; see [`Fanout::welcomed`].
     async fn take_link(&mut self, link: RegionLink) {
         let RegionLink { region, epoch, end } = link;
-        let Some(port) = self.regions.get_mut(region.0 as usize) else {
-            warn!(%region, "a link to a region the layout does not have");
-            return;
-        };
+        let port = self.regions.entry(region).or_default();
         if port
             .link
             .as_ref()
@@ -464,7 +454,7 @@ impl Fanout {
     /// The region `from` has said what it knows of this edge. Returns why the edge has
     /// to stop, if it has to.
     async fn welcomed(&mut self, from: RegionId, welcome: Welcome) -> Option<Stopped> {
-        let port = &self.regions[from.0 as usize];
+        let port = &self.regions.entry(from).or_default();
         match welcome {
             Welcome::Superseded => {
                 error!(%from, "another edge has taken this one's name; stopping");
@@ -481,14 +471,14 @@ impl Fanout {
                 // Said in every hello from now on. Kept also when the link ends before
                 // anything more is read: the region tells an edge that says another
                 // number the same again, as long as it has taken nothing from it.
-                self.regions[from.0 as usize].since = since;
+                self.regions.entry(from).or_default().since = since;
             }
         }
         let entries = match welcome {
             Welcome::Resumed { entries } | Welcome::Unknown { entries, .. } => entries,
             Welcome::Superseded => 0,
         };
-        let link = self.regions[from.0 as usize].link.as_mut()?;
+        let link = self.regions.entry(from).or_default().link.as_mut()?;
         link.announced = Some(entries);
         if entries == 0 {
             self.send_kept(from).await;
@@ -499,7 +489,7 @@ impl Fanout {
     /// Sends the region `region` what was kept for it, now that it has said where it
     /// stands and the outbox entries its welcome announced have been handled.
     async fn send_kept(&mut self, region: RegionId) {
-        let port = &mut self.regions[region.0 as usize];
+        let port = &mut self.regions.entry(region).or_default();
         let Some(link) = port.link.as_mut() else {
             return;
         };
@@ -522,7 +512,7 @@ impl Fanout {
     /// kept for the region is sent.
     async fn outbox(&mut self, from: RegionId, number: u64, entry: Durable) {
         self.handle_entry(from, number, entry).await;
-        let link = self.regions[from.0 as usize].link.as_mut();
+        let link = self.regions.entry(from).or_default().link.as_mut();
         let Some(link) = link.filter(|link| !link.welcomed) else {
             return;
         };
@@ -540,7 +530,7 @@ impl Fanout {
     /// region means nothing to it any more.
     async fn forget_region(&mut self, region: RegionId) {
         warn!(%region, "a region has forgotten this edge; dropping what was kept for it");
-        let port = &mut self.regions[region.0 as usize];
+        let port = &mut self.regions.entry(region).or_default();
         let kept = std::mem::take(&mut port.kept);
         port.numbered = 0;
         port.applied = 0;
@@ -760,7 +750,7 @@ impl Fanout {
     /// that was handled before is one the region sends again because the confirmation
     /// had not reached it, and is passed over.
     async fn handle_entry(&mut self, from: RegionId, number: u64, entry: Durable) {
-        let port = &mut self.regions[from.0 as usize];
+        let port = &mut self.regions.entry(from).or_default();
         if number <= port.seen {
             return;
         }
@@ -835,7 +825,7 @@ impl Fanout {
         // placed when the region has applied the leaving and the join behind it. Taking
         // the answer for them would put them into the world as their old self, with an
         // entity that the region removes a moment later.
-        let port = &self.regions[from.0 as usize];
+        let port = &self.regions.entry(from).or_default();
         let left_since = port.kept.iter().any(
             |(_, body)| matches!(body, EdgeToWorker::PlayerLeave { player: left } if *left == player),
         );
@@ -883,7 +873,7 @@ impl Fanout {
             Presence::Absent => {
                 // A join or an arrival that the region has not applied yet is among
                 // what is sent to it again, and puts the player there.
-                let port = &self.regions[from.0 as usize];
+                let port = &self.regions.entry(from).or_default();
                 let under_way = port.kept.iter().any(|(_, body)| match body {
                     EdgeToWorker::PlayerJoin(join) => join.player == player,
                     EdgeToWorker::PlayerArrive {
@@ -904,7 +894,7 @@ impl Fanout {
     /// durable, and with them the inputs of `inputs` up to the numbers given. None of
     /// that has to be sent again.
     fn progress(&mut self, from: RegionId, applied: u64, inputs: &[(PlayerId, u64)]) {
-        let port = &mut self.regions[from.0 as usize];
+        let port = &mut self.regions.entry(from).or_default();
         port.applied = port.applied.max(applied);
         while port
             .kept
@@ -1479,8 +1469,7 @@ impl Fanout {
     /// link, from 1. Without a link the message is not sent, and its number means
     /// nothing: the hello of the next link names every chunk anew.
     fn next_ask(&mut self, region: RegionId) -> u64 {
-        let port = self.regions.get_mut(region.0 as usize);
-        let link = port.and_then(|port| port.link.as_mut());
+        let link = self.regions.entry(region).or_default().link.as_mut();
         link.map_or(0, |link| {
             link.asked += 1;
             link.asked
@@ -1576,9 +1565,9 @@ impl Fanout {
     /// if there is a link: a hello says anew what the edge wants to see and what it has
     /// seen.
     async fn send_to_region(&mut self, region: RegionId, body: EdgeToWorker) {
-        let Some(port) = self.regions.get_mut(region.0 as usize) else {
-            return;
-        };
+        // A region the edge has only just heard of gets its port here: what is numbered
+        // is kept for it until the routing table brings its link.
+        let port = self.regions.entry(region).or_default();
         let number = body.is_numbered().then(|| {
             port.numbered += 1;
             port.numbered
@@ -2558,6 +2547,45 @@ mod tests {
         );
         edge.settle(WEST).await;
         assert!(connected(&mut packets));
+    }
+
+    /// A region the edge has no link to yet is kept for like any other: what is to go
+    /// to it waits for its link, and is not dropped.
+    #[tokio::test]
+    async fn what_is_sent_to_a_region_without_a_link_yet_is_kept_for_it() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.joined(player(1), EntityId(5)).await;
+        let third = RegionId(2);
+        let action = RemoteAction {
+            player: player(1),
+            sequence: 3,
+            step: RemoteStep::Break {
+                position: BlockPos::new(640, -61, 0),
+            },
+        };
+        let entry = Durable::Remote {
+            action: action.clone(),
+            to: Some(third),
+        };
+        edge.say(WEST, entry);
+        edge.settle(WEST).await;
+
+        // The routing table brings the region: after its welcome it is sent what waited.
+        let (link, mut worker) = link_to(third, 1);
+        assert!(edge.relinks.replace(link).await);
+        let hello = timeout(SOON, worker.recv()).await.unwrap().unwrap();
+        assert!(
+            matches!(hello.body, EdgeToWorker::Hello { .. }),
+            "{hello:?}"
+        );
+        let welcome = Welcome::Unknown {
+            since: 1,
+            entries: 0,
+        };
+        worker.try_send(WorkerToEdge::Welcome(welcome)).unwrap();
+        let kept = timeout(SOON, worker.recv()).await.unwrap().unwrap();
+        assert_eq!(kept.number, Some(1));
+        assert_eq!(kept.body, EdgeToWorker::Remote(action));
     }
 
     /// What was kept for a region is sent again only when the outbox entries that the
