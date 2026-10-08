@@ -1,4 +1,5 @@
-//! The Clustine world format: content-addressed sections, chunk manifests, write-ahead log.
+//! The Clustine world format: content-addressed sections, chunk manifests, write-ahead log,
+//! and what is kept per region.
 //!
 //! A chunk is stored as a [`ChunkManifest`] that lists, for each of its sections, the
 //! [`Hash`] of that section's canonical encoding. The sections themselves are stored
@@ -13,12 +14,14 @@
 mod bytes;
 mod log;
 mod manifest;
+mod region;
 mod section;
 
 use std::fmt;
 
-pub use log::{BlockChanges, read_log};
+pub use log::{LogRecord, Logged, read_log, read_log_with_offsets};
 pub use manifest::ChunkManifest;
+pub use region::{RegionFile, StateFile};
 pub use section::{decode_section, encode_section, pack, unpack};
 
 /// The version of the encodings in this crate. It is written into everything stored.

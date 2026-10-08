@@ -127,7 +127,7 @@ from disk when the store is back.
 | # | Scope | Verified by | Status |
 |---|---|---|---|
 | A0 | Numbers and ids on the wire at both ends, snapshots taken at tick time, epoch tags at the edge; no change in behaviour | All existing tests | done |
-| A1 | Store and format: commit lane and `Committed`, state records and state file, restored state on opening, epochs and id blocks on disk, no folding at start | Store tests: kill at every point of a commit, a checkpoint and a recovery; latency of commits while chunks are saved | to do |
+| A1 | Store and format: commit lane and `Committed`, state records and state file, restored state on opening, epochs and id blocks on disk, no folding at start | Store tests: kill at every point of a commit, a checkpoint and a recovery; latency of commits while chunks are saved | done; commits are shown not to wait for saves, not timed on a real disk |
 | A2 | Sim: export and restore of state, per-tick state changes, outbox, inbox numbers | Unit tests; restore then the kept messages equals the uninterrupted run up to the commit followed by the rest in one tick | done, with tests from the ADR by someone who had not seen the code |
 | A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | to do |
 | A4 | Edge: name and start count, outbox per region, kept inputs per player, resume and reconciliation, living through the loss of a region | E2E in one process: a region is torn down without warning and rebuilt while bots walk, build, hand over and watch | to do |
@@ -214,6 +214,18 @@ with them so far:
   worker calls `vouch`, heartbeats vouch `Committed` for everything it was told to run.
   Nothing the coordinator decides depends on entity ids any more; it still fills in
   `Assignment::entity_ids`, which goes once the worker takes its block from the store.
+- A1 is done: commits are answered once on disk, in one log shared by all regions and
+  synced once per group; saving and loading chunks is on a thread of its own; opening is
+  fenced and returns a `Restored` (entity ids, state file, later state deltas, by tick);
+  checkpoints keep later records, in log segments; a failed write or sync loses the
+  handles of the group. `Store::open_region` and `StoreHandle::connect` return
+  `(StoreHandle, Restored)`. Worlds of A0 are carried over. Until A3 restores the
+  region's tick, the worker numbers its ticks on from `Restored::tick()`
+  (`RegionRunner::continuing_from`), as the store orders records by tick.
+- For A3: a `Restored` has to cross TCP, whose messages are limited to 16 MiB. Each
+  tick in which a player moves logs that player's state, so a busy region holds tens of
+  megabytes of deltas by its five-minute checkpoint. A3 sends a `Restored` in parts, or
+  checkpoints the state far more often than the chunks.
 - `Durable` is in the sim's API, `EdgeId` in `clustine-world`.
 - A2 is done: `RegionState`, `StateDelta` and `RegionState::apply` in
   `crates/clustine-sim/src/state.rs`; `Region::new(config, entity_ids)`,

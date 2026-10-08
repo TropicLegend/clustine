@@ -284,15 +284,12 @@ async fn a_cluster_of_processes_is_one_server() {
         .unwrap();
     drop(visitor);
     cluster.terminate().await;
-    for region in 0..2 {
-        let log = cluster.world.join(format!("logs/{region}.wal"));
-        assert_eq!(
-            std::fs::metadata(&log).unwrap().len(),
-            0,
-            "{}",
-            log.display()
-        );
-    }
+    // The log is in segments, which are removed once checkpoints cover them.
+    let segments: Vec<_> = std::fs::read_dir(cluster.world.join("log"))
+        .unwrap()
+        .map(|segment| segment.unwrap().path())
+        .collect();
+    assert_eq!(segments, Vec::<std::path::PathBuf>::new());
 
     // And the next cluster on that world finds it as it was left.
     cluster.start().await;

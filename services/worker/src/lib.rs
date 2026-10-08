@@ -152,6 +152,11 @@ pub struct RegionRunner {
     unsaved: BTreeSet<ChunkPos>,
     /// How many ticks pass between two checkpoints.
     checkpoint_interval: u64,
+    /// The tick the world store had the region up to when it was opened. The region
+    /// counts its ticks from 0 at every start until it is restored from the store, so
+    /// the ticks it hands the store are counted on from this one: the store orders
+    /// commits by their ticks.
+    stored_ticks: u64,
     status: Arc<RegionStatus>,
 }
 
@@ -178,6 +183,7 @@ impl RegionRunner {
             inputs: TickInputs::default(),
             unsaved: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
+            stored_ticks: 0,
             status: Arc::default(),
         }
     }
@@ -198,6 +204,14 @@ impl RegionRunner {
     /// chunks that stay loaded are only in the write-ahead log, which grows meanwhile.
     pub fn with_checkpoint_interval(mut self, ticks: u64) -> Self {
         self.checkpoint_interval = ticks.max(1);
+        self
+    }
+
+    /// Says up to which tick the world store had the region when it was opened (see
+    /// [`clustine_rpc::Restored::tick`]), from which the ticks handed to the store are
+    /// counted on.
+    pub fn continuing_from(mut self, tick: u64) -> Self {
+        self.stored_ticks = tick;
         self
     }
 
@@ -257,7 +271,7 @@ impl RegionRunner {
             self.unsaved
                 .extend(changes.iter().map(|(position, _)| position.chunk()));
             self.store.request(StoreRequest::Commit {
-                tick: output.tick,
+                tick: self.stored_ticks + output.tick,
                 changes,
                 // The region's state is not kept yet.
                 state: Vec::new(),
@@ -371,7 +385,7 @@ impl RegionRunner {
         {
             self.store.request(StoreRequest::Save {
                 position,
-                tick: self.region.tick_number(),
+                tick: self.stored_ticks + self.region.tick_number(),
                 chunk: chunk.clone(),
             });
         }
@@ -385,7 +399,7 @@ impl RegionRunner {
         }
         // The region's state is not kept yet.
         self.store.request(StoreRequest::Checkpoint {
-            tick: self.region.tick_number(),
+            tick: self.stored_ticks + self.region.tick_number(),
             state: Vec::new(),
         });
     }
@@ -1473,10 +1487,12 @@ mod tests {
         let mut runner =
             RegionRunner::new(region, worker_end, store.unwrap()).with_checkpoint_interval(50);
         joined(&edge, &mut runner).await;
-        let log_length = || {
-            std::fs::metadata(directory.path().join("logs/0.wal"))
+        // The log is in segments, which a checkpoint removes once it covers them.
+        let log_length = || -> u64 {
+            std::fs::read_dir(directory.path().join("log"))
                 .unwrap()
-                .len()
+                .map(|segment| segment.unwrap().metadata().unwrap().len())
+                .sum()
         };
         let manifest = directory
             .path()

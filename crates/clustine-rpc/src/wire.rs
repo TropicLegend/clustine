@@ -147,6 +147,74 @@ mod tests {
         assert_eq!(read::<RegionHello>(&mut reader).await.unwrap(), None);
     }
 
+    /// What the world store answers a hello and a commit with comes out as it went in.
+    #[test]
+    fn the_messages_of_the_world_store_round_trip() {
+        use clustine_data::blocks;
+        use clustine_world::{BlockPos, EntityIds};
+
+        use crate::{Restored, StoreReply, StoreRequest, StoreWelcome, TickState};
+
+        let restored = Restored {
+            entity_ids: EntityIds::block(3).unwrap(),
+            state: Some(TickState {
+                tick: 7,
+                state: vec![1, 2, 3],
+            }),
+            deltas: vec![
+                TickState {
+                    tick: 8,
+                    state: Vec::new(),
+                },
+                TickState {
+                    tick: 9,
+                    state: vec![0xFF; 300],
+                },
+            ],
+        };
+        assert_eq!(restored.tick(), 9);
+        let welcomes = [
+            StoreWelcome::Accepted(restored),
+            StoreWelcome::EpochRefused { seen: u64::MAX },
+            StoreWelcome::Refused {
+                reason: "no".to_owned(),
+            },
+        ];
+        let mut written = Vec::new();
+        for welcome in &welcomes {
+            blocking::write(&mut written, welcome).unwrap();
+        }
+        let request = StoreRequest::Commit {
+            tick: 9,
+            changes: vec![(BlockPos::new(-1, -64, 3), blocks::GLASS)],
+            state: vec![4, 5],
+        };
+        blocking::write(&mut written, &request).unwrap();
+        blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
+
+        let mut reader = Cursor::new(&written);
+        for welcome in welcomes {
+            assert_eq!(blocking::read(&mut reader).unwrap(), Some(welcome));
+        }
+        assert_eq!(blocking::read(&mut reader).unwrap(), Some(request));
+        let reply = blocking::read(&mut reader).unwrap();
+        assert_eq!(reply, Some(StoreReply::Committed { tick: 9 }));
+
+        // A region that has never committed anything is restored up to tick 0, and one
+        // with a state and no commits after it up to the state's tick.
+        let mut fresh = Restored {
+            entity_ids: EntityIds::block(0).unwrap(),
+            state: None,
+            deltas: Vec::new(),
+        };
+        assert_eq!(fresh.tick(), 0);
+        fresh.state = Some(TickState {
+            tick: 4,
+            state: Vec::new(),
+        });
+        assert_eq!(fresh.tick(), 4);
+    }
+
     #[tokio::test]
     async fn a_stream_that_ends_within_a_message_is_an_error() {
         let mut written = Vec::new();

@@ -176,13 +176,17 @@ pub enum Presence {
     Absent,
 }
 
-/// What a worker asks of the world store. Requests are handled in the order they are made.
+/// What a worker asks of the world store through the handle of a region it has opened.
+/// Commits and checkpoints are done in the order they are asked for, and so are saves
+/// and loads of one chunk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StoreRequest {
     /// Load the chunk, generating it if it has never been stored. Answered with
-    /// [`StoreReply::Loaded`].
+    /// [`StoreReply::Loaded`], or [`StoreReply::Unreadable`]. A load that follows a save
+    /// of the same chunk finds what was saved.
     Load { position: ChunkPos },
-    /// Store the chunk as it is after `tick`. Not answered.
+    /// Store the chunk as it is after `tick`. It is written once every commit asked for
+    /// before it is on disk, and dropped if one of them failed. Not answered.
     Save {
         position: ChunkPos,
         tick: u64,
@@ -191,15 +195,17 @@ pub enum StoreRequest {
     /// Record the block changes of `tick` and what else changed in the region's state,
     /// so that neither is lost if the process dies before the chunks they are in have
     /// been saved. `state` is the region's own record of its changes, which the store
-    /// keeps as it is. Answered with [`StoreReply::Committed`] once it is on disk.
+    /// keeps as it is. Answered with [`StoreReply::Committed`] once it is on disk, and
+    /// not at all if it could not be put there: the handle is lost then.
     Commit {
         tick: u64,
         changes: Vec<(BlockPos, BlockState)>,
         state: Vec<u8>,
     },
-    /// Every change committed up to `tick` is contained in a chunk saved before this
-    /// request, and `state` is the region's whole state after `tick`, so the records up
-    /// to `tick` can be dropped. Not answered.
+    /// `state` is the region's whole state after `tick`, and every change committed up
+    /// to `tick` is contained in a chunk saved before this request. Once those saves are
+    /// on disk, the store keeps `state` in place of the commits up to `tick`; later ones
+    /// are kept. Not answered.
     Checkpoint { tick: u64, state: Vec<u8> },
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
@@ -222,6 +228,51 @@ pub enum StoreReply {
         tick: u64,
     },
     Flushed,
+}
+
+/// What the world store has of a region, as it hands it to the owner that opens it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restored {
+    /// The entity ids the store issued to the region when it was first opened. They are
+    /// the region's for good.
+    pub entity_ids: EntityIds,
+    /// The region's whole state as of its last checkpoint, if it has had one.
+    pub state: Option<TickState>,
+    /// The state of each commit after that checkpoint, in the order of their ticks.
+    /// The block changes of those commits are in the stored chunks already.
+    pub deltas: Vec<TickState>,
+}
+
+impl Restored {
+    /// The tick the region is restored up to: that of the last delta, or of the state if
+    /// there are none, or 0 for a region that has never committed anything.
+    pub fn tick(&self) -> u64 {
+        self.deltas
+            .last()
+            .or(self.state.as_ref())
+            .map_or(0, |state| state.tick)
+    }
+}
+
+/// What a region handed the store as its state, or as the change of its state, after a
+/// tick. The store does not look into it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TickState {
+    pub tick: u64,
+    pub state: Vec<u8>,
+}
+
+/// The world store's answer to a [`RegionHello`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StoreWelcome {
+    /// The region is the owner's now. The connection carries [`StoreRequest`]s and
+    /// [`StoreReply`]s from here on.
+    Accepted(Restored),
+    /// The region has been opened with epoch `seen`, which is higher than the one in the
+    /// hello: whoever said hello has been replaced. The connection is closed.
+    EpochRefused { seen: u64 },
+    /// The connection is closed, for the reason given.
+    Refused { reason: String },
 }
 
 /// What a service says first on a connection to a worker or to the world store: which

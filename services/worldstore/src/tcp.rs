@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use clustine_rpc::{RegionHello, RegionWelcome, StoreReply, StoreRequest, wire};
+use clustine_rpc::{RegionHello, Restored, StoreReply, StoreRequest, StoreWelcome, wire};
 use tracing::{info, warn};
 
 use crate::{Link, Store, StoreError, StoreHandle};
@@ -189,18 +189,24 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
         }
     };
     let RegionHello { region, epoch, .. } = hello;
-    let StoreHandle { link, replies, .. } = match store.open_region(hello) {
-        Ok(handle) => handle,
+    let (StoreHandle { link, replies, .. }, restored) = match store.open_region(hello) {
+        Ok(opened) => opened,
         Err(error) => {
             info!(%peer, %region, epoch, %error, "a hello was refused");
-            let refusal = RegionWelcome::Refused {
-                reason: error.to_string(),
+            let refusal = match error {
+                // Said as it is, so that the owner can tell being replaced from
+                // anything else.
+                StoreError::EpochRefused { seen, .. } => StoreWelcome::EpochRefused { seen },
+                error => StoreWelcome::Refused {
+                    reason: error.to_string(),
+                },
             };
             let _ = wire::blocking::write(&mut &*stream, &refusal);
             return;
         }
     };
-    if let Err(error) = wire::blocking::write(&mut &*stream, &RegionWelcome::Accepted) {
+    let welcome = StoreWelcome::Accepted(restored);
+    if let Err(error) = wire::blocking::write(&mut &*stream, &welcome) {
         info!(%peer, %region, epoch, %error, "a connection ended before its welcome");
         return;
     }
@@ -299,10 +305,14 @@ impl StoreHandle {
     /// Opens a region of the store that is served at `address` (host:port), as
     /// [`Store::open_region`] does with a store in this process.
     ///
-    /// Waits for the store's answer. If the store refuses the hello, the error is
+    /// Waits for the store's answer. If the store refuses the hello for its epoch, the
+    /// error is [`StoreError::EpochRefused`]; if it refuses it otherwise, it is
     /// [`StoreError::Refused`] with the reason the store gave; if the store cannot be
     /// reached or does not answer, it is [`StoreError::Io`].
-    pub fn connect(address: &str, hello: RegionHello) -> Result<StoreHandle, StoreError> {
+    pub fn connect(
+        address: &str,
+        hello: RegionHello,
+    ) -> Result<(StoreHandle, Restored), StoreError> {
         connect_within(address, hello, GREETING_TIMEOUT)
     }
 }
@@ -313,15 +323,22 @@ fn connect_within(
     address: &str,
     hello: RegionHello,
     patience: Duration,
-) -> Result<StoreHandle, StoreError> {
+) -> Result<(StoreHandle, Restored), StoreError> {
     let stream = Arc::new(reach(address, patience)?);
     // Requests are written in batches already, and one must not wait for the next.
     let _ = stream.set_nodelay(true);
     wire::blocking::write(&mut &*stream, &hello)?;
-    match greeting(&stream, patience, |stream| wire::blocking::read(stream))? {
-        RegionWelcome::Accepted => {}
-        RegionWelcome::Refused { reason } => return Err(StoreError::Refused(reason)),
-    }
+    let restored = match greeting(&stream, patience, |stream| wire::blocking::read(stream))? {
+        StoreWelcome::Accepted(restored) => restored,
+        StoreWelcome::EpochRefused { seen } => {
+            return Err(StoreError::EpochRefused {
+                region: hello.region,
+                offered: hello.epoch,
+                seen,
+            });
+        }
+        StoreWelcome::Refused { reason } => return Err(StoreError::Refused(reason)),
+    };
 
     let (requests, queued) = mpsc::channel();
     let (answers, replies) = mpsc::channel();
@@ -338,11 +355,12 @@ fn connect_within(
             let lost = Arc::clone(&lost);
             move || receive_replies(&stream, &answers, &lost)
         })?;
-    Ok(StoreHandle {
+    let handle = StoreHandle {
         link: Link::Remote(requests),
         replies,
         lost,
-    })
+    };
+    Ok((handle, restored))
 }
 
 /// Connects to `address`, trying every address the name stands for.
@@ -413,12 +431,15 @@ mod tests {
     use std::sync::Barrier;
 
     use clustine_data::{BLOCK_STATE_COUNT, BlockState, blocks};
-    use clustine_format::BlockChanges;
     use clustine_region::{Layout, RegionId};
-    use clustine_world::{BlockPos, Chunk, ChunkPos};
+    use clustine_rpc::TickState;
+    use clustine_world::{BlockPos, Chunk, ChunkPos, EntityIds};
 
     use super::*;
-    use crate::tests::{HELD, Held, edited, generator, hello, load, log, reply, save, stores};
+    use crate::tests::{
+        HELD, Held, any_reply, committed, delta, edited, generator, hello, load, log, open, reply,
+        save, stores,
+    };
 
     /// Serves `store` at an address of its own.
     fn served(store: &Store) -> (Server, String) {
@@ -429,7 +450,7 @@ mod tests {
     }
 
     fn connect(address: &str, hello: RegionHello) -> StoreHandle {
-        StoreHandle::connect(address, hello).unwrap()
+        StoreHandle::connect(address, hello).unwrap().0
     }
 
     /// Waits for `handle` to be lost.
@@ -443,19 +464,16 @@ mod tests {
         panic!("the handle was not lost");
     }
 
-    /// Says hello with `open` until the region is no longer refused for having an owner.
-    /// The store learns that a remote owner is gone a little later than that owner does.
-    fn reopened(open: impl Fn() -> Result<StoreHandle, StoreError>) -> StoreHandle {
+    /// Waits until the server has no connection open any more: the store has been
+    /// through everything that came over them.
+    fn quiet(server: &Server) {
         for _ in 0..30_000 {
-            match open() {
-                Ok(handle) => return handle,
-                Err(StoreError::EpochRefused { .. } | StoreError::Refused(_)) => {
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("{error}"),
+            if server.shared.connections().is_empty() {
+                return;
             }
+            thread::sleep(Duration::from_millis(1));
         }
-        panic!("the region was not given up");
+        panic!("a connection stayed open");
     }
 
     /// Whether the other side has closed `connection`, waiting for it if need be.
@@ -476,7 +494,10 @@ mod tests {
         connection.set_nodelay(true).unwrap();
         wire::blocking::write(&mut connection, &hello).unwrap();
         let welcome = wire::blocking::read(&mut connection).unwrap();
-        assert_eq!(welcome, Some(RegionWelcome::Accepted));
+        assert!(
+            matches!(welcome, Some(StoreWelcome::Accepted(_))),
+            "{welcome:?}"
+        );
         connection
     }
 
@@ -507,16 +528,17 @@ mod tests {
     }
 
     #[test]
-    fn what_a_remote_handle_saves_and_logs_is_found_by_a_local_one_and_after_a_restart() {
+    fn what_a_remote_handle_commits_and_saves_is_found_by_a_local_one_and_after_a_restart() {
         let directory = tempfile::tempdir().unwrap();
         let origin = ChunkPos::new(0, 0);
         let dug = (BlockPos::new(40, -61, 4), blocks::AIR);
-        {
+        let entity_ids = {
             let store = Store::local(directory.path(), generator()).unwrap();
             let (server, address) = served(&store);
-            let remote = connect(&address, hello(1, 7));
-            // Changes that are in a saved chunk by the time of a checkpoint, and one
-            // that is logged after it.
+            let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
+            assert_eq!((restored.state, restored.deltas), (None, Vec::new()));
+            // Changes that are in a saved chunk by the time of a checkpoint, and one that
+            // is committed after it.
             log(
                 &remote,
                 5,
@@ -524,32 +546,57 @@ mod tests {
             );
             save(&remote, origin, &edited());
             remote.request(StoreRequest::Checkpoint {
-                tick: 0,
-                state: Vec::new(),
+                tick: 5,
+                state: b"five".to_vec(),
             });
             log(&remote, 6, &[(40, -61, 4, blocks::AIR)]);
+            // The answers cross the connection.
+            assert_eq!(any_reply(&remote), StoreReply::Committed { tick: 5 });
+            assert_eq!(any_reply(&remote), StoreReply::Committed { tick: 6 });
             remote.flush();
-
-            // The flush has made all of it durable. The log is that of the region, under
-            // the epoch of the hello, and holds what came after the checkpoint.
-            let logged = fs::read(directory.path().join("logs/1.wal")).unwrap();
-            let (records, _) = clustine_format::read_log(&logged).unwrap();
-            let expected = BlockChanges {
-                tick: 6,
-                epoch: 7,
-                changes: vec![dug],
-            };
-            assert_eq!(records, [expected]);
-            let west = store.open_region(hello(0, 1)).unwrap();
+            let west = open(&store, hello(0, 1));
             assert_eq!(load(&west, origin), edited());
 
             // Everything goes away without the chunk that was dug in ever being saved.
             drop((remote, west));
             server.stop();
-        }
+            restored.entity_ids
+        };
 
+        // The region is restored with the state of the checkpoint and the commit after
+        // it, in this process or in another, and with the epoch it had.
         let store = Store::local(directory.path(), generator()).unwrap();
-        let owner = store.open_region(hello(1, 1)).unwrap();
+        let (server, address) = served(&store);
+        let refused = StoreHandle::connect(&address, hello(1, 6));
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::EpochRefused {
+                    region: RegionId(1),
+                    offered: 6,
+                    seen: 7
+                })
+            ),
+            "{:?}",
+            refused.err()
+        );
+        let expected = Restored {
+            entity_ids,
+            state: Some(TickState {
+                tick: 5,
+                state: b"five".to_vec(),
+            }),
+            deltas: vec![TickState {
+                tick: 6,
+                state: delta(6),
+            }],
+        };
+        let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
+        assert_eq!(restored, expected);
+        drop(remote);
+        server.stop();
+        let (owner, restored) = store.open_region(hello(1, 8)).unwrap();
+        assert_eq!(restored, expected);
         assert_eq!(load(&owner, origin), edited());
         let mut expected = generator().generate(dug.0.chunk());
         expected.set(8, -61, 4, blocks::AIR);
@@ -652,7 +699,22 @@ mod tests {
             let (_server, address) = served(&store);
             let owner = connect(&address, hello(1, 5));
             save(&owner, origin, &edited());
-            // The reason is what the store says to someone in its own process.
+            // Being replaced is told apart from everything else, with the epoch.
+            let Err(error) = StoreHandle::connect(&address, hello(1, 4)) else {
+                panic!("a lower epoch was accepted");
+            };
+            assert!(
+                matches!(
+                    error,
+                    StoreError::EpochRefused {
+                        region: RegionId(1),
+                        offered: 4,
+                        seen: 5
+                    }
+                ),
+                "{error}"
+            );
+            // Otherwise the reason is what the store says to someone in its own process.
             let refused = |hello: RegionHello, reason: StoreError| {
                 let Err(error) = StoreHandle::connect(&address, hello) else {
                     panic!("{hello:?} was accepted");
@@ -663,14 +725,6 @@ mod tests {
                 );
                 assert!(error.to_string().ends_with(&reason.to_string()), "{error}");
             };
-            for epoch in [5, 4] {
-                let reason = StoreError::EpochRefused {
-                    region: RegionId(1),
-                    offered: epoch,
-                    seen: 5,
-                };
-                refused(hello(1, epoch), reason);
-            }
             let other = RegionHello {
                 layout: Layout::single().fingerprint(),
                 ..hello(0, 1)
@@ -695,21 +749,21 @@ mod tests {
     fn a_dropped_remote_handle_frees_its_region_once_what_it_asked_for_is_done() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::local(directory.path(), generator()).unwrap();
-        let (_server, address) = served(&store);
+        let (server, address) = served(&store);
         let last = ChunkPos::new(49, 0);
         let mut dug = generator().generate(ChunkPos::new(2, 5));
         dug.set(8, -61, 4, blocks::AIR);
 
         // The next owner is once in another process and once in the store's own.
-        let remotely = || StoreHandle::connect(&address, hello(1, 3));
-        let locally = || store.open_region(hello(1, 3));
-        let next: [&dyn Fn() -> Result<StoreHandle, StoreError>; 2] = [&remotely, &locally];
+        let remotely = || connect(&address, hello(1, 3));
+        let locally = || open(&store, hello(1, 3));
+        let next: [&dyn Fn() -> StoreHandle; 2] = [&remotely, &locally];
         for (state, next) in [blocks::STONE, blocks::GLASS].into_iter().zip(next) {
             let mut built = generator().generate(last);
             built.set(1, 80, 1, state);
             dug.set(9, -61, 4, state);
 
-            let remote = reopened(remotely);
+            let remote = remotely();
             for x in 0..50 {
                 // The answers are never read, which must not keep the rest from the store.
                 remote.request(StoreRequest::Load {
@@ -722,10 +776,12 @@ mod tests {
                 9,
                 &[(40, -61, 84, blocks::AIR), (41, -61, 84, state)],
             );
-            // Dropped without a flush, and with all of that still on its way.
+            // Dropped without a flush, and with all of that still on its way. The
+            // connection ends once the store has been given all of it.
             drop(remote);
+            quiet(&server);
 
-            let owner = reopened(next);
+            let owner = next();
             assert_eq!(load(&owner, last), built);
             // What was only logged is in the chunk from the hello on.
             assert_eq!(load(&owner, ChunkPos::new(2, 5)), dug);
@@ -738,7 +794,7 @@ mod tests {
         for store in stores(directory.path()) {
             let (_server, address) = served(&store);
             // The new owner is once in the store's own process and once in another.
-            let locally = |hello| store.open_region(hello).unwrap();
+            let locally = |hello| open(&store, hello);
             let remotely = |hello| connect(&address, hello);
             let newcomers: [&dyn Fn(RegionHello) -> StoreHandle; 2] = [&locally, &remotely];
             for (region, newcomer) in (0..).zip(newcomers) {
@@ -764,12 +820,13 @@ mod tests {
                 assert!(!new.is_lost());
                 assert_eq!(load(&new, position), edited());
 
-                // The region is not the old owner's to give up either.
+                // The region is not the old owner's to give up either, nor to open again.
                 drop(old);
                 assert!(matches!(
-                    store.open_region(hello(region, 2)),
-                    Err(StoreError::EpochRefused { .. })
+                    StoreHandle::connect(&address, hello(region, 1)),
+                    Err(StoreError::EpochRefused { seen: 2, .. })
                 ));
+                assert!(!new.is_lost());
                 assert_eq!(load(&new, position), edited());
             }
         }
@@ -782,7 +839,7 @@ mod tests {
         let origin = ChunkPos::new(0, 0);
         for store in stores(directory.path()) {
             let (_server, address) = served(&store);
-            let old = store.open_region(hello(1, 1)).unwrap();
+            let old = open(&store, hello(1, 1));
             save(&old, origin, &edited());
             let new = connect(&address, hello(1, 2));
             assert!(old.is_lost() && !new.is_lost());
@@ -790,6 +847,33 @@ mod tests {
             old.flush();
             assert_eq!(old.try_reply(), None);
             assert_eq!(load(&new, origin), edited());
+        }
+    }
+
+    /// An owner whose connection was lost before the store noticed comes back with its
+    /// own epoch, and takes the region over from its old session.
+    #[test]
+    fn a_remote_owner_coming_back_with_its_epoch_replaces_its_old_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = ChunkPos::new(0, 0);
+        for store in stores(directory.path()) {
+            let (_server, address) = served(&store);
+            let (old, _) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
+            log(
+                &old,
+                1,
+                &[(3, -61, 4, blocks::AIR), (3, 100, 4, blocks::GLASS)],
+            );
+            committed(&old, 1);
+            let (new, restored) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
+            assert_eq!(restored.deltas.len(), 1);
+            lost(&old);
+            log(&old, 2, &[(3, 100, 4, blocks::STONE)]);
+            old.flush();
+            assert_eq!(old.try_reply(), None);
+            assert_eq!(load(&new, origin), edited());
+            log(&new, 2, &[(3, 100, 5, blocks::STONE)]);
+            committed(&new, 2);
         }
     }
 
@@ -820,8 +904,8 @@ mod tests {
             // Nobody listens any more: the address can be listened on again.
             TcpListener::bind(&address).unwrap();
 
-            // The store itself runs on, and the regions are free in it.
-            let owner = store.open_region(hello(1, 1)).unwrap();
+            // The store itself runs on, and the regions can be opened again in it.
+            let owner = open(&store, hello(1, 1));
             assert_eq!(load(&owner, origin), edited());
         }
     }
@@ -920,7 +1004,7 @@ mod tests {
                 assert!(closed(&stranger));
             }
             // The region was given up, after what came before the garbage was done.
-            let east = reopened(|| StoreHandle::connect(&address, hello(1, 4)));
+            let east = connect(&address, hello(1, 4));
             let mut built = generator().generate(origin);
             built.set(1, 84, 1, blocks::STONE);
             assert_eq!(load(&east, origin), built);
@@ -996,7 +1080,7 @@ mod tests {
             }
 
             // What arrived at the store is what was sent.
-            let local = store.open_region(hello(0, 1)).unwrap();
+            let local = open(&store, hello(0, 1));
             for (position, chunk) in &chunks {
                 assert_eq!(load(&local, *position), *chunk);
             }
@@ -1012,7 +1096,13 @@ mod tests {
             let (mut connection, _) = listener.accept().unwrap();
             let said: Option<RegionHello> = wire::blocking::read(&mut connection).unwrap();
             assert_eq!(said, Some(hello(1, 1)));
-            wire::blocking::write(&mut connection, &RegionWelcome::Accepted).unwrap();
+            let restored = Restored {
+                entity_ids: EntityIds::block(0).unwrap(),
+                state: None,
+                deltas: Vec::new(),
+            };
+            let welcome = StoreWelcome::Accepted(restored);
+            wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
         });
         (address, store)

@@ -159,7 +159,8 @@ impl Server {
                 epoch: 1,
                 layout: layout.fingerprint(),
             };
-            let store = store
+            // What the region is restored with is not used yet, but for its tick.
+            let (store, restored) = store
                 .open_region(hello)
                 .with_context(|| format!("opening region {region}"))?;
             let (edge_end, worker_end) = if config.serialise_link {
@@ -181,7 +182,8 @@ impl Server {
             });
             runners.push(
                 RegionRunner::new(state, worker_end, store)
-                    .with_checkpoint_interval(checkpoint_interval),
+                    .with_checkpoint_interval(checkpoint_interval)
+                    .continuing_from(restored.tick()),
             );
         }
 

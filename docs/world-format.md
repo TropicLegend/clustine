@@ -1,7 +1,8 @@
 # World format
 
 How Clustine stores a world on disk. This describes format version 1 as implemented in
-`crates/clustine-format` (encodings) and `services/worldstore` (files).
+`crates/clustine-format` (encodings) and `services/worldstore` (files); see
+`docs/adr/0008-durable-regions-and-resuming.md` for what the store promises.
 
 The format is not stable yet: it may change without a migration path until the first
 release.
@@ -14,15 +15,22 @@ release.
 - **Sections are content-addressed.** A chunk column is split into 16×16×16 sections,
   and each distinct section content is stored once, under the hash of its content.
   Identical sections, within a chunk or across the world, share storage.
-- **Files are never modified in place.** Every file is written under a temporary name
-  and renamed, so a reader sees it whole or not at all.
+- **Files are never modified in place.** Every file but the log is written under a
+  temporary name, made durable and renamed, so a reader sees it whole or not at all.
+  The log is only appended to.
+- **Nothing is durable before it is synced,** and a file that was created, renamed or
+  removed is not durably so before its directory is synced. The store syncs what it
+  relies on, and nothing it has answered depends on what it has not synced.
 
 ## Directory layout
 
 ```text
 <world>/
   meta
-  logs/<region>.wal
+  layout
+  log/<segment>.wal
+  regions/<region>.region
+  regions/<region>.state
   blobs/<first two hex digits>/<hash in hex>
   manifests/overworld/<rx>.<rz>/<x>.<z>.manifest
 ```
@@ -30,18 +38,24 @@ release.
 - `meta` is a text file of `key=value` lines: `format` (the format version),
   `data-version` (the Minecraft data version whose block state and biome ids the world
   uses) and `generator` (the generator settings).
-- `logs` holds the write-ahead logs, one per region: block changes that are not in a
-  saved chunk yet. `<region>` is the number of the region in decimal.
+- `layout` holds the fingerprint of the layout the regions were last part of, in
+  hexadecimal.
+- `log` holds the write-ahead log that all regions share, in segments numbered in the
+  order they were begun (twenty decimal digits).
+- `regions` holds two files per region that has been opened: `<region>.region`, with
+  the highest epoch it was opened with and its entity ids, and `<region>.state`, with its
+  state as of its last checkpoint. `<region>` is the number of the region in decimal.
 - `blobs` holds the sections.
 - `manifests` holds one file per stored chunk at chunk coordinates `x`, `z`, grouped
   into directories of 32×32 chunks (`rx = x >> 5`, `rz = z >> 5`).
 
-A world that was last opened before it could have several regions has a single log
-instead, the file `wal` next to `meta`. When such a world is opened, the changes in that
-log are applied like those in any other log and the file is removed.
+A world from before regions had a state has a log per region instead, `logs/<region>.wal`,
+and one from before there were regions a single log, `wal` next to `meta`. Their records
+hold block changes alone (kind 1 below). When such a world is opened, those changes are
+applied to the chunks they are in, the chunks are made durable, and the old logs are
+removed.
 
-How the world is divided into regions is not stored. Chunks and sections are kept the
-same way whichever region they are in.
+Chunks and sections are kept the same way whichever region they are in.
 
 ## Sections
 
@@ -88,63 +102,80 @@ A section with flag `0` is nothing but air in the air biome and has no file.
 The epoch is always 1 for now. It will identify which owner of a region wrote the chunk
 once regions can move between workers.
 
-## Write-ahead logs
+## The write-ahead log
 
-Each region has a log of its own, which holds the block changes made in the region since
-its last checkpoint.
+All regions share one log, so that a single sync makes the commits of all of them
+durable. It is a sequence of records, each framed as a u32 payload length, a u32 CRC-32
+of the payload, and the payload. All integers are big-endian. Every payload begins with
+the format version (u8) and the kind of record (u8):
 
-A log is a sequence of records, each framed as a u32 payload length, a u32 CRC-32 of
-the payload, and the payload. All integers are big-endian. The payload of a record of
-block changes is:
+| Kind | Record | Then |
+|---|---|---|
+| 1 | Block changes, from before regions had a state; only read | tick u64, epoch u64, changes |
+| 2 | Commit | region u32, tick u64, epoch u64, changes, state length u32, state |
+| 3 | Opened | region u32, epoch u64, restored u64 |
 
-| Field | Type |
-|---|---|
-| Format version | u8 |
-| Record kind | u8, 1 for block changes |
-| Tick the changes happened in | u64 |
-| Epoch of the region | u64 |
-| Number of changes | u32 |
-| Per change | i32 x, i32 y, i32 z, u16 block state |
+where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a u16
+block state. A commit holds what one tick of a region changed: its block changes, in
+order, and the region's own record of the change of its state, which the store does not
+look into. The epoch is that of the owner that committed it. An opened record says that
+an owner opened the region and was restored up to tick `restored`; a commit of that
+region before it in the log with a later tick is not part of the region's history.
 
-The epoch is that of the owner of the region that logged the changes. A region has one
-owner at a time, and its epoch counts the owners it has had.
+A process can die while appending, which leaves a partial record at the end of the
+segment it was appending to. Reading a segment stops at the first record that is
+incomplete or fails its checksum. Nothing is appended to a segment after that: a store
+that starts appends to a new segment, and one that fails to write or sync cuts the
+segment back to what was durable and goes on in a new one.
 
-A process can die while appending, which leaves a partial record at the end. Reading
-stops at the first record that is incomplete or fails its checksum; everything from
-there on is cut off. This concerns one log only: the logs of other regions are read in
-full.
+A segment is removed once none of its commits is needed any more and every segment
+before it is gone. Commits are not removed one by one: one that a checkpoint covers is
+passed over because its tick is not above that of the region's state file.
+
+## Region files
+
+A region file is the format version (u8), the kind (u8, 1), the highest epoch the region
+was opened with (u64), the first entity id of the region's block and the one beyond it
+(i32, i32), and a CRC-32 of everything before (u32). A state file is the format version
+(u8), the kind (u8, 2), the tick the state is as of (u64), the length of the state (u32),
+the state, and a CRC-32 of everything before. Both are written under a temporary name,
+made durable and renamed, and the directory is synced after the rename.
 
 ## What is saved when
 
-- Every tick, the block changes a region made in that tick are appended to the log of
-  the region, before players are told about them. The store takes what the regions have
-  sent it in one go and then syncs every log it has appended to, once each, to disk.
-- When a chunk that has changed is no longer needed by anyone, it is saved and unloaded.
+- Every tick in which something changed, the region commits it: its block changes and
+  the change of its state. The store appends what all regions committed meanwhile to the
+  log, syncs it once, and only then answers each commit.
+- A chunk is saved once the commits asked for before it are durable; a chunk on disk
+  therefore never holds a change that is not committed.
 - At a **checkpoint**, a region saves every loaded chunk of its own that has changed and
-  its log is emptied. The logs of other regions stay as they are. Checkpoints happen
-  every five minutes by default and when the server stops.
+  hands the store its whole state as of a tick. Once the saves before it are durable,
+  the store writes the state file, and the commits up to that tick are passed over from
+  then on. Commits after it stay. Checkpoints happen every five minutes by default and
+  when the server stops.
+- When a region is opened, the store hands its owner the state file and the state of
+  every commit with a later tick, in the order of their ticks, applies the block changes
+  of those commits to the chunks they are in, and saves those chunks. The commits stay
+  in the log until a checkpoint covers them. A chunk may have been saved with some or
+  all of them in it already; applying all of them again in order gives the same result,
+  because each change sets a block to a definite state.
+- The first time a region is opened the store gives it a block of entity ids, which is
+  the region's for good. The region file is written before the owner is answered.
+- When the store starts it leaves the log as it is. When the first region is opened with
+  another layout than the one in `layout`, the block changes of every region's commits
+  are applied to the chunks, the commits are passed over and the state files removed
+  before the new layout is written: the regions of one layout know nothing of those of
+  another.
 
-When a world is opened and one of its logs is not empty, the server did not stop
-cleanly. The logged changes are then applied, in order, to the chunks they are in, those
-chunks are saved, and the log is emptied. This is done with every log there is, before
-any region is opened, so the world may be divided into other regions than last time. A
-chunk may have been saved between two logged changes and already contain the earlier
-one; applying all of them again in order gives the same result, because each change sets
-a block to a definite state.
+Only the owner of a region gets anything done for it. An owner that opens the region
+with the epoch of the current owner, or a higher one, replaces it; what the previous
+owner sends from then on is dropped, and none of its commits is answered unless the new
+owner was restored with it. An owner with a lower epoch than the highest the region has
+been opened with is refused, also after the store was started again.
 
-The same is done with the log of a single region when the region gets a new owner while
-the store keeps running, as after the worker that ran it has died: what the previous
-owner logged is in the saved chunks before the new owner loads any of them.
-
-Only the owner of a region gets anything saved or logged for it. Once an owner with a
-higher epoch has opened the region, what the previous owner still sends is dropped, so
-it cannot overwrite what the new owner does. The store does not remember epochs from one
-run to the next: one that has just been started accepts the first owner of a region
-whatever its epoch.
-
-A change is on its way to disk when a player sees it, but not guaranteed to be there:
-the server does not wait for the log before answering. Killing the process a moment
-after a change can therefore still lose it.
+A commit that could not be written or synced is never answered, and the owner of every
+region that wrote to the log in that sync loses its handle, opens the region again and
+is restored from what is on disk.
 
 ## Reading a damaged world
 

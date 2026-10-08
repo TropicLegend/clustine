@@ -486,15 +486,19 @@ async fn a_divided_world_survives_a_restart() {
 }
 
 /// Killing the server process outright loses nothing of what either region had told
-/// players: each region's log is applied when the world is opened again.
+/// players: what each region committed is applied when it is opened again.
 #[tokio::test]
 async fn a_divided_world_survives_the_server_being_killed() {
     let directory = tempfile::tempdir().unwrap();
     let world = directory.path().join("world");
     let address = free_address().await;
     let divided = ["--boundaries", "1"];
-    let log_lengths = || {
-        ["logs/0.wal", "logs/1.wal"].map(|log| std::fs::metadata(world.join(log)).unwrap().len())
+    // The regions share a log, kept in segments.
+    let logged = || -> u64 {
+        std::fs::read_dir(world.join("log"))
+            .unwrap()
+            .map(|segment| segment.unwrap().metadata().unwrap().len())
+            .sum()
     };
 
     let mut server = spawn_server(&address, &world, &divided).await;
@@ -506,16 +510,14 @@ async fn a_divided_world_survives_the_server_being_killed() {
     server.kill().await.unwrap();
     drop(builder);
 
-    // The chunks were still loaded and no checkpoint was due, so nothing but the logs
-    // of the two regions holds the changes.
+    // The chunks were still loaded and no checkpoint was due, so nothing but the log
+    // holds the changes.
     assert!(!world.join("manifests/overworld").exists());
-    let [west, east] = log_lengths();
-    assert!(west > 0 && east > 0, "{west} and {east} bytes logged");
+    assert!(logged() > 0);
 
     let mut server = spawn_server(&address, &world, &divided).await;
     let visitor = join(&address, "Visitor").await;
     assert_built_on_both_sides(&visitor);
-    assert_eq!(log_lengths(), [0, 0]);
 
     server.kill().await.unwrap();
 }

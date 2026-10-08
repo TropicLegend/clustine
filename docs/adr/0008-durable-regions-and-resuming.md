@@ -110,7 +110,10 @@ store's own record format and are applied to chunks by the store.
   are refused and its handle is lost. No old owner can be told `Committed` for a record
   that the new owner's restore did not read.
 - **A failed write or sync loses the handle.** The log is cut back to its last good
-  length, the region's handle is lost, and nothing is answered. A failed sync is not
+  length, the region's handle is lost, and nothing is answered. All regions share one
+  log, so that one sync makes a group of commits durable; a failed sync therefore loses
+  the handle of every region that wrote in that group, which a failing disk would come
+  to anyway. A failed sync is not
   retried: what it was meant to make durable may be gone even if a later sync succeeds.
   The worker restores the region from what is on disk (section 4), which holds everything
   that was ever confirmed.
@@ -139,6 +142,11 @@ store's own record format and are applied to chunks by the store.
 - A chunk that cannot be read is answered with `Unreadable { position }` rather than not
   at all; the region leaves it unloaded, as today, and nothing waits for it.
 - When the store starts it leaves the logs as they are.
+- Opening a region writes a marker to the log, so that a write which failed but reached
+  the disk after all cannot become part of the region's history after the new owner was
+  restored without it.
+- When the layout changes, every region's commits are applied to the chunks first and
+  their state files removed: the regions of the old layout are not those of the new one.
 
 ### 4. The worker
 

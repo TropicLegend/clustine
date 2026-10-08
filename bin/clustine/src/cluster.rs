@@ -20,7 +20,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clustine_coordinator::{ClientError, CoordinatorConfig, Orders, RoutingWatch, WorkerClient};
 use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Routing};
 use clustine_region::{Layout, RoutingTable};
-use clustine_rpc::{Assignment, EdgeMessage, RegionHello, WorkerToEdge, tcp};
+use clustine_rpc::{Assignment, EdgeMessage, RegionHello, Restored, WorkerToEdge, tcp};
 use clustine_sim::{Region, RegionConfig};
 use clustine_worker::{Links, RegionRunner, RegionStatus, Worker};
 use clustine_worldstore::{Store, StoreError, StoreHandle};
@@ -130,7 +130,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
         layout: orders.layout.fingerprint(),
     };
 
-    let store = tokio::select! {
+    let (store, restored) = tokio::select! {
         opened = open_region(&args.store, hello) => opened?,
         _ = &mut stop => return Ok(()),
     };
@@ -143,7 +143,10 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     };
     let state = Region::new(config, entity_ids);
     let ticks = (args.checkpoint_interval.as_millis() / clustine_worker::TICK.as_millis()) as u64;
-    let runner = RegionRunner::without_links(state, store).with_checkpoint_interval(ticks);
+    // What the region is restored with is not used yet, but for its tick.
+    let runner = RegionRunner::without_links(state, store)
+        .with_checkpoint_interval(ticks)
+        .continuing_from(restored.tick());
     let links = runner.links();
     let status = runner.status();
     let running = Worker::spawn(runner);
@@ -164,13 +167,13 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
 }
 
 /// Opens the region at the world store, trying until the store can be reached.
-async fn open_region(address: &str, hello: RegionHello) -> Result<StoreHandle> {
+async fn open_region(address: &str, hello: RegionHello) -> Result<(StoreHandle, Restored)> {
     loop {
         let store = address.to_owned();
         let opened =
             tokio::task::spawn_blocking(move || StoreHandle::connect(&store, hello)).await?;
         match opened {
-            Ok(store) => return Ok(store),
+            Ok(opened) => return Ok(opened),
             Err(StoreError::Io(error)) => {
                 info!(%error, store = %address, "the world store cannot be reached yet");
                 sleep(RETRY).await;

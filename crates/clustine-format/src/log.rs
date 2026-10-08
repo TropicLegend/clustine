@@ -1,4 +1,5 @@
-//! The write-ahead log: block changes that have not made it into stored chunks yet.
+//! The write-ahead log: what regions committed and the world store has not yet folded
+//! into a region's state file and the stored chunks.
 //!
 //! The log is a sequence of records, each framed as:
 //!
@@ -8,20 +9,21 @@
 //! | CRC-32 of the payload | u32 |
 //! | Payload | bytes |
 //!
-//! and the payload of a record of block changes is:
+//! Every payload starts with the format version (u8) and the kind of record (u8). What
+//! follows depends on the kind:
 //!
-//! | Field | Type |
-//! |---|---|
-//! | Format version | u8 |
-//! | Record kind | u8, 1 for block changes |
-//! | Tick the changes happened in | u64 |
-//! | Epoch of the region | u64 |
-//! | Number of changes | u32 |
-//! | Per change | i32 x, i32 y, i32 z, u16 block state |
+//! | Kind | Record | Fields |
+//! |---|---|---|
+//! | 1 | [`LogRecord::Changes`], written before regions had a state | tick u64, epoch u64, changes |
+//! | 2 | [`LogRecord::Commit`] | region u32, tick u64, epoch u64, changes, state length u32, state bytes |
+//! | 3 | [`LogRecord::Opened`] | region u32, epoch u64, restored u64 |
 //!
-//! All integers are big-endian. A process can die while appending, which leaves a
-//! partial record at the end. Reading therefore stops at the first record that is
-//! incomplete or fails its checksum, and reports how many bytes were valid.
+//! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
+//! u16 block state. All integers are big-endian.
+//!
+//! A process can die while appending, which leaves a partial record at the end. Reading
+//! therefore stops at the first record that is incomplete or fails its checksum, and
+//! reports how many bytes were valid.
 
 use clustine_data::BlockState;
 use clustine_world::BlockPos;
@@ -29,7 +31,9 @@ use clustine_world::BlockPos;
 use crate::bytes::Input;
 use crate::{FORMAT_VERSION, FormatError};
 
-const KIND_BLOCK_CHANGES: u8 = 1;
+const KIND_CHANGES: u8 = 1;
+const KIND_COMMIT: u8 = 2;
+const KIND_OPENED: u8 = 3;
 
 /// Bytes of the length and the checksum in front of every payload.
 const FRAME_HEADER_LENGTH: usize = 8;
@@ -37,35 +41,85 @@ const FRAME_HEADER_LENGTH: usize = 8;
 /// A payload longer than this is taken for damage, not for a record.
 const MAX_PAYLOAD_LENGTH: usize = 64 * 1024 * 1024;
 
-/// The blocks that changed during one tick, in the order they changed.
+/// Bytes a block change takes in a payload.
+const CHANGE_LENGTH: usize = 14;
+
+/// A record of the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockChanges {
-    pub tick: u64,
-    /// The epoch of the owner of the region that made the changes: the one it opened the
-    /// region at the world store with.
-    pub epoch: u64,
-    pub changes: Vec<(BlockPos, BlockState)>,
+pub enum LogRecord {
+    /// The blocks that changed during one tick of a region, as logged before regions had
+    /// a state of their own: such a log was one per region, so the record does not say
+    /// which region it is of. The world store only reads these.
+    Changes {
+        tick: u64,
+        /// The epoch of the owner of the region that made the changes.
+        epoch: u64,
+        changes: Vec<(BlockPos, BlockState)>,
+    },
+    /// What one tick of a region committed: the blocks that changed, in the order they
+    /// changed, and the region's own record of what else changed, which the store keeps
+    /// as it is.
+    Commit {
+        region: u32,
+        tick: u64,
+        /// The epoch of the owner that committed it.
+        epoch: u64,
+        changes: Vec<(BlockPos, BlockState)>,
+        state: Vec<u8>,
+    },
+    /// The region was opened by an owner with `epoch` and restored up to tick
+    /// `restored`. A record of the region that comes before this one with a later tick
+    /// is not part of the region's history: the owner that opened it here did not read
+    /// it, and goes on from `restored` without it.
+    Opened {
+        region: u32,
+        epoch: u64,
+        restored: u64,
+    },
 }
 
-impl BlockChanges {
+impl LogRecord {
     /// The record as it is appended to the log, frame included.
     pub fn encode(&self) -> Vec<u8> {
-        let mut payload = vec![FORMAT_VERSION, KIND_BLOCK_CHANGES];
-        payload.extend_from_slice(&self.tick.to_be_bytes());
-        payload.extend_from_slice(&self.epoch.to_be_bytes());
-        payload.extend_from_slice(&(self.changes.len() as u32).to_be_bytes());
-        for (position, state) in &self.changes {
-            payload.extend_from_slice(&position.x.to_be_bytes());
-            payload.extend_from_slice(&position.y.to_be_bytes());
-            payload.extend_from_slice(&position.z.to_be_bytes());
-            payload.extend_from_slice(&state.0.to_be_bytes());
+        let mut payload = vec![FORMAT_VERSION];
+        match self {
+            Self::Changes {
+                tick,
+                epoch,
+                changes,
+            } => {
+                payload.push(KIND_CHANGES);
+                payload.extend_from_slice(&tick.to_be_bytes());
+                payload.extend_from_slice(&epoch.to_be_bytes());
+                put_changes(&mut payload, changes);
+            }
+            Self::Commit {
+                region,
+                tick,
+                epoch,
+                changes,
+                state,
+            } => {
+                payload.push(KIND_COMMIT);
+                payload.extend_from_slice(&region.to_be_bytes());
+                payload.extend_from_slice(&tick.to_be_bytes());
+                payload.extend_from_slice(&epoch.to_be_bytes());
+                put_changes(&mut payload, changes);
+                payload.extend_from_slice(&(state.len() as u32).to_be_bytes());
+                payload.extend_from_slice(state);
+            }
+            Self::Opened {
+                region,
+                epoch,
+                restored,
+            } => {
+                payload.push(KIND_OPENED);
+                payload.extend_from_slice(&region.to_be_bytes());
+                payload.extend_from_slice(&epoch.to_be_bytes());
+                payload.extend_from_slice(&restored.to_be_bytes());
+            }
         }
-
-        let mut record = Vec::with_capacity(FRAME_HEADER_LENGTH + payload.len());
-        record.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        record.extend_from_slice(&crc32fast::hash(&payload).to_be_bytes());
-        record.extend_from_slice(&payload);
-        record
+        frame(&payload)
     }
 
     fn decode(payload: &[u8]) -> Result<Self, FormatError> {
@@ -74,25 +128,72 @@ impl BlockChanges {
         if version != FORMAT_VERSION {
             return Err(FormatError::UnsupportedVersion(version));
         }
-        if input.u8()? != KIND_BLOCK_CHANGES {
-            return Err(FormatError::Corrupt("record kind"));
-        }
-        let tick = input.u64()?;
-        let epoch = input.u64()?;
-        let count = input.u32()? as usize;
-        // Each change takes 14 bytes; a forged count must not reserve more than that.
-        let mut changes = Vec::with_capacity(count.min(input.0.len() / 14));
-        for _ in 0..count {
-            let position = BlockPos::new(input.i32()?, input.i32()?, input.i32()?);
-            changes.push((position, BlockState(input.u16()?)));
-        }
+        let record = match input.u8()? {
+            KIND_CHANGES => Self::Changes {
+                tick: input.u64()?,
+                epoch: input.u64()?,
+                changes: take_changes(&mut input)?,
+            },
+            KIND_COMMIT => Self::Commit {
+                region: input.u32()?,
+                tick: input.u64()?,
+                epoch: input.u64()?,
+                changes: take_changes(&mut input)?,
+                state: {
+                    let length = input.u32()? as usize;
+                    input.take(length)?.to_vec()
+                },
+            },
+            KIND_OPENED => Self::Opened {
+                region: input.u32()?,
+                epoch: input.u64()?,
+                restored: input.u64()?,
+            },
+            _ => return Err(FormatError::Corrupt("record kind")),
+        };
         input.finish()?;
-        Ok(Self {
-            tick,
-            epoch,
-            changes,
-        })
+        Ok(record)
     }
+}
+
+/// Frames `payload` as a record of the log.
+fn frame(payload: &[u8]) -> Vec<u8> {
+    let mut record = Vec::with_capacity(FRAME_HEADER_LENGTH + payload.len());
+    record.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    record.extend_from_slice(&crc32fast::hash(payload).to_be_bytes());
+    record.extend_from_slice(payload);
+    record
+}
+
+fn put_changes(payload: &mut Vec<u8>, changes: &[(BlockPos, BlockState)]) {
+    payload.extend_from_slice(&(changes.len() as u32).to_be_bytes());
+    for (position, state) in changes {
+        payload.extend_from_slice(&position.x.to_be_bytes());
+        payload.extend_from_slice(&position.y.to_be_bytes());
+        payload.extend_from_slice(&position.z.to_be_bytes());
+        payload.extend_from_slice(&state.0.to_be_bytes());
+    }
+}
+
+fn take_changes(input: &mut Input<'_>) -> Result<Vec<(BlockPos, BlockState)>, FormatError> {
+    let count = input.u32()? as usize;
+    // A forged count must not reserve more than the payload can hold.
+    let mut changes = Vec::with_capacity(count.min(input.0.len() / CHANGE_LENGTH));
+    for _ in 0..count {
+        let position = BlockPos::new(input.i32()?, input.i32()?, input.i32()?);
+        changes.push((position, BlockState(input.u16()?)));
+    }
+    Ok(changes)
+}
+
+/// A record read from a log, with where it is in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Logged {
+    /// The offset of the record's frame in the log.
+    pub offset: usize,
+    /// The length of the frame, header included.
+    pub length: usize,
+    pub record: LogRecord,
 }
 
 /// Reads the records at the start of `log`. Returns them with the number of bytes they
@@ -100,7 +201,16 @@ impl BlockChanges {
 ///
 /// A record that is complete and passes its checksum but cannot be understood is an
 /// error: that is not what dying in the middle of a write looks like.
-pub fn read_log(log: &[u8]) -> Result<(Vec<BlockChanges>, usize), FormatError> {
+pub fn read_log(log: &[u8]) -> Result<(Vec<LogRecord>, usize), FormatError> {
+    let (logged, valid) = read_log_with_offsets(log)?;
+    Ok((
+        logged.into_iter().map(|logged| logged.record).collect(),
+        valid,
+    ))
+}
+
+/// Does what [`read_log`] does, and says for each record where it is.
+pub fn read_log_with_offsets(log: &[u8]) -> Result<(Vec<Logged>, usize), FormatError> {
     let mut records = Vec::new();
     let mut valid = 0;
     loop {
@@ -119,7 +229,11 @@ pub fn read_log(log: &[u8]) -> Result<(Vec<BlockChanges>, usize), FormatError> {
         if crc32fast::hash(payload) != checksum {
             break;
         }
-        records.push(BlockChanges::decode(payload)?);
+        records.push(Logged {
+            offset: valid,
+            length: FRAME_HEADER_LENGTH + length,
+            record: LogRecord::decode(payload)?,
+        });
         valid += FRAME_HEADER_LENGTH + length;
     }
     Ok((records, valid))
@@ -132,24 +246,61 @@ mod tests {
 
     use super::*;
 
-    fn record(tick: u64, count: i32) -> BlockChanges {
-        BlockChanges {
+    fn record(tick: u64, count: i32) -> LogRecord {
+        LogRecord::Commit {
+            region: 3,
             tick,
             epoch: 1,
             changes: (0..count)
                 .map(|index| (BlockPos::new(index, -61, -index), blocks::STONE))
                 .collect(),
+            state: vec![tick as u8; count as usize],
         }
     }
 
     #[test]
     fn known_answer() {
-        let record = BlockChanges {
+        let record = LogRecord::Commit {
+            region: 4,
             tick: 2,
             epoch: 1,
             changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+            state: vec![7, 8],
         };
         let bytes = record.encode();
+        let payload = [
+            1, 2, // version, kind
+            0, 0, 0, 4, // region
+            0, 0, 0, 0, 0, 0, 0, 2, // tick
+            0, 0, 0, 0, 0, 0, 0, 1, // epoch
+            0, 0, 0, 1, // one change
+            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9, // the change
+            0, 0, 0, 2, 7, 8, // the state
+        ];
+        assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
+        assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
+        assert_eq!(bytes[8..], payload);
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+
+        let opened = LogRecord::Opened {
+            region: 4,
+            epoch: 9,
+            restored: 300,
+        };
+        let bytes = opened.encode();
+        let payload = [
+            1, 3, // version, kind
+            0, 0, 0, 4, // region
+            0, 0, 0, 0, 0, 0, 0, 9, // epoch
+            0, 0, 0, 0, 0, 0, 1, 44, // restored
+        ];
+        assert_eq!(bytes[8..], payload);
+        assert_eq!(read_log(&bytes), Ok((vec![opened], bytes.len())));
+    }
+
+    /// A log as the world store wrote it before regions had a state is still read.
+    #[test]
+    fn records_of_block_changes_alone_are_read() {
         let payload = [
             1, 1, // version, kind
             0, 0, 0, 0, 0, 0, 0, 2, // tick
@@ -157,10 +308,14 @@ mod tests {
             0, 0, 0, 1, // one change
             0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9,
         ];
-        assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
-        assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
-        assert_eq!(bytes[8..], payload);
-        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+        let bytes = frame(&payload);
+        let expected = LogRecord::Changes {
+            tick: 2,
+            epoch: 1,
+            changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+        };
+        assert_eq!(expected.encode(), bytes);
+        assert_eq!(read_log(&bytes), Ok((vec![expected], bytes.len())));
     }
 
     #[test]
@@ -169,7 +324,7 @@ mod tests {
     }
 
     /// Whatever byte the process died at while appending, exactly the records written
-    /// in full before are read back.
+    /// in full before are read back, each where it was written.
     #[test]
     fn a_log_cut_off_anywhere_yields_the_complete_records() {
         let records = [record(1, 3), record(2, 0), record(5, 40)];
@@ -188,6 +343,12 @@ mod tests {
                 Ok((records[..complete].to_vec(), valid)),
                 "cut at {length}"
             );
+        }
+        let (logged, _) = read_log_with_offsets(&log).unwrap();
+        for (index, logged) in logged.iter().enumerate() {
+            let start = if index == 0 { 0 } else { ends[index - 1] };
+            assert_eq!((logged.offset, logged.length), (start, ends[index] - start));
+            assert_eq!(logged.record, records[index]);
         }
     }
 
@@ -211,37 +372,42 @@ mod tests {
 
     #[test]
     fn a_record_that_checks_out_but_makes_no_sense_is_an_error() {
-        let framed = |payload: &[u8]| {
-            let mut record = (payload.len() as u32).to_be_bytes().to_vec();
-            record.extend_from_slice(&crc32fast::hash(payload).to_be_bytes());
-            record.extend_from_slice(payload);
-            record
-        };
         assert_eq!(
-            read_log(&framed(&[9, 1])),
+            read_log(&frame(&[9, 1])),
             Err(FormatError::UnsupportedVersion(9))
         );
-        assert!(read_log(&framed(&[1, 7])).is_err());
-        assert!(read_log(&framed(&[])).is_err());
+        assert!(read_log(&frame(&[1, 7])).is_err());
+        assert!(read_log(&frame(&[])).is_err());
+        // A state longer than what is left.
+        let mut payload = record(1, 1).encode()[FRAME_HEADER_LENGTH..].to_vec();
+        payload.pop();
+        assert!(read_log(&frame(&payload)).is_err());
     }
 
     proptest! {
         #[test]
         fn records_round_trip(
+            region: u32,
             tick: u64,
             epoch: u64,
             changes in prop::collection::vec((any::<i32>(), any::<i32>(), any::<i32>(), any::<u16>()), 0..50),
+            state in prop::collection::vec(any::<u8>(), 0..200),
+            restored: u64,
         ) {
-            let record = BlockChanges {
+            let commit = LogRecord::Commit {
+                region,
                 tick,
                 epoch,
                 changes: changes
                     .into_iter()
                     .map(|(x, y, z, state)| (BlockPos::new(x, y, z), BlockState(state)))
                     .collect(),
+                state,
             };
-            let bytes = record.encode();
-            prop_assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+            let opened = LogRecord::Opened { region, epoch, restored };
+            let mut bytes = commit.encode();
+            bytes.extend(opened.encode());
+            prop_assert_eq!(read_log(&bytes), Ok((vec![commit, opened], bytes.len())));
         }
 
         #[test]

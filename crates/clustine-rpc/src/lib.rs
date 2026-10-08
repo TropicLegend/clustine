@@ -12,5 +12,6 @@ pub mod wire;
 
 pub use messages::{
     Assignment, EdgeMessage, EdgeToWorker, FromCoordinator, Presence, RegionHello, RegionWelcome,
-    StoreReply, StoreRequest, ToCoordinator, Vouch, Welcome, WorkerToEdge,
+    Restored, StoreReply, StoreRequest, StoreWelcome, TickState, ToCoordinator, Vouch, Welcome,
+    WorkerToEdge,
 };
