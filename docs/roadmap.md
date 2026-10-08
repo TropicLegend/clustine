@@ -476,7 +476,12 @@ an edge says about a player names the stay it means, by its entity, so that what
 earlier stay sent can never be taken for a later one. The pause at a move, which the
 record for phase B left to be judged here with an optimised build, is 0.36 to 0.40
 seconds in the middle (0.9 unoptimised), most of it the move itself, so the resume is
-left as it is. The edge's part is designed next (ADR-0015), by whoever builds it.
+left as it is. The edge's part is
+[ADR-0015](adr/0015-the-edge-through-merges-and-splits.md), written by whoever builds
+it and reviewed in turn: eleven defects, three of which would have disconnected a
+player who had done nothing wrong, each a sequence in which what one region said was
+read late against what another had said since. Their fixes changed nine rules of
+ADR-0014's contract with the edge and added one number to a welcome.
 
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`

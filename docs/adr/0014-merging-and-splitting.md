@@ -4,7 +4,8 @@
   simulation, the region runner, the worker process and the coordinator, and the
   contract the edge's part of the step is designed against. Revised after an
   independent review against the code (see "Review"). Not built. The edge's part is
-  ADR-0015, designed against section 8 of this one.
+  ADR-0015, designed against section 8 of this one; its review changed rules 37 to
+  40, 44, 45, 47, 48 and 50 and the welcomes, as ADR-0015 lists.
 - Date: 2026-10-08
 
 ## Context
@@ -723,10 +724,15 @@ has for the edge**, and for every player the hello named:
 - then, for every other player the state has under this edge, in ascending order:
   `Present`.
 
-The welcome says how many answers follow, as it says how many entries:
-`Welcome::Resumed { entries, presences }`, `Welcome::Unknown { since, entries,
-presences }`. "The state" is the region's before the tick that takes the hello, as
-for the entries. After an `Unknown` that makes or resets the state for the edge, the
+The welcome says how many answers follow, as it says how many entries, and how far the
+region had applied the edge's messages in the state they are made of:
+`Welcome::Resumed { entries, presences, applied }`, `Welcome::Unknown { since,
+entries, presences, applied }`. "The state" is the region's before the tick that
+takes the hello, as for the entries, and `applied` is its `EdgeState::applied` for
+the edge: 0 after an `Unknown` that makes or resets the state. It is what the tick's
+`Progress` says afterwards; the welcome says it so that the edge knows, before it
+reads a `Present` for a player who is entering the world, whether the region had
+applied their join (ADR-0015, section 2.1). After an `Unknown` that makes or resets the state for the edge, the
 state has nobody of it: the answers are those for the hello's players, all `Absent`,
 as today. After an `Unknown` that tells the edge the `since` the state already had
 (`Answer::ToldAgain`), the answers are from the state like after `Resumed`; until now
@@ -1156,12 +1162,16 @@ when the merge or the split happened: there is none.
 37. **After a welcome's entries the region says whom it has for the edge**: one
     presence answer for each player the hello named, in the hello's order, `Present`
     or `Absent`; then one `Present` for every other stay it has for the edge, in
-    ascending order of the players. The welcome's `presences` is how many follow. They
+    ascending order of the players. The welcome's `presences` is how many follow, and
+    its `applied` the number of the edge's last message the region had applied. They
     are of the same state as the entries: a stay that an entry among them sent
-    elsewhere is not among them.
+    elsewhere is not among them, and a join numbered above `applied` has not made
+    the stay a `Present` speaks of.
 38. **What the edge does with them:**
     - `Present`, and the edge has that stay (the player, with that entity) under this
-      region: as today.
+      region: as today. For a player who is entering the world and has not been told
+      an entity: the answer is their stay if their join is at or below the welcome's
+      `applied`, and an earlier stay, which the join will end, if it is above.
     - `Present`, and the edge has that stay under another region: **the stay is this
       region's.** Its view's subscriptions move here as at a hand-over (rule 18),
       without an arrival, and every input of it the edge keeps above the answer's
@@ -1170,11 +1180,13 @@ when the merge or the split happened: there is none.
       has them with another entity): `PlayerLeave { player, entity }` to this region,
       with the answer's entity.
     - `Absent`: as today (ADR-0008, section 5).
-    - **When `presences` answers have been handled**: a player the edge believes to be
-      this region's, for whom no `Present` with their entity came, is absent, and is
-      judged as after `Absent` today (a join or an arrival of theirs that is among
-      what the edge is sending the region again puts them there). That takes in the
-      players an `Absorbed` among the entries made this region's (rule 42).
+    - **When `presences` answers have been handled**: a player whom an `Absorbed`
+      among this welcome's entries made this region's (rule 42), and for whom no
+      `Present` with their entity came, is absent, and is judged as after `Absent`
+      today. Nobody else is judged then: a player the hello named has had an answer
+      of their own, and one whom another region's entry put under this region
+      meanwhile may have been sent on since, which their region's own answers will
+      say.
 
     Why moving a stay on a region's word is always right. A stay is in at most one
     living region's state (section 2.5). A region comes by a stay in three ways: a
@@ -1192,18 +1204,22 @@ when the merge or the split happened: there is none.
     has handled that `Absorbed`, and not before**; or from the moment it has concluded
     by rule 44 that none comes. Until then what is meant for `B` (what the edge kept
     for it, and what an entry of any region sends there in `Departed::to`,
-    `Remote::to`, `NotMine::holder` or `Elsewhere::region`) is kept for `B`, as for
-    any region without a link. From then on a name of `B` means `A`, through several
+    `Remote::to`, `NotMine::holder`, `Elsewhere::region` or `SplitOff::region`) is
+    kept for `B`, as for any region without a link. From then on a name of `B` means `A`, through several
     merges in a row, and **if that makes the place an entry sends something the
     region the entry came from, the edge sends it there**: a `Departed { to: B }` of
     `A`, read after `A` absorbed `B`, is an arrival at `A`. (Until now the edge takes
     that for an error.) The routing table's pairs tell the edge which region to
-    expect the entry from, and serve rule 44; it acts on nothing else of them.
+    expect the entry from, and serve rule 44; it acts on nothing else of them, but
+    that a region of which it has nothing at all (no player, subscription or kept
+    message) may stand for its survivor on the table's word, as no entry could move
+    anything.
     Regions other than the survivor go on naming an absorbed region for as long as
     they believe it; nothing tells them.
-40. **When the edge has handled `A`'s `Absorbed { B }`, it asks again** (rule 14) for
-    every viewer's subscription it has, at any region but `A`, that was told elsewhere
-    with `B`. That region then asks the store and names `A`.
+40. **A subscription that was told elsewhere with `B` is told elsewhere with `A`**
+    from the moment the edge has handled `A`'s `Absorbed { B }`. It need not be asked
+    again: the edge was a guest at `B` for the chunk, and by rule 42 is one at `A`,
+    which serves it or says `NotMine` (rule 15).
 
 #### 8.5 `Absorbed`
 
@@ -1252,15 +1268,21 @@ when the merge or the split happened: there is none.
     handled as an entry of `A`: `C` stands for `A`. An edge that resumes with a region
     the routing table says `B` went into, and has been sent no `Absorbed` for `B` when
     the welcome's entries are through, treats `B` as having forgotten it (ADR-0010):
-    it gives up what it kept for `B`, and `B` stands for that region.
+    it gives up what it kept for `B`, and `B` stands for that region. This rests
+    on a region answering no hello between handing the store a merge or a split and
+    taking it (section 3.3: taking it drops every link, also those attached and not
+    taken up), so that a hello said after the table has the pair is answered from
+    after the merge.
 
 #### 8.6 `SplitOff`, and the new region
 
 45. **`SplitOff { region: N, players }`** is an entry of the outbox of the region `A`
     that was split, made by the tick of the split, for each edge that has a player in
     the part. `players` are the stays that are in `N` from that tick on, each with its
-    entity id. For a stay the edge has with that entity under `A`: **the player is
-    `N`'s.** There is no `PlayerArrive`; `N` has them whole. Their view's subscriptions
+    entity id. For a stay the edge has with that entity under `A`, **unless an
+    arrival of theirs is among what the edge keeps for `A`** (the stay then came back
+    to `A` after the split, by way of `N`, whose presence answers the edge read
+    first): **the player is `N`'s.** There is no `PlayerArrive`; `N` has them whole. Their view's subscriptions
     move as at a hand-over (rule 18), and every input of theirs the edge still keeps
     is sent to `N`, which passes over what `A` had applied. For any other stay named,
     the edge does nothing: one it has under another region has been moved on by a
@@ -1279,8 +1301,9 @@ when the merge or the split happened: there is none.
     ends.
 47. **The first link to a new region** begins like any: a hello, with the players the
     edge believes to be there and their views. The welcome is `Unknown { since,
-    entries: 0, presences }`, which to an edge that never had anything from `N` is how
-    everything begins (ADR-0008, section 5): what it kept for `N` stays, numbered from
+    entries, presences, applied: 0 }`, with no entries unless `N` has itself been
+    split or has absorbed since, which to an edge that never had anything from `N` is
+    how everything begins (ADR-0008, section 5): what it kept for `N` stays, numbered from
     1. The presence answers after it are `Present` for every stay `N` has for the
     edge. An edge that links to `N` before it has read `A`'s `SplitOff` names nobody,
     and learns from those answers who is there (rule 38); the `SplitOff` then names
@@ -1301,9 +1324,10 @@ when the merge or the split happened: there is none.
       itself let go to `B` before the merge comes back to `A` and is taken in.
     - **A block action of a player who stays, on a chunk of the part.** It is behind
       the hello on the new link to `A`, and held until the chunk is answered, with
-      `Elsewhere { N }`; `A` then says `Remote { to: Some(N) }`; the edge has asked
-      `N` for the chunk by then (rule 13), so rule 34 holds the action at `N` until
-      `N` serves it.
+      `Elsewhere { N }`; `A` then says `Remote { to: Some(N) }`; the edge asks
+      `N` for the chunk before it sends an action on to it, if it is not asking
+      already (ADR-0015, section 4), so rule 34 holds the action at `N` until `N`
+      serves it.
     - **A third region that still believes `A` to hold a chunk of the part** sends
       players and actions to `A`, which sends them on to `N` with `NotMine` if it
       has heard that `N` holds the chunk, and otherwise takes the player in and asks,
@@ -1334,8 +1358,11 @@ when the merge or the split happened: there is none.
     a `SplitOff` among them, if that is how it went) and every `SplitOff`; and then
     the presence answers, which say who is there now. It finds no route for a region
     that was absorbed. The order in which it resumes with the regions does not
-    matter: a presence answer takes a stay from whatever region the edge had it
-    under, a `SplitOff` only from the region that says it, and both go by the entity.
+    matter, nor how the messages of their links fall between each other: a presence
+    answer takes a stay from whatever region the edge had it under, a `SplitOff` only
+    from the region that says it and only a stay that has not come back, both go by
+    the entity, and nobody is judged absent on an entry of another region (rules 38
+    and 45).
     **This is every edge after every merge and split**, as all of them meet the
     entries in a welcome. If the edge was away for more than 600 ticks of a region,
     that region has forgotten it and its entries (rule 1); the presence answers of
@@ -1458,8 +1485,8 @@ EdgeToWorker::Input {
 }
 
 pub enum Welcome {
-    Resumed { entries: u32, presences: u32 },
-    Unknown { since: u64, entries: u32, presences: u32 },
+    Resumed { entries: u32, presences: u32, applied: u64 },
+    Unknown { since: u64, entries: u32, presences: u32, applied: u64 },
     Superseded,
 }
 
