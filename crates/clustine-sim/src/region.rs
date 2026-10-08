@@ -15,6 +15,10 @@ use crate::api::{
 };
 use crate::state::{EdgeDelta, EdgeState, PlayerState, RegionState, StateDelta};
 
+mod reshape;
+
+pub use reshape::{NoSplit, Part, Splitting};
+
 /// What a region is created with, and restored with: what it is given rather than what
 /// it has come to know. Its block of entity ids is part of its [`RegionState`], and
 /// which chunks it holds is the world store's to say; see [`Holdings`].

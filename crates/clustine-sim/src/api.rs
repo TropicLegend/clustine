@@ -289,7 +289,7 @@ pub enum Durable {
     /// `numbers` reaches, is what that region had in its outbox for the edge, under
     /// new numbers. It names no players: the presence answers that follow every
     /// welcome say whom the region has. See
-    /// `docs/adr/0014-merging-and-splitting.md`, section 2.3. No region makes this yet.
+    /// `docs/adr/0014-merging-and-splitting.md`, section 2.3.
     Absorbed {
         region: RegionId,
         /// The `since` a welcome of the absorbed region would have said to the edge:
@@ -308,8 +308,7 @@ pub enum Durable {
     /// A part of this region has become the region `region`, and the stays named are
     /// in it from now on: those of the edge's players who went, each with their
     /// entity, in ascending order. Which chunks went is said on the link, anew on
-    /// every link. See `docs/adr/0014-merging-and-splitting.md`, section 2.4. No region
-    /// makes this yet.
+    /// every link. See `docs/adr/0014-merging-and-splitting.md`, section 2.4.
     SplitOff {
         region: RegionId,
         players: Vec<(PlayerId, EntityId)>,
