@@ -55,7 +55,30 @@ jobs:
         run: command -v kind || deploy/kind/get-kind.sh
 
       - name: Run the cluster test
-        run: deploy/kind/test.sh
+        shell: bash
+        # The log is kept for the step below; the exit status is the test's.
+        run: |
+          set -o pipefail
+          deploy/kind/test.sh 2>&1 | tee cluster.log
         env:
           # Built above.
           SKIP_BUILD: "1"
+
+      # A job's log can only be read by someone who is signed in. What the test did and
+      # why it failed is put where everyone can read it: the annotations of the run.
+      - name: Say why the cluster test failed
+        if: failure()
+        shell: bash
+        run: |
+          {
+            # Each step of the test, what it counted, the bots' verdicts and its own.
+            grep -a -E '^==> |^test\.sh: |bots with seed|^Error|disconnected|logged "|workers that run|before "' cluster.log || true
+          } | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-900 | tail -n 45 |
+            while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+          # And how the services ended, as far as it fits.
+          grep -a -E ' (WARN|ERROR) ' cluster.log | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-400 | tail -n 25 |
+            while IFS= read -r line; do
+              echo "::warning::${line}"
+            done
