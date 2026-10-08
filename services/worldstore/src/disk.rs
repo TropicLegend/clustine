@@ -284,6 +284,17 @@ impl MemoryDisk {
         disk
     }
 
+    /// The disk with the fault, counted from what is changed or synced from now on.
+    #[cfg(test)]
+    pub(crate) fn with(self, fault: Fault) -> Self {
+        {
+            let mut memory = self.memory();
+            memory.fault = Some(fault);
+            memory.operations = 0;
+        }
+        self
+    }
+
     fn memory(&self) -> MutexGuard<'_, Memory> {
         // Every change is made in full under the lock; a panic in a test elsewhere
         // leaves nothing half done.

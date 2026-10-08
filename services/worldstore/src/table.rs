@@ -1,0 +1,518 @@
+//! The table of regions: which regions there are and which chunks each holds.
+//!
+//! The table is the commit thread's alone. On disk it is the file `regions/table` with
+//! the records of the log from the file's `from` on applied to it; see
+//! `docs/adr/0011-the-world-store-and-regions.md`.
+//!
+//! **Who holds a chunk**: the region it is granted to; else the region that is pinned
+//! to an area which contains it; else nobody. Areas of different regions never overlap.
+
+use std::collections::{BTreeMap, VecDeque};
+
+use clustine_format::{TableFile, TableRegion};
+use clustine_region::{Layout, RegionId};
+use clustine_rpc::{ChunkBox, RegionInfo, RegionList};
+use clustine_world::{ChunkArea, ChunkPos};
+
+use crate::StoreError;
+
+/// How the world is divided when the store is started: the regions that are pinned to
+/// an area, and where players enter the world.
+///
+/// Until regions follow players everywhere, the division is that of a [`Layout`]: its
+/// stripes are the pinned regions. A division with other areas, or with none, is for
+/// tests that need chunks nobody holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Division {
+    /// The chunk players enter the world in.
+    pub home: ChunkPos,
+    /// The areas of the pinned regions, which must not overlap. Region `i` is pinned
+    /// to area `i`.
+    pub pinned: Vec<ChunkArea>,
+    /// The fingerprint a hello has to name, if the division is that of a layout.
+    pub layout: Option<u64>,
+}
+
+impl Division {
+    /// The division of `layout`: its stripes as the pinned areas, in their order, and
+    /// its fingerprint.
+    pub fn stripes(home: ChunkPos, layout: &Layout) -> Self {
+        Self {
+            home,
+            pinned: layout.regions().map(|(_, area)| area).collect(),
+            layout: Some(layout.fingerprint()),
+        }
+    }
+
+    /// Refuses a division in which two areas have a chunk in common: who holds it
+    /// would depend on the order they are looked at in.
+    pub(crate) fn check(&self) -> Result<(), StoreError> {
+        for (second, area) in self.pinned.iter().enumerate() {
+            if let Some(first) = self.pinned[..second]
+                .iter()
+                .position(|before| overlap(*before, *area))
+            {
+                return Err(StoreError::Division {
+                    first: RegionId(first as u32),
+                    second: RegionId(second as u32),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether the two areas have a chunk in common.
+fn overlap(one: ChunkArea, other: ChunkArea) -> bool {
+    let west = |area: ChunkArea| area.min_x.map_or(i64::MIN, i64::from);
+    let east = |area: ChunkArea| area.max_x.map_or(i64::MAX, i64::from);
+    west(one).max(west(other)) < east(one).min(east(other))
+}
+
+/// What a region holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Holding {
+    /// The areas the region is pinned to: it holds every chunk of them that is not
+    /// granted to any region.
+    pinned: Vec<ChunkArea>,
+    /// The chunks it was granted, each with the tick of the region it holds it from.
+    grants: BTreeMap<ChunkPos, u64>,
+}
+
+/// The regions there are and the chunks each holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Table {
+    /// The first segment of the log whose records are not in the table file.
+    pub(crate) from: u64,
+    /// The id the next region gets.
+    pub(crate) next_region: u32,
+    pub(crate) home_chunk: ChunkPos,
+    pub(crate) home_region: RegionId,
+    /// The areas of the division the table was made from.
+    division: Vec<ChunkArea>,
+    /// The living regions.
+    regions: BTreeMap<RegionId, Holding>,
+    /// Which region each granted chunk is granted to.
+    granted: BTreeMap<ChunkPos, RegionId>,
+    /// The regions that were absorbed, each with what it went into, oldest first.
+    absorbed: VecDeque<(RegionId, RegionId)>,
+}
+
+impl Table {
+    /// The table of a world that is divided as `division` says and has nothing else:
+    /// region `i` pinned to area `i`, and the home chunk held by the pinned region
+    /// whose area it is in or, if there is none, granted to a region made after them.
+    /// The next region id is at least `next_region`, so that an id the world has used
+    /// is not used again for a region made later.
+    pub(crate) fn made_from(division: &Division, next_region: u32, from: u64) -> Self {
+        let mut regions: BTreeMap<RegionId, Holding> = (0..)
+            .map(RegionId)
+            .zip(&division.pinned)
+            .map(|(region, area)| {
+                let holding = Holding {
+                    pinned: vec![*area],
+                    grants: BTreeMap::new(),
+                };
+                (region, holding)
+            })
+            .collect();
+        let mut granted = BTreeMap::new();
+        let pinned_home = regions
+            .iter()
+            .find(|(_, holding)| holding.pinned[0].contains(division.home))
+            .map(|(region, _)| *region);
+        let home_region = pinned_home.unwrap_or_else(|| {
+            let region = RegionId(regions.len() as u32);
+            let holding = Holding {
+                pinned: Vec::new(),
+                // Ticks are numbered from 1: the chunk is the region's from the start.
+                grants: BTreeMap::from([(division.home, 0)]),
+            };
+            regions.insert(region, holding);
+            granted.insert(division.home, region);
+            region
+        });
+        Self {
+            from,
+            next_region: next_region.max(regions.len() as u32),
+            home_chunk: division.home,
+            home_region,
+            division: division.pinned.clone(),
+            regions,
+            granted,
+            absorbed: VecDeque::new(),
+        }
+    }
+
+    /// The table as the file has it. A file that passes for one and says what cannot
+    /// be, such as a chunk granted to two regions, is refused.
+    pub(crate) fn read(file: TableFile) -> Result<Self, StoreError> {
+        let mut regions = BTreeMap::new();
+        let mut granted = BTreeMap::new();
+        for TableRegion { id, pinned, grants } in file.regions {
+            let region = RegionId(id);
+            if id >= file.next_region {
+                return Err(misfit(format!(
+                    "region {id} is not below the next region id"
+                )));
+            }
+            for (chunk, _) in &grants {
+                if let Some(other) = granted.insert(*chunk, region) {
+                    return Err(misfit(format!(
+                        "chunk {chunk:?} is granted to regions {other} and {region}"
+                    )));
+                }
+            }
+            let holding = Holding {
+                pinned,
+                grants: grants.into_iter().collect(),
+            };
+            regions.insert(region, holding);
+        }
+        let table = Self {
+            from: file.from,
+            next_region: file.next_region,
+            home_chunk: file.home_chunk,
+            home_region: RegionId(file.home_region),
+            division: file.division,
+            regions,
+            granted,
+            absorbed: file
+                .absorbed
+                .into_iter()
+                .map(|(absorbed, into)| (RegionId(absorbed), RegionId(into)))
+                .collect(),
+        };
+        let areas: Vec<(RegionId, ChunkArea)> = table.areas().collect();
+        for (index, (region, area)) in areas.iter().enumerate() {
+            let other = areas[..index]
+                .iter()
+                .find(|(other, before)| other != region && overlap(*before, *area));
+            if let Some((other, _)) = other {
+                return Err(misfit(format!(
+                    "regions {other} and {region} are pinned to areas that overlap"
+                )));
+            }
+        }
+        if table.holder(table.home_chunk) != Some(table.home_region) {
+            return Err(misfit(format!(
+                "the home region {} does not hold the home chunk",
+                table.home_region
+            )));
+        }
+        Ok(table)
+    }
+
+    /// The table as it is written to its file, with `from` as the first segment of the
+    /// log that is not in it.
+    pub(crate) fn file(&self, from: u64) -> TableFile {
+        TableFile {
+            from,
+            next_region: self.next_region,
+            home_chunk: self.home_chunk,
+            home_region: self.home_region.0,
+            division: self.division.clone(),
+            regions: self
+                .regions
+                .iter()
+                .map(|(region, holding)| TableRegion {
+                    id: region.0,
+                    pinned: holding.pinned.clone(),
+                    grants: holding
+                        .grants
+                        .iter()
+                        .map(|(chunk, tick)| (*chunk, *tick))
+                        .collect(),
+                })
+                .collect(),
+            absorbed: self
+                .absorbed
+                .iter()
+                .map(|(absorbed, into)| (absorbed.0, into.0))
+                .collect(),
+        }
+    }
+
+    /// Whether the table was made from `division`: from the same areas and the same
+    /// home chunk. What the regions are pinned to now is not looked at, as a merge
+    /// changes that and the division stays the one the store is started with.
+    pub(crate) fn is_of(&self, division: &Division) -> bool {
+        self.division == division.pinned && self.home_chunk == division.home
+    }
+
+    /// Whether `region` is a living region.
+    pub(crate) fn has(&self, region: RegionId) -> bool {
+        self.regions.contains_key(&region)
+    }
+
+    /// The living regions, in ascending order.
+    pub(crate) fn regions(&self) -> impl Iterator<Item = RegionId> + '_ {
+        self.regions.keys().copied()
+    }
+
+    /// The areas `region` is pinned to; none if it is not pinned or no region.
+    pub(crate) fn pinned(&self, region: RegionId) -> &[ChunkArea] {
+        self.regions
+            .get(&region)
+            .map_or(&[], |holding| &holding.pinned)
+    }
+
+    /// Every area a region is pinned to, with the region.
+    fn areas(&self) -> impl Iterator<Item = (RegionId, ChunkArea)> + '_ {
+        self.regions
+            .iter()
+            .flat_map(|(region, holding)| holding.pinned.iter().map(|area| (*region, *area)))
+    }
+
+    /// The region that holds `chunk`, if one does.
+    pub(crate) fn holder(&self, chunk: ChunkPos) -> Option<RegionId> {
+        self.granted.get(&chunk).copied().or_else(|| {
+            self.areas()
+                .find(|(_, area)| area.contains(chunk))
+                .map(|(region, _)| region)
+        })
+    }
+
+    /// The tick of `region` from which it holds `chunk`, if it holds it: that of its
+    /// grant, or 0 for a chunk it holds by being pinned.
+    pub(crate) fn held_from(&self, region: RegionId, chunk: ChunkPos) -> Option<u64> {
+        let holding = self.regions.get(&region)?;
+        match self.granted.get(&chunk) {
+            Some(holder) if *holder == region => holding.grants.get(&chunk).copied(),
+            Some(_) => None,
+            None => holding
+                .pinned
+                .iter()
+                .any(|area| area.contains(chunk))
+                .then_some(0),
+        }
+    }
+
+    /// The list of regions for whoever assigns them. `epoch` says the highest epoch a
+    /// region was opened with.
+    pub(crate) fn list(&self, epoch: impl Fn(RegionId) -> u64) -> RegionList {
+        RegionList {
+            home: self.home_region,
+            regions: self
+                .regions
+                .iter()
+                .map(|(region, holding)| RegionInfo {
+                    region: *region,
+                    epoch: epoch(*region),
+                    bounds: bounds(holding.grants.keys().copied()),
+                    pinned: holding.pinned.clone(),
+                })
+                .collect(),
+            absorbed: self.absorbed.iter().copied().collect(),
+        }
+    }
+}
+
+/// The smallest box around `chunks`, if there are any.
+fn bounds(chunks: impl Iterator<Item = ChunkPos>) -> Option<ChunkBox> {
+    chunks.fold(None, |bounds: Option<ChunkBox>, chunk| {
+        Some(match bounds {
+            None => ChunkBox {
+                min: chunk,
+                max: chunk,
+            },
+            Some(ChunkBox { min, max }) => ChunkBox {
+                min: ChunkPos::new(min.x.min(chunk.x), min.z.min(chunk.z)),
+                max: ChunkPos::new(max.x.max(chunk.x), max.z.max(chunk.z)),
+            },
+        })
+    })
+}
+
+fn misfit(what: String) -> StoreError {
+    StoreError::Table(what)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn area(min_x: Option<i32>, max_x: Option<i32>) -> ChunkArea {
+        ChunkArea { min_x, max_x }
+    }
+
+    /// Two areas with a gap between them, and the home chunk in the gap.
+    fn gap() -> Division {
+        Division {
+            home: ChunkPos::new(0, 0),
+            pinned: vec![area(None, Some(0)), area(Some(16), None)],
+            layout: None,
+        }
+    }
+
+    #[test]
+    fn the_stripes_of_a_layout_are_pinned_regions_with_the_ids_of_the_layout() {
+        let layout = Layout::new(vec![0, 4]).unwrap();
+        let division = Division::stripes(ChunkPos::new(2, -7), &layout);
+        assert_eq!(division.layout, Some(layout.fingerprint()));
+        division.check().unwrap();
+        let table = Table::made_from(&division, 0, 1);
+        assert_eq!(table.next_region, 3);
+        assert_eq!(table.home_region, RegionId(1));
+        for (region, area) in layout.regions() {
+            assert_eq!(table.pinned(region), [area]);
+        }
+        for x in -40..40 {
+            let chunk = ChunkPos::new(x, x * 3);
+            let holder = layout.region_of(chunk);
+            assert_eq!(table.holder(chunk), Some(holder));
+            for region in table.regions() {
+                let held = (region == holder).then_some(0);
+                assert_eq!(table.held_from(region, chunk), held);
+            }
+        }
+        // One region pinned to the whole world.
+        let single = Division::stripes(ChunkPos::new(0, 0), &Layout::single());
+        let table = Table::made_from(&single, 0, 1);
+        assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
+        assert_eq!(table.pinned(RegionId(0)), [ChunkArea::EVERYWHERE]);
+    }
+
+    #[test]
+    fn a_home_chunk_in_no_area_is_granted_to_a_region_made_after_the_pinned_ones() {
+        let table = Table::made_from(&gap(), 0, 1);
+        assert_eq!((table.home_region, table.next_region), (RegionId(2), 3));
+        assert_eq!(table.pinned(RegionId(2)), []);
+        assert_eq!(table.holder(ChunkPos::new(0, 0)), Some(RegionId(2)));
+        assert_eq!(table.held_from(RegionId(2), ChunkPos::new(0, 0)), Some(0));
+        // The rest of the gap is nobody's.
+        assert_eq!(table.holder(ChunkPos::new(0, 1)), None);
+        assert_eq!(table.holder(ChunkPos::new(15, 0)), None);
+        assert_eq!(table.holder(ChunkPos::new(-1, 0)), Some(RegionId(0)));
+        assert_eq!(table.holder(ChunkPos::new(16, 0)), Some(RegionId(1)));
+        assert_eq!(table.held_from(RegionId(1), ChunkPos::new(0, 0)), None);
+        assert_eq!(table.held_from(RegionId(9), ChunkPos::new(0, 0)), None);
+
+        // No pinned region at all: the world begins with the home region alone.
+        let alone = Division {
+            home: ChunkPos::new(3, 3),
+            pinned: Vec::new(),
+            layout: None,
+        };
+        let table = Table::made_from(&alone, 0, 1);
+        assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
+        assert_eq!(table.holder(ChunkPos::new(3, 3)), Some(RegionId(0)));
+        // An id that the world has used before is not given to a region made later.
+        assert_eq!(Table::made_from(&alone, 7, 1).next_region, 7);
+    }
+
+    #[test]
+    fn areas_that_overlap_are_no_division() {
+        let overlapping = [
+            vec![ChunkArea::EVERYWHERE, area(Some(3), Some(4))],
+            vec![
+                area(None, Some(1)),
+                area(Some(5), None),
+                area(Some(0), None),
+            ],
+            vec![area(Some(0), Some(5)), area(Some(4), Some(9))],
+        ];
+        for pinned in overlapping {
+            let division = Division {
+                home: ChunkPos::new(0, 0),
+                pinned,
+                layout: None,
+            };
+            assert!(
+                matches!(division.check(), Err(StoreError::Division { .. })),
+                "{division:?}"
+            );
+        }
+        // Areas that touch do not overlap: an area has its western end only.
+        gap().check().unwrap();
+        let touching = Division {
+            pinned: vec![area(Some(0), Some(5)), area(Some(5), Some(9))],
+            ..gap()
+        };
+        touching.check().unwrap();
+    }
+
+    #[test]
+    fn the_table_is_what_its_file_says_and_the_file_what_the_table_is() {
+        let table = Table::made_from(&gap(), 0, 4);
+        let file = table.file(table.from);
+        assert_eq!(file.from, 4);
+        assert_eq!(file.regions.len(), 3);
+        assert_eq!(file.regions[2].grants, [(ChunkPos::new(0, 0), 0)]);
+        let read = Table::read(TableFile::decode(&file.encode()).unwrap()).unwrap();
+        assert_eq!(read, table);
+        assert!(read.is_of(&gap()));
+        // Another home chunk is another division, and so are other areas.
+        let moved = Division {
+            home: ChunkPos::new(1, 0),
+            ..gap()
+        };
+        assert!(!read.is_of(&moved));
+        let narrower = Division {
+            pinned: vec![area(None, Some(0)), area(Some(17), None)],
+            ..gap()
+        };
+        assert!(!read.is_of(&narrower));
+        // The fingerprint is no part of it: it is what hellos are held to.
+        let named = Division {
+            layout: Some(7),
+            ..gap()
+        };
+        assert!(read.is_of(&named));
+    }
+
+    #[test]
+    fn a_table_file_that_says_what_cannot_be_is_refused() {
+        let good = Table::made_from(&gap(), 0, 4).file(4);
+        let refused = |change: fn(&mut TableFile)| {
+            let mut file = good.clone();
+            change(&mut file);
+            let read = Table::read(file);
+            assert!(matches!(read, Err(StoreError::Table(_))), "{read:?}");
+        };
+        // A chunk granted twice, a home region that does not hold the home chunk or
+        // is none, a region whose id the next region would get again, and two regions
+        // pinned to the same chunks.
+        refused(|file| file.regions[1].grants = vec![(ChunkPos::new(0, 0), 3)]);
+        refused(|file| file.home_region = 1);
+        refused(|file| file.home_region = 9);
+        refused(|file| file.next_region = 2);
+        refused(|file| file.regions[2].pinned = vec![ChunkArea::EVERYWHERE]);
+    }
+
+    #[test]
+    fn the_list_has_the_regions_with_what_they_are_pinned_to() {
+        let table = Table::made_from(&gap(), 0, 1);
+        let list = table.list(|region| u64::from(region.0) * 10);
+        assert_eq!(list.home, RegionId(2));
+        assert_eq!(list.absorbed, []);
+        let origin = ChunkPos::new(0, 0);
+        let expected = [
+            (0, vec![area(None, Some(0))], None),
+            (1, vec![area(Some(16), None)], None),
+            (
+                2,
+                Vec::new(),
+                Some(ChunkBox {
+                    min: origin,
+                    max: origin,
+                }),
+            ),
+        ]
+        .map(|(region, pinned, bounds)| RegionInfo {
+            region: RegionId(region),
+            epoch: u64::from(region) * 10,
+            bounds,
+            pinned,
+        });
+        assert_eq!(list.regions, expected);
+
+        let chunks = [(3, -2), (-1, 5), (0, 0)].map(|(x, z)| ChunkPos::new(x, z));
+        let around = ChunkBox {
+            min: ChunkPos::new(-1, -2),
+            max: ChunkPos::new(3, 5),
+        };
+        assert_eq!(bounds(chunks.into_iter()), Some(around));
+        assert_eq!(bounds(std::iter::empty()), None);
+    }
+}

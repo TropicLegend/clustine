@@ -25,9 +25,9 @@ use clustine_rpc::{RegionHello, Restored, link};
 use clustine_sim::RegionConfig;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_worker::{RegionRunner, Worker};
-use clustine_world::{ChunkArea, ChunkGenerator, Vec3};
+use clustine_world::{ChunkArea, ChunkGenerator, ChunkPos, Vec3};
 use clustine_worldgen::FlatGenerator;
-use clustine_worldstore::{Store, StoreError, StoreHandle};
+use clustine_worldstore::{Division, Store, StoreError, StoreHandle};
 use tokio::task::JoinHandle;
 
 /// Messages that may wait in each direction between the edge and a region. A region
@@ -63,6 +63,13 @@ pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
 /// Where players enter the world: above the middle of the block at the origin.
 pub(crate) fn spawn_point() -> Vec3 {
     Vec3::new(0.5, f64::from(FlatGenerator::classic().surface_y()), 0.5)
+}
+
+/// How the world store is told the world is divided: the stripes of `layout` as its
+/// pinned regions, with the chunk of [`spawn_point`] as the one players enter in.
+pub(crate) fn division(layout: &Layout) -> Division {
+    let spawn = spawn_point();
+    Division::stripes(ChunkPos::containing(spawn.x, spawn.z), layout)
 }
 
 /// Resolves when the process is asked to stop: by an interrupt from the terminal or,
@@ -247,11 +254,15 @@ impl Server {
         let spawn = spawn_point();
         let generator = generator();
         let layout = Layout::new(config.boundaries).context("dividing the world into regions")?;
-        // One store for all regions, as in a cluster.
+        // One store for all regions, as in a cluster. It is told how the world is
+        // divided when it starts, and its regions are those of the layout.
         let store = match &config.world {
-            Some(directory) => Store::local(directory, Arc::clone(&generator))
-                .with_context(|| format!("opening the world in {}", directory.display()))?,
-            None => Store::memory(Arc::clone(&generator)),
+            Some(directory) => {
+                Store::local_divided(directory, Arc::clone(&generator), division(&layout))
+                    .with_context(|| format!("opening the world in {}", directory.display()))?
+            }
+            None => Store::memory_divided(Arc::clone(&generator), division(&layout))
+                .context("starting a world in memory")?,
         };
         let regions = Regions {
             store,

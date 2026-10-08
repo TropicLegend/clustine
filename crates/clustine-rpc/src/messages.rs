@@ -209,11 +209,14 @@ pub enum Presence {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StoreRequest {
     /// Load the chunk, generating it if it has never been stored. Answered with
-    /// [`StoreReply::Loaded`], or [`StoreReply::Unreadable`]. A load that follows a save
-    /// of the same chunk finds what was saved.
+    /// [`StoreReply::Loaded`], or [`StoreReply::Unreadable`], or, if the region does
+    /// not hold the chunk, with [`StoreReply::NotHeld`]. A load that follows a save of
+    /// the same chunk finds what was saved.
     Load { position: ChunkPos },
     /// Store the chunk as it is after `tick`. It is written once every commit asked for
-    /// before it is on disk, and dropped if one of them failed. Not answered.
+    /// before it is on disk, and dropped if one of them failed. Not answered, unless
+    /// the region does not hold the chunk: then nothing is stored, and the answer is
+    /// [`StoreReply::NotHeld`].
     Save {
         position: ChunkPos,
         tick: u64,
@@ -315,23 +318,35 @@ pub enum StoreReply {
     Declined {
         reason: String,
     },
+    /// The region asked to load or to save a chunk it does not hold, which only the
+    /// holder may. Nothing was done. `holder` is the region that holds the chunk, if
+    /// one does.
+    NotHeld {
+        position: ChunkPos,
+        holder: Option<RegionId>,
+    },
 }
 
 /// What the world store has of a region, as it hands it to the owner that opens it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Restored {
     /// The entity ids the store issued to the region when it was first opened. They are
-    /// the region's for good.
+    /// the region's for good. A region that was split off another has none: its block
+    /// is empty, with `first` and `end` both 0.
     pub entity_ids: EntityIds,
     /// The region's whole state as of its last checkpoint, if it has had one.
     pub state: Option<TickState>,
     /// The state of each commit after that checkpoint, in the order of their ticks.
     /// The block changes of those commits are in the stored chunks already.
     pub deltas: Vec<TickState>,
-    /// The chunks the region holds, each with the tick of the region at which it was
-    /// granted (ADR-0010, section 1). Empty as long as the store keeps no grants: a
-    /// region of a stripe has every chunk of its area.
+    /// The chunks the region was granted, in ascending order, each with the tick of
+    /// the region from which it holds the chunk (ADR-0011, section 2). Not among them
+    /// are the chunks it holds by being pinned.
     pub held: Vec<(ChunkPos, u64)>,
+    /// The areas the region is pinned to: it holds every chunk of them that no region
+    /// was granted. The store does not say which those are; a region finds out about
+    /// a chunk by claiming it.
+    pub pinned: Vec<ChunkArea>,
 }
 
 impl Restored {
@@ -363,6 +378,8 @@ pub enum StoreWelcome {
     Accepted {
         /// [`Restored::entity_ids`].
         entity_ids: EntityIds,
+        /// [`Restored::pinned`].
+        pinned: Vec<ChunkArea>,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.
@@ -404,7 +421,7 @@ pub enum RestoredItem {
 }
 
 /// The regions of a world as the world store has them, for the coordinator. See
-/// ADR-0010, section 6. Nothing asks for it yet.
+/// ADR-0010, section 6, and ADR-0011, section 5.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegionList {
     /// The region that holds the chunk players enter the world in.
@@ -417,17 +434,17 @@ pub struct RegionList {
 }
 
 /// What the coordinator learns of a region from the world store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegionInfo {
     pub region: RegionId,
     /// The highest epoch the region was opened with; 0 if it never was.
     pub epoch: u64,
-    /// The smallest box of chunks that has every chunk the region holds, if it holds
-    /// any.
+    /// The smallest box of chunks that has every chunk the region was granted, if it
+    /// was granted any. The areas it is pinned to are not in it.
     pub bounds: Option<ChunkBox>,
-    /// The area the region is pinned to, if it is: it holds every chunk of it that no
-    /// other region was granted.
-    pub pinned: Option<ChunkArea>,
+    /// The areas the region is pinned to: it holds every chunk of them that no region
+    /// was granted. A region comes to several by absorbing regions that are pinned.
+    pub pinned: Vec<ChunkArea>,
 }
 
 /// A box of chunks, with both corners in it.

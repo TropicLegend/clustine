@@ -10,6 +10,11 @@
 //! owner at a time; see `docs/adr/0008-durable-regions-and-resuming.md`, section 3, for
 //! what it promises.
 //!
+//! The store also says which regions there are and which of them holds a chunk: it is
+//! started with a [`Division`] of the world, only the holder of a chunk loads and saves
+//! it, and [`Store::regions`] lists the regions. See
+//! `docs/adr/0011-the-world-store-and-regions.md`.
+//!
 //! Only chunks that were changed are stored. Any other chunk is generated again when it
 //! is needed, which is why a world is tied to the generator settings it was created with.
 //!
@@ -20,10 +25,13 @@ mod chunks;
 mod disk;
 mod lanes;
 mod local;
+mod table;
 mod tcp;
 
 #[cfg(test)]
 mod kill;
+#[cfg(test)]
+mod regions;
 #[cfg(test)]
 mod tests;
 
@@ -36,12 +44,13 @@ use std::thread;
 
 use clustine_format::{FormatError, Hash};
 use clustine_region::{Layout, RegionId};
-use clustine_rpc::{RegionHello, Restored, StoreReply, StoreRequest};
-use clustine_world::ChunkGenerator;
+use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest};
+use clustine_world::{ChunkGenerator, ChunkPos};
 
 use crate::chunks::{ChunkService, Chunks, FileChunks, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk};
 use crate::lanes::Lanes;
+pub use crate::table::Division;
 pub use crate::tcp::{Server, serve};
 
 /// Why a world could not be opened, read or written, or a region not be opened.
@@ -77,6 +86,18 @@ pub enum StoreError {
     /// The store's regions are part of another layout than the one in the hello.
     #[error("the store's regions are part of layout {expected:016x}, not of layout {offered:016x}")]
     LayoutMismatch { expected: u64, offered: u64 },
+    /// The world has no such region: the hello is for a region of another division
+    /// than the store was started with, or for one that was absorbed long ago.
+    #[error("the world has no region {region}")]
+    UnknownRegion { region: RegionId },
+    /// The store was started with a division in which two pinned regions have a chunk
+    /// in common.
+    #[error("the areas of the pinned regions {first} and {second} overlap")]
+    Division { first: RegionId, second: RegionId },
+    /// The table of regions and the log do not fit together, or the table says what
+    /// cannot be.
+    #[error("the table of regions is not in order: {0}")]
+    Table(String),
     /// Every block of entity ids has been issued.
     #[error("there are no entity ids left for another region")]
     OutOfEntityIds,
@@ -186,6 +207,10 @@ enum Message {
     },
     /// The thread for chunks has done everything the handle asked for before a flush.
     Flushed(Arc<Peer>),
+    /// Someone wants the list of regions.
+    Regions {
+        answer: Sender<Result<RegionList, StoreError>>,
+    },
 }
 
 /// A running store. It stops when it and every [`StoreHandle`] it has handed out have
@@ -196,25 +221,67 @@ pub struct Store {
 }
 
 impl Store {
-    /// Starts a store that keeps everything in memory only.
+    /// Starts a store that keeps everything in memory only, for a world that is one
+    /// region: [`Store::memory_divided`] with the one stripe of [`Layout::single`] and
+    /// the home chunk at the origin.
     pub fn memory(generator: Arc<dyn ChunkGenerator>) -> Store {
+        Self::memory_divided(generator, undivided())
+            .expect("a world of one region has no areas that overlap")
+    }
+
+    /// Starts a store that keeps everything in memory only, for a world divided as
+    /// `division` says.
+    pub fn memory_divided(
+        generator: Arc<dyn ChunkGenerator>,
+        division: Division,
+    ) -> Result<Store, StoreError> {
         start(
             Arc::new(MemoryDisk::default()),
             Path::new("/world"),
             Box::new(MemoryChunks::default()),
             generator,
+            &division,
         )
-        .expect("a store in memory starts with nothing to read")
+    }
+
+    /// Starts a store as [`Store::local_divided`] does, for a world that is one region,
+    /// as [`Store::memory`] does.
+    pub fn local(root: &Path, generator: Arc<dyn ChunkGenerator>) -> Result<Store, StoreError> {
+        Self::local_divided(root, generator, undivided())
     }
 
     /// Starts a store that keeps the world in the directory `root`, creating the world
-    /// there if there is none. What the regions committed and have not checkpointed is
-    /// left in the log, for each region to be restored with when it is opened.
-    pub fn local(root: &Path, generator: Arc<dyn ChunkGenerator>) -> Result<Store, StoreError> {
+    /// there if there is none, divided as `division` says. What the regions committed
+    /// and have not checkpointed is left in the log, for each region to be restored
+    /// with when it is opened.
+    ///
+    /// If the world there was divided otherwise, by other areas or with another home
+    /// chunk, it is made over: what its regions committed is put into the stored
+    /// chunks, their states are dropped, and its regions are those of `division`.
+    pub fn local_divided(
+        root: &Path,
+        generator: Arc<dyn ChunkGenerator>,
+        division: Division,
+    ) -> Result<Store, StoreError> {
         let disk: Arc<dyn Disk> = Arc::new(OsDisk::default());
         local::prepare(&disk, root, generator.as_ref())?;
         let chunks = FileChunks::new(Arc::clone(&disk), root);
-        start(disk, root, Box::new(chunks), generator)
+        start(disk, root, Box::new(chunks), generator, &division)
+    }
+
+    /// The regions of the world, with what each is pinned to and roughly holds, and
+    /// those that were absorbed. Everything asked for before is durable when the list
+    /// is made, so that it has nothing a crash would take back.
+    ///
+    /// The error is [`StoreError::Io`] for as long as what a failed write left in the
+    /// log is not durably gone, as it is for a hello.
+    pub fn regions(&self) -> Result<RegionList, StoreError> {
+        let (answer, answered) = mpsc::channel();
+        // The store runs for as long as there is a `Store`, so it is still there.
+        let _ = self.messages.send(Message::Regions { answer });
+        answered
+            .recv()
+            .expect("the store answers every request for the list")
     }
 
     /// Opens a region for its owner, and returns the handle with what the region is to
@@ -222,8 +289,9 @@ impl Store {
     /// handles: what the previous owner asked for before it is done first, and the
     /// commits among that are what the region is restored with.
     ///
-    /// The first hello decides which layout the store's regions are part of; one that
-    /// names another layout is refused. A region has one owner at a time. A hello with
+    /// The regions are those of the division the store was started with: a hello for
+    /// a region there is none of is refused, and so is one that names another layout
+    /// than the division's. A region has one owner at a time. A hello with
     /// the epoch of the owner, or a higher one, replaces the owner, whose handle is lost
     /// from then on: what it asks for is not done and it is not answered. A hello with a
     /// lower epoch than the highest the region has been opened with is refused, also
@@ -349,6 +417,11 @@ impl StoreHandle {
     }
 }
 
+/// A world that is one region, which players enter at the origin.
+fn undivided() -> Division {
+    Division::stripes(ChunkPos::new(0, 0), &Layout::single())
+}
+
 /// The hello of the first owner of a region that covers the whole world.
 fn whole_world() -> RegionHello {
     RegionHello {
@@ -363,7 +436,7 @@ fn whole_world() -> RegionHello {
 pub fn spawn(generator: Arc<dyn ChunkGenerator>) -> StoreHandle {
     let (handle, _) = Store::memory(generator)
         .open_region(whole_world())
-        .expect("a store that has just been started accepts any hello");
+        .expect("a store that has just been started accepts the hello for its one region");
     handle
 }
 
@@ -378,19 +451,23 @@ pub fn spawn_local(
 }
 
 /// Starts the threads of a store that keeps its log and region files on `disk` under
-/// `root`, and its chunks in `chunks`.
+/// `root`, and its chunks in `chunks`, for a world divided as `division` says.
+///
+/// The thread for chunks runs first: reading the world may have it put what the regions
+/// of another division committed into the stored chunks. It ends by itself if the world
+/// cannot be read, when nothing can give it work any more.
 fn start(
     disk: Arc<dyn Disk>,
     root: &Path,
     chunks: Box<dyn Chunks>,
     generator: Arc<dyn ChunkGenerator>,
+    division: &Division,
 ) -> Result<Store, StoreError> {
     let (jobs, queued) = mpsc::channel();
-    let lanes = Lanes::load(Arc::clone(&disk), root, jobs)?;
     let service = ChunkService {
         chunks,
         generator,
-        disk,
+        disk: Arc::clone(&disk),
         regions: root.join("regions"),
         saved: Vec::new(),
         states: 0,
@@ -398,6 +475,7 @@ fn start(
     thread::Builder::new()
         .name("worldstore-chunks".to_owned())
         .spawn(move || service.run(queued))?;
+    let lanes = Lanes::load(disk, root, jobs, division)?;
     let (messages, received) = mpsc::channel();
     thread::Builder::new()
         .name("worldstore".to_owned())

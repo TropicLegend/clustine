@@ -73,6 +73,9 @@ spec:
             # A directory in the volume rather than the volume itself, whose top level
             # may hold things that are not the world, such as lost+found.
             - --world=/data/world
+            # As in coordinator.yaml: the store keeps which region holds which chunk,
+            # and refuses workers that divide the world otherwise.
+            - --boundaries=4
           ports:
             - name: worldstore
               containerPort: 25602

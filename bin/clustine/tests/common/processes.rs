@@ -159,6 +159,10 @@ impl Cluster {
                 &self.store.0,
                 "--world",
                 self.world.to_str().unwrap(),
+                // As the coordinator divides the world, or the store would refuse the
+                // workers' hellos.
+                "--boundaries",
+                &self.boundaries,
             ],
         );
         self.store.1 = Some(store);

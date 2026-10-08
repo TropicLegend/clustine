@@ -84,12 +84,25 @@ pub(crate) fn hello(region: u32, epoch: u64) -> RegionHello {
     }
 }
 
+/// How the stores of these tests divide the world: into the two regions [`hello`]
+/// says hello for, with the home chunk at the origin, which is the eastern region's.
+pub(crate) fn division() -> Division {
+    Division::stripes(ChunkPos::new(0, 0), &Layout::new(vec![0]).unwrap())
+}
+
+/// A store in memory for the two regions of [`division`].
+pub(crate) fn memory() -> Store {
+    Store::memory_divided(generator(), division()).unwrap()
+}
+
+/// A store for the two regions of [`division`] that keeps the world in `directory`.
+pub(crate) fn local(directory: &Path) -> Store {
+    Store::local_divided(directory, generator(), division()).unwrap()
+}
+
 /// A store of each kind.
 pub(crate) fn stores(directory: &Path) -> [Store; 2] {
-    [
-        Store::memory(generator()),
-        Store::local(directory, generator()).unwrap(),
-    ]
+    [memory(), local(directory)]
 }
 
 /// Opens a region and returns its handle.
@@ -359,7 +372,7 @@ fn a_checkpoint_keeps_the_commits_after_it() {
 fn a_checkpoint_that_covers_every_commit_leaves_no_log_behind() {
     let directory = tempfile::tempdir().unwrap();
     let segments = || fs::read_dir(directory.path().join("log")).unwrap().count();
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     let owner = open(&store, hello(1, 1));
     log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
     log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
@@ -392,7 +405,7 @@ fn a_checkpoint_that_covers_every_commit_leaves_no_log_behind() {
 #[test]
 fn commits_carry_the_region_and_the_epoch_of_the_owner() {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     let owner = open(&store, hello(1, 7));
     log(&owner, 3, &[(3, -61, 4, blocks::AIR)]);
     owner.flush();
@@ -466,7 +479,7 @@ fn regions_commit_and_checkpoint_independently() {
     let mut dug = generator().generate(west_chunk);
     dug.set(13, -61, 4, blocks::AIR);
     {
-        let store = Store::local(directory.path(), generator()).unwrap();
+        let store = local(directory.path());
         let west = open(&store, hello(0, 1));
         let east = open(&store, hello(1, 1));
         log(&west, 1, &[(-3, -61, 4, blocks::AIR)]);
@@ -486,7 +499,7 @@ fn regions_commit_and_checkpoint_independently() {
         // The server dies before the east has saved anything.
     }
 
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     let (west, restored_west) = store.open_region(hello(0, 1)).unwrap();
     let (east, restored_east) = store.open_region(hello(1, 1)).unwrap();
     assert_eq!(load(&east, east_chunk), edited());
@@ -504,7 +517,7 @@ fn regions_commit_and_checkpoint_independently() {
 fn a_world_opened_with_another_layout_has_what_the_regions_of_the_old_one_committed() {
     let directory = tempfile::tempdir().unwrap();
     {
-        let store = Store::local(directory.path(), generator()).unwrap();
+        let store = local(directory.path());
         let west = open(&store, hello(0, 3));
         let east = open(&store, hello(1, 4));
         log(&west, 1, &[(-3, -61, 4, blocks::AIR)]);
@@ -537,12 +550,27 @@ fn a_world_opened_with_another_layout_has_what_the_regions_of_the_old_one_commit
         assert_eq!(west_chunk.get(13, -61, 4), Some(blocks::AIR));
     }
     // Nothing of the old regions is left to be restored when the old layout comes back.
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     let (_, restored) = store.open_region(hello(1, 4)).unwrap();
     assert_eq!((restored.state, restored.deltas), (None, Vec::new()));
-    let layout = Layout::new(vec![0]).unwrap().fingerprint();
-    let stored = fs::read_to_string(directory.path().join("layout")).unwrap();
-    assert_eq!(stored, format!("{layout:016x}\n"));
+    // The world is divided as the store was told when it started: the list has the two
+    // stripes, and no file says the layout any more.
+    let list = store.regions().unwrap();
+    let stripes: Vec<_> = Layout::new(vec![0]).unwrap().regions().collect();
+    let listed: Vec<_> = list
+        .regions
+        .iter()
+        .map(|info| (info.region, info.pinned.clone()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (stripes[0].0, vec![stripes[0].1]),
+            (stripes[1].0, vec![stripes[1].1])
+        ]
+    );
+    assert_eq!(list.home, RegionId(1));
+    assert!(!directory.path().join("layout").exists());
 }
 
 #[test]
@@ -550,7 +578,7 @@ fn a_record_cut_off_at_the_end_of_the_log_loses_only_itself() {
     let directory = tempfile::tempdir().unwrap();
     let (west_chunk, east_chunk) = (ChunkPos::new(-1, 0), ChunkPos::new(0, 0));
     {
-        let store = Store::local(directory.path(), generator()).unwrap();
+        let store = local(directory.path());
         let west = open(&store, hello(0, 1));
         let east = open(&store, hello(1, 1));
         for (handle, x) in [(&west, -3), (&east, 3)] {
@@ -564,7 +592,7 @@ fn a_record_cut_off_at_the_end_of_the_log_loses_only_itself() {
     let complete = fs::read(&segment).unwrap();
     fs::write(&segment, &complete[..complete.len() - 1]).unwrap();
 
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     let (west, restored_west) = store.open_region(hello(0, 1)).unwrap();
     let (east, restored_east) = store.open_region(hello(1, 1)).unwrap();
     assert_eq!(deltas(&restored_west), [(1, delta(1)), (2, delta(2))]);
@@ -675,7 +703,7 @@ fn a_region_opened_again_has_what_its_last_owner_committed() {
     let manifest = directory
         .path()
         .join("manifests/overworld/0.0/0.0.manifest");
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     let first = open(&store, hello(1, 1));
     log(&first, 1, &[(3, -61, 4, blocks::STONE)]);
     log(
@@ -775,7 +803,7 @@ fn what_a_replaced_owner_has_queued_or_asks_for_later_is_not_done() {
     };
 
     let held = Arc::new(Held(Barrier::new(2)));
-    let store = Store::local(directory.path(), held.clone()).unwrap();
+    let store = Store::local_divided(directory.path(), held.clone(), division()).unwrap();
     let old = open(&store, hello(1, 1));
     log(&old, 1, &[(3, -61, 4, blocks::AIR)]);
 
@@ -815,7 +843,7 @@ fn what_a_replaced_owner_has_queued_or_asks_for_later_is_not_done() {
 
     // After a crash the world is as the new owner left it.
     drop((old, new, store));
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     let (owner, restored) = store.open_region(hello(1, 3)).unwrap();
     assert_eq!(restored.state, None);
     assert_eq!(deltas(&restored), [(1, delta(1)), (2, delta(2))]);
@@ -903,7 +931,7 @@ fn a_region_given_up_is_opened_again_with_the_same_epoch_or_a_higher_one() {
 fn entity_ids_and_the_highest_epoch_outlive_the_store() {
     let directory = tempfile::tempdir().unwrap();
     let (west_ids, east_ids) = {
-        let store = Store::local(directory.path(), generator()).unwrap();
+        let store = local(directory.path());
         let (_west, west) = store.open_region(hello(0, 3)).unwrap();
         let (_east, east) = store.open_region(hello(1, 1)).unwrap();
         (west.entity_ids, east.entity_ids)
@@ -913,7 +941,7 @@ fn entity_ids_and_the_highest_epoch_outlive_the_store() {
         assert!((0..EntityIds::BLOCK_COUNT).any(|index| EntityIds::block(index) == Some(ids)));
     }
 
-    let store = Store::local(directory.path(), generator()).unwrap();
+    let store = local(directory.path());
     assert!(matches!(
         store.open_region(hello(0, 2)),
         Err(StoreError::EpochRefused { seen: 3, .. })
@@ -924,7 +952,7 @@ fn entity_ids_and_the_highest_epoch_outlive_the_store() {
     assert_eq!(west.entity_ids, west_ids);
 
     // In memory, a region opened for the first time gets a block of its own all the same.
-    let store = Store::memory(generator());
+    let store = memory();
     let (_, first) = store.open_region(hello(1, 1)).unwrap();
     let (_, second) = store.open_region(hello(0, 1)).unwrap();
     let (_, again) = store.open_region(hello(1, 2)).unwrap();
@@ -932,8 +960,9 @@ fn entity_ids_and_the_highest_epoch_outlive_the_store() {
     assert_eq!(first.entity_ids, again.entity_ids);
 }
 
+/// The layout is the one the store was started with, whoever says hello first.
 #[test]
-fn a_hello_with_another_layout_than_the_first_is_refused() {
+fn a_hello_with_another_layout_than_the_stores_is_refused() {
     let directory = tempfile::tempdir().unwrap();
     for store in stores(directory.path()) {
         let first = hello(0, 1);
@@ -948,6 +977,7 @@ fn a_hello_with_another_layout_than_the_first_is_refused() {
                     if expected == first.layout && offered == other.layout
             )
         };
+        assert!(refused());
         let west = open(&store, first);
         assert!(refused());
         // The layout stays when no region is open any more.
@@ -1052,6 +1082,7 @@ fn held_saves() -> (Store, Arc<Barrier>, Arc<MemoryDisk>) {
         Path::new("/world"),
         Box::new(chunks),
         generator(),
+        &division(),
     )
     .unwrap();
     (store, barrier, disk)
@@ -1064,7 +1095,8 @@ fn commits_are_answered_while_a_save_is_under_way() {
     let (store, barrier, _) = held_saves();
     let west = open(&store, hello(0, 1));
     let east = open(&store, hello(1, 1));
-    save(&west, HELD, &edited());
+    // The chunk is the eastern region's, and only its holder saves it.
+    save(&east, HELD, &edited());
     barrier.wait();
 
     // The save is under way and does not end before it is let go.
@@ -1083,7 +1115,7 @@ fn commits_are_answered_while_a_save_is_under_way() {
 
     barrier.wait();
     west.flush();
-    assert_eq!(load(&west, HELD), edited());
+    assert_eq!(load(&east, HELD), edited());
 }
 
 /// A load that follows a save of the same chunk finds what was saved, also when the save
@@ -1092,7 +1124,7 @@ fn commits_are_answered_while_a_save_is_under_way() {
 fn a_load_after_a_save_finds_what_was_saved_even_while_the_save_waits() {
     let directory = tempfile::tempdir().unwrap();
     let held = Arc::new(Held(Barrier::new(2)));
-    let store = Store::local(directory.path(), held.clone()).unwrap();
+    let store = Store::local_divided(directory.path(), held.clone(), division()).unwrap();
     let owner = open(&store, hello(1, 1));
     let origin = ChunkPos::new(0, 0);
 
@@ -1222,6 +1254,7 @@ fn switched() -> (Store, Arc<Switched>) {
         Path::new("/world"),
         Box::new(chunks),
         generator(),
+        &division(),
     )
     .unwrap();
     (store, disk)
@@ -1448,7 +1481,8 @@ fn a_failed_append_loses_every_handle_and_answers_nothing_of_its_group() {
 fn restarted(disk: &MemoryDisk, survival: Survival) -> Store {
     let left = Arc::new(disk.crashed(survival));
     let chunks = FileChunks::new(left.clone(), Path::new("/world"));
-    start(left, Path::new("/world"), Box::new(chunks), generator()).unwrap()
+    let root = Path::new("/world");
+    start(left, root, Box::new(chunks), generator(), &division()).unwrap()
 }
 
 /// F2 of ADR-0011: once the store has welcomed a hello after a failed sync, the segment
@@ -1529,6 +1563,8 @@ fn nobody_is_served_while_the_log_cannot_be_cut_back_for_good() {
             };
             assert!(matches!(error, StoreError::Io(_)), "{error}");
         }
+        // Nor is anyone told which regions there are.
+        assert!(matches!(store.regions(), Err(StoreError::Io(_))));
     }
     // The connection ends without a word.
     let mut connection = std::net::TcpStream::connect(&address).unwrap();
@@ -1538,6 +1574,7 @@ fn nobody_is_served_while_the_log_cannot_be_cut_back_for_good() {
     assert_eq!(said, None);
 
     disk.failing_syncs.store(false, Ordering::SeqCst);
+    assert_eq!(store.regions().unwrap().regions.len(), 2);
     let (remote, restored) = StoreHandle::connect(&address, hello(1, 2)).unwrap();
     assert_eq!(restored.state, None);
     assert_eq!(deltas(&restored), [(1, delta(1))]);
@@ -1602,6 +1639,7 @@ fn store_on_memory(disk: &Arc<MemoryDisk>) -> Store {
         Path::new("/world"),
         Box::new(chunks::MemoryChunks::default()),
         generator(),
+        &division(),
     )
     .unwrap()
 }

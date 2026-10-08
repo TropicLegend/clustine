@@ -117,6 +117,14 @@ enum Service {
         /// Directory the world is kept in; created if it does not exist.
         #[arg(long, default_value = "world")]
         world: PathBuf,
+
+        /// Chunk x coordinates at which the world is divided into regions, in ascending
+        /// order and separated by commas: the same as the coordinator is given. The
+        /// store keeps which region holds which chunk, and refuses workers that divide
+        /// the world otherwise. A world that was divided otherwise before is made over:
+        /// its regions start anew, and what was built in it stays.
+        #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+        boundaries: Vec<i32>,
     },
     /// Simulates the region the coordinator gives it.
     Worker {
@@ -203,7 +211,11 @@ async fn main() -> Result<()> {
             })
             .await
         }
-        Some(Service::Worldstore { listen, world }) => cluster::worldstore(listen, world).await,
+        Some(Service::Worldstore {
+            listen,
+            world,
+            boundaries,
+        }) => cluster::worldstore(listen, world, boundaries).await,
         Some(Service::Worker {
             coordinator,
             store,

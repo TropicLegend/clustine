@@ -27,7 +27,7 @@ use clustine_sim::{Durable, PlayerEvent, PlayerJoin, RegionConfig, RegionState};
 use clustine_worker::{Ended, RegionRunner, Worker};
 use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
 use clustine_worldgen::FlatGenerator;
-use clustine_worldstore::{Store, StoreHandle};
+use clustine_worldstore::{Division, Store, StoreHandle};
 use uuid::Uuid;
 
 const E: EdgeId = EdgeId(11);
@@ -109,12 +109,20 @@ struct World {
     _directory: Option<tempfile::TempDir>,
 }
 
+/// How the stores of these tests divide the world: into the stripes of [`layout`],
+/// which is what the hellos name.
+fn division() -> Division {
+    Division::stripes(ChunkPos::containing(SPAWN.x, SPAWN.z), &layout())
+}
+
 impl World {
     fn memory() -> Self {
         // A new world knows no edge, whatever a test before on this thread was told.
         SINCE.with(|since| since.borrow_mut().clear());
+        let store = Store::memory_divided(Arc::new(FlatGenerator::classic()), division())
+            .expect("stripes do not overlap");
         Self {
-            store: Store::memory(Arc::new(FlatGenerator::classic())),
+            store,
             epoch: 0,
             _directory: None,
         }
@@ -123,7 +131,8 @@ impl World {
     fn local() -> Self {
         SINCE.with(|since| since.borrow_mut().clear());
         let directory = tempfile::tempdir().expect("a temporary directory");
-        let store = Store::local(directory.path(), Arc::new(FlatGenerator::classic()))
+        let generator = Arc::new(FlatGenerator::classic());
+        let store = Store::local_divided(directory.path(), generator, division())
             .expect("a new world in an empty directory");
         Self {
             store,

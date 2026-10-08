@@ -205,6 +205,14 @@ mod tests {
             StoreReply::Declined {
                 reason: "the log of the absorbed region is not empty".to_owned(),
             },
+            StoreReply::NotHeld {
+                position: chunks[0],
+                holder: Some(region),
+            },
+            StoreReply::NotHeld {
+                position: chunks[1],
+                holder: None,
+            },
         ] {
             round_trip(reply);
         }
@@ -217,10 +225,16 @@ mod tests {
                     min: chunks[0],
                     max: chunks[1],
                 }),
-                pinned: Some(ChunkArea {
-                    min_x: Some(4),
-                    max_x: None,
-                }),
+                pinned: vec![
+                    ChunkArea {
+                        min_x: Some(4),
+                        max_x: None,
+                    },
+                    ChunkArea {
+                        min_x: None,
+                        max_x: Some(-9),
+                    },
+                ],
             }],
             absorbed: vec![(RegionId(3), region)],
         });
@@ -280,7 +294,7 @@ mod tests {
     #[test]
     fn the_messages_of_the_world_store_round_trip() {
         use clustine_data::blocks;
-        use clustine_world::{BlockPos, EntityIds};
+        use clustine_world::{BlockPos, ChunkArea, EntityIds};
 
         use crate::{
             Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
@@ -289,6 +303,10 @@ mod tests {
 
         let restored = Restored {
             held: Vec::new(),
+            pinned: vec![ChunkArea {
+                min_x: None,
+                max_x: Some(0),
+            }],
             entity_ids: EntityIds::block(3).unwrap(),
             state: Some(TickState {
                 tick: 7,
@@ -309,6 +327,7 @@ mod tests {
         let welcomes = [
             StoreWelcome::Accepted {
                 entity_ids: restored.entity_ids,
+                pinned: restored.pinned.clone(),
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Refused {
@@ -373,6 +392,7 @@ mod tests {
         // with a state and no commits after it up to the state's tick.
         let mut fresh = Restored {
             held: Vec::new(),
+            pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
             state: None,
             deltas: Vec::new(),

@@ -12,7 +12,7 @@ use clustine_world::{BlockPos, Chunk, ChunkPos};
 
 use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival};
-use crate::tests::{generator, hello};
+use crate::tests::{division, generator, hello};
 
 /// Who committed something: the first owner of the region, or the one that took it
 /// over from it.
@@ -69,7 +69,7 @@ fn whole(owner: Owner, tick: u64) -> Vec<u8> {
 fn store_on(disk: Arc<MemoryDisk>) -> Result<Store, StoreError> {
     let root = Path::new("/world");
     let chunks = FileChunks::new(disk.clone(), root);
-    start(disk, root, Box::new(chunks), generator())
+    start(disk, root, Box::new(chunks), generator(), &division())
 }
 
 fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState, delta: Vec<u8>) {

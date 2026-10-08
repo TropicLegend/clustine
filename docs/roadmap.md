@@ -241,7 +241,7 @@ What checks it:
    ```bash
    cargo build -p clustine
    target/debug/clustine coordinator --boundaries 4
-   target/debug/clustine worldstore --world world
+   target/debug/clustine worldstore --world world --boundaries 4
    target/debug/clustine worker --name a --listen 127.0.0.1:25611
    target/debug/clustine worker --name b --listen 127.0.0.1:25612
    target/debug/clustine worker --name c --listen 127.0.0.1:25613

@@ -1202,3 +1202,54 @@ test that the rule for a failed group changes
 (`a_commit_that_cannot_be_written_is_cut_off_and_loses_the_handle`, in which another
 region commits on), and that making the truncation durable syncs a segment whose sync
 has failed once more, which the first of the tests in item 7 asserts never happens.
+
+## Found while building
+
+What turned out otherwise than this record says when it was built, step by step, and
+what was decided. None of it changes what section 4.3 guarantees.
+
+### C1.3
+
+1. **Section 4.2, step 3 (c): the region files of regions the new division does not
+   have** (those with an empty block) are not removed while the world is made over,
+   before the new table is written, but by step 4 of the same start, after it. Step 4
+   removes exactly these files at every start in any case, and to know which regions
+   the new division "does not have" in (c) the new table would have to be there before
+   (d) writes it. A store that dies in between finds the new table and does step 4;
+   one that dies before (d) finds the old table and makes the world over again, as the
+   record says.
+2. **Section 2, entity ids: the store counts the blocks it has issued** and counts on
+   before it writes the region file, instead of working the next block out from the
+   region files it has read and written. An opening whose region file was put in place
+   and whose sync of `regions/` then failed is refused, and the block in that file was
+   never told to anyone; but the next opening of another region would have been issued
+   the same block, and its sync would have made both files durable. A failed opening
+   can now pass over a block, of which there are 2047.
+3. **`Restored::held` is empty until C1.4**, also for the home region of a division
+   whose home chunk is in no pinned area and is therefore granted from the start. The
+   table of section 9 gives `Restored::held` and its way over TCP to C1.4; the grant is
+   in the table and in the list from C1.3 on, and loads and saves go by it.
+4. **Records of kinds 4 to 7 in the log** stay what they were to the store before
+   C1.1, records of no kind it knows (`StoreError::Damaged`), until the step that
+   writes them: C1.4 for `Granted` and `Returned`, C1.5 for `Absorbed` and `Split`. No
+   store before those steps writes one.
+5. **What the owner types**: `docs/roadmap.md` shows the command line of
+   `clustine worldstore` as well as `README.md` does ("Where M3 stands", what to try
+   with real clients), and gets `--boundaries 4` with it. Without it the store would
+   take the world for one region and refuse both workers.
+6. **Existing tests that load or open outside their stripe** (open question 11), beyond
+   those section 9 names, corrected as those are:
+   - `tcp.rs`, `what_a_remote_handle_commits_and_saves_is_found_by_a_local_one_and_after_a_restart`
+     and `a_chunk_with_every_section_different_survives_the_trip`: the handle in the
+     store's own process that looks at what the remote one saved was the western
+     region's and loaded chunks of the eastern one. It is the eastern region's now,
+     opened with the same epoch in the first and the next in the second.
+   - `tcp.rs`, `a_connection_that_sends_garbage_is_dropped_and_the_others_are_served`:
+     its connection that stops in the middle of a request said hello for region 2 of a
+     world of two. Its stores are made with three areas, of which that is the third.
+   - `tcp.rs` and the worker's `lib.rs`: literals of `Restored` and of
+     `StoreWelcome::Accepted` in tests get the new field `pinned`, and
+     `what_a_remote_handle_commits_…` expects the eastern stripe in it.
+   - `tests.rs`, `a_hello_with_another_layout_than_the_first_is_refused` is named
+     `…_than_the_stores_is_refused`, as there is no first hello that decides any more,
+     and asserts the refusal before any hello as well as after.

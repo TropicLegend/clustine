@@ -29,7 +29,7 @@ use clustine_rpc::{
     RegionHello, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
     StoreWelcome, TickState, wire,
 };
-use clustine_world::EntityIds;
+use clustine_world::{ChunkArea, EntityIds};
 use tracing::{info, warn};
 
 use crate::{Link, Store, StoreError, StoreHandle};
@@ -283,14 +283,16 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
 /// that has stopped reading must not hold on to a thread and a region for ever.
 fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Result<()> {
     let Restored {
-        // Not sent yet: the store keeps no grants, so there are none (ADR-0010).
+        // Not sent yet: the store grants no chunks yet, so there are none (ADR-0011).
         held: _,
+        pinned,
         entity_ids,
         state,
         deltas,
     } = restored;
     stream.set_write_timeout(Some(patience))?;
-    wire::blocking::write(&mut &*stream, &StoreWelcome::Accepted { entity_ids })?;
+    let accepted = StoreWelcome::Accepted { entity_ids, pinned };
+    wire::blocking::write(&mut &*stream, &accepted)?;
     for part in Parts::new(state, deltas, PART_BYTES) {
         wire::blocking::write(&mut &*stream, &part)?;
     }
@@ -399,10 +401,11 @@ struct Arriving {
 }
 
 impl Arriving {
-    fn new(entity_ids: EntityIds) -> Self {
+    fn new(entity_ids: EntityIds, pinned: Vec<ChunkArea>) -> Self {
         Self {
             restored: Restored {
                 held: Vec::new(),
+                pinned,
                 entity_ids,
                 state: None,
                 deltas: Vec::new(),
@@ -577,8 +580,8 @@ fn welcomed(
     stream: &mut &TcpStream,
     hello: RegionHello,
 ) -> io::Result<Option<Result<Restored, StoreError>>> {
-    let entity_ids = match wire::blocking::read(stream)? {
-        Some(StoreWelcome::Accepted { entity_ids }) => entity_ids,
+    let (entity_ids, pinned) = match wire::blocking::read(stream)? {
+        Some(StoreWelcome::Accepted { entity_ids, pinned }) => (entity_ids, pinned),
         Some(StoreWelcome::EpochRefused { seen }) => {
             return Ok(Some(Err(StoreError::EpochRefused {
                 region: hello.region,
@@ -591,7 +594,7 @@ fn welcomed(
         }
         None => return Ok(None),
     };
-    let mut arriving = Arriving::new(entity_ids);
+    let mut arriving = Arriving::new(entity_ids, pinned);
     loop {
         let Some(part) = wire::blocking::read(stream)? else {
             return Err(io::Error::new(
@@ -678,9 +681,10 @@ mod tests {
     use clustine_world::{BlockPos, Chunk, ChunkPos};
 
     use super::*;
+    use crate::Division;
     use crate::tests::{
-        HELD, Held, any_reply, committed, delta, edited, generator, hello, load, log, open, reply,
-        save, stores,
+        HELD, Held, any_reply, committed, delta, division, edited, generator, hello, load, local,
+        log, memory, open, reply, save, stores,
     };
 
     /// Serves `store` at an address of its own.
@@ -784,7 +788,7 @@ mod tests {
         let origin = ChunkPos::new(0, 0);
         let dug = (BlockPos::new(40, -61, 4), blocks::AIR);
         let entity_ids = {
-            let store = Store::local(directory.path(), generator()).unwrap();
+            let store = local(directory.path());
             let (server, address) = served(&store);
             let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
             assert_eq!((restored.state, restored.deltas), (None, Vec::new()));
@@ -805,18 +809,19 @@ mod tests {
             assert_eq!(any_reply(&remote), StoreReply::Committed { tick: 5 });
             assert_eq!(any_reply(&remote), StoreReply::Committed { tick: 6 });
             remote.flush();
-            let west = open(&store, hello(0, 1));
-            assert_eq!(load(&west, origin), edited());
+            // The same owner in the store's own process: only the holder loads a chunk.
+            let local = open(&store, hello(1, 7));
+            assert_eq!(load(&local, origin), edited());
 
             // Everything goes away without the chunk that was dug in ever being saved.
-            drop((remote, west));
+            drop((remote, local));
             server.stop();
             restored.entity_ids
         };
 
         // The region is restored with the state of the checkpoint and the commit after
         // it, in this process or in another, and with the epoch it had.
-        let store = Store::local(directory.path(), generator()).unwrap();
+        let store = local(directory.path());
         let (server, address) = served(&store);
         let refused = StoreHandle::connect(&address, hello(1, 6));
         assert!(
@@ -833,6 +838,8 @@ mod tests {
         );
         let expected = Restored {
             held: Vec::new(),
+            // The eastern stripe.
+            pinned: division().pinned[1..].to_vec(),
             entity_ids,
             state: Some(TickState {
                 tick: 5,
@@ -861,7 +868,7 @@ mod tests {
     fn a_remote_flush_is_answered_only_when_everything_before_it_is_done() {
         let directory = tempfile::tempdir().unwrap();
         let held = Arc::new(Held(Barrier::new(2)));
-        let store = Store::local(directory.path(), held.clone()).unwrap();
+        let store = Store::local_divided(directory.path(), held.clone(), division()).unwrap();
         let (_server, address) = served(&store);
         let remote = connect(&address, hello(1, 1));
 
@@ -1000,7 +1007,7 @@ mod tests {
     #[test]
     fn a_dropped_remote_handle_frees_its_region_once_what_it_asked_for_is_done() {
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::local(directory.path(), generator()).unwrap();
+        let store = local(directory.path());
         let (server, address) = served(&store);
         let last = ChunkPos::new(49, 0);
         let mut dug = generator().generate(ChunkPos::new(2, 5));
@@ -1164,7 +1171,7 @@ mod tests {
 
     #[test]
     fn dropping_the_server_stops_it() {
-        let store = Store::memory(generator());
+        let store = memory();
         let (server, address) = served(&store);
         let remote = connect(&address, hello(1, 1));
         drop(server);
@@ -1222,7 +1229,18 @@ mod tests {
     fn a_connection_that_sends_garbage_is_dropped_and_the_others_are_served() {
         let directory = tempfile::tempdir().unwrap();
         let (origin, far) = (ChunkPos::new(0, 0), ChunkPos::new(-9, 9));
-        for store in stores(directory.path()) {
+        // A world of three regions, so that there is one for the connection that stops
+        // in the middle of a request: a hello for a region there is none of is refused.
+        let stripes = Layout::new(vec![0, 16]).unwrap();
+        let three = Division {
+            pinned: stripes.regions().map(|(_, area)| area).collect(),
+            ..division()
+        };
+        let stores = [
+            Store::memory_divided(generator(), three.clone()).unwrap(),
+            Store::local_divided(directory.path(), generator(), three).unwrap(),
+        ];
+        for store in stores {
             let (server, address) = served(&store);
             let west = connect(&address, hello(0, 1));
 
@@ -1331,8 +1349,9 @@ mod tests {
                 assert_eq!(reply(&remote), loaded);
             }
 
-            // What arrived at the store is what was sent.
-            let local = open(&store, hello(0, 1));
+            // What arrived at the store is what was sent, as the next owner of the
+            // region finds it in the store's own process.
+            let local = open(&store, hello(1, 2));
             for (position, chunk) in &chunks {
                 assert_eq!(load(&local, *position), *chunk);
             }
@@ -1363,6 +1382,7 @@ mod tests {
             assert_eq!(said, Some(hello(1, 1)));
             let welcome = StoreWelcome::Accepted {
                 entity_ids: EntityIds::block(0).unwrap(),
+                pinned: Vec::new(),
             };
             wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
@@ -1438,7 +1458,7 @@ mod tests {
     #[test]
     fn a_connection_that_does_not_read_its_answers_keeps_nobody_else_waiting() {
         let (origin, far) = (ChunkPos::new(0, 0), ChunkPos::new(-9, 9));
-        let store = Store::memory(generator());
+        let store = memory();
         let (server, address) = served(&store);
         let west = connect(&address, hello(0, 1));
 
@@ -1523,7 +1543,7 @@ mod tests {
 
     /// Puts together what [`Parts`] made.
     fn together(entity_ids: EntityIds, parts: Vec<RestoredPart>) -> io::Result<Restored> {
-        let mut arriving = Arriving::new(entity_ids);
+        let mut arriving = Arriving::new(entity_ids, Vec::new());
         let mut parts = parts.into_iter();
         loop {
             let part = parts.next().expect("the last part ends them");
@@ -1549,6 +1569,7 @@ mod tests {
         let entity_ids = EntityIds::block(2).unwrap();
         let restored = |state: Option<usize>, deltas: &[usize]| Restored {
             held: Vec::new(),
+            pinned: Vec::new(),
             entity_ids,
             state: state.map(|length| tick_state(7, length)),
             deltas: (8..)
@@ -1667,6 +1688,7 @@ mod tests {
         ];
         let expected = Restored {
             held: Vec::new(),
+            pinned: Vec::new(),
             entity_ids,
             state: Some(TickState {
                 tick: 4,
@@ -1857,6 +1879,7 @@ mod tests {
                 let welcome = wire::blocking::read(&mut connection).unwrap();
                 let accepted = StoreWelcome::Accepted {
                     entity_ids: expected.entity_ids,
+                    pinned: expected.pinned.clone(),
                 };
                 assert_eq!(welcome, Some(accepted));
                 for _ in 0..parts {
@@ -1889,6 +1912,7 @@ mod tests {
         // Far more than the system takes for a connection that nobody reads from.
         let restored = Restored {
             held: Vec::new(),
+            pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
             state: None,
             deltas: vec![TickState {

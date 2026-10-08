@@ -91,7 +91,7 @@ cargo run -p clustine -- coordinator --boundaries 4
 ```
 
 ```bash
-cargo run -p clustine -- worldstore --world world
+cargo run -p clustine -- worldstore --world world --boundaries 4
 ```
 
 ```bash

@@ -17,10 +17,15 @@
 //!
 //! ```text
 //! log/<n>.wal          the log, in segments numbered in the order they were begun
+//! regions/table        the regions there are and the chunks each holds
 //! regions/<r>.region   per region, its highest epoch and its entity ids
 //! regions/<r>.state    per region, its state as of its last checkpoint
-//! layout               the fingerprint of the layout the regions are part of
+//! layout               only in a world from before there was a table: the fingerprint
+//!                      of the layout its regions were part of
 //! ```
+//!
+//! The table of regions is this thread's alone: it decides who holds a chunk, in the
+//! order the messages arrive. See `table.rs`.
 //!
 //! A segment is removed once nothing in it is needed any more and every segment before
 //! it is gone. Records are not removed one by one: a record that a checkpoint covers is
@@ -36,15 +41,17 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use clustine_data::BlockState;
 use clustine_format::{
-    FormatError, LogRecord, Logged, RegionFile, StateFile, read_log, read_log_with_offsets,
+    FormatError, LogRecord, Logged, RegionFile, StateFile, TableFile, read_log,
+    read_log_with_offsets,
 };
 use clustine_region::RegionId;
-use clustine_rpc::{RegionHello, Restored, StoreReply, StoreRequest, TickState};
-use clustine_world::{BlockPos, EntityIds};
+use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest, TickState};
+use clustine_world::{BlockPos, EntityId, EntityIds};
 use tracing::{error, info, warn};
 
 use crate::chunks::Job;
 use crate::disk::{Disk, replace};
+use crate::table::{Division, Table};
 use crate::{Message, Opened, Peer, Session, StoreError};
 
 /// A segment of the log that has grown beyond this is not appended to any more.
@@ -60,11 +67,15 @@ pub(crate) struct Lanes {
     root: PathBuf,
     jobs: Sender<Job>,
     log: Log,
-    /// The fingerprint of the layout the regions are part of, known from the first hello.
+    /// The fingerprint a hello has to name, if the world is divided as a layout is.
     layout: Option<u64>,
-    /// Whether the layout file may have been written without being made durable.
-    layout_unsure: bool,
+    /// The regions there are and the chunks each holds.
+    table: Table,
+    /// A lane for every living region, and for no other.
     regions: BTreeMap<RegionId, Lane>,
+    /// The index of the next block of entity ids: above every block a region file has,
+    /// whatever has become of its region, so that none is issued twice.
+    next_block: u32,
     /// How many handles have been handed out.
     sessions: u64,
     group: Group,
@@ -127,13 +138,20 @@ impl Group {
 }
 
 impl Lanes {
-    /// Reads what the world in `root` has: the regions' files and the log. Nothing is
-    /// changed, except that temporary files of writes that never finished are removed.
+    /// Reads what the world in `root` has, and brings it in line with how `told` says
+    /// the world is divided: the regions' files, the table of regions and the log. This
+    /// is section 4.2 of ADR-0011. Every step of it is done again, to the same end, by
+    /// a store that starts on what a crash in the middle of it left.
+    ///
+    /// The thread for chunks has to be running: a world that was divided otherwise has
+    /// what its regions committed put into the stored chunks.
     pub(crate) fn load(
         disk: Arc<dyn Disk>,
         root: &Path,
         jobs: Sender<Job>,
+        told: &Division,
     ) -> Result<Self, StoreError> {
+        told.check()?;
         let regions_directory = root.join("regions");
         let log_directory = root.join("log");
         disk.create_dir_all(&regions_directory)?;
@@ -164,6 +182,25 @@ impl Lanes {
                 _ => {}
             }
         }
+        let next_block = regions
+            .values()
+            .filter_map(|lane| lane.file)
+            .filter(|file| !is_empty(file.entity_ids))
+            .map(|file| (file.entity_ids.first.0 / EntityIds::BLOCK_SIZE) as u32 + 1)
+            .max()
+            .unwrap_or(0);
+
+        let table_path = regions_directory.join("table");
+        let stored = match disk.read(&table_path)? {
+            Some(bytes) => {
+                let file = TableFile::decode(&bytes).map_err(|error| StoreError::Damaged {
+                    path: table_path.clone(),
+                    error,
+                })?;
+                Some(Table::read(file)?)
+            }
+            None => None,
+        };
 
         let mut log = Log {
             disk: Arc::clone(&disk),
@@ -238,18 +275,57 @@ impl Lanes {
             log.segments.insert(segment);
             log.next = segment + 1;
         }
+        // Also when no segment is left: a record for the table in a segment below the
+        // file's `from` would not be read at the next start.
+        if let Some(table) = &stored {
+            log.next = log.next.max(table.from);
+        }
 
-        Ok(Self {
+        // A world from before there was a table says in this file how it was divided.
+        let layout_path = root.join("layout");
+        let before = match disk.read(&layout_path)? {
+            Some(bytes) => Some(parse_layout(&bytes).ok_or_else(|| {
+                StoreError::MalformedMeta("the layout file is not a fingerprint".to_owned())
+            })?),
+            None => None,
+        };
+        let remake = match &stored {
+            Some(table) => !table.is_of(told),
+            None => before.is_some_and(|layout| Some(layout) != told.layout),
+        };
+        let keep = stored.is_some() && !remake;
+        let used = stored.as_ref().map_or(0, |table| table.next_region);
+        let mut lanes = Self {
             disk,
             root: root.to_owned(),
             jobs,
             log,
-            layout: None,
-            layout_unsure: false,
+            layout: told.layout,
+            // Where there is none, this one stands in until the table is written below.
+            table: stored.unwrap_or_else(|| Table::made_from(told, 0, 0)),
             regions,
+            next_block,
             sessions: 0,
             group: Group::default(),
-        })
+        };
+        if remake {
+            lanes.make_over()?;
+        }
+        if !keep {
+            // What changes the table from now on goes to a segment the file names.
+            lanes.log.close();
+            let from = lanes.log.next;
+            lanes.table = Table::made_from(told, used, from);
+            lanes.write_table(from)?;
+        }
+        // Only once the table is durable, by which a start after a crash knows that
+        // there is nothing left to be made over; and also if a store died right here.
+        if lanes.disk.exists(&layout_path)? {
+            lanes.disk.remove(&layout_path)?;
+            lanes.disk.sync_directory(root)?;
+        }
+        lanes.align()?;
+        Ok(lanes)
     }
 
     pub(crate) fn run(mut self, messages: Receiver<Message>) {
@@ -297,6 +373,17 @@ impl Lanes {
                     self.group.flushes.push(peer);
                 }
             }
+            Message::Regions { answer } => {
+                // The list has nothing that is not durable, and is not given while what
+                // a failed group left in the log could still come back.
+                self.end_group();
+                let list = match self.log.settle() {
+                    Ok(()) => Ok(self.list()),
+                    Err(error) => Err(StoreError::Io(error)),
+                };
+                // Whoever asked may have gone.
+                let _ = answer.send(list);
+            }
         }
     }
 
@@ -310,6 +397,24 @@ impl Lanes {
 
     fn state_path(&self, region: RegionId) -> PathBuf {
         self.regions_directory().join(format!("{region}.state"))
+    }
+
+    /// The list of regions as the table has it.
+    fn list(&self) -> RegionList {
+        self.table.list(|region| {
+            let file = self.regions.get(&region).and_then(|lane| lane.file);
+            file.map_or(0, |file| file.epoch)
+        })
+    }
+
+    /// Writes the table file, with `from` as the first segment of the log that is not
+    /// in it, and makes it durable.
+    fn write_table(&mut self, from: u64) -> Result<(), StoreError> {
+        let path = self.regions_directory().join("table");
+        replace(self.disk.as_ref(), &path, &self.table.file(from).encode())?;
+        self.disk.sync_directory(&self.regions_directory())?;
+        self.table.from = from;
+        Ok(())
     }
 
     /// Does what the owner `session` asks for, if it still owns its region.
@@ -357,6 +462,18 @@ impl Lanes {
                         self.fail_log();
                     }
                 }
+                return;
+            }
+            // Only the holder loads and saves a chunk. Looked at here, where the table
+            // is; what the thread for chunks is given has passed, and is done in the
+            // order it passed in.
+            StoreRequest::Load { position } | StoreRequest::Save { position, .. }
+                if self.table.held_from(session.region, position).is_none() =>
+            {
+                peer.answer(StoreReply::NotHeld {
+                    position,
+                    holder: self.table.holder(position),
+                });
                 return;
             }
             // A load need not wait for commits, only for what was asked before it of the
@@ -578,15 +695,18 @@ impl Lanes {
             epoch,
             layout,
         } = hello;
-        match self.layout {
-            Some(expected) if expected != layout => {
-                return Err(StoreError::LayoutMismatch {
-                    expected,
-                    offered: layout,
-                });
-            }
-            Some(_) => {}
-            None => self.decide_layout(layout)?,
+        if let Some(expected) = self.layout
+            && expected != layout
+        {
+            return Err(StoreError::LayoutMismatch {
+                expected,
+                offered: layout,
+            });
+        }
+        // Before anything is written: the regions are those the table has, and a hello
+        // makes none.
+        if !self.table.has(region) {
+            return Err(StoreError::UnknownRegion { region });
         }
 
         // An owner gives way to one with the same epoch, which is the same owner come
@@ -601,12 +721,25 @@ impl Lanes {
                 seen: file.epoch,
             });
         }
-        if file.map(|file| file.epoch) != Some(epoch) {
-            let entity_ids = match file {
-                Some(file) => file.entity_ids,
-                None => self.allocate()?,
-            };
-            let updated = RegionFile { epoch, entity_ids };
+        // A region that is pinned or home gets a block of entity ids when it is first
+        // opened, and keeps it. A region that was split off another has none, unless
+        // its id has become that of a pinned or home region since.
+        let issued = file
+            .map(|file| file.entity_ids)
+            .filter(|ids| !is_empty(*ids));
+        let entity_ids = match issued {
+            Some(entity_ids) => entity_ids,
+            None if !self.table.pinned(region).is_empty() || region == self.table.home_region => {
+                let block = EntityIds::block(self.next_block).ok_or(StoreError::OutOfEntityIds)?;
+                // Before it is written: if writing fails half way, the block may be on
+                // disk all the same, and must not be another region's as well.
+                self.next_block += 1;
+                block
+            }
+            None => NO_ENTITY_IDS,
+        };
+        let updated = RegionFile { epoch, entity_ids };
+        if file != Some(updated) {
             // On disk before anyone is told that the region is theirs, so that an owner
             // with a lower epoch is refused after a restart too.
             replace(
@@ -696,6 +829,7 @@ impl Lanes {
             state: state.map(|StateFile { tick, state }| TickState { tick, state }),
             deltas,
             held: Vec::new(),
+            pinned: self.table.pinned(region).to_vec(),
         };
         let opened = Opened {
             session,
@@ -705,56 +839,24 @@ impl Lanes {
         Ok((opened, restored, changes, restored_tick, peer))
     }
 
-    /// The entity ids for a region opened for the first time: a block no region has had.
-    fn allocate(&self) -> Result<EntityIds, StoreError> {
-        let next = self
+    /// Makes the world over for another division than it had: puts the block changes
+    /// of every region's commits into the stored chunks, and then lets go of the
+    /// regions' commits and states. The commits of those regions mean nothing to the
+    /// regions of the new division, but the blocks they changed belong to the world.
+    ///
+    /// In an order that makes doing it again harmless: until the table of the new
+    /// division is durable, which is the caller's next step, a store that starts finds
+    /// the old one, or the old layout file, and does all of this again.
+    fn make_over(&mut self) -> Result<(), StoreError> {
+        let left: Vec<RegionId> = self
             .regions
-            .values()
-            .filter_map(|lane| lane.file)
-            .map(|file| (file.entity_ids.first.0 / EntityIds::BLOCK_SIZE) as u32 + 1)
-            .max()
-            .unwrap_or(0);
-        EntityIds::block(next).ok_or(StoreError::OutOfEntityIds)
-    }
-
-    /// Takes the layout of the first hello as the one the regions are part of. If the
-    /// world was last run with another, what its regions have that is not in the stored
-    /// chunks is put there first: the commits of those regions mean nothing to the
-    /// regions of this layout, but the blocks they changed belong to the world.
-    fn decide_layout(&mut self, offered: u64) -> Result<(), StoreError> {
-        let path = self.root.join("layout");
-        let stored = match self.disk.read(&path)? {
-            Some(bytes) => Some(parse_layout(&bytes).ok_or_else(|| {
-                StoreError::MalformedMeta("the layout file is not a fingerprint".to_owned())
-            })?),
-            None => None,
-        };
-        // A file this store wrote and failed to make durable is there to be read, and is
-        // written again all the same.
-        if stored != Some(offered) || self.layout_unsure {
-            let left = self
-                .regions
-                .values()
-                .any(|lane| !lane.live.is_empty() || lane.state_tick.is_some());
-            if left {
-                self.fold()?;
-            }
-            self.layout_unsure = true;
-            replace(
-                self.disk.as_ref(),
-                &path,
-                format!("{offered:016x}\n").as_bytes(),
-            )?;
-            self.disk.sync_directory(&self.root)?;
-            self.layout_unsure = false;
+            .iter()
+            .filter(|(_, lane)| !lane.live.is_empty() || lane.state_tick.is_some())
+            .map(|(region, _)| *region)
+            .collect();
+        if left.is_empty() {
+            return Ok(());
         }
-        self.layout = Some(offered);
-        Ok(())
-    }
-
-    /// Puts the block changes of every region's commits into the stored chunks, and
-    /// then lets go of the regions' commits and states.
-    fn fold(&mut self) -> Result<(), StoreError> {
         let mut changes = Vec::new();
         for lane in self.regions.values() {
             let mut chosen = BTreeMap::new();
@@ -767,26 +869,18 @@ impl Lanes {
         }
         let (done, finished) = mpsc::channel();
         let _ = self.jobs.send(Job::Fold { changes, done });
-        // No region is open before the layout is known, so waiting here keeps no commit
-        // waiting.
+        // No region is open before the store has started, so waiting here keeps no
+        // commit waiting.
         finished
             .recv()
             .map_err(|_| io::Error::other("the thread for chunks has gone"))??;
         info!(
-            "the world was last run with another layout; what its regions had is in the stored chunks now"
+            "the world was divided otherwise before; what its regions had is in the stored chunks now"
         );
 
         // The commits are passed over from now on, and the states go. What is known
-        // here is changed only once that is durable: until then, a hello that comes
-        // after a failure does all of this again, as does a store started after a crash,
-        // because the layout on disk is still the old one.
-        let folded: Vec<RegionId> = self
-            .regions
-            .iter()
-            .filter(|(_, lane)| !lane.live.is_empty() || lane.state_tick.is_some())
-            .map(|(region, _)| *region)
-            .collect();
-        for region in &folded {
+        // here is changed only once that is durable.
+        for region in &left {
             let opened = LogRecord::Opened {
                 region: region.0,
                 epoch: self.regions[region].file.map_or(0, |file| file.epoch),
@@ -802,28 +896,64 @@ impl Lanes {
             self.fail_log();
             return Err(error.into());
         }
-        for region in &folded {
-            let lane = self
-                .regions
-                .get_mut(region)
-                .expect("folded lanes are lanes");
+        for region in &left {
+            let lane = self.regions.get_mut(region).expect("lanes that are left");
             lane.live.clear();
             if lane.state_tick.is_some() {
                 self.disk.remove(&self.state_path(*region))?;
             }
         }
         self.disk.sync_directory(&self.regions_directory())?;
-        for region in &folded {
-            let lane = self
-                .regions
-                .get_mut(region)
-                .expect("folded lanes are lanes");
+        for region in &left {
+            let lane = self.regions.get_mut(region).expect("lanes that are left");
             lane.state_tick = None;
         }
         self.log.close();
         self.collect();
         Ok(())
     }
+
+    /// Brings the files of the regions in line with the table, and the lanes: a region
+    /// the table does not have has no lane and no state file, and no region file
+    /// either unless that has a block of entity ids, which has to stay known so that it
+    /// is not issued again. Every living region has a lane.
+    fn align(&mut self) -> Result<(), StoreError> {
+        let gone: Vec<RegionId> = self
+            .regions
+            .keys()
+            .filter(|region| !self.table.has(**region))
+            .copied()
+            .collect();
+        let mut removed = false;
+        for region in gone {
+            let lane = self.regions.remove(&region).expect("a lane that is there");
+            if lane.state_tick.is_some() {
+                self.disk.remove(&self.state_path(region))?;
+                removed = true;
+            }
+            if lane.file.is_some_and(|file| is_empty(file.entity_ids)) {
+                self.disk.remove(&self.region_path(region))?;
+                removed = true;
+            }
+        }
+        if removed {
+            self.disk.sync_directory(&self.regions_directory())?;
+        }
+        for region in self.table.regions() {
+            self.regions.entry(region).or_default();
+        }
+        Ok(())
+    }
+}
+
+/// The block of entity ids of a region that has none.
+const NO_ENTITY_IDS: EntityIds = EntityIds {
+    first: EntityId(0),
+    end: EntityId(0),
+};
+
+fn is_empty(entity_ids: EntityIds) -> bool {
+    entity_ids.first.0 >= entity_ids.end.0
 }
 
 /// The region's owner, if any, gets nothing done any more, and the region is read

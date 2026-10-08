@@ -636,6 +636,21 @@ impl RegionRunner {
                     }
                     self.release_held();
                 }
+                // A region that keeps to its stripe is never told this. If it is, the
+                // chunk is one it will not get: nothing waits for it, as for a chunk
+                // that cannot be read.
+                StoreReply::NotHeld { position, holder } => {
+                    error!(
+                        ?position,
+                        ?holder,
+                        "the world store does not take the region for the holder of a chunk"
+                    );
+                    self.unreadable.insert(position);
+                    for link in self.links.values_mut() {
+                        link.hold.remove(&position);
+                    }
+                    self.release_held();
+                }
                 StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
                 StoreReply::Flushed => self.flushes_answered += 1,
                 // Answers to what no runner asks for yet (ADR-0010).
@@ -4406,6 +4421,7 @@ mod tests {
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
             held: Vec::new(),
+            pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
             state,
             deltas,
@@ -4611,6 +4627,7 @@ mod tests {
         let ids = EntityIds::block(0).unwrap();
         let restored = |state, deltas| Restored {
             held: Vec::new(),
+            pinned: Vec::new(),
             entity_ids: ids,
             state,
             deltas,
