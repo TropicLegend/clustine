@@ -8,8 +8,8 @@ creating more separate servers.
 > build; that world can be simulated by several worker processes, with players handed
 > from one to the next as they walk; and a worker or the world store can die without
 > anyone being disconnected or losing anything they were shown: another worker carries
-> on with the region from what is on disk. The parts of the world each worker has are
-> still fixed, and there is one edge and one coordinator. See the
+> on with the region from what is on disk. The regions are still fixed parts of the
+> world, shared out among the workers, and there is one edge and one coordinator. See the
 > [roadmap](docs/roadmap.md).
 
 ## Goals

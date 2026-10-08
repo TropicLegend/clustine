@@ -480,7 +480,16 @@ review first:
 - **Every service with several replicas**, highly available and balanced by load. M3
   leaves one coordinator with nothing on disk and one edge whose death takes its players
   with it (see the limits below); regions that survive their worker and edges that
-  survive a region are what this builds on.
+  survive a region are what this builds on. The groundwork for its plan is in
+  [groundwork/replicas-and-availability.md](groundwork/replicas-and-availability.md):
+  for each service what its death costs today, what state another replica would need,
+  the options with what each needs changed, an order of work, and **twelve questions
+  for the owner**. Its three findings that matter most: regions, runner and coordinator
+  handle several edges, and the edge itself does not yet; two coordinators at once are
+  safe for the world, as the store admits only the highest epoch, but would keep taking
+  regions from each other; and a player who joins again starts at the spawn point with
+  the starting hotbar, whatever happened before, so no edge's death can be followed by
+  a rejoin "where they were" until a player's place and hotbar are kept.
 - **Terrain generation**, reusing what SteelMC or Pumpkin have, which ADR-0002 chose
   the AGPL for; `docs/library-evaluation.md` has what was found about both. The
   groundwork for its plan is in

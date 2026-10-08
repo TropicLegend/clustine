@@ -164,8 +164,8 @@ enum Service {
         #[arg(long)]
         region: u32,
 
-        /// Name of the worker to move it to, which has to be one that runs no region.
-        /// Without this, any such worker.
+        /// Name of the worker to move it to. Without this, the worker that runs the
+        /// fewest regions.
         #[arg(long)]
         to: Option<String>,
     },

@@ -1,5 +1,5 @@
-# The workers simulate the world. Each runs one of the regions the coordinator divides
-# it into.
+# The workers simulate the world. Each runs some of the regions it is divided into, as
+# the coordinator shares them out.
 #
 # The Service is headless, which gives every worker a DNS name of its own:
 # clustine-worker-0.clustine-worker and so on. An edge has to reach the one worker that
