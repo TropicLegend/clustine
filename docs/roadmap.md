@@ -238,13 +238,29 @@ with them so far:
   the next tick. When an edge says hello again with a higher start, the old start's last
   message number can become the edge's `applied`; A3 drops the old start's messages.
 
+A0, A1, A2 and A5 are on `main`, with the tests for A2 written from ADR-0008 alone
+(`crates/clustine-sim/tests/specification.rs`). What a player notices has not changed
+yet: a worker that dies still disconnects its players.
+
 Next, in this order:
 
-1. In parallel, each in a crate of its own: A1 (`services/worldstore`,
-   `crates/clustine-format`) and A2 (`crates/clustine-sim`); after those A3
-   (`services/worker`), tests for A2 written from ADR-0008 alone, and A5
-   (`services/coordinator`); then A4 (`services/edge`), which is where ordering mistakes
-   hide and should not be delegated; then A6.
+1. A3 (`services/worker`, and `bin/clustine` where it starts workers): restore the
+   region from `Restored` (`Region::restore`, folding the deltas with
+   `RegionState::apply`) instead of `continuing_from`; send `Commit` with the postcard
+   of each tick's `StateDelta`, and `Checkpoint` with the whole state; hold each tick's
+   `Outgoing` until its `Committed`, at most eight ticks ahead; the resume of section 4
+   (refusing a lower start, closing other links of the edge, dropping the old start's
+   waiting messages, `Welcome`, outbox entries above `seen`, presence answers, holding
+   the line until the hello's snapshots are out); numbered messages deduplicated against
+   what was received; `Progress`; `Gone` after 30 seconds; restoring after losing the
+   store, and `WorkerClient::vouch` and `epoch_refused` (vouch `Committed` for a region
+   that ticked within the last second); the entity id block from the store, after which
+   `Assignment::entity_ids` goes; and a `Restored` larger than 16 MiB (see below). It can
+   be delegated with a brief like those of A1 and A2, which said: own crates, a worktree,
+   the interface, the tests expected, no commits to `main`, no pushes or downloads.
+2. A4 (`services/edge`): kept messages and inputs, resuming, reconciliation, living
+   through the loss of a region. Ordering mistakes hide here: not delegated.
+3. A6, the chaos tests; then A7, the docs; then the stop for the owner's check.
 
 Notes for what follows A0, which the ADR does not spell out:
 
