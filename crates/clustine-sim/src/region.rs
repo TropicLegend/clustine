@@ -1305,35 +1305,180 @@ mod tests {
         hotbar
     }
 
-    /// The regions that are taken to hold what lies west and east of an area.
-    const WESTERN: RegionId = RegionId(7);
-    const EASTERN: RegionId = RegionId(8);
+    /// The regions of the worlds these tests are in, as the world store numbers stripes:
+    /// from west to east. Most worlds are divided into two at the line between `WEST`
+    /// and `EAST`; `MIDDLE` is the second of three stripes.
+    const WEST_REGION: RegionId = RegionId(0);
+    const EAST_REGION: RegionId = RegionId(1);
+    const WEST_OF_MIDDLE: RegionId = RegionId(0);
+    const EAST_OF_MIDDLE: RegionId = RegionId(2);
 
-    /// What a region for `area` is created with: it takes the area as its own and the
-    /// rest of the world as its neighbours'.
-    fn config(area: ChunkArea) -> RegionConfig {
-        let mut presumed = vec![(area, None)];
-        if let Some(min_x) = area.min_x {
-            let west = ChunkArea {
-                min_x: None,
-                max_x: Some(min_x),
-            };
-            presumed.push((west, Some(WESTERN)));
-        }
-        if let Some(max_x) = area.max_x {
-            let east = ChunkArea {
-                min_x: Some(max_x),
-                max_x: None,
-            };
-            presumed.push((east, Some(EASTERN)));
-        }
+    /// What a region is created with. It takes nothing as given, and gives back at once
+    /// what nothing uses.
+    fn config() -> RegionConfig {
         RegionConfig {
             spawn: SPAWN,
             starting_hotbar: hotbar(),
             return_after: 0,
-            presumed,
+            presumed: Vec::new(),
         }
     }
+
+    /// Who holds which chunk, as the world store keeps it: the store of these tests.
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct Grants {
+        /// The areas regions are pinned to. A pinned region holds every chunk of its
+        /// areas that is not granted to anyone.
+        pinned: Vec<(ChunkArea, RegionId)>,
+        /// The chunks that have been granted, each with the region that holds it.
+        granted: BTreeMap<ChunkPos, RegionId>,
+    }
+
+    impl Grants {
+        /// A world divided into stripes at the chunk x coordinates `boundaries`, as a
+        /// layout divides it: the regions are numbered from west to east, and each is
+        /// pinned to its stripe.
+        fn stripes(boundaries: &[i32]) -> Self {
+            let stripe = |index: usize| ChunkArea {
+                min_x: index.checked_sub(1).map(|west| boundaries[west]),
+                max_x: boundaries.get(index).copied(),
+            };
+            let pinned = (0..=boundaries.len())
+                .map(|index| (stripe(index), RegionId(index as u32)))
+                .collect();
+            Self {
+                pinned,
+                granted: BTreeMap::new(),
+            }
+        }
+
+        /// The world of stripes of which `area` is one, and the region pinned to it.
+        fn around(area: ChunkArea) -> (Self, RegionId) {
+            let boundaries: Vec<i32> = [area.min_x, area.max_x].into_iter().flatten().collect();
+            let region = RegionId(u32::from(area.min_x.is_some()));
+            (Self::stripes(&boundaries), region)
+        }
+
+        /// Who holds the chunk at `position`: the region it is granted to, else the one
+        /// pinned to an area that contains it, else nobody.
+        fn holder(&self, position: ChunkPos) -> Option<RegionId> {
+            let granted = self.granted.get(&position).copied();
+            granted.or_else(|| {
+                let mut pinned = self.pinned.iter();
+                let area = pinned.find(|(area, _)| area.contains(position));
+                area.map(|(_, region)| *region)
+            })
+        }
+
+        /// Answers a claim of `region` as the store does: what the region holds is
+        /// granted, what another holds is foreign with that region, and what nobody
+        /// holds is the region's from now on. Returns `granted` and `foreign`.
+        fn answer(
+            &mut self,
+            region: RegionId,
+            claims: &[ChunkPos],
+        ) -> (Vec<ChunkPos>, Vec<(ChunkPos, RegionId)>) {
+            let (mut granted, mut foreign) = (Vec::new(), Vec::new());
+            for position in claims {
+                match self.holder(*position) {
+                    Some(holder) if holder != region => foreign.push((*position, holder)),
+                    Some(_) => granted.push(*position),
+                    None => {
+                        self.granted.insert(*position, region);
+                        granted.push(*position);
+                    }
+                }
+            }
+            (granted, foreign)
+        }
+
+        /// Takes back what `region` returns: such a chunk is nobody's again, or the
+        /// region's that is pinned to it. The store would leave out a chunk the region
+        /// was not granted, with a warning; no region returns one.
+        fn take_back(&mut self, region: RegionId, returns: &[ChunkPos]) {
+            for position in returns {
+                let granted = self.granted.remove(position);
+                assert_eq!(granted, Some(region), "{position:?} was returned");
+            }
+        }
+    }
+
+    /// The chunks around the origin that a fixture knows from the start, in ascending
+    /// order: three to either side along x and one along z. The tests that are not
+    /// about asking stay within them.
+    fn near() -> impl Iterator<Item = ChunkPos> {
+        (-3..=3).flat_map(|x| (-3..=3).map(move |z| ChunkPos::new(x, z)))
+    }
+
+    /// A region with the store that answers it: the claims of a tick are answered into
+    /// the inputs of the next, and what a tick returns is taken back.
+    struct Served {
+        region: Region,
+        id: RegionId,
+        grants: Grants,
+        /// What the store answered to the claims of the last tick.
+        granted: Vec<ChunkPos>,
+        foreign: Vec<(ChunkPos, RegionId)>,
+    }
+
+    impl Served {
+        /// A region that has never run, is pinned to `area`, gives out `entity_ids` and
+        /// knows both edges. It has what the tests that are not about asking need: it
+        /// holds the chunks of its area near the origin, and has been told, for the
+        /// viewer's tickets an edge would give it, whose the chunks near the origin
+        /// beyond its area are. So a player who steps across is let go in the tick of
+        /// the step, and what is done to a block there is passed on with its region.
+        fn new(area: ChunkArea, entity_ids: EntityIds) -> Self {
+            let (grants, id) = Grants::around(area);
+            let (held, beyond): (Vec<_>, Vec<_>) =
+                near().partition(|position| area.contains(*position));
+            let holdings = Holdings {
+                held,
+                pinned: vec![area],
+            };
+            let mut served = Self {
+                region: Region::restore(config(), knowing_the_edges(entity_ids), holdings),
+                id,
+                grants,
+                granted: Vec::new(),
+                foreign: Vec::new(),
+            };
+            if !beyond.is_empty() {
+                let output = served.tick(&tickets(beyond.clone(), vec![]));
+                assert_eq!(output.claims, beyond);
+                let answer = served.with_answers(TickInputs::default());
+                served.tick(&answer);
+                assert_eq!(served.region.tick_number(), LEARNING);
+            }
+            for position in beyond {
+                let knowledge = served.region.knowledge(position);
+                assert!(matches!(knowledge, Knowledge::Foreign(_)), "{position:?}");
+            }
+            served
+        }
+
+        /// `inputs` with what the store answered to the claims of the tick before.
+        fn with_answers(&mut self, mut inputs: TickInputs) -> TickInputs {
+            inputs.granted.append(&mut self.granted);
+            inputs.foreign.append(&mut self.foreign);
+            inputs
+        }
+
+        /// Ticks the region with `inputs` as they are, and has the store answer what
+        /// it claims and take back what it returns.
+        fn tick(&mut self, inputs: &TickInputs) -> TickOutput {
+            let output = checked(&mut self.region, inputs);
+            let (mut granted, mut foreign) = self.grants.answer(self.id, &output.claims);
+            self.granted.append(&mut granted);
+            self.foreign.append(&mut foreign);
+            self.grants.take_back(self.id, &output.returns);
+            output
+        }
+    }
+
+    /// The ticks a fixture for an area with neighbours has run when a test begins: one
+    /// in which it asks about their chunks, and one with the answer.
+    const LEARNING: u64 = 2;
 
     /// The edge the players of these tests come through.
     const EDGE: EdgeId = EdgeId(0xED6E);
@@ -1357,25 +1502,43 @@ mod tests {
         state
     }
 
-    /// A region that has never run, gives out `entity_ids` and knows both edges.
-    fn fresh(config: RegionConfig, entity_ids: EntityIds) -> Region {
-        Region::restore(config, knowing_the_edges(entity_ids), Holdings::default())
+    /// A region that has never run, is pinned to `area`, gives out `entity_ids` and
+    /// knows both edges, with what [`Served::new`] has it know of chunks. The test goes
+    /// on without the store: whatever else the region asks stays unanswered.
+    fn fresh(area: ChunkArea, entity_ids: EntityIds) -> Region {
+        Served::new(area, entity_ids).region
     }
 
-    /// A fresh region that takes nothing as given: it holds `held`, is pinned to
-    /// `pinned`, and learns the rest from the answers a test gives it. What nothing
-    /// uses it gives back at once.
+    /// A region that has never run and knows no more of chunks than the store says
+    /// when a region is opened: it holds `held` and is pinned to `pinned`. The rest it
+    /// learns from the answers a test gives it.
     fn asking(held: &[ChunkPos], pinned: &[ChunkArea]) -> Region {
-        let config = RegionConfig {
-            presumed: Vec::new(),
-            ..config(ChunkArea::EVERYWHERE)
-        };
+        asking_with(config(), held, pinned)
+    }
+
+    /// The same with a configuration of the test's own.
+    fn asking_with(config: RegionConfig, held: &[ChunkPos], pinned: &[ChunkArea]) -> Region {
         let holdings = Holdings {
             held: held.to_vec(),
             pinned: pinned.to_vec(),
         };
         let state = knowing_the_edges(EntityIds::block(0).unwrap());
         Region::restore(config, state, holdings)
+    }
+
+    /// Tickets of the given kind that begin and end.
+    fn tickets_of(kind: Ticket, added: &[ChunkPos], removed: &[ChunkPos]) -> TickInputs {
+        let of_kind = |chunks: &[ChunkPos]| chunks.iter().map(|chunk| (*chunk, kind)).collect();
+        TickInputs {
+            tickets_added: of_kind(added),
+            tickets_removed: of_kind(removed),
+            ..TickInputs::default()
+        }
+    }
+
+    /// A tick in which nothing comes in.
+    fn idle(region: &mut Region) -> TickOutput {
+        checked(region, &TickInputs::default())
     }
 
     /// What the store answers a region.
@@ -1450,9 +1613,10 @@ mod tests {
 
     /// A fresh region for `area` with the first block of entity ids.
     fn region_in(area: ChunkArea) -> Region {
-        fresh(config(area), EntityIds::block(0).unwrap())
+        fresh(area, EntityIds::block(0).unwrap())
     }
 
+    /// A region that is pinned to the whole world.
     fn region() -> Region {
         region_in(ChunkArea::EVERYWHERE)
     }
@@ -2308,7 +2472,7 @@ mod tests {
         let output = checked(
             &mut region,
             &TickInputs {
-                foreign: vec![(beyond, EASTERN)],
+                foreign: vec![(beyond, EAST_OF_MIDDLE)],
                 chunks_loaded: all.map(|(position, _)| (position, chunk())).to_vec(),
                 ..TickInputs::default()
             },
@@ -2322,7 +2486,7 @@ mod tests {
         }
         assert_eq!(region.loaded_chunk_count(), 2);
         assert_eq!(region.knowledge(unclaimed), Knowledge::Asked);
-        assert_eq!(region.knowledge(beyond), Knowledge::Foreign(EASTERN));
+        assert_eq!(region.knowledge(beyond), Knowledge::Foreign(EAST_OF_MIDDLE));
 
         // The tickets were counted all the same: a chunk that is granted is asked of
         // storage in that very tick, for the ticket it has had all along,
@@ -2363,6 +2527,433 @@ mod tests {
         assert_eq!(output.returns, [far]);
         assert_eq!(region.knowledge(beyond), Knowledge::Unknown);
         assert_eq!(region.knowledge(unclaimed), Knowledge::Held);
+    }
+
+    /// The chunks of an area a region is pinned to are not the region's before it has
+    /// asked for them.
+    #[test]
+    fn a_chunk_is_asked_for_once_and_held_when_the_store_grants_it() {
+        let position = ChunkPos::new(1, 4);
+        // A ticket of either kind makes a region ask where it is pinned: such a claim
+        // takes nothing from anyone.
+        for kind in [Ticket::Viewer, Ticket::Guest] {
+            let mut region = asking(&[], &[MIDDLE]);
+            assert_eq!(region.knowledge(position), Knowledge::Unknown);
+            assert_eq!(region.held_chunk_count(), 0);
+
+            let output = checked(&mut region, &tickets_of(kind, &[position], &[]));
+            assert_eq!(output.claims, [position]);
+            assert!(output.chunk_requests.is_empty());
+            assert_eq!(region.knowledge(position), Knowledge::Asked);
+            // Once: it is asked until the answer comes, whatever else wants it.
+            for _ in 0..3 {
+                let output = checked(&mut region, &tickets_of(kind, &[position], &[]));
+                assert!(output.claims.is_empty() && output.chunk_requests.is_empty());
+            }
+
+            // Granted, it is the region's, and is asked of storage in that tick.
+            let output = checked(&mut region, &answers(vec![position], vec![]));
+            assert_eq!(output.chunk_requests, [position]);
+            assert_eq!(region.knowledge(position), Knowledge::Held);
+            assert_eq!(region.held_chunk_count(), 1);
+            // A chunk of a pinned area is never given back, with tickets or without.
+            let output = checked(&mut region, &tickets_of(kind, &[], &[position; 4]));
+            assert!(output.returns.is_empty());
+            for _ in 0..3 {
+                assert!(idle(&mut region).returns.is_empty());
+            }
+            assert_eq!(region.knowledge(position), Knowledge::Held);
+        }
+    }
+
+    /// On open land a guest is no reason to take a chunk, and a reason to keep one.
+    #[test]
+    fn a_guests_ticket_claims_nothing_outside_the_pinned_areas_and_keeps_what_is_held() {
+        let position = ChunkPos::new(1, 4);
+        let mut region = asking(&[], &[]);
+        let output = checked(&mut region, &tickets_of(Ticket::Guest, &[position], &[]));
+        assert!(output.claims.is_empty());
+        assert_eq!(region.knowledge(position), Knowledge::Unknown);
+        assert!(idle(&mut region).claims.is_empty());
+
+        // A viewer's ticket is a reason: a region grows where its players look.
+        let output = checked(&mut region, &tickets(vec![position], vec![]));
+        assert_eq!(output.claims, [position]);
+        // The viewer has gone when the answer comes, and the guest keeps the chunk.
+        checked(&mut region, &tickets(vec![], vec![position]));
+        let output = checked(&mut region, &answers(vec![position], vec![]));
+        assert_eq!(output.chunk_requests, [position]);
+        assert!(output.returns.is_empty());
+        for _ in 0..3 {
+            assert!(idle(&mut region).returns.is_empty());
+        }
+        assert_eq!(region.knowledge(position), Knowledge::Held);
+        // Until the guest goes as well.
+        let output = checked(&mut region, &tickets_of(Ticket::Guest, &[], &[position]));
+        assert_eq!(output.returns, [position]);
+        assert_eq!(region.knowledge(position), Knowledge::Unknown);
+    }
+
+    #[test]
+    fn what_the_store_calls_anothers_is_believed_for_as_long_as_it_is_wanted() {
+        let position = ChunkPos::new(5, 0);
+        let other = RegionId(9);
+        let mut region = asking(&[], &[]);
+        let output = checked(&mut region, &tickets(vec![position], vec![]));
+        assert_eq!(output.claims, [position]);
+
+        // Believed while the viewer's ticket is there, without asking again and
+        // without loading anything.
+        checked(&mut region, &answers(vec![], vec![(position, other)]));
+        for _ in 0..3 {
+            let output = idle(&mut region);
+            assert!(output.claims.is_empty() && output.chunk_requests.is_empty());
+            assert_eq!(region.knowledge(position), Knowledge::Foreign(other));
+        }
+        // A guest's ticket does not keep the belief: outside the pinned areas it
+        // changes nothing the region knows.
+        checked(&mut region, &tickets_of(Ticket::Guest, &[position], &[]));
+        let output = checked(&mut region, &tickets(vec![], vec![position]));
+        assert_eq!(region.knowledge(position), Knowledge::Unknown);
+        assert!(output.claims.is_empty() && output.returns.is_empty());
+        // A viewer who comes again makes the region ask again.
+        let output = checked(&mut region, &tickets(vec![position], vec![]));
+        assert_eq!(output.claims, [position]);
+
+        // An answer about a chunk nothing wants any more: `foreign` is forgotten at
+        // the end of its tick,
+        checked(&mut region, &tickets(vec![], vec![position]));
+        assert_eq!(region.knowledge(position), Knowledge::Asked);
+        let output = checked(&mut region, &answers(vec![], vec![(position, other)]));
+        assert_eq!(region.knowledge(position), Knowledge::Unknown);
+        assert!(output.claims.is_empty());
+        // and `granted` makes the chunk the region's, which on open land gives it
+        // back in that very tick.
+        let unwanted = ChunkPos::new(6, 0);
+        checked(&mut region, &tickets(vec![unwanted], vec![]));
+        checked(&mut region, &tickets(vec![], vec![unwanted]));
+        let output = checked(&mut region, &answers(vec![unwanted], vec![]));
+        assert_eq!(output.returns, [unwanted]);
+        assert!(output.chunk_requests.is_empty());
+        assert_eq!(region.knowledge(unwanted), Knowledge::Unknown);
+    }
+
+    #[test]
+    fn a_doubt_makes_the_region_ask_again_about_what_it_still_believes() {
+        let (believed, held, nothing) = (
+            ChunkPos::new(5, 0),
+            ChunkPos::new(0, 0),
+            ChunkPos::new(7, 7),
+        );
+        let (other, third) = (RegionId(9), RegionId(10));
+        let mut region = asking(&[held], &[]);
+        checked(&mut region, &tickets(vec![believed, held], vec![]));
+        checked(&mut region, &answers(vec![], vec![(believed, other)]));
+        let doubt = |unbelieve: Vec<(ChunkPos, RegionId)>| TickInputs {
+            unbelieve,
+            ..TickInputs::default()
+        };
+
+        // Naming another region than the one believed, a chunk the region holds or
+        // one it knows nothing of changes nothing.
+        let none = vec![(believed, third), (held, other), (nothing, other)];
+        let output = checked(&mut region, &doubt(none));
+        assert!(output.claims.is_empty());
+        assert_eq!(region.knowledge(believed), Knowledge::Foreign(other));
+        assert_eq!(region.knowledge(held), Knowledge::Held);
+        assert_eq!(region.knowledge(nothing), Knowledge::Unknown);
+
+        // Naming the region believed makes the region ask again in that tick, as a
+        // viewer still wants to know.
+        let output = checked(&mut region, &doubt(vec![(believed, other)]));
+        assert_eq!(output.claims, [believed]);
+        assert_eq!(region.knowledge(believed), Knowledge::Asked);
+        // The answer can be another one now. A doubt about what was believed before
+        // is older than that, and is passed over.
+        checked(&mut region, &answers(vec![], vec![(believed, third)]));
+        let output = checked(&mut region, &doubt(vec![(believed, other)]));
+        assert!(output.claims.is_empty());
+        assert_eq!(region.knowledge(believed), Knowledge::Foreign(third));
+
+        // If nothing wants the chunk any more, the region forgets it and does not ask.
+        let mut inputs = doubt(vec![(believed, third)]);
+        inputs.tickets_removed = viewers(vec![believed]);
+        let output = checked(&mut region, &inputs);
+        assert!(output.claims.is_empty());
+        assert_eq!(region.knowledge(believed), Knowledge::Unknown);
+    }
+
+    #[test]
+    fn a_chunk_that_nothing_uses_is_given_back_and_no_other() {
+        // On open land the region holds five chunks: one nothing uses, one a player
+        // stands in, one with a viewer's ticket, one with a guest's, and the home chunk.
+        let [unused, stood_in, viewed, visited] = [1, 2, 3, 4].map(|x| ChunkPos::new(x, 0));
+        let home = ChunkPos::new(0, 0);
+        let mut region = asking(&[home, unused, stood_in, viewed, visited], &[]);
+        let output = checked(
+            &mut region,
+            &TickInputs {
+                tickets_added: vec![(viewed, Ticket::Viewer), (visited, Ticket::Guest)],
+                player_changes: vec![join(1)],
+                inputs: vec![walk(1, 40.5, 0.5)],
+                ..TickInputs::default()
+            },
+        );
+        assert_eq!(output.returns, [unused]);
+        assert_eq!(region.knowledge(unused), Knowledge::Unknown);
+        assert_eq!(region.held_chunk_count(), 4);
+        // Once, and nothing else goes while it is used.
+        for _ in 0..5 {
+            assert!(idle(&mut region).returns.is_empty());
+        }
+
+        // Each goes when its use ends: the guest's ticket, the viewer's, and the
+        // player, who walks home.
+        let output = checked(&mut region, &tickets_of(Ticket::Guest, &[], &[visited]));
+        assert_eq!(output.returns, [visited]);
+        let output = checked(&mut region, &tickets(vec![], vec![viewed]));
+        assert_eq!(output.returns, [viewed]);
+        let output = checked(&mut region, &moves(vec![walk(1, 0.5, 0.5)]));
+        assert_eq!(output.returns, [stood_in]);
+        // The home chunk is never given back, with nobody left in it either.
+        let output = checked(&mut region, &changes(vec![leave(1)]));
+        assert!(output.returns.is_empty());
+        for _ in 0..3 {
+            assert!(idle(&mut region).returns.is_empty());
+        }
+        assert_eq!(region.knowledge(home), Knowledge::Held);
+        assert_eq!(region.held_chunk_count(), 1);
+    }
+
+    #[test]
+    fn a_chunk_is_given_back_only_after_the_time_set_without_use() {
+        let position = ChunkPos::new(3, 0);
+        let config = RegionConfig {
+            return_after: 5,
+            ..config()
+        };
+        let quiet = |region: &mut Region, ticks: usize| {
+            for _ in 0..ticks {
+                assert!(idle(region).returns.is_empty(), "{}", region.tick_number());
+            }
+        };
+
+        // The ticks before the region was created count as ticks in which the chunk
+        // was used. It goes five ticks after the first tick in which nothing used it,
+        // which is the sixth here, and not before.
+        let mut region = asking_with(config.clone(), &[position], &[]);
+        quiet(&mut region, 5);
+        assert_eq!(idle(&mut region).returns, [position]);
+
+        // A use in between starts the count anew, of either kind and however short:
+        // a ticket in the fifth tick that is gone in the sixth.
+        for kind in [Ticket::Viewer, Ticket::Guest] {
+            let mut region = asking_with(config.clone(), &[position], &[]);
+            quiet(&mut region, 4);
+            checked(&mut region, &tickets_of(kind, &[position], &[]));
+            let output = checked(&mut region, &tickets_of(kind, &[], &[position]));
+            assert!(output.returns.is_empty());
+            quiet(&mut region, 4);
+            assert_eq!(idle(&mut region).returns, [position]);
+            assert_eq!(region.tick_number(), 6 + 5);
+        }
+
+        // The ticks before a grant count as used too: a chunk that is granted in the
+        // third tick and that nothing uses goes with the eighth.
+        let mut region = asking_with(config, &[], &[]);
+        checked(&mut region, &tickets(vec![position], vec![]));
+        checked(&mut region, &tickets(vec![], vec![position]));
+        let output = checked(&mut region, &answers(vec![position], vec![]));
+        assert!(output.returns.is_empty());
+        quiet(&mut region, 4);
+        assert_eq!(idle(&mut region).returns, [position]);
+        assert_eq!(region.tick_number(), 3 + 5);
+    }
+
+    /// The scaffold of the time in which the processes still divide the world by a
+    /// layout: `docs/adr/0012-the-tick-on-chunks.md`, section 8.
+    #[test]
+    fn what_a_region_presumes_it_never_asks_about_gives_back_or_forgets() {
+        let other = RegionId(1);
+        let config = RegionConfig {
+            presumed: vec![(WEST, Some(other)), (EAST, None)],
+            ..config()
+        };
+        // What the store says the region holds of a presumed area does not count.
+        let mut region = asking_with(config, &[EAST_CHUNK, WEST_CHUNK], &[]);
+        assert_eq!(region.held_chunk_count(), 0);
+        let (own, far) = (ChunkPos::new(30, 7), ChunkPos::new(-30, 7));
+        let as_presumed = |region: &Region| {
+            for position in [EAST_CHUNK, own] {
+                assert_eq!(region.knowledge(position), Knowledge::Held);
+            }
+            for position in [WEST_CHUNK, far] {
+                assert_eq!(region.knowledge(position), Knowledge::Foreign(other));
+            }
+            assert_eq!(region.held_chunk_count(), 0);
+        };
+        as_presumed(&region);
+
+        // Nothing is asked or given back, neither without use nor with it, and a chunk
+        // of the region's own is asked of storage with its first ticket.
+        let output = idle(&mut region);
+        assert!(output.claims.is_empty() && output.returns.is_empty());
+        let all = vec![
+            (own, Ticket::Viewer),
+            (far, Ticket::Viewer),
+            (far, Ticket::Guest),
+            (EAST_CHUNK, Ticket::Guest),
+        ];
+        let output = checked(
+            &mut region,
+            &TickInputs {
+                tickets_added: all.clone(),
+                player_changes: vec![join(1)],
+                ..TickInputs::default()
+            },
+        );
+        assert!(output.claims.is_empty() && output.returns.is_empty());
+        assert_eq!(output.chunk_requests, [EAST_CHUNK, own]);
+
+        // What the store says of such a chunk changes nothing.
+        let output = checked(
+            &mut region,
+            &TickInputs {
+                granted: vec![far, WEST_CHUNK],
+                foreign: vec![(own, RegionId(5)), (EAST_CHUNK, RegionId(5))],
+                unbelieve: vec![(far, other), (WEST_CHUNK, other)],
+                ..TickInputs::default()
+            },
+        );
+        assert!(output.claims.is_empty() && output.returns.is_empty());
+        assert!(output.chunk_requests.is_empty());
+        as_presumed(&region);
+
+        // A player who steps across is let go in that tick, to the region presumed.
+        let output = checked(&mut region, &moves(vec![walk(1, -0.5, 0.5)]));
+        assert_eq!(let_go(&output), [(player(1), other)]);
+        // With nobody there and nothing watched, all of it is known as before.
+        let output = checked(
+            &mut region,
+            &TickInputs {
+                tickets_removed: all,
+                ..TickInputs::default()
+            },
+        );
+        assert!(output.claims.is_empty() && output.returns.is_empty());
+        assert!(idle(&mut region).returns.is_empty());
+        as_presumed(&region);
+    }
+
+    #[test]
+    fn a_restored_region_knows_what_the_store_says_it_holds_and_asks_again_for_the_rest() {
+        // A region on open land. Its player has walked into a chunk that it was then
+        // granted, and looks at a chunk the store has said is another region's.
+        let [home, walked_into, seen] = [0, 1, 2].map(|x| ChunkPos::new(x, 0));
+        let spare = ChunkPos::new(7, 7);
+        let other = RegionId(9);
+        let config = RegionConfig {
+            return_after: 3,
+            ..config()
+        };
+        let mut region = asking_with(config.clone(), &[home], &[]);
+        checked(
+            &mut region,
+            &TickInputs {
+                tickets_added: viewers(vec![home, walked_into, seen]),
+                player_changes: vec![join(1)],
+                inputs: vec![with_number(1, walk(1, 20.5, 0.5))],
+                ..TickInputs::default()
+            },
+        );
+        checked(
+            &mut region,
+            &answers(vec![walked_into], vec![(seen, other)]),
+        );
+        assert_eq!(region.knowledge(walked_into), Knowledge::Held);
+        assert_eq!(region.knowledge(seen), Knowledge::Foreign(other));
+
+        // The store says what the restored region holds: here the home chunk and one
+        // more, and not the chunk the player stands in. Nothing else is known, and no
+        // chunk is loaded or watched.
+        let state = region.state();
+        let holdings = Holdings {
+            held: vec![home, spare],
+            pinned: Vec::new(),
+        };
+        let mut restored = Region::restore(config, state.clone(), holdings);
+        assert_eq!(restored.state(), state);
+        for position in [home, spare] {
+            assert_eq!(restored.knowledge(position), Knowledge::Held);
+        }
+        for position in [walked_into, seen] {
+            assert_eq!(restored.knowledge(position), Knowledge::Unknown);
+        }
+        assert_eq!(restored.held_chunk_count(), 2);
+        assert_eq!(restored.loaded_chunk_count(), 0);
+
+        // The player stays the region's, which asks for the chunk they stand in with
+        // its first tick. What they do meanwhile is applied.
+        let output = checked(
+            &mut restored,
+            &moves(vec![with_number(2, walk(1, 21.5, 0.5))]),
+        );
+        assert_eq!(output.claims, [walked_into]);
+        assert!(let_go(&output).is_empty());
+        assert_eq!(restored.player(player(1)).unwrap().1.position.x, 21.5);
+        // The time before a return starts with the restore: what nothing comes to use
+        // goes with the fourth tick, and not before.
+        for _ in 0..2 {
+            assert!(idle(&mut restored).returns.is_empty());
+        }
+        // The answer lets the player go or not, as it would have.
+        let output = checked(&mut restored, &answers(vec![], vec![(walked_into, other)]));
+        assert_eq!(output.returns, [spare]);
+        assert_eq!(let_go(&output), [(player(1), other)]);
+        assert_eq!(restored.tick_number(), state.tick + 4);
+    }
+
+    #[test]
+    fn a_region_without_entity_ids_refuses_every_join() {
+        // The empty block, which a region has that was made by a split.
+        let none = EntityIds {
+            first: EntityId(40),
+            end: EntityId(40),
+        };
+        let mut region = fresh(ChunkArea::EVERYWHERE, none);
+        let output = region.tick(&changes(vec![join(1), join(2)]));
+        let refused = |number| (player(number), PlayerEvent::Refused);
+        assert_eq!(told(&output), [refused(1), refused(2)]);
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert_eq!(region.player_count(), 0);
+
+        // A player who arrives brings their entity along, and is taken in.
+        region.tick(&changes(vec![arrive(1, &transfer(1, 77, 8.5, 0))]));
+        assert_eq!(region.player(player(1)).unwrap().0, EntityId(77));
+        let output = region.tick(&changes(vec![join(2)]));
+        assert_eq!(told(&output), [refused(2)]);
+    }
+
+    #[test]
+    fn crowds_are_the_chunks_with_players_in_them_and_how_many() {
+        let mut region = region();
+        assert!(region.crowds().is_empty());
+        region.tick(&changes(vec![join(1), join(2), join(3)]));
+        assert_eq!(region.crowds(), [(ChunkPos::new(0, 0), 3)]);
+
+        region.tick(&moves(vec![walk(1, 20.5, 0.5), walk(2, -3.5, 40.5)]));
+        let apart = [
+            (ChunkPos::new(-1, 2), 1),
+            (ChunkPos::new(0, 0), 1),
+            (ChunkPos::new(1, 0), 1),
+        ];
+        assert_eq!(region.crowds(), apart);
+        region.tick(&TickInputs {
+            player_changes: vec![leave(3)],
+            inputs: vec![walk(2, 24.5, 3.5)],
+            ..TickInputs::default()
+        });
+        assert_eq!(region.crowds(), [(ChunkPos::new(1, 0), 2)]);
     }
 
     #[test]
@@ -2456,6 +3047,8 @@ mod tests {
                 ),
             ]
         );
+        // To the region the store has said holds the chunk they stepped into.
+        assert_eq!(let_go(&output), [(player(1), EAST_OF_MIDDLE)]);
         assert_eq!(region.player_count(), 0);
         assert_eq!(region.player(player(1)), None);
         assert_eq!(region.entity(EntityId(1)), None);
@@ -2479,7 +3072,7 @@ mod tests {
         let (west, east, south) = (ChunkPos::new(-1, 0), ChunkPos::new(2, 0), SOUTH_CHUNK);
         let output = checked(&mut region, &tickets(vec![west, east, south], vec![]));
         assert_eq!(output.claims, [west, south, east]);
-        let foreign = vec![(west, WESTERN), (east, EASTERN)];
+        let foreign = vec![(west, WEST_OF_MIDDLE), (east, EAST_OF_MIDDLE)];
         checked(&mut region, &answers(vec![], foreign));
         region
     }
@@ -2495,8 +3088,8 @@ mod tests {
             ((0.0, 0.5), None),
             ((31.9, 0.5), None),
             // Into a chunk the store has said is another region's.
-            ((-0.1, 0.5), Some(WESTERN)),
-            ((32.0, 0.5), Some(EASTERN)),
+            ((-0.1, 0.5), Some(WEST_OF_MIDDLE)),
+            ((32.0, 0.5), Some(EAST_OF_MIDDLE)),
             // Into one the region has asked for and into one it knows nothing of: the
             // player stays, and the answer decides.
             ((0.5, 16.0), None),
@@ -2565,7 +3158,7 @@ mod tests {
         let output = checked(
             &mut region,
             &TickInputs {
-                foreign: vec![(NORTH_CHUNK, WESTERN)],
+                foreign: vec![(NORTH_CHUNK, WEST_OF_MIDDLE)],
                 inputs: vec![
                     with_number(3, walk(1, 2.5, 0.5)),
                     with_number(4, dig(1, 2, -61, 3, 7)),
@@ -2573,7 +3166,7 @@ mod tests {
                 ..TickInputs::default()
             },
         );
-        assert_eq!(let_go(&output), [(player(1), WESTERN)]);
+        assert_eq!(let_go(&output), [(player(1), WEST_OF_MIDDLE)]);
         let [(_, PlayerEvent::Departed(transfer))] = &told(&output)[..] else {
             panic!("{:?}", told(&output));
         };
@@ -2610,7 +3203,7 @@ mod tests {
     #[test]
     fn an_arriving_player_carries_on_as_they_were_handed_over() {
         let mut region = fresh(
-            config(MIDDLE),
+            MIDDLE,
             EntityIds {
                 first: EntityId(1),
                 end: EntityId(3),
@@ -2659,6 +3252,7 @@ mod tests {
             ..transfer
         };
         assert_eq!(told(&output), [departed(1, handed_on)]);
+        assert_eq!(let_go(&output), [(player(1), EAST_OF_MIDDLE)]);
     }
 
     #[test]
@@ -2713,7 +3307,7 @@ mod tests {
             last_input: 0,
         };
         assert_eq!(told(&output), [(player(1), spawned), departed(1, transfer)]);
-        assert_eq!(let_go(&output), [(player(1), WESTERN)]);
+        assert_eq!(let_go(&output), [(player(1), WEST_REGION)]);
         assert!(!output.events.iter().any(is_removal));
         assert_eq!(region.player_count(), 0);
     }
@@ -2737,7 +3331,10 @@ mod tests {
         let output = checked(&mut region, &changes(vec![arrive(1, &transfer)]));
         // The player is not taken in, and nobody is shown or told anything: the entity
         // is on its way still.
-        assert_eq!(output.durable, [(EDGE, 1, not_mine(1, &transfer, WESTERN))]);
+        assert_eq!(
+            output.durable,
+            [(EDGE, 1, not_mine(1, &transfer, WEST_OF_MIDDLE))]
+        );
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert!(output.player_events.is_empty());
         assert_eq!(region.player_count(), 0);
@@ -2753,7 +3350,10 @@ mod tests {
                 ..TickInputs::default()
             },
         );
-        assert_eq!(output.durable, [(EDGE, 2, not_mine(1, &transfer, WESTERN))]);
+        assert_eq!(
+            output.durable,
+            [(EDGE, 2, not_mine(1, &transfer, WEST_OF_MIDDLE))]
+        );
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert_eq!(region.player_count(), 0);
     }
@@ -2877,7 +3477,7 @@ mod tests {
     #[test]
     fn a_region_that_has_used_up_its_entity_ids_refuses_players() {
         let mut region = fresh(
-            config(ChunkArea::EVERYWHERE),
+            ChunkArea::EVERYWHERE,
             EntityIds {
                 first: EntityId(7),
                 end: EntityId(9),
@@ -2925,13 +3525,33 @@ mod tests {
         Face::East,
     ];
 
-    /// Has `region` load a chunk with a floor at `position`, which its area has to contain.
+    /// Has `region` load a chunk with a floor at `position`, which it has to hold.
     fn lay_floor(region: &mut Region, position: ChunkPos) {
         region.tick(&tickets(vec![position], vec![]));
         region.tick(&TickInputs {
             chunks_loaded: vec![(position, floor())],
             ..TickInputs::default()
         });
+    }
+
+    /// Has `region`, which is `id` to the store `grants`, come by the chunk at
+    /// `position` and a floor in it as a region does for a viewer of its own: it asks
+    /// the store, is granted the chunk, asks storage for it and is delivered it.
+    fn claim_floor(region: &mut Region, id: RegionId, grants: &mut Grants, position: ChunkPos) {
+        let output = checked(region, &tickets(vec![position], vec![]));
+        assert_eq!(output.claims, [position]);
+        assert!(output.chunk_requests.is_empty());
+        let (granted, foreign) = grants.answer(id, &output.claims);
+        let output = checked(region, &answers(granted, foreign));
+        assert_eq!(output.chunk_requests, [position]);
+        checked(
+            region,
+            &TickInputs {
+                chunks_loaded: vec![(position, floor())],
+                ..TickInputs::default()
+            },
+        );
+        assert_eq!(region.chunk(position), Some(&floor()));
     }
 
     /// The region east of the line with player 1 standing on its floor at `FEET`, stone
@@ -2945,7 +3565,7 @@ mod tests {
     /// The region west of the line with a floor in the chunk at the line, which is as
     /// far as the eastern one's players can reach, and nobody in it.
     fn west_with_floor() -> Region {
-        let mut region = fresh(config(WEST), EntityIds::block(1).unwrap());
+        let mut region = fresh(WEST, EntityIds::block(1).unwrap());
         lay_floor(&mut region, WEST_CHUNK);
         region
     }
@@ -3113,6 +3733,7 @@ mod tests {
         for (sequence, (x, y)) in (1..).zip(beyond) {
             let output = region.tick(&moves(vec![dig(1, x, y, 2, sequence)]));
             assert_eq!(requests(&output), [remote(1, sequence, break_at(x, y, 2))]);
+            assert_eq!(asked_of(&output), [Some(WEST_REGION)]);
             assert!(output.events.is_empty(), "{:?}", output.events);
             // The player is not told that it was handled: it has not been.
             assert!(told(&output).is_empty(), "sequence {sequence}");
@@ -3164,6 +3785,7 @@ mod tests {
             let output = region.tick(&moves(vec![click]));
             let step = place_against(x, y, z, face, blocks::STONE, FEET);
             assert_eq!(requests(&output), [remote(1, sequence, step)]);
+            assert_eq!(asked_of(&output), [Some(WEST_REGION)]);
             assert!(output.events.is_empty(), "{:?}", output.events);
             assert!(told(&output).is_empty(), "sequence {sequence}");
         }
@@ -3190,6 +3812,7 @@ mod tests {
         let output = region.tick(&moves(vec![click]));
         let step = place_at(-1, -61, 2, blocks::STONE, FEET);
         assert_eq!(requests(&output), [remote(1, 1, step)]);
+        assert_eq!(asked_of(&output), [Some(WEST_REGION)]);
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert!(told(&output).is_empty());
 
@@ -3316,6 +3939,7 @@ mod tests {
                 remote(1, 3, break_at(-1, -61, 2)),
             ]
         );
+        assert_eq!(asked_of(&output), [Some(WEST_REGION); 4]);
         assert_eq!(output.events, [changed(3, -61, 2, blocks::AIR)]);
         assert_eq!(told(&output), [acknowledged(1, 2)]);
     }
@@ -3511,7 +4135,7 @@ mod tests {
         let next = remote(3, 41, place_at(0, -61, 2, blocks::DIRT, placer));
         assert_eq!(
             outcomes(&output),
-            [RemoteOutcome::Next(next.clone(), Some(EASTERN))]
+            [RemoteOutcome::Next(next.clone(), Some(EAST_REGION))]
         );
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert!(requests(&output).is_empty());
@@ -3572,7 +4196,7 @@ mod tests {
         // The store has said who holds the chunk: the action is for that region.
         let mut region = west_with_floor();
         let output = region.tick(&remotely(actions.to_vec()));
-        let not_mine = |action: &RemoteAction| RemoteOutcome::NotMine(action.clone(), EASTERN);
+        let not_mine = |action: &RemoteAction| RemoteOutcome::NotMine(action.clone(), EAST_REGION);
         assert_eq!(outcomes(&output), actions.each_ref().map(not_mine));
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert!(requests(&output).is_empty());
@@ -3635,7 +4259,7 @@ mod tests {
                 done(3, 1),
                 RemoteOutcome::Next(
                     remote(1, 6, place_at(0, -61, 2, blocks::STONE, FEET)),
-                    Some(EASTERN)
+                    Some(EAST_REGION)
                 ),
                 done(2, 11),
             ]
@@ -3834,7 +4458,7 @@ mod tests {
         let mut reference = joined(&numbers);
         // Everyone starts east of the line, where the spawn point is.
         let mut regions = [
-            fresh(config(WEST), EntityIds::block(1).unwrap()),
+            fresh(WEST, EntityIds::block(1).unwrap()),
             joined_in(EAST, &numbers),
         ];
         // What the edge has sent to each region since that region's last tick.
@@ -4001,7 +4625,7 @@ mod tests {
         let mut reference = joined(&[1]);
         reference.tick(&moves(made.to_vec()));
 
-        let mut west = fresh(config(WEST), EntityIds::block(1).unwrap());
+        let mut west = fresh(WEST, EntityIds::block(1).unwrap());
         let mut east = joined_in(EAST, &[1]);
         let handed_over = |output: TickOutput| match told(&output).as_slice() {
             [(_, PlayerEvent::Departed(transfer))] => transfer.clone(),
@@ -4042,12 +4666,20 @@ mod tests {
     ///
     /// The router sends each input to the region it believes the player to be in and
     /// hands players over as in `two_regions_match_one`. What a region asks of another
-    /// or passes on, the router gives to the region that has the block concerned for
-    /// its next tick, so that an action takes a tick longer for each region it goes to.
+    /// or passes on, the router gives to the region the entry names, or, where it names
+    /// none, to the region that holds the chunk concerned, which is the edge's part as
+    /// well: for that region's next tick, so that an action takes a tick longer for
+    /// each region it goes to.
     struct Divided {
         whole: Region,
-        /// West of the line and east of it.
+        /// West of the line and east of it: regions 0 and 1 of the store.
         regions: [Region; 2],
+        /// The store of both regions, which answers what a region claims into that
+        /// region's next tick.
+        grants: Grants,
+        /// Whether the regions were told nothing about each other's chunks: see
+        /// [`Divided::asking`].
+        asking: bool,
         /// What the router has sent to each region since that region's last tick.
         waiting: [TickInputs; 2],
         routes: BTreeMap<PlayerId, Route>,
@@ -4064,6 +4696,9 @@ mod tests {
         /// What a player's region asked of the other one, and what a region passed on.
         asked: Vec<RemoteAction>,
         passed_on: Vec<RemoteAction>,
+        /// How many actions the router ended itself, counting them as done, because
+        /// no region served the chunk concerned.
+        ended: usize,
         /// The changes of blocks in the single region and in the two, and how many of
         /// the latter came of what a region was given by the other one.
         whole_changes: Vec<RegionEvent>,
@@ -4073,8 +4708,39 @@ mod tests {
 
     impl Divided {
         /// Both worlds with a floor on either side of the line and the given players at
-        /// the spawn point, which is east of it.
+        /// the spawn point, which is east of it. Each of the two regions has been told
+        /// whose the chunks around the line are, for the viewer's tickets an edge
+        /// gives a region on what its players see.
         fn new(numbers: &[u128]) -> Self {
+            let regions = [west_with_floor(), on_floor_in(EAST, numbers)];
+            Self::with(numbers, regions, Grants::stripes(&[0]), false)
+        }
+
+        /// The same with regions that were told nothing: each has asked for the chunk
+        /// at the line on its own side, which it holds and has a floor in, and knows
+        /// nothing of any other. So a player who steps across is let go when the store
+        /// has answered, two ticks after the step, and what is done to a block across
+        /// the line is passed on without a region, for the router to find it.
+        fn asking(numbers: &[u128]) -> Self {
+            let mut grants = Grants::stripes(&[0]);
+            let mut region = |area, id, block, position| {
+                let state = knowing_the_edges(EntityIds::block(block).unwrap());
+                let holdings = Holdings {
+                    held: Vec::new(),
+                    pinned: vec![area],
+                };
+                let mut region = Region::restore(config(), state, holdings);
+                claim_floor(&mut region, id, &mut grants, position);
+                region
+            };
+            let west = region(WEST, WEST_REGION, 1, WEST_CHUNK);
+            let mut east = region(EAST, EAST_REGION, 0, EAST_CHUNK);
+            let joins = numbers.iter().map(|number| join(*number)).collect();
+            checked(&mut east, &changes(joins));
+            Self::with(numbers, [west, east], grants, true)
+        }
+
+        fn with(numbers: &[u128], regions: [Region; 2], grants: Grants, asking: bool) -> Self {
             let mut whole = on_floor(numbers);
             lay_floor(&mut whole, WEST_CHUNK);
             let routes = numbers
@@ -4092,7 +4758,9 @@ mod tests {
                 .collect();
             Self {
                 whole,
-                regions: [west_with_floor(), on_floor_in(EAST, numbers)],
+                regions,
+                grants,
+                asking,
                 waiting: [TickInputs::default(), TickInputs::default()],
                 routes,
                 step: 0,
@@ -4103,16 +4771,17 @@ mod tests {
                 done: Vec::new(),
                 asked: Vec::new(),
                 passed_on: Vec::new(),
+                ended: 0,
                 whole_changes: Vec::new(),
                 changes: Vec::new(),
                 changed_for_others: 0,
             }
         }
 
-        /// The index of the region that has the block at `position`.
+        /// The index of the region that has the block at `position`, as the store
+        /// says.
         fn region_of(&self, position: BlockPos) -> usize {
-            let has = |region: &Region| region.knowledge(position.chunk()) == Knowledge::Held;
-            self.regions.iter().position(has).unwrap()
+            self.grants.holder(position.chunk()).unwrap().0 as usize
         }
 
         /// The block at `position` in the divided world.
@@ -4147,13 +4816,30 @@ mod tests {
             // Both regions tick with what they were sent before this step, so that what
             // one of them leaves to the other is taken up in the other's next tick.
             let given = std::mem::take(&mut self.waiting);
-            let outputs = [0, 1].map(|index| self.regions[index].tick(&given[index]));
+            let outputs = [0, 1].map(|index| checked(&mut self.regions[index], &given[index]));
             for (from, (output, given)) in outputs.into_iter().zip(given).enumerate() {
                 assert_eq!(
                     outcomes(&output).len(),
                     given.remote_actions.len(),
                     "step {step}"
                 );
+                // The store answers into the region's next tick. Regions that were told
+                // about the chunks around the line have nothing to ask.
+                let id = RegionId(from as u32);
+                assert!(self.asking || output.claims.is_empty(), "step {step}");
+                let (mut granted, mut foreign) = self.grants.answer(id, &output.claims);
+                self.waiting[from].granted.append(&mut granted);
+                self.waiting[from].foreign.append(&mut foreign);
+                self.grants.take_back(id, &output.returns);
+                // A player is let go to the other region, which takes them in: nobody
+                // arrives where the chunk is believed a third region's.
+                for (_, to) in let_go(&output) {
+                    assert_eq!(to.0 as usize, 1 - from, "step {step}");
+                }
+                let sent_on = |(_, _, entry): &(EdgeId, u64, Durable)| {
+                    matches!(entry, Durable::NotMine { .. })
+                };
+                assert!(!output.durable.iter().any(sent_on), "step {step}");
                 let changes: Vec<_> = output
                     .events
                     .iter()
@@ -4190,20 +4876,46 @@ mod tests {
                             self.passed_on.push(action.clone());
                             onward.push((action, to));
                         }
-                        // The router sends an action to the region that has the block.
-                        RemoteOutcome::NotMine(action, holder) => {
-                            panic!("step {step}: {action:?} is said to be for {holder}")
-                        }
+                        // Checked above: the router sends an action to the region
+                        // that holds the chunk, which takes the step.
+                        RemoteOutcome::NotMine(..) => unreachable!(),
                     }
                 }
                 self.asked.extend(requests(&output).iter().cloned());
                 onward.extend(requests(&output).into_iter().zip(asked_of(&output)));
                 for (action, named) in onward {
-                    let to = self.region_of(action.step.concerns());
+                    let concerned = action.step.concerns().chunk();
+                    let to = match named {
+                        // What a region believes is what the store said.
+                        Some(region) => {
+                            let holder = self.grants.holder(concerned);
+                            assert_eq!(Some(region), holder, "step {step}: {action:?}");
+                            region.0 as usize
+                        }
+                        // Where the region names none, the edge sends the action to
+                        // the region that serves it the chunk, which holds it and
+                        // knows so, and never back to where it came from. If there is
+                        // no such region, nobody has shown the player the block: the
+                        // edge ends the action and tells the player that it was
+                        // handled.
+                        None => {
+                            let serves =
+                                |region: &Region| region.knowledge(concerned) == Knowledge::Held;
+                            match self.regions.iter().position(serves) {
+                                Some(to) => to,
+                                None => {
+                                    self.done.push((action.player, action.sequence));
+                                    self.ended += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    };
                     // What concerns its own blocks a region has to do itself.
                     assert_ne!(to, from, "step {step}: {action:?}");
-                    // Each region knows its neighbour, and names it.
-                    assert_eq!(named, Some([WESTERN, EASTERN][to]), "step {step}");
+                    // A region that was told about the chunks around the line names
+                    // the region.
+                    assert!(self.asking || named.is_some(), "step {step}: {action:?}");
                     self.waiting[to].remote_actions.push((REMOTE, action));
                 }
             }
@@ -4335,7 +5047,19 @@ mod tests {
 
     #[test]
     fn two_regions_change_blocks_across_the_line_as_one_region_does() {
-        let mut world = Divided::new(&[1]);
+        a_player_changes_blocks_across_the_line(Divided::new(&[1]));
+    }
+
+    /// The same with regions that were told nothing about each other's chunks. What a
+    /// player does across the line is then passed on without a region, and the player is
+    /// let go when the store has answered; the blocks end the same, and what each
+    /// region does of it is the same too.
+    #[test]
+    fn two_regions_that_have_to_ask_change_blocks_across_the_line_as_one_region_does() {
+        a_player_changes_blocks_across_the_line(Divided::asking(&[1]));
+    }
+
+    fn a_player_changes_blocks_across_the_line(mut world: Divided) {
         let script = [
             // The player stands east of the line, a block and a half from it, and breaks
             // the floor on their own side and beyond the line.
@@ -4415,6 +5139,16 @@ mod tests {
     /// `a_placement_by_way_of_another_region_is_overtaken_by_a_dig_of_its_spot`.
     #[test]
     fn two_regions_change_blocks_as_one_region_does_whatever_a_player_does() {
+        a_player_does_whatever_can_be_done_near_the_line(Divided::new(&[1]));
+    }
+
+    /// The same with regions that were told nothing about each other's chunks.
+    #[test]
+    fn two_regions_that_have_to_ask_change_blocks_as_one_region_does_whatever_a_player_does() {
+        a_player_does_whatever_can_be_done_near_the_line(Divided::asking(&[1]));
+    }
+
+    fn a_player_does_whatever_can_be_done_near_the_line(mut world: Divided) {
         const ROUNDS: usize = 3000;
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let mut random = |bound: u64| {
@@ -4424,7 +5158,6 @@ mod tests {
             state % bound
         };
 
-        let mut world = Divided::new(&[1]);
         let mut sequence = 0;
         for _ in 0..ROUNDS {
             // A block within four blocks of the line, more often than not right at it:
@@ -4495,6 +5228,10 @@ mod tests {
         let acknowledged = world.acknowledged.len();
         assert!(acknowledged > 500, "{acknowledged} acknowledged");
         assert!(world.handovers > 200, "{} handovers", world.handovers);
+        // Where the regions have to ask, the row north of the chunks they serve is
+        // nobody's to act on, and the router ended what the player did there. Regions
+        // that were told about it name each other, and nothing ends at the router.
+        assert_eq!(world.ended > 0, world.asking, "{} ended", world.ended);
     }
 
     /// This documents a limit and not what is wanted: whoever lifts it has to turn this
@@ -4549,6 +5286,18 @@ mod tests {
     /// to three times in a tick between them, and the router is slow to hear of it.
     #[test]
     fn nothing_done_to_blocks_is_lost_or_handled_twice_however_quickly_players_act() {
+        players_act_quickly_near_the_line(Divided::new(&[1, 2]));
+    }
+
+    /// Nor where the regions were told nothing about each other's chunks, and a player
+    /// who has stepped across goes on acting in the region they left until the store
+    /// has answered.
+    #[test]
+    fn nothing_done_to_blocks_is_lost_or_handled_twice_where_regions_have_to_ask() {
+        players_act_quickly_near_the_line(Divided::asking(&[1, 2]));
+    }
+
+    fn players_act_quickly_near_the_line(mut world: Divided) {
         const STEPS: usize = 3000;
         let mut state = 0xD1B5_4A32_D192_ED03u64;
         let mut random = |bound: u64| {
@@ -4558,7 +5307,6 @@ mod tests {
             state % bound
         };
 
-        let mut world = Divided::new(&[1, 2]);
         let mut sequences = [0; 2];
         for _ in 0..STEPS {
             let mut made = Vec::new();
@@ -4665,6 +5413,16 @@ mod tests {
     /// on the blocks of the other's side, both in the same tick.
     #[test]
     fn two_regions_serve_players_on_either_side_of_the_line_as_one_region_does() {
+        players_work_on_either_side_of_the_line(Divided::new(&[1, 2]));
+    }
+
+    /// The same with regions that were told nothing about each other's chunks.
+    #[test]
+    fn two_regions_that_have_to_ask_serve_players_on_either_side_as_one_region_does() {
+        players_work_on_either_side_of_the_line(Divided::asking(&[1, 2]));
+    }
+
+    fn players_work_on_either_side_of_the_line(mut world: Divided) {
         const ROUNDS: i32 = 1500;
         let mut state = 0x2545_F491_4F6C_DD1Du64;
         let mut random = |bound: u64| {
@@ -4674,7 +5432,6 @@ mod tests {
             state % bound
         };
 
-        let mut world = Divided::new(&[1, 2]);
         // Player 1 stays east of the line and player 2 goes west of it. Each clicks
         // blocks of a strip of their own, which reaches from the second block on their
         // side of the line to the third beyond it and is two blocks wide. What they
@@ -4950,6 +5707,19 @@ mod tests {
         assert_eq!(region.tick_number(), 300);
     }
 
+    /// What a region for `area` is given in a run in which edges give it `made`, tick by
+    /// tick: the same with what the store answers to its claims, each in the tick after
+    /// the claim.
+    fn with_the_stores_answers(area: ChunkArea, made: Vec<TickInputs>) -> Vec<TickInputs> {
+        let mut served = Served::new(area, EntityIds::block(0).unwrap());
+        let answered = made.into_iter().map(|inputs| {
+            let inputs = served.with_answers(inputs);
+            served.tick(&inputs);
+            inputs
+        });
+        answered.collect()
+    }
+
     /// The same holds for a region that has a part of the world only, with players
     /// arriving from its neighbours and departing to them.
     #[test]
@@ -5029,6 +5799,12 @@ mod tests {
             }
             recorded.push(inputs);
         }
+        // The tickets that come and go take away what the region believes of its
+        // neighbours' chunks and make it ask again, so what the store answers is part
+        // of the record.
+        let recorded = with_the_stores_answers(MIDDLE, recorded);
+        let answered = |inputs: &&TickInputs| !inputs.foreign.is_empty();
+        assert!(recorded.iter().filter(answered).count() > 10);
 
         let replay = || {
             let mut region = region_in(MIDDLE);
@@ -5067,7 +5843,7 @@ mod tests {
                 .iter()
                 .any(|output| !output.chunk_requests.is_empty())
         );
-        assert_eq!(region.tick_number(), 600);
+        assert_eq!(region.tick_number(), LEARNING + 600);
     }
 
     /// And for a region whose players work on blocks at either end of its area and
@@ -5172,6 +5948,12 @@ mod tests {
             .filter(|outcome| matches!(outcome, RemoteOutcome::Next(..)))
             .count();
         assert!(passed_on > 0);
+        // and some of which was for a neighbour,
+        let for_a_neighbour = |outcome: &&RemoteOutcome| {
+            matches!(outcome, RemoteOutcome::NotMine(_, holder)
+                if [WEST_OF_MIDDLE, EAST_OF_MIDDLE].contains(holder))
+        };
+        assert!(outcomes.iter().filter(for_a_neighbour).count() > 0);
         // and changed blocks in ticks in which none of its own players did anything.
         let for_others = recorded
             .iter()
@@ -5181,6 +5963,187 @@ mod tests {
             .filter(|event| is_block_change(event))
             .count();
         assert!(for_others > 0);
-        assert_eq!(region.tick_number(), 1500);
+        assert_eq!(region.tick_number(), LEARNING + 1500);
+    }
+
+    /// And for a region on open land, which holds what its players and their viewers
+    /// have made it ask for and gives back what they have left. A neighbour holds a
+    /// strip of chunks to the west, and the store answers a tick after the claim or
+    /// later. After every tick the region's chunks are in order, it holds nothing the
+    /// store has not granted it, and it believes of a chunk only what the store said.
+    #[test]
+    fn a_recorded_run_on_open_land_keeps_the_chunks_in_order_and_replays_identically() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut random = |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound
+        };
+        // Numbered here for the reason given in the tests above.
+        let mut made = 0u64;
+
+        let (me, neighbour) = (RegionId(4), RegionId(5));
+        let home = ChunkPos::new(0, 0);
+        let begin = || {
+            let config = RegionConfig {
+                return_after: 3,
+                ..config()
+            };
+            asking_with(config, &[home], &[])
+        };
+        // The store: the home chunk is the region's, and the chunks with x = -2 are the
+        // neighbour's, which never gives them back.
+        let mut grants = Grants::default();
+        grants.granted.insert(home, me);
+        for z in -3..=3 {
+            grants.granted.insert(ChunkPos::new(-2, z), neighbour);
+        }
+
+        let mut region = begin();
+        // What the store has answered that the region has not been given yet, the
+        // tickets that are out, and what storage has been asked for.
+        let (mut granted, mut foreign) = (Vec::new(), Vec::new());
+        let mut out: Vec<(ChunkPos, Ticket)> = Vec::new();
+        let mut asked_of_storage: Vec<ChunkPos> = Vec::new();
+        let (mut recorded, mut outputs) = (Vec::new(), Vec::new());
+        let (mut grants_made, mut returns_made) = (0, 0);
+        for _ in 0..3000 {
+            let mut inputs = TickInputs::default();
+            if random(3) != 0 {
+                inputs.granted = mem::take(&mut granted);
+                inputs.foreign = mem::take(&mut foreign);
+            }
+            for _ in 0..random(5) {
+                let number = u128::from(random(4));
+                made += 1;
+                // A chunk up to three from the home chunk, a place in those chunks, and
+                // a block near where the player stands, if they are there.
+                let position = ChunkPos::new(random(7) as i32 - 3, random(5) as i32 - 2);
+                let kind = [Ticket::Viewer, Ticket::Viewer, Ticket::Guest][random(3) as usize];
+                let (x, z) = (
+                    random(1120) as f64 / 10.0 - 48.0,
+                    random(800) as f64 / 10.0 - 32.0,
+                );
+                let feet = region.player(player(number)).map(|(_, pose)| pose.position);
+                let block = feet.map(|feet| {
+                    let (x, z) = (feet.x.floor() as i32, feet.z.floor() as i32);
+                    (x + random(5) as i32 - 2, z + random(5) as i32 - 2)
+                });
+                match (random(16), block) {
+                    (0, _) => inputs.player_changes.push(join(number)),
+                    (1, _) => inputs.player_changes.push(leave(number)),
+                    (2, _) => {
+                        // With an entity of another region's block.
+                        let entity = 5_000_000 + number as i32;
+                        let mut transfer = transfer(number, entity, x, made);
+                        transfer.pose.position.z = z;
+                        inputs.player_changes.push(arrive(number, &transfer));
+                    }
+                    (3..=5, _) => {
+                        inputs.tickets_added.push((position, kind));
+                        out.push((position, kind));
+                    }
+                    (6..=8, _) if !out.is_empty() => {
+                        let ended = out.swap_remove(random(out.len() as u64) as usize);
+                        inputs.tickets_removed.push(ended);
+                    }
+                    // One that may never have been counted.
+                    (9, _) => inputs.tickets_removed.push((position, kind)),
+                    (10, _) => {
+                        let delivered = asked_of_storage.drain(..);
+                        inputs
+                            .chunks_loaded
+                            .extend(delivered.map(|position| (position, floor())));
+                    }
+                    (11, Some((x, z))) => {
+                        let block = dig(number, x, -61, z, random(1000) as i32);
+                        inputs.inputs.push(with_number(made, block));
+                    }
+                    (12, Some((x, z))) => {
+                        let block = place(number, x, -61, z, across_more_often(random(8)));
+                        inputs.inputs.push(with_number(made, block));
+                    }
+                    (13, _) => inputs.unbelieve.push((position, neighbour)),
+                    // Up to two blocks from where the neighbour's strip begins, in the
+                    // row of the home chunk, so that its blocks are within reach.
+                    (14, _) => {
+                        let x = -16.0 + random(40) as f64 / 10.0 - 1.0;
+                        let step = walk(number, x, random(160) as f64 / 10.0);
+                        inputs.inputs.push(with_number(made, step));
+                    }
+                    _ => inputs.inputs.push(with_number(made, walk(number, x, z))),
+                }
+            }
+
+            let output = checked(&mut region, &inputs);
+            let (mut now_granted, mut now_foreign) = grants.answer(me, &output.claims);
+            grants_made += now_granted.len();
+            returns_made += output.returns.len();
+            granted.append(&mut now_granted);
+            foreign.append(&mut now_foreign);
+            grants.take_back(me, &output.returns);
+            asked_of_storage.extend(&output.chunk_requests);
+            for x in -4..=4 {
+                for z in -3..=3 {
+                    let position = ChunkPos::new(x, z);
+                    let holder = grants.holder(position);
+                    match region.knowledge(position) {
+                        Knowledge::Held => assert_eq!(holder, Some(me), "{position:?}"),
+                        Knowledge::Foreign(believed) => {
+                            assert_eq!(holder, Some(believed), "{position:?}");
+                            assert_eq!(believed, neighbour);
+                        }
+                        Knowledge::Asked | Knowledge::Unknown => {}
+                    }
+                }
+            }
+            assert_eq!(region.knowledge(home), Knowledge::Held);
+            recorded.push(inputs);
+            outputs.push(output);
+        }
+
+        // The run did something worth checking. The region was granted chunks and gave
+        // them back, was told of others that they are the neighbour's, and loaded some.
+        assert!(grants_made > 100, "{grants_made} grants");
+        assert!(returns_made > 100, "{returns_made} returns");
+        let answers = |told: fn(&TickInputs) -> usize| recorded.iter().map(told).sum::<usize>();
+        let told_foreign = answers(|inputs| inputs.foreign.len());
+        assert!(told_foreign > 30, "{told_foreign} chunks of the neighbour");
+        let happened = |wanted: fn(&RegionEvent) -> bool| {
+            outputs
+                .iter()
+                .flat_map(|output| &output.events)
+                .filter(|event| wanted(event))
+                .count()
+        };
+        let changed = happened(is_block_change);
+        assert!(changed > 10, "{changed} blocks changed");
+        // Players were let go to the neighbour, arrivals went on to it, and what
+        // players did to blocks of chunks the region did not hold went to the neighbour
+        // by name and to nobody by name.
+        let entries = |wanted: fn(&Durable) -> bool| {
+            outputs
+                .iter()
+                .flat_map(|output| &output.durable)
+                .filter(|(_, _, entry)| wanted(entry))
+                .count()
+        };
+        let let_go = entries(|entry| matches!(entry, Durable::Departed { .. }));
+        let sent_on = entries(|entry| matches!(entry, Durable::NotMine { .. }));
+        let named = entries(|entry| matches!(entry, Durable::Remote { to: Some(_), .. }));
+        let unnamed = entries(|entry| matches!(entry, Durable::Remote { to: None, .. }));
+        assert!(let_go > 10, "{let_go} let go");
+        assert!(sent_on > 3, "{sent_on} sent on");
+        assert!(named > 3 && unnamed > 10, "{named} named, {unnamed} not");
+
+        // And the same inputs, with the same answers of the store, give the same
+        // region, outputs, claims and returns.
+        let replay = || {
+            let mut region = begin();
+            let outputs: Vec<_> = recorded.iter().map(|inputs| region.tick(inputs)).collect();
+            (region, outputs)
+        };
+        assert_eq!(replay(), (region, outputs));
     }
 }
