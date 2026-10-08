@@ -265,14 +265,51 @@ pub struct TickState {
 /// The world store's answer to a [`RegionHello`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StoreWelcome {
-    /// The region is the owner's now. The connection carries [`StoreRequest`]s and
-    /// [`StoreReply`]s from here on.
-    Accepted(Restored),
+    /// The store lets the owner have the region. What the region is restored with
+    /// follows in [`RestoredPart`]s, up to one that is the last: a [`Restored`] can be
+    /// larger than a message may be. After the last part the connection carries
+    /// [`StoreRequest`]s and [`StoreReply`]s.
+    Accepted {
+        /// [`Restored::entity_ids`].
+        entity_ids: EntityIds,
+    },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.
     EpochRefused { seen: u64 },
     /// The connection is closed, for the reason given.
     Refused { reason: String },
+}
+
+/// Some of the state and the deltas of a [`Restored`], as they follow a
+/// [`StoreWelcome::Accepted`]. The pieces of all parts, in the order they are sent, are
+/// the state if there is one and then the deltas in the order of their ticks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoredPart {
+    pub pieces: Vec<RestoredPiece>,
+    /// Nothing follows this part: the region is restored with what has been sent.
+    pub last: bool,
+}
+
+/// The state or a delta of a [`Restored`], or as much of one as its part had room for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoredPiece {
+    pub of: RestoredItem,
+    /// [`TickState::tick`] of what this is a piece of.
+    pub tick: u64,
+    /// The bytes of [`TickState::state`] that come after those of the pieces before.
+    pub bytes: Vec<u8>,
+    /// Whether these are the last of its bytes. If not, the next piece, which is the
+    /// first of the next part, goes on with the same state or delta.
+    pub complete: bool,
+}
+
+/// What a [`RestoredPiece`] is a piece of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RestoredItem {
+    /// [`Restored::state`].
+    State,
+    /// One of [`Restored::deltas`].
+    Delta,
 }
 
 /// What a service says first on a connection to a worker or to the world store: which

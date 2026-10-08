@@ -153,7 +153,10 @@ mod tests {
         use clustine_data::blocks;
         use clustine_world::{BlockPos, EntityIds};
 
-        use crate::{Restored, StoreReply, StoreRequest, StoreWelcome, TickState};
+        use crate::{
+            Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
+            StoreWelcome, TickState,
+        };
 
         let restored = Restored {
             entity_ids: EntityIds::block(3).unwrap(),
@@ -174,7 +177,9 @@ mod tests {
         };
         assert_eq!(restored.tick(), 9);
         let welcomes = [
-            StoreWelcome::Accepted(restored),
+            StoreWelcome::Accepted {
+                entity_ids: restored.entity_ids,
+            },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Refused {
                 reason: "no".to_owned(),
@@ -199,6 +204,40 @@ mod tests {
         assert_eq!(blocking::read(&mut reader).unwrap(), Some(request));
         let reply = blocking::read(&mut reader).unwrap();
         assert_eq!(reply, Some(StoreReply::Committed { tick: 9 }));
+
+        // The parts a welcome is followed by: one that ends in the middle of a delta,
+        // and one with nothing in it but that it is the last.
+        let parts = [
+            RestoredPart {
+                pieces: vec![
+                    RestoredPiece {
+                        of: RestoredItem::State,
+                        tick: 7,
+                        bytes: vec![1, 2, 3],
+                        complete: true,
+                    },
+                    RestoredPiece {
+                        of: RestoredItem::Delta,
+                        tick: u64::MAX,
+                        bytes: vec![0xFF; 300],
+                        complete: false,
+                    },
+                ],
+                last: false,
+            },
+            RestoredPart {
+                pieces: Vec::new(),
+                last: true,
+            },
+        ];
+        let mut written = Vec::new();
+        for part in &parts {
+            blocking::write(&mut written, part).unwrap();
+        }
+        let mut reader = Cursor::new(&written);
+        for part in parts {
+            assert_eq!(blocking::read(&mut reader).unwrap(), Some(part));
+        }
 
         // A region that has never committed anything is restored up to tick 0, and one
         // with a state and no commits after it up to the state's tick.

@@ -222,10 +222,9 @@ with them so far:
   `(StoreHandle, Restored)`. Worlds of A0 are carried over. Until A3 restores the
   region's tick, the worker numbers its ticks on from `Restored::tick()`
   (`RegionRunner::continuing_from`), as the store orders records by tick.
-- For A3: a `Restored` has to cross TCP, whose messages are limited to 16 MiB. Each
-  tick in which a player moves logs that player's state, so a busy region holds tens of
-  megabytes of deltas by its five-minute checkpoint. A3 sends a `Restored` in parts, or
-  checkpoints the state far more often than the chunks.
+- A `Restored` crosses TCP in parts of at most a megabyte, a single large state or
+  delta in as many pieces as it takes, so that a busy region, which holds tens of
+  megabytes of deltas by its five-minute checkpoint, can be opened by another worker.
 - `Durable` is in the sim's API, `EdgeId` in `clustine-world`.
 - A2 is done: `RegionState`, `StateDelta` and `RegionState::apply` in
   `crates/clustine-sim/src/state.rs`; `Region::new(config, entity_ids)`,
@@ -254,8 +253,8 @@ Next, in this order:
    the line until the hello's snapshots are out); numbered messages deduplicated against
    what was received; `Progress`; `Gone` after 30 seconds; restoring after losing the
    store, and `WorkerClient::vouch` and `epoch_refused` (vouch `Committed` for a region
-   that ticked within the last second); the entity id block from the store, after which
-   `Assignment::entity_ids` goes; and a `Restored` larger than 16 MiB (see below). It can
+   that ticked within the last second); and the entity id block from the store, after
+   which `Assignment::entity_ids` goes. It can
    be delegated with a brief like those of A1 and A2, which said: own crates, a worktree,
    the interface, the tests expected, no commits to `main`, no pushes or downloads.
 2. A4 (`services/edge`): kept messages and inputs, resuming, reconciliation, living
@@ -286,6 +285,21 @@ Notes for what follows A0, which the ADR does not spell out:
 - The heartbeat gains a payload (section 6 of the ADR), and the worker reports an epoch
   the store refused.
 - Kubernetes: the edge becomes a StatefulSet, so that its name survives a restart (A4).
+
+### After M3, as the owner asked on 2026-10-08
+
+To be planned as milestones of their own, each with a written plan and an independent
+review first:
+
+- **Every service with several replicas**, highly available and balanced by load. M3
+  leaves one coordinator with nothing on disk and one edge whose death takes its players
+  with it (see the limits below); regions that survive their worker and edges that
+  survive a region are what this builds on.
+- **Terrain generation**, reusing what SteelMC or Pumpkin have if the licence of
+  ADR-0002 allows it; `docs/library-evaluation.md` has what was found about both.
+
+The owner also asked for the work to go on without waiting for them: at each stop of M3
+what to try with real clients is written down here, and the next phase begins.
 
 ### Known limits after M3
 

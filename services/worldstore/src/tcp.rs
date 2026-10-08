@@ -5,6 +5,12 @@
 //! in order and everything in the format of [`wire`]. [`serve`] is the store's side of
 //! this, [`StoreHandle::connect`] the owner's.
 //!
+//! What a region is restored with can be far larger than a message may be: a busy region
+//! commits a delta every tick, and its checkpoints are minutes apart. So a welcome is
+//! followed by the region's state and deltas in parts of bounded size, a single large
+//! one in as many pieces as it takes, and the region is its owner's once the owner has
+//! the last of them.
+//!
 //! On either side one thread reads from the connection and another writes to it, so that
 //! neither side ever keeps the other from sending. A connection lasts as long as its
 //! region is owned through it: the owner gives the region up by closing it, and the store
@@ -19,7 +25,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use clustine_rpc::{RegionHello, Restored, StoreReply, StoreRequest, StoreWelcome, wire};
+use clustine_rpc::{
+    RegionHello, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
+    StoreWelcome, TickState, wire,
+};
+use clustine_world::EntityIds;
 use tracing::{info, warn};
 
 use crate::{Link, Store, StoreError, StoreHandle};
@@ -32,6 +42,18 @@ const ACCEPT_INTERVAL: Duration = Duration::from_millis(5);
 
 /// How much is read from or written to a connection at a time.
 const BUFFER: usize = 64 * 1024;
+
+/// How much of what a region is restored with goes into one message, counted as by
+/// [`Parts`]. Far below [`wire::MAX_MESSAGE_LENGTH`], so that neither side holds much
+/// more than the region's state itself while it crosses.
+const PART_BYTES: usize = 1024 * 1024;
+
+// A part is a few bytes more on the connection than what is counted for it.
+const _: () = assert!(PART_BYTES + 16 <= wire::MAX_MESSAGE_LENGTH as usize / 8);
+
+/// What a piece takes in its part besides its bytes, at most: what it is a piece of,
+/// its tick, the number of its bytes and whether it is complete.
+const PIECE_OVERHEAD: usize = 24;
 
 /// A store that is being served to other processes. Stopping or dropping it ends that;
 /// the store itself runs on for whoever else holds it.
@@ -205,9 +227,10 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
             return;
         }
     };
-    let welcome = StoreWelcome::Accepted(restored);
-    if let Err(error) = wire::blocking::write(&mut &*stream, &welcome) {
-        info!(%peer, %region, epoch, %error, "a connection ended before its welcome");
+    if let Err(error) = welcome(stream, GREETING_TIMEOUT, restored) {
+        // The region is given up as with any connection that is lost, by dropping what
+        // it was opened with.
+        info!(%peer, %region, epoch, %error, "a connection ended before its region was restored");
         return;
     }
     info!(%peer, %region, epoch, "a region was opened by another process");
@@ -250,9 +273,192 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
     info!(%peer, %region, epoch, "the connection of a region ended");
 }
 
-/// Takes the other side's part of the greeting from `stream` with `read`, which is
-/// [`wire::blocking::read`]. That side has `patience` for it; what follows the greeting
-/// may take as long as it likes.
+/// Welcomes the owner of a region on `stream` and sends it what the region is restored
+/// with, in parts. The owner may leave the store waiting for `patience` at a time: one
+/// that has stopped reading must not hold on to a thread and a region for ever.
+fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Result<()> {
+    let Restored {
+        entity_ids,
+        state,
+        deltas,
+    } = restored;
+    stream.set_write_timeout(Some(patience))?;
+    wire::blocking::write(&mut &*stream, &StoreWelcome::Accepted { entity_ids })?;
+    for part in Parts::new(state, deltas, PART_BYTES) {
+        wire::blocking::write(&mut &*stream, &part)?;
+    }
+    // Answers wait for as long as the owner takes to read them.
+    stream.set_write_timeout(None)
+}
+
+/// The state and the deltas of a [`Restored`] as the parts they are sent in, none of
+/// which holds more than `room` bytes.
+///
+/// What is counted is the bytes of the states and [`PIECE_OVERHEAD`] for each piece, not
+/// the number of pieces: one delta can be large, and thousands can be next to nothing.
+/// A state or delta that does not fit what is left of a part is cut there and goes on in
+/// the next, so that nothing is too large to be sent.
+struct Parts {
+    state: Option<TickState>,
+    deltas: std::vec::IntoIter<TickState>,
+    /// What has been taken from the two and is not sent in full, with the number of its
+    /// bytes that are.
+    cut: Option<(RestoredItem, TickState, usize)>,
+    room: usize,
+    /// Whether the last part has been made.
+    done: bool,
+}
+
+impl Parts {
+    fn new(state: Option<TickState>, deltas: Vec<TickState>, room: usize) -> Self {
+        Self {
+            state,
+            deltas: deltas.into_iter(),
+            cut: None,
+            // A part has room for a byte at least, or nothing would ever be sent.
+            room: room.max(PIECE_OVERHEAD + 1),
+            done: false,
+        }
+    }
+
+    /// What is sent next, and how many of its bytes have been sent already.
+    fn item(&mut self) -> Option<(RestoredItem, TickState, usize)> {
+        if let Some(cut) = self.cut.take() {
+            return Some(cut);
+        }
+        if let Some(state) = self.state.take() {
+            return Some((RestoredItem::State, state, 0));
+        }
+        let delta = self.deltas.next()?;
+        Some((RestoredItem::Delta, delta, 0))
+    }
+}
+
+impl Iterator for Parts {
+    type Item = RestoredPart;
+
+    fn next(&mut self) -> Option<RestoredPart> {
+        if self.done {
+            return None;
+        }
+        let mut pieces = Vec::new();
+        let mut room = self.room;
+        loop {
+            let Some((of, mut state, sent)) = self.item() else {
+                // Even if there is nothing in it: the owner waits to be told that it
+                // has everything.
+                self.done = true;
+                return Some(RestoredPart { pieces, last: true });
+            };
+            if room <= PIECE_OVERHEAD {
+                self.cut = Some((of, state, sent));
+                return Some(RestoredPart {
+                    pieces,
+                    last: false,
+                });
+            }
+            let rest = state.state.len() - sent;
+            let taken = rest.min(room - PIECE_OVERHEAD);
+            room -= PIECE_OVERHEAD + taken;
+            let complete = taken == rest;
+            let bytes = if sent == 0 && complete {
+                // Nearly always, and then nothing is copied.
+                std::mem::take(&mut state.state)
+            } else {
+                state.state[sent..sent + taken].to_vec()
+            };
+            pieces.push(RestoredPiece {
+                of,
+                tick: state.tick,
+                bytes,
+                complete,
+            });
+            if !complete {
+                self.cut = Some((of, state, sent + taken));
+                return Some(RestoredPart {
+                    pieces,
+                    last: false,
+                });
+            }
+        }
+    }
+}
+
+/// A [`Restored`] that is being put together from the parts it arrives in.
+struct Arriving {
+    restored: Restored,
+    /// The state or delta whose pieces have not all arrived.
+    cut: Option<(RestoredItem, TickState)>,
+}
+
+impl Arriving {
+    fn new(entity_ids: EntityIds) -> Self {
+        Self {
+            restored: Restored {
+                entity_ids,
+                state: None,
+                deltas: Vec::new(),
+            },
+            cut: None,
+        }
+    }
+
+    /// Adds a part. Returns the whole once the part was the last, and itself until then.
+    ///
+    /// Parts that do not fit together are an error rather than a region restored with
+    /// something its store never had.
+    fn add(mut self, part: RestoredPart) -> io::Result<Result<Restored, Self>> {
+        for piece in part.pieces {
+            let (of, state) = match self.cut.take() {
+                Some((of, mut state)) => {
+                    if (piece.of, piece.tick) != (of, state.tick) {
+                        return Err(misfit("a piece does not go on with the one before it"));
+                    }
+                    state.state.extend_from_slice(&piece.bytes);
+                    (of, state)
+                }
+                None => {
+                    let state = TickState {
+                        tick: piece.tick,
+                        state: piece.bytes,
+                    };
+                    (piece.of, state)
+                }
+            };
+            if !piece.complete {
+                self.cut = Some((of, state));
+                continue;
+            }
+            match of {
+                RestoredItem::State => {
+                    if self.restored.state.is_some() || !self.restored.deltas.is_empty() {
+                        return Err(misfit("a state that is not the first of all"));
+                    }
+                    self.restored.state = Some(state);
+                }
+                RestoredItem::Delta => self.restored.deltas.push(state),
+            }
+        }
+        if !part.last {
+            return Ok(Err(self));
+        }
+        if self.cut.is_some() {
+            return Err(misfit("the last part ends in the middle of a piece"));
+        }
+        Ok(Ok(self.restored))
+    }
+}
+
+fn misfit(what: &str) -> io::Error {
+    io::Error::new(
+        ErrorKind::InvalidData,
+        format!("what a region is restored with arrived in disorder: {what}"),
+    )
+}
+
+/// Takes the other side's part of the greeting from `stream` with `read`, which reads
+/// it with [`wire::blocking::read`]. That side may keep this one waiting for `patience`
+/// at a time while it does; what follows the greeting may take as long as it likes.
 fn greeting<T>(
     stream: &TcpStream,
     patience: Duration,
@@ -328,17 +534,9 @@ fn connect_within(
     // Requests are written in batches already, and one must not wait for the next.
     let _ = stream.set_nodelay(true);
     wire::blocking::write(&mut &*stream, &hello)?;
-    let restored = match greeting(&stream, patience, |stream| wire::blocking::read(stream))? {
-        StoreWelcome::Accepted(restored) => restored,
-        StoreWelcome::EpochRefused { seen } => {
-            return Err(StoreError::EpochRefused {
-                region: hello.region,
-                offered: hello.epoch,
-                seen,
-            });
-        }
-        StoreWelcome::Refused { reason } => return Err(StoreError::Refused(reason)),
-    };
+    // Nothing is asked of the store before all of it is here: the region is not its
+    // owner's with half of what it is restored with.
+    let restored = greeting(&stream, patience, |stream| welcomed(stream, hello))??;
 
     let (requests, queued) = mpsc::channel();
     let (answers, replies) = mpsc::channel();
@@ -361,6 +559,41 @@ fn connect_within(
         lost,
     };
     Ok((handle, restored))
+}
+
+/// Reads the store's answer to `hello` and, if it is a welcome, what the region is
+/// restored with, to the last part. Returns `None` if the store said nothing at all.
+fn welcomed(
+    stream: &mut &TcpStream,
+    hello: RegionHello,
+) -> io::Result<Option<Result<Restored, StoreError>>> {
+    let entity_ids = match wire::blocking::read(stream)? {
+        Some(StoreWelcome::Accepted { entity_ids }) => entity_ids,
+        Some(StoreWelcome::EpochRefused { seen }) => {
+            return Ok(Some(Err(StoreError::EpochRefused {
+                region: hello.region,
+                offered: hello.epoch,
+                seen,
+            })));
+        }
+        Some(StoreWelcome::Refused { reason }) => {
+            return Ok(Some(Err(StoreError::Refused(reason))));
+        }
+        None => return Ok(None),
+    };
+    let mut arriving = Arriving::new(entity_ids);
+    loop {
+        let Some(part) = wire::blocking::read(stream)? else {
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "the connection was closed before the region was restored",
+            ));
+        };
+        match arriving.add(part)? {
+            Ok(restored) => return Ok(Some(Ok(restored))),
+            Err(more) => arriving = more,
+        }
+    }
 }
 
 /// Connects to `address`, trying every address the name stands for.
@@ -432,8 +665,7 @@ mod tests {
 
     use clustine_data::{BLOCK_STATE_COUNT, BlockState, blocks};
     use clustine_region::{Layout, RegionId};
-    use clustine_rpc::TickState;
-    use clustine_world::{BlockPos, Chunk, ChunkPos, EntityIds};
+    use clustine_world::{BlockPos, Chunk, ChunkPos};
 
     use super::*;
     use crate::tests::{
@@ -495,10 +727,19 @@ mod tests {
         wire::blocking::write(&mut connection, &hello).unwrap();
         let welcome = wire::blocking::read(&mut connection).unwrap();
         assert!(
-            matches!(welcome, Some(StoreWelcome::Accepted(_))),
+            matches!(welcome, Some(StoreWelcome::Accepted { .. })),
             "{welcome:?}"
         );
+        while !part(&mut connection).last {}
         connection
+    }
+
+    /// Reads a part of what a region is restored with from a connection of the test's
+    /// own.
+    fn part(connection: &mut TcpStream) -> RestoredPart {
+        wire::blocking::read(connection)
+            .unwrap()
+            .expect("a part follows")
     }
 
     /// The number of chunks that are stored in the world in `directory`.
@@ -1087,21 +1328,31 @@ mod tests {
         }
     }
 
-    /// A store of the test's own: it welcomes the hello of the one connection it accepts
-    /// and leaves the rest to `then`.
+    /// A store of the test's own: it welcomes the hello of the one connection it accepts,
+    /// restores the region with nothing, and leaves the rest to `then`.
     fn fake_store(then: impl FnOnce(TcpStream) + Send + 'static) -> (String, JoinHandle<()>) {
+        welcoming_store(|mut connection| {
+            let nothing = RestoredPart {
+                pieces: Vec::new(),
+                last: true,
+            };
+            wire::blocking::write(&mut connection, &nothing).unwrap();
+            then(connection);
+        })
+    }
+
+    /// A store of the test's own: it welcomes the hello of the one connection it accepts
+    /// and leaves the rest to `then`, beginning with what the region is restored with.
+    fn welcoming_store(then: impl FnOnce(TcpStream) + Send + 'static) -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let store = thread::spawn(move || {
             let (mut connection, _) = listener.accept().unwrap();
             let said: Option<RegionHello> = wire::blocking::read(&mut connection).unwrap();
             assert_eq!(said, Some(hello(1, 1)));
-            let restored = Restored {
+            let welcome = StoreWelcome::Accepted {
                 entity_ids: EntityIds::block(0).unwrap(),
-                state: None,
-                deltas: Vec::new(),
             };
-            let welcome = StoreWelcome::Accepted(restored);
             wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
         });
@@ -1200,5 +1451,443 @@ mod tests {
         assert!(!west.is_lost());
         server.stop();
         lost(&west);
+    }
+
+    const MEBIBYTE: usize = 1024 * 1024;
+
+    /// The most a message may hold.
+    const LIMIT: usize = wire::MAX_MESSAGE_LENGTH as usize;
+
+    /// `length` bytes that depend on `seed` and hardly repeat, so that pieces which are
+    /// lost, doubled or out of order show.
+    fn bytes(seed: u64, length: usize) -> Vec<u8> {
+        (0..length as u64)
+            .map(|at| (at ^ (at >> 8) ^ (at >> 16)).wrapping_add(seed) as u8)
+            .collect()
+    }
+
+    /// Has an owner in the store's own process, with `epoch`, commit to region 1: a
+    /// state of `state` bytes if that is given, and after it a delta of each of the
+    /// lengths in `deltas`. Returns what the store restores the region with in its own
+    /// process after that, which is opened with the next epoch for it.
+    fn filled(store: &Store, epoch: u64, state: Option<usize>, deltas: &[usize]) -> Restored {
+        let owner = open(store, hello(1, epoch));
+        log(&owner, 1, &[]);
+        if let Some(length) = state {
+            owner.request(StoreRequest::Checkpoint {
+                tick: 1,
+                state: bytes(1, length),
+            });
+        }
+        let mut tick = 1;
+        for length in deltas {
+            tick += 1;
+            owner.request(StoreRequest::Commit {
+                tick,
+                changes: Vec::new(),
+                state: bytes(tick, *length),
+            });
+        }
+        committed(&owner, tick);
+        owner.flush();
+        drop(owner);
+
+        let (owner, restored) = store.open_region(hello(1, epoch + 1)).unwrap();
+        drop(owner);
+        let state_length = restored.state.as_ref().map(|state| state.state.len());
+        assert_eq!(state_length, state);
+        let lengths = restored.deltas.iter().map(|delta| delta.state.len());
+        // Without a checkpoint the commit of tick 1 is still among them.
+        let skipped = usize::from(state.is_none());
+        assert_eq!(lengths.skip(skipped).collect::<Vec<_>>(), deltas);
+        restored
+    }
+
+    /// The number of bytes `part` is on the connection.
+    fn sent_length(part: &RestoredPart) -> usize {
+        let mut sent = Vec::new();
+        wire::blocking::write(&mut sent, part).unwrap();
+        sent.len()
+    }
+
+    /// Puts together what [`Parts`] made.
+    fn together(entity_ids: EntityIds, parts: Vec<RestoredPart>) -> io::Result<Restored> {
+        let mut arriving = Arriving::new(entity_ids);
+        let mut parts = parts.into_iter();
+        loop {
+            let part = parts.next().expect("the last part ends them");
+            match arriving.add(part)? {
+                Ok(restored) => {
+                    assert_eq!(parts.next(), None, "a part after the last");
+                    return Ok(restored);
+                }
+                Err(more) => arriving = more,
+            }
+        }
+    }
+
+    fn tick_state(tick: u64, length: usize) -> TickState {
+        TickState {
+            tick,
+            state: bytes(tick, length),
+        }
+    }
+
+    #[test]
+    fn what_a_region_is_restored_with_is_cut_into_bounded_parts_that_fit_together_again() {
+        let entity_ids = EntityIds::block(2).unwrap();
+        let restored = |state: Option<usize>, deltas: &[usize]| Restored {
+            entity_ids,
+            state: state.map(|length| tick_state(7, length)),
+            deltas: (8..)
+                .zip(deltas)
+                .map(|(tick, length)| tick_state(tick, *length))
+                .collect(),
+        };
+        // Next to nothing thousands of times over, with and without bytes at all.
+        let tiny: Vec<usize> = (0..3000).map(|index| index % 5).collect();
+        let cases = [
+            restored(None, &[]),
+            restored(Some(0), &[]),
+            restored(Some(3), &[4, 0, 5]),
+            restored(None, &[0]),
+            restored(None, &tiny),
+            // A state and deltas that are larger than a part, and one that is as large
+            // as a part to the byte.
+            restored(
+                Some(2500),
+                &[1, 3000, 0, 1000 - PIECE_OVERHEAD, 976, 977, 2],
+            ),
+        ];
+        for room in [0, 30, 100, 1000, PART_BYTES] {
+            for case in &cases {
+                let parts: Vec<_> =
+                    Parts::new(case.state.clone(), case.deltas.clone(), room).collect();
+                let room = room.max(PIECE_OVERHEAD + 1);
+                for (index, part) in parts.iter().enumerate() {
+                    // Besides what is counted, a part has its length, the number of its
+                    // pieces and whether it is the last.
+                    assert!(sent_length(part) <= room + 16, "{}", sent_length(part));
+                    assert_eq!(part.last, index == parts.len() - 1);
+                    // Only what a part had no room for is cut, and it ends the part.
+                    for (at, piece) in part.pieces.iter().enumerate() {
+                        assert!(piece.complete || at == part.pieces.len() - 1);
+                    }
+                }
+                // No more parts than it takes: every part but the last is full.
+                let counted = |part: &RestoredPart| {
+                    let bytes: usize = part.pieces.iter().map(|piece| piece.bytes.len()).sum();
+                    bytes + part.pieces.len() * PIECE_OVERHEAD
+                };
+                for part in &parts[..parts.len() - 1] {
+                    assert!(counted(part) + PIECE_OVERHEAD >= room, "{}", counted(part));
+                }
+                assert_eq!(together(entity_ids, parts).unwrap(), *case);
+            }
+        }
+
+        // The same with what goes into a message as it is served: a state and a delta
+        // of several parts each.
+        let large = restored(Some(3 * PART_BYTES + 5), &[3, 5 * PART_BYTES / 2, 0]);
+        let parts: Vec<_> =
+            Parts::new(large.state.clone(), large.deltas.clone(), PART_BYTES).collect();
+        assert!(parts.len() > 5);
+        for part in &parts {
+            assert!(sent_length(part) <= PART_BYTES + 16);
+        }
+        assert_eq!(together(entity_ids, parts).unwrap(), large);
+    }
+
+    #[test]
+    fn parts_that_do_not_fit_together_are_an_error() {
+        let entity_ids = EntityIds::block(2).unwrap();
+        let piece = |of, tick, complete| RestoredPiece {
+            of,
+            tick,
+            bytes: vec![1, 2],
+            complete,
+        };
+        let (state, delta) = (RestoredItem::State, RestoredItem::Delta);
+        let disorders = [
+            // A piece that goes on with another tick, or with a state as a delta.
+            vec![piece(delta, 4, false), piece(delta, 5, true)],
+            vec![piece(state, 4, false), piece(delta, 4, true)],
+            // A second state, and a state after a delta.
+            vec![piece(state, 4, true), piece(state, 5, true)],
+            vec![piece(delta, 4, true), piece(state, 5, true)],
+            // An end in the middle of a delta.
+            vec![piece(delta, 4, true), piece(delta, 5, false)],
+        ];
+        for pieces in disorders {
+            // Whether they come in one part or in one each.
+            let one = vec![RestoredPart {
+                pieces: pieces.clone(),
+                last: true,
+            }];
+            let last = pieces.len() - 1;
+            let each = pieces
+                .into_iter()
+                .enumerate()
+                .map(|(index, piece)| RestoredPart {
+                    pieces: vec![piece],
+                    last: index == last,
+                });
+            for parts in [one, each.collect()] {
+                let error = together(entity_ids, parts.clone()).unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::InvalidData, "{parts:?}");
+            }
+        }
+
+        // In order, the same pieces are a state and a delta.
+        let parts = vec![
+            RestoredPart {
+                pieces: vec![piece(state, 4, false)],
+                last: false,
+            },
+            RestoredPart {
+                pieces: vec![piece(state, 4, true), piece(delta, 5, false)],
+                last: false,
+            },
+            RestoredPart {
+                pieces: vec![piece(delta, 5, true)],
+                last: true,
+            },
+        ];
+        let expected = Restored {
+            entity_ids,
+            state: Some(TickState {
+                tick: 4,
+                state: vec![1, 2, 1, 2],
+            }),
+            deltas: vec![TickState {
+                tick: 5,
+                state: vec![1, 2, 1, 2],
+            }],
+        };
+        assert_eq!(together(entity_ids, parts).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_region_restored_with_far_more_than_a_message_holds_is_opened_over_a_connection() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = ChunkPos::new(0, 0);
+        for store in stores(directory.path()) {
+            let (_server, address) = served(&store);
+            // A state and a delta that are each more than a message holds, deltas that
+            // are each more than a part holds, and thousands of next to nothing.
+            let mut deltas = vec![LIMIT + 3];
+            deltas.extend([MEBIBYTE * 3 / 2; 4]);
+            deltas.extend((0..3000).map(|index| index % 40));
+            let expected = filled(&store, 1, Some(LIMIT + MEBIBYTE), &deltas);
+            let held: usize = expected.deltas.iter().map(|delta| delta.state.len()).sum();
+            assert!(held > LIMIT + 6 * MEBIBYTE, "{held}");
+
+            let (remote, restored) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
+            // Not `assert_eq`, which would print all of it.
+            assert!(restored == expected);
+
+            // The region is the owner's from then on, and nothing it was restored with
+            // is taken for an answer.
+            assert_eq!(remote.try_reply(), None);
+            let tick = expected.tick() + 1;
+            log(&remote, tick, &[]);
+            remote.request(StoreRequest::Load { position: origin });
+            remote.request(StoreRequest::Flush);
+            let mut answers = vec![any_reply(&remote), any_reply(&remote), any_reply(&remote)];
+            // The commit and the load are answered in whichever order they are done.
+            let loaded = StoreReply::Loaded {
+                position: origin,
+                chunk: generator().generate(origin),
+            };
+            assert_eq!(answers.pop(), Some(StoreReply::Flushed));
+            assert!(answers.contains(&StoreReply::Committed { tick }));
+            assert!(answers.contains(&loaded));
+            assert_eq!(remote.try_reply(), None);
+            assert!(!remote.is_lost());
+        }
+    }
+
+    #[test]
+    fn a_region_restored_with_little_or_nothing_is_opened_over_a_connection() {
+        // Nothing at all: a region that is opened for the first time.
+        let directory = tempfile::tempdir().unwrap();
+        for store in stores(directory.path()) {
+            let (_server, address) = served(&store);
+            let (remote, restored) = StoreHandle::connect(&address, hello(0, 1)).unwrap();
+            assert_eq!((&restored.state, &restored.deltas), (&None, &Vec::new()));
+            drop(remote);
+            let (_local, locally) = store.open_region(hello(0, 2)).unwrap();
+            assert_eq!(restored, locally);
+        }
+
+        // A few deltas, one of them without a byte: without a state, after one, and
+        // after one that is empty itself.
+        for state in [None, Some(4), Some(0)] {
+            let directory = tempfile::tempdir().unwrap();
+            for store in stores(directory.path()) {
+                let (_server, address) = served(&store);
+                let expected = filled(&store, 1, state, &[3, 0, 7]);
+                let (remote, restored) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
+                assert_eq!(restored, expected);
+                remote.flush();
+                assert_eq!(remote.try_reply(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn connecting_fails_when_the_store_does_not_get_to_the_end_of_what_a_region_is_restored_with() {
+        let first = || RestoredPart {
+            pieces: vec![
+                RestoredPiece {
+                    of: RestoredItem::State,
+                    tick: 3,
+                    bytes: vec![7; 100],
+                    complete: true,
+                },
+                RestoredPiece {
+                    of: RestoredItem::Delta,
+                    tick: 4,
+                    bytes: vec![8; 100],
+                    complete: false,
+                },
+            ],
+            last: false,
+        };
+        let failed = |connected: Result<(StoreHandle, Restored), StoreError>, kind| {
+            let Err(error) = connected else {
+                panic!("a region was restored with a part of what it is restored with");
+            };
+            assert!(
+                matches!(&error, StoreError::Io(error) if error.kind() == kind),
+                "{error}"
+            );
+        };
+
+        // A store that goes away after the first part, as one does whose process dies.
+        let (address, store) = welcoming_store(move |mut connection| {
+            wire::blocking::write(&mut connection, &first()).unwrap();
+        });
+        failed(
+            StoreHandle::connect(&address, hello(1, 1)),
+            ErrorKind::UnexpectedEof,
+        );
+        store.join().unwrap();
+
+        // One that goes away in the middle of a part.
+        let (address, store) = welcoming_store(move |mut connection| {
+            wire::blocking::write(&mut connection, &first()).unwrap();
+            let mut second = Vec::new();
+            wire::blocking::write(&mut second, &first()).unwrap();
+            connection.write_all(&second[..second.len() / 2]).unwrap();
+        });
+        failed(
+            StoreHandle::connect(&address, hello(1, 1)),
+            ErrorKind::UnexpectedEof,
+        );
+        store.join().unwrap();
+
+        // One that says it is done in the middle of a delta, and one that sends
+        // something that is no part.
+        let (address, store) = welcoming_store(move |mut connection| {
+            let last = RestoredPart {
+                last: true,
+                ..first()
+            };
+            wire::blocking::write(&mut connection, &last).unwrap();
+            assert!(closed(&connection));
+        });
+        failed(
+            StoreHandle::connect(&address, hello(1, 1)),
+            ErrorKind::InvalidData,
+        );
+        store.join().unwrap();
+        let (address, store) = welcoming_store(move |mut connection| {
+            wire::blocking::write(&mut connection, &first()).unwrap();
+            connection.write_all(&[0xFF; 4]).unwrap();
+            assert!(closed(&connection));
+        });
+        failed(
+            StoreHandle::connect(&address, hello(1, 1)),
+            ErrorKind::InvalidData,
+        );
+        store.join().unwrap();
+
+        // One that stops in the middle and stays: it is not waited for for ever.
+        let (close, closing) = mpsc::channel::<()>();
+        let (address, store) = welcoming_store(move |mut connection| {
+            wire::blocking::write(&mut connection, &first()).unwrap();
+            let _ = closing.recv();
+        });
+        failed(
+            connect_within(&address, hello(1, 1), Duration::from_millis(300)),
+            ErrorKind::TimedOut,
+        );
+        close.send(()).unwrap();
+        store.join().unwrap();
+    }
+
+    #[test]
+    fn a_region_whose_owner_went_away_while_it_was_restored_is_opened_again_with_everything() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = ChunkPos::new(0, 0);
+        for store in stores(directory.path()) {
+            let (server, address) = served(&store);
+            // More than the system takes for a connection that nobody reads from.
+            let expected = filled(&store, 1, Some(2 * MEBIBYTE), &[MEBIBYTE; 10]);
+
+            // An owner that goes away with the first part, and one that goes away with
+            // the welcome alone.
+            for parts in [1, 0] {
+                let mut connection = TcpStream::connect(&address).unwrap();
+                wire::blocking::write(&mut connection, &hello(1, 3)).unwrap();
+                let welcome = wire::blocking::read(&mut connection).unwrap();
+                let accepted = StoreWelcome::Accepted {
+                    entity_ids: expected.entity_ids,
+                };
+                assert_eq!(welcome, Some(accepted));
+                for _ in 0..parts {
+                    let first = part(&mut connection);
+                    assert!(!first.last && !first.pieces.is_empty());
+                }
+                drop(connection);
+                // The store gives up on it, and its region with it.
+                quiet(&server);
+            }
+
+            // The same owner comes back with its epoch and is given all of it.
+            let (remote, restored) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
+            assert!(restored == expected);
+            assert_eq!(load(&remote, origin), generator().generate(origin));
+            let tick = expected.tick() + 1;
+            log(&remote, tick, &[]);
+            committed(&remote, tick);
+            assert!(!remote.is_lost());
+        }
+    }
+
+    /// The store's side of a connection whose other side, which is returned with it,
+    /// reads nothing.
+    #[test]
+    fn an_owner_that_stops_reading_what_its_region_is_restored_with_is_given_up_on() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let deaf = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        // Far more than the system takes for a connection that nobody reads from.
+        let restored = Restored {
+            entity_ids: EntityIds::block(0).unwrap(),
+            state: None,
+            deltas: vec![TickState {
+                tick: 1,
+                state: vec![0; 4 * LIMIT],
+            }],
+        };
+        let error = welcome(&stream, Duration::from_millis(300), restored).unwrap_err();
+        // Which of the two a write that ran out of time reports depends on the system.
+        assert!(
+            matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+            "{error}"
+        );
+        drop(deaf);
     }
 }
