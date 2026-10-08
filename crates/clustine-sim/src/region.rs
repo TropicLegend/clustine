@@ -432,14 +432,29 @@ impl Region {
             .filter(|(_, player)| player.edge == id)
             .map(|(player, _)| *player)
             .collect();
+        let mut reported = BTreeSet::new();
         for player in players {
+            if let Some(entity) = self.players.get(&player).map(|player| player.entity_id) {
+                reported.insert(entity);
+            }
             self.remove_player(player, output);
         }
+        // A departed player can have come back since, through this edge or another, and
+        // keeps their entity when they do. Such an entity is either reported removed
+        // above already or alive in the region still, and must not be reported again.
+        let alive: BTreeSet<_> = self
+            .players
+            .values()
+            .map(|player| player.entity_id)
+            .collect();
         let Some(edge) = self.edges.get_mut(&id) else {
             return;
         };
         for entry in mem::take(&mut edge.outbox).into_values() {
-            if let Durable::Departed { transfer, .. } = entry {
+            if let Durable::Departed { transfer, .. } = entry
+                && !alive.contains(&transfer.entity_id)
+                && reported.insert(transfer.entity_id)
+            {
                 let position = transfer.pose.position;
                 output.events.push(RegionEvent::EntityRemoved {
                     entity: transfer.entity_id,

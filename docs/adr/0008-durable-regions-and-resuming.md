@@ -46,7 +46,8 @@ clocks, I/O and hash maps. New among the inputs:
     edge with a lower start, the edge is **reset**: every player of that edge is removed
     (reported as `EntityRemoved`), the entity of every `Departed` in its outbox is reported
     as removed too (a departing entity is otherwise never reported removed, and would stay
-    on the screens of those who saw it leave), its outbox is dropped, `applied` and `sent`
+    on the screens of those who saw it leave) unless a player of the region has it again,
+    having come back, and no entity is reported twice; its outbox is dropped, `applied` and `sent`
     become 0, and the new start is noted. An unknown edge is noted with `applied` and
     `sent` at 0. An equal start changes nothing. A lower start never reaches the tick
     (section 4).
@@ -55,9 +56,15 @@ clocks, I/O and hash maps. New among the inputs:
     outbox's `Departed` are removed as for a reset, and the region forgets the edge.
 - `applied: Vec<(EdgeId, u64)>`: the inputs of this tick contain the edge's messages up
   to this number; the region notes it as that edge's `applied`.
-- Joining, arriving and leaving name the edge they came from. That is input to the tick,
-  not something on the wire: the runner knows which edge a link belongs to.
-  - A join or an arrival makes the player that edge's.
+- Joining, arriving, leaving, inputs and remote actions name the edge they came from.
+  That is input to the tick, not something on the wire: the runner knows which edge a
+  link belongs to. Whatever names an edge the region does not know is ignored, as nobody
+  could be told what became of it; an arrival through such an edge has its entity
+  reported removed, as one with nowhere to go. An input through another edge than the
+  player's is ignored: it is from a connection the player had before.
+  - A join or an arrival makes the player that edge's, with nothing handled yet. An
+    arrival of a player the region has already changes nothing about them (their entity,
+    their edge); the entity that was on its way is reported removed if it is another.
   - A join of a player the region has under **another** edge replaces them: the old entity
     is reported removed and the player enters the world anew. This is the rule the runner
     applies by link today, carried over to edges; it is what lets a player come back
@@ -311,6 +318,12 @@ this record, all worked in above:
 13. A worker could not open its region again with its own epoch while the store still
     had its old session, and did not tell being replaced from the store being away.
 14. Epochs kept on disk and epochs from the coordinator's clock could disagree for good.
+
+Tests of the sim written from this record by someone who had not seen the code (A2)
+found that a reset reported the entity of a `Departed` removed even when its player had
+come back and lived on in the region, and left open what an arrival of a player who is
+there, a join through an unknown edge and `handled` on entering anew do; all of that is
+in section 2 now.
 
 Building the coordinator (A5) found one more: vouching was defined by a commit confirmed
 within the lease, which an idle region, which commits nothing, never has; it would have
