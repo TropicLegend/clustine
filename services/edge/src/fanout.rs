@@ -210,8 +210,14 @@ struct Link {
     id: u64,
     /// Whether the region has said what it knows of this edge. Until then nothing that
     /// was kept is sent again: a region that has forgotten the edge expects its
-    /// messages numbered from 1, and would close the link over the gap.
+    /// messages numbered from 1, and would close the link over the gap. Nor is it sent
+    /// before the outbox entries that the welcome announced have been handled: one of
+    /// them can change what is kept (`docs/adr/0013-the-edge-without-a-layout.md`,
+    /// section 6).
     welcomed: bool,
+    /// How many of the outbox entries the welcome announced are still to come; `None`
+    /// until the welcome has been read.
+    announced: Option<u32>,
 }
 
 /// What the edge keeps for a region, with or without a link to it; see
@@ -443,6 +449,7 @@ impl Fanout {
             epoch,
             id,
             welcomed: false,
+            announced: None,
         });
     }
 
@@ -469,8 +476,25 @@ impl Fanout {
                 self.regions[from.0 as usize].since = since;
             }
         }
-        let port = &mut self.regions[from.0 as usize];
-        let link = port.link.as_mut()?;
+        let entries = match welcome {
+            Welcome::Resumed { entries } | Welcome::Unknown { entries, .. } => entries,
+            Welcome::Superseded => 0,
+        };
+        let link = self.regions[from.0 as usize].link.as_mut()?;
+        link.announced = Some(entries);
+        if entries == 0 {
+            self.send_kept(from).await;
+        }
+        None
+    }
+
+    /// Sends the region `region` what was kept for it, now that it has said where it
+    /// stands and the outbox entries its welcome announced have been handled.
+    async fn send_kept(&mut self, region: RegionId) {
+        let port = &mut self.regions[region.0 as usize];
+        let Some(link) = port.link.as_mut() else {
+            return;
+        };
         link.welcomed = true;
         // In the order they were made, which is the order of their numbers.
         for (number, body) in &port.kept {
@@ -483,7 +507,24 @@ impl Fanout {
                 break;
             }
         }
-        None
+    }
+
+    /// Takes an entry of the outbox of the region `from`, and counts it against what the
+    /// region's welcome announced: when the last of those has been handled, what was
+    /// kept for the region is sent.
+    async fn outbox(&mut self, from: RegionId, number: u64, entry: Durable) {
+        self.handle_entry(from, number, entry).await;
+        let link = self.regions[from.0 as usize].link.as_mut();
+        let Some(link) = link.filter(|link| !link.welcomed) else {
+            return;
+        };
+        // An entry the edge had handled before counts as well: the region announced it.
+        if let Some(left) = &mut link.announced {
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                self.send_kept(from).await;
+            }
+        }
     }
 
     /// The region `region` has forgotten this edge, which stayed away from it for too
@@ -710,7 +751,7 @@ impl Fanout {
     /// Handles an entry of the outbox of the region `from` and confirms it. An entry
     /// that was handled before is one the region sends again because the confirmation
     /// had not reached it, and is passed over.
-    async fn outbox(&mut self, from: RegionId, number: u64, entry: Durable) {
+    async fn handle_entry(&mut self, from: RegionId, number: u64, entry: Durable) {
         let port = &mut self.regions[from.0 as usize];
         if number <= port.seen {
             return;
@@ -1257,8 +1298,12 @@ impl Fanout {
     /// the edge resumes with the region, after missing what happened meanwhile, and is
     /// reconciled with what the edge shows: a chunk that differs is sent again, and an
     /// entity the edge shows in the chunk that the region does not have there is
-    /// removed. The entity of one of this edge's own players is never removed by this:
-    /// what becomes of them the region says for each of them.
+    /// removed, if it was this region that introduced it. The entity of one of this
+    /// edge's own players is never removed by this: what becomes of them the region
+    /// says for each of them. Nor is an entity that another region introduced: a
+    /// player of one region can stand in a chunk another holds while the store says
+    /// whose it is, and the holder's snapshot does not have them
+    /// (`docs/adr/0012-the-tick-on-chunks.md`, rule 32).
     async fn take_snapshot(
         &mut self,
         from: RegionId,
@@ -1296,6 +1341,7 @@ impl Fanout {
                 .iter()
                 .filter(|(id, shown)| {
                     shown.state.chunk() == position
+                        && shown.from == from
                         && !self.entity_owners.contains_key(id)
                         && entities.iter().all(|present| present.entity != **id)
                 })
@@ -2420,6 +2466,39 @@ mod tests {
         );
         edge.settle(WEST).await;
         assert!(connected(&mut packets));
+    }
+
+    /// What was kept for a region is sent again only when the outbox entries that the
+    /// region's welcome announced have been handled: one of them can change what is
+    /// kept.
+    #[tokio::test]
+    async fn what_was_kept_is_sent_after_the_entries_the_welcome_announced() {
+        let mut edge = Harness::start().await;
+        let _packets = edge.joined(player(1), EntityId(5)).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+
+        let hello = edge.relink(WEST, 2).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 2 }));
+        let done = |sequence| Durable::RemoteDone {
+            player: player(u128::MAX),
+            sequence,
+        };
+        // The first entry is confirmed, and nothing that was kept has been sent.
+        let first = edge.say(WEST, done(1));
+        let message = edge.next(WEST).await;
+        assert_eq!(message.body, EdgeToWorker::Confirm { number: first });
+        // With the second, what was kept follows its confirmation, in order.
+        let second = edge.say(WEST, done(2));
+        let message = edge.next(WEST).await;
+        assert_eq!(message.body, EdgeToWorker::Confirm { number: second });
+        let (number, join) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 1 && matches!(join, EdgeToWorker::PlayerJoin(_)),
+            "{join:?}"
+        );
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
     }
 
     #[tokio::test]
