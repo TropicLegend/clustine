@@ -207,6 +207,8 @@ fn an_unknown_edge_is_noted_with_nothing_applied_or_sent() {
         region.edge(A),
         Some(&EdgeState {
             start: 7,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             applied: 0,
             sent: 0,
             outbox: BTreeMap::new(),
@@ -256,6 +258,8 @@ fn a_higher_start_resets_the_edge_and_removes_whatever_of_it_is_shown() {
         region.edge(A),
         Some(&EdgeState {
             start: 2,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             ..EdgeState::default()
         })
     );
@@ -352,6 +356,8 @@ fn a_gone_edge_is_forgotten_with_its_players_and_departures() {
         region.edge(A),
         Some(&EdgeState {
             start: 1,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             ..EdgeState::default()
         })
     );
@@ -372,6 +378,8 @@ fn a_gone_edge_that_starts_again_in_the_same_tick_has_an_empty_outbox() {
         region.edge(A),
         Some(&EdgeState {
             start: 1,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             ..EdgeState::default()
         })
     );

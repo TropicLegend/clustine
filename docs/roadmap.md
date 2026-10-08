@@ -399,6 +399,14 @@ worker that dies or leaves go to the others. `chaos.rs` has two workers running 
 regions with one of them killed again and again; `moves.rs` has a single worker that
 runs everything and hands it to one that arrives.
 
+C2b has its design in [ADR-0012](adr/0012-the-tick-on-chunks.md), written from the
+code of the sim and the runner and reviewed like ADR-0011 (sixteen defects, worked
+in). Of its steps C2b.1 is built: a region's state for an edge says since when the
+region knows the edge, the edge says that number in its hellos and is resumed only if
+it is the region's, a welcome says how many outbox entries follow it, and what a worker
+stores of a region begins with a number for its form, so that what an earlier build
+stored is dropped instead of being read as something else.
+
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
 and in hellos, the welcome saying how many entries follow (all C2b); how `Restored::held`

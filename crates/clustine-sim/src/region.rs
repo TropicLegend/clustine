@@ -389,6 +389,7 @@ impl Region {
                         id,
                         EdgeState {
                             start,
+                            since: self.tick,
                             ..EdgeState::default()
                         },
                     );
@@ -402,6 +403,7 @@ impl Region {
                         id,
                         EdgeState {
                             start,
+                            since: self.tick,
                             ..EdgeState::default()
                         },
                     );
@@ -515,6 +517,7 @@ impl Region {
                 .map(|(id, journal)| {
                     let delta = self.edges.get(&id).map(|edge| EdgeDelta {
                         start: edge.start,
+                        since: edge.since,
                         applied: edge.applied,
                         sent: edge.sent,
                         cleared: journal.cleared,

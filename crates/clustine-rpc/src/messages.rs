@@ -42,6 +42,11 @@ pub enum EdgeToWorker {
         /// Which start of the edge this is. Each start of an edge has a higher number
         /// than the one before.
         start: u64,
+        /// The `since` of the last welcome the edge has read from this region
+        /// ([`Welcome::Unknown`]), 0 if none: the region's word for the numbering the
+        /// two share. The region resumes only with an edge that says the one it has.
+        /// See `docs/adr/0012-the-tick-on-chunks.md`, section 4.5.
+        since: u64,
         /// The number of the last outbox entry the edge has got from this region; 0 if
         /// none.
         seen: u64,
@@ -164,11 +169,17 @@ pub enum WorkerToEdge {
 /// What a region answers an edge that has said hello.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Welcome {
-    /// The region knew the edge with this start and carries on where it was.
-    Resumed,
-    /// The region did not know the edge with this start: it is new, or the region has
-    /// forgotten it. What the edge believed to be in the region is not there.
-    Unknown,
+    /// The region knew the edge with this start and with the `since` it said, and
+    /// carries on where it was. `entries` outbox entries follow, those above the
+    /// hello's `seen`, before anything else.
+    Resumed { entries: u32 },
+    /// The region does not share a numbering with the edge: it did not know the edge
+    /// with this start, or has forgotten it, or knows it since another moment than the
+    /// edge said. What the edge believed to be in the region is not there, nothing of
+    /// the hello's `seen` was taken, and the edge numbers its messages from 1 again.
+    /// `since` is what the edge says in its hellos from now on. `entries` outbox
+    /// entries follow, numbered from the region's own first.
+    Unknown { since: u64, entries: u32 },
     /// The region knows a later start of this edge, so this one has been replaced. The
     /// link is closed.
     Superseded,

@@ -194,6 +194,48 @@ pub enum RestoreError {
     State { tick: u64, error: postcard::Error },
     #[error("the stored change of the region's state in tick {tick} cannot be read: {error}")]
     Delta { tick: u64, error: postcard::Error },
+    #[error(
+        "what is stored of the region as of tick {tick} was written by a later build (format {format})"
+    )]
+    Format { tick: u64, format: u8 },
+}
+
+/// The number of the form in which a region's state and its changes are handed to the
+/// world store. It is raised by every change to the shape of anything a `RegionState`
+/// or a `StateDelta` contains: what was stored with a lower number, or before there
+/// was one, cannot be read as what it is now, and postcard does not notice (it has no
+/// names or kinds on the wire, so bytes of one shape can read as another).
+/// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
+/// changes, and says so.
+pub const STATE_FORMAT: u8 = 1;
+
+/// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
+/// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
+/// was stored before there was a number: such bytes begin with the tick, which
+/// postcard writes with a first byte of zero only for tick 0, and no state or delta of
+/// tick 0 is ever stored.
+fn stored<T: serde::Serialize>(value: &T) -> Vec<u8> {
+    let bytes = vec![0, STATE_FORMAT];
+    postcard::to_extend(value, bytes).expect("a region's state is made of what postcard can write")
+}
+
+/// What `bytes`, a state or a delta as the store has it for `tick`, are.
+enum Stored<'a> {
+    /// Of this build: the postcard of the value.
+    Current(&'a [u8]),
+    /// From before: written without a number, or with a lower one. It cannot be read.
+    Before,
+}
+
+fn sort_stored(tick: u64, bytes: &[u8]) -> Result<Stored<'_>, RestoreError> {
+    match bytes {
+        [0, format, rest @ ..] if *format == STATE_FORMAT => Ok(Stored::Current(rest)),
+        [0, format, ..] if *format > STATE_FORMAT => Err(RestoreError::Format {
+            tick,
+            format: *format,
+        }),
+        _ => Ok(Stored::Before),
+    }
 }
 
 /// What a runner needs of the world store. A [`StoreHandle`] is what it is in earnest;
@@ -235,8 +277,22 @@ struct Resume {
     seen: u64,
     /// The players the edge believes to be in the region.
     players: Vec<PlayerId>,
-    /// Whether the region knew the edge with the start of the hello.
-    known: bool,
+    /// What the hello is answered with.
+    answer: Answer,
+}
+
+/// How a hello is answered; see `docs/adr/0012-the-tick-on-chunks.md`, section 4.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// The region knows the edge with the hello's start and `since`.
+    Resumed,
+    /// The region knows the edge with that start since another moment than the edge
+    /// says, and has taken nothing from it since: the edge never read the welcome that
+    /// said so. It is told again, and sent the whole outbox.
+    ToldAgain,
+    /// The region does not know the edge with that start, or resets it: the tick that
+    /// takes the hello makes its state.
+    New,
 }
 
 /// A link to an edge and what the runner keeps for it.
@@ -767,23 +823,36 @@ impl RegionRunner {
                 continue;
             };
             resumed.insert(*id);
-            let welcome = match resume.known {
-                true => Welcome::Resumed,
-                false => Welcome::Unknown,
+            // The entries that follow the welcome: after a resume those the edge has
+            // not seen, and all of them for an edge that is told again since when the
+            // region knows it. A state that the coming tick makes has none.
+            let state = self.region.edge(edge);
+            let (above, since) = match (resume.answer, state) {
+                (Answer::Resumed, Some(state)) => (Some(resume.seen), state.since),
+                (Answer::ToldAgain, Some(state)) => (Some(0), state.since),
+                // The number of the tick that takes the hello, which is the `since`
+                // of the state it makes.
+                _ => (None, before + 1),
+            };
+            let entries: Vec<_> = match (above, state) {
+                (Some(above), Some(state)) => state
+                    .outbox
+                    .range((Bound::Excluded(above), Bound::Unbounded))
+                    .map(|(number, entry)| (*number, entry.clone()))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+            let welcome = match resume.answer {
+                Answer::Resumed => Welcome::Resumed { entries: count },
+                Answer::ToldAgain | Answer::New => Welcome::Unknown {
+                    since,
+                    entries: count,
+                },
             };
             outgoing.push((*id, WorkerToEdge::Welcome(welcome)));
-            if let Some(state) = self.region.edge(edge).filter(|_| resume.known) {
-                let above = (Bound::Excluded(resume.seen), Bound::Unbounded);
-                for (number, entry) in state.outbox.range(above) {
-                    let entry = entry.clone();
-                    outgoing.push((
-                        *id,
-                        WorkerToEdge::Outbox {
-                            number: *number,
-                            entry,
-                        },
-                    ));
-                }
+            for (number, entry) in entries {
+                outgoing.push((*id, WorkerToEdge::Outbox { number, entry }));
             }
             for player in resume.players {
                 // A player of another edge has connected anew through that one; this
@@ -791,7 +860,7 @@ impl RegionRunner {
                 let state = self
                     .region
                     .player_state(player)
-                    .filter(|state| resume.known && state.edge == edge);
+                    .filter(|state| resume.answer == Answer::Resumed && state.edge == edge);
                 let answer = match state {
                     Some(state) => Presence::Present {
                         entity: state.entity_id,
@@ -878,8 +947,7 @@ impl RegionRunner {
             self.store.request(StoreRequest::Commit {
                 tick: output.tick,
                 changes,
-                state: postcard::to_stdvec(&output.delta)
-                    .expect("a change of state is made of what postcard can write"),
+                state: stored(&output.delta),
             });
         }
         // After the commit of the tick the saved chunks show.
@@ -1076,8 +1144,7 @@ impl RegionRunner {
         }
         self.store.request(StoreRequest::Checkpoint {
             tick: self.region.tick_number(),
-            state: postcard::to_stdvec(&self.region.state())
-                .expect("a region's state is made of what postcard can write"),
+            state: stored(&self.region.state()),
         });
     }
 
@@ -1253,6 +1320,7 @@ impl RegionRunner {
             EdgeToWorker::Hello {
                 edge,
                 start,
+                since,
                 seen,
                 players,
                 chunks,
@@ -1260,9 +1328,9 @@ impl RegionRunner {
                 let resume = Resume {
                     seen,
                     players,
-                    known: false,
+                    answer: Answer::New,
                 };
-                return self.hello(id, link, edge, start, resume, chunks);
+                return self.hello(id, link, edge, (start, since), resume, chunks);
             }
             EdgeToWorker::Confirm { number } => {
                 // Without a hello there is no telling whose outbox is meant.
@@ -1348,7 +1416,7 @@ impl RegionRunner {
         id: LinkId,
         link: &mut EdgeLink,
         edge: EdgeId,
-        start: u64,
+        (start, since): (u64, u64),
         mut resume: Resume,
         chunks: Vec<ChunkPos>,
     ) -> bool {
@@ -1414,21 +1482,51 @@ impl RegionRunner {
             }),
         };
         known.link = Some(id);
-        resume.known = known.settled;
+        // Since when the region, as it is before the coming tick, knows the edge with
+        // this start, if it does.
+        let has = self.region.edge(edge).map(|state| state.since);
+        resume.answer = match has.filter(|_| known.settled) {
+            Some(has) if has == since => Answer::Resumed,
+            // The edge never read the welcome that told it since when: nothing it has
+            // sent was numbered for the state the region has, and none of it was taken.
+            Some(_) if known.received == 0 => Answer::ToldAgain,
+            // The edge has lost its `since` after the region took messages from it.
+            // Nothing it kept can be trusted to fit what the region has, and the link
+            // would drop its messages numbered from 1 as ones it has had, without a
+            // word. So the edge is reset as for a higher start.
+            Some(_) => {
+                warn!(
+                    link = id.0,
+                    edge = edge.0,
+                    start,
+                    "an edge no longer knows since when the region knows it; resetting it"
+                );
+                known.settled = false;
+                known.received = 0;
+                self.forget_inputs_of(edge);
+                self.inputs.edges.push(EdgeEvent::Gone { edge });
+                Answer::New
+            }
+            None => Answer::New,
+        };
         info!(
             link = id.0,
             edge = edge.0,
             start,
-            known = resume.known,
+            answer = ?resume.answer,
             "an edge said hello"
         );
         self.inputs.edges.push(EdgeEvent::Started { edge, start });
-        self.inputs.edges.push(EdgeEvent::Confirmed {
-            edge,
-            number: resume.seen,
-        });
+        // After anything but a resume the hello's `seen` is a number of a numbering the
+        // region does not share, and confirms nothing.
+        if resume.answer == Answer::Resumed {
+            self.inputs.edges.push(EdgeEvent::Confirmed {
+                edge,
+                number: resume.seen,
+            });
+        }
         link.edge = Some(edge);
-        link.unknown = !resume.known;
+        link.unknown = resume.answer != Answer::Resumed;
         link.resume = Some(resume);
         for position in chunks {
             self.subscribe(link, position);
@@ -1555,23 +1653,56 @@ impl RegionRunner {
 
 /// The state of a region as the store has it: its last checkpoint, or that of a region
 /// that has never run, with every commit since applied.
+///
+/// What was stored by a build with another form of state cannot be read. Everything up
+/// to the last such item is dropped: the region is as one that has never run, at the
+/// tick of that item, and what was stored behind it is applied to that. Players and
+/// edges do not outlive a server that is replaced by another build, and the chunks have
+/// every block. The same comes out every time the region is opened, until its next
+/// checkpoint replaces what was dropped.
 fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
+    let fresh = |tick| {
+        let mut state = RegionState::new(restored.entity_ids);
+        state.tick = tick;
+        state
+    };
     let mut state = match &restored.state {
-        Some(stored) => {
-            postcard::from_bytes(&stored.state).map_err(|error| RestoreError::State {
-                tick: stored.tick,
-                error,
-            })?
-        }
-        None => RegionState::new(restored.entity_ids),
+        Some(stored) => match sort_stored(stored.tick, &stored.state)? {
+            Stored::Current(bytes) => {
+                postcard::from_bytes(bytes).map_err(|error| RestoreError::State {
+                    tick: stored.tick,
+                    error,
+                })?
+            }
+            Stored::Before => {
+                warn!(
+                    tick = stored.tick,
+                    "the stored state of the region is of an earlier build; starting without it"
+                );
+                fresh(stored.tick)
+            }
+        },
+        None => fresh(0),
     };
     for stored in &restored.deltas {
-        let delta: StateDelta =
-            postcard::from_bytes(&stored.state).map_err(|error| RestoreError::Delta {
-                tick: stored.tick,
-                error,
-            })?;
-        state.apply(&delta);
+        match sort_stored(stored.tick, &stored.state)? {
+            Stored::Current(bytes) => {
+                let delta: StateDelta =
+                    postcard::from_bytes(bytes).map_err(|error| RestoreError::Delta {
+                        tick: stored.tick,
+                        error,
+                    })?;
+                state.apply(&delta);
+            }
+            Stored::Before => {
+                warn!(
+                    tick = stored.tick,
+                    "a stored change of the region's state is of an earlier build; starting \
+                     without what came before it"
+                );
+                state = fresh(stored.tick);
+            }
+        }
     }
     Ok(state)
 }
@@ -1679,17 +1810,30 @@ mod tests {
     /// way a link between two processes does.
     const KINDS: [fn(usize) -> (TestEdge, WorkerEnd); 2] = [in_process, framed];
 
+    /// A welcome as [`TestEdge`] hands it on: without its numbers, which most tests
+    /// are not about. [`TestEdge::welcomed`] has it as it was said.
+    const UNKNOWN: WorkerToEdge = WorkerToEdge::Welcome(Welcome::Unknown {
+        since: 0,
+        entries: 0,
+    });
+    const RESUMED: WorkerToEdge = WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 });
+
     /// An edge's end of a link that numbers what it sends, as an edge does.
     struct TestEdge {
         end: EdgeEnd,
         /// Which edge this is, and which start of it.
         edge: EdgeId,
         start: u64,
+        /// Since when the region knows this edge, as its last welcome said; 0 for an
+        /// edge that has read none. Said in its hellos.
+        since: u64,
         /// The number of the last numbered message sent.
         sent: AtomicU64,
         /// What the worker said about resuming and progress, which `recv` and `try_recv`
         /// set aside: most tests are about what else a region says.
         aside: Vec<WorkerToEdge>,
+        /// The welcome read on this link, as it was said.
+        welcomed: Option<Welcome>,
     }
 
     impl TestEdge {
@@ -1709,15 +1853,22 @@ mod tests {
                 end,
                 edge,
                 start,
+                since: 0,
                 sent: AtomicU64::new(0),
                 aside: Vec::new(),
+                welcomed: None,
             }
         }
 
         /// The same start of the same edge on another link, numbering on from where it
-        /// was. It has not said hello there yet.
-        fn again(&self, end: EdgeEnd) -> Self {
-            let again = Self::silent(end, self.edge, self.start);
+        /// was. It has not said hello there yet. It has read every welcome the region
+        /// `runner` runs has made for it, and so knows since when the region knows it.
+        fn again(&self, end: EdgeEnd, runner: &RegionRunner) -> Self {
+            let mut again = Self::silent(end, self.edge, self.start);
+            again.since = runner
+                .region()
+                .edge(self.edge)
+                .map_or(0, |state| state.since);
             again
                 .sent
                 .store(self.sent.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -1729,6 +1880,7 @@ mod tests {
             EdgeToWorker::Hello {
                 edge: self.edge,
                 start: self.start,
+                since: self.since,
                 seen,
                 players: players.to_vec(),
                 chunks: chunks.to_vec(),
@@ -1771,9 +1923,26 @@ mod tests {
             )
         }
 
+        /// Takes note of a welcome as it was said, and hands every message on with a
+        /// welcome's numbers taken out.
+        fn plain(&mut self, message: WorkerToEdge) -> WorkerToEdge {
+            match message {
+                WorkerToEdge::Welcome(welcome) => {
+                    self.welcomed = Some(welcome);
+                    match welcome {
+                        Welcome::Resumed { .. } => RESUMED,
+                        Welcome::Unknown { .. } => UNKNOWN,
+                        Welcome::Superseded => WorkerToEdge::Welcome(Welcome::Superseded),
+                    }
+                }
+                other => other,
+            }
+        }
+
         async fn recv(&mut self) -> Option<WorkerToEdge> {
             loop {
                 let message = self.end.recv().await?;
+                let message = self.plain(message);
                 if !Self::about_resuming(&message) {
                     return Some(message);
                 }
@@ -1783,7 +1952,7 @@ mod tests {
 
         fn try_recv(&mut self) -> Result<Option<WorkerToEdge>, LinkError> {
             loop {
-                match self.end.try_recv()? {
+                match self.end.try_recv()?.map(|message| self.plain(message)) {
                     Some(message) if Self::about_resuming(&message) => self.aside.push(message),
                     other => return Ok(other),
                 }
@@ -1795,6 +1964,7 @@ mod tests {
         fn everything(&mut self) -> Vec<WorkerToEdge> {
             let mut messages = Vec::new();
             while let Ok(Some(message)) = self.end.try_recv() {
+                let message = self.plain(message);
                 messages.push(message);
             }
             messages
@@ -2915,10 +3085,7 @@ mod tests {
         // The edge finds its link closed after what did fit.
         assert!(matches!(
             edge.everything()[..],
-            [
-                WorkerToEdge::Welcome(Welcome::Unknown),
-                WorkerToEdge::Progress { .. }
-            ]
+            [UNKNOWN, WorkerToEdge::Progress { .. }]
         ));
         assert!(closed(&mut edge).await);
     }
@@ -2937,7 +3104,7 @@ mod tests {
         // The last the old link carried is something the player did.
         old.send(walk(player(), 3.0)).await.unwrap();
         let (edge_end, new_end) = link::in_process(256);
-        let mut new = old.again(edge_end);
+        let mut new = old.again(edge_end, &runner);
         drop(old);
         runner.links().attach(new_end);
         new.send(new.hello(0, &[player()], &[ORIGIN]))
@@ -2955,7 +3122,7 @@ mod tests {
         assert_eq!(runner.region().player(player()), Some((entity, walked)));
         // The answer is of the region as it was before the tick that took the step.
         let told = new.everything();
-        assert_eq!(told[0], WorkerToEdge::Welcome(Welcome::Resumed));
+        assert_eq!(told[0], RESUMED);
         let WorkerToEdge::Presence {
             answer:
                 Presence::Present {
@@ -3525,7 +3692,7 @@ mod tests {
         assert_eq!(runner.region().tick_number(), 9);
         assert_eq!(x_of(&runner, player()), Some(20.0));
         let told = edge.everything();
-        assert_eq!(told[0], WorkerToEdge::Welcome(Welcome::Unknown));
+        assert_eq!(told[0], UNKNOWN);
         assert!(matches!(
             told[1],
             WorkerToEdge::ToPlayer {
@@ -3635,7 +3802,7 @@ mod tests {
         let mut restored = opened(&store, config(WEST));
         assert_eq!(restored.region().state(), committed);
         let (edge_end, worker_end) = link::in_process(256);
-        let mut again = edge.again(edge_end);
+        let mut again = edge.again(edge_end, &restored);
         restored.links().attach(worker_end);
         again
             .send(again.hello(0, &[player(), other_player()], &[]))
@@ -3646,7 +3813,7 @@ mod tests {
 
         let told = again.everything();
         let [
-            WorkerToEdge::Welcome(Welcome::Resumed),
+            RESUMED,
             WorkerToEdge::Outbox {
                 number: 1,
                 entry: Durable::Departed { player: gone, .. },
@@ -3724,7 +3891,7 @@ mod tests {
         // The edge is back and sends again what it has not heard to be applied. What the
         // region has is dropped, and the next is taken.
         let (edge_end, worker_end) = link::in_process(256);
-        let again = edge.again(edge_end);
+        let again = edge.again(edge_end, &second);
         second.links().attach(worker_end);
         again.send(again.hello(0, &[], &[])).await.unwrap();
         again.send_as(3, walk(player(), 3.0)).await;
@@ -3744,7 +3911,7 @@ mod tests {
 
         // And so does a first message beyond the next one the region expects.
         let (edge_end, worker_end) = link::in_process(256);
-        let ahead = edge.again(edge_end);
+        let ahead = edge.again(edge_end, &second);
         second.links().attach(worker_end);
         ahead.send(ahead.hello(0, &[], &[])).await.unwrap();
         ahead.send_as(6, walk(player(), 12.0)).await;
@@ -3784,10 +3951,7 @@ mod tests {
             assert_eq!(runner.region().edge(id).unwrap().start, 5);
             assert_eq!(runner.region().player_count(), 1);
             assert!(runner.region().player(player()).is_some());
-            assert_eq!(
-                later.everything()[0],
-                WorkerToEdge::Welcome(Welcome::Unknown)
-            );
+            assert_eq!(later.everything()[0], UNKNOWN);
         }
     }
 
@@ -3816,7 +3980,7 @@ mod tests {
         // The edge has seen the first entry. With the hello comes something its
         // remaining player did.
         let (edge_end, worker_end) = link::in_process(256);
-        let mut again = edge.again(edge_end);
+        let mut again = edge.again(edge_end, &runner);
         runner.links().attach(worker_end);
         let asked = [player(), third_player(), other_player()];
         again.send(again.hello(1, &asked, &[])).await.unwrap();
@@ -3838,7 +4002,7 @@ mod tests {
         };
         let told = again.everything();
         let [
-            WorkerToEdge::Welcome(Welcome::Resumed),
+            RESUMED,
             WorkerToEdge::Outbox {
                 number: 2,
                 entry: Durable::Departed { .. },
@@ -3920,7 +4084,7 @@ mod tests {
         assert_eq!(
             new.everything(),
             [
-                WorkerToEdge::Welcome(Welcome::Unknown),
+                UNKNOWN,
                 WorkerToEdge::Presence {
                     player: player(),
                     answer: Presence::Absent,
@@ -3968,7 +4132,7 @@ mod tests {
         assert_eq!(
             edge.everything(),
             [
-                WorkerToEdge::Welcome(Welcome::Unknown),
+                UNKNOWN,
                 WorkerToEdge::Progress {
                     applied: 0,
                     inputs: vec![],
@@ -4028,7 +4192,7 @@ mod tests {
         let shown = place(|message| matches!(message, WorkerToEdge::ChunkSnapshot { .. }));
         let entered = place(|message| matches!(message, WorkerToEdge::ToPlayer { .. }));
         assert!(shown < entered, "{told:?}");
-        assert_eq!(told[0], WorkerToEdge::Welcome(Welcome::Unknown));
+        assert_eq!(told[0], UNKNOWN);
     }
 
     /// What a link sent while it was held does not count as received. If the link ends
@@ -4047,7 +4211,7 @@ mod tests {
         step(&mut runner);
         assert_eq!(runner.links[&LinkId(0)].held.len(), 1);
         let (edge_end, worker_end) = link::in_process(256);
-        let second = first.again(edge_end);
+        let second = first.again(edge_end, &runner);
         drop(first);
         step(&mut runner);
         assert!(runner.links.is_empty());
@@ -4155,7 +4319,7 @@ mod tests {
         let mut runner = runner(edge_end);
         runner.links().attach(other_end);
         let progress = |applied, inputs| WorkerToEdge::Progress { applied, inputs };
-        let unknown = WorkerToEdge::Welcome(Welcome::Unknown);
+        let unknown = UNKNOWN;
         step(&mut runner);
         // An edge that has said hello hears where the region is, even if nowhere.
         assert_eq!(edge.everything(), [unknown.clone(), progress(0, vec![])]);
@@ -4246,9 +4410,10 @@ mod tests {
             state,
             deltas,
         };
+        // Of this build by its first two bytes, and nothing postcard can read behind.
         let unreadable = |tick| clustine_rpc::TickState {
             tick,
-            state: vec![0xff; 3],
+            state: vec![0, STATE_FORMAT, 0xff, 0xff, 0xff],
         };
         assert!(matches!(
             restored_state(restored(Some(unreadable(4)), vec![])),
@@ -4260,6 +4425,244 @@ mod tests {
         ));
         let state = restored_state(restored(None, vec![])).unwrap();
         assert_eq!(state, RegionState::new(EntityIds::block(0).unwrap()));
+    }
+
+    /// An edge and a region share a numbering only since the welcome that the edge has
+    /// read. An edge that says hello again without having read it is told the same
+    /// once more, and one that says what it was told is resumed.
+    #[tokio::test]
+    async fn an_edge_that_never_read_its_welcome_is_told_again_since_when_it_is_known() {
+        let (mut edge, worker_end) = in_process(256);
+        let mut runner = runner(worker_end);
+        step(&mut runner);
+        edge.everything();
+        let Some(Welcome::Unknown { since, entries: 0 }) = edge.welcomed else {
+            panic!("{:?}", edge.welcomed);
+        };
+        assert_eq!(since, runner.region().tick_number());
+        assert_eq!(runner.region().edge(edge.edge).unwrap().since, since);
+
+        // Another link of the same start that knows of no welcome.
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut unread = TestEdge::silent(edge_end, edge.edge, edge.start);
+        runner.links().attach(worker_end);
+        unread.send(unread.hello(0, &[], &[])).await.unwrap();
+        step(&mut runner);
+        step(&mut runner);
+        unread.everything();
+        assert_eq!(
+            unread.welcomed,
+            Some(Welcome::Unknown { since, entries: 0 })
+        );
+        // What it sends from 1 is taken.
+        unread.send(join(player(), "Notch")).await.unwrap();
+        step(&mut runner);
+        assert!(runner.region().player(player()).is_some());
+
+        // One that says since when is resumed, and its player is there.
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut read = unread.again(edge_end, &runner);
+        assert_eq!(read.since, since);
+        runner.links().attach(worker_end);
+        read.send(read.hello(0, &[player()], &[])).await.unwrap();
+        step(&mut runner);
+        read.everything();
+        assert_eq!(read.welcomed, Some(Welcome::Resumed { entries: 0 }));
+        assert!(runner.region().player(player()).is_some());
+    }
+
+    /// An edge that says another `since` than the region has for it, after the region
+    /// took messages from it, has lost track. Nothing it kept can be trusted to fit,
+    /// so the region resets it as for a higher start: its players go, and it is known
+    /// anew from that tick.
+    #[tokio::test]
+    async fn an_edge_that_lost_its_since_after_the_region_took_its_messages_is_reset() {
+        let (mut edge, worker_end) = in_process(256);
+        let mut runner = runner(worker_end);
+        edge.send(join(player(), "Notch")).await.unwrap();
+        step(&mut runner);
+        edge.everything();
+        let Some(Welcome::Unknown { since, .. }) = edge.welcomed else {
+            panic!("{:?}", edge.welcomed);
+        };
+        let (entity, _) = runner.region().player(player()).unwrap();
+
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut lost = TestEdge::silent(edge_end, edge.edge, edge.start);
+        runner.links().attach(worker_end);
+        lost.send(lost.hello(0, &[player()], &[ORIGIN]))
+            .await
+            .unwrap();
+        step(&mut runner);
+        step_until(&mut runner, |runner| {
+            runner.links.values().all(|link| link.hold.is_empty())
+        });
+        let told = lost.everything();
+        let Some(Welcome::Unknown {
+            since: anew,
+            entries: 0,
+        }) = lost.welcomed
+        else {
+            panic!("{:?}", lost.welcomed);
+        };
+        assert!(anew > since, "{anew} {since}");
+        assert_eq!(runner.region().edge(edge.edge).unwrap().since, anew);
+        // The player is gone, and is said to be absent.
+        assert!(runner.region().player(player()).is_none());
+        assert!(told.contains(&WorkerToEdge::Presence {
+            player: player(),
+            answer: Presence::Absent,
+        }));
+        let removed = told.iter().any(|message| {
+            matches!(message, WorkerToEdge::TickDelta { events, .. }
+                if events.iter().any(|event| matches!(event,
+                    RegionEvent::EntityRemoved { entity: gone, .. } if *gone == entity)))
+        });
+        assert!(removed, "{told:?}");
+        // What the edge numbers from 1 is taken.
+        lost.send(join(other_player(), "Alex")).await.unwrap();
+        step(&mut runner);
+        assert!(runner.region().player(other_player()).is_some());
+        assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 1);
+    }
+
+    /// A state and a delta that have something of everything a state is made of.
+    fn a_state_and_a_delta() -> (RegionState, StateDelta) {
+        let ids = EntityIds::block(0).unwrap();
+        let mut region = Region::new(config(WEST), ids);
+        let edge = EdgeId(7);
+        let join = PlayerChange::Join(
+            edge,
+            PlayerJoin {
+                player: player(),
+                name: "Steve".to_owned(),
+            },
+        );
+        region.tick(&TickInputs {
+            edges: vec![EdgeEvent::Started { edge, start: 3 }],
+            ..TickInputs::default()
+        });
+        let mut inputs = TickInputs {
+            applied: vec![(edge, 2)],
+            ..TickInputs::default()
+        };
+        inputs.change(join);
+        // One who stays, so that the state has a player.
+        inputs.change(PlayerChange::Join(
+            edge,
+            PlayerJoin {
+                player: other_player(),
+                name: "Alex".to_owned(),
+            },
+        ));
+        // A step out of the area: the player is let go, which is an outbox entry.
+        inputs.input(
+            edge,
+            player(),
+            1,
+            PlayerInput::Move {
+                position: Some(Vec3::new(40.5, -60.0, 0.5)),
+                rotation: None,
+                on_ground: true,
+            },
+        );
+        let output = region.tick(&inputs);
+        assert_eq!(output.durable.len(), 1, "{:?}", output.durable);
+        (region.state(), output.delta)
+    }
+
+    /// What is stored of a region is read back by its first two bytes. Postcard writes
+    /// neither names nor kinds, so bytes of one shape can read as another, and a build
+    /// that changes the shape of a state has to say so with [`STATE_FORMAT`]. This test
+    /// has the bytes of a state and of a delta written out. **If it fails, a shape has
+    /// changed: raise `STATE_FORMAT` and write the new bytes down here.**
+    #[test]
+    fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
+        let (state, delta) = a_state_and_a_delta();
+        let hex =
+            |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
+        assert_eq!(STATE_FORMAT, 1);
+        assert_eq!(
+            hex(stored(&state)),
+            concat!(
+                "0001020280808001060110000000000000000000000000000000020404416c6578000000000000e0",
+                "3f0000000000004ec0000000000000e03f0000000000000000000000000000000000000000000701",
+                "07030102010101001000000000000000000000000000000001020553746576650000000000404440",
+                "0000000000004ec0000000000000e03f0000000000000000010000000000000000000001",
+            )
+        );
+        assert_eq!(
+            hex(stored(&delta)),
+            concat!(
+                "00010201060210000000000000000000000000000000010010000000000000000000000000000000",
+                "02010404416c6578000000000000e03f0000000000004ec0000000000000e03f0000000000000000",
+                "00000000000000000000000000070107010301020100000101001000000000000000000000000000",
+                "0000010205537465766500000000004044400000000000004ec0000000000000e03f000000000000",
+                "0000010000000000000000000001",
+            )
+        );
+    }
+
+    /// What an earlier build stored cannot be read. It is dropped up to the last such
+    /// item: the region is as one that never ran, at that item's tick, and what this
+    /// build stored behind it is applied.
+    #[test]
+    fn what_an_earlier_build_stored_of_a_region_is_dropped_and_the_rest_applied() {
+        let ids = EntityIds::block(0).unwrap();
+        let restored = |state, deltas| Restored {
+            held: Vec::new(),
+            entity_ids: ids,
+            state,
+            deltas,
+        };
+        let (state, delta) = a_state_and_a_delta();
+        let item = |tick, state| clustine_rpc::TickState { tick, state };
+        // As builds before the number wrote them: the postcard alone, which begins
+        // with the tick.
+        let bare_state = postcard::to_stdvec(&state).unwrap();
+        let bare_delta = postcard::to_stdvec(&delta).unwrap();
+        let fresh = |tick| {
+            let mut fresh = RegionState::new(ids);
+            fresh.tick = tick;
+            fresh
+        };
+
+        // A state from before, alone and with a delta from before behind it.
+        let alone = restored(Some(item(2, bare_state.clone())), vec![]);
+        assert_eq!(restored_state(alone).unwrap(), fresh(2));
+        let both = restored(
+            Some(item(2, bare_state.clone())),
+            vec![item(3, bare_delta.clone())],
+        );
+        assert_eq!(restored_state(both).unwrap(), fresh(3));
+
+        // A delta of this build behind one from before is applied to what is left.
+        let later = StateDelta {
+            tick: 4,
+            ..StateDelta::default()
+        };
+        let mixed = restored(
+            Some(item(2, stored(&state))),
+            vec![item(3, bare_delta), item(4, stored(&later))],
+        );
+        assert_eq!(restored_state(mixed).unwrap(), fresh(4));
+
+        // What this build stored is read as it is.
+        let whole = restored(Some(item(2, stored(&state))), vec![]);
+        assert_eq!(restored_state(whole).unwrap(), state);
+
+        // A lower number is from before as well; a higher one is a later build's.
+        let mut lower = stored(&state);
+        lower[1] = STATE_FORMAT - 1;
+        let lower = restored(Some(item(2, lower)), vec![]);
+        assert_eq!(restored_state(lower).unwrap(), fresh(2));
+        let mut higher = stored(&state);
+        higher[1] = STATE_FORMAT + 1;
+        let higher = restored(Some(item(2, higher)), vec![]);
+        assert!(matches!(
+            restored_state(higher),
+            Err(RestoreError::Format { tick: 2, format }) if format == STATE_FORMAT + 1
+        ));
     }
 
     /// Opens the one region of `store` as the owner that comes after the one of
@@ -4495,10 +4898,7 @@ mod tests {
         let (mut other, other_end) = in_process(256);
         runner.links().attach(other_end);
         step(&mut runner);
-        assert_eq!(
-            other.everything()[0],
-            WorkerToEdge::Welcome(Welcome::Unknown)
-        );
+        assert_eq!(other.everything()[0], UNKNOWN);
         assert_eq!(runner.phase, Phase::Preparing);
 
         // The flush is answered, and the step that finds it so takes nothing from a
@@ -4525,7 +4925,7 @@ mod tests {
             RegionRunner::restore(config(ChunkArea::EVERYWHERE), handle, restored).unwrap();
         assert_eq!(next.region().state(), state);
         let (edge_end, worker_end) = link::in_process(256);
-        let mut again = edge.again(edge_end);
+        let mut again = edge.again(edge_end, &runner);
         next.links().attach(worker_end);
         again
             .send(again.hello(0, &[player()], &[ORIGIN]))
@@ -4535,10 +4935,7 @@ mod tests {
         step_until(&mut next, |runner| x_of(runner, player()) == Some(5.0));
         step(&mut next);
         assert_eq!(next.region().edge(edge.edge).unwrap().applied, number);
-        assert_eq!(
-            again.everything()[0],
-            WorkerToEdge::Welcome(Welcome::Resumed)
-        );
+        assert_eq!(again.everything()[0], RESUMED);
     }
 
     /// Ticks that ran before the region stopped ticking are owed to the edges once the

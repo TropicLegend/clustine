@@ -31,6 +31,24 @@ use clustine_worldstore::{Store, StoreHandle};
 use uuid::Uuid;
 
 const E: EdgeId = EdgeId(11);
+
+thread_local! {
+    /// Since when the region knows each edge of the test that is running, as the last
+    /// welcome that a link of that edge has read said. An edge says it in its hellos
+    /// (`docs/adr/0012-the-tick-on-chunks.md`, section 4.5); these tests are about what
+    /// ADR-0008 says of an edge that keeps to that, so the links see to it by
+    /// themselves.
+    static SINCE: std::cell::RefCell<BTreeMap<EdgeId, u64>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+/// What a welcome says, whatever numbers come with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Said {
+    Resumed,
+    Unknown,
+    Superseded,
+}
 const F: EdgeId = EdgeId(22);
 
 /// The region under test is the western one of two: every chunk with x below 1.
@@ -93,6 +111,8 @@ struct World {
 
 impl World {
     fn memory() -> Self {
+        // A new world knows no edge, whatever a test before on this thread was told.
+        SINCE.with(|since| since.borrow_mut().clear());
         Self {
             store: Store::memory(Arc::new(FlatGenerator::classic())),
             epoch: 0,
@@ -101,6 +121,7 @@ impl World {
     }
 
     fn local() -> Self {
+        SINCE.with(|since| since.borrow_mut().clear());
         let directory = tempfile::tempdir().expect("a temporary directory");
         let store = Store::local(directory.path(), Arc::new(FlatGenerator::classic()))
             .expect("a new world in an empty directory");
@@ -143,6 +164,8 @@ struct Link {
     end: EdgeEnd,
     log: Vec<WorkerToEdge>,
     closed: bool,
+    /// The edge that said hello on this link, once one has.
+    edge: std::cell::Cell<Option<EdgeId>>,
 }
 
 impl Link {
@@ -153,6 +176,7 @@ impl Link {
             end: edge,
             log: Vec::new(),
             closed: false,
+            edge: std::cell::Cell::new(None),
         }
     }
 
@@ -181,9 +205,12 @@ impl Link {
         players: Vec<PlayerId>,
         chunks: Vec<ChunkPos>,
     ) {
+        self.edge.set(Some(edge));
+        let since = SINCE.with(|since| since.borrow().get(&edge).copied().unwrap_or(0));
         self.plain(EdgeToWorker::Hello {
             edge,
             start,
+            since,
             seen,
             players,
             chunks,
@@ -217,12 +244,15 @@ impl Link {
         let (last, before) = self.log.split_last().expect("a message was just read");
         let context = || brief(&self.log);
         match last {
-            WorkerToEdge::Welcome(_) => {
+            WorkerToEdge::Welcome(welcome) => {
                 assert!(
                     before.is_empty(),
                     "a welcome that is not first: {}",
                     context()
                 );
+                if let (Welcome::Unknown { since, .. }, Some(edge)) = (welcome, self.edge.get()) {
+                    SINCE.with(|told| told.borrow_mut().insert(edge, *since));
+                }
             }
             _ => assert!(
                 matches!(self.log[0], WorkerToEdge::Welcome(_)),
@@ -499,9 +529,11 @@ fn presence(log: &[WorkerToEdge], id: PlayerId) -> Option<(usize, &Presence)> {
         })
 }
 
-fn welcome(log: &[WorkerToEdge]) -> Option<Welcome> {
+fn welcome(log: &[WorkerToEdge]) -> Option<Said> {
     match log.first() {
-        Some(WorkerToEdge::Welcome(welcome)) => Some(*welcome),
+        Some(WorkerToEdge::Welcome(Welcome::Resumed { .. })) => Some(Said::Resumed),
+        Some(WorkerToEdge::Welcome(Welcome::Unknown { .. })) => Some(Said::Unknown),
+        Some(WorkerToEdge::Welcome(Welcome::Superseded)) => Some(Said::Superseded),
         _ => None,
     }
 }
@@ -874,7 +906,7 @@ fn resume(next: &mut RegionRunner, sessions: &mut [&mut Session]) {
     for session in sessions.iter_mut() {
         let log = &session.link.log;
         let witness = &session.witness;
-        assert_eq!(welcome(log), Some(Welcome::Resumed), "{}", brief(log));
+        assert_eq!(welcome(log), Some(Said::Resumed), "{}", brief(log));
 
         // With nothing seen, the whole outbox is sent again, before the presence answers.
         let resent: BTreeMap<u64, Durable> = outbox(log)
@@ -1092,7 +1124,7 @@ fn a_hello_with_a_lower_start_is_told_it_was_superseded_and_its_link_is_closed()
     let mut world = World::memory();
     let mut runner = world.open();
     let mut current = established(&mut runner, E, 5);
-    assert_eq!(welcome(&current.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&current.log), Some(Said::Unknown));
     let entity = join_and_wait(&mut runner, &mut current, 1, player(1));
 
     let mut stale = Link::attach(&runner);
@@ -1137,7 +1169,7 @@ fn a_hello_with_the_same_start_is_resumed_and_closes_the_edges_other_link() {
         "the second link resuming and the first being closed",
         |_, links| snapshot(&links[0].log, HOME).is_some() && links[1].closed,
     );
-    assert_eq!(welcome(&second.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&second.log), Some(Said::Resumed));
     assert!(!second.closed);
 
     // Another edge's link is none of this edge's.
@@ -1180,7 +1212,7 @@ fn a_higher_start_removes_the_old_starts_players_and_is_not_known_in(mut world: 
                 && removal(&links[2].log, entity).is_some()
         },
     );
-    assert_eq!(welcome(&new.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&new.log), Some(Said::Unknown));
     assert!(matches!(
         presence(&new.log, player(1)),
         Some((_, Presence::Absent))
@@ -1232,7 +1264,7 @@ fn what_the_old_start_sent_for_the_coming_tick_is_dropped_by_a_higher_start_in(m
     );
     sync(&mut runner, &mut [&mut new, &mut watcher, &mut old], 0);
 
-    assert_eq!(welcome(&new.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&new.log), Some(Said::Unknown));
     assert_eq!(
         runner.region().player_count(),
         0,
@@ -1314,12 +1346,7 @@ fn the_resume_comes_first_and_in_order_in(mut world: World) {
     );
     let log = &new.log;
 
-    assert_eq!(
-        log[0],
-        WorkerToEdge::Welcome(Welcome::Resumed),
-        "{}",
-        brief(log)
-    );
+    assert_eq!(welcome(log), Some(Said::Resumed), "{}", brief(log));
     // Entry 1 has been seen; entry 2 is the departure of player 2.
     assert!(
         matches!(&log[1], WorkerToEdge::Outbox { number: 2, entry: Durable::Departed { player: gone, .. } } if *gone == player(2)),
@@ -1409,12 +1436,7 @@ fn a_resume_with_nothing_seen_sends_the_whole_outbox_in_ascending_order() {
 
     let new = resumed(&mut runner, E, 5, 0, vec![player(2)]);
     let log = &new.log;
-    assert_eq!(
-        log[0],
-        WorkerToEdge::Welcome(Welcome::Resumed),
-        "{}",
-        brief(log)
-    );
+    assert_eq!(welcome(log), Some(Said::Resumed), "{}", brief(log));
     assert!(
         matches!(
             &log[1],
@@ -1477,12 +1499,7 @@ fn nothing_of_a_tick_before_the_hellos_arrives_on_the_new_link_in(mut world: Wor
     sync(&mut runner, &mut [&mut new, &mut old], 0);
     let log = &new.log;
 
-    assert_eq!(
-        log[0],
-        WorkerToEdge::Welcome(Welcome::Resumed),
-        "{}",
-        brief(log)
-    );
+    assert_eq!(welcome(log), Some(Said::Resumed), "{}", brief(log));
     assert_eq!(
         outbox_numbers(log),
         vec![1],
@@ -1602,7 +1619,7 @@ fn a_gap_in_the_numbers_closes_the_link_and_what_came_before_it_counts() {
 
     // The edge carries on from number 2 on its next link.
     let mut again = resumed(&mut runner, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&again.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&again.log), Some(Said::Resumed));
     assert_eq!(applied(&again.log), Some(1));
     again.numbered(2, join(player(2)));
     again.numbered(3, join(player(3)));
@@ -1667,7 +1684,7 @@ fn after_a_restore_what_is_sent_again_is_not_applied_twice() {
     assert_eq!(next.region().state().edges[&E], before.edges[&E]);
     let mut e = resumed(&mut next, E, 5, 0, vec![player(1)]);
     let mut watcher = resumed(&mut next, F, 5, 0, Vec::new());
-    assert_eq!(welcome(&e.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&e.log), Some(Said::Resumed));
     assert_eq!(
         applied(&e.log),
         Some(7),
@@ -1775,7 +1792,7 @@ fn a_resume_holds_what_follows_until_the_hellos_chunks_are_out_in(mut world: Wor
     sync(&mut runner, &mut [&mut e], 0);
     let log = &e.log;
 
-    assert_eq!(welcome(log), Some(Welcome::Resumed), "{}", brief(log));
+    assert_eq!(welcome(log), Some(Said::Resumed), "{}", brief(log));
     let (changed, state) = block_change(log, near)
         .unwrap_or_else(|| panic!("the dig changed nothing: {}", brief(log)));
     assert_eq!(state, blocks::AIR);
@@ -1864,7 +1881,7 @@ fn what_was_held_when_a_link_ended_is_applied_once_when_it_is_sent_again_in(mut 
     drop(first);
 
     let mut second = resumed(&mut runner, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&second.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&second.log), Some(Said::Resumed));
     sync(&mut runner, &mut [&mut second], 0);
     assert_eq!(
         applied(&second.log),
@@ -1931,7 +1948,7 @@ fn confirmed_entries_are_dropped_and_not_sent_again() {
     sync(&mut runner, &mut [&mut e], 0);
 
     let mut again = resumed(&mut runner, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&again.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&again.log), Some(Said::Resumed));
     assert_eq!(outbox_numbers(&again.log), vec![3], "{}", brief(&again.log));
 
     // The next owner knows of the confirmation too.
@@ -2041,7 +2058,7 @@ fn a_progress_comes_with_the_tick_of_every_hello() {
     // `established` and `resumed` wait for a progress, so each of these also shows that
     // one comes although nothing but the hello happened.
     let mut first = established(&mut runner, E, 5);
-    assert_eq!(welcome(&first.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&first.log), Some(Said::Unknown));
     assert_eq!(
         progress(&first.log)
             .first()
@@ -2054,7 +2071,7 @@ fn a_progress_comes_with_the_tick_of_every_hello() {
     wait_applied(&mut runner, &mut [&mut first], 0, 2);
 
     let second = resumed(&mut runner, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&second.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&second.log), Some(Said::Resumed));
     assert_eq!(
         progress(&second.log).first().map(|(applied, _)| *applied),
         Some(2)
@@ -2063,7 +2080,7 @@ fn a_progress_comes_with_the_tick_of_every_hello() {
     let mut next = world.open();
     drop(runner);
     let third = resumed(&mut next, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&third.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&third.log), Some(Said::Resumed));
     assert_eq!(
         progress(&third.log).first().map(|(applied, _)| *applied),
         Some(2)
@@ -2206,7 +2223,7 @@ fn an_edge_without_a_link_for_too_long_is_forgotten_with_its_players() {
 
     // Back with the same start, it is a stranger and numbers from 1.
     let mut back = resumed(&mut runner, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&back.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&back.log), Some(Said::Unknown));
     assert_eq!(
         presence(&back.log, player(1)).map(|(_, answer)| answer),
         Some(&Presence::Absent)
@@ -2231,7 +2248,7 @@ fn an_edge_that_is_back_in_time_keeps_its_players_however_often_it_is_away() {
         drop(e);
         run_to_tick(&mut runner, &mut [&mut watcher], left + GONE_AFTER / 2);
         e = resumed(&mut runner, E, 5, 0, vec![player(1)]);
-        assert_eq!(welcome(&e.log), Some(Welcome::Resumed), "{}", brief(&e.log));
+        assert_eq!(welcome(&e.log), Some(Said::Resumed), "{}", brief(&e.log));
         assert!(matches!(
             presence(&e.log, player(1)),
             Some((_, Presence::Present { entity: present, .. })) if *present == entity
@@ -2318,7 +2335,7 @@ fn after_a_restore_an_edge_that_is_back_in_time_is_resumed() {
     let back = resumed(&mut next, E, 5, 0, vec![player(1)]);
     assert_eq!(
         welcome(&back.log),
-        Some(Welcome::Resumed),
+        Some(Said::Resumed),
         "{}",
         brief(&back.log)
     );
@@ -2439,12 +2456,13 @@ fn a_worker_whose_store_is_lost_ends_by_itself() {
         end: edge,
         log: Vec::new(),
         closed: false,
+        edge: std::cell::Cell::new(None),
     };
     e.hello(E, 5, 0, Vec::new(), vec![HOME]);
     wait_for(&mut e, "the welcome of a running worker", |link| {
         snapshot(&link.log, HOME).is_some()
     });
-    assert_eq!(welcome(&e.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&e.log), Some(Said::Unknown));
     assert!(status.tick.load(Ordering::SeqCst) > 0);
 
     let _other = world.open();
@@ -2465,6 +2483,7 @@ fn a_worker_whose_store_is_lost_ends_by_itself() {
         end: edge,
         log: Vec::new(),
         closed: false,
+        edge: std::cell::Cell::new(None),
     };
     wait_for(
         &mut late,
@@ -2499,6 +2518,7 @@ fn a_stopped_worker_has_stored_everything_and_closed_its_links() {
         end: edge,
         log: Vec::new(),
         closed: false,
+        edge: std::cell::Cell::new(None),
     };
     e.hello(E, 5, 0, Vec::new(), vec![HOME]);
     e.numbered(1, join(player(1)));
@@ -2596,7 +2616,7 @@ fn a_link_that_ends_does_not_make_its_players_leave() {
 
     // On its next link the edge acts for the player as before.
     let mut back = resumed(&mut runner, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&back.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&back.log), Some(Said::Resumed));
     assert!(matches!(
         presence(&back.log, player(1)),
         Some((_, Presence::Present { entity: present, .. })) if *present == entity
@@ -2638,7 +2658,7 @@ fn what_a_link_sent_before_it_ended_still_counts() {
 
     // They count as received: the edge is told so, and sending them again changes nothing.
     let mut back = resumed(&mut runner, E, 5, 0, vec![player(1), player(2)]);
-    assert_eq!(welcome(&back.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&back.log), Some(Said::Resumed));
     assert_eq!(applied(&back.log), Some(2), "{}", brief(&back.log));
     for id in [player(1), player(2)] {
         assert!(matches!(
@@ -2700,7 +2720,7 @@ fn a_departure_dropped_by_a_reset_is_reported_removed_to_every_link_in(mut world
         },
     );
     sync(&mut runner, &mut [&mut new, &mut watcher], 0);
-    assert_eq!(welcome(&new.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&new.log), Some(Said::Unknown));
     assert!(
         removal(&new.log, leaves).is_some(),
         "every link is told, the new start's too: {}",
@@ -2859,7 +2879,7 @@ fn what_the_old_start_had_held_behind_its_resume_is_dropped_by_a_higher_start_in
 
     assert_eq!(
         welcome(&new.log),
-        Some(Welcome::Unknown),
+        Some(Said::Unknown),
         "{}",
         brief(&new.log)
     );
@@ -2925,12 +2945,7 @@ fn what_the_old_link_sent_as_the_new_one_said_hello_is_answered_on_the_new_link_
     assert_eq!(entries[0].1, 1);
     assert!(presence(log, player(1)).is_some_and(|(answer, _)| answer < entries[0].0));
     assert!(outbox(&old.log).is_empty(), "{}", brief(&old.log));
-    assert_eq!(
-        log[0],
-        WorkerToEdge::Welcome(Welcome::Resumed),
-        "{}",
-        brief(log)
-    );
+    assert_eq!(welcome(log), Some(Said::Resumed), "{}", brief(log));
     // The resume is of the state before the tick that takes the join in.
     let (answer, absent) = presence(log, player(2)).expect("the player was named");
     assert_eq!(*absent, Presence::Absent, "{}", brief(log));
@@ -2977,7 +2992,7 @@ fn a_restored_region_knows_each_edges_start() {
     assert!(next.region().player(player(1)).is_some());
 
     let newer = resumed(&mut next, E, 6, 0, vec![player(1)]);
-    assert_eq!(welcome(&newer.log), Some(Welcome::Unknown));
+    assert_eq!(welcome(&newer.log), Some(Said::Unknown));
     run_until(
         &mut next,
         &mut [&mut watcher],
@@ -3062,7 +3077,7 @@ fn a_higher_start_is_told_nothing_of_what_the_old_start_was_owed_in(mut world: W
     sync(&mut runner, &mut [&mut new, &mut old], 0);
     let log = &new.log;
 
-    assert_eq!(welcome(log), Some(Welcome::Unknown), "{}", brief(log));
+    assert_eq!(welcome(log), Some(Said::Unknown), "{}", brief(log));
     assert!(
         outbox(log).is_empty(),
         "the old start's outbox is dropped: {}",
@@ -3148,7 +3163,7 @@ fn after_a_restore_a_departure_dropped_with_its_edge_is_still_reported_removed()
     let mut next = world.open().with_gone_after(GONE_AFTER);
     drop(runner);
     let mut watcher = resumed(&mut next, F, 5, 0, Vec::new());
-    assert_eq!(welcome(&watcher.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&watcher.log), Some(Said::Resumed));
     run_until(
         &mut next,
         &mut [&mut watcher],
@@ -3403,7 +3418,7 @@ fn a_runner_that_has_released_its_region_ticks_no_more_and_closes_a_link_that_co
     // The edge finds the region, as it was, at whoever opens it next.
     let mut next = world.open();
     let again = resumed(&mut next, E, 5, 0, vec![player(1)]);
-    assert_eq!(welcome(&again.log), Some(Welcome::Resumed));
+    assert_eq!(welcome(&again.log), Some(Said::Resumed));
     assert!(matches!(
         presence(&again.log, player(1)),
         Some((_, Presence::Present { .. }))
@@ -3424,6 +3439,7 @@ fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links(
         end: edge,
         log: Vec::new(),
         closed: false,
+        edge: std::cell::Cell::new(None),
     };
     e.hello(E, 5, 0, Vec::new(), vec![HOME]);
     e.numbered(1, join(player(1)));
@@ -3450,6 +3466,7 @@ fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links(
         end: edge,
         log: Vec::new(),
         closed: false,
+        edge: std::cell::Cell::new(None),
     };
     wait_for(
         &mut late,

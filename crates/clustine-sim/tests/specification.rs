@@ -356,6 +356,8 @@ fn an_unknown_edge_is_noted_with_nothing_applied_or_sent() {
         region.edge(E),
         Some(&EdgeState {
             start: 42,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             applied: 0,
             sent: 0,
             outbox: Default::default(),
@@ -395,6 +397,8 @@ fn a_higher_start_removes_the_edges_players_and_departing_entities_and_drops_its
         region.edge(E),
         Some(&EdgeState {
             start: 20,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             applied: 0,
             sent: 0,
             outbox: Default::default(),
@@ -582,6 +586,8 @@ fn an_edge_started_again_after_it_was_gone_starts_from_nothing() {
         region.edge(E),
         Some(&EdgeState {
             start: 10,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             applied: 0,
             sent: 0,
             outbox: Default::default(),
@@ -613,6 +619,8 @@ fn gone_and_started_in_one_tick_start_the_edge_from_nothing() {
         region.edge(E),
         Some(&EdgeState {
             start: 10,
+            // Made in the tick that has just run.
+            since: region.tick_number(),
             applied: 0,
             sent: 0,
             outbox: Default::default(),

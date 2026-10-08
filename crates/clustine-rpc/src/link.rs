@@ -271,6 +271,7 @@ mod tests {
             EdgeToWorker::Hello {
                 edge: EdgeId::from_name("edge-0"),
                 start: 1_791_000_000_000,
+                since: 17,
                 seen: 41,
                 players: vec![player()],
                 chunks: vec![ChunkPos::new(0, -1)],
@@ -387,8 +388,11 @@ mod tests {
                     chunk: ChunkPos::new(3, -4),
                 }],
             },
-            WorkerToEdge::Welcome(Welcome::Resumed),
-            WorkerToEdge::Welcome(Welcome::Unknown),
+            WorkerToEdge::Welcome(Welcome::Resumed { entries: 3 }),
+            WorkerToEdge::Welcome(Welcome::Unknown {
+                since: 17,
+                entries: 0,
+            }),
             WorkerToEdge::Welcome(Welcome::Superseded),
             WorkerToEdge::Outbox {
                 number: 42,

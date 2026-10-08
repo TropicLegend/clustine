@@ -380,6 +380,7 @@ dependencies = [
  "clustine-worldgen",
  "clustine-worldstore",
  "postcard",
+ "serde",
  "tempfile",
  "thiserror",
  "tokio",

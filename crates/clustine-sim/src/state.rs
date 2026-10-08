@@ -51,6 +51,12 @@ pub struct PlayerState {
 pub struct EdgeState {
     /// Which start of the edge the region knows.
     pub start: u64,
+    /// Since when the region has known the edge without a break: the number of the tick
+    /// that made this state, when it noted an edge it did not know or reset one for a
+    /// higher start. An edge says the number it was last told when it says hello, and
+    /// is taken to share the region's numbering of messages and outbox entries only if
+    /// it is this one. See `docs/adr/0012-the-tick-on-chunks.md`, section 2.6.
+    pub since: u64,
     /// The number of the last message of that edge that was applied.
     pub applied: u64,
     /// The number of the last outbox entry made; the next one is numbered one higher.
@@ -95,6 +101,7 @@ impl RegionState {
             };
             let edge = self.edges.entry(*id).or_default();
             edge.start = change.start;
+            edge.since = change.since;
             edge.applied = change.applied;
             edge.sent = change.sent;
             if change.cleared {
@@ -154,6 +161,8 @@ impl StateDelta {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeDelta {
     pub start: u64,
+    /// [`EdgeState::since`] after the tick.
+    pub since: u64,
     pub applied: u64,
     pub sent: u64,
     /// Whether the outbox the edge had before the tick was dropped as a whole, as when

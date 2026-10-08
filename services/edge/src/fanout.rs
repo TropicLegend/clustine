@@ -228,6 +228,11 @@ struct RegionPort {
     applied: u64,
     /// The number of the last outbox entry of the region that was handled.
     seen: u64,
+    /// The `since` of the last welcome read from the region, 0 if none: the region's
+    /// word for the numbering the two share, which the edge says in every hello. The
+    /// region resumes only if it is the one it has; see
+    /// `docs/adr/0012-the-tick-on-chunks.md`, section 5.3.
+    since: u64,
 }
 
 /// What reaches the fan-out task from a link to a region: a message, or `None` when the
@@ -425,6 +430,7 @@ impl Fanout {
         let hello = EdgeToWorker::Hello {
             edge: self.identity.edge,
             start: self.identity.start,
+            since: port.since,
             seen: port.seen,
             players,
             chunks,
@@ -449,11 +455,19 @@ impl Fanout {
                 error!(%from, "another edge has taken this one's name; stopping");
                 return Some(Stopped::Superseded);
             }
-            Welcome::Resumed => {}
-            // To an edge that has had nothing to do with the region this is how
-            // everything begins.
-            Welcome::Unknown if port.applied == 0 && port.seen == 0 => {}
-            Welcome::Unknown => self.forget_region(from).await,
+            Welcome::Resumed { .. } => {}
+            Welcome::Unknown { since, .. } => {
+                // To an edge that has had nothing to do with the region this is how
+                // everything begins, and what it kept for the region is numbered as
+                // the region expects it: from 1.
+                if port.applied != 0 || port.seen != 0 {
+                    self.forget_region(from).await;
+                }
+                // Said in every hello from now on. Kept also when the link ends before
+                // anything more is read: the region tells an edge that says another
+                // number the same again, as long as it has taken nothing from it.
+                self.regions[from.0 as usize].since = since;
+            }
         }
         let port = &mut self.regions[from.0 as usize];
         let link = port.link.as_mut()?;
@@ -1801,7 +1815,13 @@ mod tests {
                     ),
                     "{hello:?}"
                 );
-                harness.tell(region, WorkerToEdge::Welcome(Welcome::Unknown));
+                harness.tell(
+                    region,
+                    WorkerToEdge::Welcome(Welcome::Unknown {
+                        since: 1,
+                        entries: 0,
+                    }),
+                );
             }
             harness
         }
@@ -2031,6 +2051,7 @@ mod tests {
         let EdgeToWorker::Hello {
             edge: id,
             start,
+            since,
             seen,
             players,
             chunks,
@@ -2043,6 +2064,8 @@ mod tests {
             (id, start, seen),
             (IDENTITY.edge, IDENTITY.start, edge.outbox[0])
         );
+        // And it says since when the region knows it, as the region's welcome told it.
+        assert_eq!(since, 1);
         assert_eq!(players, [player(1)]);
         // Every chunk of the region that the edge shows or wants, and none of the other
         // region's.
@@ -2051,7 +2074,7 @@ mod tests {
         assert!(chunks.iter().all(|chunk| layout.region_of(*chunk) == WEST));
         assert!(connected(&mut packets));
 
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
         for expected in [2, 3, 4] {
             let (number, body) = edge.next_numbered(WEST).await;
             assert_eq!(number, expected);
@@ -2090,7 +2113,7 @@ mod tests {
         assert_eq!(edge.next_numbered(WEST).await.0, 4);
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
         assert_eq!(edge.next_numbered(WEST).await.0, 3);
         assert_eq!(edge.next_numbered(WEST).await.0, 4);
     }
@@ -2115,7 +2138,13 @@ mod tests {
 
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Unknown));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Unknown {
+                since: 1,
+                entries: 0,
+            }),
+        );
         disconnected(&mut packets).await;
 
         // All the region hears is that the player is gone, numbered from 1 again.
@@ -2199,7 +2228,7 @@ mod tests {
             matches!(&hello, EdgeToWorker::Hello { players, .. } if *players == [player(1)]),
             "{hello:?}"
         );
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
         let departed = Durable::Departed {
             player: player(1),
             transfer: transfer(EntityId(5), 1),
@@ -2244,7 +2273,7 @@ mod tests {
             matches!(&hello, EdgeToWorker::Hello { players, .. } if players.len() == 2),
             "{hello:?}"
         );
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
         for absent in [player(1), player(2)] {
             edge.tell(
                 WEST,
@@ -2269,7 +2298,7 @@ mod tests {
 
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
         edge.tell(
             WEST,
             WorkerToEdge::Presence {
@@ -2327,7 +2356,7 @@ mod tests {
         // has the player as they were.
         let hello = edge.relink(WEST, 2).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
         edge.tell(
             WEST,
             WorkerToEdge::Presence {
@@ -2367,7 +2396,7 @@ mod tests {
         // And it is as that entity that the edge knows them from then on.
         let hello = edge.relink(WEST, 3).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed));
+        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));
         edge.tell(
             WEST,
             WorkerToEdge::Presence {
@@ -2398,7 +2427,13 @@ mod tests {
         let mut edge = Harness::start().await;
         let hello = edge.relink(WEST, 5).await;
         assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
-        edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Unknown));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Welcome(Welcome::Unknown {
+                since: 1,
+                entries: 0,
+            }),
+        );
 
         // The link of an owner with a lower epoch is dropped, which closes it.
         let (stale, mut worker) = link_to(WEST, 4);
