@@ -432,6 +432,15 @@ player goes to in its outbox entries. Until the runner asks the store (C2b.3) th
 processes tell each region the stripes as given (`presumed`), so nothing changes for a
 cluster yet. Its scenarios are being written by someone else from the record.
 
+C2b.3 is built: the region runner passes a tick's claims and returns to the store and
+the answers back into ticks, keeps subscriptions of viewers and of guests with their
+numbers, answers each with a snapshot, `Elsewhere` or `NotMine`, and holds a link that
+has said hello until every chunk it named is answered. `clustine worker
+--ask-the-store` leaves the given stripes out, so that regions really ask the store
+which chunks they hold; every end-to-end test passes that way too, with the edge as it
+is, and a fifth check runs them so (`CLUSTINE_TEST_ASK_THE_STORE`). The processes still
+start with the stripes given until C2b.5.
+
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
 and in hellos, the welcome saying how many entries follow (all C2b); how `Restored::held`

@@ -41,12 +41,19 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 CLUSTINE_TEST_BOUNDARIES=0,4 cargo test -p clustine --locked
+CLUSTINE_TEST_BOUNDARIES=0,4 CLUSTINE_TEST_ASK_THE_STORE=1 cargo test -p clustine --locked
 ```
 
-The last line runs the end-to-end tests on a world divided into three regions. CI runs all
-four, and names failed tests on the run's summary page (readable without signing in
-through the check run's annotations). `tools/check.sh` runs the four, the two test runs
-at the same time, and says which failed; that takes about ten minutes on six processors.
+The last two lines run the end-to-end tests on a world divided into three regions: once
+with regions that take their stripes as given, and once with regions that ask the world
+store which chunks they hold (ADR-0012, section 8; the first of the two goes when step
+C2b.5 takes the given stripes away). The tests of chaos and of moves divide their worlds
+themselves and run only in the third line; on regions that ask they are run by hand with
+`CLUSTINE_TEST_ASK_THE_STORE=1 cargo test -p clustine --locked --test chaos --test
+moves` until then. CI runs all five, and names failed tests on the run's summary page
+(readable without signing in through the check run's annotations). `tools/check.sh` runs
+the five, the three test runs at the same time, and says which failed; that takes about
+ten minutes on six processors.
 The tests that start clusters of processes run several at a time
 (`CLUSTINE_TEST_CLUSTERS`, by default one for every two processors).
 
