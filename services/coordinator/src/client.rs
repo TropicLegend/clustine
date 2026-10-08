@@ -400,7 +400,7 @@ pub struct Mover {
 
 impl Mover {
     /// Connects to the coordinator at `coordinator` (host:port) and asks it to move
-    /// `region` to the worker named `to`, or to any worker that waits.
+    /// `region` to the worker named `to`, or to the worker that runs the fewest.
     pub async fn ask(
         coordinator: &str,
         region: RegionId,

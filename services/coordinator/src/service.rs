@@ -296,9 +296,9 @@ impl Service {
                 info!(worker = %name, %region, seen, "the world store refused an epoch");
                 let name = name.clone();
                 let changes = self.coordinator.epoch_refused(now, &name, region, seen);
-                // The region the worker dropped has gone to a waiting worker, unless
-                // there is none or the coordinator is new; then it is without an owner
-                // until a tick gives it away.
+                // The region the worker dropped has been given away again, unless no
+                // worker can be given it or the coordinator is new; then it is without
+                // an owner until a tick gives it away.
                 self.announce(&changes, None);
             }
             (Role::Worker(name), ToCoordinator::Released { region, epoch }) => {
@@ -562,7 +562,7 @@ impl Service {
 /// A region that nobody could be given is not anybody's "now", so there is no
 /// [`FromCoordinator::MoveDone`] to say: the mover is told that the move is not done and
 /// why, although the region has left its old owner, and hears no more. The region is
-/// assigned like any region without an owner as soon as a worker waits.
+/// assigned like any region without an owner as soon as a worker can be given it.
 fn outcome_message(outcome: &MoveOutcome) -> FromCoordinator {
     match &outcome.owner {
         Some((to, epoch)) => FromCoordinator::MoveDone {
@@ -578,8 +578,8 @@ fn outcome_message(outcome: &MoveOutcome) -> FromCoordinator {
                 "was taken from its owner, which did not release it"
             };
             let reason = format!(
-                "region {region} {how}, but no worker waits to be given it; \
-                 it is without an owner until one does"
+                "region {region} {how}, but no other worker is there to be given \
+                 it; it is without an owner until a worker can be"
             );
             FromCoordinator::MoveRefused { reason }
         }
@@ -790,8 +790,11 @@ mod tests {
         }
     }
 
-    /// A coordinator, the workers `a` and `b` with the two westernmost regions, which
-    /// they were given in the order they registered, and an edge that has seen as much.
+    /// A coordinator of a world with two regions, the workers `a` and `b` with one
+    /// each, which they were given in the order they registered, and an edge that has
+    /// seen as much. Both register before the coordinator gives anything away, which
+    /// it does once it has been there for a lease: the first would be given both
+    /// regions otherwise.
     struct Cluster {
         served: Served,
         a: WorkerClient,
@@ -886,7 +889,8 @@ mod tests {
         }
     }
 
-    /// The next orders of a worker, which are to run one region: that region.
+    /// The next orders of a worker, which the test expects to be to run one region:
+    /// that region.
     async fn next_region(worker: &mut WorkerClient) -> Assignment {
         let orders = within(worker.next()).await.unwrap();
         assert_eq!(orders.assignments.len(), 1, "{orders:?}");
@@ -907,6 +911,13 @@ mod tests {
             }
         })
         .await
+    }
+
+    /// The region and the epoch that `table` has for the region numbered `region`,
+    /// which is what its owner is told to release.
+    fn orders_of(table: &RoutingTable, region: u32) -> (RegionId, u64) {
+        let route = table.route(RegionId(region)).unwrap();
+        (route.region, route.epoch)
     }
 
     /// The next thing a worker is told, which is to release a region: the region and
@@ -970,14 +981,13 @@ mod tests {
     async fn a_waiting_worker_is_given_the_region_of_one_that_vanished_once_its_lease_is_out() {
         let served = Served::start(&[0]).await;
         let mut watch = served.watch().await;
+        // Both are there before the coordinator gives anything away, so each is given
+        // one region. The second is heard from no earlier than now.
         let (mut stays, _) = served.worker("stays", &[]).await;
-        let west = next_region(&mut stays).await;
-        assert_eq!(west.region, RegionId(0));
-
-        // The coordinator has been there for a lease by now, so this worker is given
-        // the other region at the next tick. It is heard from no earlier than now.
         let heard = Instant::now();
         let (mut vanishes, _) = served.worker("vanishes", &[]).await;
+        let west = next_region(&mut stays).await;
+        assert_eq!(west.region, RegionId(0));
         let east = next_region(&mut vanishes).await;
         assert_eq!(east.region, RegionId(1));
         let table = table_where(&mut watch, RoutingTable::is_complete).await;
@@ -990,6 +1000,8 @@ mod tests {
         assert_eq!(orders, served.orders(&[]));
         drop(vanishes);
 
+        // The region goes to the worker that runs nothing, not to the one that runs
+        // the other region.
         let taken = next_region(&mut waits).await;
         assert!(heard.elapsed() > LEASE);
         assert_eq!(taken.region, RegionId(1));
@@ -1008,6 +1020,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_single_worker_is_given_every_region_and_told_of_all_of_them_at_once() {
+        let served = Served::start(&[-8, 8]).await;
+        let mut watch = served.watch().await;
+        let (mut alone, orders) = served.worker("alone", &[]).await;
+        assert_eq!(orders, served.orders(&[]));
+
+        let orders = within(alone.next()).await.unwrap();
+        let regions: Vec<RegionId> = orders.assignments.iter().map(|held| held.region).collect();
+        assert_eq!(regions, [RegionId(0), RegionId(1), RegionId(2)]);
+        let table = table_where(&mut watch, RoutingTable::is_complete).await;
+        let routes: Vec<RegionRoute> = orders
+            .assignments
+            .iter()
+            .map(|held| route(*held, "alone"))
+            .collect();
+        assert_eq!(table.routes, routes);
+
+        // A worker that comes later is given none of them, and is the one a region
+        // is moved to.
+        let (mut late, orders) = served.worker("late", &[]).await;
+        assert_eq!(orders, served.orders(&[]));
+        let mut mover = ask_to_move(&served, 1, None).await;
+        let begun = MoveAnswer::Begun {
+            from: "alone".to_owned(),
+            to: "late".to_owned(),
+        };
+        assert_eq!(within(mover.next()).await.unwrap(), begun);
+        let middle = orders_of(&table, 1);
+        assert_eq!(next_release(&mut alone).await, middle);
+        alone.released(middle.0, middle.1);
+        let taken = next_region(&mut late).await;
+        assert_eq!(taken.region, RegionId(1));
+        // The old owner is told the two that it still runs.
+        let left = [table.routes[0].epoch, table.routes[2].epoch];
+        let orders = match within(alone.event()).await.unwrap() {
+            WorkerEvent::Orders(orders) => orders,
+            other => panic!("{other:?} are no orders"),
+        };
+        let epochs: Vec<u64> = orders.assignments.iter().map(|held| held.epoch).collect();
+        assert_eq!(epochs, left);
+    }
+
+    #[tokio::test]
     async fn a_worker_back_within_its_lease_keeps_its_region_and_only_its_address_is_news() {
         let Cluster {
             served,
@@ -1017,18 +1072,30 @@ mod tests {
             held_b,
             mut watch,
             table,
-        } = Cluster::start(&[-8, 8]).await;
+        } = Cluster::start(&[0]).await;
 
-        // The connection of `a` ends, and a tick goes by without it: the one at which a
-        // worker that has come since is given a region. It is the one nobody had and
-        // not the one `a` runs, because a lost connection is not the end of a worker.
+        // The connection of `a` ends, and the coordinator goes on without it: a
+        // region is moved meanwhile, to a worker that has come since. Nothing is
+        // taken from `a`, because a lost connection is not the end of a worker.
         drop(a);
-        let (mut c, _) = served.worker("c", &[]).await;
+        let (mut c, orders) = served.worker("c", &[]).await;
+        assert_eq!(orders, served.orders(&[]));
+        let mut mover = ask_to_move(&served, 1, Some("c")).await;
+        assert!(matches!(
+            within(mover.next()).await.unwrap(),
+            MoveAnswer::Begun { .. }
+        ));
+        assert_eq!(next_release(&mut b).await, (held_b.region, held_b.epoch));
+        b.released(held_b.region, held_b.epoch);
         let held_c = next_region(&mut c).await;
-        assert_eq!(held_c.region, RegionId(2));
+        assert_eq!(held_c.region, RegionId(1));
+        assert_eq!(
+            within(b.event()).await.unwrap(),
+            WorkerEvent::Orders(served.orders(&[]))
+        );
         let with_c = within(watch.next()).await.unwrap();
         assert_eq!(with_c.version, table.version + 1);
-        let routes = [route(held_a, "a"), route(held_b, "b"), route(held_c, "c")];
+        let routes = [route(held_a, "a"), route(held_c, "c")];
         assert_eq!(with_c.routes, routes);
 
         // Back at the same address, the worker carries on.
@@ -1562,11 +1629,10 @@ mod tests {
             ..
         } = Cluster::start(&[0]).await;
         let asked = [
-            (0, None, "no worker waits that region 0 could be moved to"),
             (
                 0,
-                Some("b"),
-                "region 0 cannot be moved to b, which runs a region already",
+                Some("a"),
+                "region 0 cannot be moved to a, which owns the region",
             ),
             (
                 1,
@@ -1846,8 +1912,8 @@ mod tests {
         a.send(released).await.unwrap();
         hear_next(&mut service, start).await;
 
-        let reason = "region 0 was released by its owner, but no worker waits to be given \
-                      it; it is without an owner until one does";
+        let reason = "region 0 was released by its owner, but no other worker is there to \
+                      be given it; it is without an owner until a worker can be";
         let refused = FromCoordinator::MoveRefused {
             reason: reason.to_owned(),
         };
@@ -1864,7 +1930,8 @@ mod tests {
             released: false,
         };
         let reason = "region 2 was taken from its owner, which did not release it, but no \
-                      worker waits to be given it; it is without an owner until one does";
+                      other worker is there to be given it; it is without an owner until \
+                      a worker can be";
         let refused = FromCoordinator::MoveRefused {
             reason: reason.to_owned(),
         };

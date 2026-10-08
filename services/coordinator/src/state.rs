@@ -50,7 +50,7 @@ pub enum MoveRefusal {
         from: String,
         to: String,
     },
-    #[error("no worker waits that region {0} could be moved to")]
+    #[error("no other worker is there that region {0} could be moved to")]
     NoTarget(RegionId),
     #[error("region {region} cannot be moved to {worker}, which {why}")]
     NotATarget {
@@ -121,7 +121,10 @@ struct Worker {
     address: String,
     /// When it was last heard from.
     heard: Instant,
-    /// Its place among the workers: one that registered earlier has a lower number.
+    /// Its place among the workers: one that registered earlier has a lower number,
+    /// and one that lost or released a region has the highest of all from then on.
+    /// Among workers with equally many regions, the one with the lowest is given the
+    /// next.
     arrival: u64,
     /// Whether it has a connection, as far as the service has said: it has one when it
     /// registers, and none once [`Coordinator::disconnected`] is called.
@@ -139,7 +142,8 @@ struct Release {
     /// The owner.
     from: String,
     /// The worker the region is meant for. It is reserved: as long as the release
-    /// lasts, it is given nothing else and is no other release's target.
+    /// lasts, it counts as having the region when the worker with the fewest is
+    /// looked for. It may run regions already, and be the target of other releases.
     to: String,
     /// When the owner was first asked.
     asked: Instant,
@@ -260,11 +264,21 @@ impl Holder {
 
 /// Decides which worker runs which region.
 ///
-/// A worker registers and then has to be heard from at least once per lease. One that
-/// owns nothing is waiting, and [`Coordinator::tick`] gives the regions without an owner
-/// to the waiting workers. A worker that is silent for longer than a lease is forgotten,
-/// and what it ran goes to a waiting worker, with a higher epoch. The times that are
-/// passed in need not be in order; a worker was last heard from at the latest of them.
+/// A worker registers and then has to be heard from at least once per lease. It runs
+/// as many regions as it is given. A region can be given to any worker that is
+/// registered, has a connection and is not leaving, and of those it goes to **the one
+/// with the fewest regions**: the regions it owns and those it is the reserved target of
+/// (see below) are counted. Of several with equally few it goes to the one that has
+/// waited longest: the one that registered first, but a worker that lost or released a
+/// region is behind all the others from then on.
+///
+/// [`Coordinator::tick`] gives the regions without an owner away like that, the lowest
+/// first and counting each as it goes, so that they are spread evenly over the workers
+/// that are there. A worker that is silent for longer than a lease is forgotten, and
+/// what it ran goes to the others, with higher epochs. Nothing is taken from a worker to
+/// even things out: one that registers later is given only what has no owner. The times
+/// that are passed in need not be in order; a worker was last heard from at the latest
+/// of them.
 ///
 /// Being heard from is not enough to keep a region, though: a worker that is there but
 /// cannot get anything of the region made durable shows its players nothing. So each
@@ -281,8 +295,8 @@ impl Holder {
 /// a lease before, or if its owner has been waiting for the store for longer than
 /// `STORE_PATIENCE`: at that point, rather than a lease after the last vouch that
 /// counted, so that a worker cut off from the store keeps the region no longer than that.
-/// The owner stays registered and goes to the back of the waiting workers, so that
-/// another one gets the region if there is one.
+/// The owner stays registered and goes behind the other workers, so that of those with
+/// as few regions as it has, another one is given the region.
 ///
 /// Whatever workers report and in whatever order, a region never has two owners and
 /// never goes back to an epoch below one it has had, because storage and peers tell the
@@ -296,17 +310,20 @@ impl Holder {
 /// **release**, which [`Coordinator::move_region`] notes, or the coordinator itself for
 /// the regions of a worker that said it is [`Coordinator::leaving`].
 ///
-/// A release needs a **target**: a registered worker that has a connection, owns no
-/// region, is not leaving, is not the target of another release and is not the region's
-/// owner. The target is reserved while the release lasts. A release is of one owner and
-/// one epoch: when the region changes either for another reason, the release is dropped
-/// and its target is free again. While it lasts the region is not taken from its owner
-/// for want of vouching, as the owner stops ticking on purpose. A release that is not
-/// answered within a lease of when it was first asked ends like the owner's death: the
-/// region is taken from it and assigned.
+/// A release needs a **target**: a registered worker that has a connection, is not
+/// leaving and is not the region's owner. It may run regions already and be the target
+/// of other releases; if nobody names one, it is the one with the fewest regions, as
+/// above. The target is **reserved** while the release lasts: it is being given the
+/// region just now, and counts as having it. A release is of one owner and one epoch:
+/// when the region changes either for another reason, the release is dropped and its
+/// target no longer counts as having the region. While it lasts the region is not taken
+/// from its owner for want of vouching, as the owner stops ticking on purpose. A release
+/// that is not answered within a lease of when it was first asked ends like the owner's
+/// death: the region is taken from it and assigned.
 ///
-/// When a release ends, the region goes to its target if that still is one, else to any
-/// target, else it is without an owner until a tick gives it to a worker that waits.
+/// When a release ends, the region goes to its target if that still is one, else to the
+/// target with the fewest regions, else it is without an owner until a tick finds a
+/// worker to give it to.
 ///
 /// Every call that may change something ends by dropping the releases that no longer
 /// hold, forgetting the leaving workers that own nothing, and beginning a release for
@@ -528,10 +545,10 @@ impl Coordinator {
     /// worker take a region from another.
     ///
     /// To be refused is to be heard from, if the worker is registered. The call ends
-    /// like a [`Coordinator::tick`] at `now`, so that a region the worker dropped goes
-    /// to a waiting worker at once, with an epoch above `seen`, and edges see it change
-    /// hands in one new routing table. The waiting worker may be the same one: being
-    /// refused says nothing against it.
+    /// like a [`Coordinator::tick`] at `now`, so that a region the worker dropped is
+    /// given away at once, with an epoch above `seen`, and edges see it change hands in
+    /// one new routing table. It may go to the same worker: being refused says nothing
+    /// against it, and it has one region fewer now.
     pub fn epoch_refused(
         &mut self,
         now: Instant,
@@ -575,8 +592,8 @@ impl Coordinator {
     ///
     /// A worker that said it is leaving is not expected back. It is forgotten at once,
     /// and the call ends like a [`Coordinator::tick`] at `now`, so that what it owned
-    /// goes to the workers that wait, as far as there are any and the coordinator is
-    /// not new. The world store fences the worker if it lives.
+    /// goes to the other workers, if there are any and the coordinator is not new. The
+    /// world store fences the worker if it lives.
     pub fn disconnected(&mut self, now: Instant, name: &str) -> Changes {
         let before = self.holders();
         match self.workers.get_mut(name) {
@@ -593,9 +610,10 @@ impl Coordinator {
 
     /// The worker `name` has been told to stop. It is given nothing new from now on, and
     /// is no target of a release. For each region it owns a release is begun as soon as
-    /// there is a target, which is looked for at the end of this and every later call.
-    /// Once it owns nothing, it is forgotten and named in [`Changes::gone`]; that is at
-    /// once if it owns nothing now.
+    /// there is a target, which is looked for at the end of this and every later call;
+    /// several of its regions may be meant for the same target. Once it owns nothing,
+    /// it is forgotten and named in [`Changes::gone`]; that is at once if it owns
+    /// nothing now.
     ///
     /// To say so is to be heard from. Leaving belongs to one registration: a worker that
     /// registers again is not leaving until it says so again. A worker that is not
@@ -616,8 +634,8 @@ impl Coordinator {
         self.finish(&before, now)
     }
 
-    /// Somebody wants `region` moved: to the worker `to`, or to any target. `mover`
-    /// names whoever asked, and comes back in the [`MoveOutcome`] of a later call (or of
+    /// Somebody wants `region` moved: to the worker `to`, which may run regions
+    /// already, or to the target with the fewest. `mover` names whoever asked, and comes back in the [`MoveOutcome`] of a later call (or of
     /// none, if the coordinator is replaced before the release ends).
     ///
     /// The move is refused, and nothing changes, unless the region has an owner, is not
@@ -671,17 +689,19 @@ impl Coordinator {
     ///
     /// If it owns the region with that epoch, the region is taken from it and assigned
     /// at once, with a new epoch: to the target of the release if there was one and it
-    /// still is a target, else to any target. That holds whether or not a release was
-    /// noted, and during the grace period of a new coordinator too: the owner itself
-    /// says that the region is free. With no target the region is without an owner
-    /// until a tick gives it to a worker that waits. The worker itself goes to the back
-    /// of those that wait.
+    /// still is a target, else to the target with the fewest regions. That holds
+    /// whether or not a release was noted, and during the grace period of a new
+    /// coordinator too: the owner itself says that the region is free. With no target,
+    /// which is when no other worker is there, the region is without an owner until a
+    /// tick gives it away, to this worker again if it is still the only one. The worker
+    /// itself goes behind all the others.
     ///
     /// A region that nobody owns, released by a registered worker with an epoch that is
     /// not below the last one the coordinator knows of it, is free as well. That is
     /// what a new coordinator hears when the release was done before the worker found
     /// it: the worker registers holding nothing and says what it let go of. The region
-    /// is given to a worker that waits at once, the one that says this last among them.
+    /// is given away at once like any without an owner, and the worker that says this
+    /// is behind all the others for it.
     /// The coordinator cannot check that the worker was the owner; if it was not, the
     /// world store fences whoever still runs the region, as after any crash.
     ///
@@ -734,15 +754,14 @@ impl Coordinator {
     /// Leases are only looked at here: a worker that is heard from late, but before the
     /// tick that would have forgotten it, keeps what it has.
     ///
-    /// Regions without an owner go to the waiting workers, the lowest region first and
-    /// the worker that registered first before the others, one region for each worker.
+    /// Regions without an owner are given away, the lowest region first, each to the
+    /// worker that has the fewest regions when its turn comes; see [`Coordinator`].
     /// Such an assignment has an epoch above every epoch issued or reported so far, and
     /// entity ids that were never issued or reported. A region stays without an owner if
-    /// no worker is waiting, or if epochs or entity ids have run out. A worker that is
-    /// leaving or reserved for a release does not wait for these.
+    /// no worker is there that could be given it, or if epochs have run out.
     ///
     /// A release that was first asked more than a lease ago ends here: the region is
-    /// taken from its owner, which goes to the back of those that wait, and assigned as
+    /// taken from its owner, which goes behind all the other workers, and assigned as
     /// in [`Coordinator::released`].
     pub fn tick(&mut self, now: Instant) -> Changes {
         let before = self.holders();
@@ -783,7 +802,8 @@ impl Coordinator {
     }
 
     /// What keeps the worker `name` from being the target of a release by `owner`, as
-    /// the end of a sentence about it; `None` if it is a target.
+    /// the end of a sentence about it; `None` if it is a target. How many regions it
+    /// runs does not come into it.
     fn unfit(&self, name: &str, owner: &str) -> Option<&'static str> {
         let Some(worker) = self.workers.get(name) else {
             return Some("is not registered");
@@ -797,26 +817,48 @@ impl Coordinator {
         if worker.leaving {
             return Some("is leaving");
         }
-        let mut owners = self
-            .regions
-            .values()
-            .filter_map(|state| state.owner.as_ref());
-        if owners.any(|owner| owner.worker == name) {
-            return Some("runs a region already");
-        }
-        if self.releases.values().any(|release| release.to == name) {
-            return Some("is the target of another release");
-        }
         None
     }
 
-    /// The target of a release by `owner` that has waited longest, if there is one.
-    fn first_target(&self, owner: &str) -> Option<String> {
+    /// How many regions each worker has that has any: those it owns and those it is
+    /// the reserved target of, which it is being given just now.
+    fn loads(&self) -> BTreeMap<&str, usize> {
+        let owned = self
+            .regions
+            .values()
+            .filter_map(|state| state.owner.as_ref())
+            .map(|owner| owner.worker.as_str());
+        let reserved = self.releases.values().map(|release| release.to.as_str());
+        let mut loads = BTreeMap::new();
+        for name in owned.chain(reserved) {
+            *loads.entry(name).or_insert(0) += 1;
+        }
+        loads
+    }
+
+    /// The worker that is given the next region: of those that are registered, have a
+    /// connection and are not leaving, the one with the fewest regions, and of several
+    /// such the one that has waited longest. `except` is left out, if it is given.
+    fn lightest(&self, except: Option<&str>) -> Option<String> {
+        let loads = self.loads();
         self.workers
             .iter()
-            .filter(|(name, _)| self.unfit(name, owner).is_none())
-            .min_by_key(|(_, worker)| worker.arrival)
+            // One without a connection may be dead, which only its lease running out
+            // would show: the region would stand still for that long. If it lives, it
+            // registers again within a second.
+            .filter(|(_, worker)| worker.connected && !worker.leaving)
+            .filter(|(name, _)| except != Some(name.as_str()))
+            .min_by_key(|(name, worker)| {
+                let load = loads.get(name.as_str()).copied().unwrap_or(0);
+                (load, worker.arrival)
+            })
             .map(|(name, _)| name.clone())
+    }
+
+    /// The target of a release by `owner` if nobody names one: of the workers that
+    /// could be one, the one [`Coordinator::lightest`] picks.
+    fn first_target(&self, owner: &str) -> Option<String> {
+        self.lightest(Some(owner))
     }
 
     /// Notes that `from`, which owns `region` with `epoch`, is asked at `now` to release
@@ -846,9 +888,9 @@ impl Coordinator {
         });
     }
 
-    /// Takes `region` from its owner, which goes to the back of the workers that wait,
-    /// and assigns it at `now` to the target of its release if it has one that still is
-    /// a target, else to any target, else to nobody. A release of the region ends with
+    /// Takes `region` from its owner, which goes behind all the other workers, and
+    /// assigns it at `now` to the target of its release if it has one that still is a
+    /// target, else to the target with the fewest regions, else to nobody. A release of the region ends with
     /// that; `released` says whether the owner let go by itself.
     fn hand_over(&mut self, now: Instant, region: RegionId, released: bool) {
         let state = self
@@ -866,7 +908,8 @@ impl Coordinator {
         worker.arrival = self.arrivals;
         self.arrivals += 1;
 
-        // Taken out first: its target is not reserved against itself.
+        // Taken out first, so that its target is not counted as having the region
+        // already if another target has to be found.
         let release = self.releases.remove(&region);
         let meant = release.as_ref().map(|release| release.to.clone());
         if let Some(release) = release {
@@ -973,8 +1016,9 @@ impl Coordinator {
             })
             .collect();
         for (region, from, epoch) in wanted {
-            // A worker that owns a region is nobody's target, so a target for one of
-            // these is a target for all of them, and without one there is none.
+            // No target owns any of these, as their owners are leaving. So a target for
+            // one of them is a target for all of them, and without one there is none.
+            // Each release counts for its target when the next one is looked for.
             let Some(to) = self.first_target(&from) else {
                 break;
             };
@@ -1157,7 +1201,8 @@ impl Coordinator {
                 "a region was taken from its owner"
             );
             // Whatever keeps the worker from vouching may well keep it from running the
-            // region again, so a waiting worker that has not failed gets it first.
+            // region again, so a worker that has not failed gets it first, unless that
+            // one has more regions.
             let worker = self
                 .workers
                 .get_mut(&owner.worker)
@@ -1167,43 +1212,23 @@ impl Coordinator {
         }
     }
 
-    /// Gives the regions without an owner to the waiting workers, as of `now`. A worker
-    /// that is leaving is given nothing, nor is one that is reserved for a release.
-    /// During the grace period only the regions that their owners let go of are given.
+    /// Gives each region without an owner to the worker that has the fewest regions
+    /// when its turn comes, as of `now`, the lowest region first. A worker that is
+    /// leaving or has no connection is given nothing. During the grace period only the
+    /// regions that their owners let go of are given.
     fn assign(&mut self, now: Instant) {
         let grace = now.saturating_duration_since(self.started) < self.config.lease;
-        let busy: BTreeSet<&str> = self
-            .regions
-            .values()
-            .filter_map(|region| region.owner.as_ref())
-            .map(|owner| owner.worker.as_str())
-            .chain(self.releases.values().map(|release| release.to.as_str()))
-            .collect();
-        let mut waiting: Vec<(u64, &str)> = self
-            .workers
-            .iter()
-            // One without a connection may be dead, which only its lease running out
-            // would show: the region would stand still for that long. If it lives, it
-            // registers again within a second and is given a region then.
-            .filter(|(name, worker)| {
-                !worker.leaving && worker.connected && !busy.contains(name.as_str())
-            })
-            .map(|(name, worker)| (worker.arrival, name.as_str()))
-            .collect();
-        waiting.sort_unstable();
-
         let unowned: Vec<RegionId> = self
             .regions
             .iter()
             .filter(|(_, region)| region.owner.is_none() && (region.let_go || !grace))
             .map(|(id, _)| *id)
             .collect();
-        let pairs: Vec<(RegionId, String)> = unowned
-            .into_iter()
-            .zip(waiting)
-            .map(|(id, (_, name))| (id, name.to_owned()))
-            .collect();
-        for (id, name) in pairs {
+        for id in unowned {
+            // Who can be given a region does not change as these are given.
+            let Some(name) = self.lightest(None) else {
+                break;
+            };
             // Epochs do not come back once they have run out, so there is nothing to
             // assign the other regions with either.
             if !self.grant(now, id, &name) {
@@ -1588,9 +1613,8 @@ mod tests {
                 }
             }
 
-            // A release never outlives its owner or its epoch, and a worker is the
-            // target of one release at most, and not of its own.
-            let mut targets = BTreeSet::new();
+            // A release never outlives its owner or its epoch, and no worker is the
+            // target of its own.
             for (region, release) in &self.coordinator.releases {
                 let held = Assignment {
                     region: *region,
@@ -1602,7 +1626,6 @@ mod tests {
                     |owned: &Assignment| (owned.region, owned.epoch) == (held.region, held.epoch);
                 assert!(owned.iter().any(same), "{release:?} outlived its owner");
                 assert_ne!(release.from, release.to, "{release:?}");
-                assert!(targets.insert(&release.to), "{release:?} shares its target");
             }
             // Nothing is left over for the next call to hand out.
             let Pending {
@@ -1750,30 +1773,134 @@ mod tests {
     }
 
     #[test]
-    fn the_table_fills_up_with_a_new_version_for_each_region() {
+    fn the_table_fills_up_with_a_new_version_for_each_call_that_adds_to_it() {
         let mut cluster = Cluster::new(&[0]);
         // Nobody is there to run anything.
-        assert_eq!(cluster.tick(LEASE), Changes::default());
+        assert_eq!(cluster.tick(1), Changes::default());
 
-        cluster.register(LEASE, "a", "a:25601", &[]);
-        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        // A worker that ran one of the regions under the coordinator before this one.
+        let held = assignment(0, 7, 0);
+        assert_eq!(
+            cluster.register(1, "a", "a:25601", &[held]),
+            changes(&["a"], true)
+        );
         let table = cluster.table();
         assert_eq!(table.version, FIRST_EPOCH + 1);
-        assert_eq!(table.routes, [route(0, FIRST_EPOCH + 1, "a:25601")]);
+        assert_eq!(table.routes, [route(0, 7, "a:25601")]);
         assert!(!table.is_complete());
 
-        cluster.register(LEASE + 1, "b", "b:25601", &[]);
-        assert_eq!(cluster.tick(LEASE + 1), changes(&["b"], true));
+        // The other region goes to the worker that has none.
+        cluster.register(2, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["b"], true));
         let table = cluster.table();
         assert_eq!(table.version, FIRST_EPOCH + 2);
         assert_eq!(
             table.routes,
-            [
-                route(0, FIRST_EPOCH + 1, "a:25601"),
-                route(1, FIRST_EPOCH + 2, "b:25601"),
-            ]
+            [route(0, 7, "a:25601"), route(1, FIRST_EPOCH + 1, "b:25601"),]
         );
         assert!(table.is_complete());
+    }
+
+    /// The layout of a world with five regions.
+    const FIVE: [i32; 4] = [-16, -8, 0, 8];
+
+    /// The numbers of the regions that the worker `name` runs.
+    fn regions_of(cluster: &Cluster, name: &str) -> Vec<u32> {
+        let held = cluster.assignments(name);
+        held.iter().map(|held| held.region.0).collect()
+    }
+
+    #[test]
+    fn fewer_workers_than_regions_are_given_every_region_spread_evenly() {
+        let mut cluster = Cluster::new(&FIVE);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        // The lowest region first, each to the worker with the fewest so far, and of
+        // two with equally many to the one that registered first.
+        assert_eq!(regions_of(&cluster, "a"), [0, 2, 4]);
+        assert_eq!(regions_of(&cluster, "b"), [1, 3]);
+        let table = cluster.table();
+        assert!(table.is_complete());
+        // One call, one new version, and an epoch of its own for each region.
+        assert_eq!(table.version, FIRST_EPOCH + 1);
+        let epochs: Vec<u64> = table.routes.iter().map(|route| route.epoch).collect();
+        assert_eq!(epochs, Vec::from_iter(FIRST_EPOCH + 1..=FIRST_EPOCH + 5));
+        assert_eq!(cluster.tick(LEASE), Changes::default());
+
+        // A single worker runs the whole world.
+        let mut cluster = Cluster::new(&FIVE);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn the_regions_of_a_worker_whose_lease_ran_out_are_spread_over_those_that_remain() {
+        let mut cluster = Cluster::new(&[-16, -8, 0, 8, 16]);
+        for name in ["a", "b", "c"] {
+            cluster.register(0, name, &format!("{name}:25601"), &[]);
+        }
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b", "c"], true));
+        assert_eq!(regions_of(&cluster, "c"), [2, 5]);
+
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(2 * LEASE, name));
+        }
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a", "b", "c"], true));
+        // One each, and not both to the worker that comes first.
+        assert_eq!(regions_of(&cluster, "a"), [0, 2, 3]);
+        assert_eq!(regions_of(&cluster, "b"), [1, 4, 5]);
+        assert!(cluster.table().is_complete());
+        assert!(!cluster.heartbeat(2 * LEASE + 1, "c"));
+
+        // With one worker more than the other, the next region to lose its owner does
+        // not go to the one that has more, although that one registered first.
+        let mut cluster = Cluster::new(&FIVE);
+        for name in ["a", "b", "c"] {
+            cluster.register(0, name, &format!("{name}:25601"), &[]);
+        }
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b", "c"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 3]);
+        assert_eq!(regions_of(&cluster, "b"), [1, 4]);
+        assert_eq!(regions_of(&cluster, "c"), [2]);
+        for name in ["a", "c"] {
+            assert!(cluster.heartbeat(2 * LEASE, name));
+        }
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a", "b", "c"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 3, 4]);
+        assert_eq!(regions_of(&cluster, "c"), [1, 2]);
+    }
+
+    #[test]
+    fn a_worker_that_registers_later_is_given_nothing_that_has_an_owner() {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 1]);
+        let table = cluster.table();
+
+        // Nothing is taken from a worker to even things out.
+        assert_eq!(
+            cluster.register(LEASE, "b", "b:25601", &[]),
+            Changes::default()
+        );
+        for now in [LEASE, 2 * LEASE, 3 * LEASE] {
+            for name in ["a", "b"] {
+                assert!(cluster.heartbeat(now, name));
+            }
+            assert_eq!(cluster.tick(now), Changes::default());
+        }
+        assert!(cluster.assignments("b").is_empty());
+        assert_eq!(cluster.table(), table);
+
+        // It is the first to be given a region that loses its owner, though: here one
+        // that the other worker no longer vouches for.
+        assert!(cluster.heartbeat_with(4 * LEASE + 1, "a", &COMMITTED));
+        assert!(cluster.heartbeat_with(4 * LEASE + 1, "b", &[]));
+        assert_eq!(cluster.tick(4 * LEASE + 1), changes(&["a", "b"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0]);
+        assert_eq!(regions_of(&cluster, "b"), [1]);
     }
 
     #[test]
@@ -2163,10 +2290,11 @@ mod tests {
     #[test]
     fn a_refusal_takes_nothing_from_an_owner_it_does_not_concern_but_raises_epochs() {
         let mut cluster = Cluster::new(&[0]);
-        cluster.register(0, "a", "a:25601", &[]);
-        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
-        let held = cluster.assignments("a");
-        let epoch = held[0].epoch;
+        // The coordinator is new, so the region that this worker does not report
+        // stays without an owner for a lease.
+        let epoch = FIRST_EPOCH + 1;
+        let held = [assignment(0, epoch, 0)];
+        cluster.register(0, "a", "a:25601", &held);
 
         // A refusal under an earlier assignment of the same worker, of a region that
         // another worker runs or nobody does, from a worker that is not registered,
@@ -2181,7 +2309,7 @@ mod tests {
         ];
         for (name, region, seen) in refusals {
             assert_eq!(
-                cluster.epoch_refused(LEASE, name, region, seen),
+                cluster.epoch_refused(1, name, region, seen),
                 Changes::default(),
                 "{name} {region} {seen}"
             );
@@ -2641,9 +2769,11 @@ mod tests {
         let mut cluster = Cluster::new(&[0]);
         let mut now = LEASE;
         // Region 1 keeps the last block; region 0 goes from worker to worker, and each
-        // uses up another.
+        // uses up another. The worker that keeps has no connection, or it would be
+        // given the other region whenever that loses its owner.
         let kept = assignment(1, 5, EntityIds::BLOCK_COUNT - 1);
         cluster.register(0, "keeps", "keeps:25601", &[kept]);
+        assert_eq!(cluster.disconnected(0, "keeps"), Changes::default());
         for block in 0..EntityIds::BLOCK_COUNT - 1 {
             cluster.register(now, "a", "a:25601", &[]);
             assert!(cluster.heartbeat(now, "keeps"));
@@ -2788,19 +2918,19 @@ mod tests {
     #[test]
     fn a_move_is_refused_with_the_reason_and_changes_nothing() {
         let mut cluster = Cluster::new(&[0]);
-        cluster.register(0, "a", "a:25601", &[]);
-        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
-        // The other region has no owner, and nobody waits.
+        // The coordinator is new: the region that nobody reports has no owner yet.
+        cluster.register(0, "a", "a:25601", &[assignment(0, FIRST_OWNER, 0)]);
         assert_eq!(
-            cluster.move_region(LEASE, 1, None, 1),
+            cluster.move_region(1, 1, None, 1),
             Err(MoveRefusal::NoOwner(RegionId(1)))
         );
+        // Nobody else is there.
         assert_eq!(
-            cluster.move_region(LEASE, 0, None, 1),
+            cluster.move_region(1, 0, None, 1),
             Err(MoveRefusal::NoTarget(RegionId(0)))
         );
         assert_eq!(
-            cluster.move_region(LEASE, 5, None, 1),
+            cluster.move_region(1, 5, None, 1),
             Err(MoveRefusal::NoSuchRegion(RegionId(5)))
         );
 
@@ -2820,44 +2950,39 @@ mod tests {
         };
         unfit(&mut cluster, 0, "nobody", "is not registered");
         unfit(&mut cluster, 0, "a", "owns the region");
-        unfit(&mut cluster, 0, "b", "runs a region already");
 
-        // The only worker that waits has lost its connection.
+        // One of the others has lost its connection, and the other one leaves, for
+        // which its region is to be released to the only worker left.
         assert_eq!(cluster.disconnected(LEASE + 1, "c"), Changes::default());
         unfit(&mut cluster, 0, "c", "has no connection to the coordinator");
-        assert_eq!(
-            cluster.move_region(LEASE + 1, 0, None, 1),
-            Err(MoveRefusal::NoTarget(RegionId(0)))
-        );
-        // So a worker that leaves has nobody to hand over to, and goes on running.
-        assert_eq!(cluster.leaving(LEASE + 1, "b"), Changes::default());
-        unfit(&mut cluster, 0, "b", "is leaving");
-
-        // When the one that waits is back, it is reserved for the worker that leaves.
         let second = cluster.assignments("b")[0].epoch;
         assert_eq!(
-            cluster.register(LEASE + 2, "c", "c:25601", &[]),
+            cluster.leaving(LEASE + 1, "b"),
             asks(&[order("b", 1, second)])
         );
-        unfit(&mut cluster, 0, "c", "is the target of another release");
+        unfit(&mut cluster, 0, "b", "is leaving");
         assert_eq!(
-            cluster.move_region(LEASE + 2, 0, None, 1),
+            cluster.move_region(LEASE + 1, 0, None, 1),
             Err(MoveRefusal::NoTarget(RegionId(0)))
         );
         let refusal = MoveRefusal::BeingReleased {
             region: RegionId(1),
             from: "b".to_owned(),
-            to: "c".to_owned(),
+            to: "a".to_owned(),
         };
         assert_eq!(
             cluster.move_region(LEASE + 2, 1, None, 1),
+            Err(refusal.clone())
+        );
+        assert_eq!(
+            cluster.move_region(LEASE + 2, 1, Some("c"), 1),
             Err(refusal.clone())
         );
 
         // Whoever asked is told in words.
         assert_eq!(
             refusal.to_string(),
-            "region 1 is being released already, by b for c"
+            "region 1 is being released already, by b for a"
         );
         let refusal = MoveRefusal::NotATarget {
             region: RegionId(0),
@@ -2870,12 +2995,100 @@ mod tests {
         );
         assert_eq!(
             MoveRefusal::NoTarget(RegionId(0)).to_string(),
-            "no worker waits that region 0 could be moved to"
+            "no other worker is there that region 0 could be moved to"
         );
     }
 
     #[test]
-    fn a_reserved_target_is_given_no_other_region_and_is_no_other_releases_target() {
+    fn a_region_is_moved_to_a_worker_that_runs_one_already_by_name_and_by_choice() {
+        // By name, although another worker runs nothing.
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        cluster.register(LEASE, "c", "c:25601", &[]);
+        let (moving, asked) = cluster.move_region(LEASE + 1, 0, Some("b"), 1).unwrap();
+        assert_eq!(moving, begun("a", "b"));
+        assert_eq!(asked, asks(&[order("a", 0, FIRST_EPOCH + 1)]));
+        let expected = Changes {
+            moves: vec![outcome(1, 0, Some(("b", FIRST_EPOCH + 3)), true)],
+            ..changes(&["a", "b"], true)
+        };
+        assert_eq!(
+            cluster.released(LEASE + 2, "a", 0, FIRST_EPOCH + 1),
+            expected
+        );
+        assert_eq!(
+            cluster.assignments("b"),
+            [
+                assignment(0, FIRST_EPOCH + 3, 2),
+                assignment(1, FIRST_EPOCH + 2, 1)
+            ]
+        );
+        assert!(cluster.assignments("a").is_empty());
+        assert!(cluster.assignments("c").is_empty());
+
+        // By choice, when every other worker runs one: the one that has waited
+        // longest of those with the fewest.
+        let mut cluster = Cluster::new(&[-8, 0, 8]);
+        for name in ["a", "b", "c"] {
+            cluster.register(0, name, &format!("{name}:25601"), &[]);
+        }
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b", "c"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 3]);
+        let (moving, _) = cluster.move_region(LEASE + 1, 0, None, 2).unwrap();
+        assert_eq!(moving, begun("a", "b"));
+        let expected = Changes {
+            moves: vec![outcome(2, 0, Some(("b", FIRST_EPOCH + 5)), true)],
+            ..changes(&["a", "b"], true)
+        };
+        assert_eq!(
+            cluster.released(LEASE + 2, "a", 0, FIRST_EPOCH + 1),
+            expected
+        );
+        assert_eq!(regions_of(&cluster, "b"), [0, 1]);
+        // The next by choice goes to the worker with the fewest then, whichever
+        // registered first.
+        let (moving, _) = cluster.move_region(LEASE + 3, 1, None, 3).unwrap();
+        assert_eq!(moving, begun("b", "c"));
+        let (moving, _) = cluster.move_region(LEASE + 3, 3, None, 4).unwrap();
+        assert_eq!(moving, begun("a", "b"));
+    }
+
+    #[test]
+    fn a_reserved_target_counts_as_having_the_region_when_the_next_target_is_chosen() {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        cluster.register(LEASE, "c", "c:25601", &[]);
+        cluster.register(LEASE, "d", "d:25601", &[]);
+        let (moving, _) = cluster.move_region(LEASE + 100, 0, None, 1).unwrap();
+        assert_eq!(moving, begun("a", "c"));
+        // A second move does not pick the same worker, which has waited longest of
+        // the two that own nothing: it is being given a region just now.
+        let (moving, _) = cluster.move_region(LEASE + 100, 1, None, 2).unwrap();
+        assert_eq!(moving, begun("b", "d"));
+        // Each gets the region it was reserved for.
+        let expected = Changes {
+            moves: vec![outcome(2, 1, Some(("d", FIRST_EPOCH + 3)), true)],
+            ..changes(&["b", "d"], true)
+        };
+        assert_eq!(
+            cluster.released(LEASE + 200, "b", 1, FIRST_EPOCH + 2),
+            expected
+        );
+        let expected = Changes {
+            moves: vec![outcome(1, 0, Some(("c", FIRST_EPOCH + 4)), true)],
+            ..changes(&["a", "c"], true)
+        };
+        assert_eq!(
+            cluster.released(LEASE + 200, "a", 0, FIRST_EPOCH + 1),
+            expected
+        );
+
+        // The same when a region without an owner is given away while a release
+        // lasts.
         let mut cluster = Cluster::new(&[0]);
         cluster.register(0, "a", "a:25601", &[]);
         cluster.register(0, "b", "b:25601", &[]);
@@ -2883,41 +3096,60 @@ mod tests {
         cluster.register(LEASE, "c", "c:25601", &[]);
         let (moving, _) = cluster.move_region(LEASE + 100, 0, None, 1).unwrap();
         assert_eq!(moving, begun("a", "c"));
-
-        // A second move cannot pick the same worker.
-        assert_eq!(
-            cluster.move_region(LEASE + 100, 1, None, 2),
-            Err(MoveRefusal::NoTarget(RegionId(1)))
-        );
-        assert!(cluster.move_region(LEASE + 100, 1, Some("c"), 2).is_err());
-
-        // The other owner dies. Its region has no owner now, and the only worker that
-        // waits is spoken for.
+        // The other owner dies. The worker that owns nothing counts as having one
+        // region, like the worker that is asked to release, which registered before
+        // it and is given this one.
         assert!(cluster.heartbeat(2 * LEASE, "a"));
         assert!(cluster.heartbeat(2 * LEASE, "c"));
-        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["b"], true));
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a", "b"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 1]);
         assert!(cluster.assignments("c").is_empty());
-        assert_eq!(cluster.table().routes.len(), 1);
-
-        // It is given the region it was reserved for, and the worker that released
-        // that one waits like any other and is given the one without an owner.
+        // The release goes on, and ends as it was meant to.
         let expected = Changes {
-            moves: vec![outcome(1, 0, Some(("c", FIRST_EPOCH + 3)), true)],
+            moves: vec![outcome(1, 0, Some(("c", FIRST_EPOCH + 4)), true)],
             ..changes(&["a", "c"], true)
         };
         assert_eq!(
             cluster.released(2 * LEASE + 2, "a", 0, FIRST_EPOCH + 1),
             expected
         );
+        assert_eq!(regions_of(&cluster, "a"), [1]);
+        assert_eq!(regions_of(&cluster, "c"), [0]);
+    }
+
+    #[test]
+    fn a_reserved_target_can_be_named_for_another_region_and_be_given_one_meanwhile() {
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        cluster.register(LEASE, "c", "c:25601", &[]);
+        for (region, from, mover) in [(0, "a", 1), (1, "b", 2)] {
+            let (moving, _) = cluster
+                .move_region(LEASE + 100, region, Some("c"), mover)
+                .unwrap();
+            assert_eq!(moving, begun(from, "c"));
+        }
+        // One owner lets go, and the other does not answer: both regions end up
+        // with the worker they were meant for.
+        let expected = Changes {
+            moves: vec![outcome(2, 1, Some(("c", FIRST_EPOCH + 3)), true)],
+            ..changes(&["b", "c"], true)
+        };
         assert_eq!(
-            cluster.assignments("c"),
-            [assignment(0, FIRST_EPOCH + 3, 2)]
+            cluster.released(LEASE + 200, "b", 1, FIRST_EPOCH + 2),
+            expected
         );
-        assert_eq!(cluster.tick(2 * LEASE + 2), changes(&["a"], true));
-        assert_eq!(
-            cluster.assignments("a"),
-            [assignment(1, FIRST_EPOCH + 4, 3)]
-        );
+        assert_eq!(cluster.coordinator.releases[&RegionId(0)].to, "c");
+        for name in ["a", "b", "c"] {
+            assert!(cluster.heartbeat(2 * LEASE + 100, name));
+        }
+        let expected = Changes {
+            moves: vec![outcome(1, 0, Some(("c", FIRST_EPOCH + 4)), false)],
+            ..changes(&["a", "c"], true)
+        };
+        assert_eq!(cluster.tick(2 * LEASE + 101), expected);
+        assert_eq!(regions_of(&cluster, "c"), [0, 1]);
     }
 
     #[test]
@@ -3358,29 +3590,101 @@ mod tests {
     }
 
     #[test]
-    fn a_leaving_worker_is_asked_at_the_tick_that_frees_a_target() {
+    fn a_leaving_worker_with_two_regions_hands_both_over_and_is_let_go() {
+        let mut cluster = Cluster::new(&[-8, 0, 8]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 2]);
+        let held = cluster.assignments("a");
+
+        // It is asked to release both at once, for the only other worker there is,
+        // which runs two regions itself.
+        let both = [order("a", 0, held[0].epoch), order("a", 2, held[1].epoch)];
+        assert_eq!(cluster.leaving(LEASE + 1, "a"), asks(&both));
+        let meant = |cluster: &Cluster, region: u32| {
+            cluster.coordinator.releases[&RegionId(region)].to.clone()
+        };
+        assert_eq!(
+            (meant(&cluster, 0), meant(&cluster, 2)),
+            ("b".into(), "b".into())
+        );
+
+        // It lets go of one and is still there, as it has another.
+        assert_eq!(
+            cluster.released(LEASE + 2, "a", 2, held[1].epoch),
+            changes(&["a", "b"], true)
+        );
+        assert_eq!(regions_of(&cluster, "a"), [0]);
+        assert!(cluster.heartbeat(LEASE + 2, "a"));
+        // With the last one it is forgotten.
+        let expected = Changes {
+            gone: vec!["a".to_owned()],
+            ..changes(&["a", "b"], true)
+        };
+        assert_eq!(cluster.released(LEASE + 3, "a", 0, held[0].epoch), expected);
+        assert_eq!(regions_of(&cluster, "b"), [0, 1, 2, 3]);
+        assert!(!cluster.heartbeat(LEASE + 3, "a"));
+        assert!(cluster.coordinator.releases.is_empty());
+        assert!(cluster.table().is_complete());
+
+        // With two workers that run nothing, each is the target of one of them.
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        let held = cluster.assignments("a");
+        cluster.register(LEASE, "b", "b:25601", &[]);
+        cluster.register(LEASE, "c", "c:25601", &[]);
+        let both = [order("a", 0, held[0].epoch), order("a", 1, held[1].epoch)];
+        assert_eq!(cluster.leaving(LEASE + 1, "a"), asks(&both));
+        assert_eq!(
+            (meant(&cluster, 0), meant(&cluster, 1)),
+            ("b".into(), "c".into())
+        );
+        // It answers neither. Both regions are taken from it when the lease is out,
+        // and it is forgotten.
+        for name in ["a", "b", "c"] {
+            assert!(cluster.heartbeat(2 * LEASE + 1, name));
+        }
+        assert_eq!(cluster.tick(2 * LEASE + 1), Changes::default());
+        let expected = Changes {
+            gone: vec!["a".to_owned()],
+            ..changes(&["a", "b", "c"], true)
+        };
+        assert_eq!(cluster.tick(2 * LEASE + 2), expected);
+        assert_eq!(regions_of(&cluster, "b"), [0]);
+        assert_eq!(regions_of(&cluster, "c"), [1]);
+    }
+
+    #[test]
+    fn a_leaving_worker_is_asked_although_the_only_target_is_reserved_for_another_release() {
         let mut cluster = Cluster::new(&[0]);
         cluster.register(0, "a", "a:25601", &[]);
         cluster.register(0, "b", "b:25601", &[]);
         assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
         cluster.register(LEASE, "c", "c:25601", &[]);
-        // The only worker that waits is reserved for the other region.
         let (moving, _) = cluster.move_region(LEASE + 100, 1, None, 1).unwrap();
         assert_eq!(moving, begun("b", "c"));
-        assert_eq!(cluster.leaving(LEASE + 200, "a"), Changes::default());
+        // The owner that is asked has lost its connection, so the worker that is
+        // reserved for its region is all there is for the one that leaves.
+        assert_eq!(cluster.disconnected(LEASE + 150, "b"), Changes::default());
+        assert_eq!(
+            cluster.leaving(LEASE + 200, "a"),
+            asks(&[order("a", 0, FIRST_EPOCH + 1)])
+        );
+        assert_eq!(cluster.coordinator.releases[&RegionId(0)].to, "c");
 
-        // That release runs out. The worker it took the region from waits now, and
-        // is a target for the one that leaves.
-        for name in ["a", "b", "c"] {
-            assert!(cluster.heartbeat(2 * LEASE, name));
-        }
         let expected = Changes {
-            releases: vec![order("a", 0, FIRST_EPOCH + 1)],
-            moves: vec![outcome(1, 1, Some(("c", FIRST_EPOCH + 3)), false)],
-            ..changes(&["b", "c"], true)
+            gone: vec!["a".to_owned()],
+            ..changes(&["a", "c"], true)
         };
-        assert_eq!(cluster.tick(2 * LEASE + 101), expected);
-        assert_eq!(cluster.coordinator.releases[&RegionId(0)].to, "b");
+        assert_eq!(
+            cluster.released(LEASE + 300, "a", 0, FIRST_EPOCH + 1),
+            expected
+        );
+        assert_eq!(regions_of(&cluster, "c"), [0]);
+        // The other release goes on.
+        assert_eq!(cluster.coordinator.releases[&RegionId(1)].to, "c");
     }
 
     #[test]
@@ -3473,7 +3777,11 @@ mod tests {
         cluster.register(0, "a", "a:25601", &[]);
         cluster.register(0, "b", "b:25601", &[]);
         assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
-        assert_eq!(cluster.leaving(LEASE + 1, "a"), Changes::default());
+        // The other worker is there to hand over to, although it runs a region.
+        assert_eq!(
+            cluster.leaving(LEASE + 1, "a"),
+            asks(&[order("a", 0, FIRST_EPOCH + 1)])
+        );
         assert!(cluster.heartbeat(LEASE + 1, "b"));
 
         // A lost connection alone takes nothing from a worker that is not leaving.
@@ -3483,7 +3791,9 @@ mod tests {
         assert!(!cluster.heartbeat(LEASE + 2, "a"));
         assert_eq!(cluster.table().routes.len(), 1);
 
-        // Its region is given to a worker that waits like any without an owner.
+        // Its region is given away like any without an owner, once a worker with a
+        // connection is there.
+        assert_eq!(cluster.tick(LEASE + 2), Changes::default());
         cluster.register(LEASE + 3, "c", "c:25601", &[]);
         assert_eq!(cluster.tick(LEASE + 3), changes(&["c"], true));
         assert_eq!(
@@ -3493,30 +3803,53 @@ mod tests {
     }
 
     #[test]
-    fn the_region_of_a_leaving_worker_that_vanishes_goes_at_once_to_a_worker_that_waits() {
+    fn the_region_of_a_leaving_worker_that_vanishes_goes_at_once_to_another_worker() {
         let mut cluster = Cluster::new(&[0]);
         cluster.register(0, "a", "a:25601", &[]);
         cluster.register(0, "b", "b:25601", &[]);
         assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
         cluster.register(LEASE, "c", "c:25601", &[]);
-        // Both owners are asked to release for the one worker that waits; only one
-        // of them can be. The other goes on running, and then its process dies.
+        // Both owners are asked to release for the one worker that does not leave.
+        // One of them goes on running, and then its process dies.
         assert_eq!(
             cluster.leaving(LEASE + 1, "a"),
             asks(&[order("a", 0, FIRST_EPOCH + 1)])
         );
-        assert_eq!(cluster.leaving(LEASE + 1, "b"), Changes::default());
+        assert_eq!(
+            cluster.leaving(LEASE + 1, "b"),
+            asks(&[order("b", 1, FIRST_EPOCH + 2)])
+        );
         assert_eq!(
             cluster.disconnected(LEASE + 2, "a"),
             changes(&["a", "c"], true)
         );
-        // The release went with its owner, so the worker it had reserved is the first
-        // that waits; and then it is no target for the other leaving worker.
+        // The release went with its owner, and the region to the worker it was
+        // meant for all the same, as nobody else is there. The other release goes on.
         assert_eq!(
             cluster.assignments("c"),
             [assignment(0, FIRST_EPOCH + 3, 2)]
         );
-        assert!(cluster.coordinator.releases.is_empty());
+        let releases = &cluster.coordinator.releases;
+        assert_eq!(Vec::from_iter(releases.keys()), [&RegionId(1)]);
+        assert_eq!(releases[&RegionId(1)].to, "c");
+    }
+
+    /// The workers that can be given a region, each with how many regions it has,
+    /// counting those it is the reserved target of, and its place among the workers:
+    /// the least of these is the worker that is given the next region. Counted afresh
+    /// from what the coordinator holds, for the randomised test to check its choices by.
+    fn fit_workers(coordinator: &Coordinator) -> BTreeMap<String, (usize, u64)> {
+        let fit = coordinator
+            .workers
+            .iter()
+            .filter(|(_, worker)| worker.connected && !worker.leaving);
+        fit.map(|(name, worker)| {
+            let owned = coordinator.assignments(name).len();
+            let targets = coordinator.releases.values();
+            let reserved = targets.filter(|release| release.to == *name).count();
+            (name.clone(), (owned + reserved, worker.arrival))
+        })
+        .collect()
     }
 
     /// Numbers that look random and are the same in every run (xorshift64*).
@@ -3545,7 +3878,8 @@ mod tests {
     /// miss it, and start afresh, and now and then the coordinator is replaced, all at
     /// random. Regions are moved, workers release them when asked, unasked or not at
     /// all, say that they leave and lose their connections. [`Cluster`] checks every
-    /// call; this adds what only shows over time.
+    /// call; this adds what only shows over time, and that whoever is given a region
+    /// or picked as a target is the worker with the fewest regions then.
     #[test]
     fn epochs_only_rise_and_nothing_is_shared_whatever_workers_do() {
         const WORKERS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
@@ -3553,6 +3887,7 @@ mod tests {
         let (mut refused, mut restarts, mut dropped) = (0, 0, 0);
         let (mut moves, mut unmoved, mut let_go, mut overdue) = (0, 0, 0, 0);
         let (mut left, mut vanished, mut asked_to_leave, mut cut_off) = (0, 0, 0, 0);
+        let (mut compared, mut meant, mut shared, mut handed_on) = (0, 0, 0, 0);
 
         for seed in 1..=24_u64 {
             let mut random = Generator(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
@@ -3590,9 +3925,12 @@ mod tests {
                     .filter(|(_, worker)| worker.leaving)
                     .map(|(name, _)| name.clone())
                     .collect();
+                let fit_before = fit_workers(&cluster.coordinator);
                 cluster.last = None;
                 // What the worker reports to hold, if this step is a registration.
                 let mut reported: Option<Vec<Assignment>> = None;
+                // The region its owner lets go of in this step, if one does.
+                let mut let_go_of: Option<RegionId> = None;
                 // Whether what is assigned in this step has to respect the grace
                 // period of a new coordinator.
                 let mut graceful = true;
@@ -3669,14 +4007,7 @@ mod tests {
                     for worker in WORKERS {
                         let had = before.assignments(worker);
                         let has = cluster.assignments(worker);
-                        if has.iter().any(|assignment| !had.contains(assignment)) {
-                            // Only a worker that had nothing, or lost all it had in
-                            // this tick, is given a region, and only one.
-                            assert_eq!(has.len(), 1, "{worker} has {has:?}");
-                            assert!(!had.contains(&has[0]), "{worker} had {had:?}");
-                        } else {
-                            lost += had.len() - has.len();
-                        }
+                        lost += had.iter().filter(|held| !has.contains(held)).count();
                     }
                     // Not every worker gets to hear that something has changed for it.
                     for worker in changes.workers {
@@ -3749,9 +4080,20 @@ mod tests {
                         Ok((begun, _)) => {
                             let had = before.assignments(&begun.from).iter();
                             assert!(had.map(|held| held.region.0).any(|held| held == region));
-                            assert!(before.assignments(&begun.to).is_empty(), "{begun:?}");
-                            assert!(to.is_none_or(|to| to == begun.to), "{begun:?}");
-                            assert!(!leaving_before.contains(&begun.to), "{begun:?}");
+                            // The target can be given a region, however many it runs.
+                            // If nobody named it, no other has fewer, nor has one
+                            // with as many waited longer.
+                            assert!(fit_before.contains_key(&begun.to), "{begun:?}");
+                            assert_ne!(begun.from, begun.to);
+                            let others = fit_before.iter();
+                            let chosen = others
+                                .filter(|(other, _)| **other != begun.from)
+                                .min_by_key(|(_, load)| **load)
+                                .map(|(other, _)| other.as_str());
+                            match to {
+                                Some(to) => assert_eq!(to, begun.to),
+                                None => assert_eq!(chosen, Some(begun.to.as_str())),
+                            }
                             movers.insert(step);
                             moves += 1;
                         }
@@ -3781,10 +4123,17 @@ mod tests {
                     let owned = before.assignments(name).iter().any(owned);
                     let changes = cluster.released(now, name, region.0, epoch);
                     if owned {
-                        // It no longer has the region, whoever has it now.
+                        // It no longer has the region, whoever has it now: the
+                        // worker it was to be released for, if that can be given it.
                         let has = cluster.assignments(name);
                         assert!(has.iter().all(|held| held.region != region), "{has:?}");
+                        let target = releases_before.get(&region).map(|release| &release.to);
+                        if let Some(target) = target.filter(|to| fit_before.contains_key(*to)) {
+                            let has = cluster.assignments(target);
+                            assert!(has.iter().any(|held| held.region == region), "{has:?}");
+                        }
                         let_go += 1;
+                        let_go_of = Some(region);
                         free.insert(region);
                     } else if before.table.route(region).is_none() {
                         // Nobody owns it: the worker may have been its last owner,
@@ -3854,18 +4203,108 @@ mod tests {
                         "{worker} is leaving and was given {assignment:?}"
                     );
                 }
-                // A reserved target is given nothing while the release lasts, and the
-                // region it is reserved for when the release ends by its owner letting
-                // go or not answering, if it still is a target then.
-                for (region, release) in &releases_before {
-                    let given = gained.iter().filter(|(worker, _)| *worker == release.to);
-                    let lasts =
-                        cluster.coordinator.releases.get(region).is_some_and(|now| {
-                            (now.epoch, &now.to) == (release.epoch, &release.to)
-                        });
-                    if lasts {
-                        assert_eq!(given.count(), 0, "{release:?} and its target was given");
+                // Whoever was given a region in this step had the fewest regions of the
+                // workers that could be given it at that moment. What the others had
+                // then is known for sure only if they lost nothing in this step and no
+                // release that was meant for them ended in it, so each of them is
+                // counted between the least and the most it can have had. A region
+                // that goes to the target of its release was counted as that worker's
+                // before; one that was let go of or released does not go back to the
+                // worker it was taken from.
+                let coordinator = &cluster.coordinator;
+                let fit = fit_workers(coordinator);
+                let lasted = |region: &RegionId, release: &Release| {
+                    coordinator.releases.get(region).is_some_and(|now| {
+                        (now.epoch, &now.from, &now.to)
+                            == (release.epoch, &release.from, &release.to)
+                    })
+                };
+                for (index, (worker, assignment)) in gained.iter().enumerate() {
+                    let region = assignment.region;
+                    assert!(
+                        fit.contains_key(*worker),
+                        "{worker} was given {assignment:?}"
+                    );
+                    let release = releases_before.get(&region);
+                    if release.is_some_and(|release| release.to == *worker) {
+                        meant += 1;
+                        continue;
                     }
+                    let handed_over = release.is_some() || let_go_of == Some(region);
+                    let owned = |held: &&Assignment| held.region == region;
+                    let old = WORKERS
+                        .into_iter()
+                        .find(|old| before.assignments(old).iter().any(|held| owned(&held)));
+                    let least = |other: &str| {
+                        let later = gained[index..].iter();
+                        let reserved = releases_before.iter();
+                        after.assignments(other).len()
+                            - later.filter(|(given, _)| *given == other).count()
+                            + reserved
+                                .filter(|(region, release)| lasted(region, release))
+                                .filter(|(_, release)| release.to == other)
+                                .count()
+                    };
+                    let most = |other: &str| {
+                        let had = before.assignments(other).iter();
+                        let has = after.assignments(other);
+                        let ended = releases_before.iter();
+                        least(other)
+                            + had.filter(|held| !has.contains(held)).count()
+                            + ended
+                                .filter(|(ended, release)| {
+                                    **ended != region && !lasted(ended, release)
+                                })
+                                .filter(|(_, release)| release.to == other)
+                                .count()
+                    };
+                    let had = least(worker);
+                    shared += usize::from(had > 0);
+                    for (other, (_, arrival)) in &fit {
+                        if other == worker || handed_over && old == Some(other.as_str()) {
+                            continue;
+                        }
+                        assert!(
+                            had <= most(other),
+                            "{worker} had {had} regions and was given {assignment:?}, \
+                             although {other} had {} at most",
+                            most(other)
+                        );
+                        if least(other) == most(other) && had == most(worker) {
+                            let waited = fit[*worker].1;
+                            assert!(
+                                had < least(other) || waited < *arrival,
+                                "{worker} was given {assignment:?} before {other}, \
+                                 which had as few regions and had waited longer"
+                            );
+                            compared += 1;
+                        }
+                    }
+                }
+                // The same for the releases that were begun for workers that leave,
+                // which are begun in the order of their regions, each counting for its
+                // target from then on.
+                let begun: Vec<(&RegionId, &Release)> = coordinator
+                    .releases
+                    .iter()
+                    .filter(|(_, release)| release.mover.is_none())
+                    .filter(|(region, release)| {
+                        let before = releases_before.get(region);
+                        !before.is_some_and(|before| before.epoch == release.epoch)
+                    })
+                    .collect();
+                for (index, (_, release)) in begun.iter().enumerate() {
+                    let later = |other: &str| {
+                        let later = begun[index..].iter();
+                        later.filter(|(_, later)| later.to == other).count()
+                    };
+                    let chosen = fit
+                        .iter()
+                        .filter(|(other, _)| **other != release.from)
+                        .min_by_key(|(other, (load, arrival))| (load - later(other), *arrival))
+                        .map(|(other, _)| other);
+                    assert_eq!(chosen, Some(&release.to), "{release:?}");
+                    handed_on += 1;
                 }
 
                 // Whoever asked for a move hears once how it ended, and that is when
@@ -3924,6 +4363,10 @@ mod tests {
             vanished,
             asked_to_leave,
             cut_off,
+            compared,
+            meant,
+            shared,
+            handed_on,
         ];
         assert!(counts.iter().all(|count| *count >= 100), "{counts:?}");
     }
