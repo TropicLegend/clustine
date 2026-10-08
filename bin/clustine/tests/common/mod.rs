@@ -79,9 +79,27 @@ pub fn view_area(center: (i32, i32), view_distance: i32) -> Vec<(i32, i32)> {
 
 /// An address on this machine that nothing listens on right now, as `host:port`.
 #[allow(dead_code)] // Not every test binary uses it.
+///
+/// The port is below those the system gives to whoever asks for any port or connects
+/// out. A process of a test cluster that is killed and started again binds its address
+/// a second time, and a port the system had picked was once given to someone else in
+/// between: the worker could not come back and its players were disconnected.
 pub async fn free_address() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    listener.local_addr().unwrap().to_string()
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // Where the system's own range begins on Linux unless it was changed.
+    const FIRST: u32 = 10_240;
+    const COUNT: u32 = 32_768 - FIRST;
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    // Test binaries that run at the same time begin in different places.
+    let start = std::process::id().wrapping_mul(7_919);
+    for _ in 0..COUNT {
+        let offset = start.wrapping_add(NEXT.fetch_add(1, Ordering::Relaxed)) % COUNT;
+        let address = format!("127.0.0.1:{}", FIRST + offset);
+        if tokio::net::TcpListener::bind(&address).await.is_ok() {
+            return address;
+        }
+    }
+    panic!("no port is free");
 }
 
 /// Starts the real server binary on `address` with its world in `world` and with the
