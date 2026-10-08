@@ -7,6 +7,12 @@
   of a grant is the store's and a claim carries none, the merge names the epoch the
   absorbed region was opened with, the new region of a split is opened with an
   ordinary hello, and a pinned region claims the chunks of its areas like any other.
+  How the tick and the region runner work on chunk sets is
+  [ADR-0012](0012-the-tick-on-chunks.md), with its own list of changes to this record:
+  above all, a guest's ticket keeps a chunk from being given back, a region gives a
+  chunk back only after a while without use, what a player does to a chunk the region
+  is not sure of is routed by the edge, and answers about chunks carry the number of
+  the asking they answer.
 - Date: 2026-10-08
 
 ## Context

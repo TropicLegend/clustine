@@ -1,6 +1,6 @@
 # ADR-0012: The tick on chunks
 
-- Status: **Proposed**; the design of step C2b of milestone M3, phase C, for the
+- Status: **Accepted**; the design of step C2b of milestone M3, phase C, for the
   simulation and the region runner. Revised after an independent review against the
   code (see the end). Not built yet. The edge's side of the step is designed
   elsewhere, against section 5 of this record.
