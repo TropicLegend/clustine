@@ -1,8 +1,9 @@
-//! What workers and edges reach the coordinator with.
+//! What workers, edges and operators reach the coordinator with.
 //!
 //! Each of them has one connection to it. A worker registers over its connection and is
-//! told what to run, an edge asks for the routing table and is sent every new one. The
-//! service at the other end is [`crate::serve`].
+//! told what to run, an edge asks for the routing table and is sent every new one, and
+//! whoever wants a region moved asks for that and is told how it went. The service at
+//! the other end is [`crate::serve`].
 
 use std::io;
 use std::time::Duration;
@@ -53,18 +54,31 @@ pub struct Orders {
     pub assignments: Vec<Assignment>,
 }
 
+/// What the coordinator tells a worker after its first orders.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkerEvent {
+    /// What the worker is to run from now on.
+    Orders(Orders),
+    /// The worker is to let go of `region`, which it holds with `epoch`, so that
+    /// another worker can carry on with it, and to say so with
+    /// [`WorkerClient::released`]. If it does not hold the region with that epoch, it
+    /// says so at once all the same. See `docs/adr/0009-moving-a-region.md`.
+    Release { region: RegionId, epoch: u64 },
+}
+
 /// A worker's connection to the coordinator.
 ///
 /// For as long as it exists, the coordinator is told every [`HEARTBEAT_INTERVAL`] that
-/// the worker is there, whether or not anybody is waiting in [`WorkerClient::next`],
+/// the worker is there, whether or not anybody is waiting in [`WorkerClient::event`],
 /// and what it vouches for; see [`WorkerClient::vouch`]. Dropping it ends the
 /// connection. The worker then keeps its regions until its lease runs out, and for good
-/// if it registers again before that.
+/// if it registers again before that, unless it had said that it is leaving: then the
+/// coordinator takes it to be gone at once.
 #[derive(Debug)]
 pub struct WorkerClient {
-    /// The orders that came after the first and, last of all, why no more will come.
-    /// From the task that holds the connection.
-    orders: mpsc::UnboundedReceiver<Result<Orders, ClientError>>,
+    /// What the coordinator said after the first orders and, last of all, why no more
+    /// will come. From the task that holds the connection.
+    events: mpsc::UnboundedReceiver<Result<WorkerEvent, ClientError>>,
     /// What the worker last said it vouches for, which every heartbeat says; `None`
     /// until it says anything.
     vouches: watch::Sender<Option<Vec<(RegionId, Vouch)>>>,
@@ -125,8 +139,9 @@ impl WorkerClient {
 
         // The task must never wait for the worker, or the heartbeats would stop while
         // the worker is busy; hence a queue without a limit. It stays short all the
-        // same: the coordinator only speaks when the worker's orders change.
-        let (sender, orders) = mpsc::unbounded_channel();
+        // same: the coordinator only speaks when the worker's orders change or it is
+        // to release a region.
+        let (sender, events) = mpsc::unbounded_channel();
         let (vouches, vouched) = watch::channel(None);
         let (reports, reported) = mpsc::unbounded_channel();
         let task = Task {
@@ -135,11 +150,11 @@ impl WorkerClient {
             regions,
             vouched,
             reported,
-            orders: sender,
+            events: sender,
         };
         tokio::spawn(task.keep_registered());
         let client = Self {
-            orders,
+            events,
             vouches,
             reports,
         };
@@ -165,22 +180,73 @@ impl WorkerClient {
     /// `region`, because it has seen an owner with the epoch `seen`. The worker has
     /// dropped the region; the coordinator issues epochs above `seen` from now on.
     /// Sent at once, ahead of the next heartbeat. If the connection is lost, nothing is
-    /// sent, and [`WorkerClient::next`] says that the connection is lost.
+    /// sent, and [`WorkerClient::event`] says that the connection is lost.
     pub fn epoch_refused(&self, region: RegionId, seen: u64) {
         let _ = self
             .reports
             .send(ToCoordinator::EpochRefused { region, seen });
     }
 
+    /// Tells the coordinator that the worker has let go of `region`, which it held with
+    /// `epoch`: in answer to [`WorkerEvent::Release`], or by itself. The region is
+    /// closed at the world store, and the worker never takes up that assignment again.
+    /// The coordinator gives the region to another worker at once, and the worker's
+    /// next orders are without it.
+    ///
+    /// Sent at once, ahead of the next heartbeat. If the connection is lost, nothing is
+    /// sent, or what was sent may not have arrived, and [`WorkerClient::event`] says
+    /// that the connection is lost. Nothing has to be remembered for that case. The
+    /// worker registers again and reports what it holds, which is without the region:
+    /// if the coordinator had asked for the release, it takes that as the answer. If it
+    /// had not, the orders that answer the registration still contain the assignment,
+    /// and the worker, which has released it, says so again with this.
+    pub fn released(&self, region: RegionId, epoch: u64) {
+        let _ = self.reports.send(ToCoordinator::Released { region, epoch });
+    }
+
+    /// Tells the coordinator that the worker has been told to stop. From now on the
+    /// coordinator gives it nothing new and asks it to release what it runs, each
+    /// region as soon as another worker is there to take it. Once the worker owns
+    /// nothing, the coordinator closes the connection, and [`WorkerClient::event`] says
+    /// that it is lost: that is how the worker knows that it may exit.
+    ///
+    /// Sent at once, ahead of the next heartbeat. If the connection is lost, nothing is
+    /// sent, and [`WorkerClient::event`] says that the connection is lost. Leaving
+    /// belongs to one registration: a worker that registers again and is still to stop
+    /// says so again on the new client. If the connection is lost after this was said,
+    /// the coordinator takes the worker to be gone and gives its regions away, so a
+    /// worker that goes on running one by registering again reports it as held.
+    pub fn leaving(&self) {
+        let _ = self.reports.send(ToCoordinator::Leaving);
+    }
+
+    /// Waits for the next thing the coordinator says: new orders, or that a region is
+    /// to be released. What came while nobody waited is returned first, in the order
+    /// it came. An error means the connection is lost.
+    ///
+    /// Nothing is lost if the returned future is dropped before it is done.
+    pub async fn event(&mut self) -> Result<WorkerEvent, ClientError> {
+        // Once the task has said why it ended, all there is left to say is that the
+        // connection is gone.
+        self.events.recv().await.unwrap_or(Err(ClientError::Lost))
+    }
+
     /// Waits until the coordinator changes what the worker is to run, and returns the new
     /// orders. Orders that came while nobody waited are returned first, in the order
     /// they came. An error means the connection is lost.
     ///
-    /// Nothing is lost if the returned future is dropped before it is done.
+    /// This is [`WorkerClient::event`] for a worker that releases nothing: what the
+    /// coordinator asks it to release is passed over, and the region is taken from it
+    /// when the lease is out.
+    ///
+    /// Nothing is lost if the returned future is dropped before it is done, but for
+    /// the requests to release that were passed over.
     pub async fn next(&mut self) -> Result<Orders, ClientError> {
-        // Once the task has said why it ended, all there is left to say is that the
-        // connection is gone.
-        self.orders.recv().await.unwrap_or(Err(ClientError::Lost))
+        loop {
+            if let WorkerEvent::Orders(orders) = self.event().await? {
+                return Ok(orders);
+            }
+        }
     }
 }
 
@@ -195,14 +261,14 @@ struct Task {
     vouched: watch::Receiver<Option<Vec<(RegionId, Vouch)>>>,
     /// What the worker has to tell besides heartbeats.
     reported: mpsc::UnboundedReceiver<ToCoordinator>,
-    /// Where the orders go.
-    orders: mpsc::UnboundedSender<Result<Orders, ClientError>>,
+    /// Where what the coordinator says goes.
+    events: mpsc::UnboundedSender<Result<WorkerEvent, ClientError>>,
 }
 
 impl Task {
     /// Tells the coordinator every `heartbeat` that the worker is there, passes on what
-    /// else the worker reports and the orders that come, until the connection is lost
-    /// or the worker's client is dropped.
+    /// else the worker reports and what the coordinator says, until the connection is
+    /// lost or the worker's client is dropped.
     ///
     /// Until the worker says what it vouches for, it vouches for every region it has
     /// been told to run, which is what a worker that is heard from did before regions
@@ -217,10 +283,12 @@ impl Task {
         beats.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let ended = loop {
             tokio::select! {
-                message = self.link.recv() => match orders_from(message) {
-                    Ok(new) => {
-                        self.regions = new.assignments.iter().map(|held| held.region).collect();
-                        if self.orders.send(Ok(new)).is_err() {
+                message = self.link.recv() => match event_from(message) {
+                    Ok(event) => {
+                        if let WorkerEvent::Orders(new) = &event {
+                            self.regions = new.assignments.iter().map(|held| held.region).collect();
+                        }
+                        if self.events.send(Ok(event)).is_err() {
                             return;
                         }
                     }
@@ -242,10 +310,10 @@ impl Task {
                     }
                 }
                 // The worker's client was dropped.
-                () = self.orders.closed() => return,
+                () = self.events.closed() => return,
             }
         };
-        let _ = self.orders.send(Err(ended));
+        let _ = self.events.send(Err(ended));
     }
 
     /// What the next heartbeat vouches for.
@@ -298,29 +366,114 @@ impl RoutingWatch {
     }
 }
 
+/// What the coordinator answers whoever asked for a region to be moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveAnswer {
+    /// The move is not done, for the reason given. Nothing follows. This is the answer
+    /// to a move that never began; it can also follow [`MoveAnswer::Begun`], if the
+    /// region left its owner and no worker was there to be given it.
+    Refused { reason: String },
+    /// The worker `from` has been asked to release the region for the worker `to`.
+    /// [`MoveAnswer::Done`] or [`MoveAnswer::Refused`] follows, within the
+    /// coordinator's lease or little more.
+    Begun { from: String, to: String },
+    /// The region is the worker `to`'s now, with `epoch`; that need not be the worker
+    /// the move began for. `released` says whether the old owner let go of it, or did
+    /// not in time and was taken for dead. Nothing follows.
+    Done {
+        to: String,
+        epoch: u64,
+        released: bool,
+    },
+}
+
+/// The connection of whoever asked the coordinator to move a region.
+#[derive(Debug)]
+pub struct Mover {
+    link: CoordinatorEnd,
+}
+
+impl Mover {
+    /// Connects to the coordinator at `coordinator` (host:port) and asks it to move
+    /// `region` to the worker named `to`, or to any worker that waits.
+    pub async fn ask(
+        coordinator: &str,
+        region: RegionId,
+        to: Option<&str>,
+    ) -> Result<Self, ClientError> {
+        let link = connect(coordinator).await?;
+        let to = to.map(str::to_owned);
+        link.send(ToCoordinator::Move { region, to })
+            .await
+            .map_err(|_| ClientError::Lost)?;
+        Ok(Self { link })
+    }
+
+    /// The coordinator's next answer: first [`MoveAnswer::Refused`] or
+    /// [`MoveAnswer::Begun`], and after the latter how the move ended. The coordinator
+    /// closes the connection after its last answer, so asking for another gives
+    /// [`ClientError::Lost`], as does a connection that is lost before: the move may
+    /// then go on all the same, and the routing table shows what became of it.
+    ///
+    /// Nothing is lost if the returned future is dropped before it is done.
+    pub async fn next(&mut self) -> Result<MoveAnswer, ClientError> {
+        match self.link.recv().await {
+            Some(FromCoordinator::MoveRefused { reason }) => Ok(MoveAnswer::Refused { reason }),
+            Some(FromCoordinator::MoveBegun { from, to }) => Ok(MoveAnswer::Begun { from, to }),
+            Some(FromCoordinator::MoveDone {
+                to,
+                epoch,
+                released,
+            }) => Ok(MoveAnswer::Done {
+                to,
+                epoch,
+                released,
+            }),
+            Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
+            Some(FromCoordinator::Assigned { .. } | FromCoordinator::Release { .. }) => {
+                Err(unexpected("orders to somebody who asked for a move"))
+            }
+            Some(FromCoordinator::Routing(_)) => Err(unexpected(
+                "a routing table to somebody who asked for a move",
+            )),
+            None => Err(ClientError::Lost),
+        }
+    }
+}
+
 /// A link to the coordinator at `coordinator`.
 async fn connect(coordinator: &str) -> Result<CoordinatorEnd, ClientError> {
     let stream = TcpStream::connect(coordinator).await?;
     Ok(tcp::link(stream, QUEUE))
 }
 
-/// What the coordinator said to a worker, as the orders it is, or why there are none.
+/// What the coordinator answered a registration, as the orders it is, or why there are
+/// none.
 fn orders_from(message: Option<FromCoordinator>) -> Result<Orders, ClientError> {
+    match event_from(message)? {
+        WorkerEvent::Orders(orders) => Ok(orders),
+        // A worker is asked to release what it was told to run, so orders come first.
+        WorkerEvent::Release { .. } => Err(unexpected("a release before any orders")),
+    }
+}
+
+/// What the coordinator said to a worker, or why it says no more.
+fn event_from(message: Option<FromCoordinator>) -> Result<WorkerEvent, ClientError> {
     match message {
         Some(FromCoordinator::Assigned {
             layout,
             spawn,
             assignments,
-        }) => Ok(Orders {
+        }) => Ok(WorkerEvent::Orders(Orders {
             layout,
             spawn,
             assignments,
-        }),
+        })),
+        Some(FromCoordinator::Release { region, epoch }) => {
+            Ok(WorkerEvent::Release { region, epoch })
+        }
         Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
         Some(FromCoordinator::Routing(_)) => Err(unexpected("a routing table to a worker")),
-        // No coordinator asks a worker to release anything yet; see
-        // docs/adr/0009-moving-a-region.md.
-        Some(FromCoordinator::Release { .. }) => Err(unexpected("a release")),
         Some(
             FromCoordinator::MoveRefused { .. }
             | FromCoordinator::MoveBegun { .. }
@@ -577,6 +730,231 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_release_comes_in_order_with_the_orders_and_next_passes_it_over() {
+        let first = [assignment(0, 5)];
+        let release = WorkerEvent::Release {
+            region: RegionId(0),
+            epoch: 5,
+        };
+        // Two workers are told the same; one of them does not release anything.
+        for releases in [true, false] {
+            let (listener, address) = listen().await;
+            let coordinator = tokio::spawn(async move {
+                let mut link = accept(&listener).await;
+                assert!(within(link.recv()).await.is_some());
+                link.send(assigned(&[])).await.unwrap();
+                link.send(assigned(&first)).await.unwrap();
+                let (region, epoch) = (RegionId(0), 5);
+                link.send(FromCoordinator::Release { region, epoch })
+                    .await
+                    .unwrap();
+                link.send(assigned(&[])).await.unwrap();
+                link
+            });
+            let (mut client, _) = register(&address).await.unwrap();
+            let _link = coordinator.await.unwrap();
+            if releases {
+                let expected = [
+                    WorkerEvent::Orders(orders(&first)),
+                    release.clone(),
+                    WorkerEvent::Orders(orders(&[])),
+                ];
+                for event in expected {
+                    assert_eq!(within(client.event()).await.unwrap(), event);
+                }
+            } else {
+                assert_eq!(within(client.next()).await.unwrap(), orders(&first));
+                assert_eq!(within(client.next()).await.unwrap(), orders(&[]));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_released_region_and_leaving_are_reported_at_once_and_in_order() {
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let mut link = accept(&listener).await;
+            assert!(within(link.recv()).await.is_some());
+            link.send(assigned(&[assignment(3, 7)])).await.unwrap();
+            link
+        });
+        let (mut client, _) = register(&address).await.unwrap();
+        let mut link = coordinator.await.unwrap();
+        client.released(RegionId(3), 7);
+        client.leaving();
+        client.released(RegionId(4), 9);
+        let said = [
+            ToCoordinator::Released {
+                region: RegionId(3),
+                epoch: 7,
+            },
+            ToCoordinator::Leaving,
+            ToCoordinator::Released {
+                region: RegionId(4),
+                epoch: 9,
+            },
+        ];
+        for expected in said {
+            loop {
+                match within(link.recv()).await {
+                    Some(ToCoordinator::Heartbeat { .. }) => {}
+                    other => {
+                        assert_eq!(other, Some(expected));
+                        break;
+                    }
+                }
+            }
+        }
+
+        // The coordinator closes the connection of a worker that has left. That is
+        // all the worker hears, and what it says after that goes nowhere.
+        drop(link);
+        for _ in 0..2 {
+            let lost = within(client.event()).await;
+            assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
+            client.released(RegionId(3), 7);
+            client.leaving();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_release_in_answer_to_a_registration_is_an_error() {
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let link = accept(&listener).await;
+            let (region, epoch) = (RegionId(0), 5);
+            link.send(FromCoordinator::Release { region, epoch })
+                .await
+                .unwrap();
+            link
+        });
+        let answer = register(&address).await;
+        assert!(is_invalid_data(&answer), "{answer:?}");
+        drop(coordinator.await.unwrap());
+    }
+
+    /// A coordinator that answers one request for a move with `answers` and hangs up.
+    /// Returns what it was asked.
+    async fn answer_a_move(
+        listener: TcpListener,
+        answers: Vec<FromCoordinator>,
+    ) -> Option<ToCoordinator> {
+        let mut link = accept(&listener).await;
+        let asked = within(link.recv()).await;
+        for answer in answers {
+            link.send(answer).await.unwrap();
+        }
+        asked
+    }
+
+    #[tokio::test]
+    async fn whoever_asks_for_a_move_is_given_the_answers_as_they_come_and_then_the_loss() {
+        let (listener, address) = listen().await;
+        let answers = vec![
+            FromCoordinator::MoveBegun {
+                from: "a".to_owned(),
+                to: "b".to_owned(),
+            },
+            FromCoordinator::MoveDone {
+                to: "c".to_owned(),
+                epoch: 9,
+                released: false,
+            },
+        ];
+        let coordinator = tokio::spawn(answer_a_move(listener, answers));
+        let mut mover = within(Mover::ask(&address, RegionId(2), Some("b")))
+            .await
+            .unwrap();
+        let asked = ToCoordinator::Move {
+            region: RegionId(2),
+            to: Some("b".to_owned()),
+        };
+        assert_eq!(coordinator.await.unwrap(), Some(asked));
+        let begun = MoveAnswer::Begun {
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+        };
+        assert_eq!(within(mover.next()).await.unwrap(), begun);
+        let done = MoveAnswer::Done {
+            to: "c".to_owned(),
+            epoch: 9,
+            released: false,
+        };
+        assert_eq!(within(mover.next()).await.unwrap(), done);
+        for _ in 0..2 {
+            let lost = within(mover.next()).await;
+            assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_move_carries_its_reason_before_or_after_it_began() {
+        let refused = || FromCoordinator::MoveRefused {
+            reason: "not today".to_owned(),
+        };
+        let begun = FromCoordinator::MoveBegun {
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+        };
+        for answers in [vec![refused()], vec![begun, refused()]] {
+            let (listener, address) = listen().await;
+            let count = answers.len();
+            let coordinator = tokio::spawn(answer_a_move(listener, answers));
+            let mut mover = within(Mover::ask(&address, RegionId(0), None))
+                .await
+                .unwrap();
+            let asked = ToCoordinator::Move {
+                region: RegionId(0),
+                to: None,
+            };
+            assert_eq!(coordinator.await.unwrap(), Some(asked));
+            for _ in 1..count {
+                let answer = within(mover.next()).await.unwrap();
+                assert!(matches!(answer, MoveAnswer::Begun { .. }), "{answer:?}");
+            }
+            let answer = MoveAnswer::Refused {
+                reason: "not today".to_owned(),
+            };
+            assert_eq!(within(mover.next()).await.unwrap(), answer);
+            let lost = within(mover.next()).await;
+            assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_move_that_is_answered_wrongly_or_not_at_all_is_an_error() {
+        // What is meant for a worker or an edge.
+        for wrong in [assigned(&[]), FromCoordinator::Routing(table(1))] {
+            let (listener, address) = listen().await;
+            let coordinator = tokio::spawn(answer_a_move(listener, vec![wrong]));
+            let mut mover = within(Mover::ask(&address, RegionId(0), None))
+                .await
+                .unwrap();
+            coordinator.await.unwrap();
+            let answer = within(mover.next()).await;
+            assert!(is_invalid_data(&answer), "{answer:?}");
+        }
+
+        // A coordinator that goes away without a word, and one that is not there.
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let _ = accept(&listener).await;
+            listener
+        });
+        let mut mover = within(Mover::ask(&address, RegionId(0), None))
+            .await
+            .unwrap();
+        let lost = within(mover.next()).await;
+        assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
+        drop(coordinator.await.unwrap());
+        let unreachable = within(Mover::ask(&address, RegionId(0), None)).await;
+        assert!(
+            matches!(unreachable, Err(ClientError::Io(_))),
+            "{unreachable:?}"
+        );
     }
 
     #[tokio::test]
