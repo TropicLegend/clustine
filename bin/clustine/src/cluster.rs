@@ -883,7 +883,7 @@ async fn whole_world(coordinator: &str) -> (RoutingWatch, RoutingTable) {
 /// How often the edge tries to link to a region's owner while that is new: the owner
 /// of a region that was moved takes links a moment after the routing table names it, and
 /// its players stand still until the edge is through.
-const LINK_RETRY_AT_FIRST: Duration = Duration::from_millis(100);
+const LINK_RETRY_AT_FIRST: Duration = Duration::from_millis(20);
 
 /// For how long it tries that often, before it tries every [`RETRY`].
 const LINK_RETRY_EAGERLY_FOR: Duration = Duration::from_secs(2);

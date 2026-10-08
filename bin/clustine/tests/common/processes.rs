@@ -195,14 +195,19 @@ impl Cluster {
         );
     }
 
-    /// Every process by name, in the order in which they are asked to stop.
+    /// Every process by name, in the order in which they are asked to stop. The
+    /// coordinator goes before the workers: a worker that is told to stop while there
+    /// is a coordinator waits up to 20 seconds for somebody to hand its region to, and
+    /// here nobody comes.
     pub fn processes(&mut self) -> Vec<(String, &mut Option<Child>)> {
-        let mut processes = vec![("edge".to_owned(), &mut self.edge.1)];
+        let mut processes = vec![
+            ("edge".to_owned(), &mut self.edge.1),
+            ("coordinator".to_owned(), &mut self.coordinator.1),
+        ];
         for (number, worker) in self.workers.iter_mut().enumerate() {
             processes.push((worker_name(number), &mut worker.1));
         }
         processes.push(("worldstore".to_owned(), &mut self.store.1));
-        processes.push(("coordinator".to_owned(), &mut self.coordinator.1));
         processes
     }
 

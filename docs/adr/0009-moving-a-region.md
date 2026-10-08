@@ -142,7 +142,7 @@ one has restored the region, the edge has linked to it, and the resume is throug
 - the last checkpoint, small because of the one before it;
 - opening and restoring from the state file;
 - the edge reaching the new owner: when a link ends or a route changes it tries at once
-  and then every 100 milliseconds for two seconds, each region by itself and without
+  and then every 20 milliseconds for two seconds, each region by itself and without
   waiting for another region's attempt, and it takes up a new route also while an
   attempt at the old one is under way;
 - the resume, which holds what players did until the new owner has loaded and sent

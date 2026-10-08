@@ -1725,11 +1725,10 @@ async fn the_coordinator_is_killed_in_the_middle_of_a_move(
 /// moment later, as after every failure in the middle of a move, and the new
 /// coordinator moves it like the old one.
 ///
-/// The server does not pass this: about one time in five the region's players stand
-/// still for 15 seconds and more, which is close to the 20 seconds after which the edge
-/// disconnects them. So there is no test of this failure in the default run at all.
+/// This failed when it was written: the edge found a new coordinator only by chance
+/// while it was trying to link to a region, and the region's players stood still for
+/// 15 seconds and more.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "finding: an edge that is trying to link to a region finds a new coordinator only by chance, many seconds late"]
 async fn players_keep_playing_when_the_coordinator_is_killed_in_the_middle_of_a_move() {
     if a_repetition() {
         return;
@@ -1743,7 +1742,6 @@ async fn players_keep_playing_when_the_coordinator_is_killed_in_the_middle_of_a_
 /// once, whatever its grace period says, so that nobody waits for a lease (section 1,
 /// step 4, and the sixth defect of the review).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "finding: a region released while the coordinator was away waits out the new coordinator's grace period"]
 async fn a_region_released_while_the_coordinator_was_away_does_not_wait_for_a_lease() {
     if a_repetition() {
         return;
