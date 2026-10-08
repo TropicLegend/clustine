@@ -441,6 +441,17 @@ which chunks they hold; every end-to-end test passes that way too, with the edge
 is, and a fifth check runs them so (`CLUSTINE_TEST_ASK_THE_STORE`). The processes still
 start with the stripes given until C2b.5.
 
+C2b.4 is built as [ADR-0013](adr/0013-the-edge-without-a-layout.md) has it, which was
+reviewed like the others (nineteen defects, two of them ordering mistakes of the kind
+this part has had before): the edge no longer knows how the world is divided. It asks
+a player's region for everything the player sees and other regions as a guest where a
+region names them, takes answers by their number, sends a player or an action on
+blocks where a region says, and is handed the home region and nothing else. Every
+end-to-end test passes with regions that take their stripes as given and with regions
+that ask the store; the pause at a move is 0.8 seconds in the middle, as before. Left
+of C2b: the scenarios of ADR-0013 by someone else, and C2b.5, which takes the given
+stripes away so that asking is the only way.
+
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
 and in hellos, the welcome saying how many entries follow (all C2b); how `Restored::held`

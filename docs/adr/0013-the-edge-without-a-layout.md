@@ -2,7 +2,7 @@
 
 - Status: **Accepted**; the design of the edge's part of step C2b of milestone M3, phase
   C (step C2b.4 of ADR-0012). Revised after an independent review against the code and
-  the contract (see the end). Not built yet.
+  the contract (see the end). Built; its scenarios are to be written by someone else.
 - Date: 2026-10-08
 
 ## Context
@@ -251,7 +251,7 @@ The edge has to work against regions that presume and regions that ask the store
 |---|---|---|
 | E1 | Ports in a map, made on first use; the welcome's entries before what was kept; a reconciled snapshot removes only what its region introduced. Subscriptions still by the layout (built) | The edge's unit tests as they are; below, 18 and 19 |
 | E2 | The subscription table, `want` and `unwant`, guests, answers by number, `served_by`, the hello's two lists, links, and the view's subscriptions moving with a player who is handed over (built) | Below, 1 to 12 and 20; statements V, G and E at the end of every turn |
-| E3 | `Departed { to }`, `NotMine` for an arrival with its count, `Remote` by `to` and by `served_by`; the layout goes from the edge, which is handed the home region in its place | Below, 13 to 17 and 21 |
+| E3 | `Departed { to }`, `NotMine` for an arrival with its count, `Remote` by `to` and by `served_by`; the layout goes from the edge, which is handed the home region in its place (built) | Below, 13 to 17 and 21 |
 
 **Existing tests whose point changes** (`fanout.rs`):
 `a_lost_link_keeps_the_players_and_a_new_one_resumes` asserts that the hello names

@@ -928,7 +928,12 @@ pub async fn edge(args: EdgeArgs) -> Result<()> {
     // One start for as long as the process lives: what the edge keeps for the regions
     // lives as long, and so do the numbers it gives its messages.
     let identity = EdgeIdentity::starting_now(&args.name);
-    let (routing, relinks) = Routing::new(table.layout.clone(), table.spawn, identity, Vec::new());
+    // Players enter the world in the region that has the spawn point, which the world
+    // store pins as home. The edge is told that region and nothing else of how the world
+    // is divided.
+    let spawn_chunk = clustine_world::ChunkPos::containing(table.spawn.x, table.spawn.z);
+    let home = table.layout.region_of(spawn_chunk);
+    let (routing, relinks) = Routing::new(home, table.spawn, identity, Vec::new());
     let edge = Edge::bind(args.bind, args.edge.clone(), routing)
         .await
         .with_context(|| format!("listening on {}", args.bind))?;

@@ -29,12 +29,12 @@ use clustine_protocol::packets::play::{
     game_event, game_mode, inventory, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
-    Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
-    PlayerJoin, PlayerTransfer, RegionEvent,
+    Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerEvent,
+    PlayerInput, PlayerJoin, PlayerTransfer, RegionEvent, RemoteAction,
 };
 use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
 use tokio::sync::mpsc;
@@ -165,6 +165,9 @@ struct PlayerView {
     /// The region the player is in, as far as this task has been told. The region itself
     /// may already have let the player go, with the message saying so still on its way.
     region: RegionId,
+    /// How often a region has sent the player on because it believes another to hold
+    /// the chunk they stand in, since a region last applied something of theirs.
+    passed_on: u32,
     /// When the player asked to enter the world, for as long as no region has placed
     /// them.
     joining_since: Option<Instant>,
@@ -338,7 +341,6 @@ type FromLink = (RegionId, u64, Option<WorkerToEdge>);
 
 pub(crate) struct Fanout {
     config: FanoutConfig,
-    layout: Layout,
     /// The region players enter the world in.
     spawn_region: RegionId,
     /// Who this edge is to the regions.
@@ -402,16 +404,12 @@ impl Fanout {
         routing: Routing,
         commands: mpsc::Receiver<Command>,
     ) -> Self {
-        let spawn = routing.spawn;
-        let spawn_region = routing
-            .layout
-            .region_of(ChunkPos::containing(spawn.x, spawn.z));
+        let spawn_region = routing.home;
         // The messages of all regions are read from one queue, each link's in the order
         // they were sent.
         let (queue, messages) = mpsc::channel(REGION_QUEUE_CAPACITY);
         Self {
             config,
-            layout: routing.layout,
             spawn_region,
             identity: routing.identity,
             regions: BTreeMap::new(),
@@ -779,6 +777,7 @@ impl Fanout {
                         awaiting_teleport,
                         entity: None,
                         region: self.spawn_region,
+                        passed_on: 0,
                         joining_since: Some(Instant::now()),
                         inputs_sent: 0,
                         kept_inputs: VecDeque::new(),
@@ -950,29 +949,54 @@ impl Fanout {
                 }
             }
             Durable::Remote { action, to } => {
-                // The region that has the block the next step is about takes it: the
-                // one the entry names, or, where it names none, by this edge's layout.
-                let to =
-                    to.unwrap_or_else(|| self.layout.region_of(action.step.concerns().chunk()));
-                let (player, sequence) = (action.player, action.sequence);
-                if let Some(view) = self.players.get_mut(&player) {
-                    view.under_way.insert(sequence);
-                }
-                if to == from {
-                    // The region passed on what, by this edge's layout, is its own to
-                    // do. Sending it back would have the two go round in circles.
-                    error!(%from, "a region passed on an action about one of its own blocks");
-                    self.arrived(player, sequence).await;
+                // The region the entry names takes the next step. Where it names none,
+                // the region did not know who holds the chunk: the one that serves
+                // this edge the chunk does, as a client can only have clicked a block
+                // of a chunk some region sent it.
+                let chunk = action.step.concerns().chunk();
+                let serves = self.replica.get(&chunk).and_then(|entry| entry.served_by);
+                self.pass_on(from, to.or(serves), action).await;
+            }
+            // A remote action reached a region that does not hold the chunk and
+            // believes another to.
+            Durable::NotMine {
+                what: Misdirected::Remote(action),
+                holder,
+            } => self.pass_on(from, Some(holder), action).await,
+            // A player was let go to a region that believes another to hold the chunk
+            // they stand in: they go on to that one, as if this region had let them go.
+            Durable::NotMine {
+                what: Misdirected::Arrival { player, transfer },
+                holder,
+            } => {
+                let passed = self.players.get_mut(&player).map(|view| {
+                    view.passed_on += 1;
+                    view.passed_on
+                });
+                // Beliefs form no ring, so this ends after fewer steps than there are
+                // regions (ADR-0012, rule 20). Should they ever, the player is not
+                // sent round for ever.
+                if passed.is_some_and(|passed| passed as usize > self.regions.len()) {
+                    error!(%from, %holder, "a player is passed from region to region without end");
+                    if let Some(view) = self.players.get(&player) {
+                        refuse(&view.outbound, "The server lost track of where you are.");
+                    }
+                    let chunk =
+                        ChunkPos::containing(transfer.pose.position.x, transfer.pose.position.z);
+                    let discard = EdgeToWorker::Discard {
+                        entity: transfer.entity_id,
+                        chunk,
+                    };
+                    self.send_to_region(holder, discard).await;
+                    self.remove_player(player).await;
                 } else {
-                    self.send_to_region(to, EdgeToWorker::Remote(action)).await;
+                    self.hand_over(player, from, holder, transfer).await;
                 }
             }
             Durable::RemoteDone { player, sequence } => self.arrived(player, sequence).await,
-            // Of regions that hold chunks and merge and split, which no region does yet
-            // (ADR-0010). It is confirmed like any other, so that it does not come back.
-            entry @ (Durable::NotMine { .. }
-            | Durable::Absorbed { .. }
-            | Durable::SplitOff { .. }) => {
+            // Of regions that merge and split, which no region does yet (ADR-0010). It
+            // is confirmed like any other, so that it does not come back.
+            entry @ (Durable::Absorbed { .. } | Durable::SplitOff { .. }) => {
                 error!(%from, ?entry, "a region said what this edge does not act on yet");
             }
         }
@@ -980,6 +1004,26 @@ impl Fanout {
         // region may forget the entry.
         self.send_to_region(from, EdgeToWorker::Confirm { number })
             .await;
+    }
+
+    /// Passes what is left of a player's action on blocks on to the region `to`, which
+    /// the region `from` named or which serves this edge the chunk. With nowhere to
+    /// send it, or only back where it came from, the action ends here: its player is
+    /// told that it was handled, and sees the block as it is.
+    async fn pass_on(&mut self, from: RegionId, to: Option<RegionId>, action: RemoteAction) {
+        let (player, sequence) = (action.player, action.sequence);
+        let Some(view) = self.players.get_mut(&player) else {
+            // Nobody is left to be told how it ended.
+            return;
+        };
+        view.under_way.insert(sequence);
+        match to.filter(|to| *to != from) {
+            Some(to) => self.send_to_region(to, EdgeToWorker::Remote(action)).await,
+            None => {
+                debug!(%from, ?to, "an action on blocks has nowhere to go and ends here");
+                self.arrived(player, sequence).await;
+            }
+        }
     }
 
     /// The region `from` has said whether it has `player`, whom the edge named in its
@@ -1081,6 +1125,8 @@ impl Fanout {
             let Some(view) = self.players.get_mut(player) else {
                 continue;
             };
+            // A region has applied something of theirs: they have arrived.
+            view.passed_on = 0;
             while view
                 .kept_inputs
                 .front()
@@ -2269,11 +2315,11 @@ mod tests {
         }
 
         async fn start_with_patience(region_patience: Duration) -> Self {
-            let layout = Layout::new(vec![4]).unwrap();
             let (west, west_end) = link_to(WEST, 1);
             let (east, east_end) = link_to(EAST, 1);
             let spawn = Vec3::new(0.5, -60.0, 0.5);
-            let (routing, relinks) = Routing::new(layout, spawn, IDENTITY, vec![west, east]);
+            // Players enter the world in the west.
+            let (routing, relinks) = Routing::new(WEST, spawn, IDENTITY, vec![west, east]);
             let config = FanoutConfig {
                 max_players: 20,
                 view_distance: 2,
@@ -2668,12 +2714,10 @@ mod tests {
         // And it says since when the region knows it, as the region's welcome told it.
         assert_eq!(since, 1);
         assert_eq!(players, [player(1)]);
-        // Every chunk of the region that the edge shows or wants, and none of the other
-        // region's.
-        let layout = Layout::new(vec![4]).unwrap();
-        assert!(!chunks.is_empty());
-        assert!(chunks.iter().all(|chunk| layout.region_of(*chunk) == WEST));
-        // It asks nowhere as a guest.
+        // Every chunk the region's player sees, whoever serves it: the region has not
+        // said of any that another holds it. And the edge is a guest nowhere.
+        let seen: Vec<_> = view_area(ChunkPos::new(0, 0), 2).into_iter().collect();
+        assert_eq!(chunks, seen);
         assert!(guests.is_empty());
         assert!(connected(&mut packets));
 
@@ -3275,31 +3319,117 @@ mod tests {
         assert_eq!(edge.next_numbered(WEST).await.0, 1);
     }
 
-    /// What a player of one region does to blocks of another is passed on to the region
-    /// that has them.
+    /// What is left of a player's action on blocks goes to the region the entry names.
+    /// Where it names none, the region did not know who holds the chunk, and the edge
+    /// sends it to the region that serves it the chunk; with nobody serving it, the
+    /// action ends at the edge.
     #[tokio::test]
-    async fn a_remote_action_is_passed_on_to_the_region_that_has_the_block() {
+    async fn an_action_on_blocks_goes_to_the_region_named_or_to_the_one_that_serves_the_chunk() {
         let mut edge = Harness::start().await;
-        let _packets = edge.joined(player(1), EntityId(5)).await;
-        let action = RemoteAction {
+        let mut packets = edge.join(player(1)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        let ask = first_asked(&mut edge).await;
+        // About a block of the chunk both regions' players can see.
+        let action = |sequence| RemoteAction {
             player: player(1),
-            sequence: 3,
+            sequence,
             step: RemoteStep::Break {
-                position: BlockPos::new(64, -61, 0),
+                position: BlockPos::new(40, -61, 0),
             },
         };
-        // The region names the one that has the block, or names none, and the edge
-        // finds it by its layout.
-        for (number, to) in [(1, Some(EAST)), (2, None)] {
-            let entry = Durable::Remote {
-                action: action.clone(),
-                to,
-            };
-            edge.say(WEST, entry);
-            let (numbered, body) = edge.next_numbered(EAST).await;
-            let passed_on = EdgeToWorker::Remote(action.clone());
-            assert_eq!((numbered, body), (number, passed_on));
-        }
+        let without_a_region = |sequence| Durable::Remote {
+            action: action(sequence),
+            to: None,
+        };
+
+        // The region names the one that takes the next step.
+        let named = Durable::Remote {
+            action: action(3),
+            to: Some(EAST),
+        };
+        edge.say(WEST, named);
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert_eq!((number, body), (1, EdgeToWorker::Remote(action(3))));
+
+        // It names none, and no region serves the edge that chunk: the action ends
+        // here, and nothing goes to the east (the next message there is numbered 2).
+        edge.say(WEST, without_a_region(4));
+        edge.settle(WEST).await;
+
+        // The east serves the chunk: the west says so, the edge asks there as a guest
+        // and is sent the chunk.
+        let elsewhere = WorkerToEdge::Elsewhere {
+            chunk: SHARED,
+            ask,
+            region: EAST,
+        };
+        edge.tell(WEST, elsewhere);
+        let asked = next_asked(&mut edge, EAST).await;
+        assert!(
+            matches!(asked, EdgeToWorker::SubscribeAsGuest { .. }),
+            "{asked:?}"
+        );
+        edge.tell(EAST, snapshot(SHARED, 1));
+        edge.settle(EAST).await;
+        edge.say(WEST, without_a_region(5));
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert_eq!((number, body), (2, EdgeToWorker::Remote(action(5))));
+
+        // A region that was passed the action and does not hold the chunk names who
+        // does. Had that been the west itself, it would have ended at the edge.
+        let not_mine = Durable::NotMine {
+            what: Misdirected::Remote(action(6)),
+            holder: EAST,
+        };
+        edge.say(WEST, not_mine);
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert_eq!((number, body), (3, EdgeToWorker::Remote(action(6))));
+        assert!(connected(&mut packets));
+    }
+
+    /// A player who is let go to a region that believes another to hold the chunk they
+    /// stand in is sent on to that one, as if the region had let them go, also back to
+    /// where they came from. One who is sent from region to region without end is
+    /// disconnected.
+    #[tokio::test]
+    async fn a_player_a_region_sends_on_goes_to_the_region_it_names() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        edge.say(WEST, departing_to_east(player(1), EntityId(5)));
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert!(
+            number == 1 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{body:?}"
+        );
+        let sends_on = |holder| Durable::NotMine {
+            what: Misdirected::Arrival {
+                player: player(1),
+                transfer: transfer(EntityId(5), 0),
+            },
+            holder,
+        };
+
+        // The east sends them back; the west is sent the arrival, behind the join.
+        edge.say(EAST, sends_on(WEST));
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{body:?}"
+        );
+        assert!(connected(&mut packets));
+
+        // The two go on sending them to each other: after as many times as there are
+        // regions, the edge gives up.
+        edge.say(WEST, sends_on(EAST));
+        let (_, body) = edge.next_numbered(EAST).await;
+        assert!(
+            matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{body:?}"
+        );
+        edge.say(EAST, sends_on(WEST));
+        disconnected(&mut packets).await;
     }
 
     /// A player whose region does not confirm what they do is not kept for ever.

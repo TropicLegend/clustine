@@ -316,7 +316,9 @@ impl Server {
             region_patience: config.region_patience,
         };
         let identity = EdgeIdentity::starting_now("edge");
-        let (routing, relinks) = Routing::new(layout, spawn, identity, links);
+        // The region that has the spawn point, which the store pins as home.
+        let home = layout.region_of(ChunkPos::containing(spawn.x, spawn.z));
+        let (routing, relinks) = Routing::new(home, spawn, identity, links);
         let edge = Edge::bind(config.bind, edge_config, routing)
             .await
             .with_context(|| format!("listening on {}", config.bind))?;
