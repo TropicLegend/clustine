@@ -1126,7 +1126,12 @@ impl Coordinator {
         let mut waiting: Vec<(u64, &str)> = self
             .workers
             .iter()
-            .filter(|(name, worker)| !worker.leaving && !busy.contains(name.as_str()))
+            // One without a connection may be dead, which only its lease running out
+            // would show: the region would stand still for that long. If it lives, it
+            // registers again within a second and is given a region then.
+            .filter(|(name, worker)| {
+                !worker.leaving && worker.connected && !busy.contains(name.as_str())
+            })
             .map(|(name, worker)| (worker.arrival, name.as_str()))
             .collect();
         waiting.sort_unstable();
@@ -1733,6 +1738,34 @@ mod tests {
         assert!(cluster.heartbeat(LEASE, "a"));
         assert!(cluster.heartbeat(LEASE, "b"));
         assert_eq!(cluster.tick(2 * LEASE), Changes::default());
+    }
+
+    /// A waiting worker whose connection is gone may be dead, and only its lease running
+    /// out would show. A region given to it would stand still for that long, so it is
+    /// given to one that is there, or kept until the worker is back.
+    #[test]
+    fn a_region_is_not_given_to_a_waiting_worker_that_has_no_connection() {
+        let mut cluster = Cluster::new(&[]);
+        // The first to arrive would be the first to be given the region.
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.disconnected(0, "a"), Changes::default());
+        assert_eq!(cluster.tick(LEASE), changes(&["b"], true));
+        assert_eq!(
+            cluster.assignments("b"),
+            [assignment(0, FIRST_EPOCH + 1, 0)]
+        );
+        assert!(cluster.assignments("a").is_empty());
+
+        // With nobody else there, the region waits for the worker to be back.
+        let mut cluster = Cluster::new(&[]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert!(cluster.heartbeat(LEASE, "a"));
+        assert_eq!(cluster.disconnected(LEASE, "a"), Changes::default());
+        assert_eq!(cluster.tick(LEASE), Changes::default());
+        assert!(cluster.table().routes.is_empty());
+        cluster.register(LEASE + 1, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE + 1), changes(&["a"], true));
     }
 
     #[test]

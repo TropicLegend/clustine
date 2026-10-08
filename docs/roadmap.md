@@ -304,9 +304,6 @@ distance 8: each took about 100 milliseconds from asking to the new assignment, 
 longest any bot waited for an acknowledgement was 0.4 seconds. That is four bots close
 together; the test is to say what it is with players spread out.
 
-For a later look: `assign` in the coordinator still gives a region without an owner to
-a waiting worker that has no connection, which costs a lease if that worker is dead.
-
 ### After M3, as the owner asked on 2026-10-08
 
 To be planned as milestones of their own, each with a written plan and an independent
