@@ -1433,7 +1433,7 @@ fn a_failed_sync_loses_every_handle_and_answers_nothing_of_its_group() {
 
 /// Says hello without waiting for the answer, which arrives on what is returned.
 #[allow(clippy::type_complexity)]
-fn open_later(
+pub(crate) fn open_later(
     store: &Store,
     hello: RegionHello,
 ) -> Receiver<Result<(Opened, Restored), StoreError>> {

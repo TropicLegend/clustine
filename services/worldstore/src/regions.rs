@@ -6,7 +6,7 @@ use std::sync::Barrier;
 
 use clustine_data::{BlockState, blocks};
 use clustine_format::{LogRecord, RegionFile, StateFile, TableFile};
-use clustine_rpc::{ChunkBox, RegionInfo, RegionList, TickState};
+use clustine_rpc::{ChunkBox, Decline, RegionInfo, RegionList, SplitPart, TickState};
 use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkPos, EntityIds};
 
 use super::*;
@@ -1355,6 +1355,8 @@ fn a_grant_of_a_failed_group_does_not_come_back() {
     // The claim is never answered: the answers end, without one, when the handle is
     // lost.
     assert_eq!(first.replies.iter().count(), 0);
+    // The handles are lost one after the other; this returns once the second is.
+    second.flush();
     assert!(first.is_lost() && second.is_lost());
     // As long as the log is not cut back for good, a crash can still bring the grant
     // back, and nobody is served.
@@ -1465,4 +1467,694 @@ fn what_a_region_was_granted_is_restored_over_a_connection() {
     // The home region's one chunk, without a state or a delta before it.
     let (_, home) = StoreHandle::connect(&address, hello_of(&gap(), 2, 1)).unwrap();
     assert_eq!(home.held, [(ORIGIN, 0)]);
+}
+
+/// The whole state of a region as a test makes it up.
+fn whole(name: &str, tick: u64) -> Vec<u8> {
+    format!("{name} {tick}").into_bytes()
+}
+
+/// Has the region of `handle` absorb `absorbed`, and waits for the answer.
+fn absorb(handle: &StoreHandle, absorbed: u32, absorbed_epoch: u64, tick: u64) -> StoreReply {
+    handle.request(StoreRequest::AbsorbCommit {
+        absorbed: RegionId(absorbed),
+        absorbed_epoch,
+        tick,
+        state: whole("merged", tick),
+    });
+    reply(handle)
+}
+
+/// Splits `chunks` off the region of `handle`, and waits for the answer.
+fn split(handle: &StoreHandle, tick: u64, chunks: &[ChunkPos], as_epoch: u64) -> StoreReply {
+    handle.request(StoreRequest::SplitCommit {
+        tick,
+        state: whole("rest", tick),
+        part: SplitPart {
+            chunks: chunks.to_vec(),
+            state: whole("part", tick),
+        },
+        as_epoch,
+    });
+    reply(handle)
+}
+
+fn declined(reason: Decline) -> StoreReply {
+    StoreReply::Declined { reason }
+}
+
+/// Commits `tick` and makes a checkpoint of it, so that no commit of the region is
+/// behind its checkpoint.
+fn checkpoint(handle: &StoreHandle, tick: u64) {
+    log(handle, tick, &[]);
+    handle.request(StoreRequest::Checkpoint {
+        tick,
+        state: whole("state", tick),
+    });
+    handle.flush();
+}
+
+/// What a region of the world with a gap is restored with by a store that starts on
+/// what a crash leaves of `disk`.
+fn restored_after(disk: &MemoryDisk, survival: Survival, region: u32, epoch: u64) -> Restored {
+    let left = Arc::new(disk.crashed(survival));
+    let store = store_on(&left, &gap()).unwrap();
+    store
+        .open_region(hello_of(&gap(), region, epoch))
+        .unwrap()
+        .1
+}
+
+fn state_of(restored: &Restored) -> Option<(u64, Vec<u8>)> {
+    let state = restored.state.as_ref();
+    state.map(|state| (state.tick, state.state.clone()))
+}
+
+/// Scenario 12: a merge is declined, each time with its reason and with nothing
+/// changed.
+#[test]
+fn a_merge_that_may_not_be_is_declined_with_its_reason() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, barrier) = gated(&disk, &[ORIGIN]);
+    let (survivor, _) = opened(&store, 0, 1);
+    let (home, _) = opened(&store, 2, 1);
+    let before = store.regions().unwrap();
+
+    // Itself, a region there is none of, and the home region.
+    assert_eq!(absorb(&survivor, 0, 1, 5), declined(Decline::NoSuchRegion));
+    assert_eq!(absorb(&survivor, 9, 1, 5), declined(Decline::NoSuchRegion));
+    assert_eq!(absorb(&survivor, 2, 1, 5), declined(Decline::Home));
+    // A region that nobody has open, or that is open with another epoch than named.
+    let nobody = Decline::NotOpened { epoch: None };
+    assert_eq!(absorb(&survivor, 1, 5, 5), declined(nobody));
+    let (other, _) = opened(&store, 1, 5);
+    let another = Decline::NotOpened { epoch: Some(5) };
+    assert_eq!(absorb(&survivor, 1, 4, 5), declined(another));
+    assert_eq!(absorb(&survivor, 1, 6, 5), declined(another));
+
+    // A commit behind the checkpoint, of the survivor or of the region to absorb.
+    log(&survivor, 1, &[]);
+    let uncheckpointed = |region| Decline::Uncheckpointed {
+        region: RegionId(region),
+    };
+    assert_eq!(absorb(&survivor, 1, 5, 5), declined(uncheckpointed(0)));
+    checkpoint(&survivor, 2);
+    log(&other, 1, &[]);
+    assert_eq!(absorb(&survivor, 1, 5, 5), declined(uncheckpointed(1)));
+    checkpoint(&other, 2);
+
+    // A tick that is not above one the survivor's session named in a commit.
+    for tick in [0, 1, 2] {
+        let named = Decline::Tick { named: 2 };
+        assert_eq!(absorb(&survivor, 1, 5, tick), declined(named));
+    }
+    // Nor above one it named in a checkpoint that is still with the thread for chunks.
+    save(&home, ORIGIN, &edited());
+    barrier.wait();
+    survivor.request(StoreRequest::Checkpoint {
+        tick: 7,
+        state: whole("state", 7),
+    });
+    for tick in [3, 7] {
+        let named = Decline::Tick { named: 7 };
+        assert_eq!(absorb(&survivor, 1, 5, tick), declined(named));
+    }
+    barrier.wait();
+    survivor.flush();
+
+    // A state that no record of the log holds.
+    survivor.request(StoreRequest::AbsorbCommit {
+        absorbed: RegionId(1),
+        absorbed_epoch: 5,
+        tick: 8,
+        state: vec![0; clustine_format::MAX_RECORD_LENGTH],
+    });
+    assert_eq!(reply(&survivor), declined(Decline::TooLarge));
+
+    // Nothing has changed, and the handles are as they were.
+    let mut after = store.regions().unwrap();
+    after.regions[1].epoch = 0;
+    assert_eq!(after, before);
+    assert!(!survivor.is_lost() && !other.is_lost());
+    // With every reason gone, it is done.
+    let done = StoreReply::Absorbed {
+        absorbed: RegionId(1),
+        chunks: Vec::new(),
+    };
+    assert_eq!(absorb(&survivor, 1, 5, 8), done);
+}
+
+/// Scenario 13: after a merge the survivor is restored with the state and the tick of
+/// the request and no deltas, holds what the other was granted from the merge's tick,
+/// and is pinned to both areas; the absorbed region's handle is lost and its hello is
+/// refused; the list has it among those absorbed.
+#[test]
+fn a_merge_gives_the_survivor_all_the_absorbed_region_had() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (survivor, _) = opened(&store, 0, 1);
+    let (other, _) = opened(&store, 1, 3);
+    let east = ChunkPos::new(20, 0);
+    assert_eq!(claim(&other, &[FREE]).0, [FREE]);
+    save(&other, FREE, &built(FREE, blocks::STONE));
+    save(&other, east, &built(east, blocks::GLASS));
+    checkpoint(&other, 4);
+    checkpoint(&survivor, 6);
+
+    let done = StoreReply::Absorbed {
+        absorbed: RegionId(1),
+        chunks: vec![FREE],
+    };
+    assert_eq!(absorb(&survivor, 1, 3, 10), done);
+    // The other region is none any more: its handle is lost, and nobody opens it.
+    other.flush();
+    assert!(other.is_lost() && !survivor.is_lost());
+    for epoch in [3, 4, 100] {
+        let refused = store.open_region(hello_of(&gap(), 1, epoch));
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::Absorbed {
+                    region: RegionId(1),
+                    into: RegionId(0)
+                })
+            ),
+            "{:?}",
+            refused.err()
+        );
+    }
+    let list = store.regions().unwrap();
+    assert_eq!(list.absorbed, [(RegionId(1), RegionId(0))]);
+    let regions: Vec<RegionId> = list.regions.iter().map(|info| info.region).collect();
+    assert_eq!(regions, [RegionId(0), RegionId(2)]);
+    assert_eq!(list.regions[0].pinned, gap().pinned);
+    // The survivor loads and saves chunks of both areas, and what the other built.
+    assert_eq!(load(&survivor, FREE), built(FREE, blocks::STONE));
+    assert_eq!(load(&survivor, east), built(east, blocks::GLASS));
+    save(&survivor, east, &built(east, blocks::STONE));
+    assert_eq!(load(&survivor, east), built(east, blocks::STONE));
+    assert_eq!(load(&survivor, WEST), generator().generate(WEST));
+    survivor.flush();
+
+    // Over a connection the refusal says where the region went.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = serve(store.clone(), listener).unwrap();
+    let refused = StoreHandle::connect(&server.local_addr().to_string(), hello_of(&gap(), 1, 9));
+    assert!(matches!(
+        refused,
+        Err(StoreError::Absorbed {
+            region: RegionId(1),
+            into: RegionId(0)
+        })
+    ));
+
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        assert_eq!(
+            listed(&store.regions().unwrap()),
+            listed(&list),
+            "{survival:?}"
+        );
+        let (handle, restored) = store.open_region(hello_of(&gap(), 0, epoch)).unwrap();
+        assert_eq!(state_of(&restored), Some((10, whole("merged", 10))));
+        assert_eq!(restored.deltas, [], "{survival:?}");
+        assert_eq!(restored.held, [(FREE, 10)], "{survival:?}");
+        assert_eq!(restored.pinned, gap().pinned, "{survival:?}");
+        // What the absorbed region saved before its last checkpoint is there.
+        assert_eq!(
+            load(&handle, FREE),
+            built(FREE, blocks::STONE),
+            "{survival:?}"
+        );
+        assert!(matches!(
+            store.open_region(hello_of(&gap(), 1, 100)),
+            Err(StoreError::Absorbed { .. })
+        ));
+        // The absorbed region's state is gone; its region file stays for the block of
+        // entity ids it names, which no other region is issued.
+        assert_eq!(
+            left.read(Path::new("/world/regions/1.state")).unwrap(),
+            None
+        );
+        assert!(left.exists(Path::new("/world/regions/1.region")).unwrap());
+    }
+}
+
+/// Scenarios 14 and 15: commits of the survivor after a merge are restored as deltas on
+/// the merged state, and a checkpoint with the merge's own tick is not put in place; a
+/// checkpoint after them is, and leaves no record of the merge needed.
+#[test]
+fn a_region_goes_on_from_the_state_of_its_merge() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (survivor, _) = opened(&store, 0, 1);
+    let (other, _) = opened(&store, 1, 1);
+    assert_eq!(claim(&other, &[FREE]).0, [FREE]);
+    other.flush();
+    assert!(matches!(
+        absorb(&survivor, 1, 1, 10),
+        StoreReply::Absorbed { .. }
+    ));
+
+    // With the merge's own tick, and with one below it: neither takes the place of
+    // the merged state.
+    for tick in [10, 9] {
+        survivor.request(StoreRequest::Checkpoint {
+            tick,
+            state: whole("not this", tick),
+        });
+    }
+    survivor.flush();
+    // Nor does the checkpoint of another region let the record of the merge go, which
+    // is all the state the survivor has.
+    let (home, _) = opened(&store, 2, 1);
+    checkpoint(&home, 1);
+    assert_eq!(segments(&disk), [1]);
+    let restored = restored_after(&disk, Survival::Nothing, 0, 2);
+    assert_eq!(state_of(&restored), Some((10, whole("merged", 10))));
+    assert_eq!(
+        disk.read(Path::new("/world/regions/0.state")).unwrap(),
+        None
+    );
+
+    let (x, y, z) = block_of(FREE);
+    log(&survivor, 11, &[(x, y, z, blocks::GLASS)]);
+    log(&survivor, 12, &[]);
+    survivor.flush();
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        let (handle, restored) = store.open_region(hello_of(&gap(), 0, epoch)).unwrap();
+        assert_eq!(state_of(&restored), Some((10, whole("merged", 10))));
+        let ticks: Vec<u64> = restored.deltas.iter().map(|delta| delta.tick).collect();
+        assert_eq!(ticks, [11, 12], "{survival:?}");
+        // What it changed in a chunk that came with the merge is replayed: the chunk
+        // is held from the merge's tick.
+        assert_eq!(
+            load(&handle, FREE),
+            built(FREE, blocks::GLASS),
+            "{survival:?}"
+        );
+    }
+
+    // A checkpoint above the merge is the state from then on, and the segment of the
+    // merge goes with the table file written.
+    save(&survivor, FREE, &built(FREE, blocks::GLASS));
+    survivor.request(StoreRequest::Checkpoint {
+        tick: 12,
+        state: whole("state", 12),
+    });
+    survivor.flush();
+    assert_eq!(segments(&disk), Vec::<u64>::new());
+    let file = table_file(&disk);
+    assert_eq!(file.absorbed, [(1, 0)]);
+    assert_eq!(file.regions[0].grants, [(FREE, 10)]);
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let restored = restored_after(&disk, survival, 0, epoch);
+        assert_eq!(state_of(&restored), Some((12, whole("state", 12))));
+        assert_eq!(restored.deltas, [], "{survival:?}");
+        assert_eq!(restored.held, [(FREE, 10)], "{survival:?}");
+        assert_eq!(restored.pinned, gap().pinned, "{survival:?}");
+    }
+}
+
+/// Scenario 16: a split is declined, each time with its reason and nothing changed.
+#[test]
+fn a_split_that_may_not_be_is_declined_with_its_reason() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (region, _) = opened(&store, 0, 1);
+    let (home, _) = opened(&store, 2, 1);
+    assert_eq!(claim(&region, &[FREE]).0, [FREE]);
+    let before = store.regions().unwrap();
+    let part = [WEST, FREE];
+
+    // A commit behind the checkpoint.
+    log(&region, 1, &[]);
+    let uncheckpointed = Decline::Uncheckpointed {
+        region: RegionId(0),
+    };
+    assert_eq!(split(&region, 5, &part, 1), declined(uncheckpointed));
+    checkpoint(&region, 2);
+    // A tick that is not above one the session named.
+    for tick in [1, 2] {
+        let named = Decline::Tick { named: 2 };
+        assert_eq!(split(&region, tick, &part, 1), declined(named));
+    }
+    // No chunks, and an epoch nobody can say hello with.
+    assert_eq!(split(&region, 5, &[], 1), declined(Decline::Malformed));
+    assert_eq!(split(&region, 5, &part, 0), declined(Decline::Malformed));
+    // A chunk the region does not hold: another region's, and nobody's.
+    for chunk in [ORIGIN, ChunkPos::new(20, 0), ChunkPos::new(6, 6)] {
+        let not_held = Decline::NotHeld { chunk };
+        assert_eq!(split(&region, 5, &[WEST, chunk], 1), declined(not_held));
+    }
+    // The home chunk never leaves the home region.
+    assert_eq!(claim(&home, &[ChunkPos::new(1, 0)]).0.len(), 1);
+    let with_home = [ChunkPos::new(1, 0), ORIGIN];
+    assert_eq!(split(&home, 5, &with_home, 1), declined(Decline::Home));
+    // A state that no record of the log holds.
+    region.request(StoreRequest::SplitCommit {
+        tick: 5,
+        state: Vec::new(),
+        part: SplitPart {
+            chunks: part.to_vec(),
+            state: vec![0; clustine_format::MAX_RECORD_LENGTH],
+        },
+        as_epoch: 1,
+    });
+    assert_eq!(reply(&region), declined(Decline::TooLarge));
+
+    let mut after = store.regions().unwrap();
+    after.regions[2].bounds = before.regions[2].bounds;
+    assert_eq!(after, before);
+    assert!(!region.is_lost() && !home.is_lost());
+    assert_eq!(table_file(&disk).next_region, 3);
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    assert_eq!(split(&region, 5, &part, 1), done);
+}
+
+/// Scenario 17: after a split the new region has an id above every id there was, is in
+/// the list with its epoch, not pinned, and holds the part's chunks from the split's
+/// tick; a hello for it with that epoch is restored with the part's state, and one
+/// with a lower epoch is refused; the old region has its state of the request, and
+/// does not hold the part's chunks any more.
+#[test]
+fn a_split_makes_a_region_of_the_part() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (old, _) = opened(&store, 0, 1);
+    assert_eq!(claim(&old, &[FREE]).0, [FREE]);
+    let inside = ChunkPos::new(-5, 3);
+    save(&old, inside, &built(inside, blocks::STONE));
+    save(&old, FREE, &built(FREE, blocks::GLASS));
+    checkpoint(&old, 2);
+
+    // A chunk the region was granted and one it holds by being pinned, each once.
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    assert_eq!(split(&old, 7, &[FREE, inside, FREE], 4), done);
+    let list = store.regions().unwrap();
+    let made = RegionInfo {
+        region: RegionId(3),
+        epoch: 4,
+        bounds: Some(ChunkBox {
+            min: ChunkPos::new(-5, 3),
+            max: ChunkPos::new(5, 5),
+        }),
+        pinned: Vec::new(),
+    };
+    assert_eq!(list.regions[3], made);
+    assert_eq!(list.regions[0].bounds, None);
+    for position in [inside, FREE] {
+        old.request(StoreRequest::Load { position });
+        let not_held = StoreReply::NotHeld {
+            position,
+            holder: Some(RegionId(3)),
+        };
+        assert_eq!(reply(&old), not_held);
+    }
+    assert_eq!(
+        load(&old, ChunkPos::new(-5, 4)),
+        generator().generate(ChunkPos::new(-5, 4))
+    );
+    old.flush();
+
+    let check = |store: &Store, epoch: u64, case: &str| {
+        assert_eq!(listed(&store.regions().unwrap()), listed(&list), "{case}");
+        let refused = store.open_region(hello_of(&gap(), 3, 3));
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::EpochRefused {
+                    region: RegionId(3),
+                    offered: 3,
+                    seen: 4..
+                })
+            ),
+            "{case}: {:?}",
+            refused.err()
+        );
+        let (part, restored) = store.open_region(hello_of(&gap(), 3, epoch)).unwrap();
+        assert_eq!(state_of(&restored), Some((7, whole("part", 7))), "{case}");
+        assert_eq!(restored.deltas, [], "{case}");
+        assert_eq!(restored.held, [(inside, 7), (FREE, 7)], "{case}");
+        assert_eq!(restored.pinned, [], "{case}");
+        let none = EntityIds {
+            first: clustine_world::EntityId(0),
+            end: clustine_world::EntityId(0),
+        };
+        assert_eq!(restored.entity_ids, none, "{case}");
+        assert_eq!(load(&part, inside), built(inside, blocks::STONE), "{case}");
+        assert_eq!(load(&part, FREE), built(FREE, blocks::GLASS), "{case}");
+        part.flush();
+    };
+    // The worker that made it says hello with the epoch it named.
+    check(&store, 4, "at once");
+    let (_, restored) = store.open_region(hello_of(&gap(), 0, 2)).unwrap();
+    assert_eq!(state_of(&restored), Some((7, whole("rest", 7))));
+    assert_eq!((restored.deltas, restored.held), (Vec::new(), Vec::new()));
+    for (epoch, survival) in (5..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        check(&store, epoch, &format!("{survival:?}"));
+        let (_, restored) = store.open_region(hello_of(&gap(), 0, epoch)).unwrap();
+        assert_eq!(state_of(&restored), Some((7, whole("rest", 7))));
+        assert_eq!(restored.pinned, gap().pinned[..1], "{survival:?}");
+    }
+}
+
+/// Scenario 15 for a split: a checkpoint with the split's own tick, of the old region
+/// or of the part, is not put in place, and a later one is.
+#[test]
+fn both_regions_go_on_from_the_states_of_their_split() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (old, _) = opened(&store, 0, 1);
+    assert!(matches!(
+        split(&old, 7, &[WEST], 1),
+        StoreReply::Split { .. }
+    ));
+    let (part, _) = opened(&store, 3, 1);
+    for handle in [&old, &part] {
+        handle.request(StoreRequest::Checkpoint {
+            tick: 7,
+            state: whole("not this", 7),
+        });
+        log(handle, 8, &[]);
+        handle.flush();
+    }
+    for (region, name) in [(0, "rest"), (3, "part")] {
+        let restored = restored_after(&disk, Survival::Nothing, region, 2);
+        assert_eq!(state_of(&restored), Some((7, whole(name, 7))));
+        assert_eq!(restored.deltas.len(), 1);
+    }
+    // The record of the split is needed until both have a later state of their own.
+    old.request(StoreRequest::Checkpoint {
+        tick: 8,
+        state: whole("state", 8),
+    });
+    old.flush();
+    assert_eq!(segments(&disk).len(), 1);
+    let restored = restored_after(&disk, Survival::Nothing, 3, 2);
+    assert_eq!(state_of(&restored), Some((7, whole("part", 7))));
+    part.request(StoreRequest::Checkpoint {
+        tick: 8,
+        state: whole("state", 8),
+    });
+    part.flush();
+    assert_eq!(segments(&disk), Vec::<u64>::new());
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        for region in [0, 3] {
+            let restored = restored_after(&disk, survival, region, epoch);
+            assert_eq!(state_of(&restored), Some((8, whole("state", 8))));
+            assert_eq!(restored.deltas, [], "{survival:?}");
+        }
+        let held = held_after(&disk, survival, epoch);
+        assert_eq!(held[3], [(WEST, 7)], "{survival:?}");
+    }
+}
+
+/// Scenario 18: the hello for the part of a split is answered while the thread for
+/// chunks is busy, and so is any hello with nothing to put into the stored chunks; one
+/// with a block change to replay is answered only when the thread is free.
+#[test]
+fn a_hello_with_nothing_to_replay_does_not_wait_for_the_thread_for_chunks() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, barrier) = gated(&disk, &[BUSY]);
+    let (old, _) = opened(&store, 0, 1);
+    let (busy, _) = opened(&store, 1, 1);
+    save(&busy, BUSY, &edited());
+    barrier.wait();
+
+    // None of these would return if it waited.
+    assert!(matches!(
+        split(&old, 7, &[WEST], 1),
+        StoreReply::Split { .. }
+    ));
+    let (part, held) = opened(&store, 3, 1);
+    assert_eq!(held, [(WEST, 7)]);
+    let (home, _) = opened(&store, 2, 1);
+    // Commits without a block change, and one with a change to a chunk the region
+    // does not hold any more, are nothing to replay either.
+    log(&old, 8, &[]);
+    log(&old, 9, &[(-3, -61, 4, blocks::AIR)]);
+    crate::tests::committed(&old, 9);
+    let (old, _) = opened(&store, 0, 2);
+
+    // A change to a chunk the region holds is put into the chunk first.
+    let (x, y, z) = block_of(ChunkPos::new(-9, 0));
+    log(&old, 10, &[(x, y, z, blocks::GLASS)]);
+    crate::tests::committed(&old, 10);
+    let answered = crate::tests::open_later(&store, hello_of(&gap(), 0, 3));
+    // The list is asked for behind the hello, which is therefore dealt with by now.
+    store.regions().unwrap();
+    assert!(answered.try_recv().is_err());
+    barrier.wait();
+    let (_, restored) = answered.recv().unwrap().unwrap();
+    assert_eq!(restored.deltas.len(), 3);
+    part.flush();
+    home.flush();
+}
+
+/// Scenario 19: a split of a chunk that is being returned. The split is answered; when
+/// the return comes through, the chunk is the part's, and the store starts again on
+/// what is left.
+#[test]
+fn a_chunk_that_is_being_returned_goes_with_the_part_it_is_split_off_in() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, barrier) = gated(&disk, &[BUSY]);
+    let (old, _) = opened(&store, 0, 1);
+    let (busy, _) = opened(&store, 1, 1);
+    let (home, _) = opened(&store, 2, 1);
+    let other = ChunkPos::new(6, 5);
+    assert_eq!(claim(&old, &[FREE, other]).0, [FREE, other]);
+    old.flush();
+
+    save(&busy, BUSY, &edited());
+    barrier.wait();
+    give_back(&old, &[FREE, other]);
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    assert_eq!(split(&old, 5, &[FREE], 1), done);
+    barrier.wait();
+    old.flush();
+
+    // The return has freed the chunk that stayed, and not the one that went, of which
+    // the log says nothing: it left the return when it was split off.
+    let log = disk.read(Path::new("/world/log/00000000000000000001.wal"));
+    let (records, _) = clustine_format::read_log(&log.unwrap().unwrap()).unwrap();
+    let returned: Vec<&LogRecord> = records
+        .iter()
+        .filter(|record| matches!(record, LogRecord::Returned { .. }))
+        .collect();
+    let expected = LogRecord::Returned {
+        region: 0,
+        chunks: vec![other],
+    };
+    assert_eq!(returned, [&expected]);
+    assert_eq!(
+        claim(&home, &[FREE, other]),
+        (vec![other], vec![(FREE, RegionId(3))])
+    );
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let held = held_after(&disk, survival, epoch);
+        assert_eq!(held[0], [], "{survival:?}");
+        assert_eq!(held[3], [(FREE, 5)], "{survival:?}");
+    }
+}
+
+/// Scenario 20: a part split off a pinned region and returned by the part is the pinned
+/// region's again; one absorbed by the pinned region is among what it was granted.
+/// Scenario 21: ids are not used again, also after a merge and a restart.
+#[test]
+fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (pinned, _) = opened(&store, 0, 1);
+    let (first, second) = (ChunkPos::new(-5, 0), ChunkPos::new(-5, 1));
+    let done = StoreReply::Split {
+        region: RegionId(3),
+    };
+    assert_eq!(split(&pinned, 5, &[first, second], 1), done);
+    let (part, held) = opened(&store, 3, 1);
+    assert_eq!(held, [(first, 5), (second, 5)]);
+
+    give_back(&part, &[first]);
+    part.flush();
+    assert_eq!(load(&pinned, first), generator().generate(first));
+    pinned.request(StoreRequest::Load { position: second });
+    assert!(matches!(reply(&pinned), StoreReply::NotHeld { .. }));
+
+    let merged = StoreReply::Absorbed {
+        absorbed: RegionId(3),
+        chunks: vec![second],
+    };
+    assert_eq!(absorb(&pinned, 3, 1, 6), merged);
+    assert_eq!(load(&pinned, second), generator().generate(second));
+    pinned.flush();
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        let (pinned, held) = opened(&store, 0, epoch);
+        // By being pinned again, without a grant; and by the merge, from its tick.
+        assert_eq!(held, [(second, 6)], "{survival:?}");
+        assert_eq!(load(&pinned, first), generator().generate(first));
+        // The region that is gone has left no files, and its id is not used again.
+        let files = left.list(Path::new("/world/regions")).unwrap();
+        assert!(
+            !files.iter().any(|name| name.starts_with("3.")),
+            "{files:?}"
+        );
+        let again = StoreReply::Split {
+            region: RegionId(4),
+        };
+        assert_eq!(split(&pinned, 9, &[first], 1), again, "{survival:?}");
+    }
+}
+
+/// Scenario 22: a checkpoint of the absorbed region that is still under way when the
+/// merge is written is not put in place.
+#[test]
+fn a_checkpoint_of_a_region_that_is_absorbed_meanwhile_is_not_put_in_place() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, barrier) = gated(&disk, &[ORIGIN]);
+    let (survivor, _) = opened(&store, 0, 1);
+    let (other, _) = opened(&store, 1, 1);
+    let (home, _) = opened(&store, 2, 1);
+
+    save(&home, ORIGIN, &edited());
+    barrier.wait();
+    other.request(StoreRequest::Checkpoint {
+        tick: 4,
+        state: whole("late", 4),
+    });
+    assert!(matches!(
+        absorb(&survivor, 1, 1, 5),
+        StoreReply::Absorbed { .. }
+    ));
+    barrier.wait();
+    home.flush();
+    survivor.flush();
+    let files = disk.list(Path::new("/world/regions")).unwrap();
+    assert!(
+        !files.iter().any(|name| name.starts_with("1.state")),
+        "{files:?}"
+    );
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        let files = left.list(Path::new("/world/regions")).unwrap();
+        assert!(
+            !files.iter().any(|name| name.starts_with("1.state")),
+            "{files:?}"
+        );
+        let (_, restored) = store.open_region(hello_of(&gap(), 0, epoch)).unwrap();
+        assert_eq!(state_of(&restored), Some((5, whole("merged", 5))));
+    }
 }

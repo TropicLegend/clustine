@@ -86,6 +86,9 @@ pub enum StoreError {
     /// The store's regions are part of another layout than the one in the hello.
     #[error("the store's regions are part of layout {expected:016x}, not of layout {offered:016x}")]
     LayoutMismatch { expected: u64, offered: u64 },
+    /// The region has been absorbed by another, and is none any more.
+    #[error("region {region} has been absorbed by region {into}")]
+    Absorbed { region: RegionId, into: RegionId },
     /// The world has no such region: the hello is for a region of another division
     /// than the store was started with, or for one that was absorbed long ago.
     #[error("the world has no region {region}")]

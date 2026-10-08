@@ -1279,3 +1279,33 @@ what was decided. None of it changes what section 4.3 guarantees.
    to a commit, and an opening and the commit behind it are one sync or two. It
    passed every run of C1.2 and failed once here. It now waits for the opening to be
    durable before it commits, so that each commit is a group by itself.
+
+### C1.5
+
+1. **Sections 3.6 and 3.7 do not say which reason is given when several hold.** The
+   store looks in this order and names the first. A merge: `NoSuchRegion`, `Home`,
+   `NotOpened`, `Uncheckpointed` (the survivor before the region to absorb), `Tick`,
+   `TooLarge`. A split: `Uncheckpointed`, `Tick`, `Malformed`, `NotHeld`, `Home`,
+   `TooLarge`. So a part with the home chunk asked for by a region that does not hold
+   that chunk is declined as `NotHeld`, and `Home` is what the home region itself is
+   told.
+2. **Section 3.7, step 3, "with each chunk once"**: the chunks of the part are written
+   in ascending order, not in that of the request.
+3. **Section 3.4, "if no change is left to apply"** is taken as written, not as "no
+   commit behind the checkpoint": a region whose live commits changed no block, or
+   only blocks of chunks it does not hold or holds from a later tick, is answered by
+   the commit thread as well.
+4. **Section 3.7, step 4 and the review's second item: two things keep a chunk that was
+   split off while it was being returned with the part**, and either would do: the
+   split takes it out of `returning`, and a return frees only what the region still
+   has a grant of when its message arrives. Without the first, a `Returned` naming the
+   chunk would be written for the old region, which changes nothing in memory and is
+   passed over at a start; the store's test of scenario 19 looks at the log for it.
+5. **Section 3.6, step 5**: after the absorbed region's files are removed, `regions/`
+   is synced, so that they are durably gone before the survivor is answered if the
+   disk allows; a failure of either is logged and left to the next start, as the
+   section says.
+6. **A test of C1.4 looked at two handles after waiting for one**:
+   `a_grant_of_a_failed_group_does_not_come_back` waited for the first region's answers
+   to end and then asserted that the second was lost as well; the handles are lost one
+   after the other, and once it looked in between. It waits for the second now.

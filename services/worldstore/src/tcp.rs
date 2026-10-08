@@ -219,6 +219,9 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
                 // Said as it is, so that the owner can tell being replaced from
                 // anything else.
                 StoreError::EpochRefused { seen, .. } => StoreWelcome::EpochRefused { seen },
+                // Said as it is as well: whoever runs the region is to drop it, and
+                // can ask the region it went into.
+                StoreError::Absorbed { into, .. } => StoreWelcome::Absorbed { into },
                 // Not said at all: the connection is closed without a welcome, which
                 // whoever said hello takes for a store that cannot be reached, and
                 // tries again. It is no fault of theirs, and after a failed write of
@@ -549,7 +552,8 @@ impl StoreHandle {
     /// [`Store::open_region`] does with a store in this process.
     ///
     /// Waits for the store's answer. If the store refuses the hello for its epoch, the
-    /// error is [`StoreError::EpochRefused`]; if it refuses it otherwise, it is
+    /// error is [`StoreError::EpochRefused`]; if the region has been absorbed by
+    /// another, it is [`StoreError::Absorbed`]; if it refuses it otherwise, it is
     /// [`StoreError::Refused`] with the reason the store gave; if the store cannot be
     /// reached, does not answer, or closes the connection without an answer because it
     /// could not read or write what the hello takes, it is [`StoreError::Io`], and
@@ -613,6 +617,12 @@ fn welcomed(
                 region: hello.region,
                 offered: hello.epoch,
                 seen,
+            })));
+        }
+        Some(StoreWelcome::Absorbed { into }) => {
+            return Ok(Some(Err(StoreError::Absorbed {
+                region: hello.region,
+                into,
             })));
         }
         Some(StoreWelcome::Refused { reason }) => {

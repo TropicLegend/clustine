@@ -16,6 +16,10 @@ use clustine_world::{ChunkArea, ChunkPos};
 
 use crate::StoreError;
 
+/// How many absorbed regions the store remembers, with what each went into. A hello for
+/// one it has forgotten is refused as for a region that never was.
+pub(crate) const ABSORBED_KEPT: usize = 4096;
+
 /// How the world is divided when the store is started: the regions that are pinned to
 /// an area, and where players enter the world.
 ///
@@ -340,6 +344,93 @@ impl Table {
         Some(tick)
     }
 
+    /// The region that `region` was absorbed by, if it was and the store remembers.
+    pub(crate) fn absorbed_into(&self, region: RegionId) -> Option<RegionId> {
+        let pair = self
+            .absorbed
+            .iter()
+            .rev()
+            .find(|(absorbed, _)| *absorbed == region);
+        pair.map(|(_, into)| *into)
+    }
+
+    /// The merge: every chunk `absorbed` was granted is granted to `region` with
+    /// `tick`, every area it was pinned to is one `region` is pinned to, and `absorbed`
+    /// is no region any more. Returns the chunks that are granted to `region` by it, in
+    /// ascending order. Nothing changes if one of the two is no living region or they
+    /// are one: that is a record of the log that does not fit the table.
+    pub(crate) fn absorb(
+        &mut self,
+        region: RegionId,
+        absorbed: RegionId,
+        tick: u64,
+    ) -> Result<Vec<ChunkPos>, StoreError> {
+        if region == absorbed || !self.has(region) || absorbed == self.home_region {
+            return Err(misfit(format!(
+                "region {absorbed} is absorbed by region {region}, which cannot be"
+            )));
+        }
+        let Some(gone) = self.regions.remove(&absorbed) else {
+            return Err(misfit(format!(
+                "region {absorbed}, which is none, is absorbed by region {region}"
+            )));
+        };
+        let survivor = self.regions.get_mut(&region).expect("looked up above");
+        survivor.pinned.extend(gone.pinned);
+        let chunks: Vec<ChunkPos> = gone.grants.into_keys().collect();
+        for chunk in &chunks {
+            survivor.grants.insert(*chunk, tick);
+            self.granted.insert(*chunk, region);
+        }
+        self.absorbed.push_back((absorbed, region));
+        while self.absorbed.len() > ABSORBED_KEPT {
+            self.absorbed.pop_front();
+        }
+        Ok(chunks)
+    }
+
+    /// The split: `part` is a new region, not pinned, that holds `chunks` from `tick`
+    /// on, which `region` no longer holds, whether it was granted them or held them by
+    /// being pinned. Nothing changes if `part` is an id that has been used, `region` is
+    /// no living region, or it does not hold one of the chunks: that is a record of the
+    /// log that does not fit the table.
+    pub(crate) fn split(
+        &mut self,
+        region: RegionId,
+        part: RegionId,
+        tick: u64,
+        chunks: &[ChunkPos],
+    ) -> Result<(), StoreError> {
+        if part.0 < self.next_region || part.0 == u32::MAX {
+            return Err(misfit(format!(
+                "region {part} is split off region {region}, and its id has been used"
+            )));
+        }
+        if !self.has(region) {
+            return Err(misfit(format!(
+                "region {part} is split off region {region}, which is none"
+            )));
+        }
+        if let Some(chunk) = chunks
+            .iter()
+            .find(|chunk| self.held_from(region, **chunk).is_none())
+        {
+            return Err(misfit(format!(
+                "chunk {chunk:?} goes to region {part}, and region {region} does not hold it"
+            )));
+        }
+        let old = self.regions.get_mut(&region).expect("it holds chunks");
+        let mut holding = Holding::default();
+        for chunk in chunks {
+            old.grants.remove(chunk);
+            holding.grants.insert(*chunk, tick);
+            self.granted.insert(*chunk, part);
+        }
+        self.regions.insert(part, holding);
+        self.next_region = part.0 + 1;
+        Ok(())
+    }
+
     /// The list of regions for whoever assigns them. `epoch` says the highest epoch a
     /// region was opened with.
     pub(crate) fn list(&self, epoch: impl Fn(RegionId) -> u64) -> RegionList {
@@ -584,6 +675,107 @@ mod tests {
             max: second,
         };
         assert_eq!(read.list(|_| 0).regions[0].bounds, Some(around));
+    }
+
+    #[test]
+    fn a_merge_gives_the_survivor_what_the_absorbed_region_held() {
+        let mut table = Table::made_from(&gap(), 0, 1);
+        let (first, second) = (ChunkPos::new(3, 3), ChunkPos::new(4, -3));
+        table.grant(RegionId(1), 7, &[second, first]).unwrap();
+        table.grant(RegionId(0), 2, &[ChunkPos::new(9, 9)]).unwrap();
+
+        // What cannot be: with itself, with or by a region that is none, and of home.
+        let before = table.clone();
+        for (region, absorbed) in [(0, 0), (0, 9), (9, 1), (0, 2)] {
+            let merged = table.absorb(RegionId(region), RegionId(absorbed), 9);
+            assert!(matches!(merged, Err(StoreError::Table(_))), "{merged:?}");
+            assert_eq!(table, before);
+        }
+
+        assert_eq!(
+            table.absorb(RegionId(0), RegionId(1), 9).unwrap(),
+            [first, second]
+        );
+        assert!(!table.has(RegionId(1)));
+        assert_eq!(table.absorbed_into(RegionId(1)), Some(RegionId(0)));
+        assert_eq!(table.absorbed_into(RegionId(0)), None);
+        // The survivor is pinned to both areas, and holds the chunks from the merge on;
+        // what it held before, it holds from when it did.
+        assert_eq!(table.pinned(RegionId(0)), gap().pinned);
+        assert_eq!(
+            table.grants(RegionId(0)),
+            [(first, 9), (second, 9), (ChunkPos::new(9, 9), 2)]
+        );
+        assert_eq!(table.holder(ChunkPos::new(20, 0)), Some(RegionId(0)));
+        assert_eq!(table.held_from(RegionId(0), ChunkPos::new(20, 0)), Some(0));
+        // Its id is not used again, and it is still the division it was made from.
+        assert_eq!(table.next_region, 3);
+        assert!(table.is_of(&gap()));
+        let list = table.list(|_| 0);
+        assert_eq!(list.absorbed, [(RegionId(1), RegionId(0))]);
+        assert_eq!(list.regions.len(), 2);
+        let read = Table::read(TableFile::decode(&table.file(1).encode()).unwrap()).unwrap();
+        assert_eq!(read, table);
+
+        // The home region absorbs as any other, and of those absorbed only so many are
+        // remembered, the latest.
+        assert_eq!(table.absorb(RegionId(2), RegionId(0), 10).unwrap().len(), 3);
+        assert_eq!(table.absorbed_into(RegionId(0)), Some(RegionId(2)));
+        for part in 3..3 + ABSORBED_KEPT as u32 {
+            table
+                .split(RegionId(2), RegionId(part), 11, &[first])
+                .unwrap();
+            table.absorb(RegionId(2), RegionId(part), 12).unwrap();
+        }
+        assert_eq!(table.list(|_| 0).absorbed.len(), ABSORBED_KEPT);
+        assert_eq!(table.absorbed_into(RegionId(1)), None);
+        assert_eq!(table.absorbed_into(RegionId(3)), Some(RegionId(2)));
+    }
+
+    #[test]
+    fn a_split_gives_the_part_its_chunks_and_an_id_of_its_own() {
+        let mut table = Table::made_from(&gap(), 0, 1);
+        let granted = ChunkPos::new(3, 3);
+        let pinned = ChunkPos::new(-4, 0);
+        table.grant(RegionId(0), 7, &[granted]).unwrap();
+
+        // What cannot be: an id that has been used, a region that is none, and a chunk
+        // the region does not hold.
+        let before = table.clone();
+        let origin = ChunkPos::new(0, 0);
+        for (region, part, chunk) in [
+            (0, 2, granted),
+            (0, 1, granted),
+            (9, 3, granted),
+            (0, 3, origin),
+        ] {
+            let split = table.split(RegionId(region), RegionId(part), 9, &[granted, chunk]);
+            assert!(matches!(split, Err(StoreError::Table(_))), "{split:?}");
+            assert_eq!(table, before);
+        }
+
+        // A chunk the region was granted and one it holds by being pinned.
+        table
+            .split(RegionId(0), RegionId(3), 9, &[pinned, granted])
+            .unwrap();
+        assert_eq!(table.next_region, 4);
+        assert_eq!(table.pinned(RegionId(3)), []);
+        assert_eq!(table.grants(RegionId(3)), [(pinned, 9), (granted, 9)]);
+        assert_eq!(table.grants(RegionId(0)), []);
+        for chunk in [pinned, granted] {
+            assert_eq!(table.holder(chunk), Some(RegionId(3)));
+            assert_eq!(table.held_from(RegionId(0), chunk), None);
+        }
+        // The rest of the area is the pinned region's still, and the chunk that was
+        // split off is its own again, from tick 0, once it is given back.
+        assert_eq!(table.held_from(RegionId(0), ChunkPos::new(-4, 1)), Some(0));
+        assert_eq!(table.release(RegionId(3), pinned), Some(9));
+        assert_eq!(table.held_from(RegionId(0), pinned), Some(0));
+        let read = Table::read(TableFile::decode(&table.file(1).encode()).unwrap()).unwrap();
+        assert_eq!(read, table);
+        // A later id than the next is taken as it is, and none below it is used after.
+        table.split(RegionId(0), RegionId(8), 9, &[pinned]).unwrap();
+        assert_eq!(table.next_region, 9);
     }
 
     #[test]

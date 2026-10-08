@@ -250,23 +250,30 @@ pub enum StoreRequest {
     /// the region was not granted, and the chunk players enter the world in, are left
     /// out. A claim of a chunk that arrives before the chunk is free keeps it. Not
     /// answered; a [`StoreRequest::Flush`] asked for behind it is answered when the
-    /// return is on disk. See ADR-0011, section 3.3. The store does not merge or split
-    /// regions yet, and passes over the two requests below.
+    /// return is on disk. See ADR-0011, section 3.3.
     Return { chunks: Vec<ChunkPos> },
     /// The merge of ADR-0010, section 4: `state` is this region's whole state after
-    /// `tick` with the region `absorbed` taken in, whose chunks are this region's from
-    /// that tick. The same worker has `absorbed` open, with nothing in its log.
-    /// Answered with [`StoreReply::Absorbed`] once it is on disk, or with
-    /// [`StoreReply::Declined`].
+    /// `tick` with the region `absorbed` taken in, whose chunks and pinned areas are
+    /// this region's from that tick. The same worker has `absorbed` open, with
+    /// `absorbed_epoch`, and neither region has a commit that no checkpoint of it
+    /// covers. `tick` has to be above every tick this session has named, in a commit or
+    /// in a checkpoint, and above the tick it was restored up to. Answered with
+    /// [`StoreReply::Absorbed`] once it is on disk, or with [`StoreReply::Declined`].
+    /// See ADR-0011, section 3.6.
     AbsorbCommit {
         absorbed: RegionId,
+        /// The epoch the worker opened `absorbed` with, which shows that it is the one
+        /// that was told to absorb it and not one whose time for that has run out.
+        absorbed_epoch: u64,
         tick: u64,
         state: Vec<u8>,
     },
     /// The split of ADR-0010, section 5: `state` is this region's whole state after
-    /// `tick` without the part, and `part` becomes a new region, opened by this
-    /// worker with `as_epoch`. Answered with [`StoreReply::Split`] once it is on disk,
-    /// or with [`StoreReply::Declined`].
+    /// `tick` without the part, and `part` becomes a new region, which nobody with a
+    /// lower epoch than `as_epoch` can open. The region has no commit that no
+    /// checkpoint of it covers, and `tick` has to be above every tick this session has
+    /// named, as for a merge. Answered with [`StoreReply::Split`] once it is on disk,
+    /// or with [`StoreReply::Declined`]. See ADR-0011, section 3.7.
     SplitCommit {
         tick: u64,
         state: Vec<u8>,
@@ -278,9 +285,11 @@ pub enum StoreRequest {
 /// What a split makes a new region of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitPart {
-    /// The chunks the new region holds, all of which the old one held.
+    /// The chunks the new region holds, all of which the old one held. The chunk
+    /// players enter the world in is not among them.
     pub chunks: Vec<ChunkPos>,
-    /// The new region's whole state.
+    /// The new region's whole state, as of the split's tick: its ticks go on from the
+    /// old region's.
     pub state: Vec<u8>,
 }
 
@@ -315,14 +324,16 @@ pub enum StoreReply {
         chunks: Vec<ChunkPos>,
     },
     /// The split asked for with [`StoreRequest::SplitCommit`] has happened, and
-    /// `region` is the new region. The worker opens it with the epoch it named.
+    /// `region` is the new region. It is not opened by the split: the worker says an
+    /// ordinary hello for it with the epoch it named, which the store answers at once,
+    /// and runs it from what it has in memory meanwhile.
     Split {
         region: RegionId,
     },
     /// A merge or a split was not done, for the reason given. Nothing has changed, and
     /// the handle is as it was.
     Declined {
-        reason: String,
+        reason: Decline,
     },
     /// The region asked to load or to save a chunk it does not hold, which only the
     /// holder may. Nothing was done. `holder` is the region that holds the chunk, if
@@ -333,6 +344,28 @@ pub enum StoreReply {
     },
 }
 
+/// Why the world store did not do a merge or a split. See ADR-0011, section 7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Decline {
+    /// `region` has commits that no checkpoint of it covers.
+    Uncheckpointed { region: RegionId },
+    /// `tick` is not above `named`, the highest tick this session has named in a commit
+    /// or a checkpoint or was restored up to.
+    Tick { named: u64 },
+    /// The region to absorb is not a living region other than the one that asks.
+    NoSuchRegion,
+    /// The home region is never absorbed, and the home chunk never leaves it.
+    Home,
+    /// The region to absorb has no owner, or one with another epoch than named.
+    NotOpened { epoch: Option<u64> },
+    /// The part has a chunk the region does not hold.
+    NotHeld { chunk: ChunkPos },
+    /// The part has no chunks, or `as_epoch` is 0.
+    Malformed,
+    /// The record of it would be longer than a record of the log may be.
+    TooLarge,
+}
+
 /// What the world store has of a region, as it hands it to the owner that opens it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Restored {
@@ -340,7 +373,8 @@ pub struct Restored {
     /// the region's for good. A region that was split off another has none: its block
     /// is empty, with `first` and `end` both 0.
     pub entity_ids: EntityIds,
-    /// The region's whole state as of its last checkpoint, if it has had one.
+    /// The region's whole state as of its last checkpoint, or of the merge or split
+    /// it went through since, if it has had any of these.
     pub state: Option<TickState>,
     /// The state of each commit after that checkpoint, in the order of their ticks.
     /// The block changes of those commits are in the stored chunks already.
@@ -390,6 +424,9 @@ pub enum StoreWelcome {
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.
     EpochRefused { seen: u64 },
+    /// The region has been absorbed by the region `into`, and is none any more. The
+    /// connection is closed.
+    Absorbed { into: RegionId },
     /// The connection is closed, for the reason given.
     Refused { reason: String },
 }

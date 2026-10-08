@@ -155,8 +155,8 @@ mod tests {
         use clustine_world::{ChunkArea, ChunkPos};
 
         use crate::{
-            ChunkBox, EdgeToWorker, FromCoordinator, RegionInfo, RegionList, SplitPart, StoreReply,
-            StoreRequest, ToCoordinator, WorkerToEdge,
+            ChunkBox, Decline, EdgeToWorker, FromCoordinator, RegionInfo, RegionList, SplitPart,
+            StoreReply, StoreRequest, ToCoordinator, WorkerToEdge,
         };
 
         fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(message: T) {
@@ -176,6 +176,7 @@ mod tests {
             },
             StoreRequest::AbsorbCommit {
                 absorbed: region,
+                absorbed_epoch: 4,
                 tick: 13,
                 state: vec![1, 2],
             },
@@ -202,7 +203,16 @@ mod tests {
             },
             StoreReply::Split { region },
             StoreReply::Declined {
-                reason: "the log of the absorbed region is not empty".to_owned(),
+                reason: Decline::Uncheckpointed { region },
+            },
+            StoreReply::Declined {
+                reason: Decline::Tick { named: 12 },
+            },
+            StoreReply::Declined {
+                reason: Decline::NotOpened { epoch: Some(3) },
+            },
+            StoreReply::Declined {
+                reason: Decline::NotHeld { chunk: chunks[0] },
             },
             StoreReply::NotHeld {
                 position: chunks[0],
@@ -329,6 +339,9 @@ mod tests {
                 pinned: restored.pinned.clone(),
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
+            StoreWelcome::Absorbed {
+                into: clustine_region::RegionId(8),
+            },
             StoreWelcome::Refused {
                 reason: "no".to_owned(),
             },

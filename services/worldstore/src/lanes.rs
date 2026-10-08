@@ -41,11 +41,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use clustine_data::BlockState;
 use clustine_format::{
-    FormatError, LogRecord, Logged, RegionFile, StateFile, TableFile, read_log,
+    LogRecord, Logged, MAX_RECORD_LENGTH, RegionFile, StateFile, TableFile, read_log,
     read_log_with_offsets,
 };
 use clustine_region::RegionId;
-use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest, TickState};
+use clustine_rpc::{
+    Decline, RegionHello, RegionList, Restored, SplitPart, StoreReply, StoreRequest, TickState,
+};
 use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds};
 use tracing::{error, info, warn};
 
@@ -93,10 +95,18 @@ pub(crate) struct Lanes {
 /// What the store knows about a region.
 #[derive(Default)]
 struct Lane {
-    /// What is on disk about it, once it has been opened.
+    /// What is on disk about it, once it has been opened or made by a split.
     file: Option<RegionFile>,
+    /// Whether `file` is not on disk as it is here: the region was made by a split,
+    /// and its file could not be written yet. The record of the split has its epoch
+    /// meanwhile, so the table file, which would let that record go, waits for it.
+    unwritten: bool,
     /// The tick of its state file, if it has one.
     state_tick: Option<u64>,
+    /// The record of the merge or the split the region went through last, if that is
+    /// its latest whole state: if its tick is above the state file's. The region is
+    /// restored from it until a checkpoint puts a later state in place.
+    record: Option<Entry>,
     /// Where its commits are in the log that whoever opens it next is restored with:
     /// those with a tick above the state file's that no later opening has passed over.
     live: Vec<Entry>,
@@ -118,9 +128,31 @@ struct Lane {
     /// How many returns the session that opened the region last has asked for, from
     /// which their numbers come.
     returns: u64,
+    /// The highest tick the session that opened the region last has named, in a commit
+    /// or in a checkpoint, in place yet or not, or was restored up to. A merge or a
+    /// split has to name a tick above it, so that no checkpoint that is still under
+    /// way can be put in place over the state it leaves.
+    named: u64,
 }
 
-/// Where a commit is in the log.
+impl Lane {
+    /// The tick of the region's latest whole state, if it has one.
+    fn whole_tick(&self) -> Option<u64> {
+        self.record.map(|record| record.tick).max(self.state_tick)
+    }
+
+    /// Takes the record at `entry`, of a merge or a split, for the region's latest
+    /// whole state if its tick is above the state file's. The commits up to its tick
+    /// are covered by it.
+    fn whole(&mut self, entry: Entry) {
+        if self.state_tick.is_none_or(|state| entry.tick > state) {
+            self.record = Some(entry);
+        }
+        self.live.retain(|live| live.tick > entry.tick);
+    }
+}
+
+/// Where a commit is in the log, or the record of a merge or a split.
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     tick: u64,
@@ -292,6 +324,7 @@ impl Lanes {
                     } => {
                         if let Some(lane) = regions.get_mut(&RegionId(region)) {
                             lane.live.retain(|entry| entry.tick <= restored);
+                            lane.record.take_if(|record| record.tick > restored);
                         }
                     }
                     LogRecord::Changes { .. } => {
@@ -326,14 +359,59 @@ impl Lanes {
                             table_last = Some(segment);
                         }
                     }
-                    // Of regions that merge and split (ADR-0011), which the store does
-                    // not do yet: to it they are what they were before the format had
-                    // them, records of no kind it knows.
-                    LogRecord::Absorbed { .. } | LogRecord::Split { .. } => {
-                        return Err(StoreError::Damaged {
-                            path,
-                            error: FormatError::Corrupt("record kind"),
-                        });
+                    // What a merge or a split means for a lane counts wherever the
+                    // record is; what it means for the table, only in a segment the
+                    // table file does not stand for.
+                    LogRecord::Absorbed {
+                        region,
+                        absorbed,
+                        tick,
+                        ..
+                    } => {
+                        let entry = Entry {
+                            tick,
+                            segment,
+                            offset: offset as u64,
+                            length,
+                        };
+                        regions.entry(RegionId(region)).or_default().whole(entry);
+                        if let Some(table) = changed_by(&mut stored, segment)? {
+                            table.absorb(RegionId(region), RegionId(absorbed), tick)?;
+                            table_last = Some(segment);
+                        }
+                    }
+                    LogRecord::Split {
+                        region,
+                        tick,
+                        part,
+                        part_epoch,
+                        chunks,
+                        ..
+                    } => {
+                        let entry = Entry {
+                            tick,
+                            segment,
+                            offset: offset as u64,
+                            length,
+                        };
+                        regions.entry(RegionId(region)).or_default().whole(entry);
+                        let made = regions.entry(RegionId(part)).or_default();
+                        made.whole(entry);
+                        // The record has the new region's epoch until its file does,
+                        // which a store that died right after the split never wrote.
+                        if made.file.is_none_or(|file| file.epoch < part_epoch) {
+                            let entity_ids =
+                                made.file.map_or(NO_ENTITY_IDS, |file| file.entity_ids);
+                            made.file = Some(RegionFile {
+                                epoch: part_epoch,
+                                entity_ids,
+                            });
+                            made.unwritten = true;
+                        }
+                        if let Some(table) = changed_by(&mut stored, segment)? {
+                            table.split(RegionId(region), RegionId(part), tick, &chunks)?;
+                            table_last = Some(segment);
+                        }
                     }
                 }
             }
@@ -416,15 +494,7 @@ impl Lanes {
                 answer,
             } => self.open(hello, reply_to, answer),
             Message::Request { session, request } => self.request(session, request),
-            Message::Close { session } => {
-                // What the handle asked for before is done first, as far as it is up to
-                // this thread: its commits answered and its saves passed on.
-                self.end_group();
-                if let Some(lane) = self.regions.get_mut(&session.region) {
-                    lane.owner
-                        .take_if(|owner| owner.peer.session.number == session.number);
-                }
-            }
+            Message::Close { session } => self.close(session),
             Message::Lost { session } => {
                 if let Some(lane) = self.regions.get_mut(&session.region)
                     && lane.current == Some(session.number)
@@ -492,8 +562,37 @@ impl Lanes {
         Ok(())
     }
 
+    /// The handle of `session` was dropped: the region has no owner, unless another
+    /// has it by now.
+    fn close(&mut self, session: Session) {
+        // What the handle asked for before is done first, as far as it is up to this
+        // thread: its commits answered and its saves passed on.
+        self.end_group();
+        if let Some(lane) = self.regions.get_mut(&session.region) {
+            lane.owner
+                .take_if(|owner| owner.peer.session.number == session.number);
+        }
+    }
+
     /// Does what the owner `session` asks for, if it still owns its region.
     fn request(&mut self, session: Session, request: StoreRequest) {
+        // A merge and a split are no part of a group: each ends the group, is made
+        // durable by itself, and changes what is known here only then.
+        let request = match request {
+            StoreRequest::AbsorbCommit {
+                absorbed,
+                absorbed_epoch,
+                tick,
+                state,
+            } => return self.absorb(session, absorbed, absorbed_epoch, tick, state),
+            StoreRequest::SplitCommit {
+                tick,
+                state,
+                part,
+                as_epoch,
+            } => return self.split(session, tick, state, part, as_epoch),
+            request => request,
+        };
         let Some(lane) = self.regions.get_mut(&session.region) else {
             return;
         };
@@ -532,6 +631,7 @@ impl Lanes {
                         });
                         owner.unsynced.push(StoreReply::Committed { tick });
                         lane.latest = lane.latest.max(tick);
+                        lane.named = lane.named.max(tick);
                     }
                     Err(error) => {
                         error!(region = %session.region, %error, "a commit could not be written to the log");
@@ -573,7 +673,11 @@ impl Lanes {
                 chunk,
                 peer,
             },
-            StoreRequest::Checkpoint { tick, state } => Job::Checkpoint { tick, state, peer },
+            StoreRequest::Checkpoint { tick, state } => {
+                // Named from now on, whether or not its state is ever put in place.
+                lane.named = lane.named.max(tick);
+                Job::Checkpoint { tick, state, peer }
+            }
             StoreRequest::Flush => Job::Flush { peer },
             StoreRequest::Claim { chunks } => {
                 let region = session.region;
@@ -671,12 +775,8 @@ impl Lanes {
                     peer,
                 }
             }
-            // Of regions that merge and split (ADR-0011), which the store does not do
-            // yet. No worker asks for these.
-            request @ (StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. }) => {
-                error!(region = %session.region, ?request, "asked for what the store does not do yet");
-                return;
-            }
+            // Taken above, before the lane was looked up.
+            StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. } => return,
         };
         if owner.unsynced.is_empty() && owner.held.is_empty() {
             let _ = self.jobs.send(job);
@@ -711,7 +811,10 @@ impl Lanes {
                     continue;
                 };
                 if synced.is_ok() {
+                    // It is the latest whole state now: a state is only put in place
+                    // above the one there was, be that a file or a record.
                     lane.state_tick = Some(tick);
+                    lane.record = None;
                     lane.live.retain(|entry| entry.tick > tick);
                     installed = true;
                 } else {
@@ -788,11 +891,13 @@ impl Lanes {
     }
 
     /// The segments of the log that a lane needs: those with a commit whoever opens
-    /// its region next is restored with.
+    /// its region next is restored with, or with the record that is its latest whole
+    /// state.
     fn needed_by_lanes(&self) -> BTreeSet<u64> {
         self.regions
             .values()
-            .flat_map(|lane| lane.live.iter().map(|entry| entry.segment))
+            .flat_map(|lane| lane.live.iter().chain(&lane.record))
+            .map(|entry| entry.segment)
             .collect()
     }
 
@@ -824,6 +929,12 @@ impl Lanes {
             || self.needed_by_lanes().contains(&first)
             || self.log.active.is_some()
         {
+            return;
+        }
+        // The record of a split has the new region's epoch until the region's file
+        // does, and the table file would let that record go.
+        if let Err(error) = self.write_region_files() {
+            warn!(%error, "the file of a new region cannot be written; the log is kept as it is");
             return;
         }
         // Only once the file is durable are the segments it stands for let go of. If it
@@ -894,7 +1005,10 @@ impl Lanes {
             let _ = self.disk.remove(temporary);
             return;
         };
-        let later = lane.state_tick.is_none_or(|state| tick > state)
+        // Only above the latest whole state, be that the state file or the record of a
+        // merge or a split: a checkpoint that was under way when such a record was
+        // written must not take the place of the state it left.
+        let later = lane.whole_tick().is_none_or(|whole| tick > whole)
             && lane.installing.is_none_or(|installing| tick > installing);
         if lane.current != Some(session.number) || !later {
             let _ = self.disk.remove(temporary);
@@ -913,8 +1027,10 @@ impl Lanes {
         }
     }
 
-    /// Opens a region for whoever said `hello`, and has the thread for chunks hand it
-    /// over once the region's commits are in the stored chunks.
+    /// Opens a region for whoever said `hello`. If commits of the region have to be
+    /// put into the stored chunks first, the thread for chunks hands it over once they
+    /// are; otherwise it is handed over here and now, without waiting for whatever that
+    /// thread is busy with.
     fn open(
         &mut self,
         hello: RegionHello,
@@ -933,6 +1049,16 @@ impl Lanes {
             return;
         }
         match self.admit(hello, reply_to) {
+            Ok((opened, restored, changes, _, _)) if changes.is_empty() => {
+                // Nothing is lost by not going through the thread for chunks: what the
+                // owner before had it do is still done before anything the new owner
+                // asks, as both go through its one queue.
+                let session = opened.session;
+                if answer.send(Ok((opened, restored))).is_err() {
+                    // Whoever asked has gone; nobody will give the region up for them.
+                    self.close(session);
+                }
+            }
             Ok((opened, restored, changes, tick, peer)) => {
                 let _ = self.jobs.send(Job::Restore {
                     changes,
@@ -983,7 +1109,10 @@ impl Lanes {
         // Before anything is written: the regions are those the table has, and a hello
         // makes none.
         if !self.table.has(region) {
-            return Err(StoreError::UnknownRegion { region });
+            return Err(match self.table.absorbed_into(region) {
+                Some(into) => StoreError::Absorbed { region, into },
+                None => StoreError::UnknownRegion { region },
+            });
         }
 
         // An owner gives way to one with the same epoch, which is the same owner come
@@ -1016,7 +1145,8 @@ impl Lanes {
             None => NO_ENTITY_IDS,
         };
         let updated = RegionFile { epoch, entity_ids };
-        if file != Some(updated) {
+        let unwritten = self.regions.get(&region).is_some_and(|lane| lane.unwritten);
+        if file != Some(updated) || unwritten {
             // On disk before anyone is told that the region is theirs, so that an owner
             // with a lower epoch is refused after a restart too.
             replace(
@@ -1025,7 +1155,9 @@ impl Lanes {
                 &updated.encode(),
             )?;
             self.disk.sync_directory(&self.regions_directory())?;
-            self.regions.entry(region).or_default().file = Some(updated);
+            let lane = self.regions.entry(region).or_default();
+            lane.file = Some(updated);
+            lane.unwritten = false;
         }
         let state_path = self.state_path(region);
         let lane = self.regions.get_mut(&region).expect("made above");
@@ -1050,6 +1182,14 @@ impl Lanes {
                 )
             }
             None => None,
+        };
+        // The latest whole state: the state file, or the record of the merge or the
+        // split the region went through since, if its tick is higher.
+        let state = match lane.record {
+            Some(entry) if state.as_ref().is_none_or(|file| entry.tick > file.tick) => {
+                Some(self.log.whole_state(&entry, region)?)
+            }
+            _ => state,
         };
         let state_tick = state.as_ref().map(|state| state.tick);
         let mut chosen = BTreeMap::new();
@@ -1095,6 +1235,7 @@ impl Lanes {
         });
         lane.current = Some(session.number);
         lane.latest = restored_tick;
+        lane.named = restored_tick;
         // A return the owner before had asked for frees nothing any more.
         lane.returning.clear();
         lane.returns = 0;
@@ -1120,6 +1261,303 @@ impl Lanes {
         Ok((opened, restored, changes, restored_tick, peer))
     }
 
+    /// The merge of section 3.6 of ADR-0011: the region of `session`, which survives,
+    /// takes in the region `absorbed`. It is one record of the log, and has happened
+    /// when that record is durable; what is known here is changed only then.
+    fn absorb(
+        &mut self,
+        session: Session,
+        absorbed: RegionId,
+        absorbed_epoch: u64,
+        tick: u64,
+        state: Vec<u8>,
+    ) {
+        // Everything either region asked for before is durable and answered.
+        self.end_group();
+        let region = session.region;
+        let Some((peer, epoch)) = self.owner_of(session) else {
+            return;
+        };
+        let record = LogRecord::Absorbed {
+            region: region.0,
+            epoch,
+            absorbed: absorbed.0,
+            tick,
+            state,
+        }
+        .encode();
+        if let Err(reason) = self.may_absorb(region, absorbed, absorbed_epoch, tick, &record) {
+            info!(%region, %absorbed, ?reason, "a merge is declined");
+            peer.answer(StoreReply::Declined { reason });
+            return;
+        }
+        let Some(entry) = self.write_alone(tick, &record) else {
+            return;
+        };
+
+        let chunks = self
+            .table
+            .absorb(region, absorbed, tick)
+            .expect("two living regions, as was looked at above");
+        self.table_last = Some(entry.segment);
+        if let Some(mut gone) = self.regions.remove(&absorbed) {
+            // Its owner gets nothing done any more; what it had the thread for chunks
+            // do is done before anything the survivor asks from now on.
+            lose(&mut gone);
+            let mut removed = Vec::new();
+            if gone.state_tick.is_some() {
+                removed.push(self.state_path(absorbed));
+            }
+            if gone.file.is_some_and(|file| is_empty(file.entity_ids)) {
+                removed.push(self.region_path(absorbed));
+            }
+            // If this fails, the files are removed when the store starts.
+            let done = removed
+                .iter()
+                .try_for_each(|path| self.disk.remove(path))
+                .and_then(|()| match removed.is_empty() {
+                    true => Ok(()),
+                    false => self.disk.sync_directory(&self.regions_directory()),
+                });
+            if let Err(error) = done {
+                warn!(%absorbed, %error, "the files of an absorbed region could not be removed yet");
+            }
+        }
+        let lane = self.regions.get_mut(&region).expect("the survivor's lane");
+        lane.record = Some(entry);
+        lane.latest = tick;
+        lane.named = tick;
+        info!(%region, %absorbed, tick, "a region has absorbed another");
+        peer.answer(StoreReply::Absorbed { absorbed, chunks });
+    }
+
+    /// Whether the region `region` may absorb `absorbed` now, with the record made for
+    /// it. Nothing is changed.
+    fn may_absorb(
+        &self,
+        region: RegionId,
+        absorbed: RegionId,
+        absorbed_epoch: u64,
+        tick: u64,
+        record: &[u8],
+    ) -> Result<(), Decline> {
+        let (Some(survivor), Some(other)) =
+            (self.regions.get(&region), self.regions.get(&absorbed))
+        else {
+            return Err(Decline::NoSuchRegion);
+        };
+        if absorbed == region {
+            return Err(Decline::NoSuchRegion);
+        }
+        if absorbed == self.table.home_region {
+            return Err(Decline::Home);
+        }
+        // Whoever asks is the one that was told to absorb the region only if it has
+        // the region open with the epoch it was told: the store does not know workers.
+        let opened = other.owner.as_ref().map(|owner| owner.epoch);
+        if opened != Some(absorbed_epoch) {
+            return Err(Decline::NotOpened { epoch: opened });
+        }
+        // The chunks and areas that come to the survivor count as held from the tick of
+        // the merge or from 0, which is only right if no commit of either region from
+        // before is left to be replayed.
+        for (id, lane) in [(region, survivor), (absorbed, other)] {
+            if !lane.live.is_empty() {
+                return Err(Decline::Uncheckpointed { region: id });
+            }
+        }
+        if tick <= survivor.named {
+            return Err(Decline::Tick {
+                named: survivor.named,
+            });
+        }
+        if record.len() > MAX_RECORD_LENGTH {
+            return Err(Decline::TooLarge);
+        }
+        Ok(())
+    }
+
+    /// The split of section 3.7 of ADR-0011: the chunks of `part` leave the region of
+    /// `session` for a new region, which is made with `as_epoch` as the highest epoch
+    /// it was opened with. It is one record of the log, as a merge is.
+    fn split(
+        &mut self,
+        session: Session,
+        tick: u64,
+        state: Vec<u8>,
+        part: SplitPart,
+        as_epoch: u64,
+    ) {
+        self.end_group();
+        let region = session.region;
+        let Some((peer, epoch)) = self.owner_of(session) else {
+            return;
+        };
+        let new = RegionId(self.table.next_region);
+        let SplitPart {
+            chunks,
+            state: part_state,
+        } = part;
+        // Each chunk once.
+        let chunks: Vec<ChunkPos> = chunks
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let record = LogRecord::Split {
+            region: region.0,
+            epoch,
+            tick,
+            state,
+            part: new.0,
+            part_epoch: as_epoch,
+            chunks: chunks.clone(),
+            part_state,
+        }
+        .encode();
+        let declined = match self.may_split(region, tick, &chunks, as_epoch) {
+            Ok(()) if record.len() > MAX_RECORD_LENGTH => Err(Decline::TooLarge),
+            other => other,
+        };
+        if let Err(reason) = declined {
+            info!(%region, ?reason, "a split is declined");
+            peer.answer(StoreReply::Declined { reason });
+            return;
+        }
+        let Some(entry) = self.write_alone(tick, &record) else {
+            return;
+        };
+
+        self.table
+            .split(region, new, tick, &chunks)
+            .expect("a new id and chunks the region holds, as was looked at above");
+        self.table_last = Some(entry.segment);
+        let lane = self
+            .regions
+            .get_mut(&region)
+            .expect("the lane of the region");
+        // A chunk whose return was on its way is the new region's: the message that
+        // comes later finds no number for it, and frees nothing.
+        for chunk in &chunks {
+            lane.returning.remove(chunk);
+        }
+        lane.record = Some(entry);
+        lane.latest = tick;
+        lane.named = tick;
+        let file = RegionFile {
+            epoch: as_epoch,
+            entity_ids: NO_ENTITY_IDS,
+        };
+        let made = Lane {
+            file: Some(file),
+            // Until it is on disk; the record has the epoch meanwhile, and its segment
+            // stays for as long.
+            unwritten: true,
+            record: Some(entry),
+            latest: tick,
+            named: tick,
+            ..Lane::default()
+        };
+        self.regions.insert(new, made);
+        if let Err(error) = self.write_region_files() {
+            warn!(region = %new, %error, "the file of a new region could not be written yet");
+        }
+        info!(%region, part = %new, tick, "a region was split");
+        peer.answer(StoreReply::Split { region: new });
+    }
+
+    /// Whether the region `region` may be split now, apart from how long the record of
+    /// it would be. Nothing is changed.
+    fn may_split(
+        &self,
+        region: RegionId,
+        tick: u64,
+        chunks: &[ChunkPos],
+        as_epoch: u64,
+    ) -> Result<(), Decline> {
+        let lane = self.regions.get(&region).ok_or(Decline::NoSuchRegion)?;
+        if !lane.live.is_empty() {
+            return Err(Decline::Uncheckpointed { region });
+        }
+        if tick <= lane.named {
+            return Err(Decline::Tick { named: lane.named });
+        }
+        if chunks.is_empty() || as_epoch == 0 {
+            return Err(Decline::Malformed);
+        }
+        if let Some(chunk) = chunks
+            .iter()
+            .find(|chunk| self.table.held_from(region, **chunk).is_none())
+        {
+            return Err(Decline::NotHeld { chunk: *chunk });
+        }
+        if chunks.contains(&self.table.home_chunk) {
+            return Err(Decline::Home);
+        }
+        Ok(())
+    }
+
+    /// The handle of `session` and the epoch it opened its region with, if it still
+    /// owns the region.
+    fn owner_of(&self, session: Session) -> Option<(Arc<Peer>, u64)> {
+        let owner = self.regions.get(&session.region)?.owner.as_ref()?;
+        (owner.peer.session.number == session.number)
+            .then(|| (Arc::clone(&owner.peer), owner.epoch))
+    }
+
+    /// Appends the record of a merge or a split and makes it durable by itself, apart
+    /// from any group: what such a record changes could not be undone simply, so
+    /// nothing is changed before it is durable. Returns where the record is, or `None`
+    /// if it could not be written, after which every region has lost its owner and
+    /// nothing is answered.
+    fn write_alone(&mut self, tick: u64, record: &[u8]) -> Option<Entry> {
+        let written = self
+            .log
+            .append(record)
+            .and_then(|at| self.log.sync().map(|()| at));
+        match written {
+            Ok((segment, offset)) => Some(Entry {
+                tick,
+                segment,
+                offset,
+                length: record.len(),
+            }),
+            Err(error) => {
+                error!(%error, "a merge or a split could not be written to the log");
+                self.fail_log();
+                None
+            }
+        }
+    }
+
+    /// Writes the region file of every region whose file is not on disk as it is known
+    /// here, which is that of a region a split has made, and makes them durable.
+    fn write_region_files(&mut self) -> io::Result<()> {
+        let unwritten: Vec<(RegionId, RegionFile)> = self
+            .regions
+            .iter()
+            .filter(|(_, lane)| lane.unwritten)
+            .filter_map(|(region, lane)| Some((*region, lane.file?)))
+            .collect();
+        if unwritten.is_empty() {
+            return Ok(());
+        }
+        for (region, file) in &unwritten {
+            replace(
+                self.disk.as_ref(),
+                &self.region_path(*region),
+                &file.encode(),
+            )?;
+        }
+        self.disk.sync_directory(&self.regions_directory())?;
+        for (region, _) in unwritten {
+            if let Some(lane) = self.regions.get_mut(&region) {
+                lane.unwritten = false;
+            }
+        }
+        Ok(())
+    }
+
     /// Makes the world over for another division than it had: puts the block changes
     /// of every region's commits into the stored chunks, and then lets go of the
     /// regions' commits and states. The commits of those regions mean nothing to the
@@ -1135,7 +1573,9 @@ impl Lanes {
         let left: Vec<RegionId> = self
             .regions
             .iter()
-            .filter(|(_, lane)| !lane.live.is_empty() || lane.state_tick.is_some())
+            .filter(|(_, lane)| {
+                !lane.live.is_empty() || lane.state_tick.is_some() || lane.record.is_some()
+            })
             .map(|(region, _)| *region)
             .collect();
         if left.is_empty() {
@@ -1189,6 +1629,7 @@ impl Lanes {
         for region in &left {
             let lane = self.regions.get_mut(region).expect("lanes that are left");
             lane.live.clear();
+            lane.record = None;
             if lane.state_tick.is_some() {
                 self.disk.remove(&self.state_path(*region))?;
             }
@@ -1232,6 +1673,9 @@ impl Lanes {
         for region in self.table.regions() {
             self.regions.entry(region).or_default();
         }
+        // The file of a region that a split made, if the store died before it was
+        // written: the record of the split had its epoch.
+        self.write_region_files()?;
         Ok(())
     }
 }
@@ -1419,27 +1863,68 @@ impl Log {
         }
     }
 
-    /// Reads the commit at `entry`: its tick, block changes and state.
-    #[allow(clippy::type_complexity)]
-    fn read(
-        &self,
-        entry: &Entry,
-    ) -> Result<Option<(u64, Vec<(BlockPos, BlockState)>, Vec<u8>)>, StoreError> {
+    /// Reads the record at `entry`, if there is a whole one.
+    fn record(&self, entry: &Entry) -> Result<Option<LogRecord>, StoreError> {
         let path = self.path(entry.segment);
         let bytes = self.disk.read_at(&path, entry.offset, entry.length)?;
         let (records, _) = read_log(&bytes).map_err(|error| StoreError::Damaged {
             path: path.clone(),
             error,
         })?;
-        Ok(records.into_iter().find_map(|record| match record {
-            LogRecord::Commit {
+        Ok(records.into_iter().next())
+    }
+
+    /// Reads the commit at `entry`: its tick, block changes and state.
+    #[allow(clippy::type_complexity)]
+    fn read(
+        &self,
+        entry: &Entry,
+    ) -> Result<Option<(u64, Vec<(BlockPos, BlockState)>, Vec<u8>)>, StoreError> {
+        Ok(match self.record(entry)? {
+            Some(LogRecord::Commit {
                 tick,
                 changes,
                 state,
                 ..
-            } => Some((tick, changes, state)),
+            }) => Some((tick, changes, state)),
             _ => None,
-        }))
+        })
+    }
+
+    /// Reads the whole state of `region` that the record of a merge or a split at
+    /// `entry` has: of a split, that of the region that was split or that of the part.
+    fn whole_state(&self, entry: &Entry, region: RegionId) -> Result<StateFile, StoreError> {
+        let state = match self.record(entry)? {
+            Some(LogRecord::Absorbed {
+                region: survivor,
+                tick,
+                state,
+                ..
+            }) if survivor == region.0 => Some(StateFile { tick, state }),
+            Some(LogRecord::Split {
+                region: old,
+                tick,
+                state,
+                part,
+                part_state,
+                ..
+            }) => {
+                if old == region.0 {
+                    Some(StateFile { tick, state })
+                } else if part == region.0 {
+                    let state = part_state;
+                    Some(StateFile { tick, state })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        state.ok_or_else(|| {
+            StoreError::Table(format!(
+                "the log has no state of region {region} where the merge or split it went through was written"
+            ))
+        })
     }
 
     /// Removes segments from the start of the log for as long as `unneeded` says so of
