@@ -250,7 +250,7 @@ The edge has to work against regions that presume and regions that ask the store
 | # | Scope | Its tests |
 |---|---|---|
 | E1 | Ports in a map, made on first use; the welcome's entries before what was kept; a reconciled snapshot removes only what its region introduced. Subscriptions still by the layout (built) | The edge's unit tests as they are; below, 18 and 19 |
-| E2 | The subscription table, `want` and `unwant`, guests, answers by number, `served_by`, the hello's two lists, links; players' regions still change by `hand_over` with the layout's region | Below, 1 to 12 and 20; statements V, G and E at the end of every turn |
+| E2 | The subscription table, `want` and `unwant`, guests, answers by number, `served_by`, the hello's two lists, links, and the view's subscriptions moving with a player who is handed over (built) | Below, 1 to 12 and 20; statements V, G and E at the end of every turn |
 | E3 | `Departed { to }`, `NotMine` for an arrival with its count, `Remote` by `to` and by `served_by`; the layout goes from the edge, which is handed the home region in its place | Below, 13 to 17 and 21 |
 
 **Existing tests whose point changes** (`fanout.rs`):
@@ -319,6 +319,16 @@ Scenarios for whoever writes tests from this record alone, on scripted regions:
     hand-overs, answers, lost and replaced links, for three regions and four players.
 21. The end-to-end tests of hand-over, blocks, takeover, chaos and moves, with regions
     that presume and with regions that ask.
+
+**Found while building E2.** The three statements are checked at the end of a turn that
+changed a subscription or who sees what: in the edge's own tests every such turn, in
+other builds with debug assertions ten times a second at most. Checked after every
+message, an edge with four viewers at a view distance of 8 did nothing else: going
+through every subscription takes longer than it has between two messages, a resume
+alone being hundreds of answers, and its players were disconnected for the wait. The
+subscription messages of a turn are gathered by region and kind where no chunk is
+named twice for a region, so that a view that moves is three messages and not one for
+every chunk; where one is named twice, they go in the order they were made.
 
 ## Consequences
 

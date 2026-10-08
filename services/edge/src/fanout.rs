@@ -137,6 +137,10 @@ struct ReplicaChunk {
     /// The chunk's packet. It is encoded when first needed and discarded when the chunk
     /// changes, so that many players can be sent the same bytes.
     packet: Option<Bytes>,
+    /// The region whose snapshot the replica has. It stays when that region's link
+    /// ends, and goes when the edge has no subscription there any more or the region
+    /// says that it does not hold the chunk.
+    served_by: Option<RegionId>,
 }
 
 impl ReplicaChunk {
@@ -245,7 +249,88 @@ struct RegionPort {
     /// region resumes only if it is the one it has; see
     /// `docs/adr/0012-the-tick-on-chunks.md`, section 5.3.
     since: u64,
+    /// The edge's subscriptions at the region, by chunk.
+    subscriptions: BTreeMap<ChunkPos, Subscription>,
 }
+
+/// What a region takes a subscription of this edge for; see
+/// `docs/adr/0013-the-edge-without-a-layout.md`, section 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A viewer whose player is the region's sees the chunk: the region takes the chunk
+    /// if nobody holds it, and keeps it.
+    Viewer,
+    /// Only viewers of other regions' players see it: the region serves the chunk if it
+    /// holds it.
+    Guest,
+}
+
+/// How the region has answered a subscription on the current link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Condition {
+    /// Not yet.
+    Waiting,
+    /// With a snapshot: every later event of the chunk comes from this region.
+    Served,
+    /// The region named holds the chunk.
+    Elsewhere(RegionId),
+}
+
+/// The edge's subscription to a chunk at a region.
+#[derive(Debug, Clone)]
+struct Subscription {
+    kind: Kind,
+    /// The number of the edge's last message on the current link that named the chunk;
+    /// 0 for one the hello named, and while the region has no link.
+    ask: u64,
+    /// The number of the message that made the subscription on the current link, or
+    /// asked the region again; 0 for one the hello named. A snapshot numbered from here
+    /// on is this subscription's, whatever message has changed its kind since.
+    begun: u64,
+    condition: Condition,
+    /// How many viewers whose player the edge believes to be this region's see the
+    /// chunk. The subscription is a viewer's exactly while this is above 0.
+    viewers: u32,
+    /// When the region was last asked again after a guest's region said it does not
+    /// hold the chunk, and whether another asking is due.
+    asked_again: Option<Instant>,
+    again_due: bool,
+}
+
+impl Subscription {
+    fn new(kind: Kind, viewers: u32) -> Self {
+        Self {
+            kind,
+            ask: 0,
+            begun: 0,
+            condition: Condition::Waiting,
+            viewers,
+            asked_again: None,
+            again_due: false,
+        }
+    }
+
+    /// As it is on a link that has just begun: named by the hello, with no answer.
+    fn begin_anew(&mut self) {
+        self.ask = 0;
+        self.begun = 0;
+        self.condition = Condition::Waiting;
+        self.again_due = false;
+    }
+}
+
+/// A subscription message that is still to be sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Asking {
+    Unsubscribe,
+    AsGuest,
+    Subscribe,
+}
+
+/// How long the edge waits before it asks a region again for a chunk that the region
+/// named as its holder says it does not hold: two regions that each name the other
+/// must not keep the edge busy.
+const ASK_AGAIN_EVERY: Duration = Duration::from_secs(1);
 
 /// What reaches the fan-out task from a link to a region: a message, or `None` when the
 /// link has ended.
@@ -268,6 +353,18 @@ pub(crate) struct Fanout {
     lost: mpsc::UnboundedSender<(RegionId, u64)>,
     /// The number the next link gets.
     next_link: u64,
+    /// Subscription messages that the turn under way has made and not sent yet, in the
+    /// order they were made: the region, what to say, the chunk, and whether it makes
+    /// the subscription or asks again. See [`Fanout::flush_asking`].
+    asking: Vec<(RegionId, Asking, ChunkPos, bool)>,
+    /// Whether a subscription, or who sees what, has changed since the statements about
+    /// subscriptions were last checked, and when that was. They are checked at the end
+    /// of a turn that changed something: in the edge's own tests every time, and in
+    /// other builds with debug assertions ten times a second at most, as going through
+    /// every subscription takes longer than an edge with many viewers has between two
+    /// messages. A resume alone is hundreds of answers.
+    changed: bool,
+    checked: Instant,
     /// Where the links' messages are put for this task; see [`Fanout::run`].
     queue: mpsc::Sender<FromLink>,
     /// Taken by [`Fanout::run`].
@@ -322,6 +419,9 @@ impl Fanout {
             relinks: routing.relinks,
             lost: routing.lost,
             next_link: 0,
+            asking: Vec::new(),
+            changed: false,
+            checked: Instant::now(),
             queue,
             messages: Some(messages),
             readers: JoinSet::new(),
@@ -371,25 +471,89 @@ impl Fanout {
                 },
                 // Whoever gives the edge links may go away; the links it has stay.
                 Some(link) = self.relinks.recv() => self.take_link(link).await,
-                _ = patience.tick() => self.drop_the_overdue().await,
+                _ = patience.tick() => {
+                    self.drop_the_overdue().await;
+                    self.ask_again_where_due().await;
+                }
+            }
+            let due = cfg!(test) || self.checked.elapsed() >= Duration::from_millis(100);
+            if self.changed && due && cfg!(debug_assertions) {
+                self.changed = false;
+                self.checked = Instant::now();
+                self.check_subscriptions();
             }
         }
+    }
+
+    /// Holds the subscriptions to the three statements of
+    /// `docs/adr/0013-the-edge-without-a-layout.md`, section 1, which are to hold at
+    /// the end of every turn. Only in builds with debug assertions, which every test
+    /// run is.
+    fn check_subscriptions(&self) {
+        assert!(self.asking.is_empty(), "a turn ended with messages unsent");
+        // V: a subscription's viewers are the players of its region that see the chunk,
+        // and it is a viewer's exactly while there are any.
+        let mut seen: BTreeMap<(RegionId, ChunkPos), u32> = BTreeMap::new();
+        for view in self.players.values() {
+            for chunk in &view.wanted {
+                *seen.entry((view.region, *chunk)).or_default() += 1;
+            }
+        }
+        for (region, port) in &self.regions {
+            for (chunk, subscription) in &port.subscriptions {
+                let viewers = seen.remove(&(*region, *chunk)).unwrap_or(0);
+                assert_eq!(subscription.viewers, viewers, "{region} {chunk:?}");
+                assert_eq!(
+                    subscription.kind == Kind::Viewer,
+                    viewers > 0,
+                    "{region} {chunk:?} {subscription:?}"
+                );
+                // G: a guest's subscription only for a chunk that someone sees.
+                let watched = self
+                    .replica
+                    .get(chunk)
+                    .is_some_and(|entry| entry.viewers > 0);
+                assert!(
+                    subscription.kind == Kind::Viewer || watched,
+                    "a guest's subscription nobody sees: {region} {chunk:?}"
+                );
+                // E: who was told that another region holds the chunk is subscribed
+                // there, unless it is about to ask again.
+                if let Condition::Elsewhere(holder) = subscription.condition {
+                    let there = self.regions.get(&holder);
+                    assert!(
+                        subscription.again_due
+                            || there.is_some_and(|port| port.subscriptions.contains_key(chunk)),
+                        "{region} was told that {holder} holds {chunk:?}, where nothing is asked"
+                    );
+                }
+            }
+        }
+        assert!(seen.is_empty(), "viewers without a subscription: {seen:?}");
     }
 
     /// Notes that the link to `region` has ended. Its players stay, and what they do is
     /// kept, until there is a link to the region again.
     fn lose_link(&mut self, region: RegionId) {
-        if let Some(link) = self.regions.entry(region).or_default().link.take() {
+        self.changed = true;
+        let port = self.regions.entry(region).or_default();
+        if let Some(link) = port.link.take() {
             warn!(%region, epoch = link.epoch, "the link to a region ended; keeping its players");
             // Nobody may be listening, which is fine.
             let _ = self.lost.send((region, link.epoch));
         }
+        // Whatever the region had answered, the next link begins with nothing: its
+        // hello names every subscription, and the answers come under the number 0.
+        port.subscriptions
+            .values_mut()
+            .for_each(Subscription::begin_anew);
     }
 
     /// Makes `link` the edge's link to its region and begins to resume with the region:
     /// says who this edge is and what it knows of the region. What was kept for the
     /// region is sent once the region has answered; see [`Fanout::welcomed`].
     async fn take_link(&mut self, link: RegionLink) {
+        self.changed = true;
         let RegionLink { region, epoch, end } = link;
         let port = self.regions.entry(region).or_default();
         if port
@@ -414,19 +578,26 @@ impl Fanout {
         });
 
         // Everyone the edge believes to be in the region, also those still entering
-        // the world there, and every chunk of it the edge shows or has asked for.
+        // the world there, and every subscription it has there, by its kind: those the
+        // region said another region holds as well, as it may have been restored since
+        // and asks the store again. A link that is replaced while it still stands
+        // begins with nothing like one that ended.
         let players = self
             .players
             .iter()
             .filter(|(_, view)| view.region == region)
             .map(|(player, _)| *player)
             .collect();
-        let chunks = self
-            .replica
-            .keys()
-            .filter(|position| self.layout.region_of(**position) == region)
-            .copied()
-            .collect();
+        port.subscriptions
+            .values_mut()
+            .for_each(Subscription::begin_anew);
+        let of_kind = |kind| {
+            let named = port.subscriptions.iter();
+            let named = named.filter(move |(_, subscription)| subscription.kind == kind);
+            named.map(|(chunk, _)| *chunk).collect::<Vec<_>>()
+        };
+        let chunks = of_kind(Kind::Viewer);
+        let guests = of_kind(Kind::Guest);
         let hello = EdgeToWorker::Hello {
             edge: self.identity.edge,
             start: self.identity.start,
@@ -434,9 +605,7 @@ impl Fanout {
             seen: port.seen,
             players,
             chunks,
-            // This edge asks for a chunk only at the region its layout names, and so
-            // never as a guest.
-            guests: Vec::new(),
+            guests,
         };
         info!(%region, epoch, kept = port.kept.len(), "linked to a region");
         // A link that is gone already is noticed by its reader.
@@ -693,10 +862,10 @@ impl Fanout {
     /// has to stop, if it has to.
     async fn handle_region(&mut self, from: RegionId, message: WorkerToEdge) -> Option<Stopped> {
         match message {
-            // Of regions that hold chunks (ADR-0010), which no region does yet.
-            message @ (WorkerToEdge::Elsewhere { .. } | WorkerToEdge::NotMine { .. }) => {
-                error!(%from, ?message, "a region said what this edge does not act on yet");
+            WorkerToEdge::Elsewhere { chunk, ask, region } => {
+                self.elsewhere(from, chunk, ask, region).await;
             }
+            WorkerToEdge::NotMine { chunk, ask } => self.not_mine(from, chunk, ask).await,
             WorkerToEdge::Welcome(welcome) => return self.welcomed(from, welcome).await,
             WorkerToEdge::ToPlayer {
                 player,
@@ -723,10 +892,15 @@ impl Fanout {
             WorkerToEdge::Progress { applied, inputs } => self.progress(from, applied, &inputs),
             WorkerToEdge::ChunkSnapshot {
                 position,
+                ask,
                 chunk,
                 entities,
                 ..
-            } => self.take_snapshot(from, position, chunk, entities).await,
+            } => {
+                if self.served(from, position, ask) {
+                    self.take_snapshot(from, position, chunk, entities).await;
+                }
+            }
             WorkerToEdge::TickDelta { events, .. } => {
                 for event in events {
                     self.handle_event(from, event).await;
@@ -994,6 +1168,12 @@ impl Fanout {
             self.send_to_region(to, discard).await;
             return;
         };
+        if view.region != from {
+            // About an earlier stay of the player in that region: they have been passed
+            // on from there since.
+            error!(name = %view.name, %from, now = %view.region, "a region let go of a player who is not its own");
+            return;
+        }
         if to == from {
             // The region named itself as the one the player walked into, which none
             // does. Sending the player back would have them bounce there forever.
@@ -1021,6 +1201,18 @@ impl Fanout {
             .map(|(number, _, input)| (*number, input.clone()))
             .collect();
         debug!(name = %view.name, %from, %to, inputs = again.len(), "handing a player over");
+
+        // What the player sees is asked of their region from now on. On the link to
+        // `to` this is before the arrival, so that one claim of that region covers the
+        // chunk the player arrives in and their view.
+        let seen: Vec<ChunkPos> = view.wanted.iter().copied().collect();
+        for chunk in &seen {
+            self.unwant(from, *chunk);
+        }
+        for chunk in &seen {
+            self.want(to, *chunk);
+        }
+        self.flush_asking().await;
 
         self.send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
             .await;
@@ -1238,8 +1430,10 @@ impl Fanout {
             chunk_z: center.z,
         })];
 
-        let mut unsubscribe = Vec::new();
+        let region = view.region;
+        let mut left = Vec::new();
         for position in view.wanted.difference(&wanted) {
+            left.push(*position);
             view.pending.remove(position);
             if view.sent.remove(position) {
                 packets.push(encoded(&UnloadChunk {
@@ -1254,19 +1448,20 @@ impl Fanout {
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
                 self.replica.remove(position);
-                unsubscribe.push(*position);
             }
         }
-        let mut subscribe = Vec::new();
+        let mut entered = Vec::new();
         for position in wanted.difference(&view.wanted) {
-            let chunk = self.replica.entry(*position).or_insert_with(|| {
-                subscribe.push(*position);
-                ReplicaChunk {
+            entered.push(*position);
+            let chunk = self
+                .replica
+                .entry(*position)
+                .or_insert_with(|| ReplicaChunk {
                     viewers: 0,
                     chunk: None,
                     packet: None,
-                }
-            });
+                    served_by: None,
+                });
             chunk.viewers += 1;
             if chunk.chunk.is_some() {
                 view.pending.insert(*position);
@@ -1282,8 +1477,13 @@ impl Fanout {
         self.entities
             .retain(|_, shown| replica.contains_key(&shown.state.chunk()));
 
-        self.subscribe(subscribe).await;
-        self.unsubscribe(unsubscribe).await;
+        for chunk in left {
+            self.unwant(region, chunk);
+        }
+        for chunk in entered {
+            self.want(region, chunk);
+        }
+        self.flush_asking().await;
         if self.send_to_player(player, packets).await {
             self.send_chunks(player).await;
         }
@@ -1445,24 +1645,252 @@ impl Fanout {
         true
     }
 
-    /// Asks the regions the chunks belong to for them and for what happens in them. A
-    /// region without a link is asked when there is one again: the hello names every
-    /// chunk of the region that the edge shows or wants.
-    async fn subscribe(&mut self, chunks: Vec<ChunkPos>) {
-        for (region, chunks) in self.by_region(chunks) {
-            let ask = self.next_ask(region);
-            self.send_to_region(region, EdgeToWorker::Subscribe { ask, chunks })
-                .await;
+    /// A viewer whose player is `region`'s has `chunk` in view from now on. The first
+    /// such viewer makes the edge's subscription there a viewer's: a new one, or a
+    /// guest's that changes its kind and keeps what the region has answered.
+    fn want(&mut self, region: RegionId, chunk: ChunkPos) {
+        self.changed = true;
+        let port = self.regions.entry(region).or_default();
+        match port.subscriptions.get_mut(&chunk) {
+            None => {
+                let subscription = Subscription::new(Kind::Viewer, 1);
+                port.subscriptions.insert(chunk, subscription);
+                self.asking.push((region, Asking::Subscribe, chunk, true));
+            }
+            Some(subscription) => {
+                subscription.viewers += 1;
+                if subscription.viewers == 1 {
+                    subscription.kind = Kind::Viewer;
+                    self.asking.push((region, Asking::Subscribe, chunk, false));
+                }
+            }
         }
     }
 
-    /// Tells the regions the chunks belong to that they are no longer needed here.
-    async fn unsubscribe(&mut self, chunks: Vec<ChunkPos>) {
-        for (region, chunks) in self.by_region(chunks) {
-            let ask = self.next_ask(region);
-            self.send_to_region(region, EdgeToWorker::Unsubscribe { ask, chunks })
-                .await;
+    /// A viewer whose player is `region`'s no longer has `chunk` in view, or the player
+    /// is no longer that region's. The replica has counted the viewer out already if
+    /// they no longer see the chunk at all.
+    ///
+    /// When it was the last such viewer and someone still sees the chunk, the
+    /// subscription becomes a guest's, **whatever the region has answered so far**:
+    /// one that serves the chunk goes on serving it, and one that waits is answered.
+    /// Ending it would leave a viewer of another region, whom that region told that
+    /// this one holds the chunk, looking at a chunk nobody serves. Only a subscription
+    /// that was told the chunk is held elsewhere is ended: it carried nothing. When
+    /// nobody sees the chunk any more, every subscription to it is ended, at every
+    /// region.
+    fn unwant(&mut self, region: RegionId, chunk: ChunkPos) {
+        self.changed = true;
+        let watched = self
+            .replica
+            .get(&chunk)
+            .is_some_and(|entry| entry.viewers > 0);
+        let port = self.regions.entry(region).or_default();
+        let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
+            error!(%region, ?chunk, "a viewer saw a chunk that nothing was asked for");
+            return;
+        };
+        subscription.viewers = subscription.viewers.saturating_sub(1);
+        if subscription.viewers == 0 {
+            if watched && !matches!(subscription.condition, Condition::Elsewhere(_)) {
+                subscription.kind = Kind::Guest;
+                self.asking.push((region, Asking::AsGuest, chunk, false));
+            } else {
+                self.end(region, chunk);
+            }
         }
+        if !watched {
+            let everywhere: Vec<_> = self
+                .regions
+                .iter()
+                .filter(|(_, port)| port.subscriptions.contains_key(&chunk))
+                .map(|(region, _)| *region)
+                .collect();
+            for region in everywhere {
+                self.end(region, chunk);
+            }
+        }
+    }
+
+    /// Ends the edge's subscription to `chunk` at `region`.
+    fn end(&mut self, region: RegionId, chunk: ChunkPos) {
+        let port = self.regions.entry(region).or_default();
+        if port.subscriptions.remove(&chunk).is_some() {
+            self.asking
+                .push((region, Asking::Unsubscribe, chunk, false));
+        }
+        if let Some(entry) = self.replica.get_mut(&chunk)
+            && entry.served_by == Some(region)
+        {
+            entry.served_by = None;
+        }
+    }
+
+    /// Sends the subscription messages the turn has made, each with the next number of
+    /// its link, and notes that number with the subscriptions it names.
+    ///
+    /// They go in the order they were made, each run of chunks for one region and of
+    /// one kind as one message. Where no chunk is named twice for a region, which is
+    /// nearly always, the messages for a region are gathered by kind instead, so that a
+    /// view that moves is a few messages and not one for every chunk; what is said
+    /// twice of one subscription within a turn has to keep its order.
+    async fn flush_asking(&mut self) {
+        let mut asking = std::mem::take(&mut self.asking);
+        let mut named = BTreeSet::new();
+        if asking
+            .iter()
+            .all(|(region, _, chunk, _)| named.insert((*region, *chunk)))
+        {
+            // Stable: within a region and a kind the order of the chunks stays.
+            asking.sort_by_key(|(region, what, ..)| (*region, *what));
+        }
+        let mut rest = asking.as_slice();
+        while let Some((region, what, ..)) = rest.first().copied() {
+            let length = rest
+                .iter()
+                .take_while(|(of, kind, ..)| (*of, *kind) == (region, what))
+                .count();
+            let (run, behind) = rest.split_at(length);
+            rest = behind;
+            let ask = self.next_ask(region);
+            let port = self.regions.entry(region).or_default();
+            for (_, _, chunk, begins) in run {
+                // One that was ended later in this turn is not there any more.
+                if what != Asking::Unsubscribe
+                    && let Some(subscription) = port.subscriptions.get_mut(chunk)
+                {
+                    subscription.ask = ask;
+                    if *begins {
+                        subscription.begun = ask;
+                    }
+                }
+            }
+            let chunks = run.iter().map(|(_, _, chunk, _)| *chunk).collect();
+            let body = match what {
+                Asking::Subscribe => EdgeToWorker::Subscribe { ask, chunks },
+                Asking::AsGuest => EdgeToWorker::SubscribeAsGuest { ask, chunks },
+                Asking::Unsubscribe => EdgeToWorker::Unsubscribe { ask, chunks },
+            };
+            self.send_to_region(region, body).await;
+        }
+    }
+
+    /// Whether a snapshot of `chunk` from `region` numbered `ask` is one the edge takes:
+    /// it has a subscription there, and the snapshot answers that subscription, not one
+    /// that was ended before it. If so, the region serves the chunk from now on.
+    ///
+    /// The number may be below that of the edge's last message about the chunk: a
+    /// message that changes the kind of a subscription the region has made the snapshot
+    /// for already is not answered, and the snapshot in flight carries the number from
+    /// before.
+    fn served(&mut self, region: RegionId, chunk: ChunkPos, ask: u64) -> bool {
+        let port = self.regions.entry(region).or_default();
+        let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
+            return false;
+        };
+        if ask < subscription.begun {
+            return false;
+        }
+        subscription.condition = Condition::Served;
+        subscription.again_due = false;
+        if let Some(entry) = self.replica.get_mut(&chunk) {
+            entry.served_by = Some(region);
+        }
+        true
+    }
+
+    /// The region `from` says that `holder` holds `chunk`, in answer to a viewer's
+    /// subscription: the edge asks there as a guest, unless it is subscribed there
+    /// already. The viewer's subscription stays, as it is why `from` goes on knowing
+    /// who holds the chunk.
+    async fn elsewhere(&mut self, from: RegionId, chunk: ChunkPos, ask: u64, holder: RegionId) {
+        self.changed = true;
+        let port = self.regions.entry(from).or_default();
+        let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
+            return;
+        };
+        // About the subscription as it was before the edge's last message, or about a
+        // guest's, which is not answered so.
+        if subscription.kind != Kind::Viewer || ask != subscription.ask {
+            return;
+        }
+        if holder == from {
+            error!(%from, ?chunk, "a region said that it holds a chunk elsewhere: itself");
+            return;
+        }
+        subscription.condition = Condition::Elsewhere(holder);
+        subscription.again_due = false;
+        if let Some(entry) = self.replica.get_mut(&chunk)
+            && entry.served_by == Some(from)
+        {
+            entry.served_by = None;
+        }
+        let there = self.regions.entry(holder).or_default();
+        if let std::collections::btree_map::Entry::Vacant(free) = there.subscriptions.entry(chunk) {
+            free.insert(Subscription::new(Kind::Guest, 0));
+            self.asking.push((holder, Asking::AsGuest, chunk, true));
+        }
+        self.flush_asking().await;
+    }
+
+    /// The region `from` says that it does not hold `chunk`, in answer to a guest's
+    /// subscription, which is over with that. Whoever was told that `from` holds the
+    /// chunk is asked again.
+    async fn not_mine(&mut self, from: RegionId, chunk: ChunkPos, ask: u64) {
+        self.changed = true;
+        let port = self.regions.entry(from).or_default();
+        let current = port.subscriptions.get(&chunk).is_some_and(|subscription| {
+            subscription.kind == Kind::Guest && ask == subscription.ask
+        });
+        if !current {
+            return;
+        }
+        port.subscriptions.remove(&chunk);
+        if let Some(entry) = self.replica.get_mut(&chunk)
+            && entry.served_by == Some(from)
+        {
+            entry.served_by = None;
+        }
+        let now = Instant::now();
+        for (region, port) in &mut self.regions {
+            let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
+                continue;
+            };
+            if subscription.kind != Kind::Viewer
+                || subscription.condition != Condition::Elsewhere(from)
+            {
+                continue;
+            }
+            let lately = subscription
+                .asked_again
+                .is_some_and(|asked| now.duration_since(asked) < ASK_AGAIN_EVERY);
+            if lately {
+                // The check that the task makes every second asks then.
+                subscription.again_due = true;
+            } else {
+                subscription.condition = Condition::Waiting;
+                subscription.asked_again = Some(now);
+                self.asking.push((*region, Asking::Subscribe, chunk, true));
+            }
+        }
+        self.flush_asking().await;
+    }
+
+    /// Asks again where a region was asked again less than a second before the last
+    /// answer that called for it.
+    async fn ask_again_where_due(&mut self) {
+        let now = Instant::now();
+        for (region, port) in &mut self.regions {
+            for (chunk, subscription) in &mut port.subscriptions {
+                if subscription.again_due {
+                    subscription.again_due = false;
+                    subscription.condition = Condition::Waiting;
+                    subscription.asked_again = Some(now);
+                    self.asking.push((*region, Asking::Subscribe, *chunk, true));
+                }
+            }
+        }
+        self.flush_asking().await;
     }
 
     /// The number of the next subscription message to `region`: they are counted per
@@ -1474,18 +1902,6 @@ impl Fanout {
             link.asked += 1;
             link.asked
         })
-    }
-
-    /// Sorts chunks by the region they belong to.
-    fn by_region(&self, chunks: Vec<ChunkPos>) -> BTreeMap<RegionId, Vec<ChunkPos>> {
-        let mut sorted: BTreeMap<_, Vec<_>> = BTreeMap::new();
-        for chunk in chunks {
-            sorted
-                .entry(self.layout.region_of(chunk))
-                .or_default()
-                .push(chunk);
-        }
-        sorted
     }
 
     /// Forgets a player and releases what was held for them. Dropping their queue ends
@@ -1530,7 +1946,6 @@ impl Fanout {
                 let _ = other.outbound.try_send(packet);
             }
         }
-        let mut unsubscribe = Vec::new();
         for position in &view.wanted {
             let chunk = self
                 .replica
@@ -1539,13 +1954,15 @@ impl Fanout {
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
                 self.replica.remove(position);
-                unsubscribe.push(*position);
             }
         }
         let replica = &self.replica;
         self.entities
             .retain(|_, shown| replica.contains_key(&shown.state.chunk()));
-        self.unsubscribe(unsubscribe).await;
+        for position in &view.wanted {
+            self.unwant(view.region, *position);
+        }
+        self.flush_asking().await;
         // If that region has just let the player go, it ignores this, and the message
         // saying so, which is on its way, makes `hand_over` clean up.
         self.send_to_region(view.region, EdgeToWorker::PlayerLeave { player })
@@ -2061,14 +2478,19 @@ mod tests {
     }
 
     /// A region takes the subscription messages of a link only in ascending order of
-    /// their numbers, which the edge counts per link, from 1.
+    /// their numbers, which the edge counts per link, from 1. Everything a player sees
+    /// is asked of the player's region; another region is asked as a guest when the
+    /// player's region names it.
     #[tokio::test]
     async fn subscription_messages_are_numbered_from_one_on_each_link() {
         /// What the edge says next to `region` about its subscriptions.
         async fn next_asked(edge: &mut Harness, region: RegionId) -> EdgeToWorker {
             loop {
                 let body = edge.next(region).await.body;
-                if let EdgeToWorker::Subscribe { .. } | EdgeToWorker::Unsubscribe { .. } = body {
+                if let EdgeToWorker::Subscribe { .. }
+                | EdgeToWorker::SubscribeAsGuest { .. }
+                | EdgeToWorker::Unsubscribe { .. } = body
+                {
                     return body;
                 }
             }
@@ -2083,8 +2505,8 @@ mod tests {
             }],
         };
 
-        // Entering the world makes the edge ask for the chunks around, all of which are
-        // the western region's.
+        // Entering the world makes the edge ask the player's region for the chunks
+        // around.
         let mut edge = Harness::start().await;
         let _packets = edge.join(player(1)).await;
         // Only once the edge has taken the join can it be told where the player is.
@@ -2097,33 +2519,75 @@ mod tests {
             "{asked:?}"
         );
 
-        // A column of chunks leaves the view, and one of the eastern region comes into
-        // it.
+        // A column of chunks leaves the view and another comes into it: both are said
+        // to the player's region, whoever holds the chunks.
         edge.tell(WEST, walked(16.5));
         let asked = next_asked(&mut edge, WEST).await;
         assert!(
             matches!(asked, EdgeToWorker::Unsubscribe { ask: 2, .. }),
             "{asked:?}"
         );
+        let asked = next_asked(&mut edge, WEST).await;
+        let EdgeToWorker::Subscribe { ask: 3, chunks } = asked else {
+            panic!("{asked:?}");
+        };
+        // The region names the eastern one as the holder of one of them: the edge asks
+        // there as a guest, with that link's own count.
+        let chunk = chunks[0];
+        let elsewhere = WorkerToEdge::Elsewhere {
+            chunk,
+            ask: 3,
+            region: EAST,
+        };
+        edge.tell(WEST, elsewhere);
         let asked = next_asked(&mut edge, EAST).await;
-        assert!(
-            matches!(asked, EdgeToWorker::Subscribe { ask: 1, .. }),
-            "{asked:?}"
+        assert_eq!(
+            asked,
+            EdgeToWorker::SubscribeAsGuest {
+                ask: 1,
+                chunks: vec![chunk]
+            }
         );
 
         // On a new link the count begins anew; on the other it goes on.
         let hello = edge.relink(WEST, 2).await;
-        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        let EdgeToWorker::Hello {
+            chunks: named,
+            guests,
+            ..
+        } = hello
+        else {
+            panic!("{hello:?}");
+        };
+        // The hello names what the player sees, the chunk held elsewhere among it.
+        assert!(
+            named.contains(&chunk) && guests.is_empty(),
+            "{named:?} {guests:?}"
+        );
         edge.tell(WEST, walked(32.5));
         let asked = next_asked(&mut edge, WEST).await;
         assert!(
             matches!(asked, EdgeToWorker::Unsubscribe { ask: 1, .. }),
             "{asked:?}"
         );
+        let asked = next_asked(&mut edge, WEST).await;
+        let EdgeToWorker::Subscribe { ask: 2, chunks } = asked else {
+            panic!("{asked:?}");
+        };
+        let next = chunks[0];
+        let elsewhere = WorkerToEdge::Elsewhere {
+            chunk: next,
+            ask: 2,
+            region: EAST,
+        };
+        edge.tell(WEST, elsewhere);
         let asked = next_asked(&mut edge, EAST).await;
-        assert!(
-            matches!(asked, EdgeToWorker::Subscribe { ask: 2, .. }),
-            "{asked:?}"
+        assert_eq!(
+            asked,
+            EdgeToWorker::SubscribeAsGuest {
+                ask: 2,
+                chunks: vec![next]
+            }
         );
     }
 
@@ -2547,6 +3011,160 @@ mod tests {
         );
         edge.settle(WEST).await;
         assert!(connected(&mut packets));
+    }
+
+    /// An empty chunk, as a region sends it in answer to a subscription numbered `ask`.
+    fn snapshot(position: ChunkPos, ask: u64) -> WorkerToEdge {
+        let overworld = clustine_data::DIMENSION_TYPES
+            .iter()
+            .find(|dimension| dimension.name == OVERWORLD)
+            .expect("the overworld is a dimension");
+        WorkerToEdge::ChunkSnapshot {
+            position,
+            ask,
+            tick: 1,
+            chunk: Chunk::empty(overworld, clustine_world::Biome(0)),
+            entities: Vec::new(),
+        }
+    }
+
+    /// What the edge says next to `region` about its subscriptions.
+    async fn next_asked(edge: &mut Harness, region: RegionId) -> EdgeToWorker {
+        loop {
+            let body = edge.next(region).await.body;
+            if let EdgeToWorker::Subscribe { .. }
+            | EdgeToWorker::SubscribeAsGuest { .. }
+            | EdgeToWorker::Unsubscribe { .. } = body
+            {
+                return body;
+            }
+        }
+    }
+
+    /// A chunk that someone at the spawn point sees, and still sees from the first
+    /// chunk of the eastern region.
+    const SHARED: ChunkPos = ChunkPos::new(2, 0);
+
+    /// The number under which the edge asked the western region for the view of a
+    /// player who has just entered the world.
+    async fn first_asked(edge: &mut Harness) -> u64 {
+        let EdgeToWorker::Subscribe { ask, chunks } = next_asked(edge, WEST).await else {
+            panic!("the edge did not ask for the view");
+        };
+        assert!(chunks.contains(&SHARED), "{chunks:?}");
+        ask
+    }
+
+    /// The outbox entry with which the western region lets a player go to the eastern.
+    fn departing_to_east(player: PlayerId, entity: EntityId) -> Durable {
+        Durable::Departed {
+            player,
+            transfer: transfer(entity, 0),
+            to: EAST,
+        }
+    }
+
+    /// A snapshot answers the subscription it was made for, whatever message has changed
+    /// the subscription's kind since: a region that has made the snapshot does not
+    /// answer the change, so an edge that took only an answer with its latest number
+    /// would wait for ever. This is the edge as a guest at the east, and its player
+    /// handed there while the snapshot is in flight.
+    #[tokio::test]
+    async fn a_snapshot_in_flight_is_taken_when_the_subscriptions_kind_has_changed_since() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.join(player(1)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        let ask = first_asked(&mut edge).await;
+        let chunk = SHARED;
+
+        // The west says that the east holds the chunk; the edge asks there as a guest.
+        let elsewhere = WorkerToEdge::Elsewhere {
+            chunk,
+            ask,
+            region: EAST,
+        };
+        edge.tell(WEST, elsewhere);
+        let asked = next_asked(&mut edge, EAST).await;
+        let as_guest = EdgeToWorker::SubscribeAsGuest {
+            ask: 1,
+            chunks: vec![chunk],
+        };
+        assert_eq!(asked, as_guest);
+
+        // The player is handed to the east before the east's snapshot is read: the
+        // guest's subscription becomes a viewer's, under a later number.
+        edge.say(WEST, departing_to_east(player(1), EntityId(5)));
+        let asked = next_asked(&mut edge, EAST).await;
+        let EdgeToWorker::Subscribe { ask: later, chunks } = asked else {
+            panic!("{asked:?}");
+        };
+        assert!(later > 1 && chunks.contains(&chunk), "{later} {chunks:?}");
+
+        // The snapshot made for the guest's subscription arrives, and is shown.
+        while packets.try_recv().is_ok() {}
+        edge.tell(EAST, snapshot(chunk, 1));
+        edge.settle(EAST).await;
+        assert!(packets.try_recv().is_ok(), "the chunk was not sent on");
+    }
+
+    /// Two players of two regions see one chunk, which the first one's region serves
+    /// and the second one's region says is held there. When the first player goes, the
+    /// subscription at their region becomes a guest's instead of ending: it is what
+    /// the second player's chunk comes from.
+    #[tokio::test]
+    async fn a_chunk_another_regions_viewer_still_sees_stays_subscribed_as_a_guests() {
+        let mut edge = Harness::start().await;
+        // The first enters the world in the west and is handed to the east.
+        let _first = edge.joined(player(1), EntityId(5)).await;
+        edge.say(WEST, departing_to_east(player(1), EntityId(5)));
+        let asked = next_asked(&mut edge, EAST).await;
+        let EdgeToWorker::Subscribe { ask, chunks } = asked else {
+            panic!("{asked:?}");
+        };
+        let chunk = SHARED;
+        assert!(chunks.contains(&chunk), "{chunks:?}");
+        edge.tell(EAST, snapshot(chunk, ask));
+        edge.settle(EAST).await;
+
+        // The second enters in the west and sees the same chunk; the west names the
+        // east, where the edge is subscribed already and asks nothing more.
+        let mut second = edge.join(player(2)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        edge.tell(WEST, spawned(player(2), EntityId(6)));
+        let asked = loop {
+            // Past what the hand-over of the first left for the west to hear.
+            match next_asked(&mut edge, WEST).await {
+                EdgeToWorker::Subscribe { ask, chunks } if chunks.contains(&chunk) => break ask,
+                _ => {}
+            }
+        };
+        let elsewhere = WorkerToEdge::Elsewhere {
+            chunk,
+            ask: asked,
+            region: EAST,
+        };
+        edge.tell(WEST, elsewhere);
+        edge.settle(WEST).await;
+
+        // The first leaves. The east is not told to forget the chunk.
+        let leave = Command::Leave {
+            session: SessionId(1),
+            player: player(1),
+        };
+        edge.commands.send(leave).await.unwrap();
+        loop {
+            match next_asked(&mut edge, EAST).await {
+                EdgeToWorker::SubscribeAsGuest { chunks, .. } if chunks.contains(&chunk) => break,
+                EdgeToWorker::Unsubscribe { chunks, .. } => {
+                    assert!(!chunks.contains(&chunk), "the chunk was given up");
+                }
+                _ => {}
+            }
+        }
+        assert!(connected(&mut second));
     }
 
     /// A region the edge has no link to yet is kept for like any other: what is to go
