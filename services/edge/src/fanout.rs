@@ -44,7 +44,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::encode::chunk_packet;
 use crate::login::Profile;
-use crate::{EdgeIdentity, RegionLink, Routing, Stopped};
+use crate::{EdgeIdentity, RegionLink, Relink, Routing, Stopped};
 
 const OVERWORLD: &str = "minecraft:overworld";
 
@@ -232,6 +232,11 @@ struct Link {
     /// said that they are there. They are judged when the answers are through; see
     /// `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 2.2.
     brought: BTreeSet<PlayerId>,
+    /// The port's `owes` as it was when the hello of this link was said. Only of these
+    /// does the end of the welcome's entries say that their `Absorbed` is not coming:
+    /// a hello said before the edge knew of a merge can have been answered from
+    /// before it.
+    owed: BTreeSet<RegionId>,
     /// The number of the last subscription message sent over this link. A region takes
     /// them only in ascending order; see `docs/adr/0012-the-tick-on-chunks.md`,
     /// section 4.3.
@@ -261,6 +266,14 @@ struct RegionPort {
     since: u64,
     /// The edge's subscriptions at the region, by chunk.
     subscriptions: BTreeMap<ChunkPos, Subscription>,
+    /// The entries of this region's outbox that came to it with a merge: for each, by
+    /// its number here, the region whose entry it was and the number it had there. An
+    /// entry is taken out when it has been handled or passed over, and all of them
+    /// wherever `seen` is put back to 0.
+    came_with: BTreeMap<u64, (RegionId, u64)>,
+    /// The regions the routing table says went into this one, of which the edge still
+    /// has something and for which it has handled no `Absorbed`.
+    owes: BTreeSet<RegionId>,
 }
 
 /// What a region takes a subscription of this edge for; see
@@ -357,7 +370,7 @@ pub(crate) struct Fanout {
     /// The links to start with, until [`Fanout::run`] takes them up.
     first_links: Vec<RegionLink>,
     /// Where new links to regions arrive.
-    relinks: mpsc::Receiver<RegionLink>,
+    relinks: mpsc::Receiver<Relink>,
     /// Where it is said that a link has ended, for whoever makes the links.
     lost: mpsc::UnboundedSender<(RegionId, u64)>,
     /// The number the next link gets.
@@ -387,6 +400,11 @@ pub(crate) struct Fanout {
     replica: BTreeMap<ChunkPos, ReplicaChunk>,
     /// The entities in the chunks of the replica.
     entities: BTreeMap<EntityId, Shown>,
+    /// The regions that are no more, each with the region it went into, as far as this
+    /// edge has acted on it. Never a chain: a value is not itself a key. Written by
+    /// [`Fanout::retire`] and by nothing else; see
+    /// `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 1.
+    stands_for: BTreeMap<RegionId, RegionId>,
 }
 
 /// An entity the edge shows, and the region that last introduced it: reported it
@@ -435,6 +453,7 @@ impl Fanout {
             entity_owners: BTreeMap::new(),
             replica: BTreeMap::new(),
             entities: BTreeMap::new(),
+            stands_for: BTreeMap::new(),
         }
     }
 
@@ -475,7 +494,10 @@ impl Fanout {
                     }
                 },
                 // Whoever gives the edge links may go away; the links it has stay.
-                Some(link) = self.relinks.recv() => self.take_link(link).await,
+                Some(relink) = self.relinks.recv() => match relink {
+                    Relink::Link(link) => self.take_link(link).await,
+                    Relink::Absorbed(pairs) => self.take_pairs(pairs).await,
+                },
                 _ = patience.tick() => {
                     self.drop_the_overdue().await;
                     self.ask_again_where_due().await;
@@ -535,6 +557,22 @@ impl Fanout {
             }
         }
         assert!(seen.is_empty(), "viewers without a subscription: {seen:?}");
+        // S: nothing the edge keeps is under a region that is no more, or names one.
+        for (absorbed, into) in &self.stands_for {
+            assert!(
+                !self.stands_for.contains_key(into),
+                "{absorbed} stands for {into}, which is no more itself"
+            );
+            assert!(
+                self.has_nothing_of(*absorbed),
+                "something is left under {absorbed}, which is no more"
+            );
+            let port = self.regions.get(absorbed);
+            assert!(
+                port.is_none_or(|port| port.link.is_none()),
+                "a link to {absorbed}, which is no more"
+            );
+        }
     }
 
     /// Notes that the link to `region` has ended. Its players stay, and what they do is
@@ -560,6 +598,10 @@ impl Fanout {
     async fn take_link(&mut self, link: RegionLink) {
         self.changed = true;
         let RegionLink { region, epoch, end } = link;
+        if self.stands_for.contains_key(&region) {
+            debug!(%region, epoch, "not taking a link to a region that is no more");
+            return;
+        }
         let port = self.regions.entry(region).or_default();
         if port
             .link
@@ -623,6 +665,7 @@ impl Fanout {
             announced: None,
             presences: None,
             brought: BTreeSet::new(),
+            owed: port.owes.clone(),
             asked: 0,
         });
     }
@@ -683,6 +726,28 @@ impl Fanout {
     /// handled: what was kept for the region is sent, and if no presence answers are
     /// to come, the region has said whom it has.
     async fn entries_through(&mut self, from: RegionId) {
+        // A region the routing table says went into this one, known when this link's
+        // hello was said, whose `Absorbed` was not among the entries, here or before:
+        // it had forgotten this edge, or this region has since. Nothing kept for it
+        // means anything any more; what the edge had under it is this region's, and
+        // the players are judged by the answers that follow.
+        let port = self.regions.entry(from).or_default();
+        let not_coming: Vec<RegionId> = match &port.link {
+            Some(link) => link.owed.intersection(&port.owes).copied().collect(),
+            None => return,
+        };
+        for absorbed in not_coming {
+            warn!(%from, %absorbed, "an absorbed region had forgotten this edge");
+            self.give_up_kept(absorbed).await;
+            self.bring(absorbed, from).await;
+        }
+        // A merge the edge heard of while this welcome was on its way: only a hello
+        // said knowing of it is answered from after it for certain.
+        if !self.regions.entry(from).or_default().owes.is_empty() {
+            debug!(%from, "ending a link to say hello anew after a merge");
+            self.lose_link(from);
+            return;
+        }
         self.send_kept(from).await;
         let link = self.regions.entry(from).or_default().link.as_ref();
         if link.is_some_and(|link| link.presences == Some(0)) {
@@ -734,19 +799,7 @@ impl Fanout {
     /// region means nothing to it any more.
     async fn forget_region(&mut self, region: RegionId) {
         warn!(%region, "a region has forgotten this edge; dropping what was kept for it");
-        let port = &mut self.regions.entry(region).or_default();
-        let kept = std::mem::take(&mut port.kept);
-        port.numbered = 0;
-        port.applied = 0;
-        port.seen = 0;
-        // What players of other regions did to blocks of this one will never be
-        // answered. Their clients are told that it was handled, and see the blocks as
-        // the region has them.
-        for (_, body) in kept {
-            if let EdgeToWorker::Remote(action) = body {
-                self.arrived(action.player, action.sequence).await;
-            }
-        }
+        self.give_up_kept(region).await;
         let lost: Vec<_> = self
             .players
             .iter()
@@ -758,6 +811,27 @@ impl Fanout {
                 refuse(&view.outbound, "The server lost track of where you are.");
             }
             self.remove_player(player).await;
+        }
+    }
+
+    /// Gives up what was kept for `region` and the numbering the two shared: the region
+    /// has forgotten this edge, and numbers its entries, and expects the edge's
+    /// messages numbered, from 1 again.
+    async fn give_up_kept(&mut self, region: RegionId) {
+        let port = &mut self.regions.entry(region).or_default();
+        let kept = std::mem::take(&mut port.kept);
+        port.numbered = 0;
+        port.applied = 0;
+        port.seen = 0;
+        // They named numbers of the numbering that is over.
+        port.came_with.clear();
+        // What players of other regions did to blocks of this one will never be
+        // answered. Their clients are told that it was handled, and see the blocks as
+        // the region has them.
+        for (_, body) in kept {
+            if let EdgeToWorker::Remote(action) = body {
+                self.arrived(action.player, action.sequence).await;
+            }
         }
     }
 
@@ -911,7 +985,8 @@ impl Fanout {
     async fn handle_region(&mut self, from: RegionId, message: WorkerToEdge) -> Option<Stopped> {
         match message {
             WorkerToEdge::Elsewhere { chunk, ask, region } => {
-                self.elsewhere(from, chunk, ask, region).await;
+                let holder = self.living(region);
+                self.elsewhere(from, chunk, ask, holder).await;
             }
             WorkerToEdge::NotMine { chunk, ask } => self.not_mine(from, chunk, ask).await,
             WorkerToEdge::Welcome(welcome) => return self.welcomed(from, welcome).await,
@@ -977,13 +1052,34 @@ impl Fanout {
             return;
         }
         port.seen = number;
+        // An entry that came to this region with a merge was another region's. If the
+        // edge handled it as that region's, it is passed over here. If not, it is this
+        // region's to say now, and can send a thing to the region it now comes from:
+        // the absorbed region had let a player go to the survivor.
+        let own = match port.came_with.remove(&number) {
+            Some((origin, there)) => {
+                let handled = self
+                    .regions
+                    .get(&origin)
+                    .is_some_and(|port| there <= port.seen);
+                if handled {
+                    self.send_to_region(from, EdgeToWorker::Confirm { number })
+                        .await;
+                    return;
+                }
+                false
+            }
+            None => true,
+        };
         match entry {
             Durable::Departed {
                 player,
                 transfer,
                 to,
             } => {
-                self.hand_over(player, from, to, transfer).await;
+                let back = !own || to != from;
+                let to = self.living(to);
+                self.hand_over(player, from, to, transfer, back).await;
             }
             Durable::Refused { player } => {
                 // A player who has an entity is in the world through another way than
@@ -1004,20 +1100,28 @@ impl Fanout {
                 // of a chunk some region sent it.
                 let chunk = action.step.concerns().chunk();
                 let serves = self.replica.get(&chunk).and_then(|entry| entry.served_by);
-                self.pass_on(from, to.or(serves), action).await;
+                let back = !own || to.is_some_and(|to| to != from);
+                let to = to.map(|to| self.living(to)).or(serves);
+                self.pass_on(from, to, action, back).await;
             }
             // A remote action reached a region that does not hold the chunk and
             // believes another to.
             Durable::NotMine {
                 what: Misdirected::Remote(action),
                 holder,
-            } => self.pass_on(from, Some(holder), action).await,
+            } => {
+                let back = !own || holder != from;
+                let holder = self.living(holder);
+                self.pass_on(from, Some(holder), action, back).await;
+            }
             // A player was let go to a region that believes another to hold the chunk
             // they stand in: they go on to that one, as if this region had let them go.
             Durable::NotMine {
                 what: Misdirected::Arrival { player, transfer },
                 holder,
             } => {
+                let back = !own || holder != from;
+                let holder = self.living(holder);
                 let passed = self.players.get_mut(&player).map(|view| {
                     view.passed_on += 1;
                     view.passed_on
@@ -1035,14 +1139,22 @@ impl Fanout {
                     self.discard(holder, transfer.entity_id, chunk).await;
                     self.remove_player(player).await;
                 } else {
-                    self.hand_over(player, from, holder, transfer).await;
+                    self.hand_over(player, from, holder, transfer, back).await;
                 }
             }
             Durable::RemoteDone { player, sequence } => self.arrived(player, sequence).await,
-            // Of regions that merge and split, which no region does yet (ADR-0010). It
-            // is confirmed like any other, so that it does not come back.
-            entry @ (Durable::Absorbed { .. } | Durable::SplitOff { .. }) => {
-                error!(%from, ?entry, "a region said what this edge does not act on yet");
+            Durable::Absorbed {
+                region,
+                since,
+                applied,
+                numbers,
+            } => {
+                self.absorbed(from, number, region, since, applied, numbers)
+                    .await;
+            }
+            Durable::SplitOff { region, players } => {
+                let part = self.living(region);
+                self.split_off(from, part, players).await;
             }
         }
         // Only now: what the entry led to is kept for the regions it concerns, so the
@@ -1054,21 +1166,46 @@ impl Fanout {
     /// Passes what is left of a player's action on blocks on to the region `to`, which
     /// the region `from` named or which serves this edge the chunk. With nowhere to
     /// send it, or only back where it came from, the action ends here: its player is
-    /// told that it was handled, and sees the block as it is.
-    async fn pass_on(&mut self, from: RegionId, to: Option<RegionId>, action: RemoteAction) {
+    /// told that it was handled, and sees the block as it is. It may go `back` where
+    /// it came from if that is another region's word, which came to `from` with a
+    /// merge, or if `from` named a region that has gone into it since.
+    ///
+    /// The region it goes to is asked for the chunk first, as a guest, if the edge is
+    /// not asking it already: a region that holds the chunk and has yet to load it
+    /// then judges the action only when it has (ADR-0014, rule 34), and one that does
+    /// not hold it says so and passes the action on as ever.
+    async fn pass_on(
+        &mut self,
+        from: RegionId,
+        to: Option<RegionId>,
+        action: RemoteAction,
+        back: bool,
+    ) {
         let (player, sequence) = (action.player, action.sequence);
         let Some(view) = self.players.get_mut(&player) else {
             // Nobody is left to be told how it ended.
             return;
         };
         view.under_way.insert(sequence);
-        match to.filter(|to| *to != from) {
-            Some(to) => self.send_to_region(to, EdgeToWorker::Remote(action)).await,
-            None => {
-                debug!(%from, ?to, "an action on blocks has nowhere to go and ends here");
-                self.arrived(player, sequence).await;
-            }
+        let Some(to) = to.filter(|to| *to != from || back) else {
+            debug!(%from, ?to, "an action on blocks has nowhere to go and ends here");
+            self.arrived(player, sequence).await;
+            return;
+        };
+        let chunk = action.step.concerns().chunk();
+        let watched = self
+            .replica
+            .get(&chunk)
+            .is_some_and(|entry| entry.viewers > 0);
+        let port = self.regions.entry(to).or_default();
+        if watched && !port.subscriptions.contains_key(&chunk) {
+            self.changed = true;
+            port.subscriptions
+                .insert(chunk, Subscription::new(Kind::Guest, 0));
+            self.asking.push((to, Asking::AsGuest, chunk, true));
+            self.flush_asking().await;
         }
+        self.send_to_region(to, EdgeToWorker::Remote(action)).await;
     }
 
     /// Takes a presence answer of the region `from`, and counts it against what the
@@ -1188,6 +1325,279 @@ impl Fanout {
         // under way elsewhere holds back later ones.
         if let Some(sequence) = handled {
             self.handled(player, sequence).await;
+        }
+    }
+
+    /// The region that `region` means: itself, or the one it went into if it is no
+    /// more and the edge has acted on that. Every region a region names is read through
+    /// this.
+    fn living(&self, region: RegionId) -> RegionId {
+        self.stands_for.get(&region).copied().unwrap_or(region)
+    }
+
+    /// Makes `absorbed` stand for `into` from now on. Its link, if the port still has
+    /// one, is taken: the end of a link is read from the same queue as everything
+    /// else, in no order with what another region says, so the edge can hear of a
+    /// merge while the absorbed region's link still stands with messages unread. What
+    /// was unread on it and matters comes again behind the survivor's `Absorbed`.
+    fn retire(&mut self, absorbed: RegionId, into: RegionId) {
+        self.changed = true;
+        for region in self.stands_for.values_mut() {
+            if *region == absorbed {
+                *region = into;
+            }
+        }
+        self.stands_for.insert(absorbed, into);
+        let port = self.regions.entry(absorbed).or_default();
+        if let Some(link) = port.link.take() {
+            debug!(region = %absorbed, "dropping the link to a region that is no more");
+            let _ = self.lost.send((absorbed, link.epoch));
+        }
+        // What was owed for it is the survivor's to say now, among the entries that
+        // came with the merge.
+        let owed = std::mem::take(&mut port.owes);
+        let survivor = self.regions.entry(into).or_default();
+        survivor.owes.remove(&absorbed);
+        survivor.owes.extend(owed);
+    }
+
+    /// Whether the edge has nothing an `Absorbed` for `region` could move.
+    fn has_nothing_of(&self, region: RegionId) -> bool {
+        let port_empty = self
+            .regions
+            .get(&region)
+            .is_none_or(|port| port.subscriptions.is_empty() && port.kept.is_empty());
+        let named = self.regions.values().any(|port| {
+            let mut conditions = port.subscriptions.values().map(|held| held.condition);
+            conditions.any(|condition| condition == Condition::Elsewhere(region))
+        });
+        port_empty
+            && !named
+            && self.players.values().all(|view| view.region != region)
+            && self.entities.values().all(|shown| shown.from != region)
+            && (self.replica.values()).all(|entry| entry.served_by != Some(region))
+    }
+
+    /// Takes what the routing table says of the regions that were absorbed, each with
+    /// the region it went into. The edge acts on a merge when the survivor tells it,
+    /// with an `Absorbed` among a welcome's entries; the table only says that such a
+    /// word is owed, or, of a region the edge has nothing of, that there is nothing to
+    /// be told. See `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 5.
+    async fn take_pairs(&mut self, pairs: Vec<(RegionId, RegionId)>) {
+        let pairs: BTreeMap<RegionId, RegionId> = pairs.into_iter().collect();
+        for (&absorbed, &first) in &pairs {
+            if self.stands_for.contains_key(&absorbed) {
+                continue;
+            }
+            // Through merges in a row, to the region that lives; the table can be
+            // behind what the edge has been told since.
+            let mut into = first;
+            for _ in 0..pairs.len() {
+                match pairs.get(&into) {
+                    Some(next) => into = *next,
+                    None => break,
+                }
+            }
+            let into = self.living(into);
+            if into == absorbed || pairs.contains_key(&into) {
+                error!(%absorbed, %into, "the routing table has regions that went into each other");
+                continue;
+            }
+            if self.has_nothing_of(absorbed) {
+                self.retire(absorbed, into);
+                continue;
+            }
+            let port = self.regions.entry(into).or_default();
+            port.owes.insert(absorbed);
+            // A link that is through its welcome's entries was answered without the
+            // word; whether before the merge or after it, only a new hello tells.
+            let settled = port
+                .link
+                .as_ref()
+                .is_some_and(|link| link.welcomed && !link.owed.contains(&absorbed));
+            if settled {
+                debug!(region = %into, %absorbed, "ending a link to say hello anew after a merge");
+                self.lose_link(into);
+            }
+        }
+    }
+
+    /// The region `into` says that it has absorbed `region`, in the entry numbered
+    /// `number` of its outbox: `since` is what the absorbed region knew this edge
+    /// since, `applied` how far it had applied the edge's messages, and `numbers` the
+    /// numbers its own entries for the edge had, which follow this one under the next
+    /// numbers. See `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 3.
+    async fn absorbed(
+        &mut self,
+        into: RegionId,
+        number: u64,
+        region: RegionId,
+        since: u64,
+        applied: u64,
+        numbers: Vec<u64>,
+    ) {
+        if region == into {
+            error!(%into, "a region said that it has absorbed itself");
+            return;
+        }
+        info!(%region, %into, "a region has been absorbed");
+        // Whether the two shared a numbering: the edge and the region then mean the
+        // same by `applied` and by the numbers of the entries.
+        let port = self.regions.entry(region).or_default();
+        let shared = since != 0 && since == port.since;
+        let forgotten = !shared && (port.seen != 0 || port.applied != 0);
+        if forgotten {
+            // It had forgotten this edge, and removed its players of it: they are
+            // judged by the answers behind these entries.
+            self.give_up_kept(region).await;
+        }
+        // Nothing of what is kept was applied by a region that had forgotten the edge,
+        // or never had anything from it.
+        let applied = if shared { applied } else { 0 };
+
+        self.bring(region, into).await;
+
+        // What the absorbed region had not applied is the survivor's to apply, under
+        // its numbers, behind what was kept for it and behind the subscriptions above.
+        let port = self.regions.entry(region).or_default();
+        let kept = std::mem::take(&mut port.kept);
+        let came_with = std::mem::take(&mut port.came_with);
+        let survivor = self.regions.entry(into).or_default();
+        let mut moved = Vec::new();
+        for (_, body) in kept.into_iter().filter(|(number, _)| *number > applied) {
+            survivor.numbered += 1;
+            survivor.kept.push_back((survivor.numbered, body.clone()));
+            moved.push((survivor.numbered, body));
+        }
+        // The entries behind this one were the absorbed region's, or came to it with a
+        // merge of its own, and are told by the numbers they had from those the edge
+        // has handled.
+        for (behind, there) in (number + 1..).zip(numbers) {
+            let origin = came_with.get(&there).copied().unwrap_or((region, there));
+            survivor.came_with.insert(behind, origin);
+        }
+        // While a welcome's entries are read nothing kept is sent; it all goes in
+        // order when they are through. Should the link be past that, what was moved
+        // goes at once.
+        if let Some(link) = survivor.link.as_ref().filter(|link| link.welcomed) {
+            for (number, body) in moved {
+                let message = EdgeMessage {
+                    number: Some(number),
+                    body,
+                };
+                if link.sender.send(message).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Makes everything the edge has under `absorbed` the region `into`'s: the region
+    /// stands for it, its players are that region's and their views are asked of it,
+    /// and so is what players of other regions see of it. Nothing is said to the
+    /// absorbed region, which is no more. The players are judged by the presence
+    /// answers of `into`'s link.
+    async fn bring(&mut self, absorbed: RegionId, into: RegionId) {
+        self.retire(absorbed, into);
+        let players: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.region == absorbed)
+            .map(|(player, _)| *player)
+            .collect();
+        for player in &players {
+            let Some(view) = self.players.get_mut(player) else {
+                continue;
+            };
+            view.region = into;
+            let seen: Vec<ChunkPos> = view.wanted.iter().copied().collect();
+            for chunk in &seen {
+                self.unwant(absorbed, *chunk);
+            }
+            for chunk in &seen {
+                self.want(into, *chunk);
+            }
+        }
+        if let Some(link) = self.regions.entry(into).or_default().link.as_mut() {
+            link.brought.extend(players);
+        }
+        // What is left there are guests' subscriptions, for what players of other
+        // regions see.
+        let port = self.regions.entry(absorbed).or_default();
+        let left: Vec<ChunkPos> = std::mem::take(&mut port.subscriptions)
+            .into_keys()
+            .collect();
+        self.asking.retain(|(region, ..)| *region != absorbed);
+        for chunk in left {
+            let watched = self
+                .replica
+                .get(&chunk)
+                .is_some_and(|entry| entry.viewers > 0);
+            let survivor = self.regions.entry(into).or_default();
+            if watched && !survivor.subscriptions.contains_key(&chunk) {
+                survivor
+                    .subscriptions
+                    .insert(chunk, Subscription::new(Kind::Guest, 0));
+                self.asking.push((into, Asking::AsGuest, chunk, true));
+            }
+        }
+        // Whatever named the absorbed region names the survivor, which is asked for
+        // those chunks now wherever the absorbed region was.
+        for (region, port) in &mut self.regions {
+            for subscription in port.subscriptions.values_mut() {
+                if subscription.condition == Condition::Elsewhere(absorbed) {
+                    subscription.condition = if *region == into {
+                        Condition::Waiting
+                    } else {
+                        Condition::Elsewhere(into)
+                    };
+                }
+            }
+        }
+        for shown in self.entities.values_mut() {
+            if shown.from == absorbed {
+                shown.from = into;
+            }
+        }
+        for entry in self.replica.values_mut() {
+            if entry.served_by == Some(absorbed) {
+                entry.served_by = Some(into);
+            }
+        }
+        // On the survivor's link before anything that was kept for either.
+        self.flush_asking().await;
+    }
+
+    /// The region `from` says that it was split and that the stays of `players` were
+    /// in `part` from then on. The word is as old as the split and read at any time
+    /// after: a stay the edge has under `from` with an arrival kept for it has come
+    /// back since, by way of the part, and stays.
+    async fn split_off(
+        &mut self,
+        from: RegionId,
+        part: RegionId,
+        players: Vec<(PlayerId, EntityId)>,
+    ) {
+        info!(%from, %part, players = players.len(), "a region has been split");
+        if part == from {
+            // The part has gone back into the region since.
+            return;
+        }
+        for (player, entity) in players {
+            let there = self
+                .players
+                .get(&player)
+                .is_some_and(|view| view.entity == Some(entity) && view.region == from);
+            let port = self.regions.entry(from).or_default();
+            let back = port.kept.iter().any(|(_, body)| {
+                matches!(
+                    body,
+                    EdgeToWorker::PlayerArrive { player: arriving, .. } if *arriving == player
+                )
+            });
+            if there && !back {
+                self.move_stay(player, part).await;
+            }
         }
     }
 
@@ -1349,7 +1759,11 @@ impl Fanout {
     }
 
     /// Passes a player whom the region `from` has let go on to `to`, the region it named
-    /// as the one they walked into, together with what they have done since.
+    /// as the one they walked into, together with what they have done since. They may
+    /// go `back` to the region the word comes from if it is another region's word,
+    /// which came to `from` with a merge, or if `from` named a region that has gone
+    /// into it since; see `docs/adr/0015-the-edge-through-merges-and-splits.md`,
+    /// section 4.
     ///
     /// Nothing else is handled while this runs, so no input of the player can go to the
     /// old region after the ones sent again here have been picked, or to the new region
@@ -1360,6 +1774,7 @@ impl Fanout {
         from: RegionId,
         to: RegionId,
         transfer: PlayerTransfer,
+        back: bool,
     ) {
         let position = transfer.pose.position;
         let chunk = ChunkPos::containing(position.x, position.z);
@@ -1379,7 +1794,7 @@ impl Fanout {
             error!(name = %view.name, %from, now = %view.region, "a region let go of a player who is not its own");
             return;
         }
-        if to == from {
+        if to == from && !back {
             // The region named itself as the one the player walked into, which none
             // does. Sending the player back would have them bounce there forever.
             error!(name = %view.name, %from, "a region let go of a player who is inside it");
@@ -1409,15 +1824,19 @@ impl Fanout {
 
         // What the player sees is asked of their region from now on. On the link to
         // `to` this is before the arrival, so that one claim of that region covers the
-        // chunk the player arrives in and their view.
-        let seen: Vec<ChunkPos> = view.wanted.iter().copied().collect();
-        for chunk in &seen {
-            self.unwant(from, *chunk);
+        // chunk the player arrives in and their view. A player who arrives where the
+        // word of their leaving comes from is asked for there already: the region
+        // that let them go has gone into it, or it into that region.
+        if to != from {
+            let seen: Vec<ChunkPos> = view.wanted.iter().copied().collect();
+            for chunk in &seen {
+                self.unwant(from, *chunk);
+            }
+            for chunk in &seen {
+                self.want(to, *chunk);
+            }
+            self.flush_asking().await;
         }
-        for chunk in &seen {
-            self.want(to, *chunk);
-        }
-        self.flush_asking().await;
 
         // The entity of the player's view, as was looked at above: the inputs sent
         // again are of the stay that is handed over.
@@ -2492,8 +2911,9 @@ mod tests {
         regions: Vec<WorkerEnd>,
         task: JoinHandle<Stopped>,
         sessions: u64,
-        /// The number of the last outbox entry each region has made.
-        outbox: [u64; 2],
+        /// The number of the last outbox entry each region has made: the two the edge
+        /// starts with, and one that a split makes.
+        outbox: [u64; 3],
     }
 
     /// A link to `region` whose owner has `epoch`, and the worker's end of it.
@@ -2529,7 +2949,7 @@ mod tests {
                 regions: vec![west_end, east_end],
                 task,
                 sessions: 0,
-                outbox: [0; 2],
+                outbox: [0; 3],
             };
             for region in [WEST, EAST] {
                 let hello = harness.next(region).await;
@@ -2652,7 +3072,36 @@ mod tests {
             assert!(self.relinks.replace(link).await);
             self.next(region).await.body
         }
+
+        /// Gives the edge its first link to the region a split made, and returns the
+        /// hello it says there.
+        async fn link_part(&mut self) -> EdgeToWorker {
+            assert_eq!(self.regions.len(), PART.0 as usize);
+            let (link, worker) = link_to(PART, 1);
+            self.regions.push(worker);
+            assert!(self.relinks.replace(link).await);
+            self.next(PART).await.body
+        }
+
+        /// What the edge sends `region` up to its next numbered message: the
+        /// messages without a number, and then that one with its number.
+        async fn up_to_numbered(
+            &mut self,
+            region: RegionId,
+        ) -> (Vec<EdgeToWorker>, (u64, EdgeToWorker)) {
+            let mut before = Vec::new();
+            loop {
+                let EdgeMessage { number, body } = self.next(region).await;
+                match number {
+                    Some(number) => return (before, (number, body)),
+                    None => before.push(body),
+                }
+            }
+        }
     }
+
+    /// The region a split of these tests makes.
+    const PART: RegionId = RegionId(2);
 
     fn player(number: u128) -> PlayerId {
         PlayerId(Uuid::from_u128(number))
@@ -3615,12 +4064,21 @@ mod tests {
             to: None,
         };
 
-        // The region names the one that takes the next step.
+        // The region names the one that takes the next step. The edge is not asking
+        // that one for the chunk yet, and does so first, as a guest: a region that
+        // holds the chunk and has yet to load it then judges the action only when it
+        // has.
         let named = Durable::Remote {
             action: action(3),
             to: Some(EAST),
         };
         edge.say(WEST, named);
+        let EdgeMessage { number, body } = edge.next(EAST).await;
+        assert!(
+            number.is_none()
+                && matches!(&body, EdgeToWorker::SubscribeAsGuest { chunks, .. } if chunks == &[SHARED]),
+            "{body:?}"
+        );
         let (number, body) = edge.next_numbered(EAST).await;
         assert_eq!((number, body), (1, EdgeToWorker::Remote(action(3))));
 
@@ -3629,19 +4087,15 @@ mod tests {
         edge.say(WEST, without_a_region(4));
         edge.settle(WEST).await;
 
-        // The east serves the chunk: the west says so, the edge asks there as a guest
-        // and is sent the chunk.
+        // The east serves the chunk: the west says so, and the east, which the edge is
+        // asking as a guest already, sends it.
         let elsewhere = WorkerToEdge::Elsewhere {
             chunk: SHARED,
             ask,
             region: EAST,
         };
         edge.tell(WEST, elsewhere);
-        let asked = next_asked(&mut edge, EAST).await;
-        assert!(
-            matches!(asked, EdgeToWorker::SubscribeAsGuest { .. }),
-            "{asked:?}"
-        );
+        edge.settle(WEST).await;
         edge.tell(EAST, snapshot(SHARED, 1));
         edge.settle(EAST).await;
         edge.say(WEST, without_a_region(5));
@@ -3888,6 +4342,410 @@ mod tests {
             number == 2 && matches!(body, EdgeToWorker::Input { .. }),
             "{number} {body:?}"
         );
+    }
+
+    /// A welcome that resumes with `entries` outbox entries and `presences` answers
+    /// behind it, from a region that had applied this edge's messages up to `applied`.
+    fn resumed_with(entries: u32, presences: u32, applied: u64) -> WorkerToEdge {
+        WorkerToEdge::Welcome(Welcome::Resumed {
+            entries,
+            presences,
+            applied,
+        })
+    }
+
+    /// The east as absorbed by the region that says this: it knew the edge since the
+    /// welcome of these tests' start, had applied its messages up to `applied`, and
+    /// had entries for it under `numbers`, which follow.
+    fn east_absorbed(applied: u64, numbers: Vec<u64>) -> Durable {
+        Durable::Absorbed {
+            region: EAST,
+            since: 1,
+            applied,
+            numbers,
+        }
+    }
+
+    fn applied_up_to(applied: u64) -> WorkerToEdge {
+        WorkerToEdge::Progress {
+            applied,
+            inputs: Vec::new(),
+        }
+    }
+
+    /// A player joins as entity 5, is let go to the east, which applies their arrival,
+    /// and takes a step there that the east has not applied.
+    async fn stepping_in_the_east(edge: &mut Harness) -> mpsc::Receiver<Bytes> {
+        let packets = edge.joined(player(1), EntityId(5)).await;
+        edge.say(WEST, departing_to_east(player(1), EntityId(5)));
+        let (number, body) = edge.next_numbered(EAST).await;
+        assert!(
+            number == 1 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{body:?}"
+        );
+        edge.tell(EAST, applied_up_to(1));
+        edge.settle(EAST).await;
+        edge.settle(WEST).await;
+        edge.input(player(1), step(65.5)).await;
+        assert_eq!(edge.next_numbered(EAST).await.0, 2);
+        packets
+    }
+
+    fn step_in_the_east() -> EdgeToWorker {
+        EdgeToWorker::Input {
+            player: player(1),
+            entity: EntityId(5),
+            number: 1,
+            input: step(65.5),
+        }
+    }
+
+    /// A region that was absorbed is the survivor's from the moment the survivor says
+    /// so, among the entries of a welcome: its players are the survivor's, what they
+    /// see is asked of the survivor, and what was kept for it and not applied goes to
+    /// the survivor under the survivor's numbers, behind those subscriptions.
+    #[tokio::test]
+    async fn what_the_edge_had_at_an_absorbed_region_is_the_survivors_from_its_word_on() {
+        let mut edge = Harness::start().await;
+        let mut packets = stepping_in_the_east(&mut edge).await;
+
+        let hello = edge.relink(WEST, 2).await;
+        let EdgeToWorker::Hello { players, .. } = hello else {
+            panic!("{hello:?}");
+        };
+        assert_eq!(players, []);
+        edge.tell(WEST, resumed_with(1, 1, 1));
+        let entry = edge.say(WEST, east_absorbed(1, Vec::new()));
+        edge.tell(WEST, says_present(player(1), EntityId(5)));
+
+        let (before, numbered) = edge.up_to_numbered(WEST).await;
+        // What they see, as a viewer's; the entry confirmed; then what the east had
+        // not applied, under the west's next number: its join was applied.
+        let eastern = ChunkPos::new(4, 0);
+        assert!(
+            before.iter().any(|body| matches!(
+                body,
+                EdgeToWorker::Subscribe { chunks, .. } if chunks.contains(&eastern)
+            )),
+            "{before:?}"
+        );
+        assert!(
+            before.contains(&EdgeToWorker::Confirm { number: entry }),
+            "{before:?}"
+        );
+        assert_eq!(numbered, (2, step_in_the_east()));
+
+        edge.settle(WEST).await;
+        edge.input(player(1), step(66.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        assert!(connected(&mut packets));
+    }
+
+    /// A player the survivor's welcome brought with an absorbed region, and of whom
+    /// its presence answers then say nothing, is not there: they are told so, and the
+    /// leave names their stay.
+    #[tokio::test]
+    async fn a_player_who_came_with_an_absorbed_region_and_is_not_there_is_disconnected() {
+        let mut edge = Harness::start().await;
+        let mut packets = stepping_in_the_east(&mut edge).await;
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed_with(1, 0, 1));
+        edge.say(WEST, east_absorbed(1, Vec::new()));
+        assert_eq!(edge.next_numbered(WEST).await, (2, step_in_the_east()));
+        let leave = EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: Some(EntityId(5)),
+        };
+        assert_eq!(edge.next_numbered(WEST).await, (3, leave));
+        disconnected(&mut packets).await;
+    }
+
+    /// The entries an absorbed region had for the edge follow the survivor's word of
+    /// the merge under the survivor's numbers. Those the edge had handled as the
+    /// absorbed region's are passed over; the others are handled, and one that lets a
+    /// player go to the survivor, which until now a region could not say of itself,
+    /// is an arrival there.
+    #[tokio::test]
+    async fn entries_that_came_with_a_merge_are_handled_unless_they_were_before() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        edge.say(WEST, departing_to_east(player(1), EntityId(5)));
+        assert_eq!(edge.next_numbered(EAST).await.0, 1);
+        edge.tell(EAST, applied_up_to(1));
+        edge.settle(WEST).await;
+        // The edge has seen five entries of the east.
+        for _ in 0..5 {
+            edge.settle(EAST).await;
+        }
+        assert_eq!(edge.outbox[EAST.0 as usize], 5);
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed_with(4, 0, 1));
+        edge.say(WEST, east_absorbed(1, vec![4, 5, 6]));
+        // Two the edge had seen as the east's, which would send an action on to the
+        // west if they were handled again; and one it had not: the east let the
+        // player go back to the west.
+        let action = |sequence| RemoteAction {
+            player: player(1),
+            sequence,
+            step: RemoteStep::Break {
+                position: BlockPos::new(40, -61, 0),
+            },
+        };
+        for sequence in [3, 4] {
+            let seen = Durable::Remote {
+                action: action(sequence),
+                to: Some(WEST),
+            };
+            edge.say(WEST, seen);
+        }
+        let back = Durable::Departed {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0),
+            to: WEST,
+        };
+        edge.say(WEST, back);
+
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{number} {body:?}"
+        );
+        // Nothing else was sent the west: what the player does next has the next
+        // number. And they are there by the arrival that is on its way, whatever the
+        // welcome, which announced no answers, did not say of them.
+        edge.settle(WEST).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        assert!(connected(&mut packets));
+    }
+
+    /// A survivor's own word from before the merge that names the absorbed region is
+    /// read while that region is still itself to the edge: the player is put under it
+    /// and their arrival kept for it, and the word of the merge behind it brings both
+    /// to the survivor.
+    #[tokio::test]
+    async fn a_player_let_go_to_a_region_that_was_then_absorbed_arrives_at_the_survivor() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed_with(2, 1, 1));
+        edge.say(WEST, departing_to_east(player(1), EntityId(5)));
+        edge.say(WEST, east_absorbed(0, Vec::new()));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: Presence::Absent,
+            },
+        );
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{number} {body:?}"
+        );
+        edge.settle(WEST).await;
+        edge.input(player(1), step(65.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        assert!(connected(&mut packets));
+    }
+
+    /// The routing table says that a region the edge still has something of went into
+    /// another. The edge acts on the survivor's word, not on the table's; a link to
+    /// the survivor that is through its welcome was answered without that word, and
+    /// the edge ends it to say a hello that is answered from after the merge.
+    #[tokio::test]
+    async fn a_merge_the_routing_table_tells_first_is_acted_on_when_the_survivor_tells_it() {
+        let mut edge = Harness::start().await;
+        let mut packets = stepping_in_the_east(&mut edge).await;
+
+        assert!(edge.relinks.absorbed(vec![(EAST, WEST)]).await);
+        let ended = timeout(SOON, edge.relinks.ended()).await.unwrap();
+        assert_eq!(ended, Some((WEST, 1)));
+        // Nothing was moved on the table's word: what the player does still goes east.
+        edge.input(player(1), step(66.5)).await;
+        assert_eq!(edge.next_numbered(EAST).await.0, 3);
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed_with(1, 1, 1));
+        edge.say(WEST, east_absorbed(1, Vec::new()));
+        edge.tell(WEST, says_present(player(1), EntityId(5)));
+        assert_eq!(edge.next_numbered(WEST).await, (2, step_in_the_east()));
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        edge.settle(WEST).await;
+        assert!(connected(&mut packets));
+    }
+
+    /// The survivor answers a hello said after the table told of the merge without a
+    /// word of it: the absorbed region had forgotten the edge, or the survivor has
+    /// since. What was kept for the absorbed region is given up, and its players are
+    /// the survivor's to answer for.
+    #[tokio::test]
+    async fn a_merge_the_survivor_never_tells_of_gives_up_what_was_kept_for_the_absorbed_region() {
+        let mut edge = Harness::start().await;
+        let mut packets = stepping_in_the_east(&mut edge).await;
+
+        assert!(edge.relinks.absorbed(vec![(EAST, WEST)]).await);
+        let ended = timeout(SOON, edge.relinks.ended()).await.unwrap();
+        assert_eq!(ended, Some((WEST, 1)));
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed_with(0, 0, 1));
+        // Not the step the east never applied: only the leave of the player the
+        // survivor did not answer for.
+        let leave = EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: Some(EntityId(5)),
+        };
+        assert_eq!(edge.next_numbered(WEST).await, (2, leave));
+        disconnected(&mut packets).await;
+    }
+
+    /// A region of which the edge has nothing stands for the one it went into on the
+    /// routing table's word: there is nothing a word of the survivor could move. What
+    /// another region then sends there goes to the survivor.
+    #[tokio::test]
+    async fn a_region_the_edge_has_nothing_of_stands_for_its_survivor_on_the_tables_word() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        assert!(edge.relinks.absorbed(vec![(EAST, WEST)]).await);
+        let ended = timeout(SOON, edge.relinks.ended()).await.unwrap();
+        assert_eq!(ended, Some((EAST, 1)));
+
+        // The west's own word from before the merge: an arrival at the west itself.
+        edge.say(WEST, departing_to_east(player(1), EntityId(5)));
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{number} {body:?}"
+        );
+        edge.settle(WEST).await;
+        assert!(connected(&mut packets));
+    }
+
+    fn split_off(players: Vec<(PlayerId, EntityId)>) -> Durable {
+        Durable::SplitOff {
+            region: PART,
+            players,
+        }
+    }
+
+    /// A region that was split says which stays went into the part. Those the edge has
+    /// under the region are the part's: the part is asked for what they see in its
+    /// first hello, and sent what they did after its welcome, without an arrival. A
+    /// stay the edge does not have is ended when the part says it has it.
+    #[tokio::test]
+    async fn the_stays_a_split_took_are_the_parts_from_the_word_of_it() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 2);
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed_with(1, 1, 1));
+        let gone = vec![(player(1), EntityId(5)), (player(2), EntityId(9))];
+        edge.say(WEST, split_off(gone));
+        // The split region no longer has them, which costs them nothing.
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: Presence::Absent,
+            },
+        );
+        edge.settle(WEST).await;
+        assert!(connected(&mut packets));
+
+        let hello = edge.link_part().await;
+        let EdgeToWorker::Hello {
+            players, chunks, ..
+        } = hello
+        else {
+            panic!("{hello:?}");
+        };
+        assert_eq!(players, [player(1)]);
+        assert!(chunks.contains(&SHARED), "{chunks:?}");
+        let welcome = Welcome::Unknown {
+            since: 3,
+            entries: 0,
+            presences: 2,
+            applied: 0,
+        };
+        edge.tell(PART, WorkerToEdge::Welcome(welcome));
+        edge.tell(PART, says_present(player(1), EntityId(5)));
+        edge.tell(PART, says_present(player(2), EntityId(9)));
+        let again = EdgeToWorker::Input {
+            player: player(1),
+            entity: EntityId(5),
+            number: 1,
+            input: step(1.5),
+        };
+        assert_eq!(edge.next_numbered(PART).await, (1, again));
+        let leave = EdgeToWorker::PlayerLeave {
+            player: player(2),
+            entity: Some(EntityId(9)),
+        };
+        assert_eq!(edge.next_numbered(PART).await, (2, leave));
+        assert!(connected(&mut packets));
+    }
+
+    /// The word of a split is as old as the split. The edge can have heard from the
+    /// part first, moved the stay there on its answer, and seen the player walk back:
+    /// the split region's word, read then, does not take them to the part again.
+    #[tokio::test]
+    async fn the_word_of_a_split_does_not_take_back_a_stay_that_has_returned() {
+        let mut edge = Harness::start().await;
+        let mut packets = edge.joined(player(1), EntityId(5)).await;
+
+        let hello = edge.link_part().await;
+        let EdgeToWorker::Hello { players, .. } = hello else {
+            panic!("{hello:?}");
+        };
+        assert_eq!(players, []);
+        let welcome = Welcome::Unknown {
+            since: 3,
+            entries: 0,
+            presences: 1,
+            applied: 0,
+        };
+        edge.tell(PART, WorkerToEdge::Welcome(welcome));
+        edge.tell(PART, says_present(player(1), EntityId(5)));
+        edge.settle(PART).await;
+
+        // They walk back into the region that was split.
+        let back = Durable::Departed {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0),
+            to: WEST,
+        };
+        edge.say(PART, back);
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{number} {body:?}"
+        );
+
+        edge.relink(WEST, 2).await;
+        edge.tell(WEST, resumed_with(1, 1, 1));
+        edge.say(WEST, split_off(vec![(player(1), EntityId(5))]));
+        edge.tell(
+            WEST,
+            WorkerToEdge::Presence {
+                player: player(1),
+                answer: Presence::Absent,
+            },
+        );
+        // The arrival is sent again, and what they do goes to the west.
+        let (number, body) = edge.next_numbered(WEST).await;
+        assert!(
+            number == 2 && matches!(body, EdgeToWorker::PlayerArrive { .. }),
+            "{number} {body:?}"
+        );
+        edge.settle(WEST).await;
+        edge.input(player(1), step(1.5)).await;
+        assert_eq!(edge.next_numbered(WEST).await.0, 3);
+        assert!(connected(&mut packets));
     }
 
     /// A player whose region does not confirm what they do is not kept for ever.

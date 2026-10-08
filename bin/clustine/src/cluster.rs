@@ -997,6 +997,11 @@ async fn keep_linked(
     mut relinks: Relinks,
 ) {
     let layout = table.layout.fingerprint();
+    // The regions that were absorbed before this edge started, before any link: what
+    // a region says can name one of them from the first message on.
+    if !relinks.absorbed(table.absorbed.clone()).await {
+        return;
+    }
     let mut watch = Some(watch);
     // The search for a coordinator, while there is none. It is one future that lives
     // across the passes of the loop below: a wait begun anew at every pass would never
@@ -1092,7 +1097,16 @@ async fn keep_linked(
                 }
                 None => return,
             },
-            next = next_table(&mut watch), if watch.is_some() => match next {
+            next = next_table(&mut watch), if watch.is_some() => {
+                // Which regions were absorbed is passed on from every table, also from
+                // one this edge otherwise keeps away from: the edge has to know that a
+                // region it still has something of is no more.
+                if let Some(next) = &next
+                    && !relinks.absorbed(next.absorbed.clone()).await
+                {
+                    return;
+                }
+                match next {
                 Some(next) if next.layout == table.layout => {
                     // A region with a new owner is tried at once, whatever the last
                     // attempt at the old one came to.
@@ -1113,7 +1127,8 @@ async fn keep_linked(
                     watch = None;
                     search = Some(Box::pin(find_coordinator(coordinator.to_owned())));
                 }
-            },
+            }
+            }
             () = sleep_until_some(again), if again.is_some() => {}
             found = found_coordinator(&mut search), if search.is_some() => {
                 info!("found a coordinator again");

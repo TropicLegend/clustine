@@ -122,8 +122,10 @@ pub struct Routing {
     /// players do is kept until a link to it comes through `relinks`.
     pub links: Vec<RegionLink>,
     /// New links to regions, which replace the ones the edge has: to a worker that has
-    /// taken a region over, or to the same worker after a connection was lost.
-    pub relinks: mpsc::Receiver<RegionLink>,
+    /// taken a region over, or to the same worker after a connection was lost; and
+    /// what the routing table says of regions that were absorbed. One queue, so that
+    /// the edge takes them in the order they were handed over.
+    pub relinks: mpsc::Receiver<Relink>,
     /// Where the edge says that its link to a region has ended, with the epoch of the
     /// owner the link went to.
     pub lost: mpsc::UnboundedSender<(RegionId, u64)>,
@@ -153,10 +155,21 @@ impl Routing {
     }
 }
 
+/// What a running edge is handed about the regions while it runs.
+#[derive(Debug)]
+pub enum Relink {
+    /// A link that takes the place of the one the edge has to that region, if it has
+    /// one.
+    Link(RegionLink),
+    /// The regions the routing table says were absorbed, each with the region it went
+    /// into.
+    Absorbed(Vec<(RegionId, RegionId)>),
+}
+
 /// Gives a running edge new links to regions, and hears from it which links have ended.
 #[derive(Debug)]
 pub struct Relinks {
-    sender: mpsc::Sender<RegionLink>,
+    sender: mpsc::Sender<Relink>,
     ended: mpsc::UnboundedReceiver<(RegionId, u64)>,
 }
 
@@ -164,7 +177,16 @@ impl Relinks {
     /// Hands the edge a link that takes the place of the one it has to that region, if
     /// it has one. Returns false if the edge is gone.
     pub async fn replace(&self, link: RegionLink) -> bool {
-        self.sender.send(link).await.is_ok()
+        self.sender.send(Relink::Link(link)).await.is_ok()
+    }
+
+    /// Tells the edge which regions the routing table says were absorbed, each with
+    /// the region it went into: all of them, every time. The edge acts on a merge when
+    /// the region that survived tells it; from this it knows that such a word is owed
+    /// (`docs/adr/0015-the-edge-through-merges-and-splits.md`, section 5). Returns
+    /// false if the edge is gone.
+    pub async fn absorbed(&self, pairs: Vec<(RegionId, RegionId)>) -> bool {
+        self.sender.send(Relink::Absorbed(pairs)).await.is_ok()
     }
 
     /// Waits until a link of the edge has ended, and returns the region it went to and
