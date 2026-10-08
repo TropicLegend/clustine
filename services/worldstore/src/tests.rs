@@ -1160,13 +1160,13 @@ fn a_load_after_a_save_finds_what_was_saved_even_while_the_save_waits() {
 
 /// A disk in memory with switches that make writes to the log, or syncs of it, fail, or
 /// hold a sync of it until the test lets it go on.
-struct Switched {
-    disk: MemoryDisk,
-    failing_appends: AtomicBool,
-    failing_syncs: AtomicBool,
-    holding_syncs: AtomicBool,
+pub(crate) struct Switched {
+    pub(crate) disk: MemoryDisk,
+    pub(crate) failing_appends: AtomicBool,
+    pub(crate) failing_syncs: AtomicBool,
+    pub(crate) holding_syncs: AtomicBool,
     /// Waited on twice by a sync that is held: once to say it is there, once to go on.
-    held: Barrier,
+    pub(crate) held: Barrier,
     /// The paths of the log that were synced, or were to be.
     synced: Mutex<Vec<PathBuf>>,
 }
@@ -1247,16 +1247,15 @@ impl Disk for Switched {
 }
 
 fn switched() -> (Store, Arc<Switched>) {
+    switched_for(&division())
+}
+
+/// A store on a disk with switches, for a world divided as `division` says.
+pub(crate) fn switched_for(division: &Division) -> (Store, Arc<Switched>) {
     let disk = Arc::new(Switched::default());
-    let chunks = FileChunks::new(disk.clone(), Path::new("/world"));
-    let store = start(
-        disk.clone(),
-        Path::new("/world"),
-        Box::new(chunks),
-        generator(),
-        &division(),
-    )
-    .unwrap();
+    let root = Path::new("/world");
+    let chunks = FileChunks::new(disk.clone(), root);
+    let store = start(disk.clone(), root, Box::new(chunks), generator(), division).unwrap();
     (store, disk)
 }
 
@@ -1595,6 +1594,9 @@ fn hellos_fail_until_cutting_the_log_back_succeeds() {
         let disk = Arc::new(MemoryDisk::default());
         let store = store_on_memory(&disk);
         let owner = open(&store, hello(1, 1));
+        // The opening is durable by itself, so that the commits are a group each and
+        // the count does not depend on what the commit thread took together.
+        owner.flush();
         log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
         committed(&owner, 1);
         disk.operations()
@@ -1604,6 +1606,7 @@ fn hellos_fail_until_cutting_the_log_back_succeeds() {
         let disk = Arc::new(MemoryDisk::failing(Fault::Fails(before + 2, count)));
         let store = store_on_memory(&disk);
         let owner = open(&store, hello(1, 1));
+        owner.flush();
         log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
         committed(&owner, 1);
         log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);

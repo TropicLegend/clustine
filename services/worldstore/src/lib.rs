@@ -207,6 +207,13 @@ enum Message {
     },
     /// The thread for chunks has done everything the handle asked for before a flush.
     Flushed(Arc<Peer>),
+    /// The thread for chunks has made the saves durable that were asked for before the
+    /// return with this number, of these chunks.
+    Returned {
+        session: Session,
+        number: u64,
+        chunks: Vec<ChunkPos>,
+    },
     /// Someone wants the list of regions.
     Regions {
         answer: Sender<Result<RegionList, StoreError>>,

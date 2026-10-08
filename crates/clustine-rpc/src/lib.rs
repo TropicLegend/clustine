@@ -14,5 +14,5 @@ pub use messages::{
     Assignment, ChunkBox, Crowds, EdgeMessage, EdgeToWorker, FromCoordinator, Presence,
     RegionHello, RegionInfo, RegionList, RegionWelcome, Restored, RestoredItem, RestoredPart,
     RestoredPiece, SplitPart, StoreReply, StoreRequest, StoreWelcome, TickState, ToCoordinator,
-    Vouch, Welcome, WorkerToEdge,
+    Vouch, Welcome, WorkerToEdge, held_bytes, held_from_bytes,
 };

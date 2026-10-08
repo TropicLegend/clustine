@@ -288,6 +288,58 @@ impl Table {
         }
     }
 
+    /// The tick of the grant `region` has of `chunk`, if it has one. A chunk it holds
+    /// by being pinned is not granted to it.
+    pub(crate) fn granted_from(&self, region: RegionId, chunk: ChunkPos) -> Option<u64> {
+        self.regions.get(&region)?.grants.get(&chunk).copied()
+    }
+
+    /// The grants of `region`, in ascending order of the chunks, each with its tick.
+    pub(crate) fn grants(&self, region: RegionId) -> Vec<(ChunkPos, u64)> {
+        self.regions.get(&region).map_or_else(Vec::new, |holding| {
+            let grants = holding.grants.iter();
+            grants.map(|(chunk, tick)| (*chunk, *tick)).collect()
+        })
+    }
+
+    /// Grants `region` each of `chunks` from its tick `tick` on. Nothing is granted if
+    /// there is no such region or one of the chunks is granted already, to whomever:
+    /// that is a record of the log that does not fit the table.
+    pub(crate) fn grant(
+        &mut self,
+        region: RegionId,
+        tick: u64,
+        chunks: &[ChunkPos],
+    ) -> Result<(), StoreError> {
+        if let Some((chunk, holder)) = chunks
+            .iter()
+            .find_map(|chunk| Some((chunk, self.granted.get(chunk)?)))
+        {
+            return Err(misfit(format!(
+                "chunk {chunk:?} is granted to region {region} while region {holder} has it"
+            )));
+        }
+        let Some(holding) = self.regions.get_mut(&region) else {
+            return Err(misfit(format!(
+                "chunks are granted to region {region}, which is none"
+            )));
+        };
+        for chunk in chunks {
+            holding.grants.insert(*chunk, tick);
+            self.granted.insert(*chunk, region);
+        }
+        Ok(())
+    }
+
+    /// Takes the grant `region` has of `chunk` from it, and returns the tick it had.
+    /// The chunk is then nobody's, or the pinned region's whose area it is in. Returns
+    /// `None`, and changes nothing, if the region has no grant of the chunk.
+    pub(crate) fn release(&mut self, region: RegionId, chunk: ChunkPos) -> Option<u64> {
+        let tick = self.regions.get_mut(&region)?.grants.remove(&chunk)?;
+        self.granted.remove(&chunk);
+        Some(tick)
+    }
+
     /// The list of regions for whoever assigns them. `epoch` says the highest epoch a
     /// region was opened with.
     pub(crate) fn list(&self, epoch: impl Fn(RegionId) -> u64) -> RegionList {
@@ -478,6 +530,60 @@ mod tests {
         refused(|file| file.home_region = 9);
         refused(|file| file.next_region = 2);
         refused(|file| file.regions[2].pinned = vec![ChunkArea::EVERYWHERE]);
+    }
+
+    #[test]
+    fn chunks_are_granted_once_and_free_again_when_released() {
+        let mut table = Table::made_from(&gap(), 0, 1);
+        let (first, second) = (ChunkPos::new(3, 3), ChunkPos::new(4, -3));
+        table.grant(RegionId(0), 7, &[first, second]).unwrap();
+        assert_eq!(table.holder(first), Some(RegionId(0)));
+        assert_eq!(table.held_from(RegionId(0), first), Some(7));
+        assert_eq!(table.granted_from(RegionId(0), second), Some(7));
+        assert_eq!(table.grants(RegionId(0)), [(first, 7), (second, 7)]);
+        assert_eq!(table.held_from(RegionId(1), first), None);
+        // A chunk held by being pinned is not granted.
+        assert_eq!(table.granted_from(RegionId(0), ChunkPos::new(-1, 0)), None);
+        assert_eq!(table.held_from(RegionId(0), ChunkPos::new(-1, 0)), Some(0));
+
+        // Granted already, to another region or the same; or to no region at all. None
+        // of the chunks of such a grant is granted.
+        let before = table.clone();
+        let free = ChunkPos::new(9, 9);
+        for (region, chunks) in [(1, [free, first]), (0, [free, second]), (7, [free, free])] {
+            let granted = table.grant(RegionId(region), 9, &chunks);
+            assert!(matches!(granted, Err(StoreError::Table(_))), "{granted:?}");
+            assert_eq!(table, before);
+        }
+
+        // Only the region that has the grant gives it up, and only once.
+        assert_eq!(table.release(RegionId(1), first), None);
+        assert_eq!(table.release(RegionId(9), first), None);
+        assert_eq!(table.release(RegionId(0), first), Some(7));
+        assert_eq!(table.release(RegionId(0), first), None);
+        assert_eq!(table.holder(first), None);
+        table.grant(RegionId(1), 2, &[first]).unwrap();
+        assert_eq!(table.holder(first), Some(RegionId(1)));
+
+        // A chunk of a pinned region's area that another region was granted is that
+        // region's, and the pinned region's again once it is released.
+        let inside = ChunkPos::new(-4, 0);
+        table.grant(RegionId(2), 5, &[inside]).unwrap();
+        assert_eq!(table.holder(inside), Some(RegionId(2)));
+        assert_eq!(table.held_from(RegionId(0), inside), None);
+        assert_eq!(table.release(RegionId(2), inside), Some(5));
+        assert_eq!(table.held_from(RegionId(0), inside), Some(0));
+
+        // The file has the grants, and the list the box around them.
+        let read = Table::read(TableFile::decode(&table.file(3).encode()).unwrap()).unwrap();
+        assert_eq!(read.from, 3);
+        assert_eq!(read.grants(RegionId(0)), [(second, 7)]);
+        assert_eq!(read.holder(first), Some(RegionId(1)));
+        let around = ChunkBox {
+            min: second,
+            max: second,
+        };
+        assert_eq!(read.list(|_| 0).regions[0].bounds, Some(around));
     }
 
     #[test]

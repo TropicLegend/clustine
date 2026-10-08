@@ -169,7 +169,6 @@ mod tests {
         let region = RegionId(9);
         for request in [
             StoreRequest::Claim {
-                tick: 12,
                 chunks: chunks.clone(),
             },
             StoreRequest::Return {
@@ -294,7 +293,7 @@ mod tests {
     #[test]
     fn the_messages_of_the_world_store_round_trip() {
         use clustine_data::blocks;
-        use clustine_world::{BlockPos, ChunkArea, EntityIds};
+        use clustine_world::{BlockPos, ChunkArea, ChunkPos, EntityIds};
 
         use crate::{
             Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
@@ -387,6 +386,24 @@ mod tests {
         for part in parts {
             assert_eq!(blocking::read(&mut reader).unwrap(), Some(part));
         }
+
+        // The grants of a region travel as the bytes of a piece.
+        let held = vec![(ChunkPos::new(-3, 7), 0), (ChunkPos::new(4, -1), u64::MAX)];
+        let piece = RestoredPiece {
+            of: RestoredItem::Held,
+            tick: 0,
+            bytes: crate::held_bytes(&held),
+            complete: true,
+        };
+        let mut written = Vec::new();
+        blocking::write(&mut written, &piece).unwrap();
+        let read: RestoredPiece = blocking::read(&mut Cursor::new(&written)).unwrap().unwrap();
+        assert_eq!(crate::held_from_bytes(&read.bytes), Some(held));
+        assert_eq!(
+            crate::held_from_bytes(&crate::held_bytes(&[])),
+            Some(Vec::new())
+        );
+        assert_eq!(crate::held_from_bytes(&[0xFF; 3]), None);
 
         // A region that has never committed anything is restored up to tick 0, and one
         // with a state and no commits after it up to the state's tick.

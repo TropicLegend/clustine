@@ -180,6 +180,13 @@ pub(crate) enum Job {
     },
     /// Everything before it is done; the commit thread answers.
     Flush { peer: Arc<Peer> },
+    /// Once the saves before it are durable, tells the commit thread, which frees the
+    /// chunks of the return with this number that are still to be freed by it.
+    Return {
+        number: u64,
+        chunks: Vec<ChunkPos>,
+        peer: Arc<Peer>,
+    },
     /// Applies the block changes of the commits a region is restored with to the stored
     /// chunks, then hands the opened region to whoever asked for it.
     Restore {
@@ -298,6 +305,28 @@ impl ChunkService {
                 if !peer.is_lost() {
                     peer.send(Message::Flushed(Arc::clone(&peer)));
                 }
+            }
+            Job::Return {
+                number,
+                chunks,
+                peer,
+            } => {
+                // The region is read afresh when it is opened again, and holds the
+                // chunks still.
+                if peer.is_lost() {
+                    return;
+                }
+                if !self.sync() {
+                    // Its saves may be among those that are not durable, and with them
+                    // what it changed in the chunks it gives back.
+                    peer.lose();
+                    return;
+                }
+                peer.send(Message::Returned {
+                    session: peer.session,
+                    number,
+                    chunks,
+                });
             }
             Job::Restore {
                 changes,

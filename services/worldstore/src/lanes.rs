@@ -46,7 +46,7 @@ use clustine_format::{
 };
 use clustine_region::RegionId;
 use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest, TickState};
-use clustine_world::{BlockPos, EntityId, EntityIds};
+use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds};
 use tracing::{error, info, warn};
 
 use crate::chunks::Job;
@@ -61,6 +61,11 @@ const SEGMENT_LIMIT: u64 = 64 * 1024 * 1024;
 /// idle still syncs.
 const GROUP_LIMIT: usize = 4096;
 
+/// At most this many chunks are granted or returned by one record of the log. A claim
+/// or a return of more takes several records, one behind the other in the same group:
+/// a record longer than the log's limit would hide itself and what follows it.
+const RECORD_CHUNKS: usize = 65_536;
+
 /// The commit thread.
 pub(crate) struct Lanes {
     disk: Arc<dyn Disk>,
@@ -73,6 +78,10 @@ pub(crate) struct Lanes {
     table: Table,
     /// A lane for every living region, and for no other.
     regions: BTreeMap<RegionId, Lane>,
+    /// The last segment of the log that has a record which changes the table and is not
+    /// in the table file, if there is one. The segments from the file's `from` up to it
+    /// hold what the file does not have.
+    table_last: Option<u64>,
     /// The index of the next block of entity ids: above every block a region file has,
     /// whatever has become of its region, so that none is issued twice.
     next_block: u32,
@@ -98,6 +107,17 @@ struct Lane {
     /// The tick of a state file that has been put in place in this group, and is not
     /// durably there until the group ends.
     installing: Option<u64>,
+    /// The highest tick of the region the store has in a commit or a whole state: the
+    /// tick the region was restored up to when it was opened, raised by every commit
+    /// taken since. It is the tick of what the region is granted.
+    latest: u64,
+    /// The chunks a return of which is on its way through the thread for chunks, each
+    /// with the number of that return. A chunk is freed only by the return it is noted
+    /// with here, so that one that was called off frees nothing later.
+    returning: BTreeMap<ChunkPos, u64>,
+    /// How many returns the session that opened the region last has asked for, from
+    /// which their numbers come.
+    returns: u64,
 }
 
 /// Where a commit is in the log.
@@ -113,8 +133,9 @@ struct Entry {
 struct Owner {
     peer: Arc<Peer>,
     epoch: u64,
-    /// The ticks of the commits appended in this group.
-    unsynced: Vec<u64>,
+    /// The answers to the commits and claims of this group, in the order they were
+    /// asked for, which are given once the group is durable.
+    unsynced: Vec<StoreReply>,
     /// What the handle asked for after those commits, for the thread for chunks, which
     /// it is given only once they are durable.
     held: Vec<Job>,
@@ -123,8 +144,11 @@ struct Owner {
 /// What the current group has done that is answered or finished when it ends.
 #[derive(Default)]
 struct Group {
-    /// The regions that appended commits.
+    /// The regions that have answers or requests waiting for the group to end.
     regions: BTreeSet<RegionId>,
+    /// What the group did to the table, which is taken back, last first, if the group
+    /// cannot be made durable.
+    changed: Vec<Change>,
     /// The regions whose state file was put in place.
     installs: BTreeSet<RegionId>,
     /// Handles to be told that everything they asked for is done.
@@ -133,8 +157,25 @@ struct Group {
 
 impl Group {
     fn is_empty(&self) -> bool {
-        self.regions.is_empty() && self.installs.is_empty() && self.flushes.is_empty()
+        self.regions.is_empty()
+            && self.changed.is_empty()
+            && self.installs.is_empty()
+            && self.flushes.is_empty()
     }
+}
+
+/// Something a group did to the table of regions.
+enum Change {
+    /// The region was granted the chunks.
+    Granted {
+        region: RegionId,
+        chunks: Vec<ChunkPos>,
+    },
+    /// The region gave the chunks back, which it had held from these ticks.
+    Returned {
+        region: RegionId,
+        grants: Vec<(ChunkPos, u64)>,
+    },
 }
 
 impl Lanes {
@@ -191,7 +232,7 @@ impl Lanes {
             .unwrap_or(0);
 
         let table_path = regions_directory.join("table");
-        let stored = match disk.read(&table_path)? {
+        let mut stored = match disk.read(&table_path)? {
             Some(bytes) => {
                 let file = TableFile::decode(&bytes).map_err(|error| StoreError::Damaged {
                     path: table_path.clone(),
@@ -202,6 +243,7 @@ impl Lanes {
             None => None,
         };
 
+        let mut table_last = None;
         let mut log = Log {
             disk: Arc::clone(&disk),
             directory: log_directory,
@@ -258,13 +300,36 @@ impl Lanes {
                             "a record of a world from before regions had a state is passed over"
                         );
                     }
-                    // Of regions that hold chunks and merge and split (ADR-0011), which
-                    // the store does not keep yet: to it they are what they were before
-                    // the format had them, records of no kind it knows.
-                    LogRecord::Granted { .. }
-                    | LogRecord::Returned { .. }
-                    | LogRecord::Absorbed { .. }
-                    | LogRecord::Split { .. } => {
+                    LogRecord::Granted {
+                        region,
+                        tick,
+                        chunks,
+                    } => {
+                        if let Some(table) = changed_by(&mut stored, segment)? {
+                            table.grant(RegionId(region), tick, &chunks)?;
+                            table_last = Some(segment);
+                        }
+                    }
+                    LogRecord::Returned { region, chunks } => {
+                        if let Some(table) = changed_by(&mut stored, segment)? {
+                            for chunk in chunks {
+                                // The record says that the region does not hold the
+                                // chunk, which is so.
+                                if table.release(RegionId(region), chunk).is_none() {
+                                    warn!(
+                                        region,
+                                        ?chunk,
+                                        "the log has a chunk returned that the region was not granted"
+                                    );
+                                }
+                            }
+                            table_last = Some(segment);
+                        }
+                    }
+                    // Of regions that merge and split (ADR-0011), which the store does
+                    // not do yet: to it they are what they were before the format had
+                    // them, records of no kind it knows.
+                    LogRecord::Absorbed { .. } | LogRecord::Split { .. } => {
                         return Err(StoreError::Damaged {
                             path,
                             error: FormatError::Corrupt("record kind"),
@@ -294,6 +359,7 @@ impl Lanes {
             None => before.is_some_and(|layout| Some(layout) != told.layout),
         };
         let keep = stored.is_some() && !remake;
+        let tabled = stored.is_some();
         let used = stored.as_ref().map_or(0, |table| table.next_region);
         let mut lanes = Self {
             disk,
@@ -304,12 +370,15 @@ impl Lanes {
             // Where there is none, this one stands in until the table is written below.
             table: stored.unwrap_or_else(|| Table::made_from(told, 0, 0)),
             regions,
+            table_last,
             next_block,
             sessions: 0,
             group: Group::default(),
         };
         if remake {
-            lanes.make_over()?;
+            // Where there was no table, nobody was granted anything, and every change
+            // the regions committed goes into the chunks.
+            lanes.make_over(tabled)?;
         }
         if !keep {
             // What changes the table from now on goes to a segment the file names.
@@ -317,6 +386,7 @@ impl Lanes {
             let from = lanes.log.next;
             lanes.table = Table::made_from(told, used, from);
             lanes.write_table(from)?;
+            lanes.table_last = None;
         }
         // Only once the table is durable, by which a start after a crash knows that
         // there is nothing left to be made over; and also if a store died right here.
@@ -373,6 +443,11 @@ impl Lanes {
                     self.group.flushes.push(peer);
                 }
             }
+            Message::Returned {
+                session,
+                number,
+                chunks,
+            } => self.returned(session, number, chunks),
             Message::Regions { answer } => {
                 // The list has nothing that is not durable, and is not given while what
                 // a failed group left in the log could still come back.
@@ -455,7 +530,8 @@ impl Lanes {
                             offset,
                             length: record.len(),
                         });
-                        owner.unsynced.push(tick);
+                        owner.unsynced.push(StoreReply::Committed { tick });
+                        lane.latest = lane.latest.max(tick);
                     }
                     Err(error) => {
                         error!(region = %session.region, %error, "a commit could not be written to the log");
@@ -499,12 +575,105 @@ impl Lanes {
             },
             StoreRequest::Checkpoint { tick, state } => Job::Checkpoint { tick, state, peer },
             StoreRequest::Flush => Job::Flush { peer },
-            // Of regions that hold chunks and merge and split (ADR-0010), which the
-            // store does not keep yet. No worker asks for these.
-            request @ (StoreRequest::Claim { .. }
-            | StoreRequest::Return { .. }
-            | StoreRequest::AbsorbCommit { .. }
-            | StoreRequest::SplitCommit { .. }) => {
+            StoreRequest::Claim { chunks } => {
+                let region = session.region;
+                let mut granted = Vec::new();
+                let mut foreign = Vec::new();
+                let mut new = Vec::new();
+                let mut asked = BTreeSet::new();
+                for chunk in chunks {
+                    // Each once, in the order of the request.
+                    if !asked.insert(chunk) {
+                        continue;
+                    }
+                    match self.table.holder(chunk) {
+                        // Nothing about it changes, also not its tick. A return of it
+                        // that is on its way is called off.
+                        Some(holder) if holder == region => {
+                            lane.returning.remove(&chunk);
+                            granted.push(chunk);
+                        }
+                        Some(holder) => foreign.push((chunk, holder)),
+                        None => {
+                            new.push(chunk);
+                            granted.push(chunk);
+                        }
+                    }
+                }
+                // The tick is the store's, not the region's own, which runs ahead of
+                // what it has committed and can be issued again after a restore.
+                let tick = lane.latest;
+                for chunks in new.chunks(RECORD_CHUNKS) {
+                    let record = LogRecord::Granted {
+                        region: region.0,
+                        tick,
+                        chunks: chunks.to_vec(),
+                    };
+                    match self.log.append(&record.encode()) {
+                        Ok((segment, _)) => self.table_last = Some(segment),
+                        Err(error) => {
+                            error!(%region, %error, "a grant could not be written to the log");
+                            self.fail_log();
+                            return;
+                        }
+                    }
+                }
+                if !new.is_empty() {
+                    // At once, so that a later claim in the same group, of whatever
+                    // region, is answered by it.
+                    self.table
+                        .grant(region, tick, &new)
+                        .expect("chunks nobody holds are granted to a region that is there");
+                    let change = Change::Granted {
+                        region,
+                        chunks: new,
+                    };
+                    self.group.changed.push(change);
+                }
+                // Answered when the group ends, behind the commits asked for before:
+                // also a claim that granted nothing anew may rest on a grant of this
+                // group.
+                owner
+                    .unsynced
+                    .push(StoreReply::Claimed { granted, foreign });
+                self.group.regions.insert(region);
+                return;
+            }
+            StoreRequest::Return { chunks } => {
+                let region = session.region;
+                let mut returned = Vec::new();
+                let mut asked = BTreeSet::new();
+                for chunk in chunks {
+                    let granted = self.table.granted_from(region, chunk).is_some();
+                    if !granted || chunk == self.table.home_chunk {
+                        warn!(
+                            %region,
+                            ?chunk,
+                            "a chunk that the region was not granted, or the home chunk, is not returned"
+                        );
+                    } else if asked.insert(chunk) {
+                        returned.push(chunk);
+                    }
+                }
+                if returned.is_empty() {
+                    return;
+                }
+                lane.returns += 1;
+                let number = lane.returns;
+                for chunk in &returned {
+                    lane.returning.insert(*chunk, number);
+                }
+                // Passed on like a save: the chunks are free once the saves before it
+                // are durable, which the thread for chunks sees to.
+                Job::Return {
+                    number,
+                    chunks: returned,
+                    peer,
+                }
+            }
+            // Of regions that merge and split (ADR-0011), which the store does not do
+            // yet. No worker asks for these.
+            request @ (StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. }) => {
                 error!(region = %session.region, ?request, "asked for what the store does not do yet");
                 return;
             }
@@ -559,6 +728,7 @@ impl Lanes {
             // flush finds the checkpoint done in full.
             self.log.close();
             self.collect();
+            self.trim_for_the_table();
         }
 
         for region in &group.regions {
@@ -569,8 +739,8 @@ impl Lanes {
             else {
                 continue;
             };
-            for tick in owner.unsynced.drain(..) {
-                owner.peer.answer(StoreReply::Committed { tick });
+            for reply in owner.unsynced.drain(..) {
+                owner.peer.answer(reply);
             }
             for job in owner.held.drain(..) {
                 let _ = self.jobs.send(job);
@@ -588,25 +758,132 @@ impl Lanes {
     /// no answer by which it could learn that it was undone, and what it was answered
     /// may have rested on what another region wrote in it.
     fn fail_log(&mut self) {
-        let Some((segment, durable)) = self.log.fail() else {
-            return;
-        };
-        self.group = Group::default();
+        let failed = self.log.fail();
+        // What the group did to the table is taken back, last first: its records are
+        // cut off the log, and a store that started now would not know of them.
+        let group = mem::take(&mut self.group);
+        for change in group.changed.into_iter().rev() {
+            match change {
+                Change::Granted { region, chunks } => {
+                    for chunk in chunks {
+                        self.table.release(region, chunk);
+                    }
+                }
+                Change::Returned { region, grants } => {
+                    for (chunk, tick) in grants {
+                        self.table.grant(region, tick, &[chunk]).expect(
+                            "a chunk the group freed is free once what it did since is undone",
+                        );
+                    }
+                }
+            }
+        }
         for lane in self.regions.values_mut() {
-            lane.live
-                .retain(|entry| entry.segment != segment || entry.offset < durable);
+            if let Some((segment, durable)) = failed {
+                lane.live
+                    .retain(|entry| entry.segment != segment || entry.offset < durable);
+            }
             lose(lane);
         }
     }
 
-    /// Removes the segments at the start of the log that hold nothing needed any more.
-    fn collect(&mut self) {
-        let needed: BTreeSet<u64> = self
-            .regions
+    /// The segments of the log that a lane needs: those with a commit whoever opens
+    /// its region next is restored with.
+    fn needed_by_lanes(&self) -> BTreeSet<u64> {
+        self.regions
             .values()
             .flat_map(|lane| lane.live.iter().map(|entry| entry.segment))
+            .collect()
+    }
+
+    /// Removes the segments at the start of the log that hold nothing needed any more:
+    /// no commit a region is restored with, and nothing the table file does not have.
+    fn collect(&mut self) {
+        let needed = self.needed_by_lanes();
+        let from = self.table.from;
+        let table = self.table_last.map(|last| from..=last);
+        self.log.remove_while(|segment| {
+            !needed.contains(&segment)
+                && !table.as_ref().is_some_and(|kept| kept.contains(&segment))
+        });
+    }
+
+    /// Writes the table file anew if that lets the first segment of the log go: if no
+    /// lane needs that segment and it is kept only for what it says of the table. The
+    /// file then has all of that, and names the next segment as the first that is not
+    /// in it.
+    ///
+    /// For the end of a group, when everything the table has is durable in the log and
+    /// no segment is being appended to.
+    fn trim_for_the_table(&mut self) {
+        let (Some(&first), Some(last)) = (self.log.segments.first(), self.table_last) else {
+            return;
+        };
+        let kept_for_the_table = (self.table.from..=last).contains(&first);
+        if !kept_for_the_table
+            || self.needed_by_lanes().contains(&first)
+            || self.log.active.is_some()
+        {
+            return;
+        }
+        // Only once the file is durable are the segments it stands for let go of. If it
+        // cannot be written, the file there is stays the one that counts, with every
+        // segment from its `from` on.
+        match self.write_table(self.log.next) {
+            Ok(()) => {
+                self.table_last = None;
+                self.collect();
+            }
+            Err(error) => {
+                error!(%error, "the table of regions could not be written; the log is kept as it is");
+            }
+        }
+    }
+
+    /// The thread for chunks has made the saves before the return `number` of `session`
+    /// durable: the chunks of it that have not been claimed again since, or returned
+    /// once more, or taken elsewhere, are free.
+    fn returned(&mut self, session: Session, number: u64, chunks: Vec<ChunkPos>) {
+        let region = session.region;
+        let Some(lane) = self.regions.get_mut(&region) else {
+            return;
+        };
+        if lane.current != Some(session.number) {
+            return;
+        }
+        // Only what is noted with this very return. A chunk that was claimed again and
+        // returned once more is noted with the later one, whose saves are not durable
+        // yet.
+        let freed: Vec<ChunkPos> = chunks
+            .into_iter()
+            .filter(|chunk| lane.returning.get(chunk) == Some(&number))
             .collect();
-        self.log.remove_while(|segment| !needed.contains(&segment));
+        for chunk in &freed {
+            lane.returning.remove(chunk);
+        }
+        for chunks in freed.chunks(RECORD_CHUNKS) {
+            let record = LogRecord::Returned {
+                region: region.0,
+                chunks: chunks.to_vec(),
+            };
+            match self.log.append(&record.encode()) {
+                Ok((segment, _)) => self.table_last = Some(segment),
+                Err(error) => {
+                    error!(%region, %error, "a return could not be written to the log");
+                    self.fail_log();
+                    return;
+                }
+            }
+        }
+        // At once: the chunks are nobody's, or the pinned region's whose area they are
+        // in, for the next claim, which is written behind this record.
+        let grants: Vec<(ChunkPos, u64)> = freed
+            .into_iter()
+            .filter_map(|chunk| Some((chunk, self.table.release(region, chunk)?)))
+            .collect();
+        if !grants.is_empty() {
+            self.group.changed.push(Change::Returned { region, grants });
+        }
     }
 
     /// Puts the state file the thread for chunks has written for `session` in place, if
@@ -817,18 +1094,22 @@ impl Lanes {
             held: Vec::new(),
         });
         lane.current = Some(session.number);
+        lane.latest = restored_tick;
+        // A return the owner before had asked for frees nothing any more.
+        lane.returning.clear();
+        lane.returns = 0;
 
         let mut changes = Vec::new();
         let mut deltas = Vec::new();
         for (tick, (changed, state)) in chosen {
-            changes.extend(changed);
+            changes.extend(replayed(&self.table, region, tick, changed));
             deltas.push(TickState { tick, state });
         }
         let restored = Restored {
             entity_ids,
             state: state.map(|StateFile { tick, state }| TickState { tick, state }),
             deltas,
-            held: Vec::new(),
+            held: self.table.grants(region),
             pinned: self.table.pinned(region).to_vec(),
         };
         let opened = Opened {
@@ -847,7 +1128,10 @@ impl Lanes {
     /// In an order that makes doing it again harmless: until the table of the new
     /// division is durable, which is the caller's next step, a store that starts finds
     /// the old one, or the old layout file, and does all of this again.
-    fn make_over(&mut self) -> Result<(), StoreError> {
+    ///
+    /// `held` says whether the world has a table by which to tell what a region held:
+    /// if so, the changes are chosen as for an opening, and otherwise all are taken.
+    fn make_over(&mut self, held: bool) -> Result<(), StoreError> {
         let left: Vec<RegionId> = self
             .regions
             .iter()
@@ -858,14 +1142,20 @@ impl Lanes {
             return Ok(());
         }
         let mut changes = Vec::new();
-        for lane in self.regions.values() {
+        for (region, lane) in &self.regions {
             let mut chosen = BTreeMap::new();
             for entry in &lane.live {
                 if let Some((tick, changed, _)) = self.log.read(entry)? {
                     chosen.insert(tick, changed);
                 }
             }
-            changes.extend(chosen.into_values().flatten());
+            for (tick, changed) in chosen {
+                if held {
+                    changes.extend(replayed(&self.table, *region, tick, changed));
+                } else {
+                    changes.extend(changed);
+                }
+            }
         }
         let (done, finished) = mpsc::channel();
         let _ = self.jobs.send(Job::Fold { changes, done });
@@ -944,6 +1234,36 @@ impl Lanes {
         }
         Ok(())
     }
+}
+
+/// The table the records of `segment` change: the one the world has, if the segment is
+/// not one its file stands for already. A record for the table in a world without one
+/// is a log that does not fit.
+fn changed_by(stored: &mut Option<Table>, segment: u64) -> Result<Option<&mut Table>, StoreError> {
+    match stored {
+        Some(table) if segment >= table.from => Ok(Some(table)),
+        Some(_) => Ok(None),
+        None => Err(StoreError::Table(
+            "the log has a record of regions and there is no table of them".to_owned(),
+        )),
+    }
+}
+
+/// Of the block changes a commit of `region` with `tick` made, those that are put into
+/// the stored chunks when the commit is replayed: those in chunks the region holds
+/// now, made after the tick it holds the chunk from. What it did to a chunk before
+/// that is in the chunk as it gave it away, and has perhaps been built over since.
+fn replayed(
+    table: &Table,
+    region: RegionId,
+    tick: u64,
+    changes: Vec<(BlockPos, BlockState)>,
+) -> impl Iterator<Item = (BlockPos, BlockState)> + '_ {
+    changes.into_iter().filter(move |(position, _)| {
+        table
+            .held_from(region, position.chunk())
+            .is_some_and(|from| tick > from)
+    })
 }
 
 /// The block of entity ids of a region that has none.

@@ -239,14 +239,19 @@ pub enum StoreRequest {
     Checkpoint { tick: u64, state: Vec<u8> },
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
-    /// Grant the region these chunks, as of its tick `tick`. Each is granted unless
-    /// another region holds it. Answered with [`StoreReply::Claimed`] once the grants
-    /// are on disk. See ADR-0010, section 1. The store does not keep grants yet, and
-    /// passes over this and the three requests below.
-    Claim { tick: u64, chunks: Vec<ChunkPos> },
+    /// Grant the region these chunks. Each is granted unless another region holds it,
+    /// from the tick of the last commit the store has of the region: the region's own
+    /// tick can be issued again after a restore, so the claim names none. Answered
+    /// with [`StoreReply::Claimed`] once the grants are on disk, behind the answers to
+    /// the commits asked for before. See ADR-0011, section 3.2.
+    Claim { chunks: Vec<ChunkPos> },
     /// The region gives these chunks back. Every change it made to them is in a save
-    /// asked for before this; the chunks are free once those saves are on disk. Not
-    /// answered.
+    /// asked for before this; the chunks are free once those saves are on disk. A chunk
+    /// the region was not granted, and the chunk players enter the world in, are left
+    /// out. A claim of a chunk that arrives before the chunk is free keeps it. Not
+    /// answered; a [`StoreRequest::Flush`] asked for behind it is answered when the
+    /// return is on disk. See ADR-0011, section 3.3. The store does not merge or split
+    /// regions yet, and passes over the two requests below.
     Return { chunks: Vec<ChunkPos> },
     /// The merge of ADR-0010, section 4: `state` is this region's whole state after
     /// `tick` with the region `absorbed` taken in, whose chunks are this region's from
@@ -296,8 +301,9 @@ pub enum StoreReply {
         tick: u64,
     },
     Flushed,
-    /// The answer to [`StoreRequest::Claim`]: the chunks the region holds from the
-    /// claim's tick on, and those of the claim that another region holds.
+    /// The answer to [`StoreRequest::Claim`]: the chunks of the claim that the region
+    /// holds, whether it was granted them by this claim or held them before, and those
+    /// that another region holds.
     Claimed {
         granted: Vec<ChunkPos>,
         foreign: Vec<(ChunkPos, RegionId)>,
@@ -388,9 +394,10 @@ pub enum StoreWelcome {
     Refused { reason: String },
 }
 
-/// Some of the state and the deltas of a [`Restored`], as they follow a
+/// Some of the state, the deltas and the grants of a [`Restored`], as they follow a
 /// [`StoreWelcome::Accepted`]. The pieces of all parts, in the order they are sent, are
-/// the state if there is one and then the deltas in the order of their ticks.
+/// the state if there is one, then the deltas in the order of their ticks, and then
+/// the grants if there are any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoredPart {
     pub pieces: Vec<RestoredPiece>,
@@ -398,7 +405,8 @@ pub struct RestoredPart {
     pub last: bool,
 }
 
-/// The state or a delta of a [`Restored`], or as much of one as its part had room for.
+/// The state, a delta or the grants of a [`Restored`], or as much of one as its part
+/// had room for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoredPiece {
     pub of: RestoredItem,
@@ -418,6 +426,19 @@ pub enum RestoredItem {
     State,
     /// One of [`Restored::deltas`].
     Delta,
+    /// [`Restored::held`], as [`held_bytes`] makes bytes of it, with a tick of 0. Left
+    /// out if the region was granted nothing.
+    Held,
+}
+
+/// [`Restored::held`] as the bytes of a [`RestoredItem::Held`]: its postcard.
+pub fn held_bytes(held: &[(ChunkPos, u64)]) -> Vec<u8> {
+    postcard::to_stdvec(held).expect("positions and ticks are serialisable")
+}
+
+/// What [`held_bytes`] made bytes of, or `None` if `bytes` are not that.
+pub fn held_from_bytes(bytes: &[u8]) -> Option<Vec<(ChunkPos, u64)>> {
+    postcard::from_bytes(bytes).ok()
 }
 
 /// The regions of a world as the world store has them, for the coordinator. See

@@ -1253,3 +1253,29 @@ what was decided. None of it changes what section 4.3 guarantees.
    - `tests.rs`, `a_hello_with_another_layout_than_the_first_is_refused` is named
      `…_than_the_stores_is_refused`, as there is no first hello that decides any more,
      and asserts the refusal before any hello as well as after.
+
+### C1.4
+
+1. **Section 3.4, the bytes of `RestoredItem::Held`**: the store's crate has neither
+   serde nor postcard (it is handed `wire`'s functions for everything it sends), so
+   "the postcard of the `Vec<(ChunkPos, u64)>`" is made and read by two functions next
+   to the message, `clustine_rpc::held_bytes` and `held_from_bytes`. No message
+   changes by it.
+2. **Section 9, scenario 11, "the log has no segment below the table file's `from`"**
+   holds for the store that runs. After a crash a segment that was removed can be
+   there again, because removing a segment is not made durable, today as before; the
+   row "Table file" of section 4.3 says so ("segments below its `from` may be there,
+   and change nothing"), and the store's test of the scenario checks the crash for
+   the same list and the same grants, not for the segments.
+3. **Section 4.2, a `Returned` of a region the table does not have** is passed over
+   with the warning, like one of a chunk the region has no grant of: it says that the
+   region does not hold the chunk, which is so. "A region that is not there" ends the
+   start for `Granted`, as the section says, and will for `Absorbed` and `Split`.
+4. **Section 3.3, a return of which no chunk is left** after those the region was not
+   granted and the home chunk are left out makes no `Job::Return`, and takes no
+   number: there is nothing for the thread for chunks to make durable for it.
+5. **A test of C1.2 depended on how the commit thread grouped what it was sent**:
+   `hellos_fail_until_cutting_the_log_back_succeeds` counts the changes and syncs up
+   to a commit, and an opening and the commit behind it are one sync or two. It
+   passed every run of C1.2 and failed once here. It now waits for the opening to be
+   durable before it commits, so that each commit is a group by itself.

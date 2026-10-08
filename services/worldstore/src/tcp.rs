@@ -27,9 +27,9 @@ use std::time::Duration;
 
 use clustine_rpc::{
     RegionHello, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
-    StoreWelcome, TickState, wire,
+    StoreWelcome, TickState, held_bytes, held_from_bytes, wire,
 };
-use clustine_world::{ChunkArea, EntityIds};
+use clustine_world::{ChunkArea, ChunkPos, EntityIds};
 use tracing::{info, warn};
 
 use crate::{Link, Store, StoreError, StoreHandle};
@@ -283,8 +283,7 @@ fn converse(store: &Store, stream: &TcpStream, peer: SocketAddr) {
 /// that has stopped reading must not hold on to a thread and a region for ever.
 fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Result<()> {
     let Restored {
-        // Not sent yet: the store grants no chunks yet, so there are none (ADR-0011).
-        held: _,
+        held,
         pinned,
         entity_ids,
         state,
@@ -293,23 +292,26 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
     stream.set_write_timeout(Some(patience))?;
     let accepted = StoreWelcome::Accepted { entity_ids, pinned };
     wire::blocking::write(&mut &*stream, &accepted)?;
-    for part in Parts::new(state, deltas, PART_BYTES) {
+    for part in Parts::new(state, deltas, &held, PART_BYTES) {
         wire::blocking::write(&mut &*stream, &part)?;
     }
     // Answers wait for as long as the owner takes to read them.
     stream.set_write_timeout(None)
 }
 
-/// The state and the deltas of a [`Restored`] as the parts they are sent in, none of
-/// which holds more than `room` bytes.
+/// The state, the deltas and the grants of a [`Restored`] as the parts they are sent
+/// in, none of which holds more than `room` bytes.
 ///
 /// What is counted is the bytes of the states and [`PIECE_OVERHEAD`] for each piece, not
 /// the number of pieces: one delta can be large, and thousands can be next to nothing.
 /// A state or delta that does not fit what is left of a part is cut there and goes on in
-/// the next, so that nothing is too large to be sent.
+/// the next, so that nothing is too large to be sent. The grants are sent like a state,
+/// as the bytes [`held_bytes`] makes of them, behind the deltas.
 struct Parts {
     state: Option<TickState>,
     deltas: std::vec::IntoIter<TickState>,
+    /// The grants as they are sent, if there are any and they have not been taken yet.
+    held: Option<TickState>,
     /// What has been taken from the two and is not sent in full, with the number of its
     /// bytes that are.
     cut: Option<(RestoredItem, TickState, usize)>,
@@ -319,10 +321,20 @@ struct Parts {
 }
 
 impl Parts {
-    fn new(state: Option<TickState>, deltas: Vec<TickState>, room: usize) -> Self {
+    fn new(
+        state: Option<TickState>,
+        deltas: Vec<TickState>,
+        held: &[(ChunkPos, u64)],
+        room: usize,
+    ) -> Self {
+        let held = (!held.is_empty()).then(|| TickState {
+            tick: 0,
+            state: held_bytes(held),
+        });
         Self {
             state,
             deltas: deltas.into_iter(),
+            held,
             cut: None,
             // A part has room for a byte at least, or nothing would ever be sent.
             room: room.max(PIECE_OVERHEAD + 1),
@@ -338,8 +350,11 @@ impl Parts {
         if let Some(state) = self.state.take() {
             return Some((RestoredItem::State, state, 0));
         }
-        let delta = self.deltas.next()?;
-        Some((RestoredItem::Delta, delta, 0))
+        if let Some(delta) = self.deltas.next() {
+            return Some((RestoredItem::Delta, delta, 0));
+        }
+        let held = self.held.take()?;
+        Some((RestoredItem::Held, held, 0))
     }
 }
 
@@ -396,8 +411,10 @@ impl Iterator for Parts {
 /// A [`Restored`] that is being put together from the parts it arrives in.
 struct Arriving {
     restored: Restored,
-    /// The state or delta whose pieces have not all arrived.
+    /// The state, the delta or the grants whose pieces have not all arrived.
     cut: Option<(RestoredItem, TickState)>,
+    /// Whether the grants have arrived, which nothing follows.
+    held: bool,
 }
 
 impl Arriving {
@@ -411,6 +428,7 @@ impl Arriving {
                 deltas: Vec::new(),
             },
             cut: None,
+            held: false,
         }
     }
 
@@ -440,6 +458,9 @@ impl Arriving {
                 self.cut = Some((of, state));
                 continue;
             }
+            if self.held {
+                return Err(misfit("something behind the chunks the region holds"));
+            }
             match of {
                 RestoredItem::State => {
                     if self.restored.state.is_some() || !self.restored.deltas.is_empty() {
@@ -448,6 +469,11 @@ impl Arriving {
                     self.restored.state = Some(state);
                 }
                 RestoredItem::Delta => self.restored.deltas.push(state),
+                RestoredItem::Held => {
+                    self.restored.held = held_from_bytes(&state.state)
+                        .ok_or_else(|| misfit("chunks the region holds that cannot be read"))?;
+                    self.held = true;
+                }
             }
         }
         if !part.last {
@@ -1595,7 +1621,7 @@ mod tests {
         for room in [0, 30, 100, 1000, PART_BYTES] {
             for case in &cases {
                 let parts: Vec<_> =
-                    Parts::new(case.state.clone(), case.deltas.clone(), room).collect();
+                    Parts::new(case.state.clone(), case.deltas.clone(), &[], room).collect();
                 let room = room.max(PIECE_OVERHEAD + 1);
                 for (index, part) in parts.iter().enumerate() {
                     // Besides what is counted, a part has its length, the number of its
@@ -1623,12 +1649,94 @@ mod tests {
         // of several parts each.
         let large = restored(Some(3 * PART_BYTES + 5), &[3, 5 * PART_BYTES / 2, 0]);
         let parts: Vec<_> =
-            Parts::new(large.state.clone(), large.deltas.clone(), PART_BYTES).collect();
+            Parts::new(large.state.clone(), large.deltas.clone(), &[], PART_BYTES).collect();
         assert!(parts.len() > 5);
         for part in &parts {
             assert!(sent_length(part) <= PART_BYTES + 16);
         }
         assert_eq!(together(entity_ids, parts).unwrap(), large);
+    }
+
+    /// What a region was granted follows its state and deltas as one more item, cut
+    /// into pieces like them, and nothing follows it.
+    #[test]
+    fn the_chunks_a_region_was_granted_are_sent_in_parts_behind_its_state_and_deltas() {
+        let entity_ids = EntityIds::block(2).unwrap();
+        let held: Vec<(ChunkPos, u64)> = (0..500)
+            .map(|z| (ChunkPos::new(-3, z), z as u64 * 1000))
+            .collect();
+        let with_states = (
+            Some(tick_state(7, 40)),
+            vec![tick_state(8, 3), tick_state(9, 300)],
+        );
+        for (state, deltas) in [(None, Vec::new()), with_states] {
+            for room in [30, 100, 1000, PART_BYTES] {
+                let parts: Vec<_> =
+                    Parts::new(state.clone(), deltas.clone(), &held, room).collect();
+                for part in &parts {
+                    assert!(sent_length(part) <= room.max(PIECE_OVERHEAD + 1) + 16);
+                }
+                let items: Vec<RestoredItem> = parts
+                    .iter()
+                    .flat_map(|part| part.pieces.iter().map(|piece| piece.of))
+                    .collect();
+                let first = items
+                    .iter()
+                    .position(|of| *of == RestoredItem::Held)
+                    .expect("the grants are sent");
+                assert!(items[first..].iter().all(|of| *of == RestoredItem::Held));
+                let restored = together(entity_ids, parts).unwrap();
+                assert_eq!(restored.held, held);
+                assert_eq!(
+                    (restored.state, restored.deltas),
+                    (state.clone(), deltas.clone())
+                );
+            }
+        }
+        // A region that was granted nothing is sent no such item.
+        let parts: Vec<_> = Parts::new(None, Vec::new(), &[], 100).collect();
+        let nothing = RestoredPart {
+            pieces: Vec::new(),
+            last: true,
+        };
+        assert_eq!(parts, [nothing]);
+
+        // A second one, a state or a delta behind one, one that cannot be read, and
+        // an end in the middle of one do not fit together.
+        let piece = |of, bytes: &[u8], complete| RestoredPiece {
+            of,
+            tick: 0,
+            bytes: bytes.to_vec(),
+            complete,
+        };
+        let bytes = held_bytes(&held[..2]);
+        let granted = RestoredItem::Held;
+        let disorders = [
+            vec![piece(granted, &bytes, true), piece(granted, &bytes, true)],
+            vec![
+                piece(granted, &bytes, true),
+                piece(RestoredItem::Delta, &[1], true),
+            ],
+            vec![
+                piece(granted, &bytes, true),
+                piece(RestoredItem::State, &[1], true),
+            ],
+            vec![piece(granted, &[0xFF; 3], true)],
+            vec![piece(granted, &bytes[..3], false)],
+        ];
+        for pieces in disorders {
+            let parts = vec![RestoredPart { pieces, last: true }];
+            let error = together(entity_ids, parts.clone()).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidData, "{parts:?}");
+        }
+        let parts = vec![RestoredPart {
+            pieces: vec![
+                piece(RestoredItem::Delta, &[1], true),
+                piece(granted, &bytes, true),
+            ],
+            last: true,
+        }];
+        assert_eq!(together(entity_ids, parts).unwrap().held, held[..2]);
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //! regions and who holds a chunk. See `docs/adr/0011-the-world-store-and-regions.md`.
 
 use std::path::Path;
+use std::sync::Barrier;
 
-use clustine_data::blocks;
+use clustine_data::{BlockState, blocks};
 use clustine_format::{LogRecord, RegionFile, StateFile, TableFile};
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList, TickState};
 use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkPos, EntityIds};
@@ -643,4 +644,825 @@ fn a_table_that_cannot_be_read_starts_no_store() {
         store_on(&impossible, &division()),
         Err(StoreError::Table(_))
     ));
+}
+
+/// A chunk in the gap of [`gap`], which nobody holds until it is claimed.
+const FREE: ChunkPos = ChunkPos::new(5, 5);
+
+/// Claims `chunks` and waits for the answer: those granted, and those of other regions.
+pub(crate) fn claim(
+    handle: &StoreHandle,
+    chunks: &[ChunkPos],
+) -> (Vec<ChunkPos>, Vec<(ChunkPos, RegionId)>) {
+    handle.request(StoreRequest::Claim {
+        chunks: chunks.to_vec(),
+    });
+    match reply(handle) {
+        StoreReply::Claimed { granted, foreign } => (granted, foreign),
+        other => panic!("expected the answer to a claim, got {other:?}"),
+    }
+}
+
+pub(crate) fn give_back(handle: &StoreHandle, chunks: &[ChunkPos]) {
+    handle.request(StoreRequest::Return {
+        chunks: chunks.to_vec(),
+    });
+}
+
+/// Opens a region of the world with a gap, and returns the handle with what the region
+/// was granted.
+fn opened(store: &Store, region: u32, epoch: u64) -> (StoreHandle, Vec<(ChunkPos, u64)>) {
+    let (handle, restored) = store.open_region(hello_of(&gap(), region, epoch)).unwrap();
+    (handle, restored.held)
+}
+
+/// What each region of the world with a gap that is left on `disk` was granted, as a
+/// store that starts on it says when the regions are opened with `epoch`.
+fn held_after(disk: &MemoryDisk, survival: Survival, epoch: u64) -> Vec<Vec<(ChunkPos, u64)>> {
+    let left = Arc::new(disk.crashed(survival));
+    let store = store_on(&left, &gap()).unwrap();
+    let regions = store.regions().unwrap().regions;
+    regions
+        .iter()
+        .map(|info| opened(&store, info.region.0, epoch).1)
+        .collect()
+}
+
+/// The chunk at `position` with a block set that the flat world does not have there.
+fn built(position: ChunkPos, state: BlockState) -> Chunk {
+    let mut chunk = generator().generate(position);
+    chunk.set(7, 100, 7, state);
+    chunk
+}
+
+/// The block [`built`] sets, in the chunk at `position`.
+fn block_of(position: ChunkPos) -> (i32, i32, i32) {
+    (position.x * 16 + 7, 100, position.z * 16 + 7)
+}
+
+/// Keeps chunks as `chunks` does, but a save of one of the chunks in `gated` waits
+/// until the test lets it go on, keeping the thread for chunks busy.
+struct Gated<C> {
+    chunks: C,
+    gated: Vec<ChunkPos>,
+    barrier: Arc<Barrier>,
+}
+
+impl<C: Chunks> Chunks for Gated<C> {
+    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
+        self.chunks.load(position)
+    }
+
+    fn save(&mut self, position: ChunkPos, tick: u64, chunk: &Chunk) -> Result<(), StoreError> {
+        if self.gated.contains(&position) {
+            // Once to say that the save has started, once to be let go on.
+            self.barrier.wait();
+            self.barrier.wait();
+        }
+        self.chunks.save(position, tick, chunk)
+    }
+
+    fn sync(&mut self) -> Result<(), StoreError> {
+        self.chunks.sync()
+    }
+}
+
+/// A store for the world with a gap on `disk`, whose saves of the chunks in `gated`
+/// wait for the barrier.
+fn gated(disk: &Arc<MemoryDisk>, gated: &[ChunkPos]) -> (Store, Arc<Barrier>) {
+    let barrier = Arc::new(Barrier::new(2));
+    let root = Path::new(ROOT);
+    let chunks = Gated {
+        chunks: FileChunks::new(disk.clone(), root),
+        gated: gated.to_vec(),
+        barrier: Arc::clone(&barrier),
+    };
+    let store = start(disk.clone(), root, Box::new(chunks), generator(), &gap()).unwrap();
+    (store, barrier)
+}
+
+/// The chunk of the eastern pinned region whose save holds the thread for chunks.
+const BUSY: ChunkPos = ChunkPos::new(1000, 1000);
+
+/// Scenario 2 of ADR-0011: a claim of a chunk in the region's own stripe is granted,
+/// writes nothing and adds nothing to what the region is restored with as granted; one
+/// in the other's stripe is `foreign` with that region.
+#[test]
+fn a_pinned_region_is_answered_from_the_table_without_a_record() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &division()).unwrap();
+    let west = open(&store, hello(0, 1));
+    let east = open(&store, hello(1, 1));
+    west.flush();
+    east.flush();
+    let before = disk.operations();
+    // Each chunk once, in the order of the request, however often it is named.
+    let far = ChunkPos::new(40, -40);
+    assert_eq!(
+        claim(&east, &[ORIGIN, WEST, far, ORIGIN, WEST]),
+        (vec![ORIGIN, far], vec![(WEST, RegionId(0))])
+    );
+    assert_eq!(
+        claim(&west, &[ORIGIN, WEST]),
+        (vec![WEST], vec![(ORIGIN, RegionId(1))])
+    );
+    assert_eq!(disk.operations(), before);
+    // Giving back what was never granted does nothing either.
+    give_back(&east, &[ORIGIN, WEST]);
+    east.flush();
+    assert_eq!(disk.operations(), before);
+    assert_eq!(load(&east, ORIGIN), generator().generate(ORIGIN));
+    drop((west, east));
+    for region in 0..2 {
+        let (_, restored) = store.open_region(hello(region, 2)).unwrap();
+        assert_eq!(restored.held, []);
+    }
+    let list = store.regions().unwrap();
+    assert!(list.regions.iter().all(|info| info.bounds.is_none()));
+}
+
+/// Scenario 3: a chunk nobody holds is granted once; the second region to ask gets
+/// `foreign`, also when both ask in one group; and a store that starts again has the
+/// chunk for the first and not for the second.
+#[test]
+fn a_free_chunk_is_granted_to_the_first_region_that_claims_it() {
+    let (store, disk) = crate::tests::switched_for(&gap());
+    let (first, held) = opened(&store, 0, 1);
+    let (second, _) = opened(&store, 1, 1);
+    assert_eq!(held, []);
+    assert_eq!(claim(&first, &[FREE]), (vec![FREE], Vec::new()));
+    assert_eq!(
+        claim(&second, &[FREE]),
+        (Vec::new(), vec![(FREE, RegionId(0))])
+    );
+    // Claimed again by its holder, it is among those granted, and nothing changes.
+    assert_eq!(claim(&first, &[FREE]), (vec![FREE], Vec::new()));
+    assert_eq!(load(&first, FREE), generator().generate(FREE));
+    second.request(StoreRequest::Load { position: FREE });
+    let not_held = StoreReply::NotHeld {
+        position: FREE,
+        holder: Some(RegionId(0)),
+    };
+    assert_eq!(reply(&second), not_held);
+
+    // Two claims of one chunk in one group, which the held sync of a commit makes of
+    // them: the grant is not durable when the second claim is looked at.
+    let other = ChunkPos::new(6, 5);
+    disk.holding_syncs.store(true, Ordering::SeqCst);
+    log(&first, 1, &[]);
+    disk.held.wait();
+    second.request(StoreRequest::Claim {
+        chunks: vec![other],
+    });
+    first.request(StoreRequest::Claim {
+        chunks: vec![other, FREE],
+    });
+    disk.held.wait();
+    let granted = StoreReply::Claimed {
+        granted: vec![other],
+        foreign: Vec::new(),
+    };
+    assert_eq!(reply(&second), granted);
+    let foreign = StoreReply::Claimed {
+        granted: vec![FREE],
+        foreign: vec![(other, RegionId(1))],
+    };
+    assert_eq!(reply(&first), foreign);
+
+    // The list has the box around what each was granted.
+    let list = store.regions().unwrap();
+    let bounds: Vec<_> = list.regions.iter().map(|info| info.bounds).collect();
+    let around = |chunk| {
+        Some(ChunkBox {
+            min: chunk,
+            max: chunk,
+        })
+    };
+    assert_eq!(bounds, [around(FREE), around(other), around(ORIGIN)]);
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        // The grant of the first was made before it had committed anything; that of
+        // the second as well.
+        let held = held_after(&disk.disk, survival, epoch);
+        assert_eq!(
+            held,
+            [vec![(FREE, 0)], vec![(other, 0)], vec![(ORIGIN, 0)]],
+            "{survival:?}"
+        );
+    }
+}
+
+/// Scenario 4: a claim is answered only after the commits asked for before it, and is
+/// in the log whenever it was answered.
+#[test]
+fn a_claim_is_answered_behind_the_commits_before_it_and_is_durable_by_then() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (region, _) = opened(&store, 0, 1);
+    for tick in 1..=3 {
+        log(&region, tick, &[]);
+    }
+    region.request(StoreRequest::Claim { chunks: vec![FREE] });
+    log(&region, 4, &[]);
+    let mut answers = Vec::new();
+    for _ in 0..5 {
+        answers.push(crate::tests::any_reply(&region));
+    }
+    let claimed = StoreReply::Claimed {
+        granted: vec![FREE],
+        foreign: Vec::new(),
+    };
+    let committed = |tick| StoreReply::Committed { tick };
+    assert_eq!(
+        answers,
+        [
+            committed(1),
+            committed(2),
+            committed(3),
+            claimed,
+            committed(4)
+        ]
+    );
+    // A crash that keeps nothing unsynced has the grant, with the tick of the last
+    // commit before it.
+    let held = held_after(&disk, Survival::Nothing, 2);
+    assert_eq!(held[0], [(FREE, 3)]);
+}
+
+/// Scenario 5: the tick of a grant is that of the last commit the store has of the
+/// region, and a change the region makes to the chunk in the tick after it is in the
+/// chunk when the region is opened once more.
+#[test]
+fn a_grant_has_the_tick_of_the_last_commit_and_what_follows_is_replayed() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (first, _) = opened(&store, 0, 1);
+    for tick in 1..=3 {
+        log(&first, tick, &[]);
+    }
+    first.flush();
+    drop(first);
+
+    // Restored up to tick 3, whatever tick the region itself is in by now.
+    let (second, restored) = store.open_region(hello_of(&gap(), 0, 2)).unwrap();
+    assert_eq!(restored.tick(), 3);
+    assert_eq!(claim(&second, &[FREE]), (vec![FREE], Vec::new()));
+    let (x, y, z) = block_of(FREE);
+    log(&second, 4, &[(x, y, z, blocks::GLASS)]);
+    second.flush();
+    drop(second);
+
+    let (third, restored) = store.open_region(hello_of(&gap(), 0, 3)).unwrap();
+    assert_eq!(restored.held, [(FREE, 3)]);
+    assert_eq!(load(&third, FREE), built(FREE, blocks::GLASS));
+    // And the same after the store has started again.
+    third.flush();
+    let left = Arc::new(disk.crashed(Survival::Nothing));
+    let store = store_on(&left, &gap()).unwrap();
+    let (fourth, held) = opened(&store, 0, 4);
+    assert_eq!(held, [(FREE, 3)]);
+    assert_eq!(load(&fourth, FREE), built(FREE, blocks::GLASS));
+}
+
+/// What a region committed for a chunk it does not hold is logged and never put into a
+/// stored chunk.
+#[test]
+fn changes_to_chunks_a_region_does_not_hold_are_not_replayed() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &division()).unwrap();
+    let west = open(&store, hello(0, 1));
+    let east = open(&store, hello(1, 1));
+    // The western region changes a block of its own and one of the eastern stripe.
+    log(
+        &west,
+        1,
+        &[(-3, -61, 4, blocks::AIR), (3, 100, 4, blocks::GLASS)],
+    );
+    west.flush();
+    drop(west);
+    let (west, restored) = store.open_region(hello(0, 2)).unwrap();
+    assert_eq!(restored.deltas.len(), 1);
+    assert_eq!(load(&west, WEST), dug());
+    assert_eq!(load(&east, ORIGIN), generator().generate(ORIGIN));
+    // Nor when the world is made over, with whoever holds the chunk then.
+    west.flush();
+    east.flush();
+    let left = Arc::new(disk.crashed(Survival::Nothing));
+    let single = stripes(&[]);
+    let store = store_on(&left, &single).unwrap();
+    let whole = open(&store, hello_of(&single, 0, 3));
+    assert_eq!(load(&whole, WEST), dug());
+    assert_eq!(load(&whole, ORIGIN), generator().generate(ORIGIN));
+}
+
+/// Scenario 6, built over: a region changes a block of a chunk, saves the chunk and
+/// returns it, without a checkpoint; another claims the chunk, sets the same block
+/// otherwise, saves, checkpoints and returns; the first claims the chunk again and is
+/// then opened anew. The block is as the second left it.
+#[test]
+fn what_a_later_holder_built_is_not_undone_by_an_earlier_holders_log() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (first, _) = opened(&store, 0, 1);
+    let (second, _) = opened(&store, 1, 1);
+    let (x, y, z) = block_of(FREE);
+
+    assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+    log(&first, 1, &[(x, y, z, blocks::STONE)]);
+    first.request(StoreRequest::Save {
+        position: FREE,
+        tick: 1,
+        chunk: built(FREE, blocks::STONE),
+    });
+    give_back(&first, &[FREE]);
+    first.flush();
+
+    assert_eq!(claim(&second, &[FREE]).0, [FREE]);
+    assert_eq!(load(&second, FREE), built(FREE, blocks::STONE));
+    log(&second, 1, &[(x, y, z, blocks::GLASS)]);
+    second.request(StoreRequest::Save {
+        position: FREE,
+        tick: 1,
+        chunk: built(FREE, blocks::GLASS),
+    });
+    second.request(StoreRequest::Checkpoint {
+        tick: 1,
+        state: b"second".to_vec(),
+    });
+    give_back(&second, &[FREE]);
+    second.flush();
+
+    assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+    first.flush();
+    drop(first);
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        let (first, restored) = store.open_region(hello_of(&gap(), 0, epoch)).unwrap();
+        // The commit is still what the region is restored with, and the grant is of
+        // its tick, so that its change is not put into the chunk again.
+        assert_eq!(restored.deltas.len(), 1, "{survival:?}");
+        assert_eq!(restored.held, [(FREE, 1)], "{survival:?}");
+        assert_eq!(
+            load(&first, FREE),
+            built(FREE, blocks::GLASS),
+            "{survival:?}"
+        );
+    }
+}
+
+/// Scenario 7: a chunk that is returned and not saved again loses nothing that was
+/// saved before; a claim that arrives before the return is through is `foreign`, one
+/// after it granted; and a flush behind the return is answered only once a crash would
+/// keep the return.
+#[test]
+fn a_chunk_is_its_regions_until_its_return_is_through() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, barrier) = gated(&disk, &[BUSY]);
+    let (first, _) = opened(&store, 0, 1);
+    let (busy, _) = opened(&store, 1, 1);
+    let (second, _) = opened(&store, 2, 1);
+    assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+    save(&first, FREE, &built(FREE, blocks::STONE));
+    first.flush();
+
+    // The thread for chunks is busy; the return waits behind what it is busy with.
+    save(&busy, BUSY, &edited());
+    barrier.wait();
+    give_back(&first, &[FREE]);
+    first.request(StoreRequest::Flush);
+    assert_eq!(
+        claim(&second, &[FREE]),
+        (Vec::new(), vec![(FREE, RegionId(0))])
+    );
+    // The claim was looked at after the flush was asked for, which is not answered.
+    assert_eq!(first.try_reply(), None);
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let held = held_after(&disk, survival, epoch);
+        assert_eq!(held[0], [(FREE, 0)], "{survival:?}");
+    }
+
+    barrier.wait();
+    assert_eq!(reply(&first), StoreReply::Flushed);
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let held = held_after(&disk, survival, epoch);
+        assert_eq!(held[0], [], "{survival:?}");
+    }
+    first.request(StoreRequest::Load { position: FREE });
+    let not_held = StoreReply::NotHeld {
+        position: FREE,
+        holder: None,
+    };
+    assert_eq!(reply(&first), not_held);
+    assert_eq!(claim(&second, &[FREE]), (vec![FREE], Vec::new()));
+    assert_eq!(load(&second, FREE), built(FREE, blocks::STONE));
+    assert_eq!(
+        claim(&first, &[FREE]),
+        (Vec::new(), vec![(FREE, RegionId(2))])
+    );
+}
+
+/// Scenario 8: a region that claims a chunk again while its return of it is under way
+/// keeps it, with the tick it had.
+#[test]
+fn a_chunk_claimed_again_while_it_is_being_returned_is_kept() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, barrier) = gated(&disk, &[BUSY]);
+    let (first, _) = opened(&store, 0, 1);
+    let (busy, _) = opened(&store, 1, 1);
+    let (second, _) = opened(&store, 2, 1);
+    log(&first, 1, &[]);
+    assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+    log(&first, 2, &[]);
+
+    save(&busy, BUSY, &edited());
+    barrier.wait();
+    give_back(&first, &[FREE]);
+    assert_eq!(claim(&first, &[FREE]), (vec![FREE], Vec::new()));
+    barrier.wait();
+    first.flush();
+    assert_eq!(
+        claim(&second, &[FREE]),
+        (Vec::new(), vec![(FREE, RegionId(0))])
+    );
+    assert_eq!(load(&first, FREE), generator().generate(FREE));
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let held = held_after(&disk, survival, epoch);
+        assert_eq!(held[0], [(FREE, 1)], "{survival:?}");
+    }
+}
+
+/// Scenario 9: a return that was called off frees nothing later. With the thread for
+/// chunks held, a region returns a chunk, claims it again, commits a change to it,
+/// saves it and returns it again. When the thread has got as far as the first return,
+/// the chunk is the region's, and the change is in what it loads after a crash there.
+/// When it has got to the end, the chunk is free and the stored chunk has the change.
+#[test]
+fn a_return_that_was_called_off_frees_nothing_later() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, barrier) = gated(&disk, &[BUSY, FREE]);
+    let (first, _) = opened(&store, 0, 1);
+    let (busy, _) = opened(&store, 1, 1);
+    let (second, _) = opened(&store, 2, 1);
+    let (x, y, z) = block_of(FREE);
+    log(&first, 1, &[]);
+    assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+
+    save(&busy, BUSY, &edited());
+    barrier.wait();
+    give_back(&first, &[FREE]);
+    assert_eq!(claim(&first, &[FREE]), (vec![FREE], Vec::new()));
+    log(&first, 2, &[(x, y, z, blocks::GLASS)]);
+    first.request(StoreRequest::Save {
+        position: FREE,
+        tick: 2,
+        chunk: built(FREE, blocks::GLASS),
+    });
+    give_back(&first, &[FREE]);
+    first.request(StoreRequest::Flush);
+
+    // On to the save of the chunk, which is behind the first return and waits.
+    barrier.wait();
+    barrier.wait();
+    // Once the list is here, the commit thread has heard of the first return.
+    let list = store.regions().unwrap();
+    assert!(list.regions[0].bounds.is_some());
+    assert_eq!(
+        claim(&second, &[FREE]),
+        (Vec::new(), vec![(FREE, RegionId(0))])
+    );
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        let (again, held) = opened(&store, 0, epoch);
+        assert_eq!(held, [(FREE, 1)], "{survival:?}");
+        assert_eq!(
+            load(&again, FREE),
+            built(FREE, blocks::GLASS),
+            "{survival:?}"
+        );
+    }
+
+    // On to the end.
+    barrier.wait();
+    assert_eq!(reply(&first), StoreReply::Flushed);
+    assert_eq!(store.regions().unwrap().regions[0].bounds, None);
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        let (_, held) = opened(&store, 0, epoch);
+        assert_eq!(held, [], "{survival:?}");
+        let (home, _) = opened(&store, 2, epoch);
+        assert_eq!(claim(&home, &[FREE]).0, [FREE], "{survival:?}");
+        assert_eq!(
+            load(&home, FREE),
+            built(FREE, blocks::GLASS),
+            "{survival:?}"
+        );
+    }
+}
+
+/// The home chunk is not returned, and neither is a chunk more than once by one
+/// return, nor one the region holds by being pinned.
+#[test]
+fn the_home_chunk_and_chunks_that_were_not_granted_are_not_returned() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (home, held) = opened(&store, 2, 1);
+    assert_eq!(held, [(ORIGIN, 0)]);
+    assert_eq!(claim(&home, &[FREE]).0, [FREE]);
+    give_back(&home, &[ORIGIN, FREE, FREE, WEST, ChunkPos::new(9, 9)]);
+    home.flush();
+    assert_eq!(load(&home, ORIGIN), generator().generate(ORIGIN));
+    let held = held_after(&disk, Survival::Nothing, 2);
+    assert_eq!(held, [vec![], vec![], vec![(ORIGIN, 0)]]);
+    // A pinned region holds a chunk of its area whatever it returns.
+    let (west, _) = opened(&store, 0, 3);
+    give_back(&west, &[WEST]);
+    west.flush();
+    assert_eq!(load(&west, WEST), generator().generate(WEST));
+}
+
+/// Appends `records` to the world on `disk` as a segment of the log with `number`.
+fn segment(disk: &MemoryDisk, number: u64, records: &[LogRecord]) {
+    let log: Vec<u8> = records.iter().flat_map(LogRecord::encode).collect();
+    put(disk, &format!("/world/log/{number:020}.wal"), &log);
+}
+
+/// Scenario 10: a `Returned` in the log for a chunk the region has no grant of does
+/// not keep the store from starting, and changes nothing. A `Granted` that does not
+/// fit the table does, and so does any record of regions in a world without a table.
+#[test]
+fn records_of_the_log_that_do_not_fit_the_table() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (first, _) = opened(&store, 0, 1);
+    assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+    first.flush();
+    let world = disk.crashed(Survival::Nothing);
+    let expected = held_after(&world, Survival::Nothing, 2);
+
+    let returned = |region, chunk| LogRecord::Returned {
+        region,
+        chunks: vec![chunk],
+    };
+    let left = world.crashed(Survival::Nothing);
+    // Of another region than the one that holds it, of a chunk nobody was granted, of
+    // one held by being pinned, and of a region there is none of.
+    let stray = [
+        returned(1, FREE),
+        returned(0, ChunkPos::new(6, 6)),
+        returned(0, WEST),
+        returned(9, FREE),
+    ];
+    segment(&left, 7, &stray);
+    assert_eq!(held_after(&left, Survival::Nothing, 2), expected);
+
+    let granted = |region, chunk| LogRecord::Granted {
+        region,
+        tick: 1,
+        chunks: vec![chunk],
+    };
+    for misfit in [
+        granted(1, FREE),
+        granted(0, FREE),
+        granted(9, ChunkPos::new(6, 6)),
+    ] {
+        let left = Arc::new(world.crashed(Survival::Nothing));
+        segment(&left, 7, std::slice::from_ref(&misfit));
+        let started = store_on(&left, &gap());
+        assert!(matches!(started, Err(StoreError::Table(_))), "{misfit:?}");
+    }
+    // In a segment the table file stands for, a record is not read for the table:
+    // neither this grant nor the one the store wrote, which the file made here does
+    // not have.
+    let left = Arc::new(world.crashed(Survival::Nothing));
+    let mut file = table_file(&left);
+    file.from = 8;
+    put(&left, "/world/regions/table", &file.encode());
+    segment(&left, 7, &[granted(1, FREE)]);
+    assert_eq!(
+        held_after(&left, Survival::Nothing, 2),
+        [vec![], vec![], vec![(ORIGIN, 0)]]
+    );
+
+    // A world from before there was a table has no such records.
+    let old = world_of_today();
+    segment(&old, 2, &[granted(0, FREE)]);
+    assert!(matches!(
+        store_on(&old, &division()),
+        Err(StoreError::Table(_))
+    ));
+}
+
+/// The segments of the log in the world on `disk`.
+fn segments(disk: &MemoryDisk) -> Vec<u64> {
+    let names = disk.list(Path::new("/world/log")).unwrap();
+    names
+        .iter()
+        .map(|name| name.strip_suffix(".wal").unwrap().parse().unwrap())
+        .collect()
+}
+
+/// Scenario 11: after checkpoints of every region, the log has no segment below the
+/// table file's `from`, and a store started on that world has the same list and the
+/// same grants.
+#[test]
+fn the_table_file_is_written_when_that_frees_the_log() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (first, _) = opened(&store, 0, 1);
+    let (second, _) = opened(&store, 1, 1);
+    let other = ChunkPos::new(6, 5);
+    log(&first, 1, &[]);
+    assert_eq!(claim(&first, &[FREE, other]).0, [FREE, other]);
+    log(&second, 1, &[]);
+    give_back(&first, &[other]);
+    first.flush();
+    assert_eq!(claim(&second, &[other]).0, [other]);
+    second.flush();
+    assert_eq!(segments(&disk), [1]);
+    assert_eq!(table_file(&disk).from, 1);
+
+    // The first region's checkpoint does not free the segment: the second has a commit
+    // in it. The table stays as it is.
+    first.request(StoreRequest::Checkpoint {
+        tick: 1,
+        state: b"first".to_vec(),
+    });
+    first.flush();
+    assert_eq!(segments(&disk), [1]);
+    assert_eq!(table_file(&disk).from, 1);
+    log(&first, 2, &[]);
+    first.flush();
+    assert_eq!(segments(&disk), [1, 2]);
+
+    // The second's does: no lane needs the first segment any more, and the table file
+    // takes its place.
+    second.request(StoreRequest::Checkpoint {
+        tick: 1,
+        state: b"second".to_vec(),
+    });
+    second.flush();
+    let file = table_file(&disk);
+    assert_eq!(file.from, 3);
+    assert_eq!(file.regions[0].grants, [(FREE, 1)]);
+    assert_eq!(file.regions[1].grants, [(other, 1)]);
+    // The segment with the first region's later commit stays for that commit.
+    assert_eq!(segments(&disk), [2]);
+    first.request(StoreRequest::Checkpoint {
+        tick: 2,
+        state: b"first".to_vec(),
+    });
+    first.flush();
+    assert_eq!(segments(&disk), Vec::<u64>::new());
+
+    let list = store.regions().unwrap();
+    for (epoch, survival) in (2..).zip(SURVIVALS) {
+        // A segment that was removed can be there again after a crash; what it says
+        // of the table is in the file, and is not read.
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        assert_eq!(listed(&store.regions().unwrap()), listed(&list));
+        let held = held_after(&disk, survival, epoch);
+        assert_eq!(
+            held,
+            [vec![(FREE, 1)], vec![(other, 1)], vec![(ORIGIN, 0)]],
+            "{survival:?}"
+        );
+    }
+
+    // What changes the table afterwards is in a segment the file names, and counts.
+    assert_eq!(claim(&second, &[ChunkPos::new(7, 5)]).0.len(), 1);
+    second.flush();
+    assert_eq!(segments(&disk), [3]);
+    let held = held_after(&disk, Survival::Nothing, 9);
+    assert_eq!(held[1].len(), 2);
+}
+
+/// F4 of ADR-0011: a claim in a group that failed, then the same chunk claimed by
+/// another region and answered, then a crash that loses truncations it was not made to
+/// write out: the store starts, and the chunk is the second region's.
+#[test]
+fn a_grant_of_a_failed_group_does_not_come_back() {
+    let (store, disk) = crate::tests::switched_for(&gap());
+    let (first, _) = opened(&store, 0, 1);
+    let (second, _) = opened(&store, 1, 1);
+    log(&first, 1, &[]);
+    crate::tests::committed(&first, 1);
+
+    disk.failing_syncs.store(true, Ordering::SeqCst);
+    first.request(StoreRequest::Claim { chunks: vec![FREE] });
+    // The claim is never answered: the answers end, without one, when the handle is
+    // lost.
+    assert_eq!(first.replies.iter().count(), 0);
+    assert!(first.is_lost() && second.is_lost());
+    // As long as the log is not cut back for good, a crash can still bring the grant
+    // back, and nobody is served.
+    assert_eq!(
+        held_after(&disk.disk, Survival::Untruncated, 2)[0],
+        [(FREE, 1)]
+    );
+    assert!(matches!(store.regions(), Err(StoreError::Io(_))));
+    disk.failing_syncs.store(false, Ordering::SeqCst);
+
+    // The grant is taken back in memory as well: the chunk is free for the second.
+    let (second, _) = opened(&store, 1, 2);
+    assert_eq!(claim(&second, &[FREE]), (vec![FREE], Vec::new()));
+    for (epoch, survival) in (3..).zip(SURVIVALS) {
+        let held = held_after(&disk.disk, survival, epoch);
+        assert_eq!(held[0], [], "{survival:?}");
+        assert_eq!(held[1], [(FREE, 0)], "{survival:?}");
+    }
+}
+
+/// A return whose record is in a group that failed is undone as well: the chunk is the
+/// region's again, with the tick it had, as it is for a store that starts.
+#[test]
+fn a_return_of_a_failed_group_is_given_back() {
+    let (store, disk) = crate::tests::switched_for(&gap());
+    let (first, _) = opened(&store, 0, 1);
+    log(&first, 1, &[]);
+    assert_eq!(claim(&first, &[FREE]).0, [FREE]);
+
+    disk.failing_syncs.store(true, Ordering::SeqCst);
+    give_back(&first, &[FREE]);
+    first.flush();
+    assert!(first.is_lost());
+    disk.failing_syncs.store(false, Ordering::SeqCst);
+
+    let (second, _) = opened(&store, 1, 1);
+    assert_eq!(
+        claim(&second, &[FREE]),
+        (Vec::new(), vec![(FREE, RegionId(0))])
+    );
+    let (first, held) = opened(&store, 0, 2);
+    assert_eq!(held, [(FREE, 1)]);
+    assert_eq!(load(&first, FREE), generator().generate(FREE));
+    for (epoch, survival) in (3..).zip(SURVIVALS) {
+        let held = held_after(&disk.disk, survival, epoch);
+        assert_eq!(held[0], [(FREE, 1)], "{survival:?}");
+    }
+}
+
+/// A claim or a return of more chunks than a record takes is several records, and all
+/// of them or none count.
+#[test]
+fn a_claim_of_very_many_chunks_takes_several_records() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (first, _) = opened(&store, 0, 1);
+    // A hundred thousand chunks of the gap, which is sixteen chunks wide.
+    let many: Vec<ChunkPos> = (0..100_000)
+        .map(|index| ChunkPos::new(index % 16, 100 + index / 16))
+        .collect();
+    assert_eq!(claim(&first, &many), (many.clone(), Vec::new()));
+    first.flush();
+    let log = disk.read(Path::new("/world/log/00000000000000000001.wal"));
+    let (records, _) = clustine_format::read_log(&log.unwrap().unwrap()).unwrap();
+    let granted: Vec<usize> = records
+        .iter()
+        .filter_map(|record| match record {
+            LogRecord::Granted { chunks, .. } => Some(chunks.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(granted, [65_536, 100_000 - 65_536]);
+    assert_eq!(held_after(&disk, Survival::Nothing, 2)[0].len(), 100_000);
+
+    give_back(&first, &many);
+    first.flush();
+    assert_eq!(held_after(&disk, Survival::Nothing, 3)[0], []);
+}
+
+/// What a region was granted crosses a connection with the rest of what it is restored
+/// with.
+#[test]
+fn what_a_region_was_granted_is_restored_over_a_connection() {
+    let store = Store::memory_divided(generator(), gap()).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = serve(store.clone(), listener).unwrap();
+    let address = server.local_addr().to_string();
+    let (remote, restored) = StoreHandle::connect(&address, hello_of(&gap(), 0, 1)).unwrap();
+    assert_eq!(
+        (restored.held, restored.pinned),
+        (Vec::new(), gap().pinned[..1].to_vec())
+    );
+    // Requests and answers of regions that hold chunks cross it as well.
+    let chunks: Vec<ChunkPos> = (0..3000).map(|z| ChunkPos::new(3, z)).collect();
+    log(&remote, 1, &[]);
+    assert_eq!(claim(&remote, &chunks), (chunks.clone(), Vec::new()));
+    give_back(&remote, &chunks[..1]);
+    remote.flush();
+    drop(remote);
+
+    let expected: Vec<(ChunkPos, u64)> = chunks[1..].iter().map(|chunk| (*chunk, 1)).collect();
+    let (remote, restored) = StoreHandle::connect(&address, hello_of(&gap(), 0, 2)).unwrap();
+    assert_eq!(restored.held, expected);
+    assert_eq!(restored.tick(), 1);
+    drop(remote);
+    let (_, locally) = store.open_region(hello_of(&gap(), 0, 3)).unwrap();
+    assert_eq!(locally.held, expected);
+    // The home region's one chunk, without a state or a delta before it.
+    let (_, home) = StoreHandle::connect(&address, hello_of(&gap(), 2, 1)).unwrap();
+    assert_eq!(home.held, [(ORIGIN, 0)]);
 }
