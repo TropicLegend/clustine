@@ -1036,7 +1036,7 @@ impl Fanout {
         };
         let mut outgoing = Vec::new();
         for (player, view) in &mut self.players {
-            let packets = view.update_visibility(&state, moved);
+            let packets = view.update_visibility(*player, &state, moved);
             if !packets.is_empty() {
                 outgoing.push((*player, packets));
             }
@@ -1212,7 +1212,7 @@ impl Fanout {
         view.wanted = wanted;
         // Entities in chunks that came into view appear, those left behind disappear.
         for shown in self.entities.values() {
-            packets.extend(view.update_visibility(&shown.state, false));
+            packets.extend(view.update_visibility(player, &shown.state, false));
         }
         let replica = &self.replica;
         self.entities
@@ -1517,11 +1517,16 @@ impl Fanout {
 impl PlayerView {
     /// Works out what the client has to be told about `state` and records it: the
     /// packets that show the entity if it came into view, move it if `moved`, or hide it
-    /// if it left the view. A player is never shown their own entity; the client
-    /// creates that itself.
-    fn update_visibility(&mut self, state: &EntityState, moved: bool) -> Vec<Bytes> {
+    /// if it left the view. `me` is the player whose view this is. A player is never
+    /// shown their own entity; the client creates that itself. Nor are they shown an
+    /// entity they were before: one who leaves while being handed over and joins again
+    /// at once is a new entity, while the old one may still arrive in the region it
+    /// was on its way to and be removed there a moment later. A client that is shown
+    /// a player with its own UUID has two of itself.
+    fn update_visibility(&mut self, me: PlayerId, state: &EntityState, moved: bool) -> Vec<Bytes> {
         let in_world = self.entity.is_some();
-        let own = self.entity == Some(state.entity);
+        let EntityKind::Player { player: of, .. } = &state.kind;
+        let own = self.entity == Some(state.entity) || *of == me;
         let in_view = in_world && !own && self.wanted.contains(&state.chunk());
         let shown = self.visible.contains_key(&state.entity);
         match (in_view, shown) {
