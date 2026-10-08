@@ -77,7 +77,8 @@ throughout, and each worker took players in and let them go twelve times.
 A check by hand with unmodified clients on 2026-10-08 found building to work and to be
 seen by others, and blocks on the other side of a boundary to be out of reach, which was
 how it had been planned. That was changed the same day: what a player does to blocks of
-another region is now passed on to it.
+another region is now passed on to it, which the same clients then confirmed, breaking
+and placing across the boundary from both sides.
 
 The design decisions are in [ADR-0006](adr/0006-static-regions-and-handoff.md) and
 [ADR-0007](adr/0007-coordinator-scope.md).
