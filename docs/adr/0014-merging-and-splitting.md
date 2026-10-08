@@ -1772,7 +1772,10 @@ the runner sees a lost handle either way, and that is K5 and K10.
   and `Absent` for those two, in the hello's order, then `Present` for the other, and
   `presences: 3`.
 - R29. A first hello of an edge the region does not know: `presences` is the number
-  of names, all `Absent`.
+  of names, all `Absent`, and `applied` is 0. A resume after the region applied the
+  edge's messages up to `k` and before it took `k + 1`, which waits on the link's
+  hold or came too late: the welcome says `applied: k`, and the `Progress` of that
+  tick says the same or more.
 - R30. A leave that names the entity of a stay a presence answer showed removes it; a
   leave that names another does not.
 - R31. A merge on stripes (region 1, with a player and an unconfirmed entry, absorbed
