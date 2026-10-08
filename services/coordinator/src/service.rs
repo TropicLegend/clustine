@@ -794,7 +794,7 @@ mod tests {
     /// each, which they were given in the order they registered, and an edge that has
     /// seen as much. Both register before the coordinator gives anything away, which
     /// it does once it has been there for a lease: the first would be given both
-    /// regions otherwise.
+    /// regions otherwise, and one of them would be moved to the second after that.
     struct Cluster {
         served: Served,
         a: WorkerClient,
@@ -1020,7 +1020,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_single_worker_is_given_every_region_and_told_of_all_of_them_at_once() {
+    async fn a_single_worker_is_given_every_region_and_hands_one_to_a_worker_that_comes_later() {
         let served = Served::start(&[-8, 8]).await;
         let mut watch = served.watch().await;
         let (mut alone, orders) = served.worker("alone", &[]).await;
@@ -1037,29 +1037,30 @@ mod tests {
             .collect();
         assert_eq!(table.routes, routes);
 
-        // A worker that comes later is given none of them, and is the one a region
-        // is moved to.
+        // A worker that comes later is given none of them. At its next tick the
+        // coordinator asks the first for one of its regions, without anybody
+        // having asked for a move, to even them out.
         let (mut late, orders) = served.worker("late", &[]).await;
         assert_eq!(orders, served.orders(&[]));
-        let mut mover = ask_to_move(&served, 1, None).await;
-        let begun = MoveAnswer::Begun {
-            from: "alone".to_owned(),
-            to: "late".to_owned(),
-        };
-        assert_eq!(within(mover.next()).await.unwrap(), begun);
-        let middle = orders_of(&table, 1);
-        assert_eq!(next_release(&mut alone).await, middle);
-        alone.released(middle.0, middle.1);
+        let last = orders_of(&table, 2);
+        assert_eq!(next_release(&mut alone).await, last);
+        alone.released(last.0, last.1);
         let taken = next_region(&mut late).await;
-        assert_eq!(taken.region, RegionId(1));
-        // The old owner is told the two that it still runs.
-        let left = [table.routes[0].epoch, table.routes[2].epoch];
+        assert_eq!(taken.region, RegionId(2));
+        assert!(taken.epoch > last.1);
+        // The old owner is told the two that it still runs, and the edge sees the
+        // one region change hands.
+        let left = [table.routes[0].epoch, table.routes[1].epoch];
         let orders = match within(alone.event()).await.unwrap() {
             WorkerEvent::Orders(orders) => orders,
             other => panic!("{other:?} are no orders"),
         };
         let epochs: Vec<u64> = orders.assignments.iter().map(|held| held.epoch).collect();
         assert_eq!(epochs, left);
+        let after = within(watch.next()).await.unwrap();
+        assert_eq!(after.version, table.version + 1);
+        assert_eq!(after.route(RegionId(2)), Some(&route(taken, "late")));
+        assert_eq!(after.routes[..2], table.routes[..2]);
     }
 
     #[tokio::test]

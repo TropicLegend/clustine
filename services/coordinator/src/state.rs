@@ -147,7 +147,8 @@ struct Release {
     to: String,
     /// When the owner was first asked.
     asked: Instant,
-    /// Who asked for the move, if somebody did; nobody did if the owner is leaving.
+    /// Who asked for the move, if somebody did; nobody did if the owner is leaving,
+    /// or if the coordinator evens regions out.
     mover: Option<u64>,
 }
 
@@ -275,10 +276,10 @@ impl Holder {
 /// [`Coordinator::tick`] gives the regions without an owner away like that, the lowest
 /// first and counting each as it goes, so that they are spread evenly over the workers
 /// that are there. A worker that is silent for longer than a lease is forgotten, and
-/// what it ran goes to the others, with higher epochs. Nothing is taken from a worker to
-/// even things out: one that registers later is given only what has no owner. The times
-/// that are passed in need not be in order; a worker was last heard from at the latest
-/// of them.
+/// what it ran goes to the others, with higher epochs. A worker that registers later is
+/// given what has no owner, and regions of workers that have more by and by (see
+/// "Evening out" below). The times that are passed in need not be in order; a worker
+/// was last heard from at the latest of them.
 ///
 /// Being heard from is not enough to keep a region, though: a worker that is there but
 /// cannot get anything of the region made durable shows its players nothing. So each
@@ -307,8 +308,9 @@ impl Holder {
 /// See `docs/adr/0009-moving-a-region.md`. A region moves when its owner lets go of it
 /// and says so with [`Coordinator::released`]: the region is assigned at once, with a
 /// new epoch, and nobody waits for a lease. The owner is asked to do that by a
-/// **release**, which [`Coordinator::move_region`] notes, or the coordinator itself for
-/// the regions of a worker that said it is [`Coordinator::leaving`].
+/// **release**, which [`Coordinator::move_region`] notes, or the coordinator itself: for
+/// the regions of a worker that said it is [`Coordinator::leaving`], and to even regions
+/// out.
 ///
 /// A release needs a **target**: a registered worker that has a connection, is not
 /// leaving and is not the region's owner. It may run regions already and be the target
@@ -328,6 +330,28 @@ impl Holder {
 /// Every call that may change something ends by dropping the releases that no longer
 /// hold, forgetting the leaving workers that own nothing, and beginning a release for
 /// each region of a leaving worker for which there is a target now.
+///
+/// # Evening out
+///
+/// Regions are only given to the worker with the fewest when they have no owner, so a
+/// worker that registers after the others, or a moment after the grace period of a new
+/// coordinator, would run nothing while another runs everything. So a
+/// [`Coordinator::tick`], after everything else it does, begins a release of its own,
+/// one at most:
+///
+/// - not during the grace period of a new coordinator, and not while any release is
+///   under way, so that regions move one at a time;
+/// - among the workers that are registered, have a connection and are not leaving: a
+///   worker without a connection could not be told, and nothing is evened out towards
+///   one that leaves;
+/// - if the one of them with the most regions has at least two more than the one with
+///   the fewest, which is the one a region without an owner would go to. Of several
+///   with the most it is the one that has waited least. A difference of one is left
+///   alone, so that nothing goes back and forth;
+/// - of the region with the highest number that the former runs, for the latter.
+///
+/// From then on it is a release like any other, and the next one is begun by a tick
+/// after it has ended.
 #[derive(Debug, Clone)]
 pub struct Coordinator {
     config: CoordinatorConfig,
@@ -763,10 +787,57 @@ impl Coordinator {
     /// A release that was first asked more than a lease ago ends here: the region is
     /// taken from its owner, which goes behind all the other workers, and assigned as
     /// in [`Coordinator::released`].
+    ///
+    /// Last of all, and only here, a release is begun to even regions out, if a worker
+    /// runs two regions more than another and no release is under way; see
+    /// [`Coordinator`]. The worker that is to release is named in
+    /// [`Changes::releases`].
     pub fn tick(&mut self, now: Instant) -> Changes {
         let before = self.holders();
         self.settle(now);
+        // Not part of what other calls end like a tick with: those give away what
+        // has no owner, and this takes a region from one that runs it.
+        self.even_out(now);
         self.finish(&before, now)
+    }
+
+    /// Begins a release, as of `now`, of one region of the worker with the most regions
+    /// for the one with the fewest, if the difference is two or more, no release is
+    /// under way and the coordinator is not new; see [`Coordinator`].
+    fn even_out(&mut self, now: Instant) {
+        let grace = now.saturating_duration_since(self.started) < self.config.lease;
+        if grace || !self.releases.is_empty() {
+            return;
+        }
+        let Some(light) = self.lightest(None) else {
+            return;
+        };
+        // No release is under way, so these are the regions the workers own.
+        let loads = self.loads();
+        let load = |name: &str| loads.get(name).copied().unwrap_or(0);
+        let heavy = self
+            .workers
+            .iter()
+            .filter(|(_, worker)| worker.connected && !worker.leaving)
+            .max_by_key(|(name, worker)| (load(name), worker.arrival))
+            .map(|(name, _)| name.clone())
+            .expect("there is a lightest worker, so there is one with the most regions");
+        // With one more, the two would only change places.
+        if load(&heavy) < load(&light) + 2 {
+            return;
+        }
+        let (region, epoch) = self
+            .regions
+            .iter()
+            .rev()
+            .find(|(_, state)| {
+                let owner = state.owner.as_ref();
+                owner.is_some_and(|owner| owner.worker == heavy)
+            })
+            .map(|(region, state)| (*region, state.epoch))
+            .expect("a worker that has two regions more than another owns one");
+        info!(%region, from = %heavy, to = %light, "a region is moved to even regions out");
+        self.note_release(now, region, epoch, &heavy, &light, None);
     }
 
     /// What a tick at `now` does.
@@ -1872,35 +1943,275 @@ mod tests {
         assert_eq!(regions_of(&cluster, "c"), [1, 2]);
     }
 
+    /// The worker each region that is being released is meant for.
+    fn targets(cluster: &Cluster) -> Vec<(u32, &str)> {
+        let releases = cluster.coordinator.releases.iter();
+        Vec::from_iter(releases.map(|(region, release)| (region.0, release.to.as_str())))
+    }
+
+    /// Lets `leases` leases go by from `from` on, a quarter of a lease at a time, with
+    /// every worker heard from and vouching for what it runs: no tick changes or
+    /// begins anything.
+    fn nothing_happens(cluster: &mut Cluster, from: u64, leases: u64, workers: &[&str]) {
+        for quarter in 1..=4 * leases {
+            let now = from + quarter * LEASE / 4;
+            for name in workers {
+                assert!(cluster.heartbeat(now, name));
+            }
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+        }
+    }
+
     #[test]
-    fn a_worker_that_registers_later_is_given_nothing_that_has_an_owner() {
+    fn a_second_worker_is_given_one_of_the_two_regions_of_the_first_at_the_next_tick() {
         let mut cluster = Cluster::new(&[0]);
         cluster.register(0, "a", "a:25601", &[]);
         assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
         assert_eq!(regions_of(&cluster, "a"), [0, 1]);
+        assert!(cluster.heartbeat(LEASE, "a"));
         let table = cluster.table();
 
-        // Nothing is taken from a worker to even things out.
+        // A worker that registers is given nothing that has an owner. The next tick
+        // asks the first for one of its regions, the one with the highest number.
         assert_eq!(
             cluster.register(LEASE, "b", "b:25601", &[]),
             Changes::default()
         );
-        for now in [LEASE, 2 * LEASE, 3 * LEASE] {
-            for name in ["a", "b"] {
-                assert!(cluster.heartbeat(now, name));
-            }
+        assert!(cluster.coordinator.releases.is_empty());
+        // Nor does a call that ends like a tick begin anything: only a tick does.
+        assert_eq!(
+            cluster.epoch_refused(LEASE, "b", 0, FIRST_EPOCH),
+            Changes::default()
+        );
+        assert_eq!(
+            cluster.tick(LEASE + 1),
+            asks(&[order("a", 1, FIRST_EPOCH + 2)])
+        );
+        assert_eq!(targets(&cluster), [(1, "b")]);
+        // Nothing has changed hands yet, and the first is asked only once.
+        assert_eq!(cluster.table(), table);
+        assert_eq!(cluster.tick(LEASE + 2), Changes::default());
+
+        // It is a release like any other: nobody hears how it ended.
+        assert_eq!(
+            cluster.released(LEASE + 3, "a", 1, FIRST_EPOCH + 2),
+            changes(&["a", "b"], true)
+        );
+        assert_eq!(
+            cluster.assignments("a"),
+            [assignment(0, FIRST_EPOCH + 1, 0)]
+        );
+        assert_eq!(
+            cluster.assignments("b"),
+            [assignment(1, FIRST_EPOCH + 3, 2)]
+        );
+        // One each, and that is how it stays.
+        nothing_happens(&mut cluster, LEASE + 3, 3, &["a", "b"]);
+        assert!(cluster.coordinator.releases.is_empty());
+    }
+
+    #[test]
+    fn three_regions_on_one_worker_and_a_newcomer_end_as_two_and_one_and_stay_so() {
+        let mut cluster = Cluster::new(&[-8, 8]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        assert!(cluster.heartbeat(LEASE, "a"));
+        cluster.register(LEASE, "b", "b:25601", &[]);
+        assert_eq!(
+            cluster.tick(LEASE + 1),
+            asks(&[order("a", 2, FIRST_EPOCH + 3)])
+        );
+        assert_eq!(
+            cluster.released(LEASE + 2, "a", 2, FIRST_EPOCH + 3),
+            changes(&["a", "b"], true)
+        );
+        assert_eq!(regions_of(&cluster, "a"), [0, 1]);
+        assert_eq!(regions_of(&cluster, "b"), [2]);
+
+        // One move, and no more: with another the two would only change places.
+        nothing_happens(&mut cluster, LEASE + 2, 3, &["a", "b"]);
+        assert!(cluster.coordinator.releases.is_empty());
+        assert_eq!(regions_of(&cluster, "a"), [0, 1]);
+    }
+
+    #[test]
+    fn a_difference_of_one_region_is_left_alone() {
+        let mut cluster = Cluster::new(&[-8, 8]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        assert_eq!(regions_of(&cluster, "a"), [0, 2]);
+        assert_eq!(regions_of(&cluster, "b"), [1]);
+        nothing_happens(&mut cluster, LEASE, 2, &["a", "b"]);
+
+        // Nor is a worker that runs nothing given the only region of another.
+        let mut cluster = a_runs_and_b_waits();
+        nothing_happens(&mut cluster, LEASE, 2, &["a", "b"]);
+        assert!(cluster.coordinator.releases.is_empty());
+    }
+
+    #[test]
+    fn of_the_workers_with_the_most_regions_the_one_that_waited_least_gives_up_its_highest() {
+        let mut cluster = Cluster::new(&[-8, 0, 8]);
+        cluster.register(0, "a", "a:25601", &[]);
+        cluster.register(0, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+        assert_eq!(regions_of(&cluster, "b"), [1, 3]);
+        let last = cluster.assignments("b")[1].epoch;
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(LEASE, name));
+        }
+
+        cluster.register(LEASE, "c", "c:25601", &[]);
+        assert_eq!(cluster.tick(LEASE + 1), asks(&[order("b", 3, last)]));
+        assert_eq!(targets(&cluster), [(3, "c")]);
+        assert_eq!(
+            cluster.released(LEASE + 2, "b", 3, last),
+            changes(&["b", "c"], true)
+        );
+        // Two, one and one: nothing more is to be done.
+        nothing_happens(&mut cluster, LEASE + 2, 2, &["a", "b", "c"]);
+        assert_eq!(regions_of(&cluster, "a"), [0, 2]);
+        assert_eq!(regions_of(&cluster, "c"), [3]);
+    }
+
+    #[test]
+    fn nothing_is_evened_out_during_the_grace_period() {
+        let mut cluster = Cluster::new(&[0]);
+        // One worker ran both regions under the coordinator before this one, and
+        // another ran nothing.
+        let held = [assignment(0, 5, 0), assignment(1, 6, 1)];
+        cluster.register(0, "a", "a:25601", &held);
+        cluster.register(0, "b", "b:25601", &[]);
+        for now in [0, 1, LEASE / 2, LEASE - 1] {
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+            assert!(cluster.coordinator.releases.is_empty());
+        }
+        // Workers that have not found the new coordinator yet may be among those
+        // with the most regions. After a lease they have had their chance.
+        assert_eq!(cluster.tick(LEASE), asks(&[order("a", 1, 6)]));
+        assert_eq!(targets(&cluster), [(1, "b")]);
+    }
+
+    #[test]
+    fn nothing_is_evened_out_while_another_release_is_under_way() {
+        let mut cluster = Cluster::new(&[-8, 8]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        let held = cluster.assignments("a");
+        assert!(cluster.heartbeat(LEASE, "a"));
+        cluster.register(LEASE, "b", "b:25601", &[]);
+        cluster.register(LEASE, "c", "c:25601", &[]);
+
+        // Somebody asks for a move before the next tick. While that lasts, the
+        // coordinator begins none of its own, although one worker has three regions
+        // and another neither has one nor is being given one.
+        let (moving, _) = cluster.move_region(LEASE + 1, 0, Some("b"), 1).unwrap();
+        assert_eq!(moving, begun("a", "b"));
+        for now in [LEASE + 2, LEASE + 3] {
             assert_eq!(cluster.tick(now), Changes::default());
         }
-        assert!(cluster.assignments("b").is_empty());
-        assert_eq!(cluster.table(), table);
+        assert_eq!(targets(&cluster), [(0, "b")]);
 
-        // It is the first to be given a region that loses its owner, though: here one
-        // that the other worker no longer vouches for.
-        assert!(cluster.heartbeat_with(4 * LEASE + 1, "a", &COMMITTED));
-        assert!(cluster.heartbeat_with(4 * LEASE + 1, "b", &[]));
-        assert_eq!(cluster.tick(4 * LEASE + 1), changes(&["a", "b"], true));
-        assert_eq!(regions_of(&cluster, "a"), [0]);
-        assert_eq!(regions_of(&cluster, "b"), [1]);
+        // When it has ended, the next tick begins one, and the tick after that
+        // begins no second one beside it.
+        let expected = Changes {
+            moves: vec![outcome(1, 0, Some(("b", FIRST_EPOCH + 4)), true)],
+            ..changes(&["a", "b"], true)
+        };
+        assert_eq!(cluster.released(LEASE + 4, "a", 0, held[0].epoch), expected);
+        assert_eq!(
+            cluster.tick(LEASE + 5),
+            asks(&[order("a", 2, held[2].epoch)])
+        );
+        assert_eq!(targets(&cluster), [(2, "c")]);
+        assert_eq!(cluster.tick(LEASE + 6), Changes::default());
+        assert_eq!(
+            cluster.released(LEASE + 7, "a", 2, held[2].epoch),
+            changes(&["a", "c"], true)
+        );
+        nothing_happens(&mut cluster, LEASE + 7, 2, &["a", "b", "c"]);
+        for (name, region) in [("a", 1), ("b", 0), ("c", 2)] {
+            assert_eq!(regions_of(&cluster, name), [region], "{name}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_evened_out_from_or_to_a_worker_without_a_connection() {
+        // The worker that has both regions could not be told to release one.
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        let held = cluster.assignments("a");
+        assert_eq!(cluster.disconnected(LEASE, "a"), Changes::default());
+        cluster.register(LEASE, "b", "b:25601", &[]);
+        nothing_happens(&mut cluster, LEASE, 2, &["a", "b"]);
+        assert!(cluster.coordinator.releases.is_empty());
+        // When it is back, it is.
+        assert_eq!(
+            cluster.register(3 * LEASE, "a", "a:25601", &held),
+            Changes::default()
+        );
+        assert_eq!(
+            cluster.tick(3 * LEASE),
+            asks(&[order("a", 1, held[1].epoch)])
+        );
+
+        // The worker that has nothing would not hear that it was given a region.
+        let mut cluster = Cluster::new(&[0]);
+        cluster.register(0, "a", "a:25601", &[]);
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        cluster.register(LEASE, "b", "b:25601", &[]);
+        assert_eq!(cluster.disconnected(LEASE, "b"), Changes::default());
+        nothing_happens(&mut cluster, LEASE, 2, &["a", "b"]);
+        assert!(cluster.coordinator.releases.is_empty());
+    }
+
+    #[test]
+    fn nothing_is_evened_out_towards_a_leaving_worker() {
+        let mut cluster = Cluster::new(&[-8, 0, 8]);
+        // One worker ran three of the regions under the coordinator before this one,
+        // and another the fourth.
+        let three = [
+            assignment(0, 5, 0),
+            assignment(1, 6, 1),
+            assignment(2, 7, 2),
+        ];
+        cluster.register(0, "a", "a:25601", &three);
+        cluster.register(0, "b", "b:25601", &[assignment(3, 8, 3)]);
+        // The one with fewer leaves. Its region is to go to the other one, not the
+        // other way round.
+        assert_eq!(cluster.leaving(1, "b"), asks(&[order("b", 3, 8)]));
+        for name in ["a", "b"] {
+            assert!(cluster.heartbeat(LEASE, name));
+        }
+        assert_eq!(cluster.tick(LEASE), Changes::default());
+        assert_eq!(targets(&cluster), [(3, "a")]);
+
+        // A leaving worker that owns something is being asked to release it whenever
+        // another worker is there, so that alone holds the coordinator back. With
+        // those releases out of the way it still begins nothing: neither towards the
+        // worker that leaves, nor from it when it is the one with more regions.
+        let now = cluster.at(LEASE);
+        cluster.coordinator.releases.clear();
+        cluster.coordinator.even_out(now);
+        assert!(cluster.coordinator.releases.is_empty());
+        assert!(cluster.coordinator.pending.orders.is_empty());
+
+        let mut cluster = Cluster::new(&[-8, 0, 8]);
+        cluster.register(0, "a", "a:25601", &three);
+        cluster.register(0, "b", "b:25601", &[]);
+        let asked = Vec::from_iter(
+            three
+                .iter()
+                .map(|held| order("a", held.region.0, held.epoch)),
+        );
+        assert_eq!(cluster.leaving(1, "a"), asks(&asked));
+        let now = cluster.at(LEASE);
+        cluster.coordinator.releases.clear();
+        cluster.coordinator.even_out(now);
+        assert!(cluster.coordinator.releases.is_empty());
+        assert!(cluster.coordinator.pending.orders.is_empty());
     }
 
     #[test]
@@ -2621,9 +2932,12 @@ mod tests {
         // One call, one new version.
         assert_eq!(table.version, FIRST_EPOCH + 1);
 
-        // Nothing is left for a worker that waits.
+        // Nothing is left to give to a worker that runs nothing. Once the coordinator
+        // is no longer new, it asks for one of the two for that worker.
         cluster.register(0, "b", "b:25601", &[]);
-        assert_eq!(cluster.tick(LEASE), Changes::default());
+        assert_eq!(cluster.tick(LEASE - 1), Changes::default());
+        assert_eq!(cluster.tick(LEASE), asks(&[order("a", 1, 30)]));
+        assert_eq!(cluster.assignments("a"), [holding[2], holding[0]]);
     }
 
     #[test]
@@ -3144,12 +3458,17 @@ mod tests {
         for name in ["a", "b", "c"] {
             assert!(cluster.heartbeat(2 * LEASE + 100, name));
         }
+        // That leaves it with two regions and the others with none, which the same
+        // tick begins to even out, whoever asked for it to be so: one of them is to
+        // go to the worker that has waited longer since it lost its own.
         let expected = Changes {
+            releases: vec![order("c", 1, FIRST_EPOCH + 3)],
             moves: vec![outcome(1, 0, Some(("c", FIRST_EPOCH + 4)), false)],
             ..changes(&["a", "c"], true)
         };
         assert_eq!(cluster.tick(2 * LEASE + 101), expected);
         assert_eq!(regions_of(&cluster, "c"), [0, 1]);
+        assert_eq!(cluster.coordinator.releases[&RegionId(1)].to, "b");
     }
 
     #[test]
@@ -3878,8 +4197,9 @@ mod tests {
     /// miss it, and start afresh, and now and then the coordinator is replaced, all at
     /// random. Regions are moved, workers release them when asked, unasked or not at
     /// all, say that they leave and lose their connections. [`Cluster`] checks every
-    /// call; this adds what only shows over time, and that whoever is given a region
-    /// or picked as a target is the worker with the fewest regions then.
+    /// call; this adds what only shows over time, that whoever is given a region or
+    /// picked as a target is the worker with the fewest regions then, and that ticks
+    /// even regions out, one release at a time.
     #[test]
     fn epochs_only_rise_and_nothing_is_shared_whatever_workers_do() {
         const WORKERS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
@@ -3888,6 +4208,7 @@ mod tests {
         let (mut moves, mut unmoved, mut let_go, mut overdue) = (0, 0, 0, 0);
         let (mut left, mut vanished, mut asked_to_leave, mut cut_off) = (0, 0, 0, 0);
         let (mut compared, mut meant, mut shared, mut handed_on) = (0, 0, 0, 0);
+        let (mut evened, mut even) = (0, 0);
 
         for seed in 1..=24_u64 {
             let mut random = Generator(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
@@ -3931,6 +4252,8 @@ mod tests {
                 let mut reported: Option<Vec<Assignment>> = None;
                 // The region its owner lets go of in this step, if one does.
                 let mut let_go_of: Option<RegionId> = None;
+                // Whether this step is a tick.
+                let mut ticked = false;
                 // Whether what is assigned in this step has to respect the grace
                 // period of a new coordinator.
                 let mut graceful = true;
@@ -4004,6 +4327,7 @@ mod tests {
                     reported = Some(holding);
                 } else if roll < 88 {
                     let changes = cluster.tick(now);
+                    ticked = true;
                     for worker in WORKERS {
                         let had = before.assignments(worker);
                         let has = cluster.assignments(worker);
@@ -4281,10 +4605,13 @@ mod tests {
                         }
                     }
                 }
-                // The same for the releases that were begun for workers that leave,
-                // which are begun in the order of their regions, each counting for its
-                // target from then on.
-                let begun: Vec<(&RegionId, &Release)> = coordinator
+                // The releases that nobody asked for and that were begun in this step:
+                // for workers that leave, or to even regions out.
+                let leaves = |name: &str| {
+                    let worker = coordinator.workers.get(name);
+                    worker.is_some_and(|worker| worker.leaving)
+                };
+                let (begun, evening): (Vec<_>, Vec<_>) = coordinator
                     .releases
                     .iter()
                     .filter(|(_, release)| release.mover.is_none())
@@ -4292,7 +4619,45 @@ mod tests {
                         let before = releases_before.get(region);
                         !before.is_some_and(|before| before.epoch == release.epoch)
                     })
-                    .collect();
+                    .partition(|(_, release)| leaves(&release.from));
+
+                // A release to even out is begun by a tick alone, when the coordinator
+                // is no longer new and no other release is under way. It takes the
+                // highest region of a worker with the most regions among those that
+                // can be given one, the one of them that has waited least, for the
+                // one that would be given the next region, which has fewer by two
+                // regions or more.
+                let owned = |name: &str| after.assignments(name).len();
+                for (region, release) in &evening {
+                    assert!(ticked && now >= grace_ends, "{release:?}");
+                    assert_eq!(coordinator.releases.len(), 1, "{release:?}");
+                    let heavy = fit
+                        .iter()
+                        .max_by_key(|(name, (_, arrival))| (owned(name), *arrival))
+                        .map(|(name, _)| name);
+                    let light = fit
+                        .iter()
+                        .min_by_key(|(name, (_, arrival))| (owned(name), *arrival))
+                        .map(|(name, _)| name);
+                    assert_eq!(heavy, Some(&release.from), "{release:?}");
+                    assert_eq!(light, Some(&release.to), "{release:?}");
+                    assert!(owned(&release.from) >= owned(&release.to) + 2);
+                    let highest = after.assignments(&release.from).last();
+                    assert_eq!(highest.map(|held| held.region), Some(**region));
+                    evened += 1;
+                }
+                // And no tick leaves two of those workers further apart than by one
+                // region without having begun to do something about it.
+                if ticked && now >= grace_ends && coordinator.releases.is_empty() {
+                    let most = fit.keys().map(|name| owned(name)).max();
+                    let fewest = fit.keys().map(|name| owned(name)).min();
+                    assert!(most <= fewest.map(|fewest| fewest + 1), "{fit:?}");
+                    even += 1;
+                }
+
+                // The releases that were begun for workers that leave are begun in the
+                // order of their regions, each for the worker with the fewest regions,
+                // and each counting for its target from then on.
                 for (index, (_, release)) in begun.iter().enumerate() {
                     let later = |other: &str| {
                         let later = begun[index..].iter();
@@ -4367,6 +4732,8 @@ mod tests {
             meant,
             shared,
             handed_on,
+            evened,
+            even,
         ];
         assert!(counts.iter().all(|count| *count >= 100), "{counts:?}");
     }
