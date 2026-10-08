@@ -1682,6 +1682,10 @@ fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
         state
     };
     let mut state = match &restored.state {
+        // That of a region that never ran, whatever its bytes are: a runner that is
+        // stopped before its first tick stores one, and one of an earlier build begins
+        // with the zero of its tick, which is not the zero in front of a format number.
+        Some(stored) if stored.tick == 0 => fresh(0),
         Some(stored) => match sort_stored(stored.tick, &stored.state)? {
             Stored::Current(bytes) => {
                 postcard::from_bytes(bytes).map_err(|error| RestoreError::State {

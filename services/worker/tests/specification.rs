@@ -5317,7 +5317,6 @@ fn deltas_from_before_without_a_state_are_dropped_up_to_the_last_in(mut world: W
 }
 
 #[test]
-#[ignore = "finding: a state of tick 0 is read; one from before is refused as a later build's"]
 fn the_state_of_a_region_that_never_ran_stored_before_there_was_a_format_is_not_read() {
     in_memory_and_on_disk(
         the_state_of_a_region_that_never_ran_stored_before_there_was_a_format_is_not_read_in,
@@ -5381,7 +5380,6 @@ fn a_runner_told_to_stop_before_its_first_tick_leaves_a_state_of_tick_0_that_is_
 }
 
 #[test]
-#[ignore = "finding: a state of tick 0 is read, so its bytes can be an error"]
 fn a_state_of_tick_0_is_not_read_whatever_it_is_and_what_was_committed_since_is_applied() {
     in_memory_and_on_disk(
         a_state_of_tick_0_is_not_read_whatever_it_is_and_what_was_committed_since_is_applied_in,

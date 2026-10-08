@@ -1566,6 +1566,32 @@ Nothing in the store's interface changes.
 3. **Section 4, "Departures nobody will pass on"**: also arrivals that were answered
    `NotMine`.
 
+## Found by the tests of C2b.1
+
+Written from this record by someone who had not seen the code. One fault in the code:
+
+- A stored state of tick 0 was read like any other, against section 4.1. One that an
+  earlier build left (a runner stopped before its first tick stores one) begins with
+  the zero of its tick, which was taken for the zero in front of a format number, and
+  the region was refused as written by a later build. It is not read now.
+
+And what the record left to the reader, which the tests and the code read alike:
+
+- **What "received" is after a restore** (section 4.5): a restored runner counts from
+  the state's `applied`, so an edge that lost its `since` after a message of it was
+  applied under an earlier owner is reset.
+- **Two hellos of one edge between two ticks**: the link that stays is told the
+  `since` the region has for the edge after the tick, with its entries; the cases of
+  section 4.5 are not worked out for each hello by itself from the state before.
+- **A numbered message right behind the hello of an edge that is reset** is taken:
+  nothing counts as received from the hello on.
+- **An item that cannot be read, or is a later build's, before an item from before**
+  (section 4.1): items are gone through in order and the error comes first. It cannot
+  arise without going back to an earlier build twice.
+
+Left for step C3, which is the first to make such states: what presence says after
+`Unknown` when the state has a player of the edge and nothing received.
+
 ## Open questions
 
 1. **Whether a region may take in an arrival for a chunk it has nothing to do with.**
