@@ -248,13 +248,18 @@ mod tests {
             absorbed: vec![(RegionId(3), region)],
         });
         round_trip(EdgeToWorker::SubscribeAsGuest {
+            ask: 7,
             chunks: chunks.clone(),
         });
         round_trip(WorkerToEdge::Elsewhere {
             chunk: chunks[0],
+            ask: 7,
             region,
         });
-        round_trip(WorkerToEdge::NotMine { chunk: chunks[1] });
+        round_trip(WorkerToEdge::NotMine {
+            chunk: chunks[1],
+            ask: 8,
+        });
         for said in [
             ToCoordinator::Players {
                 regions: vec![(region, vec![(chunks[0], 3)])],

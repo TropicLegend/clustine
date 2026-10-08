@@ -68,6 +68,14 @@ const SPAWN: Vec3 = Vec3::new(13.5, FEET, 8.5);
 /// A block of the next region that a player at the spawn can reach.
 const BEYOND: BlockPos = BlockPos::new(16, GROUND, 8);
 
+/// The chunk [`BEYOND`] is in, the first of the next region. The region under test
+/// learns from the store that it is the next region's, and only if it has a reason to
+/// ask: a viewer's subscription to it, or a player standing in it.
+const NEXT: ChunkPos = ChunkPos::new(1, 0);
+
+/// The next region, the eastern one of the two.
+const NEIGHBOUR: RegionId = RegionId(1);
+
 /// How often a wait steps the runner before it gives up. With a millisecond between
 /// steps, a wait that cannot succeed fails after a few seconds.
 const STEPS: usize = 4000;
@@ -89,18 +97,15 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     hotbar
 }
 
-/// The region takes the stripes of the layout as given, its own and its neighbour's,
-/// as the processes have it as long as a runner does not ask the store
+/// The region takes nothing as given: of every chunk it asks the store, which is
+/// divided into the stripes of the layout, whether it is its own
 /// (`docs/adr/0012-the-tick-on-chunks.md`, section 8).
 fn config() -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after: 0,
-        presumed: layout()
-            .regions()
-            .map(|(region, area)| (area, (region != REGION).then_some(region)))
-            .collect(),
+        presumed: Vec::new(),
     }
 }
 
@@ -182,6 +187,8 @@ struct Link {
     closed: bool,
     /// The edge that said hello on this link, once one has.
     edge: std::cell::Cell<Option<EdgeId>>,
+    /// The number of the last subscription message sent on this link.
+    asked: std::cell::Cell<u64>,
 }
 
 impl Link {
@@ -193,6 +200,7 @@ impl Link {
             log: Vec::new(),
             closed: false,
             edge: std::cell::Cell::new(None),
+            asked: std::cell::Cell::new(0),
         }
     }
 
@@ -230,7 +238,26 @@ impl Link {
             seen,
             players,
             chunks,
+            guests: Vec::new(),
         });
+    }
+
+    /// The number of the next subscription message on this link: they are counted from
+    /// 1, apart from the numbers of what changes the region.
+    fn next_ask(&self) -> u64 {
+        self.asked.set(self.asked.get() + 1);
+        self.asked.get()
+    }
+
+    /// Subscribes to `chunks` for a viewer of one of this region's players.
+    fn subscribe(&self, chunks: Vec<ChunkPos>) {
+        let ask = self.next_ask();
+        self.plain(EdgeToWorker::Subscribe { ask, chunks });
+    }
+
+    fn unsubscribe(&self, chunks: Vec<ChunkPos>) {
+        let ask = self.next_ask();
+        self.plain(EdgeToWorker::Unsubscribe { ask, chunks });
     }
 
     /// Reads whatever has arrived, and notes whether the worker has closed the link.
@@ -394,18 +421,14 @@ fn run_to_tick(runner: &mut RegionRunner, links: &mut [&mut Link], tick: u64) {
 fn sync(runner: &mut RegionRunner, links: &mut [&mut Link], through: usize) -> u64 {
     static NEXT: AtomicI32 = AtomicI32::new(0);
     let position = ChunkPos::new(-64 - NEXT.fetch_add(1, Ordering::Relaxed), 40);
-    links[through].plain(EdgeToWorker::Subscribe {
-        chunks: vec![position],
-    });
+    links[through].subscribe(vec![position]);
     run_until(
         runner,
         links,
         "the snapshot that marks a tick",
         |_, links| snapshot(&links[through].log, position).is_some(),
     );
-    links[through].plain(EdgeToWorker::Unsubscribe {
-        chunks: vec![position],
-    });
+    links[through].unsubscribe(vec![position]);
     let (_, tick, _, _) =
         snapshot(&links[through].log, position).expect("the wait ended on this snapshot");
     tick
@@ -428,7 +451,9 @@ fn snapshot(
                 tick,
                 chunk,
                 entities,
+                ..
             } if *at == position => Some((index, *tick, chunk, entities)),
+
             _ => None,
         })
 }
@@ -648,6 +673,15 @@ fn wait_applied(runner: &mut RegionRunner, links: &mut [&mut Link], through: usi
     });
 }
 
+/// Waits until the link has been sent the outbox entry `number`. What a region does by
+/// itself, such as letting a player go when the store has said whose the chunk they
+/// stand in is, comes ticks after the message that led to it was applied.
+fn wait_entry(runner: &mut RegionRunner, links: &mut [&mut Link], through: usize, number: u64) {
+    run_until(runner, links, "an outbox entry", |_, links| {
+        outbox_numbers(&links[through].log).contains(&number)
+    });
+}
+
 // ---------------------------------------------------------------------------------------
 // 1. Output commit
 // ---------------------------------------------------------------------------------------
@@ -673,8 +707,11 @@ struct Witness {
 impl Witness {
     fn absorb(&mut self, message: &WorkerToEdge) {
         match message {
-            WorkerToEdge::Elsewhere { .. } | WorkerToEdge::NotMine { .. } => {
-                panic!("a region said {message:?}, which none does yet")
+            // The answer to a subscription to a chunk of the next region, of which this
+            // region tells the edge nothing else.
+            WorkerToEdge::Elsewhere { .. } => {}
+            WorkerToEdge::NotMine { .. } => {
+                panic!("a region said {message:?}, and nobody asked as a guest")
             }
             WorkerToEdge::ChunkSnapshot { entities, .. } => {
                 for entity in entities {
@@ -809,7 +846,12 @@ impl Witness {
     }
 }
 
-/// An edge in the long scenario: its link, its numbering and what it has been told.
+/// An edge in the long scenario: its link, its numbering and what it has been told. It
+/// asks for the home chunk and, as a viewer whose player can see across the line does,
+/// for the first chunk of the next region. So the region knows whose that chunk is
+/// before anything the edge sends is applied, also after it was restored: a player who
+/// steps into it is let go in the tick of the step, and a block of it is passed on with
+/// the region named.
 struct Session {
     edge: EdgeId,
     start: u64,
@@ -826,7 +868,7 @@ struct Session {
 impl Session {
     fn begin(runner: &RegionRunner, edge: EdgeId, start: u64) -> Self {
         let link = Link::attach(runner);
-        link.hello(edge, start, 0, Vec::new(), vec![HOME]);
+        link.hello(edge, start, 0, Vec::new(), vec![HOME, NEXT]);
         Self {
             edge,
             start,
@@ -908,7 +950,7 @@ fn resume(next: &mut RegionRunner, sessions: &mut [&mut Session]) {
             session.start,
             0,
             session.players.clone(),
-            vec![HOME],
+            vec![HOME, NEXT],
         );
     }
     {
@@ -1036,13 +1078,17 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
     assert_eq!(f.witness.blocks.get(&near), Some(&blocks::AIR));
     assert_eq!(e.witness.handled.get(&one), Some(&1));
 
-    // A block of the next region: an outbox entry, and nothing acknowledged.
+    // A block of the next region: an outbox entry that names that region, as the
+    // region has asked whose the chunk is, and nothing acknowledged.
     e.send(input(one, 3, dig(BEYOND, 2)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert_eq!(e.witness.outbox.len(), 1);
     assert!(matches!(
         e.witness.outbox.get(&1),
-        Some(Durable::Remote { .. })
+        Some(Durable::Remote {
+            to: Some(NEIGHBOUR),
+            ..
+        })
     ));
 
     // Out through the eastern end.
@@ -1050,7 +1096,7 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert!(matches!(
         e.witness.outbox.get(&2),
-        Some(Durable::Departed { player, .. }) if *player == two
+        Some(Durable::Departed { player, to: NEIGHBOUR, .. }) if *player == two
     ));
     assert_eq!(e.witness.own.len(), 1);
 
@@ -1319,6 +1365,10 @@ fn what_the_old_start_sent_for_the_coming_tick_is_dropped_by_a_higher_start_in(m
 /// beyond the region (sequence 2, outbox entry 1), and player 2, who has walked out
 /// (outbox entry 2), after which player 1 has put dirt into a slot; edge F with player 3.
 /// E's eight messages are applied.
+///
+/// Nobody has asked the region about the chunk beyond its end. So the block is passed
+/// on without a region named, and the player is let go once the store has said whose
+/// the chunk they stand in is, a tick or two after the step.
 fn busy_region(runner: &mut RegionRunner) -> (Link, Link, EntityId) {
     let mut e = established(runner, E, 5);
     let mut f = established(runner, F, 5);
@@ -1345,7 +1395,19 @@ fn busy_region(runner: &mut RegionRunner) -> (Link, Link, EntityId) {
         ),
     );
     wait_applied(runner, &mut [&mut e, &mut f], 0, 8);
+    wait_entry(runner, &mut [&mut e, &mut f], 0, 2);
     assert_eq!(outbox_numbers(&e.log), vec![1, 2], "{}", brief(&e.log));
+    assert!(
+        matches!(
+            outbox(&e.log).as_slice(),
+            [
+                (_, 1, Durable::Remote { to: None, .. }),
+                (_, 2, Durable::Departed { to: NEIGHBOUR, .. })
+            ]
+        ),
+        "{}",
+        brief(&e.log)
+    );
     (e, f, entity)
 }
 
@@ -1759,6 +1821,7 @@ fn a_number_on_a_message_that_has_none_or_none_on_one_that_has_closes_the_link()
     numbered.numbered(
         1,
         EdgeToWorker::Subscribe {
+            ask: 1,
             chunks: vec![ChunkPos::new(-3, 0)],
         },
     );
@@ -1855,9 +1918,7 @@ fn an_ordinary_subscription_holds_nothing() {
 
     // The chunk has to come from the store, which cannot have answered within the tick
     // that takes the move in.
-    e.plain(EdgeToWorker::Subscribe {
-        chunks: vec![elsewhere],
-    });
+    e.subscribe(vec![elsewhere]);
     e.numbered(2, input(player(1), 1, move_to(12.5)));
     run_until(
         &mut runner,
@@ -2480,6 +2541,7 @@ fn a_worker_whose_store_is_lost_ends_by_itself() {
         log: Vec::new(),
         closed: false,
         edge: std::cell::Cell::new(None),
+        asked: std::cell::Cell::new(0),
     };
     e.hello(E, 5, 0, Vec::new(), vec![HOME]);
     wait_for(&mut e, "the welcome of a running worker", |link| {
@@ -2507,6 +2569,7 @@ fn a_worker_whose_store_is_lost_ends_by_itself() {
         log: Vec::new(),
         closed: false,
         edge: std::cell::Cell::new(None),
+        asked: std::cell::Cell::new(0),
     };
     wait_for(
         &mut late,
@@ -2542,6 +2605,7 @@ fn a_stopped_worker_has_stored_everything_and_closed_its_links() {
         log: Vec::new(),
         closed: false,
         edge: std::cell::Cell::new(None),
+        asked: std::cell::Cell::new(0),
     };
     e.hello(E, 5, 0, Vec::new(), vec![HOME]);
     e.numbered(1, join(player(1)));
@@ -2585,9 +2649,7 @@ fn a_tick_that_changes_nothing_is_published_without_a_commit() {
     // Nobody does anything from here on; a subscription changes nothing of the region's
     // state. Its snapshot arrives all the same, and so does the next.
     let quiet = ChunkPos::new(-7, -7);
-    e.plain(EdgeToWorker::Subscribe {
-        chunks: vec![quiet],
-    });
+    e.subscribe(vec![quiet]);
     run_until(
         &mut runner,
         &mut [&mut e],
@@ -2706,14 +2768,18 @@ fn with_an_unconfirmed_departure(runner: &mut RegionRunner) -> (Link, Link, Enti
     let leaves = join_and_wait(runner, &mut e, 2, player(2));
     e.numbered(3, input(player(2), 1, move_to(16.5)));
     wait_applied(runner, &mut [&mut e, &mut watcher], 0, 3);
+    // Nobody had asked about the chunk the player stepped into: they are let go when
+    // the store has said whose it is.
+    wait_entry(runner, &mut [&mut e, &mut watcher], 0, 1);
     assert!(
         matches!(
             outbox(&e.log).as_slice(),
-            [(_, 1, Durable::Departed { .. })]
+            [(_, 1, Durable::Departed { to: NEIGHBOUR, .. })]
         ),
         "{}",
         brief(&e.log)
     );
+
     sync(runner, &mut [&mut watcher, &mut e], 0);
     assert!(
         removal(&watcher.log, leaves).is_none(),
@@ -3139,9 +3205,7 @@ fn a_tick_with_nothing_to_commit_does_not_overtake_the_tick_before_it() {
     wait_applied(&mut runner, &mut [&mut e, &mut f], 0, 1);
     // Another edge keeps a second chunk loaded, so that a snapshot of it needs no store.
     let other = ChunkPos::new(-1, 0);
-    f.plain(EdgeToWorker::Subscribe {
-        chunks: vec![other],
-    });
+    f.subscribe(vec![other]);
     run_until(
         &mut runner,
         &mut [&mut f, &mut e],
@@ -3155,9 +3219,7 @@ fn a_tick_with_nothing_to_commit_does_not_overtake_the_tick_before_it() {
     // snapshot to publish.
     e.numbered(2, input(player(1), 1, dig(near, 1)));
     runner.step();
-    e.plain(EdgeToWorker::Subscribe {
-        chunks: vec![other],
-    });
+    e.subscribe(vec![other]);
     runner.step();
     run_until(
         &mut runner,
@@ -3463,6 +3525,7 @@ fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links(
         log: Vec::new(),
         closed: false,
         edge: std::cell::Cell::new(None),
+        asked: std::cell::Cell::new(0),
     };
     e.hello(E, 5, 0, Vec::new(), vec![HOME]);
     e.numbered(1, join(player(1)));
@@ -3490,6 +3553,7 @@ fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links(
         log: Vec::new(),
         closed: false,
         edge: std::cell::Cell::new(None),
+        asked: std::cell::Cell::new(0),
     };
     wait_for(
         &mut late,
@@ -3539,6 +3603,7 @@ fn hello_since(
         seen,
         players,
         chunks,
+        guests: Vec::new(),
     });
 }
 

@@ -53,9 +53,19 @@ pub enum EdgeToWorker {
         /// The players the edge believes to be in this region. Each is answered with
         /// [`WorkerToEdge::Presence`].
         players: Vec<PlayerId>,
-        /// Every chunk of this region that the edge shows or has asked for. The link is
-        /// subscribed to them.
+        /// The chunks that viewers of this region's players see, whoever serves them:
+        /// the viewer's subscriptions the link begins with, as [`EdgeToWorker::Subscribe`]
+        /// makes them, with the number 0.
         chunks: Vec<ChunkPos>,
+        /// The chunks of this region that viewers of other regions' players see: the
+        /// guest's subscriptions the link begins with, as
+        /// [`EdgeToWorker::SubscribeAsGuest`] makes them, with the number 0. A chunk
+        /// that is also among `chunks` is a viewer's.
+        ///
+        /// Each chunk of both lists holds back what the link sends behind the hello
+        /// until its subscription is answered. See
+        /// `docs/adr/0012-the-tick-on-chunks.md`, section 4.5.
+        guests: Vec<ChunkPos>,
     },
     /// The edge has handled the outbox entries up to this number; see
     /// [`WorkerToEdge::Outbox`].
@@ -84,17 +94,33 @@ pub enum EdgeToWorker {
     /// one; see [`RemoteAction`]. Answered with [`WorkerToEdge::RemoteDone`] or with
     /// [`WorkerToEdge::Remote`] if yet another region has to take a step.
     Remote(RemoteAction),
-    /// The edge wants a snapshot of these chunks, followed by every later change to
-    /// them. A subscription also keeps the chunk loaded.
-    Subscribe { chunks: Vec<ChunkPos> },
-    /// The edge no longer needs these chunks.
-    Unsubscribe { chunks: Vec<ChunkPos> },
-    /// Like [`EdgeToWorker::Subscribe`], for chunks that a viewer of another region
-    /// sees: the region serves those it holds and answers [`WorkerToEdge::NotMine`] for
-    /// the others, and does not claim a chunk because a guest asks for it. See
-    /// `docs/adr/0010-regions-that-follow-players.md`, section 3. No edge says this
-    /// yet, and a worker ignores it.
-    SubscribeAsGuest { chunks: Vec<ChunkPos> },
+    /// The edge subscribes to these chunks for viewers whose players are this region's:
+    /// it wants a snapshot of each, followed by every later change to it. Such a
+    /// subscription is the region's reason to claim a chunk nobody holds and to keep it
+    /// loaded; for a chunk another region holds it is answered with
+    /// [`WorkerToEdge::Elsewhere`], and stays, as the region's reason to go on knowing
+    /// who holds the chunk. Said again for a chunk that was told elsewhere, it has the
+    /// region ask the world store again.
+    ///
+    /// `ask` numbers the subscription messages of a link (this one,
+    /// [`EdgeToWorker::SubscribeAsGuest`] and [`EdgeToWorker::Unsubscribe`]) from 1,
+    /// each higher than the one before; the lists of a hello count as number 0. One
+    /// that is not above the one before ends the link. An answer carries the number of
+    /// the last message that named its chunk. See
+    /// `docs/adr/0012-the-tick-on-chunks.md`, section 4.3.
+    Subscribe { ask: u64, chunks: Vec<ChunkPos> },
+    /// The edge no longer needs these chunks. `ask` is as for
+    /// [`EdgeToWorker::Subscribe`].
+    Unsubscribe { ask: u64, chunks: Vec<ChunkPos> },
+    /// Like [`EdgeToWorker::Subscribe`], for chunks that a viewer of another region's
+    /// player sees: the region serves those it holds and answers
+    /// [`WorkerToEdge::NotMine`] for the others. It does not claim a chunk because a
+    /// guest asks for it, except in an area it is pinned to, and does not give one back
+    /// while a guest is subscribed to it. Said for a chunk the link has a viewer's
+    /// subscription to, it makes that a guest's, and [`EdgeToWorker::Subscribe`] makes
+    /// it a viewer's again; a subscription that is served stays so, without another
+    /// snapshot. `ask` is as for [`EdgeToWorker::Subscribe`].
+    SubscribeAsGuest { ask: u64, chunks: Vec<ChunkPos> },
 }
 
 impl EdgeToWorker {
@@ -123,6 +149,11 @@ pub enum WorkerToEdge {
     /// Sent once per subscription; later changes follow as [`WorkerToEdge::TickDelta`].
     ChunkSnapshot {
         position: ChunkPos,
+        /// Which asking this answers: the number of the last subscription message of
+        /// the link that named the chunk when the tick ran, 0 for a hello. An edge
+        /// passes over an answer with a lower number than its own last message about
+        /// the chunk: it is about a subscription the edge has changed or ended since.
+        ask: u64,
         tick: u64,
         chunk: Chunk,
         entities: Vec<EntityState>,
@@ -157,13 +188,21 @@ pub enum WorkerToEdge {
         applied: u64,
         inputs: Vec<(PlayerId, u64)>,
     },
-    /// The region `region` holds `chunk`, which the edge is subscribed to here or has
-    /// asked for: the edge subscribes there as a guest. See ADR-0010, section 3. No
-    /// worker says this yet, and an edge ignores it.
-    Elsewhere { chunk: ChunkPos, region: RegionId },
-    /// This region does not hold `chunk` and does not know who does. The edge asks the
-    /// viewer's region again.
-    NotMine { chunk: ChunkPos },
+    /// The answer to a viewer's subscription to a chunk this region does not hold: the
+    /// world store has said that `region` holds it. The edge subscribes there as a
+    /// guest. The subscription stays, and nothing more of the chunk comes on it until
+    /// the edge asks again with [`EdgeToWorker::Subscribe`]. `ask` is as in
+    /// [`WorkerToEdge::ChunkSnapshot`]. See `docs/adr/0012-the-tick-on-chunks.md`,
+    /// section 5.4.
+    Elsewhere {
+        chunk: ChunkPos,
+        ask: u64,
+        region: RegionId,
+    },
+    /// The answer to a guest's subscription to a chunk this region does not hold, which
+    /// ends the subscription. The edge asks the viewer's region again. `ask` is as in
+    /// [`WorkerToEdge::ChunkSnapshot`].
+    NotMine { chunk: ChunkPos, ask: u64 },
 }
 
 /// What a region answers an edge that has said hello.

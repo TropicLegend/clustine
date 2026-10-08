@@ -277,6 +277,7 @@ mod tests {
                 seen: 41,
                 players: vec![player()],
                 chunks: vec![ChunkPos::new(0, -1)],
+                guests: vec![ChunkPos::new(7, -1)],
             },
             EdgeToWorker::Confirm { number: 41 },
             EdgeToWorker::PlayerJoin(PlayerJoin {
@@ -284,9 +285,15 @@ mod tests {
                 name: "Notch".to_owned(),
             }),
             EdgeToWorker::Subscribe {
+                ask: 1,
                 chunks: vec![ChunkPos::new(-1, 2), ChunkPos::new(3, -4)],
             },
+            EdgeToWorker::SubscribeAsGuest {
+                ask: 2,
+                chunks: vec![ChunkPos::new(3, -4)],
+            },
             EdgeToWorker::Unsubscribe {
+                ask: 3,
                 chunks: vec![ChunkPos::new(-1, 2)],
             },
             EdgeToWorker::Input {
@@ -372,6 +379,7 @@ mod tests {
             },
             WorkerToEdge::ChunkSnapshot {
                 position: ChunkPos::new(3, -4),
+                ask: 2,
                 tick: 99,
                 chunk: chunk(),
                 entities: vec![EntityState {
@@ -464,6 +472,15 @@ mod tests {
             WorkerToEdge::Progress {
                 applied: 17,
                 inputs: vec![(player(), 77)],
+            },
+            WorkerToEdge::Elsewhere {
+                chunk: ChunkPos::new(3, -4),
+                ask: 5,
+                region: RegionId(1),
+            },
+            WorkerToEdge::NotMine {
+                chunk: ChunkPos::new(3, -4),
+                ask: 6,
             },
         ];
 

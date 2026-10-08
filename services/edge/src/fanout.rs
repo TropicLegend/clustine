@@ -218,6 +218,10 @@ struct Link {
     /// How many of the outbox entries the welcome announced are still to come; `None`
     /// until the welcome has been read.
     announced: Option<u32>,
+    /// The number of the last subscription message sent over this link. A region takes
+    /// them only in ascending order; see `docs/adr/0012-the-tick-on-chunks.md`,
+    /// section 4.3.
+    asked: u64,
 }
 
 /// What the edge keeps for a region, with or without a link to it; see
@@ -440,6 +444,9 @@ impl Fanout {
             seen: port.seen,
             players,
             chunks,
+            // This edge asks for a chunk only at the region its layout names, and so
+            // never as a guest.
+            guests: Vec::new(),
         };
         info!(%region, epoch, kept = port.kept.len(), "linked to a region");
         // A link that is gone already is noticed by its reader.
@@ -450,6 +457,7 @@ impl Fanout {
             id,
             welcomed: false,
             announced: None,
+            asked: 0,
         });
     }
 
@@ -1452,7 +1460,8 @@ impl Fanout {
     /// chunk of the region that the edge shows or wants.
     async fn subscribe(&mut self, chunks: Vec<ChunkPos>) {
         for (region, chunks) in self.by_region(chunks) {
-            self.send_to_region(region, EdgeToWorker::Subscribe { chunks })
+            let ask = self.next_ask(region);
+            self.send_to_region(region, EdgeToWorker::Subscribe { ask, chunks })
                 .await;
         }
     }
@@ -1460,9 +1469,22 @@ impl Fanout {
     /// Tells the regions the chunks belong to that they are no longer needed here.
     async fn unsubscribe(&mut self, chunks: Vec<ChunkPos>) {
         for (region, chunks) in self.by_region(chunks) {
-            self.send_to_region(region, EdgeToWorker::Unsubscribe { chunks })
+            let ask = self.next_ask(region);
+            self.send_to_region(region, EdgeToWorker::Unsubscribe { ask, chunks })
                 .await;
         }
+    }
+
+    /// The number of the next subscription message to `region`: they are counted per
+    /// link, from 1. Without a link the message is not sent, and its number means
+    /// nothing: the hello of the next link names every chunk anew.
+    fn next_ask(&mut self, region: RegionId) -> u64 {
+        let port = self.regions.get_mut(region.0 as usize);
+        let link = port.and_then(|port| port.link.as_mut());
+        link.map_or(0, |link| {
+            link.asked += 1;
+            link.asked
+        })
     }
 
     /// Sorts chunks by the region they belong to.
@@ -2049,6 +2071,73 @@ mod tests {
         }
     }
 
+    /// A region takes the subscription messages of a link only in ascending order of
+    /// their numbers, which the edge counts per link, from 1.
+    #[tokio::test]
+    async fn subscription_messages_are_numbered_from_one_on_each_link() {
+        /// What the edge says next to `region` about its subscriptions.
+        async fn next_asked(edge: &mut Harness, region: RegionId) -> EdgeToWorker {
+            loop {
+                let body = edge.next(region).await.body;
+                if let EdgeToWorker::Subscribe { .. } | EdgeToWorker::Unsubscribe { .. } = body {
+                    return body;
+                }
+            }
+        }
+        // The region says that the player has walked a chunk east, to `x`.
+        let walked = |x: f64| WorkerToEdge::TickDelta {
+            tick: 1,
+            events: vec![RegionEvent::EntityMoved {
+                entity: EntityId(5),
+                pose: Pose::at(Vec3::new(x, -60.0, 0.5)),
+                previous_chunk: ChunkPos::containing(x - 16.0, 0.5),
+            }],
+        };
+
+        // Entering the world makes the edge ask for the chunks around, all of which are
+        // the western region's.
+        let mut edge = Harness::start().await;
+        let _packets = edge.join(player(1)).await;
+        // Only once the edge has taken the join can it be told where the player is.
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        let asked = next_asked(&mut edge, WEST).await;
+        assert!(
+            matches!(asked, EdgeToWorker::Subscribe { ask: 1, .. }),
+            "{asked:?}"
+        );
+
+        // A column of chunks leaves the view, and one of the eastern region comes into
+        // it.
+        edge.tell(WEST, walked(16.5));
+        let asked = next_asked(&mut edge, WEST).await;
+        assert!(
+            matches!(asked, EdgeToWorker::Unsubscribe { ask: 2, .. }),
+            "{asked:?}"
+        );
+        let asked = next_asked(&mut edge, EAST).await;
+        assert!(
+            matches!(asked, EdgeToWorker::Subscribe { ask: 1, .. }),
+            "{asked:?}"
+        );
+
+        // On a new link the count begins anew; on the other it goes on.
+        let hello = edge.relink(WEST, 2).await;
+        assert!(matches!(hello, EdgeToWorker::Hello { .. }), "{hello:?}");
+        edge.tell(WEST, walked(32.5));
+        let asked = next_asked(&mut edge, WEST).await;
+        assert!(
+            matches!(asked, EdgeToWorker::Unsubscribe { ask: 1, .. }),
+            "{asked:?}"
+        );
+        let asked = next_asked(&mut edge, EAST).await;
+        assert!(
+            matches!(asked, EdgeToWorker::Subscribe { ask: 2, .. }),
+            "{asked:?}"
+        );
+    }
+
     #[tokio::test]
     async fn what_changes_a_region_is_numbered_from_one_per_region() {
         let mut edge = Harness::start().await;
@@ -2113,6 +2202,7 @@ mod tests {
             seen,
             players,
             chunks,
+            guests,
         } = hello
         else {
             panic!("expected a hello, got {hello:?}");
@@ -2130,6 +2220,8 @@ mod tests {
         let layout = Layout::new(vec![4]).unwrap();
         assert!(!chunks.is_empty());
         assert!(chunks.iter().all(|chunk| layout.region_of(*chunk) == WEST));
+        // It asks nowhere as a guest.
+        assert!(guests.is_empty());
         assert!(connected(&mut packets));
 
         edge.tell(WEST, WorkerToEdge::Welcome(Welcome::Resumed { entries: 0 }));

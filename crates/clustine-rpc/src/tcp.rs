@@ -157,6 +157,7 @@ mod tests {
             edge.send(leave).await.unwrap();
         }
         let subscribe = EdgeMessage::unnumbered(EdgeToWorker::Subscribe {
+            ask: 1,
             chunks: chunks.clone(),
         });
         edge.send(subscribe.clone()).await.unwrap();
