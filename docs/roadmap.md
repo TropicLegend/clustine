@@ -188,7 +188,7 @@ differently, so that each leaves everything working.
 | # | Scope | Verified by | Status |
 |---|---|---|---|
 | C0 | The messages and types of ADR-0010, refused or ignored by everyone | All existing tests | done |
-| C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each. Designed in [ADR-0011](adr/0011-the-world-store-and-regions.md), in steps C1.1 to C1.7 | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | designed and reviewed; being built |
+| C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each. Designed in [ADR-0011](adr/0011-the-world-store-and-regions.md), in steps C1.1 to C1.7 | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | built; independent tests being written |
 | C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | done |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos. Designed in [ADR-0012](adr/0012-the-tick-on-chunks.md), in steps C2b.1 to C2b.5 | Hand-over, block, takeover, chaos and move tests on two pinned regions | designed and reviewed; to build |
 | C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | to do |
@@ -406,6 +406,21 @@ region knows the edge, the edge says that number in its hellos and is resumed on
 it is the region's, a welcome says how many outbox entries follow it, and what a worker
 stores of a region begins with a number for its form, so that what an earlier build
 stored is dropped instead of being read as something else.
+
+C1 is built as [ADR-0011](adr/0011-the-world-store-and-regions.md) has it, in its seven
+steps: the store is told how the world is divided when it starts (`clustine worldstore
+--boundaries`, the same as the coordinator), keeps a table of regions and of which
+region holds which chunk, lets only the holder load and save a chunk, grants and takes
+back chunks, replays a region's log only into what it holds, merges and splits regions
+as one record of the log each, and gives the coordinator the list of regions. After a
+failed write of the log every region loses its owner and nobody is served until the
+log is cut back durably. It is killed at every write and sync of claims, returns, a
+merge and a split (`kill_regions.rs`), which found a fault in the chunk store older
+than this work: a section file left behind by two faults in a row was taken for stored.
+Nothing asks the store for any of the new things yet: the stripes are pinned regions
+and work as before. What the builder decided where the record was silent is at the
+record's end. The scenarios of its section 9 are being written by someone else from
+the record alone.
 
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
