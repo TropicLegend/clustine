@@ -93,3 +93,142 @@ Not in M2, and known to be missing:
 - One edge. With several there is no shared player list and nothing stops an account
   from being on two edges at once.
 - The services trust whoever reaches their ports.
+
+## M3 plan
+
+Planned and agreed on 2026-10-08. M3 is about three times M2 and is built in three phases
+on one mechanism: **a region can be rebuilt from the world store, and an edge can resume
+with a rebuilt region.** Failover, migration, merging and splitting are that, started for
+different reasons. [ADR-0008](adr/0008-durable-regions-and-resuming.md) specifies the
+mechanism; read it before touching phase A.
+
+Decided with the owner:
+
+- All three phases, **with a stop after each** for a check with real clients.
+- **Workers and the world store** are survived without disconnecting anyone, and both are
+  what the chaos tests kill. A dead edge still takes its players with it; the single
+  coordinator is merely missed while it is away.
+- **Takeover after 5 seconds**: that is the lease, so players of a dead worker stand
+  still for about 5 to 7 seconds.
+
+"No acknowledged state lost" means: every block change a client was shown or told was
+handled is on disk before it is shown; a player of a region whose worker dies stays
+connected and keeps entity, position, hotbar and held slot as last made durable, with
+everything done since applied again from what the edge kept; and nobody else sees that
+player vanish or appear twice.
+
+### Phase A: recovery
+
+Regions stay the fixed stripes. A spare worker waits; when a worker's lease runs out, its
+region goes to a waiting worker, edges keep their players, hold what they do, reconnect
+and resume. A region that loses the world store is torn down by its worker and restored
+from disk when the store is back.
+
+| # | Scope | Verified by | Status |
+|---|---|---|---|
+| A0 | Numbers and ids on the wire at both ends, snapshots taken at tick time, epoch tags at the edge; no change in behaviour | All existing tests | next |
+| A1 | Store and format: commit lane and `Committed`, state records and state file, restored state on opening, epochs and id blocks on disk, no folding at start | Store tests: kill at every point of a commit, a checkpoint and a recovery; latency of commits while chunks are saved | to do |
+| A2 | Sim: export and restore of state, per-tick state changes, outbox, inbox numbers | Unit tests; restore then the kept messages equals the uninterrupted run up to the commit followed by the rest in one tick | to do |
+| A3 | Worker: publish after commit, resume, edge starts and expiry, restore after losing the store | Runner tests incl. a runner dropped between commit and publish | to do |
+| A4 | Edge: name and start count, outbox per region, kept inputs per player, resume and reconciliation, living through the loss of a region | E2E in one process: a region is torn down without warning and rebuilt while bots walk, build, hand over and watch | to do |
+| A5 | Coordinator: lease 5 s, per-region vouching, table changes that edges live through | State machine and service tests | to do |
+| A6 | Chaos tests: workers and the world store killed at random under bots that keep a ledger of everything acknowledged; on kind by deleting pods; in CI | No disconnect, ledger equals world, one entity per player throughout, repeatedly | to do |
+| A7 | Docs | CI | to do |
+
+Then stop for the owner's check: kill a worker while playing.
+
+### Phase B: live migration
+
+The coordinator asks an owner to release a region; the owner finishes its tick, waits
+until everything is committed and published, checkpoints, closes the region and says so;
+the region goes to the target, which opens and restores it; edges resume. An owner that
+does not answer within the lease is treated as dead, which is the same as a crash.
+
+| # | Scope | Verified by | Status |
+|---|---|---|---|
+| B1 | Release and assign; `clustine move` to ask for it | Move under bot load: nobody disconnected, pause measured and bounded | to do |
+| B2 | A worker asked to terminate hands its region over first | Rolling restart of all workers under bots, as processes | to do |
+| B3 | ADR-0009, docs | CI | to do |
+
+Then stop for the owner's check: `clustine move` and restarting workers while playing.
+
+### Phase C: regions that follow players
+
+- A region is a set of chunks and the players standing in them. Which region has a chunk
+  is decided by the world store, which grants a chunk to the first region that needs it
+  and takes it back when that region no longer does. A dead region keeps its chunks
+  until it is restored. The stripes, `Layout` and `--boundaries` go.
+- An edge asks the viewer's region for a chunk; if another region has it, it is told
+  which and asks there. Hand-over and passing on of block actions work as in M2, on these
+  chunk sets; an action that reaches a region which no longer has the block comes back as
+  "not mine" and is sent on.
+- There is always a home region with the spawn chunk; players join there.
+- The coordinator hears where each region's players are and lists regions from the store,
+  so it finds regions nobody runs, also after its own restart. It orders a merge of
+  regions whose players come within a merge distance and a split of a region whose
+  players form groups further apart than a larger split distance.
+- Merge and split are one operation of the store each: absorbing takes another region's
+  stored state, chunks, outbox and message numbers into the survivor and retires the
+  other for good; splitting off writes part of a region as a new region with a fresh id.
+  Edges are told and move what they kept for the old region to the new one.
+- Workers run several regions and start and stop them while running.
+- The single process runs the same, with the coordinator's decisions made in-process.
+
+| # | Scope | Verified by | Status |
+|---|---|---|---|
+| C1 | Store: registry of regions, chunk grants, absorb and split-off as single operations | Store tests incl. kills at every point | to do |
+| C2 | Sim, worker, edge on chunk sets instead of stripes: grants, redirects, "not mine"; several regions per worker | Existing hand-over, block and chaos tests on the new model | to do |
+| C3 | Absorb and split-off through sim, worker and edge | Differential tests against one region; kills during merge and split | to do |
+| C4 | Coordinator: reports, regions from the store, merge and split decisions with hysteresis, placing new regions on the worker with the fewest | State machine tests with scripted and random movement | to do |
+| C5 | Stripes removed; single process and cluster on the new model | Bots meeting and parting; crowds; all chaos and migration tests again; kind | to do |
+| C6 | ADR-0010, architecture, roadmap | CI | to do |
+
+Then stop for the owner's check: two clients walking towards and away from each other.
+
+### Where M3 stands
+
+Nothing of phase A is built yet. ADR-0008 is written and has not been reviewed.
+
+Next, in this order:
+
+1. Have ADR-0008 gone over by an independent reviewer against the code, as was done for
+   the plan (it found twelve defects there, all worked into this section and the ADR).
+2. A0, by whoever leads: the shared types and messages, with everything still passing.
+   The notes below say what they are.
+3. Then in parallel, each in a crate of its own: A1 (`services/worldstore`,
+   `crates/clustine-format`) and A2 (`crates/clustine-sim`); after those A3
+   (`services/worker`), tests for A2 written from ADR-0008 alone, and A5
+   (`services/coordinator`); then A4 (`services/edge`), which is where ordering mistakes
+   hide and should not be delegated; then A6.
+
+Notes for A0 and after, which the ADR does not spell out:
+
+- The store does not need to understand a region's state: `Commit` and `Checkpoint` carry
+  it as bytes (postcard of `StateDelta` and of `RegionState`), and opening returns the
+  state file's bytes and the deltas' bytes for the worker to fold with
+  `RegionState::apply`. Block changes stay in the store's own record format and are
+  applied to chunks by the store as today.
+- Numbered messages need an envelope on the edge-to-worker link, for instance
+  `EdgeMessage { number: Option<u64>, body: EdgeToWorker }`, with numbers on join, leave,
+  arrive, discard, input and remote action, and none on hello, subscribe, unsubscribe,
+  presence and confirm.
+- `PlayerJoin` and arriving gain the edge; leaving gains the entity; remote actions come
+  with their edge; `Assignment` loses `entity_ids`, which the store issues instead.
+- An edge trims what it keeps only on `Progress`, never on `Welcome`: `Welcome.applied`
+  is what was committed, and the region itself ignores what it has applied in memory.
+- `RegionRunner::send_snapshots` reads live state when it sends, and the fallback in
+  `RegionRunner::tell` sends an `EntityRemoved` outside the tick's outputs. Both have to
+  go behind the commit.
+- `Fanout::hand_over` treats a transfer to the region it came from as an error and
+  disconnects. From phase C on that is an ordinary case after a merge.
+- The store thread today syncs logs, saves chunks and recovers on one thread
+  (`services/worldstore/src/lib.rs`), and answers also when a write failed. Commits need
+  a lane of their own and an answer only on success.
+
+### Known limits after M3
+
+- One coordinator, nothing on disk; while it is down nothing is taken over, moved, merged
+  or split. Regions and players carry on.
+- One edge; an edge that dies takes its players with it.
+- A takeover takes the lease plus a moment; players of that region stand still meanwhile.
+- No load-based balancing; no authentication between services.

@@ -1,0 +1,81 @@
+# Working on Clustine
+
+Clustine is a from-scratch Minecraft: Java Edition server (26.3, protocol 777) in Rust that
+simulates one world on several worker processes. Read `README.md` and
+`docs/architecture.md` first, then `docs/roadmap.md`, which has what is done, the agreed
+plan for the current milestone and **where it stands** (the last sections of that file).
+The decision records in `docs/adr/` say why things are the way they are.
+
+## How the owner wants the work done
+
+- **Plan carefully before a milestone**: a written plan, the open questions asked, the
+  plan agreed, then built. An independent reviewer goes over a design before it is built;
+  that has found real defects every time.
+- **One verified commit per step, straight to `main`, pushed.** No pull requests.
+- **Use subagents to go faster, without them getting in each other's way.** Fix the
+  shared types and messages first; give each subagent crates of its own (and a worktree
+  of its own) and a brief that states the interface, the tests expected and how to
+  verify; they do not commit to `main`, push, download, or start Docker, kind or the
+  official server. Read and test what comes back before trusting it. Parts where ordering
+  mistakes hide (the edge's hand-over and resume logic) are not delegated.
+- **Have tests written from the specification by someone who did not write the code.**
+  Twice that found an ordering bug the author's own end-to-end tests passed.
+- **Do not defer what a player would notice within minutes.** The owner judges by playing
+  with real clients. A gap that shows only under rare timing or only in operation can
+  wait; a seam in ordinary play cannot, whatever a later milestone will do about it.
+- **M3 stops after each of its three phases** for the owner to try it with real clients.
+- Ask before downloading anything. On the owner's machine the Mojang server jar (for the
+  comparisons below; the owner has agreed to the Minecraft EULA for that), kind and the
+  container images of the cluster test are approved. Anywhere else, ask again.
+
+## Checking work
+
+Judge by exit codes. Piping `cargo` into `grep` or `tail` hides them and has let a red
+commit through once.
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+CLUSTINE_TEST_BOUNDARIES=0,4 cargo test -p clustine --locked
+```
+
+The last line runs the end-to-end tests on a world divided into three regions. CI runs all
+four, and names failed tests on the run's summary page (readable without signing in
+through the check run's annotations).
+
+- **Comparisons with the official server** (`#[ignore]` tests): need Java and the jar that
+  `cargo datagen` downloads. `CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace
+  --locked -- --ignored`. Not in CI. Run them after anything that touches the protocol.
+- **Cluster test**: `deploy/kind/test.sh` needs Docker, kubectl and kind
+  (`deploy/kind/get-kind.sh`). The `Cluster` workflow runs it on GitHub for every push
+  that touches code or `deploy/`, so it is checked there even where Docker is missing.
+- Verify a commit as it will be pushed: in a clean checkout (a detached worktree with its
+  own `CARGO_TARGET_DIR`), not in a tree with other work in progress.
+- A check with a real client needs the owner. `cargo run -p clustine -- --boundaries 4`
+  is what they run; say exactly what to try.
+
+## Conventions in the code
+
+- Comments say why, in plain sentences; British spelling ("serialise"); tests are named
+  as sentences in snake case; no `unwrap` outside tests except invariants stated with
+  `expect`.
+- `crates/clustine-sim` must stay deterministic: no hash maps, no clock, no I/O (its
+  `clippy.toml` enforces part of that). A tick is a function of the region and its inputs.
+- The edge owns everything about the Minecraft protocol; a worker never sees a packet
+  (ADR-0005).
+- Tests wait for a message or a state, never for time to pass. A fixed sleep that was
+  long enough locally failed on CI.
+- The bots (`tools/botswarm`) share the codec with the server, so new packets are only
+  really checked by the official server (the comparisons above) or a real client.
+- Commit messages: an imperative subject, then why and what in prose.
+
+## Things that cost time before
+
+- A subagent's worktree starts from `origin/main`, not from local commits: push the
+  shared contracts first, or tell it to `git merge --ff-only main`.
+- `cargo fmt` rewrites files, so scripted replacements have to match the formatted text.
+- `git push` once failed repeatedly with "Internal Server Error" while everything else
+  worked; `git push --no-thin` went through.
+- GitHub's job logs cannot be read without being signed in; the annotations of a check
+  run can (`/repos/<owner>/<repo>/check-runs/<job id>/annotations`).
