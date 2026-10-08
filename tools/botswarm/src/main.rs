@@ -141,6 +141,20 @@ enum Scenario {
         /// What the bots' names begin with, to tell runs apart.
         #[arg(long, default_value = "")]
         name_prefix: String,
+        /// The z coordinate of the first bot's lane.
+        #[arg(long, default_value_t = Ledger::default().first_lane, allow_negative_numbers = true)]
+        first_lane: i32,
+        /// How far the lane of each further bot is from the one before, in blocks.
+        #[arg(long, default_value_t = Ledger::default().lane_spacing)]
+        lane_spacing: i32,
+        /// Blocks per tick on the way to the lanes.
+        #[arg(long, default_value_t = Ledger::default().to_the_lane)]
+        to_the_lane: f64,
+        /// Every this many ticks each bot sends something that is acknowledged and
+        /// changes nothing, so that the longest wait is known also of bots that happen
+        /// to do nothing else. Without this, no bot does.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        pulse: Option<u32>,
     },
     /// Join the game and describe the chunk the bot is placed in.
     Chunks {
@@ -271,6 +285,10 @@ async fn main() -> Result<()> {
             seed,
             patience,
             name_prefix,
+            first_lane,
+            lane_spacing,
+            to_the_lane,
+            pulse,
         } => {
             let scenario = Ledger {
                 bots,
@@ -283,10 +301,28 @@ async fn main() -> Result<()> {
                 seed,
                 patience: Duration::from_secs(patience),
                 name_prefix,
+                first_lane,
+                lane_spacing,
+                to_the_lane,
+                pulse,
             };
             let address = reachable(target(address)).await?;
-            let report = ledger(&address, &scenario, &Progress::new(bots)).await?;
+            let started = std::time::Instant::now();
+            let progress = Progress::new(bots);
+            let report = ledger(&address, &scenario, &progress).await?;
             println!("{bots} bots with seed {seed}: {report}");
+            // Of everything a bot sent, pulses included, whereas the report knows of
+            // actions on blocks only.
+            let ended = std::time::Instant::now();
+            for (bot, longest) in progress.longest_waits(started, ended).iter().enumerate() {
+                if let Some(wait) = longest {
+                    println!(
+                        "bot {bot} waited {:.3} s at most for an acknowledgement, at x = {:.1}",
+                        wait.lasted(ended).as_secs_f64(),
+                        wait.x
+                    );
+                }
+            }
         }
         Scenario::Chunks {
             address,

@@ -27,10 +27,16 @@
 //!
 //! The plots the bots build on are disjoint, so what a block should be is always one
 //! bot's word.
+//!
+//! How long the server took over each thing a bot sent is kept in [`Progress`], for
+//! whoever wants to know how long players stood still around some moment; see
+//! [`Progress::longest_waits`]. A bot that only walks sends nothing that is answered, so
+//! a scenario can have every bot send a **pulse** every few ticks: something a region
+//! acknowledges and that changes nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -50,10 +56,18 @@ const GROUND: i32 = -60;
 /// The length of a client tick.
 const TICK: Duration = Duration::from_millis(50);
 
-/// How far apart the lanes are, in blocks. A bot builds on the two rows east-to-west
-/// beside its lane, which leaves a row nobody uses between one bot's plot and the next
-/// bot's lane.
+/// How far apart the lanes are at least, in blocks. A bot builds on the two rows
+/// east-to-west beside its lane, which leaves a row nobody uses between one bot's plot
+/// and the next bot's lane.
 const LANE_SPACING: i32 = 4;
+
+/// How far above the ground the block is that a pulse is about: far out of reach, so
+/// that a region acknowledges the pulse and does nothing else about it.
+const PULSE_HEIGHT: i32 = 64;
+
+/// Lanes that are no further apart than this, in blocks, are looked at by the auditor
+/// from one of them: they are well within each other's view at any view distance.
+const AUDITED_TOGETHER: i32 = 32;
 
 /// How far along its lane from where it stands a bot builds, in blocks.
 const REACH: i32 = 2;
@@ -111,6 +125,19 @@ pub struct Ledger {
     pub patience: Duration,
     /// What the names of the bots begin with.
     pub name_prefix: String,
+    /// The z coordinate of the first bot's lane, and how far the lane of each further
+    /// bot is from the one before, in blocks: at least 4. Far enough apart, the bots do
+    /// not have each other, or the same chunks, in view.
+    pub first_lane: i32,
+    pub lane_spacing: i32,
+    /// Blocks per tick on the way to the lane, for the bots and for the auditor. Lanes
+    /// that are far apart are a long way to walk at a player's pace.
+    pub to_the_lane: f64,
+    /// Every this many client ticks each bot sends a pulse: an action on a block far
+    /// out of reach, which the region the bot is in acknowledges and which changes
+    /// nothing. It is there to be waited for, so that how long the server takes to
+    /// answer is known also of a bot that happens to be doing nothing else.
+    pub pulse: Option<u32>,
 }
 
 impl Default for Ledger {
@@ -126,6 +153,10 @@ impl Default for Ledger {
             seed: 1,
             patience: Duration::from_secs(30),
             name_prefix: String::new(),
+            first_lane: 0,
+            lane_spacing: LANE_SPACING,
+            to_the_lane: TO_THE_LANE,
+            pulse: None,
         }
     }
 }
@@ -227,8 +258,8 @@ pub struct BotProgress {
     /// Whether the bot is on its lane and playing.
     pub playing: bool,
     pub x: f64,
-    /// The sequence number of its latest action, and up to which the server has
-    /// acknowledged them.
+    /// The sequence number of the latest thing it sent that is acknowledged, an action
+    /// on a block or a pulse, and up to which the server has acknowledged them.
     pub sent: i32,
     pub acknowledged: i32,
 }
@@ -239,6 +270,51 @@ struct BotCounters {
     x: AtomicU64,
     sent: AtomicI32,
     acknowledged: AtomicI32,
+    /// Everything the bot sent that is acknowledged, in the order it was sent.
+    waits: Mutex<Vec<Wait>>,
+}
+
+/// Something a bot sent that the server acknowledges, an action on a block or a pulse,
+/// and how long the server took over it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Wait {
+    /// The sequence number it was sent with.
+    pub sequence: i32,
+    /// Where the bot stood when it sent it.
+    pub x: f64,
+    pub sent: std::time::Instant,
+    /// When the acknowledgement arrived at the bot, if it has.
+    pub acknowledged: Option<std::time::Instant>,
+}
+
+impl Wait {
+    /// How long the bot has waited for the acknowledgement: until it arrived or, if it
+    /// has not, until `now`.
+    pub fn lasted(&self, now: std::time::Instant) -> Duration {
+        self.acknowledged
+            .unwrap_or(now)
+            .saturating_duration_since(self.sent)
+    }
+}
+
+/// The longest of `waits` among those that were under way at some moment from `from`
+/// to `to`: sent by `to`, and not acknowledged before `from`. One that is not
+/// acknowledged yet counts for as long as it has lasted at `now`.
+///
+/// This is how long a player stood still around a moment at which something was done to
+/// the server, as far as one bot can tell: whatever it sent just before its region
+/// stopped answering waited until the region answered again.
+pub fn longest_wait(
+    waits: &[Wait],
+    from: std::time::Instant,
+    to: std::time::Instant,
+    now: std::time::Instant,
+) -> Option<Wait> {
+    waits
+        .iter()
+        .filter(|wait| wait.sent <= to && wait.acknowledged.is_none_or(|at| at >= from))
+        .max_by_key(|wait| wait.lasted(now))
+        .copied()
 }
 
 /// Where a running ledger scenario is, for whoever disturbs the server meanwhile, and
@@ -285,6 +361,30 @@ impl Progress {
     /// Changes whenever a bot is about to step across a boundary.
     pub fn crossings(&self) -> watch::Receiver<Option<LineCrossing>> {
         self.crossings.subscribe()
+    }
+
+    /// Everything each bot has sent so far that the server acknowledges, in the order
+    /// it was sent.
+    pub fn waits(&self) -> Vec<Vec<Wait>> {
+        self.bots
+            .iter()
+            .map(|bot| bot.waits.lock().expect("no bot panics with it").clone())
+            .collect()
+    }
+
+    /// For each bot, the longest it waited for an acknowledgement among everything that
+    /// was under way at some moment from `from` to `to`; see [`longest_wait`]. `None`
+    /// for a bot that had nothing under way then, of which nothing is known.
+    pub fn longest_waits(
+        &self,
+        from: std::time::Instant,
+        to: std::time::Instant,
+    ) -> Vec<Option<Wait>> {
+        let now = std::time::Instant::now();
+        self.waits()
+            .iter()
+            .map(|waits| longest_wait(waits, from, to, now))
+            .collect()
     }
 }
 
@@ -398,6 +498,11 @@ impl Standing {
     }
 }
 
+/// The z coordinate of the block row that the lane of the bot numbered `number` is on.
+fn lane_block(ledger: &Ledger, number: usize) -> i32 {
+    ledger.first_lane + number as i32 * ledger.lane_spacing
+}
+
 /// The name of the bot numbered `number`.
 fn bot_name(prefix: &str, number: usize) -> String {
     format!("{prefix}Ledger{number}")
@@ -417,8 +522,16 @@ pub async fn ledger(
         "the progress is for another number of bots"
     );
     ensure!(
-        ledger.west < ledger.east && ledger.speed > 0.0,
+        ledger.west < ledger.east && ledger.speed > 0.0 && ledger.to_the_lane > 0.0,
         "the bots need somewhere to walk"
+    );
+    ensure!(
+        ledger.lane_spacing >= LANE_SPACING,
+        "the lanes have to be at least {LANE_SPACING} blocks apart"
+    );
+    ensure!(
+        ledger.pulse != Some(0),
+        "a pulse needs a tick to be sent in"
     );
 
     let (finished_in, mut finished_out) = mpsc::channel(ledger.bots);
@@ -588,6 +701,11 @@ struct Player {
     crossings: u32,
     hotbar_changes: u32,
     shown_late: u32,
+    /// How many client ticks the bot has played.
+    ticks: u64,
+    /// How many of the waits the bot has noted in the progress are acknowledged, which
+    /// are the first so many: acknowledgements cover everything before them.
+    answered: usize,
 }
 
 impl Player {
@@ -601,7 +719,7 @@ impl Player {
     ) -> Result<Self> {
         let mut bot = Bot::join(address, &name).await?;
         bot.wait_for_chunks(1, ledger.patience).await?;
-        let lane_block = number as i32 * LANE_SPACING;
+        let lane_block = lane_block(ledger, number);
         Ok(Self {
             number,
             name,
@@ -623,6 +741,8 @@ impl Player {
             crossings: 0,
             hotbar_changes: 0,
             shown_late: 0,
+            ticks: 0,
+            answered: 0,
             bot,
         })
     }
@@ -687,9 +807,10 @@ impl Player {
         // through another's plot.
         let speed = self.ledger.speed * (1.0 + self.number as f64 * 0.17);
         let x = self.bot.location.0;
-        self.bot.walk_to(x, self.lane, TO_THE_LANE).await?;
+        let to_the_lane = self.ledger.to_the_lane;
+        self.bot.walk_to(x, self.lane, to_the_lane).await?;
         self.bot
-            .walk_to(self.ledger.west, self.lane, TO_THE_LANE)
+            .walk_to(self.ledger.west, self.lane, to_the_lane)
             .await?;
         self.look_around()?;
         // How the bot finds its plot is the first word about every block of it that is
@@ -725,6 +846,12 @@ impl Player {
                         break 'playing;
                     }
                     self.act().await?;
+                    if let Some(every) = self.ledger.pulse
+                        && self.ticks % u64::from(every) == 0
+                    {
+                        self.pulse().await?;
+                    }
+                    self.ticks += 1;
                     self.step_towards(end, speed).await?;
                     self.settle()?;
                 }
@@ -736,7 +863,7 @@ impl Player {
             .playing
             .store(false, Ordering::Relaxed);
 
-        while !self.open.is_empty() {
+        while !self.open.is_empty() || self.unanswered().is_some() {
             self.bot
                 .idle(TICK)
                 .await
@@ -861,6 +988,7 @@ impl Player {
         } else {
             (Kind::Break, AIR, self.bot.dig(x, GROUND, z).await?)
         };
+        self.waits_for(sequence);
         self.open.push(self.entries.len());
         self.entries.push(Entry {
             sequence,
@@ -875,9 +1003,76 @@ impl Player {
         Ok(())
     }
 
+    /// Sends something that the region the bot is in acknowledges and that changes
+    /// nothing: breaking a block far above the bot's head, which is out of reach.
+    async fn pulse(&mut self) -> Result<()> {
+        let (x, z) = (self.bot.location.0, self.bot.location.2);
+        let block = (x.floor() as i32, GROUND + PULSE_HEIGHT, z.floor() as i32);
+        let sequence = self.bot.dig(block.0, block.1, block.2).await?;
+        self.waits_for(sequence);
+        Ok(())
+    }
+
+    /// Notes in the progress that the bot waits for the acknowledgement of what it has
+    /// just sent with `sequence`.
+    fn waits_for(&mut self, sequence: i32) {
+        let wait = Wait {
+            sequence,
+            x: self.bot.location.0,
+            sent: std::time::Instant::now(),
+            acknowledged: None,
+        };
+        let counters = &self.progress.bots[self.number];
+        counters
+            .waits
+            .lock()
+            .expect("no bot panics with it")
+            .push(wait);
+    }
+
+    /// The first thing the bot sent that is not acknowledged yet, if there is one.
+    fn unanswered(&self) -> Option<Wait> {
+        let waits = self.progress.bots[self.number].waits.lock();
+        waits
+            .expect("no bot panics with it")
+            .get(self.answered)
+            .copied()
+    }
+
+    /// Notes in the progress which acknowledgements have arrived since the last look,
+    /// and when each did. Fails if the oldest thing that is not acknowledged has waited
+    /// longer than the patience.
+    fn note_acknowledgements(&mut self) -> Result<()> {
+        let arrived = std::mem::take(&mut self.bot.acknowledgements);
+        let counters = &self.progress.bots[self.number];
+        let mut waits = counters.waits.lock().expect("no bot panics with it");
+        for (sequence, at) in arrived {
+            // An acknowledgement covers everything up to its sequence number.
+            while let Some(wait) = waits.get_mut(self.answered)
+                && wait.sequence <= sequence
+            {
+                wait.acknowledged = Some(at.into_std());
+                self.answered += 1;
+            }
+        }
+        if let Some(oldest) = waits.get(self.answered) {
+            let patience = self.ledger.patience;
+            ensure!(
+                oldest.sent.elapsed() <= patience,
+                "what the bot sent with sequence number {} at x = {:.2} was not acknowledged \
+                 within {patience:?}; the server has acknowledged up to {}",
+                oldest.sequence,
+                oldest.x,
+                self.bot.acknowledged_sequence
+            );
+        }
+        Ok(())
+    }
+
     /// Notes what the server has acknowledged and shown since the last look, and fails
     /// if it has taken too long over something or said something that cannot be.
     fn settle(&mut self) -> Result<()> {
+        self.note_acknowledgements()?;
         let now = Instant::now();
         let patience = self.ledger.patience;
         let mut still_open = Vec::new();
@@ -924,10 +1119,14 @@ impl Player {
         counters
             .x
             .store(self.bot.location.0.to_bits(), Ordering::Relaxed);
-        counters.sent.store(
-            self.entries.last().map_or(0, |entry| entry.sequence),
-            Ordering::Relaxed,
-        );
+        // Of anything that is acknowledged, a pulse as well as an action on a block.
+        let latest = counters
+            .waits
+            .lock()
+            .expect("no bot panics with it")
+            .last()
+            .map_or(0, |wait| wait.sequence);
+        counters.sent.store(latest, Ordering::Relaxed);
         counters
             .acknowledged
             .store(self.bot.acknowledged_sequence, Ordering::Relaxed);
@@ -1123,7 +1322,7 @@ pub async fn audit_blocks(
 
 /// Joins as the auditor, walks along the lanes and fails unless every block is what
 /// the last word about it says. Returns the auditor, standing in the middle of the
-/// lanes.
+/// lane it walked last.
 async fn walk_and_compare(
     address: &str,
     ledger: &Ledger,
@@ -1135,14 +1334,31 @@ async fn walk_and_compare(
         .context("the auditor could not join")?;
     auditor.wait_for_chunks(1, ledger.patience).await?;
 
-    // Past everything that was built, at a pace that lets the chunks keep up, on the
-    // lane the spawn point is on.
-    let z = auditor.location.2;
+    // Past everything that was built, at a pace that lets the chunks keep up: along
+    // the first lane, from which the lanes close by are in view, and along every
+    // further lane that is too far from the one walked before it to be.
+    let mut walked: Vec<i32> = Vec::new();
+    for number in 0..ledger.bots {
+        let lane = lane_block(ledger, number);
+        if walked
+            .last()
+            .is_none_or(|last| lane - last > AUDITED_TOGETHER)
+        {
+            walked.push(lane);
+        }
+    }
     let mut seen: BTreeMap<Cell, i32> = BTreeMap::new();
     let middle = (ledger.west + ledger.east) / 2.0;
-    for stop in [ledger.west, ledger.east, middle] {
+    let stops = walked.iter().flat_map(|lane| {
+        let z = f64::from(*lane) + 0.5;
+        // To the lane first, without changing x, as the bots went. Nobody builds any
+        // more, so it does not matter whose plot that leads across.
+        [None, Some(ledger.west), Some(ledger.east), Some(middle)].map(|x| (x, z))
+    });
+    for (stop, z) in stops {
+        let stop = stop.unwrap_or(auditor.location.0);
         auditor
-            .walk_to(stop, z, 0.8)
+            .walk_to(stop, z, ledger.to_the_lane)
             .await
             .context("the auditor was disconnected")?;
         let own_chunk = chunk_of(auditor.location.0, auditor.location.2);
@@ -1198,6 +1414,41 @@ mod tests {
         };
         assert_eq!(numbers(7), numbers(7));
         assert_ne!(numbers(7), numbers(8));
+    }
+
+    #[test]
+    fn the_longest_wait_is_among_what_was_under_way_in_the_time_asked_about() {
+        let start = std::time::Instant::now();
+        let at = |millis: u64| start + Duration::from_millis(millis);
+        let wait = |sequence, sent, acknowledged: Option<u64>| Wait {
+            sequence,
+            x: 0.0,
+            sent: at(sent),
+            acknowledged: acknowledged.map(at),
+        };
+        let waits = [
+            // Long, but over before the time asked about.
+            wait(1, 0, Some(900)),
+            // Sent before it and answered within it.
+            wait(2, 950, Some(1300)),
+            wait(3, 1100, Some(1200)),
+            // Sent within it and answered after it.
+            wait(4, 1900, Some(2500)),
+            // Sent after it.
+            wait(5, 2100, Some(4000)),
+        ];
+        let longest =
+            |from, to| longest_wait(&waits, at(from), at(to), at(5000)).map(|wait| wait.sequence);
+        assert_eq!(longest(1000, 2000), Some(4));
+        assert_eq!(longest(1000, 1500), Some(2));
+        assert_eq!(longest(0, 5000), Some(5));
+        assert_eq!(longest(4500, 5000), None);
+
+        // What is not acknowledged yet has lasted until now.
+        let waits = [wait(1, 1000, Some(1400)), wait(2, 1500, None)];
+        let longest = longest_wait(&waits, at(1000), at(2000), at(2500)).unwrap();
+        assert_eq!(longest.sequence, 2);
+        assert_eq!(longest.lasted(at(2500)), Duration::from_millis(1000));
     }
 
     #[test]

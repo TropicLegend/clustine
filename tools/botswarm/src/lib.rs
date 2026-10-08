@@ -20,7 +20,9 @@ use clustine_protocol::packets::status::{ClientboundStatus, PingRequest, StatusR
 pub use bot::{Behaviour, Bot, JoinInfo, PlayStats, SeenEntity};
 pub use connection::Connection;
 pub use cross::{Crossing, CrossingReport, cross};
-pub use ledger::{Ledger, LedgerReport, Progress, Random, audit_blocks, ledger};
+pub use ledger::{
+    Ledger, LedgerReport, Progress, Random, Wait, audit_blocks, ledger, longest_wait,
+};
 pub use oracle::Oracle;
 
 /// A server's answer to the server list ping.

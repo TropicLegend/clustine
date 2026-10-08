@@ -191,6 +191,10 @@ pub struct Bot {
     sequence: i32,
     /// Up to which of those actions the server has confirmed handling them.
     pub acknowledged_sequence: i32,
+    /// Every acknowledgement that has arrived and that nobody has taken from here yet:
+    /// the sequence number it carried and when it arrived. A scenario that measures how
+    /// long the server took over something takes them from here.
+    pub acknowledgements: Vec<(i32, Instant)>,
     /// Whether the bot has told the server that it left the loading screen.
     loaded: bool,
     /// The chunk the server last centred the bot's view on.
@@ -357,6 +361,7 @@ impl Bot {
             block_changes: BTreeMap::new(),
             sequence: 0,
             acknowledged_sequence: 0,
+            acknowledgements: Vec::new(),
             loaded: false,
             center: None,
             location: (0.0, 0.0, 0.0),
@@ -701,6 +706,8 @@ impl Bot {
             ClientboundPlay::SetHeldSlot(packet) => self.selected_slot = packet.slot,
             ClientboundPlay::AcknowledgeBlockChange(packet) => {
                 self.acknowledged_sequence = self.acknowledged_sequence.max(packet.sequence);
+                self.acknowledgements
+                    .push((packet.sequence, Instant::now()));
             }
             ClientboundPlay::Disconnect(packet) => {
                 bail!("disconnected: {}", packet.reason)
