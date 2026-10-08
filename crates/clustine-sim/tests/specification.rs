@@ -14,12 +14,12 @@ use clustine_sim::api::{
     Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
 };
 use clustine_sim::{
-    Durable, EdgeEvent, EdgeState, PlayerChange, PlayerEvent, PlayerJoin, PlayerTransfer, Region,
-    RegionConfig, RegionState, TickInputs, TickOutput,
+    Durable, EdgeEvent, EdgeState, Holdings, Knowledge, Misdirected, PlayerChange, PlayerEvent,
+    PlayerJoin, PlayerTransfer, Region, RegionConfig, RegionState, TickInputs, TickOutput, Ticket,
 };
 use clustine_world::{
-    Biome, BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Section,
-    Vec3,
+    Biome, BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId,
+    Section, Vec3,
 };
 use uuid::Uuid;
 
@@ -29,6 +29,10 @@ const F: EdgeId = EdgeId(2);
 /// The chunk region A has, and the one region B has east of it.
 const CHUNK_A: ChunkPos = ChunkPos::new(0, 0);
 const CHUNK_B: ChunkPos = ChunkPos::new(1, 0);
+
+/// The regions as the world store numbers stripes: from west to east.
+const REGION_A: RegionId = RegionId(0);
+const REGION_B: RegionId = RegionId(1);
 
 /// Blocks either side of the border between A and B, at the top of the stone.
 const OWN_BLOCK: BlockPos = BlockPos::new(14, 63, 8);
@@ -52,11 +56,21 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 fn config_a() -> RegionConfig {
     RegionConfig {
         spawn: Vec3::new(14.5, 64.0, 8.5),
-        area: ChunkArea {
+        starting_hotbar: hotbar(),
+        return_after: 0,
+        presumed: Vec::new(),
+    }
+}
+
+/// What the world store says of region A: it is pinned to its stripe and has been
+/// granted the chunk these tests use of it.
+fn holdings_a() -> Holdings {
+    Holdings {
+        held: vec![CHUNK_A],
+        pinned: vec![ChunkArea {
             min_x: None,
             max_x: Some(1),
-        },
-        starting_hotbar: hotbar(),
+        }],
     }
 }
 
@@ -64,11 +78,20 @@ fn config_a() -> RegionConfig {
 fn config_b() -> RegionConfig {
     RegionConfig {
         spawn: Vec3::new(24.5, 64.0, 8.5),
-        area: ChunkArea {
+        starting_hotbar: hotbar(),
+        return_after: 0,
+        presumed: Vec::new(),
+    }
+}
+
+/// What the world store says of region B, as of region A.
+fn holdings_b() -> Holdings {
+    Holdings {
+        held: vec![CHUNK_B],
+        pinned: vec![ChunkArea {
             min_x: Some(1),
             max_x: Some(2),
-        },
-        starting_hotbar: hotbar(),
+        }],
     }
 }
 
@@ -190,19 +213,51 @@ fn checked_tick(region: &mut Region, inputs: &TickInputs) -> TickOutput {
     output
 }
 
-/// A region with its chunk loaded, through tickets as for any region.
+/// Region A or B, whichever `chunk` is of, with that chunk loaded, through tickets as
+/// for any region. It knows its neighbour: it has been told, for a viewer's sake, that
+/// the chunk across the border is the other region's, so that a player who steps
+/// across is let go in the tick of the step and a block across the border is passed on
+/// with its region.
 fn loaded(config: RegionConfig, chunk: ChunkPos) -> Region {
-    let mut region = Region::new(config, ids());
+    let (holdings, across, neighbour) = if chunk == CHUNK_A {
+        (holdings_a(), CHUNK_B, REGION_B)
+    } else {
+        (holdings_b(), CHUNK_A, REGION_A)
+    };
+    let mut region = Region::new(config, ids(), holdings);
     load(&mut region, chunk);
+    learn(&mut region, across, neighbour);
     region
 }
 
-/// Loads `chunk` into the region in two ticks: a ticket, then what storage delivers.
+/// Has the region learn that `chunk` is `holder`'s, in two ticks: a viewer's ticket, for
+/// which it asks, then what the store answers. It believes so while the ticket is there.
+fn learn(region: &mut Region, chunk: ChunkPos, holder: RegionId) {
+    let output = checked_tick(
+        region,
+        &TickInputs {
+            tickets_added: vec![(chunk, Ticket::Viewer)],
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(output.claims, vec![chunk]);
+    checked_tick(
+        region,
+        &TickInputs {
+            foreign: vec![(chunk, holder)],
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(region.knowledge(chunk), Knowledge::Foreign(holder));
+}
+
+/// Loads `chunk`, which the region holds, into it in two ticks: a ticket, then what
+/// storage delivers.
 fn load(region: &mut Region, chunk: ChunkPos) {
     let output = checked_tick(
         region,
         &TickInputs {
-            tickets_added: vec![chunk],
+            tickets_added: vec![(chunk, Ticket::Viewer)],
             ..TickInputs::default()
         },
     );
@@ -332,7 +387,7 @@ fn handing_over() -> (Region, EntityId) {
     assert!(region.player(player(2)).is_none(), "P2 has left region A");
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, 1, Durable::Departed { player: p, transfer })]
+        [(E, 1, Durable::Departed { player: p, transfer, to: REGION_B })]
             if *p == player(2) && transfer.entity_id == departing
     ));
     let output = checked_tick(
@@ -341,7 +396,14 @@ fn handing_over() -> (Region, EntityId) {
     );
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, 2, Durable::Remote(_))]
+        [(
+            E,
+            2,
+            Durable::Remote {
+                to: Some(REGION_B),
+                ..
+            }
+        )]
     ));
     (region, departing)
 }
@@ -423,7 +485,7 @@ fn entries_after_a_reset_are_numbered_from_one() {
     );
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, 1, Durable::Remote(_))]
+        [(E, 1, Durable::Remote { .. })]
     ));
     assert_eq!(outbox_numbers(&region, E), vec![1]);
 }
@@ -452,7 +514,7 @@ fn an_equal_start_changes_nothing() {
         &single_input(E, player(1), 2, dig(BORDER_BLOCK_B, 2)),
     );
     assert!(
-        matches!(output.durable.as_slice(), [(E, 3, Durable::Remote(_))]),
+        matches!(output.durable.as_slice(), [(E, 3, Durable::Remote { .. })]),
         "numbering goes on"
     );
 }
@@ -528,7 +590,7 @@ fn entries_stay_in_the_outbox_until_confirmed() {
     );
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, 4, Durable::Remote(_))]
+        [(E, 4, Durable::Remote { .. })]
     ));
     assert_eq!(outbox_numbers(&region, E), vec![1, 2, 3, 4]);
 }
@@ -600,7 +662,7 @@ fn an_edge_started_again_after_it_was_gone_starts_from_nothing() {
     );
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, 1, Durable::Remote(_))]
+        [(E, 1, Durable::Remote { .. })]
     ));
 }
 
@@ -860,12 +922,14 @@ fn departed_goes_to_the_outbox_of_the_players_edge() {
                 Durable::Departed {
                     player: p,
                     transfer,
+                    to,
                 },
             ),
         ] => {
             assert_eq!(*p, player(1));
             assert_eq!(transfer.entity_id, entity);
             assert_eq!(transfer.last_input, 4);
+            assert_eq!(*to, REGION_B);
         }
         other => panic!("expected one Departed for F, got {other:?}"),
     }
@@ -882,7 +946,7 @@ fn refused_goes_to_the_outbox_of_the_players_edge() {
         first: EntityId(500),
         end: EntityId(501),
     };
-    let mut region = Region::new(config_a(), one_id);
+    let mut region = Region::new(config_a(), one_id, holdings_a());
     checked_tick(&mut region, &edges(vec![started(E, 10), started(F, 10)]));
     let output = checked_tick(
         &mut region,
@@ -910,13 +974,16 @@ fn a_players_own_remote_action_goes_to_the_outbox_of_their_edge() {
         vec![(
             F,
             1,
-            Durable::Remote(RemoteAction {
-                player: player(1),
-                sequence: 9,
-                step: RemoteStep::Break {
-                    position: BORDER_BLOCK_B
+            Durable::Remote {
+                action: RemoteAction {
+                    player: player(1),
+                    sequence: 9,
+                    step: RemoteStep::Break {
+                        position: BORDER_BLOCK_B
+                    },
                 },
-            })
+                to: Some(REGION_B),
+            }
         )]
     );
 }
@@ -977,10 +1044,11 @@ fn a_remote_that_continues_a_remote_action_goes_to_the_edge_it_came_from() {
         },
     );
     match output.durable.as_slice() {
-        [(F, 1, Durable::Remote(action))] => {
+        [(F, 1, Durable::Remote { action, to })] => {
             assert_eq!(action.player, player(1));
             assert_eq!(action.sequence, 3);
             assert_eq!(action.step.concerns(), target);
+            assert_eq!(*to, Some(REGION_A));
         }
         other => panic!("expected one Remote for F, got {other:?}"),
     }
@@ -1137,7 +1205,14 @@ fn handled_covers_only_the_players_own_actions_on_blocks_of_this_region() {
     );
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, _, Durable::Remote(RemoteAction { sequence: 7, .. }))]
+        [(
+            E,
+            _,
+            Durable::Remote {
+                action: RemoteAction { sequence: 7, .. },
+                ..
+            }
+        )]
     ));
     assert_eq!(region.state().players[&player(1)].handled, Some(5));
 
@@ -1283,7 +1358,7 @@ fn refusals_go_in_the_order_of_the_joins_and_use_no_entity_id() {
         first: EntityId(500),
         end: EntityId(501),
     };
-    let mut region = Region::new(config_a(), one_id);
+    let mut region = Region::new(config_a(), one_id, holdings_a());
     checked_tick(&mut region, &edges(vec![started(E, 10), started(F, 10)]));
     let output = checked_tick(
         &mut region,
@@ -1307,7 +1382,7 @@ fn refusals_go_in_the_order_of_the_joins_and_use_no_entity_id() {
 
 #[test]
 fn a_remote_action_on_a_chunk_that_is_not_loaded_is_still_answered() {
-    let mut region = Region::new(config_b(), ids());
+    let mut region = Region::new(config_b(), ids(), holdings_b());
     checked_tick(&mut region, &edges(vec![started(E, 10)]));
     let output = checked_tick(
         &mut region,
@@ -1343,6 +1418,14 @@ fn a_remote_action_for_another_region_is_answered_for_the_edge_it_came_from() {
     );
     assert_eq!(output.durable.len(), 1);
     assert_eq!(output.durable[0].0, F);
+    // The store has said that the block's chunk is region A's: the action is for it.
+    assert_eq!(
+        output.durable[0].2,
+        Durable::NotMine {
+            what: Misdirected::Remote(remote_break(player(1), 6, OWN_BLOCK)),
+            holder: REGION_A,
+        }
+    );
 }
 
 #[test]
@@ -1467,7 +1550,7 @@ fn a_confirmation_in_the_tick_of_a_reset_does_not_drop_the_new_entries() {
     let output = checked_tick(&mut region, &inputs);
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, 1, Durable::Remote(_))]
+        [(E, 1, Durable::Remote { .. })]
     ));
     assert_eq!(outbox_numbers(&region, E), vec![1]);
 }
@@ -1489,9 +1572,9 @@ fn a_departure_in_the_tick_of_a_reset_survives_it() {
 
 #[test]
 fn a_new_region_is_the_restored_state_of_one_that_never_ran() {
-    let region = Region::new(config_a(), ids());
+    let region = Region::new(config_a(), ids(), holdings_a());
     assert_eq!(region.state(), RegionState::new(ids()));
-    let restored = Region::restore(config_a(), RegionState::new(ids()));
+    let restored = Region::restore(config_a(), RegionState::new(ids()), holdings_a());
     assert_eq!(restored.state(), region.state());
 }
 
@@ -1499,12 +1582,18 @@ fn a_new_region_is_the_restored_state_of_one_that_never_ran() {
 fn a_restored_region_has_the_state_it_was_restored_from_and_no_chunk() {
     let (region, _) = handing_over();
     let state = region.state();
-    let restored = Region::restore(config_a(), state.clone());
+    let restored = Region::restore(config_a(), state.clone(), holdings_a());
     assert_eq!(restored.state(), state);
     assert_eq!(restored.tick_number(), state.tick);
     assert_eq!(restored.loaded_chunk_count(), 0);
     assert_eq!(restored.player(player(1)), region.player(player(1)));
     assert_eq!(restored.edge(E), region.edge(E));
+    // Of chunks it knows what the store says it holds and nothing else: what the
+    // original believed of its neighbour's chunk is not part of a state.
+    assert_eq!(region.knowledge(CHUNK_B), Knowledge::Foreign(REGION_B));
+    assert_eq!(restored.knowledge(CHUNK_A), Knowledge::Held);
+    assert_eq!(restored.knowledge(CHUNK_B), Knowledge::Unknown);
+    assert_eq!(restored.held_chunk_count(), 1);
 }
 
 /// The inputs of a scenario with a bit of everything: players of two edges, entries
@@ -1582,20 +1671,24 @@ fn a_restored_region_carries_on_as_the_original_from_every_tick_of_a_scenario() 
             checked_tick(&mut original, inputs);
         }
         let state = original.state();
-        let mut restored = Region::restore(config_a(), state.clone());
+        let mut restored = Region::restore(config_a(), state.clone(), holdings_a());
         assert_eq!(restored.state(), state);
 
-        // The restored region loads its chunk as the original has it, which is what the
-        // store would deliver, while the original goes on idly; nothing but the chunk
-        // requests may differ.
+        // The restored region is given its tickets again, loads its chunk as the
+        // original has it, which is what the store would deliver, and is told once more
+        // what it has to ask again: whose the chunk across the border is. The original
+        // goes on idly meanwhile; nothing but the chunk requests and the claim may
+        // differ.
         let chunk = original.chunk(CHUNK_A).expect("loaded").clone();
+        let viewer = |chunk| (chunk, Ticket::Viewer);
         let loading = [
             TickInputs {
-                tickets_added: vec![CHUNK_A],
+                tickets_added: vec![viewer(CHUNK_A), viewer(CHUNK_B)],
                 ..TickInputs::default()
             },
             TickInputs {
                 chunks_loaded: vec![(CHUNK_A, chunk)],
+                foreign: vec![(CHUNK_B, REGION_B)],
                 ..TickInputs::default()
             },
         ];
@@ -1604,9 +1697,13 @@ fn a_restored_region_carries_on_as_the_original_from_every_tick_of_a_scenario() 
             let mut actual = checked_tick(&mut restored, inputs);
             expected.chunk_requests.clear();
             actual.chunk_requests.clear();
+            actual.claims.clear();
             assert_eq!(actual, expected, "restored after tick {restore_after}");
         }
         assert_eq!(restored.chunk(CHUNK_A), original.chunk(CHUNK_A));
+        for chunk in [CHUNK_A, CHUNK_B] {
+            assert_eq!(restored.knowledge(chunk), original.knowledge(chunk));
+        }
 
         for inputs in &script[restore_after..] {
             let expected = checked_tick(&mut original, inputs);
@@ -1628,7 +1725,7 @@ fn a_restored_region_carries_on_as_the_original_from_every_tick_of_a_scenario() 
 #[test]
 fn a_region_restored_mid_hand_over_reports_the_departing_entity_on_a_reset() {
     let (original, departing) = handing_over();
-    let mut restored = Region::restore(config_a(), original.state());
+    let mut restored = Region::restore(config_a(), original.state(), holdings_a());
     let output = checked_tick(&mut restored, &edges(vec![started(E, 20)]));
     assert!(removed(&output).contains(&departing));
 }
@@ -1636,7 +1733,7 @@ fn a_region_restored_mid_hand_over_reports_the_departing_entity_on_a_reset() {
 #[test]
 fn a_region_restored_mid_hand_over_reports_the_departing_entity_when_its_edge_is_gone() {
     let (original, departing) = handing_over();
-    let mut restored = Region::restore(config_a(), original.state());
+    let mut restored = Region::restore(config_a(), original.state(), holdings_a());
     let output = checked_tick(&mut restored, &edges(vec![EdgeEvent::Gone { edge: E }]));
     assert!(removed(&output).contains(&departing));
 }
@@ -1644,7 +1741,7 @@ fn a_region_restored_mid_hand_over_reports_the_departing_entity_when_its_edge_is
 #[test]
 fn a_restored_region_keeps_unconfirmed_entries_and_numbers_on() {
     let original = three_entries();
-    let mut restored = Region::restore(config_a(), original.state());
+    let mut restored = Region::restore(config_a(), original.state(), holdings_a());
     assert_eq!(outbox_numbers(&restored, E), vec![1, 2, 3]);
     checked_tick(
         &mut restored,
@@ -1657,9 +1754,11 @@ fn a_restored_region_keeps_unconfirmed_entries_and_numbers_on() {
             ..TickInputs::default()
         },
     );
+    // The answer is the fourth entry. The block is of a chunk whose holder the restored
+    // region has not heard again, so the action goes on without a region named.
     assert!(matches!(
         output.durable.as_slice(),
-        [(E, 4, Durable::RemoteDone { .. })]
+        [(E, 4, Durable::Remote { to: None, .. })]
     ));
     assert_eq!(outbox_numbers(&restored, E), vec![2, 3, 4]);
 }
@@ -1707,12 +1806,12 @@ fn a_state_and_a_delta_survive_serialisation() {
 /// A region that has not run a tick. The one place below that makes a region without
 /// the fixtures above, so that a change to how a region is made is a change here.
 fn never_ran() -> Region {
-    Region::new(config_a(), ids())
+    Region::new(config_a(), ids(), holdings_a())
 }
 
 /// The region as another owner has it, who was given `state` by the store.
 fn restored_from(state: RegionState) -> Region {
-    Region::restore(config_a(), state)
+    Region::restore(config_a(), state, holdings_a())
 }
 
 fn since(region: &Region, edge: EdgeId) -> u64 {

@@ -203,12 +203,14 @@ async fn read_messages<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
-    use clustine_sim::api::Durable;
+    use clustine_sim::api::{Durable, Misdirected};
     use clustine_sim::api::{
         EntityKind, EntityState, Face, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
         PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
     };
-    use clustine_world::{Biome, BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
+    use clustine_world::{
+        Biome, BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3,
+    };
     use uuid::Uuid;
 
     use super::*;
@@ -399,6 +401,7 @@ mod tests {
                 entry: Durable::Departed {
                     player: player(),
                     transfer: transfer(),
+                    to: RegionId(1),
                 },
             },
             WorkerToEdge::Outbox {
@@ -407,7 +410,34 @@ mod tests {
             },
             WorkerToEdge::Outbox {
                 number: 44,
-                entry: Durable::Remote(remote()),
+                entry: Durable::Remote {
+                    action: remote(),
+                    to: Some(RegionId(1)),
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 46,
+                entry: Durable::Remote {
+                    action: remote(),
+                    to: None,
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 47,
+                entry: Durable::NotMine {
+                    what: Misdirected::Arrival {
+                        player: player(),
+                        transfer: transfer(),
+                    },
+                    holder: RegionId(1),
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 48,
+                entry: Durable::NotMine {
+                    what: Misdirected::Remote(remote()),
+                    holder: RegionId(1),
+                },
             },
             WorkerToEdge::Outbox {
                 number: 45,

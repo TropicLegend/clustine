@@ -89,11 +89,18 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     hotbar
 }
 
+/// The region takes the stripes of the layout as given, its own and its neighbour's,
+/// as the processes have it as long as a runner does not ask the store
+/// (`docs/adr/0012-the-tick-on-chunks.md`, section 8).
 fn config() -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
-        area: layout().area(REGION).expect("the layout has region 0"),
         starting_hotbar: hotbar(),
+        return_after: 0,
+        presumed: layout()
+            .regions()
+            .map(|(region, area)| (area, (region != REGION).then_some(region)))
+            .collect(),
     }
 }
 
@@ -713,7 +720,10 @@ impl Witness {
                     return;
                 }
                 self.outbox.insert(*number, entry.clone());
-                if let Durable::Departed { player, transfer } = entry {
+                if let Durable::Departed {
+                    player, transfer, ..
+                } = entry
+                {
                     // The entity lives on in the next region, which this edge is not
                     // linked to here.
                     self.own.remove(player);
@@ -736,8 +746,9 @@ impl Witness {
         self.entities
             .iter()
             .filter(|(_, pose)| {
-                config()
-                    .area
+                layout()
+                    .area(REGION)
+                    .expect("the layout has region 0")
                     .contains(ChunkPos::containing(pose.position.x, pose.position.z))
             })
             .map(|(entity, pose)| (*entity, *pose))
@@ -1029,7 +1040,10 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
     e.send(input(one, 3, dig(BEYOND, 2)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
     assert_eq!(e.witness.outbox.len(), 1);
-    assert!(matches!(e.witness.outbox.get(&1), Some(Durable::Remote(_))));
+    assert!(matches!(
+        e.witness.outbox.get(&1),
+        Some(Durable::Remote { .. })
+    ));
 
     // Out through the eastern end.
     e.send(input(two, 1, move_to(16.5)));
@@ -1451,7 +1465,7 @@ fn a_resume_with_nothing_seen_sends_the_whole_outbox_in_ascending_order() {
             &log[1],
             WorkerToEdge::Outbox {
                 number: 1,
-                entry: Durable::Remote(_)
+                entry: Durable::Remote { .. }
             }
         ),
         "{}",
@@ -2142,7 +2156,7 @@ fn what_a_tick_produced_arrives_in_the_agreed_order_in(mut world: World) {
         matches!(
             message,
             WorkerToEdge::Outbox {
-                entry: Durable::Remote(_),
+                entry: Durable::Remote { .. },
                 ..
             }
         )

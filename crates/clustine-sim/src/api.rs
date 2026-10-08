@@ -115,6 +115,11 @@ pub enum PlayerChange {
     /// already stays as they are, and the entity that was on its way is reported removed
     /// if it is another one; so is the entity of an arrival through an edge the region
     /// does not know, as nobody could be told about the player.
+    ///
+    /// A player who arrives in a chunk the region believes another to hold is not taken
+    /// in: the arrival goes on to that region with a [`Durable::NotMine`]. Whatever else
+    /// the region knows of the chunk, it takes the player in, and claims the chunk if it
+    /// knows nothing of it.
     Arrive(EdgeId, PlayerId, PlayerTransfer),
     /// An entity that another region let go will not arrive anywhere, because its player
     /// left in the meantime. It is reported as removed to those watching `chunk`, where
@@ -226,39 +231,46 @@ impl RemoteStep {
 /// `docs/adr/0008-durable-regions-and-resuming.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 ///
-/// `Departed`, `Refused` and a `Remote` made of a player's own action go to the outbox of
-/// the player's edge; `RemoteDone` and a `Remote` that continues a remote action go to
-/// the outbox of the edge the action came from.
+/// `Departed`, `Refused`, a `Remote` made of a player's own action and a `NotMine` for
+/// an arrival go to the outbox of the edge the player belongs to or arrived through;
+/// `RemoteDone`, and a `Remote` or a `NotMine` that answers a remote action, go to the
+/// outbox of the edge the action came from.
 pub enum Durable {
-    /// The player has stepped out of the region's part of the world and is no longer in
-    /// the region. Whoever routes the player passes this on to the region they are in
-    /// now as [`PlayerChange::Arrive`], together with every input numbered above
+    /// The player has stepped into a chunk the region believes `to` to hold, and is no
+    /// longer in the region. Whoever routes the player passes this on to `to` as
+    /// [`PlayerChange::Arrive`], together with every input numbered above
     /// [`PlayerTransfer::last_input`]. Nothing says that the entity is gone: it lives on
     /// in the region it walked into. Passed on to an edge as [`PlayerEvent::Departed`].
     Departed {
         player: PlayerId,
         transfer: PlayerTransfer,
+        /// The region the world store said holds the chunk the player stands in.
+        to: RegionId,
     },
     /// The player could not enter the world, because the region has no entity id left
     /// for them. Passed on to an edge as [`PlayerEvent::Refused`].
     Refused { player: PlayerId },
-    /// What is left of an action concerns another region: the one that has the block
-    /// [`RemoteStep::concerns`] names. The player's own action that is passed on is not
-    /// among the acknowledged ones of the tick.
-    Remote(RemoteAction),
+    /// What is left of an action concerns a chunk this region does not hold: the one
+    /// with the block [`RemoteStep::concerns`] names. The player's own action that is
+    /// passed on is not among the acknowledged ones of the tick.
+    Remote {
+        action: RemoteAction,
+        /// The region this one believes to hold that chunk. `None` if it has no answer
+        /// of the world store about the chunk: the action is then for the region that
+        /// serves the edge the chunk, which the edge knows at first hand. See
+        /// `docs/adr/0012-the-tick-on-chunks.md`, section 2.3.
+        to: Option<RegionId>,
+    },
     /// A remote action has been dealt with, whether or not it changed anything. The
     /// player can now be told so, as with [`PlayerEvent::Acknowledged`]; what it changed
     /// has been reported among the tick's events.
     RemoteDone { player: PlayerId, sequence: i32 },
-    /// An arrival or a remote action reached this region for a chunk it does not hold.
-    /// It goes to `holder`, the region this one knows to hold the chunk, or else back
-    /// to the region that sent it, which is told to ask again who holds the chunk. See
-    /// `docs/adr/0010-regions-that-follow-players.md`, sections 2 and 3. No region
-    /// makes this yet.
-    NotMine {
-        what: Misdirected,
-        holder: Option<RegionId>,
-    },
+    /// An arrival or a remote action reached this region for a chunk it believes
+    /// `holder` to hold, and goes there. For an arrival the player is on their way as
+    /// after a `Departed`. A region that does not know who holds the chunk never says
+    /// this: it takes an arrival in, and passes an action on as a `Remote` without a
+    /// region. See `docs/adr/0012-the-tick-on-chunks.md`, sections 2.2 and 2.4.
+    NotMine { what: Misdirected, holder: RegionId },
     /// This region has absorbed `region`, and what follows in the outbox, as far as
     /// `numbers` reaches, is what that region had in its outbox for the edge, under
     /// new numbers. See ADR-0010, section 4. No region makes this yet.
@@ -307,15 +319,17 @@ pub enum Misdirected {
 pub enum EdgeEvent {
     /// The edge is there with this start. If the region knows the edge with a lower
     /// start, the edge is reset: its players are removed and reported so, the entity of
-    /// every [`Durable::Departed`] in its outbox is reported removed too, its outbox is
-    /// dropped, and `applied` and `sent` start from 0 again. An edge the region does not
-    /// know is noted with nothing applied or sent. The same start changes nothing, and so
-    /// does a lower one, which the runner never passes on.
+    /// every [`Durable::Departed`] in its outbox, and of every [`Durable::NotMine`] for
+    /// an arrival, is reported removed too, its outbox is dropped, and `applied` and
+    /// `sent` start from 0 again. An edge the region does not know is noted with nothing
+    /// applied or sent. The same start changes nothing, and so does a lower one, which
+    /// the runner never passes on.
     Started { edge: EdgeId, start: u64 },
     /// The edge has the outbox entries up to `number`, which are dropped.
     Confirmed { edge: EdgeId, number: u64 },
-    /// The edge has been away too long. Its players and the entities of the departures
-    /// in its outbox are removed as for a reset, and the region forgets the edge.
+    /// The edge has been away too long. Its players and the entities of the players on
+    /// their way in its outbox are removed as for a reset, and the region forgets the
+    /// edge.
     Gone { edge: EdgeId },
 }
 
@@ -352,25 +366,45 @@ pub struct TickInputs {
     pub inputs: Vec<(EdgeId, PlayerId, u64, PlayerInput)>,
     /// What players of other regions did to blocks of this one, in the order it arrived,
     /// each with the edge that passed it on. It is applied after `player_changes` and
-    /// before `inputs`, and answered one for one with a [`Durable::RemoteDone`] or a
-    /// [`Durable::Remote`] for that edge. An action through an edge the region does not
-    /// know is ignored, as there is nobody to answer.
+    /// before `inputs`, and answered one for one with a [`Durable::RemoteDone`], a
+    /// [`Durable::Remote`] or a [`Durable::NotMine`] for that edge. An action through an
+    /// edge the region does not know is ignored, as there is nobody to answer.
     pub remote_actions: Vec<(EdgeId, RemoteAction)>,
-    /// Chunks someone started to need. A chunk stays loaded while it has tickets.
-    pub tickets_added: Vec<ChunkPos>,
-    /// Chunks someone stopped needing; one entry releases one ticket.
-    pub tickets_removed: Vec<ChunkPos>,
+    /// Subscriptions of links to chunks that began, each with its kind. The region
+    /// counts them on every chunk, whatever it knows of it. A chunk the region holds is
+    /// loaded while it has tickets.
+    pub tickets_added: Vec<(ChunkPos, Ticket)>,
+    /// Subscriptions that ended; one entry releases one ticket of its kind. Additions
+    /// are counted first, so that a ticket released and taken again within one tick
+    /// keeps the chunk loaded.
+    pub tickets_removed: Vec<(ChunkPos, Ticket)>,
     /// Chunks that storage delivered in answer to earlier [`TickOutput::chunk_requests`].
     pub chunks_loaded: Vec<(ChunkPos, Chunk)>,
     /// Chunks the world store has granted the region in answer to earlier
-    /// [`TickOutput::claims`]: the region holds them from this tick on. See ADR-0010,
-    /// section 2. Nothing passes these in yet, and a region ignores them.
+    /// [`TickOutput::claims`]: the region holds them from this tick on. See
+    /// `docs/adr/0012-the-tick-on-chunks.md`, section 1.3.
     pub granted: Vec<ChunkPos>,
-    /// Chunks the region claimed that another region holds, with that region.
+    /// Chunks the region claimed that another region holds, with that region. The
+    /// region believes it for as long as it wants the chunk. Ignored for a chunk the
+    /// region holds: it does not unlearn that.
     pub foreign: Vec<(ChunkPos, RegionId)>,
-    /// Chunks of which the region is to forget whom it believes to hold them, and to
-    /// claim again if it needs them: what it sent to that holder came back.
-    pub unbelieve: Vec<ChunkPos>,
+    /// Chunks of which the region is to forget that it believes the region named to
+    /// hold them, and to claim again if it wants them. A belief that has changed since
+    /// is left alone: it is newer than the doubt.
+    pub unbelieve: Vec<(ChunkPos, RegionId)>,
+}
+
+/// What a link's subscription to a chunk is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Ticket {
+    /// For a viewer whose player is this region's. It makes the region claim the chunk
+    /// if it knows nothing of it, and go on knowing who holds it otherwise.
+    Viewer,
+    /// For a viewer whose player is another region's. It makes the region claim the
+    /// chunk only in an area the region is pinned to, where a claim takes nothing from
+    /// anyone. A chunk the region holds it keeps from being given back, as any ticket
+    /// does.
+    Guest,
 }
 
 impl TickInputs {
@@ -495,19 +529,25 @@ pub struct TickOutput {
     /// and its number there. An edge's entries are numbered on from its
     /// [`EdgeState::sent`].
     ///
-    /// They are in the order they were made: refusals, in the order of the joins; the
-    /// answers to [`TickInputs::remote_actions`], one for one and in their order; what
-    /// players did to blocks of other regions, in the order of [`TickInputs::inputs`];
-    /// and the players who were let go, in the order of the players.
+    /// They are in the order they were made: refusals and the arrivals that are another
+    /// region's, in the order of [`TickInputs::player_changes`]; the answers to
+    /// [`TickInputs::remote_actions`], one for one and in their order; what players did
+    /// to blocks of chunks the region does not hold, in the order of
+    /// [`TickInputs::inputs`]; and the players who were let go, in the order of the
+    /// players.
     ///
     /// [`EdgeState::sent`]: crate::EdgeState::sent
     pub durable: Vec<(EdgeId, u64, Durable)>,
-    /// Chunks the region asks the world store to grant it, answered through
-    /// [`TickInputs::granted`] and [`TickInputs::foreign`]. See ADR-0010, section 2. No
-    /// region asks yet.
+    /// Chunks the region asks the world store to grant it, in ascending order: those it
+    /// wants and knows nothing of. Each is answered once, through
+    /// [`TickInputs::granted`] or [`TickInputs::foreign`], and is not claimed again
+    /// before.
     pub claims: Vec<ChunkPos>,
-    /// Chunks the region no longer needs and gives back to the world store. Every
-    /// change it made to them is in a save it asked for before.
+    /// Chunks the region gives back to the world store, in ascending order: nothing has
+    /// used them for [`RegionConfig::return_after`] ticks. None of them is loaded, and
+    /// every change the region made to them is in a save it asked for before.
+    ///
+    /// [`RegionConfig::return_after`]: crate::RegionConfig::return_after
     pub returns: Vec<ChunkPos>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,

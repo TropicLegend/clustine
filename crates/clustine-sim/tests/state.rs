@@ -7,20 +7,27 @@ use std::collections::BTreeMap;
 use clustine_data::{blocks, items};
 use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent};
 use clustine_sim::{
-    Durable, EdgeEvent, EdgeState, PlayerChange, PlayerJoin, PlayerTransfer, Region, RegionConfig,
-    RegionState, RemoteAction, RemoteStep, StateDelta, TickInputs, TickOutput,
+    Durable, EdgeEvent, EdgeState, Holdings, Knowledge, Misdirected, PlayerChange, PlayerJoin,
+    PlayerTransfer, Region, RegionConfig, RegionState, RemoteAction, RemoteStep, StateDelta,
+    TickInputs, TickOutput, Ticket,
 };
 use clustine_world::{
-    Biome, BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3,
+    Biome, BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId,
+    Vec3,
 };
 
 const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
-/// The chunks with x from -1 to 0: blocks with x from -16 to 15.
+/// The chunks with x from -1 to 0: blocks with x from -16 to 15. The region is pinned
+/// to them, between a region to the west and one to the east.
 const AREA: ChunkArea = ChunkArea {
     min_x: Some(-1),
     max_x: Some(1),
 };
+
+/// The regions that hold what lies west and east of the area.
+const WESTERN: RegionId = RegionId(0);
+const EASTERN: RegionId = RegionId(2);
 
 const A: EdgeId = EdgeId(0xA);
 const B: EdgeId = EdgeId(0xB);
@@ -36,8 +43,18 @@ fn config() -> RegionConfig {
     starting_hotbar[0] = Some(STONE);
     RegionConfig {
         spawn: SPAWN,
-        area: AREA,
         starting_hotbar,
+        return_after: 0,
+        presumed: Vec::new(),
+    }
+}
+
+/// What the world store says of the region: it is pinned to the area and has been
+/// granted the chunks of it that these tests use.
+fn holdings() -> Holdings {
+    Holdings {
+        held: CHUNKS.to_vec(),
+        pinned: vec![AREA],
     }
 }
 
@@ -96,20 +113,38 @@ fn floor() -> Chunk {
 /// The chunks of the area around the origin.
 const CHUNKS: [ChunkPos; 2] = [ChunkPos::new(-1, 0), ChunkPos::new(0, 0)];
 
-/// Gives `region` a ticket for each of `CHUNKS` and loads them with what `chunk` says.
+/// The chunks of the neighbours right beyond either end of the area, each with the
+/// region that holds it.
+const BEYOND: [(ChunkPos, RegionId); 2] = [
+    (ChunkPos::new(-2, 0), WESTERN),
+    (ChunkPos::new(1, 0), EASTERN),
+];
+
+/// Gives `region` what an edge and the store give it in two ticks: a viewer's ticket
+/// for each of `CHUNKS`, which are loaded with what `chunk` says, and one for each chunk
+/// of `BEYOND`, of which the region asks and is told whose it is. So a player who steps
+/// out of the area is let go in the tick of the step, and what is done to a block
+/// beyond it is passed on with its region.
 fn load(region: &mut Region, chunk: impl Fn(ChunkPos) -> Chunk) {
+    let beyond = BEYOND.map(|(position, _)| position);
+    let viewer = |position: &ChunkPos| (*position, Ticket::Viewer);
     let output = region.tick(&TickInputs {
-        tickets_added: CHUNKS.to_vec(),
+        tickets_added: CHUNKS.iter().chain(&beyond).map(viewer).collect(),
         ..TickInputs::default()
     });
     assert_eq!(output.chunk_requests, CHUNKS);
+    assert_eq!(output.claims, beyond);
     region.tick(&TickInputs {
         chunks_loaded: CHUNKS
             .iter()
             .map(|position| (*position, chunk(*position)))
             .collect(),
+        foreign: BEYOND.to_vec(),
         ..TickInputs::default()
     });
+    for (position, holder) in BEYOND {
+        assert_eq!(region.knowledge(position), Knowledge::Foreign(holder));
+    }
 }
 
 /// Ticks `region` and checks that the delta turns the state before into the one after.
@@ -124,7 +159,7 @@ fn tick(region: &mut Region, inputs: &TickInputs) -> TickOutput {
 /// A region on a floor that knows edges `A` and `B` with start 1, with player 1 of `A`
 /// and player 2 of `B` at the spawn point.
 fn populated() -> Region {
-    let mut region = Region::new(config(), ids());
+    let mut region = Region::new(config(), ids(), holdings());
     load(&mut region, |_| floor());
     tick(
         &mut region,
@@ -174,7 +209,7 @@ fn depart(region: &mut Region) -> PlayerTransfer {
 
 #[test]
 fn a_new_region_starts_from_the_state_of_its_entity_ids() {
-    let region = Region::new(config(), ids());
+    let region = Region::new(config(), ids(), holdings());
     let state = RegionState::new(ids());
     assert_eq!(region.state(), state);
     assert_eq!(state.tick, 0);
@@ -195,7 +230,7 @@ fn a_players_state_is_what_the_whole_state_has_of_them() {
 
 #[test]
 fn an_unknown_edge_is_noted_with_nothing_applied_or_sent() {
-    let mut region = Region::new(config(), ids());
+    let mut region = Region::new(config(), ids(), holdings());
     let output = tick(
         &mut region,
         &TickInputs {
@@ -535,7 +570,7 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
         first: EntityId(1),
         end: EntityId(3),
     };
-    let mut region = Region::new(config(), few);
+    let mut region = Region::new(config(), few, holdings());
     load(&mut region, |_| floor());
     tick(
         &mut region,
@@ -621,14 +656,31 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
                     sequence: 5,
                 },
             ),
-            (C, 1, Durable::Remote(next)),
-            (B, 3, Durable::Remote(request)),
+            // Each names the region the store has said holds the chunk concerned: the
+            // spot east of the area, the block east of it, and where the player went.
+            (
+                C,
+                1,
+                Durable::Remote {
+                    action: next,
+                    to: Some(EASTERN),
+                },
+            ),
+            (
+                B,
+                3,
+                Durable::Remote {
+                    action: request,
+                    to: Some(EASTERN),
+                },
+            ),
             (
                 A,
                 2,
                 Durable::Departed {
                     player: player(1),
                     transfer: transfer.clone(),
+                    to: WESTERN,
                 },
             ),
         ]
@@ -953,11 +1005,19 @@ impl Scenario {
         inputs
     }
 
-    /// Takes note of the players `output` let go, who may arrive again later.
+    /// Takes note of the players `output` let go or sent on when they arrived, who may
+    /// arrive again later.
     fn note(&mut self, output: &TickOutput) {
         for (_, _, entry) in &output.durable {
-            if let Durable::Departed { player, transfer } = entry {
-                self.departed.push((*player, transfer.clone()));
+            match entry {
+                Durable::Departed {
+                    player, transfer, ..
+                }
+                | Durable::NotMine {
+                    what: Misdirected::Arrival { player, transfer },
+                    ..
+                } => self.departed.push((*player, transfer.clone())),
+                _ => {}
             }
         }
     }
@@ -981,6 +1041,10 @@ struct Seen {
     arrivals: usize,
     remote: usize,
     remote_done: usize,
+    /// Arrivals for a chunk of a neighbour, which went on to it, and remote actions
+    /// about one.
+    sent_on: usize,
+    not_mine: usize,
     resets: usize,
     confirmed: usize,
     forgotten: usize,
@@ -993,9 +1057,17 @@ impl Seen {
             match entry {
                 Durable::Departed { .. } => self.departures += 1,
                 Durable::Refused { .. } => self.refusals += 1,
-                Durable::Remote(_) => self.remote += 1,
+                Durable::Remote { .. } => self.remote += 1,
                 Durable::RemoteDone { .. } => self.remote_done += 1,
-                Durable::NotMine { .. } | Durable::Absorbed { .. } | Durable::SplitOff { .. } => {
+                Durable::NotMine {
+                    what: Misdirected::Arrival { .. },
+                    ..
+                } => self.sent_on += 1,
+                Durable::NotMine {
+                    what: Misdirected::Remote(_),
+                    ..
+                } => self.not_mine += 1,
+                Durable::Absorbed { .. } | Durable::SplitOff { .. } => {
                     panic!("a region made {entry:?}, which none does yet")
                 }
             }
@@ -1031,6 +1103,8 @@ impl Seen {
             self.arrivals,
             self.remote,
             self.remote_done,
+            self.sent_on,
+            self.not_mine,
             self.resets,
             self.confirmed,
             self.forgotten,
@@ -1047,7 +1121,7 @@ fn generated_region() -> Region {
         first: EntityId(1),
         end: EntityId(60),
     };
-    let mut region = Region::new(config(), few);
+    let mut region = Region::new(config(), few, holdings());
     load(&mut region, |_| floor());
     region
 }
@@ -1127,7 +1201,7 @@ fn a_restored_region_carries_on_as_the_one_it_was_restored_from() {
                 // A restored region has no chunk until it is given its tickets again and
                 // storage delivers. The one it is compared with idles meanwhile, which
                 // changes nothing in it.
-                let mut copy = Region::restore(config(), stored.clone());
+                let mut copy = Region::restore(config(), stored.clone(), holdings());
                 assert_eq!(copy.state(), region.state());
                 load(&mut copy, |position| {
                     region.chunk(position).unwrap().clone()
@@ -1159,7 +1233,9 @@ fn a_restored_region_carries_on_as_the_one_it_was_restored_from() {
 #[test]
 fn states_and_deltas_survive_serialisation() {
     let mut region = generated_region();
-    let mut scenario = Scenario::new(7);
+    // A seed with which the run is full enough, see below: how full it is varies a
+    // good deal from seed to seed, and with every change to what a region does.
+    let mut scenario = Scenario::new(4);
     let mut full = 0;
     for _ in 0..300 {
         let inputs = with_foreign_entities(scenario.inputs(&region));

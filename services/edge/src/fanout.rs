@@ -717,8 +717,12 @@ impl Fanout {
         }
         port.seen = number;
         match entry {
-            Durable::Departed { player, transfer } => {
-                self.hand_over(player, from, transfer).await;
+            Durable::Departed {
+                player,
+                transfer,
+                to,
+            } => {
+                self.hand_over(player, from, to, transfer).await;
             }
             Durable::Refused { player } => {
                 // A player who has an entity is in the world through another way than
@@ -732,9 +736,11 @@ impl Fanout {
                     self.remove_player(player).await;
                 }
             }
-            Durable::Remote(action) => {
-                // The region that has the block the next step is about takes it.
-                let to = self.layout.region_of(action.step.concerns().chunk());
+            Durable::Remote { action, to } => {
+                // The region that has the block the next step is about takes it: the
+                // one the entry names, or, where it names none, by this edge's layout.
+                let to =
+                    to.unwrap_or_else(|| self.layout.region_of(action.step.concerns().chunk()));
                 let (player, sequence) = (action.player, action.sequence);
                 if let Some(view) = self.players.get_mut(&player) {
                     view.under_way.insert(sequence);
@@ -916,16 +922,21 @@ impl Fanout {
         }
     }
 
-    /// Passes a player whom the region `from` has let go on to the region they walked
-    /// into, together with what they have done since.
+    /// Passes a player whom the region `from` has let go on to `to`, the region it named
+    /// as the one they walked into, together with what they have done since.
     ///
     /// Nothing else is handled while this runs, so no input of the player can go to the
     /// old region after the ones sent again here have been picked, or to the new region
     /// before them.
-    async fn hand_over(&mut self, player: PlayerId, from: RegionId, transfer: PlayerTransfer) {
+    async fn hand_over(
+        &mut self,
+        player: PlayerId,
+        from: RegionId,
+        to: RegionId,
+        transfer: PlayerTransfer,
+    ) {
         let position = transfer.pose.position;
         let chunk = ChunkPos::containing(position.x, position.z);
-        let to = self.layout.region_of(chunk);
         // The region did not report the entity as removed, because it lives on. Should
         // it turn out to have nowhere to go, the region it was heading for is told to
         // report it, or it would stay on the screens of those who saw it cross.
@@ -945,8 +956,8 @@ impl Fanout {
             return;
         };
         if to == from {
-            // The region and this edge disagree about where the region ends. Sending
-            // the player back would have them bounce between the two forever.
+            // The region named itself as the one the player walked into, which none
+            // does. Sending the player back would have them bounce there forever.
             error!(name = %view.name, %from, "a region let go of a player who is inside it");
             refuse(&view.outbound, "The server lost track of where you are.");
             self.send_to_region(to, discard).await;
@@ -2009,6 +2020,7 @@ mod tests {
         let departed = Durable::Departed {
             player: player(1),
             transfer: transfer(EntityId(5), 1),
+            to: EAST,
         };
         edge.say(WEST, departed);
         let (number, body) = edge.next_numbered(EAST).await;
@@ -2168,6 +2180,7 @@ mod tests {
         let departed = || Durable::Departed {
             player: player(1),
             transfer: transfer(EntityId(5), 0),
+            to: EAST,
         };
 
         let number = edge.say(WEST, departed());
@@ -2232,6 +2245,7 @@ mod tests {
         let departed = Durable::Departed {
             player: player(1),
             transfer: transfer(EntityId(5), 1),
+            to: EAST,
         };
         edge.say(WEST, departed);
         edge.tell(
@@ -2457,9 +2471,18 @@ mod tests {
                 position: BlockPos::new(64, -61, 0),
             },
         };
-        edge.say(WEST, Durable::Remote(action.clone()));
-        let (number, body) = edge.next_numbered(EAST).await;
-        assert_eq!((number, body), (1, EdgeToWorker::Remote(action)));
+        // The region names the one that has the block, or names none, and the edge
+        // finds it by its layout.
+        for (number, to) in [(1, Some(EAST)), (2, None)] {
+            let entry = Durable::Remote {
+                action: action.clone(),
+                to,
+            };
+            edge.say(WEST, entry);
+            let (numbered, body) = edge.next_numbered(EAST).await;
+            let passed_on = EdgeToWorker::Remote(action.clone());
+            assert_eq!((numbered, body), (number, passed_on));
+        }
     }
 
     /// A player whose region does not confirm what they do is not kept for ever.

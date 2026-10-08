@@ -31,7 +31,7 @@ use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_rpc::{Assignment, EdgeMessage, RegionHello, Restored, Vouch, WorkerToEdge, tcp};
 use clustine_sim::RegionConfig;
-use clustine_worker::{Ended, Links, RegionRunner, RegionStatus, Worker};
+use clustine_worker::{DEFAULT_RETURN_AFTER, Ended, Links, RegionRunner, RegionStatus, Worker};
 use clustine_worldstore::{Store, StoreError, StoreHandle};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
@@ -39,7 +39,7 @@ use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
-use crate::{LINK_CAPACITY, division, generator, spawn_point, starting_hotbar};
+use crate::{LINK_CAPACITY, division, generator, presumed, spawn_point, starting_hotbar};
 
 /// The ports the services listen on unless told otherwise.
 pub const COORDINATOR_PORT: u16 = 25600;
@@ -644,10 +644,10 @@ async fn told_again(again: &mut Option<Pin<Box<dyn Future<Output = ()> + Send>>>
 
 /// What it takes to run the region of `assignment` under `orders`.
 fn hold(orders: &Orders, assignment: Assignment) -> Result<Held> {
-    let area = orders
-        .layout
-        .area(assignment.region)
-        .context("the coordinator named a region that its layout does not have")?;
+    // Such a region would take the whole world to be its neighbours'.
+    if orders.layout.area(assignment.region).is_none() {
+        bail!("the coordinator named a region that its layout does not have");
+    }
     Ok(Held {
         assignment,
         hello: RegionHello {
@@ -658,8 +658,9 @@ fn hold(orders: &Orders, assignment: Assignment) -> Result<Held> {
         // The region's entity ids are the store's to say, not the coordinator's.
         config: RegionConfig {
             spawn: orders.spawn,
-            area,
             starting_hotbar: starting_hotbar(),
+            return_after: DEFAULT_RETURN_AFTER,
+            presumed: presumed(&orders.layout, assignment.region),
         },
     })
 }

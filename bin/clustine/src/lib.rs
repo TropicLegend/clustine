@@ -24,7 +24,7 @@ use clustine_rpc::link::EdgeEnd;
 use clustine_rpc::{RegionHello, Restored, link};
 use clustine_sim::RegionConfig;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
-use clustine_worker::{RegionRunner, Worker};
+use clustine_worker::{DEFAULT_RETURN_AFTER, RegionRunner, Worker};
 use clustine_world::{ChunkArea, ChunkGenerator, ChunkPos, Vec3};
 use clustine_worldgen::FlatGenerator;
 use clustine_worldstore::{Division, Store, StoreError, StoreHandle};
@@ -70,6 +70,17 @@ pub(crate) fn spawn_point() -> Vec3 {
 pub(crate) fn division(layout: &Layout) -> Division {
     let spawn = spawn_point();
     Division::stripes(ChunkPos::containing(spawn.x, spawn.z), layout)
+}
+
+/// What `region` takes as given of who holds which chunk: the stripes of `layout`, each
+/// with its region, and `None` for its own. A region runs on that for as long as its
+/// runner does not ask the world store (`docs/adr/0012-the-tick-on-chunks.md`, section
+/// 8).
+pub(crate) fn presumed(layout: &Layout, region: RegionId) -> Vec<(ChunkArea, Option<RegionId>)> {
+    layout
+        .regions()
+        .map(|(id, area)| (area, (id != region).then_some(id)))
+        .collect()
 }
 
 /// Resolves when the process is asked to stop: by an interrupt from the terminal or,
@@ -169,10 +180,7 @@ impl Regions {
     /// where the server before this one left it, and after a takeover where the store
     /// had the previous runner.
     fn run(&self, region: RegionId, epoch: u64) -> Result<(Worker, RegionLink)> {
-        let area = self
-            .layout
-            .area(region)
-            .with_context(|| format!("the world has no region {region}"))?;
+        self.has(region)?;
         let hello = RegionHello {
             region,
             epoch,
@@ -182,7 +190,15 @@ impl Regions {
             .store
             .open_region(hello)
             .with_context(|| format!("opening region {region}"))?;
-        self.started(region, epoch, store, restored, area)
+        self.started(region, epoch, store, restored)
+    }
+
+    /// Fails if the layout has no such region. One made all the same would take the
+    /// whole world to be its neighbours'.
+    fn has(&self, region: RegionId) -> Result<()> {
+        let area = self.layout.area(region);
+        area.map(drop)
+            .with_context(|| format!("the world has no region {region}"))
     }
 
     /// Opens `region` as its first owner in this process: with an epoch above every one
@@ -190,10 +206,7 @@ impl Regions {
     /// had, in this process's predecessors or in a cluster that served it before.
     /// Returns the epoch with the rest.
     fn run_first(&self, region: RegionId) -> Result<(u64, Worker, RegionLink)> {
-        let area = self
-            .layout
-            .area(region)
-            .with_context(|| format!("the world has no region {region}"))?;
+        self.has(region)?;
         let mut epoch = 1;
         loop {
             let hello = RegionHello {
@@ -203,7 +216,7 @@ impl Regions {
             };
             match self.store.open_region(hello) {
                 Ok((store, restored)) => {
-                    let (worker, link) = self.started(region, epoch, store, restored, area)?;
+                    let (worker, link) = self.started(region, epoch, store, restored)?;
                     return Ok((epoch, worker, link));
                 }
                 // Nobody else has the world open, so the next epoch is this process's.
@@ -227,7 +240,6 @@ impl Regions {
         epoch: u64,
         store: StoreHandle,
         restored: Restored,
-        area: ChunkArea,
     ) -> Result<(Worker, RegionLink)> {
         let (end, worker_end): (EdgeEnd, _) = if self.serialise_link {
             link::framed(LINK_CAPACITY)
@@ -236,8 +248,9 @@ impl Regions {
         };
         let config = RegionConfig {
             spawn: self.spawn,
-            area,
             starting_hotbar: starting_hotbar(),
+            return_after: DEFAULT_RETURN_AFTER,
+            presumed: presumed(&self.layout, region),
         };
         let runner = RegionRunner::restore(config, store, restored)
             .with_context(|| format!("restoring region {region}"))?

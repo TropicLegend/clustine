@@ -35,8 +35,8 @@ use clustine_rpc::{
 };
 use clustine_sim::api::RegionEvent;
 use clustine_sim::{
-    Durable, EdgeEvent, PlayerChange, PlayerEvent, Region, RegionConfig, RegionState, StateDelta,
-    TickInputs,
+    Durable, EdgeEvent, Holdings, Knowledge, PlayerChange, PlayerEvent, Region, RegionConfig,
+    RegionState, StateDelta, TickInputs, Ticket,
 };
 use clustine_world::{ChunkPos, EdgeId, EntityId, PlayerId};
 use clustine_worldstore::StoreHandle;
@@ -51,6 +51,13 @@ pub const DEFAULT_CHECKPOINT_INTERVAL: u64 = 5 * 60 * 20;
 /// Ticks an edge may be without a link before the region forgets it, unless set
 /// otherwise: 30 seconds.
 pub const DEFAULT_GONE_AFTER: u64 = 30 * 20;
+
+/// Ticks a chunk a region holds outside its pinned areas may be without use before the
+/// region gives it back, as the processes set it (`RegionConfig::return_after`): 30
+/// seconds, which is the time after which an edge that stays away is gone. A region
+/// that is restored has no tickets until its edges have said hello, and must not give
+/// its chunks back in the meantime.
+pub const DEFAULT_RETURN_AFTER: u64 = 30 * 20;
 
 /// How many ticks a region may be ahead of what the world store has confirmed. At that
 /// bound it waits.
@@ -207,7 +214,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 1;
+pub const STATE_FORMAT: u8 = 2;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -334,11 +341,11 @@ impl EdgeLink {
             let visible_now = self.subscriptions.contains(&current);
             let visible_before = self.subscriptions.contains(&previous);
             match event {
-                // A player who was let go and will not be passed on was last seen where
-                // this region ends, in a chunk nobody can subscribe to here. Those who
-                // saw them leave did so from any chunk, so everyone is told.
+                // A player who was let go and will not be passed on was last seen in a
+                // chunk this region does not hold, which nobody can subscribe to here.
+                // Those who saw them leave did so from any chunk, so everyone is told.
                 RegionEvent::EntityRemoved { entity, chunk }
-                    if orphaned.contains(entity) && !region.area().contains(*chunk) =>
+                    if orphaned.contains(entity) && region.knowledge(*chunk) != Knowledge::Held =>
                 {
                     visible.push(event.clone());
                 }
@@ -450,8 +457,11 @@ impl RegionRunner {
         restored: Restored,
     ) -> Result<Self, RestoreError> {
         let state = restored_state(restored)?;
+        // What the store says the region holds and is pinned to is not passed on yet:
+        // until the runner claims and returns, a region takes its chunks as given by
+        // `RegionConfig::presumed`. See `docs/adr/0012-the-tick-on-chunks.md`, section 8.
         Ok(Self::with_store(
-            Region::restore(config, state),
+            Region::restore(config, state, Holdings::default()),
             Box::new(store),
         ))
     }
@@ -1557,8 +1567,9 @@ impl RegionRunner {
     /// Subscribes `link` to the chunk at `position`, if that is the region's.
     fn subscribe(&mut self, link: &mut EdgeLink, position: ChunkPos) {
         // Chunks elsewhere are another region's to show.
-        if self.region.area().contains(position) && link.subscriptions.insert(position) {
-            self.inputs.tickets_added.push(position);
+        let held = self.region.knowledge(position) == Knowledge::Held;
+        if held && link.subscriptions.insert(position) {
+            self.inputs.tickets_added.push((position, Ticket::Viewer));
             link.awaiting_snapshot.insert(position);
         }
     }
@@ -1632,7 +1643,7 @@ impl RegionRunner {
             // anything else can change it, so this is its final state.
             self.save(position);
         }
-        self.inputs.tickets_removed.push(position);
+        self.inputs.tickets_removed.push((position, Ticket::Viewer));
     }
 
     /// Forgets a link that is of no use any more and has been taken out of
@@ -2130,11 +2141,25 @@ mod tests {
 
     const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
 
+    /// The region east of [`WEST`], as that one takes it to be.
+    const EAST: RegionId = RegionId(1);
+
+    /// What a region is made with that takes `area` as its own, as long as a runner does
+    /// not ask the store: the whole world, or [`WEST`] with the rest being [`EAST`]'s.
     fn config(area: ChunkArea) -> RegionConfig {
+        let mut presumed = vec![(area, None)];
+        if let Some(end) = area.max_x {
+            let rest = ChunkArea {
+                min_x: Some(end),
+                max_x: None,
+            };
+            presumed.push((rest, Some(EAST)));
+        }
         RegionConfig {
             spawn: SPAWN,
-            area,
             starting_hotbar: [None; HOTBAR_SLOTS],
+            return_after: 0,
+            presumed,
         }
     }
 
@@ -2172,7 +2197,11 @@ mod tests {
             inner,
             control: Arc::clone(&control),
         };
-        let region = Region::restore(config, restored_state(restored).unwrap());
+        let region = Region::restore(
+            config,
+            restored_state(restored).unwrap(),
+            Holdings::default(),
+        );
         (RegionRunner::with_store(region, Box::new(gate)), control)
     }
 
@@ -2782,8 +2811,7 @@ mod tests {
         let generator = FlatGenerator::classic();
         let config = RegionConfig {
             spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
-            area: ChunkArea::EVERYWHERE,
-            starting_hotbar: [None; HOTBAR_SLOTS],
+            ..config(ChunkArea::EVERYWHERE)
         };
         let (edge, worker_end) = in_process(256);
         let mut runner = opened(&on_disk(directory.path()), config).with_checkpoint_interval(50);
@@ -3024,7 +3052,7 @@ mod tests {
             [
                 WorkerToEdge::Outbox {
                     number: 1,
-                    entry: Durable::Remote(_),
+                    entry: Durable::Remote { .. },
                 },
                 WorkerToEdge::Outbox {
                     number: 2,
@@ -3311,6 +3339,7 @@ mod tests {
                 entry: Durable::Departed {
                     player: player(),
                     transfer: leaving,
+                    to: EAST,
                 },
             };
             assert_eq!(message, departed);
@@ -3377,7 +3406,10 @@ mod tests {
                 step_for(&mut runner, &mut edge),
                 WorkerToEdge::Outbox {
                     number: 1,
-                    entry: Durable::Remote(request),
+                    entry: Durable::Remote {
+                        action: request,
+                        to: Some(EAST),
+                    },
                 }
             );
             // Nobody is told that it was handled, and the other edge hears nothing.
@@ -3440,15 +3472,18 @@ mod tests {
                 step_for(&mut runner, &mut other),
                 WorkerToEdge::Outbox {
                     number: 2,
-                    entry: Durable::Remote(RemoteAction {
-                        player: other_player(),
-                        sequence: 4,
-                        step: RemoteStep::Place {
-                            target,
-                            block: stone,
-                            placer,
+                    entry: Durable::Remote {
+                        action: RemoteAction {
+                            player: other_player(),
+                            sequence: 4,
+                            step: RemoteStep::Place {
+                                target,
+                                block: stone,
+                                placer,
+                            },
                         },
-                    }),
+                        to: Some(EAST),
+                    },
                 }
             );
             step(&mut runner);
@@ -3578,7 +3613,11 @@ mod tests {
             end: EntityId(2),
         };
         let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
-        let region = Region::new(config(ChunkArea::EVERYWHERE), entity_ids);
+        let region = Region::new(
+            config(ChunkArea::EVERYWHERE),
+            entity_ids,
+            Holdings::default(),
+        );
         let mut runner = RegionRunner::with_store(region, Box::new(store));
         runner.links().attach(worker_end);
 
@@ -4304,7 +4343,7 @@ mod tests {
             },
             WorkerToEdge::Outbox {
                 number: 1,
-                entry: Durable::Remote(_),
+                entry: Durable::Remote { .. },
             },
             WorkerToEdge::ToPlayer {
                 player: acknowledged,
@@ -4549,7 +4588,7 @@ mod tests {
     /// A state and a delta that have something of everything a state is made of.
     fn a_state_and_a_delta() -> (RegionState, StateDelta) {
         let ids = EntityIds::block(0).unwrap();
-        let mut region = Region::new(config(WEST), ids);
+        let mut region = Region::new(config(WEST), ids, Holdings::default());
         let edge = EdgeId(7);
         let join = PlayerChange::Join(
             edge,
@@ -4601,24 +4640,24 @@ mod tests {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 1);
+        assert_eq!(STATE_FORMAT, 2);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "0001020280808001060110000000000000000000000000000000020404416c6578000000000000e0",
+                "0002020280808001060110000000000000000000000000000000020404416c6578000000000000e0",
                 "3f0000000000004ec0000000000000e03f0000000000000000000000000000000000000000000701",
                 "07030102010101001000000000000000000000000000000001020553746576650000000000404440",
-                "0000000000004ec0000000000000e03f0000000000000000010000000000000000000001",
+                "0000000000004ec0000000000000e03f000000000000000001000000000000000000000101",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00010201060210000000000000000000000000000000010010000000000000000000000000000000",
+                "00020201060210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010404416c6578000000000000e03f0000000000004ec0000000000000e03f0000000000000000",
                 "00000000000000000000000000070107010301020100000101001000000000000000000000000000",
                 "0000010205537465766500000000004044400000000000004ec0000000000000e03f000000000000",
-                "0000010000000000000000000001",
+                "000001000000000000000000000101",
             )
         );
     }
