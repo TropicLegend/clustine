@@ -167,6 +167,10 @@ struct Region {
     /// The epoch of its owner or, while it has none, of the last one it had. It never
     /// goes down, and it is 0 as long as the region has never had an owner.
     epoch: u64,
+    /// Whether the last owner itself said that it let go of the region, and nobody has
+    /// run it since. Such a region does not wait for the grace period of a new
+    /// coordinator to end: nobody is left who could report that it holds it.
+    let_go: bool,
 }
 
 /// The worker that runs a region.
@@ -349,7 +353,8 @@ impl Coordinator {
     ///
     /// For one lease from `now` it assigns nothing new: workers that kept running while
     /// there was no coordinator must get the chance to report what they hold before any
-    /// of it is given away.
+    /// of it is given away. A region whose owner says that it let go of it does not wait
+    /// for that ([`Coordinator::released`]).
     pub fn new(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Self {
         let regions = config
             .layout
@@ -672,8 +677,16 @@ impl Coordinator {
     /// until a tick gives it to a worker that waits. The worker itself goes to the back
     /// of those that wait.
     ///
-    /// From a worker that does not own the region with that epoch this changes nothing.
-    /// To say it is to be heard from, if the worker is registered.
+    /// A region that nobody owns, released by a registered worker with an epoch that is
+    /// not below the last one the coordinator knows of it, is free as well. That is
+    /// what a new coordinator hears when the release was done before the worker found
+    /// it: the worker registers holding nothing and says what it let go of. The region
+    /// is given to a worker that waits at once, the one that says this last among them.
+    /// The coordinator cannot check that the worker was the owner; if it was not, the
+    /// world store fences whoever still runs the region, as after any crash.
+    ///
+    /// From any other worker, or with any other epoch, this changes nothing. To say it
+    /// is to be heard from, if the worker is registered.
     pub fn released(&mut self, now: Instant, name: &str, region: RegionId, epoch: u64) -> Changes {
         let before = self.holders();
         if let Some(worker) = self.workers.get_mut(name) {
@@ -682,6 +695,28 @@ impl Coordinator {
         if self.holds(region, name, epoch) {
             info!(worker = name, %region, epoch, "a worker released a region");
             self.hand_over(now, region, true);
+        } else if self.without_owner_since(region, name, epoch) {
+            info!(
+                worker = name,
+                %region,
+                epoch,
+                "a worker released a region before this coordinator knew of it"
+            );
+            self.last_epoch = self.last_epoch.max(epoch);
+            let state = self
+                .regions
+                .get_mut(&region)
+                .expect("a region without an owner is one of the layout's");
+            state.epoch = epoch;
+            state.let_go = true;
+            let arrivals = self.arrivals;
+            let worker = self
+                .workers
+                .get_mut(name)
+                .expect("the worker was found to be registered");
+            worker.arrival = arrivals;
+            self.arrivals += 1;
+            self.assign(now);
         } else {
             info!(
                 worker = name,
@@ -723,9 +758,17 @@ impl Coordinator {
         self.drop_stale_releases();
         self.end_overdue_releases(now);
         self.take_unvouched(now);
-        if now.saturating_duration_since(self.started) >= self.config.lease {
-            self.assign(now);
-        }
+        self.assign(now);
+    }
+
+    /// Whether `region` has no owner, has not been run with an epoch above `epoch`, and
+    /// `name` is a registered worker: then `name` may have been its last owner.
+    fn without_owner_since(&self, region: RegionId, name: &str, epoch: u64) -> bool {
+        self.workers.contains_key(name)
+            && self
+                .regions
+                .get(&region)
+                .is_some_and(|state| state.owner.is_none() && state.epoch <= epoch)
     }
 
     /// Whether the worker `name` owns `region` with `epoch`.
@@ -836,7 +879,15 @@ impl Coordinator {
             Some(next) => {
                 self.grant(now, region, &next);
             }
-            None => info!(%region, "nobody is there to be given a region that was let go"),
+            None => {
+                info!(%region, "nobody is there to be given a region that was let go");
+                if released {
+                    self.regions
+                        .get_mut(&region)
+                        .expect("the region was found above")
+                        .let_go = true;
+                }
+            }
         }
     }
 
@@ -1024,6 +1075,7 @@ impl Coordinator {
             .get_mut(&holding.region)
             .expect("the layout has the region, or there would have been an objection");
         region.epoch = holding.epoch;
+        region.let_go = false;
         match &mut region.owner {
             // The worker's own region, so a run of waiting for the store goes on.
             Some(owner) => {
@@ -1115,7 +1167,9 @@ impl Coordinator {
 
     /// Gives the regions without an owner to the waiting workers, as of `now`. A worker
     /// that is leaving is given nothing, nor is one that is reserved for a release.
+    /// During the grace period only the regions that their owners let go of are given.
     fn assign(&mut self, now: Instant) {
+        let grace = now.saturating_duration_since(self.started) < self.config.lease;
         let busy: BTreeSet<&str> = self
             .regions
             .values()
@@ -1139,7 +1193,7 @@ impl Coordinator {
         let unowned: Vec<RegionId> = self
             .regions
             .iter()
-            .filter(|(_, region)| region.owner.is_none())
+            .filter(|(_, region)| region.owner.is_none() && (region.let_go || !grace))
             .map(|(id, _)| *id)
             .collect();
         let pairs: Vec<(RegionId, String)> = unowned
@@ -1171,6 +1225,7 @@ impl Coordinator {
             .expect("the region is one of the layout's");
         region.epoch = epoch;
         region.owner = Some(Owner::new(name, entity_ids, now));
+        region.let_go = false;
         info!(region = %id, worker = %name, epoch, "a region was assigned");
         true
     }
@@ -3088,21 +3143,72 @@ mod tests {
     }
 
     #[test]
-    fn a_region_released_with_nobody_to_take_it_waits_for_a_tick_like_any_without_an_owner() {
-        let mut cluster = Cluster::new(&[]);
+    fn a_region_released_with_nobody_to_take_it_goes_to_the_first_that_waits_at_a_tick() {
+        let mut cluster = Cluster::new(&[0]);
         let held = assignment(0, 7, 0);
         cluster.register(1, "a", "a:25601", &[held]);
         assert_eq!(cluster.released(2, "a", 0, 7), changes(&["a"], true));
         assert!(cluster.table().routes.is_empty());
 
-        // The grace period counts for it again, and then the worker that released it
-        // is the first that waits, being the only one.
-        assert_eq!(cluster.tick(LEASE - 1), Changes::default());
-        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+        // The grace period does not count for it: its owner said that it is free. The
+        // worker that released it is the first that waits, being the only one. The
+        // other region, of which nobody said anything, waits for the grace period.
+        assert_eq!(cluster.tick(3), changes(&["a"], true));
         assert_eq!(
             cluster.assignments("a"),
             [assignment(0, FIRST_EPOCH + 1, 1)]
         );
+        cluster.register(4, "b", "b:25601", &[]);
+        assert_eq!(cluster.tick(LEASE - 1), Changes::default());
+        assert_eq!(cluster.tick(LEASE), changes(&["b"], true));
+    }
+
+    #[test]
+    fn a_region_released_before_a_new_coordinator_knew_of_it_is_assigned_at_once() {
+        // The owner was asked by the coordinator before this one, and had let go
+        // before it found this one: it registers holding nothing and says so.
+        let mut cluster = Cluster::new(&[]);
+        assert_eq!(cluster.register(1, "a", "a:25601", &[]), Changes::default());
+        assert_eq!(cluster.register(2, "b", "b:25601", &[]), Changes::default());
+        assert_eq!(cluster.released(3, "a", 0, 7), changes(&["b"], true));
+        assert_eq!(
+            cluster.assignments("b"),
+            [assignment(0, FIRST_EPOCH + 1, 0)]
+        );
+        assert!(cluster.assignments("a").is_empty());
+    }
+
+    #[test]
+    fn a_region_released_before_anyone_waits_goes_to_the_next_that_registers_and_ticks() {
+        let mut cluster = Cluster::new(&[]);
+        cluster.register(1, "a", "a:25601", &[]);
+        // It may be given back to the worker that let go of it, if that is all there is.
+        assert_eq!(cluster.released(2, "a", 0, 7), changes(&["a"], true));
+        assert_eq!(
+            cluster.assignments("a"),
+            [assignment(0, FIRST_EPOCH + 1, 0)]
+        );
+    }
+
+    #[test]
+    fn a_release_from_before_does_not_free_a_region_that_has_an_owner_or_a_later_epoch() {
+        let mut cluster = Cluster::new(&[]);
+        cluster.register(1, "a", "a:25601", &[]);
+        cluster.register(2, "b", "b:25601", &[assignment(0, 9, 0)]);
+        // Another worker reported it first.
+        assert_eq!(cluster.released(3, "a", 0, 7), Changes::default());
+        assert_eq!(cluster.released(3, "a", 0, 9), Changes::default());
+        assert_eq!(cluster.assignments("b"), [assignment(0, 9, 0)]);
+
+        // Its owner lets go with nobody fit to take it; an epoch from before that owner
+        // says nothing about the region as it is now.
+        cluster.disconnected(4, "a");
+        cluster.released(5, "b", 0, 9);
+        cluster.disconnected(6, "b");
+        assert_eq!(cluster.released(7, "a", 0, 7), Changes::default());
+        // Nor does a worker that is not registered free anything.
+        assert_eq!(cluster.released(7, "nobody", 0, 9), Changes::default());
+        assert!(cluster.table().routes.is_empty());
     }
 
     #[test]
@@ -3454,6 +3560,9 @@ mod tests {
             let fingerprint = cluster.layout.fingerprint();
             let mut now = 0;
             let mut grace_ends = LEASE;
+            // The regions that a worker said it let go of and nobody was given since:
+            // the grace period does not hold these back.
+            let mut free: BTreeSet<RegionId> = BTreeSet::new();
             // What each worker runs: what it was to run when it last heard of it.
             let mut running: BTreeMap<String, Vec<Assignment>> = BTreeMap::new();
             // What each worker has been asked to release and has not answered.
@@ -3622,6 +3731,7 @@ mod tests {
                         // it no more than that it is not behind the old one.
                         cluster.restart(now, highest_epoch);
                         grace_ends = now + LEASE;
+                        free.clear();
                         used_blocks.clear();
                         tenures.clear();
                         movers.clear();
@@ -3673,6 +3783,11 @@ mod tests {
                         let has = cluster.assignments(name);
                         assert!(has.iter().all(|held| held.region != region), "{has:?}");
                         let_go += 1;
+                        free.insert(region);
+                    } else if before.table.route(region).is_none() {
+                        // Nobody owns it: the worker may have been its last owner,
+                        // before this coordinator knew of it.
+                        free.insert(region);
                     } else {
                         assert_eq!(changes, Changes::default());
                     }
@@ -3721,9 +3836,10 @@ mod tests {
                 gained.sort_by_key(|(_, assignment)| assignment.epoch);
                 for (worker, assignment) in &gained {
                     assert!(
-                        !graceful || now >= grace_ends,
+                        !graceful || now >= grace_ends || free.contains(&assignment.region),
                         "assigned during the grace period"
                     );
+                    free.remove(&assignment.region);
                     assert!(assignment.epoch > highest_epoch, "{assignment:?}");
                     highest_epoch = assignment.epoch;
                     let block = assignment.entity_ids.first.0 / EntityIds::BLOCK_SIZE;

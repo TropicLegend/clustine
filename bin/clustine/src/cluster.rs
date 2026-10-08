@@ -916,6 +916,10 @@ async fn keep_linked(
 ) {
     let layout = table.layout.fingerprint();
     let mut watch = Some(watch);
+    // The search for a coordinator, while there is none. It is one future that lives
+    // across the passes of the loop below: a wait begun anew at every pass would never
+    // end while link attempts make the loop pass more often than it lasts.
+    let mut search: Option<Pin<Box<dyn Future<Output = RoutingWatch> + Send>>> = None;
     let mut regions: BTreeMap<RegionId, LinkState> = BTreeMap::new();
     // The attempts under way: each ends with the region, the epoch it was for, and the
     // link if there is one.
@@ -1025,14 +1029,37 @@ async fn keep_linked(
                 None => {
                     warn!("lost the coordinator; carrying on with the regions as they are");
                     watch = None;
+                    search = Some(Box::pin(find_coordinator(coordinator.to_owned())));
                 }
             },
             () = sleep_until_some(again), if again.is_some() => {}
-            // A coordinator to look for.
-            () = sleep(RETRY), if watch.is_none() => {
-                watch = RoutingWatch::connect(coordinator).await.ok();
+            found = found_coordinator(&mut search), if search.is_some() => {
+                info!("found a coordinator again");
+                watch = Some(found);
+                search = None;
             }
         }
+    }
+}
+
+/// Connects to the coordinator at `coordinator`, trying at once and then every
+/// [`RETRY`] until it is there.
+async fn find_coordinator(coordinator: String) -> RoutingWatch {
+    loop {
+        if let Ok(watch) = RoutingWatch::connect(&coordinator).await {
+            return watch;
+        }
+        sleep(RETRY).await;
+    }
+}
+
+/// What `search` comes to, which the caller has made sure is there.
+async fn found_coordinator(
+    search: &mut Option<Pin<Box<dyn Future<Output = RoutingWatch> + Send>>>,
+) -> RoutingWatch {
+    match search {
+        Some(search) => search.await,
+        None => std::future::pending().await,
     }
 }
 
