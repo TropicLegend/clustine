@@ -482,7 +482,15 @@ review first:
   with it (see the limits below); regions that survive their worker and edges that
   survive a region are what this builds on.
 - **Terrain generation**, reusing what SteelMC or Pumpkin have, which ADR-0002 chose
-  the AGPL for; `docs/library-evaluation.md` has what was found about both.
+  the AGPL for; `docs/library-evaluation.md` has what was found about both. The
+  groundwork for its plan is in
+  [groundwork/terrain-generation.md](groundwork/terrain-generation.md): what both
+  projects cover and test, their licences, how their code is built, what Minecraft 26.3
+  changed, what Clustine needs of its own in any case (biomes, light, heightmaps, block
+  properties), the options, a recommendation (a crate of Clustine's own, ported in
+  stages from SteelMC's 26.3 branch and checked against its per-stage hashes and the
+  official server) and **twelve questions for the owner** at its end, which the plan
+  waits for.
 
 The owner also asked for the work to go on without waiting for them: at each stop of M3
 what to try with real clients is written down here, and the next phase begins.
