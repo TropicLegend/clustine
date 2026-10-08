@@ -152,12 +152,6 @@ enum Service {
         /// Seconds between two saves of all changed chunks that are still loaded.
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
         checkpoint_interval: u64,
-
-        /// Have the regions ask the world store which chunks they hold, instead of
-        /// taking the stripes the coordinator names as given. It is how regions will
-        /// work once they are no longer stripes, and is here to try that out.
-        #[arg(long)]
-        ask_the_store: bool,
     },
     /// Asks the coordinator to move a region to another worker while players stay in
     /// it.
@@ -229,7 +223,6 @@ async fn main() -> Result<()> {
             advertise,
             name,
             checkpoint_interval,
-            ask_the_store,
         }) => {
             cluster::worker(WorkerArgs {
                 coordinator,
@@ -238,7 +231,6 @@ async fn main() -> Result<()> {
                 advertise: advertise.unwrap_or_else(|| listen.to_string()),
                 name,
                 checkpoint_interval: Duration::from_secs(checkpoint_interval),
-                ask_the_store,
             })
             .await
         }
@@ -287,7 +279,6 @@ async fn standalone(args: Standalone) -> Result<()> {
         checkpoint_interval: Duration::from_secs(args.checkpoint_interval),
         serialise_link: false,
         boundaries: args.boundaries,
-        presumed: true,
     })
     .await?;
     info!(address = %server.address(), "listening");

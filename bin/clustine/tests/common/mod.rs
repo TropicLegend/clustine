@@ -24,17 +24,7 @@ pub fn config() -> Config {
         checkpoint_interval: Duration::from_secs(300),
         serialise_link: false,
         boundaries: boundaries(),
-        presumed: !ask_the_store(),
     }
-}
-
-/// Whether the regions of the tests' worlds ask the world store which chunks they hold
-/// instead of taking the stripes of the layout as given: if the environment variable
-/// `CLUSTINE_TEST_ASK_THE_STORE` is set. Setting it runs every test, those that start
-/// processes too, on regions that work as they will once they are no longer stripes
-/// (`docs/adr/0012-the-tick-on-chunks.md`, section 8).
-pub fn ask_the_store() -> bool {
-    std::env::var_os("CLUSTINE_TEST_ASK_THE_STORE").is_some()
 }
 
 /// Where the tests' worlds are divided into regions: nowhere, unless the environment

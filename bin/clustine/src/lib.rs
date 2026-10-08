@@ -25,7 +25,7 @@ use clustine_rpc::{RegionHello, Restored, link};
 use clustine_sim::RegionConfig;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_worker::{DEFAULT_RETURN_AFTER, RegionRunner, Worker};
-use clustine_world::{ChunkArea, ChunkGenerator, ChunkPos, Vec3};
+use clustine_world::{ChunkGenerator, ChunkPos, Vec3};
 use clustine_worldgen::FlatGenerator;
 use clustine_worldstore::{Division, Store, StoreError, StoreHandle};
 use tokio::task::JoinHandle;
@@ -70,17 +70,6 @@ pub(crate) fn spawn_point() -> Vec3 {
 pub(crate) fn division(layout: &Layout) -> Division {
     let spawn = spawn_point();
     Division::stripes(ChunkPos::containing(spawn.x, spawn.z), layout)
-}
-
-/// What `region` takes as given of who holds which chunk: the stripes of `layout`, each
-/// with its region, and `None` for its own. A region runs on that for as long as its
-/// runner does not ask the world store (`docs/adr/0012-the-tick-on-chunks.md`, section
-/// 8).
-pub(crate) fn presumed(layout: &Layout, region: RegionId) -> Vec<(ChunkArea, Option<RegionId>)> {
-    layout
-        .regions()
-        .map(|(id, area)| (area, (id != region).then_some(id)))
-        .collect()
 }
 
 /// Resolves when the process is asked to stop: by an interrupt from the terminal or,
@@ -147,12 +136,6 @@ pub struct Config {
     /// they walk, and what they do to blocks on the other side of a boundary is passed
     /// on to the region that has them. Empty for a world that is one region.
     pub boundaries: Vec<i32>,
-    /// Whether each region takes the stripes of the layout as given, its own and the
-    /// others', in place of asking the world store which chunks it holds. With `false`
-    /// a region knows of a chunk only what the store has answered, as it will when
-    /// regions are no longer stripes. A switch for as long as the edge still divides
-    /// the world by a layout; see `docs/adr/0012-the-tick-on-chunks.md`, section 8.
-    pub presumed: bool,
 }
 
 /// A running server. Dropping it without calling [`Server::stop`] leaves it running
@@ -176,8 +159,6 @@ struct Regions {
     /// Ticks between two checkpoints.
     checkpoint_interval: u64,
     serialise_link: bool,
-    /// [`Config::presumed`].
-    presumed: bool,
 }
 
 impl Regions {
@@ -188,7 +169,6 @@ impl Regions {
     /// where the server before this one left it, and after a takeover where the store
     /// had the previous runner.
     fn run(&self, region: RegionId, epoch: u64) -> Result<(Worker, RegionLink)> {
-        self.has(region)?;
         let hello = RegionHello {
             region,
             epoch,
@@ -201,20 +181,11 @@ impl Regions {
         self.started(region, epoch, store, restored)
     }
 
-    /// Fails if the layout has no such region. One made all the same would take the
-    /// whole world to be its neighbours'.
-    fn has(&self, region: RegionId) -> Result<()> {
-        let area = self.layout.area(region);
-        area.map(drop)
-            .with_context(|| format!("the world has no region {region}"))
-    }
-
     /// Opens `region` as its first owner in this process: with an epoch above every one
     /// the world has seen for it. A world on disk remembers the owners its regions have
     /// had, in this process's predecessors or in a cluster that served it before.
     /// Returns the epoch with the rest.
     fn run_first(&self, region: RegionId) -> Result<(u64, Worker, RegionLink)> {
-        self.has(region)?;
         let mut epoch = 1;
         loop {
             let hello = RegionHello {
@@ -258,11 +229,7 @@ impl Regions {
             spawn: self.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            presumed: if self.presumed {
-                presumed(&self.layout, region)
-            } else {
-                Vec::new()
-            },
+            presumed: Vec::new(),
         };
         let runner = RegionRunner::restore(config, store, restored)
             .with_context(|| format!("restoring region {region}"))?
@@ -295,7 +262,6 @@ impl Server {
             spawn,
             checkpoint_interval: config.checkpoint_interval.as_millis() as u64 / 50,
             serialise_link: config.serialise_link,
-            presumed: config.presumed,
         };
 
         let mut links = Vec::new();

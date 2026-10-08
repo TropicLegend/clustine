@@ -39,7 +39,7 @@ use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
-use crate::{LINK_CAPACITY, division, generator, presumed, spawn_point, starting_hotbar};
+use crate::{LINK_CAPACITY, division, generator, spawn_point, starting_hotbar};
 
 /// The ports the services listen on unless told otherwise.
 pub const COORDINATOR_PORT: u16 = 25600;
@@ -123,11 +123,6 @@ pub struct WorkerArgs {
     pub name: String,
     /// How often every changed chunk that is still loaded is saved.
     pub checkpoint_interval: Duration,
-    /// Whether the regions take nothing of the layout as given and ask the world store
-    /// which chunks they hold, as they will when regions are no longer stripes. A
-    /// switch for as long as the edge still divides the world by a layout; see
-    /// `docs/adr/0012-the-tick-on-chunks.md`, section 8.
-    pub ask_the_store: bool,
 }
 
 /// A region the coordinator has given this worker, and what it takes to run it.
@@ -473,15 +468,8 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                         if regions.is_empty() && offered.is_empty() {
                             info!("registered; waiting to be given a region");
                         }
-                        let mut failed = None;
                         for assignment in offered {
-                            let held = match hold(&next, assignment, args.ask_the_store) {
-                                Ok(held) => held,
-                                Err(error) => {
-                                    failed = Some(error);
-                                    break;
-                                }
-                            };
+                            let held = hold(&next, assignment);
                             info!(
                                 region = %assignment.region,
                                 epoch = assignment.epoch,
@@ -489,9 +477,6 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             );
                             let opening = Box::pin(open_region(args.store.clone(), held.hello));
                             regions.insert(assignment.region, Phase::Opening { held, opening });
-                        }
-                        if let Some(error) = failed {
-                            break Err(error);
                         }
                     }
                 }
@@ -647,32 +632,26 @@ async fn told_again(again: &mut Option<Pin<Box<dyn Future<Output = ()> + Send>>>
     }
 }
 
-/// What it takes to run the region of `assignment` under `orders`. The region takes the
-/// stripes of the layout as given unless it is to `ask_the_store`.
-fn hold(orders: &Orders, assignment: Assignment, ask_the_store: bool) -> Result<Held> {
-    // Such a region would take the whole world to be its neighbours'.
-    if orders.layout.area(assignment.region).is_none() {
-        bail!("the coordinator named a region that its layout does not have");
-    }
-    Ok(Held {
+/// What it takes to run the region of `assignment` under `orders`. Whether the world
+/// has such a region is the store's to say: it refuses the hello of one it does not
+/// have, which ends the worker as a hello for another layout does.
+fn hold(orders: &Orders, assignment: Assignment) -> Held {
+    Held {
         assignment,
         hello: RegionHello {
             region: assignment.region,
             epoch: assignment.epoch,
             layout: orders.layout.fingerprint(),
         },
-        // The region's entity ids are the store's to say, not the coordinator's.
+        // The region's entity ids are the store's to say, not the coordinator's, and so
+        // are the chunks it holds and the areas it is pinned to.
         config: RegionConfig {
             spawn: orders.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            presumed: if ask_the_store {
-                Vec::new()
-            } else {
-                presumed(&orders.layout, assignment.region)
-            },
+            presumed: Vec::new(),
         },
-    })
+    }
 }
 
 /// Opens the region at the world store, trying until the store can be reached. An

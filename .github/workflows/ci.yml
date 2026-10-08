@@ -32,15 +32,6 @@ jobs:
         run: cargo test -p clustine --locked 2>&1 | tee -a test.log
         env:
           CLUSTINE_TEST_BOUNDARIES: "0,4"
-      # And a third time on that world, with regions that ask the world store which
-      # chunks they hold instead of taking their stripes as given, which is how they
-      # will work when regions are no longer stripes (ADR-0012, section 8).
-      - name: cargo test -p clustine --locked, on a divided world whose regions ask the store
-        shell: bash
-        run: cargo test -p clustine --locked 2>&1 | tee -a test.log
-        env:
-          CLUSTINE_TEST_BOUNDARIES: "0,4"
-          CLUSTINE_TEST_ASK_THE_STORE: "1"
       # Says on the run's summary page which tests failed and with what, where it can be
       # read without opening the log, which takes being signed in.
       - name: Name the tests that failed
