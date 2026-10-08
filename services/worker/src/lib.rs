@@ -6464,55 +6464,63 @@ mod tests {
 
     /// A player who arrives for a chunk the region believes another's is sent on, and
     /// is on their way as one the region let go: if the edge that was to pass them on
-    /// starts anew, every link is told that the entity is gone.
+    /// starts anew, or stays away until the region forgets it, every link is told that
+    /// the entity is gone.
     #[tokio::test]
     async fn an_arrival_that_was_sent_on_and_then_dropped_is_reported_removed_to_every_link() {
-        let world = Divided::stripes();
-        let (mut edge, worker_end) = in_process(256);
-        let (mut watcher, watcher_end) = in_process(256);
-        let mut runner = world.runner(RegionId(0), 1);
-        runner.links().attach(worker_end);
-        runner.links().attach(watcher_end);
+        for stays_away in [false, true] {
+            let world = Divided::stripes();
+            let (mut edge, worker_end) = in_process(256);
+            let (mut watcher, watcher_end) = in_process(256);
+            let mut runner = world.runner(RegionId(0), 1).with_gone_after(20);
+            runner.links().attach(worker_end);
+            runner.links().attach(watcher_end);
 
-        edge.send(asking_for(vec![BESIDE])).await.unwrap();
-        assert_eq!(
-            answers(&mut runner, &mut edge, 1),
-            [(BESIDE, 1, Told::Elsewhere(EAST))]
-        );
-        let arriving = PlayerTransfer {
-            pose: Pose::at(Vec3::new(16.5, -60.0, 0.5)),
-            ..transfer(EntityId(77))
-        };
-        edge.send(EdgeToWorker::PlayerArrive {
-            player: other_player(),
-            transfer: arriving.clone(),
-        })
-        .await
-        .unwrap();
-        let sent_on = WorkerToEdge::Outbox {
-            number: 1,
-            entry: Durable::NotMine {
-                what: Misdirected::Arrival {
-                    player: other_player(),
-                    transfer: arriving,
+            edge.send(asking_for(vec![BESIDE])).await.unwrap();
+            assert_eq!(
+                answers(&mut runner, &mut edge, 1),
+                [(BESIDE, 1, Told::Elsewhere(EAST))]
+            );
+            let arriving = PlayerTransfer {
+                pose: Pose::at(Vec3::new(16.5, -60.0, 0.5)),
+                ..transfer(EntityId(77))
+            };
+            edge.send(EdgeToWorker::PlayerArrive {
+                player: other_player(),
+                transfer: arriving.clone(),
+            })
+            .await
+            .unwrap();
+            let sent_on = WorkerToEdge::Outbox {
+                number: 1,
+                entry: Durable::NotMine {
+                    what: Misdirected::Arrival {
+                        player: other_player(),
+                        transfer: arriving,
+                    },
+                    holder: EAST,
                 },
-                holder: EAST,
-            },
-        };
-        assert_eq!(step_for(&mut runner, &mut edge), sent_on);
-        assert_eq!(runner.region().player_count(), 0);
+            };
+            assert_eq!(step_for(&mut runner, &mut edge), sent_on);
+            assert_eq!(runner.region().player_count(), 0);
 
-        // The edge starts anew without having passed the player on. The watcher is
-        // subscribed to nothing and hears of it all the same.
-        let (end, anew_end) = link::in_process(256);
-        let anew = TestEdge::silent(end, edge.edge, edge.start + 1);
-        anew.send(anew.hello(0, &[], &[])).await.unwrap();
-        runner.links().attach(anew_end);
-        let removed = RegionEvent::EntityRemoved {
-            entity: EntityId(77),
-            chunk: BESIDE,
-        };
-        assert_eq!(events(step_for(&mut runner, &mut watcher)), [removed]);
+            // The edge does not pass the player on. The watcher is subscribed to
+            // nothing and hears all the same that the entity is gone.
+            let (end, anew_end) = link::in_process(256);
+            let anew = TestEdge::silent(end, edge.edge, edge.start + 1);
+            if stays_away {
+                drop(edge);
+            } else {
+                anew.send(anew.hello(0, &[], &[])).await.unwrap();
+                runner.links().attach(anew_end);
+            }
+            let removed = RegionEvent::EntityRemoved {
+                entity: EntityId(77),
+                chunk: BESIDE,
+            };
+            assert_eq!(events(step_for(&mut runner, &mut watcher)), [removed]);
+            assert_eq!(runner.region().edge(anew.edge).is_none(), stays_away);
+        }
     }
 
     /// The status has how many chunks the store has granted the region and where its
@@ -6858,5 +6866,88 @@ mod tests {
                 assert!(log.is_empty(), "{log:?}");
             }
         }
+    }
+
+    /// What a region changed in a chunk is in the store when it gives the chunk back:
+    /// whoever is granted the chunk next loads it as the region left it.
+    #[tokio::test]
+    async fn a_chunk_that_is_given_back_is_loaded_by_the_next_holder_as_the_region_left_it() {
+        let world = Divided::gap();
+        let (mut edge, worker_end) = in_process(256);
+        let mut runner = world.runner(HOME, 1);
+        runner.links().attach(worker_end);
+        let (neighbour, _) = world.open(EAST, 1);
+        let air = clustine_data::blocks::AIR;
+
+        joined(&edge, &mut runner).await;
+        edge.send(asking_for(vec![BESIDE])).await.unwrap();
+        edge.send(walk(player(), 14.5)).await.unwrap();
+        answers(&mut runner, &mut edge, 2);
+        edge.send(dig(16)).await.unwrap();
+        step(&mut runner);
+        let changed = runner.region().chunk(BESIDE).unwrap().clone();
+        assert_eq!(changed.get(0, -61, 0), Some(air));
+
+        edge.send(done_with(vec![BESIDE])).await.unwrap();
+        claim_until_granted(&mut runner, &neighbour, BESIDE);
+        neighbour.request(StoreRequest::Load { position: BESIDE });
+        let loaded = loop {
+            match neighbour.try_reply() {
+                Some(StoreReply::Loaded { chunk, .. }) => break chunk,
+                Some(other) => panic!("the store answered a load with {other:?}"),
+                None => thread::sleep(Duration::from_millis(1)),
+            }
+        };
+        assert_eq!(loaded, changed);
+    }
+
+    /// A chunk has one ticket for each link that is subscribed to it, of the kind of
+    /// that link's subscription: it stays loaded and the region's until the last of
+    /// them has let go.
+    #[tokio::test]
+    async fn a_chunk_that_two_links_are_subscribed_to_stays_until_both_have_let_go() {
+        let world = Divided::gap();
+        let (mut viewer, viewer_end) = in_process(256);
+        let (mut guest, guest_end) = in_process(256);
+        let mut runner = world.runner(HOME, 1);
+        runner.links().attach(viewer_end);
+        runner.links().attach(guest_end);
+        let (neighbour, _) = world.open(EAST, 1);
+
+        viewer.send(asking_for(vec![BESIDE])).await.unwrap();
+        assert_eq!(
+            answers(&mut runner, &mut viewer, 1),
+            [(BESIDE, 1, Told::Snapshot)]
+        );
+        // The guest is served what the region holds for the viewer.
+        guest.send(asking_as_guest_for(vec![BESIDE])).await.unwrap();
+        assert_eq!(
+            answers(&mut runner, &mut guest, 1),
+            [(BESIDE, 1, Told::Snapshot)]
+        );
+
+        // The viewer lets go. The guest's subscription keeps the chunk, and goes on
+        // being told what happens in it.
+        viewer.send(done_with(vec![BESIDE])).await.unwrap();
+        let discard = EdgeToWorker::Discard {
+            entity: EntityId(9),
+            chunk: BESIDE,
+        };
+        guest.send(discard).await.unwrap();
+        let told: Vec<_> = told_until_marked(&mut runner, &mut guest, 15)
+            .into_iter()
+            .map(events)
+            .collect();
+        let removed = RegionEvent::EntityRemoved {
+            entity: EntityId(9),
+            chunk: BESIDE,
+        };
+        assert_eq!(told, [vec![removed]]);
+        assert!(runner.region().chunk(BESIDE).is_some());
+        assert_eq!(claim(&neighbour, &[BESIDE]), (vec![], vec![(BESIDE, HOME)]));
+
+        guest.send(done_with(vec![BESIDE])).await.unwrap();
+        claim_until_granted(&mut runner, &neighbour, BESIDE);
+        assert!(runner.region().chunk(BESIDE).is_none());
     }
 }
