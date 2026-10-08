@@ -21,13 +21,13 @@ pub use clustine_edge::EdgeConfig;
 use clustine_edge::{Edge, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{Layout, RegionId};
 use clustine_rpc::link::EdgeEnd;
-use clustine_rpc::{RegionHello, link};
+use clustine_rpc::{RegionHello, Restored, link};
 use clustine_sim::RegionConfig;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_worker::{RegionRunner, Worker};
-use clustine_world::{ChunkGenerator, Vec3};
+use clustine_world::{ChunkArea, ChunkGenerator, Vec3};
 use clustine_worldgen::FlatGenerator;
-use clustine_worldstore::Store;
+use clustine_worldstore::{Store, StoreError, StoreHandle};
 use tokio::task::JoinHandle;
 
 /// Messages that may wait in each direction between the edge and a region. A region
@@ -175,6 +175,53 @@ impl Regions {
             .store
             .open_region(hello)
             .with_context(|| format!("opening region {region}"))?;
+        self.started(region, epoch, store, restored, area)
+    }
+
+    /// Opens `region` as its first owner in this process: with an epoch above every one
+    /// the world has seen for it. A world on disk remembers the owners its regions have
+    /// had, in this process's predecessors or in a cluster that served it before.
+    /// Returns the epoch with the rest.
+    fn run_first(&self, region: RegionId) -> Result<(u64, Worker, RegionLink)> {
+        let area = self
+            .layout
+            .area(region)
+            .with_context(|| format!("the world has no region {region}"))?;
+        let mut epoch = 1;
+        loop {
+            let hello = RegionHello {
+                region,
+                epoch,
+                layout: self.layout.fingerprint(),
+            };
+            match self.store.open_region(hello) {
+                Ok((store, restored)) => {
+                    let (worker, link) = self.started(region, epoch, store, restored, area)?;
+                    return Ok((epoch, worker, link));
+                }
+                // Nobody else has the world open, so the next epoch is this process's.
+                Err(StoreError::EpochRefused { seen, .. }) if seen >= epoch => {
+                    epoch = seen
+                        .checked_add(1)
+                        .context("the region has run out of epochs")?;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("opening region {region}"));
+                }
+            }
+        }
+    }
+
+    /// Restores `region` from what the store returned on opening it and starts to run
+    /// it.
+    fn started(
+        &self,
+        region: RegionId,
+        epoch: u64,
+        store: StoreHandle,
+        restored: Restored,
+        area: ChunkArea,
+    ) -> Result<(Worker, RegionLink)> {
         let (end, worker_end): (EdgeEnd, _) = if self.serialise_link {
             link::framed(LINK_CAPACITY)
         } else {
@@ -217,9 +264,7 @@ impl Server {
         let mut links = Vec::new();
         let mut workers = Vec::new();
         for (region, _) in layout.regions() {
-            // Nobody else has run a region of this process's world before.
-            let epoch = 1;
-            let (worker, link) = regions.run(region, epoch)?;
+            let (epoch, worker, link) = regions.run_first(region)?;
             links.push(link);
             workers.push((epoch, worker));
         }

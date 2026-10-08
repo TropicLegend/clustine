@@ -177,6 +177,10 @@ pub struct Bot {
     pub player_list: BTreeMap<Uuid, String>,
     /// The entities the server has shown the bot and not removed again, by entity id.
     pub entities: BTreeMap<i32, SeenEntity>,
+    /// The entities the server has removed again, as they were last heard of, in the
+    /// order they went. A scenario that judges whether an entity was right to vanish
+    /// takes them from here.
+    pub vanished: Vec<SeenEntity>,
     /// The items in the hotbar as the server last told the bot, by slot from 0 to 8.
     pub hotbar: [Option<ItemStack>; 9],
     /// The hotbar slot the server last selected for the bot.
@@ -347,6 +351,7 @@ impl Bot {
             chunks: BTreeMap::new(),
             player_list: BTreeMap::new(),
             entities: BTreeMap::new(),
+            vanished: Vec::new(),
             hotbar: [None; 9],
             selected_slot: 0,
             block_changes: BTreeMap::new(),
@@ -667,8 +672,9 @@ impl Bot {
             }
             ClientboundPlay::RemoveEntities(packet) => {
                 for entity in packet.entity_ids {
-                    if self.entities.remove(&entity).is_some() {
+                    if let Some(gone) = self.entities.remove(&entity) {
                         self.stats.entities_removed += 1;
+                        self.vanished.push(gone);
                     }
                 }
             }

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use clustine_botswarm::{Bot, Crossing, Oracle, cross};
+use clustine_botswarm::{Bot, Crossing, Ledger, Oracle, Progress, cross, ledger};
 use clustine_protocol::chunk::unpack_heightmap;
 
 /// Scripted Minecraft clients for testing a server.
@@ -88,6 +88,49 @@ enum Scenario {
         /// Blocks per tick of the slowest bot.
         #[arg(long, default_value_t = Crossing::default().speed)]
         speed: f64,
+        /// What the bots' names begin with, to tell runs apart.
+        #[arg(long, default_value = "")]
+        name_prefix: String,
+    },
+    /// Several bots keep playing: they walk back and forth along lanes of their own,
+    /// build beside them and change what they hold, without waiting for the server, and
+    /// keep a ledger of every action and of what the server said once it had handled
+    /// it. Fails unless everyone stays connected, every action is acknowledged and
+    /// takes effect, nobody sees another bot vanish or twice, and someone who joins at
+    /// the end finds every block as the ledgers say. Meant to be run while parts of the
+    /// server are killed and replaced.
+    Ledger {
+        /// Server address as host:port.
+        #[arg(default_value = "127.0.0.1:25565")]
+        address: String,
+        /// How many bots play.
+        #[arg(long, default_value_t = Ledger::default().bots)]
+        bots: usize,
+        /// How many times each walks there and back. If neither this nor --seconds is
+        /// given, three times.
+        #[arg(long)]
+        rounds: Option<u32>,
+        /// How long the bots play, in seconds.
+        #[arg(long)]
+        seconds: Option<u64>,
+        /// The x coordinates to walk between.
+        #[arg(long, default_value_t = Ledger::default().west, allow_negative_numbers = true)]
+        west: f64,
+        #[arg(long, default_value_t = Ledger::default().east, allow_negative_numbers = true)]
+        east: f64,
+        /// The x coordinate of the first block east of a region boundary between the
+        /// two places; may be given several times. Only used to count what crossed one.
+        #[arg(long, allow_negative_numbers = true)]
+        line: Vec<i32>,
+        /// Blocks per tick of the slowest bot.
+        #[arg(long, default_value_t = Ledger::default().speed)]
+        speed: f64,
+        /// What the bots' choices follow from.
+        #[arg(long, default_value_t = Ledger::default().seed)]
+        seed: u64,
+        /// How long a bot waits for an acknowledgement before the run fails, in seconds.
+        #[arg(long, default_value_t = Ledger::default().patience.as_secs())]
+        patience: u64,
         /// What the bots' names begin with, to tell runs apart.
         #[arg(long, default_value = "")]
         name_prefix: String,
@@ -193,6 +236,34 @@ async fn main() -> Result<()> {
                 "{} crossings by {walkers} bots, {} blocks built, {} moves seen by the watcher",
                 report.crossings, report.blocks_built, report.moves_seen
             );
+        }
+        Scenario::Ledger {
+            address,
+            bots,
+            rounds,
+            seconds,
+            west,
+            east,
+            line,
+            speed,
+            seed,
+            patience,
+            name_prefix,
+        } => {
+            let scenario = Ledger {
+                bots,
+                rounds: rounds.or(seconds.is_none().then_some(3)),
+                duration: seconds.map(Duration::from_secs),
+                west,
+                east,
+                lines: line,
+                speed,
+                seed,
+                patience: Duration::from_secs(patience),
+                name_prefix,
+            };
+            let report = ledger(&target(address), &scenario, &Progress::new(bots)).await?;
+            println!("{bots} bots with seed {seed}: {report}");
         }
         Scenario::Chunks {
             address,

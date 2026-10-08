@@ -252,9 +252,21 @@ through it under bots.
 
 Next, in this order:
 
-1. A6, the chaos tests: workers and the world store killed at random, as processes and
-   on kind, under bots that keep a ledger of everything acknowledged.
+1. The rest of A6: the same on kind, by deleting pods under the ledger bots
+   (`clustine-botswarm ledger`), with a spare worker in the StatefulSet.
 2. A7, the docs; then what to try with real clients is written down and phase B begins.
+
+The chaos tests as processes are in `bin/clustine/tests/chaos.rs`: workers and the world
+store killed with SIGKILL from a seeded sequence (`CLUSTINE_CHAOS_SEED`, printed with
+every run; `CLUSTINE_CHAOS_KILLS` for a soak), also in the middle of a crossing, a worker
+frozen and woken, the coordinator killed, players joining and leaving while their
+region has no worker, and forty takeovers in the single process. The bots keep a ledger
+of everything acknowledged; nobody may be disconnected, every acknowledged block has
+to be there for someone who joins afterwards and after everything was killed and
+started again, and nobody may be seen twice or vanish. They found two defects, both
+fixed with them: a worker that hangs rather than dies kept its link open, and the edge
+then never tried the region's new owner again; and the single process could not start
+on a world whose region had had a later owner.
 
 Not covered by tests in A3, for A6 to cover: the worker's path for an epoch the store
 refuses, registering again with the coordinator while a region runs, and `Superseded`

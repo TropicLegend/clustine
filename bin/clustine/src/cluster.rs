@@ -702,10 +702,13 @@ async fn keep_linked(
             }
         }
 
+        // Linked to the owner the table names, not to one before it: a worker that hangs
+        // or is cut off keeps its link open for as long as it likes, and the region's new
+        // owner, which takes no links while it restores, has to be tried again.
         let whole = table
             .routes
             .iter()
-            .all(|route| linked.contains_key(&route.region));
+            .all(|route| linked.get(&route.region) == Some(&route.epoch));
         tokio::select! {
             ended = relinks.ended() => match ended {
                 // A link to an owner the edge has left behind already ended.

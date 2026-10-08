@@ -1,5 +1,9 @@
 //! Helpers shared by the end-to-end tests.
 
+// Not every test binary starts processes.
+#[allow(dead_code)]
+pub mod processes;
+
 use std::time::Duration;
 
 use clustine::{Config, EdgeConfig, Server};
