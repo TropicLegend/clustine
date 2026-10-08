@@ -755,14 +755,36 @@ fn a_join_through_another_edge_replaces_the_player() {
 }
 
 #[test]
-fn a_join_through_the_same_edge_is_ignored() {
+fn a_join_through_the_same_edge_begins_a_new_stay_too() {
+    // `docs/adr/0014-merging-and-splitting.md`, section 2.1: a join begins a new stay
+    // whatever the region has. Until then a join through the player's own edge was
+    // ignored.
     let mut region = one_player();
-    let mut before = region.state();
+    let old = entity_of(&region, player(1));
+    checked_tick(
+        &mut region,
+        &single_input(E, player(1), old, 6, dig(OWN_BLOCK, 40)),
+    );
+    let before = region.state();
     let output = checked_tick(&mut region, &changes(vec![join(E, player(1))]));
-    assert!(output.events.is_empty());
-    assert!(output.player_events.is_empty());
-    before.tick += 1;
-    assert_eq!(region.state(), before);
+    assert_eq!(
+        removed(&output),
+        vec![old],
+        "the old entity is reported removed"
+    );
+    let new = entity_of(&region, player(1));
+    assert_eq!(new, before.next_entity_id, "with the next id");
+    assert_eq!(
+        spawned(&output),
+        vec![new],
+        "the player enters the world anew"
+    );
+    assert!(matches!(
+        output.player_events.as_slice(),
+        [(p, PlayerEvent::Spawned { entity_id, .. })] if *p == player(1) && *entity_id == new
+    ));
+    let state = &region.state().players[&player(1)];
+    assert_eq!((state.edge, state.last_input, state.handled), (E, 0, None));
 }
 
 #[test]
@@ -1332,11 +1354,14 @@ fn an_arriving_player_starts_with_nothing_handled_here() {
 }
 
 #[test]
-fn an_arrival_of_a_player_the_region_has_leaves_them_as_they_are() {
+fn an_arrival_of_an_earlier_stay_of_a_player_the_region_has_leaves_them_as_they_are() {
+    // `docs/adr/0014-merging-and-splitting.md`, section 2.1: of two stays of a player
+    // the one with the lower entity id is the earlier. An arrival with a higher one
+    // than the player has would take their place.
     let mut region = one_player();
     let entity = entity_of(&region, player(1));
     let mut before = region.state();
-    let other = EntityId(7_000_001);
+    let other = EntityId(entity.0 - 1);
     let output = checked_tick(
         &mut region,
         &changes(vec![PlayerChange::Arrive(F, player(1), transfer(other, 9))]),

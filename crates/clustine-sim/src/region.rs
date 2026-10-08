@@ -274,6 +274,11 @@ impl Region {
         self.land.knowledge(position)
     }
 
+    /// Whether `position` is in an area the region is pinned to.
+    pub fn pins(&self, position: ChunkPos) -> bool {
+        self.land.is_pinned(position)
+    }
+
     /// The number of chunks the store has granted the region and it has not given back.
     pub fn held_chunk_count(&self) -> usize {
         let held = |known: &&Known| matches!(known, Known::Held { .. });
@@ -366,16 +371,12 @@ impl Region {
                         // Nobody could be told anything about the player.
                         continue;
                     }
-                    if let Some(present) = self.players.get(&join.player) {
-                        // The edge admits each player once; a second join is its mistake.
-                        if present.edge == *edge {
-                            continue;
-                        }
-                        // The player has connected anew through another edge, which the
-                        // edge they had may not have noticed yet. The new connection
-                        // replaces the old one.
-                        self.remove_player(join.player, &mut output);
-                    }
+                    // A join begins a new stay whatever the region has. A player it has
+                    // has connected anew: through another edge, which the edge they had
+                    // may not have noticed yet, or through the same one, whose leave for
+                    // the stay that is here went to a region that was absorbed or split
+                    // since. The new stay replaces the old one.
+                    self.remove_player(join.player, &mut output);
                     let entity_id = self.next_entity_id;
                     if !self.entity_ids.contains(entity_id) {
                         let refused = Durable::Refused {
@@ -413,27 +414,30 @@ impl Region {
                     self.players.insert(join.player, player);
                     self.journal.players.insert(join.player);
                 }
-                PlayerChange::Leave(edge, id, _) => {
-                    // Whatever their entity: a player who quit while entering the world
-                    // has none yet that the edge knows of. The entity a leave names is
-                    // not looked at yet.
-                    if self
-                        .players
-                        .get(id)
-                        .is_some_and(|player| player.edge == *edge)
-                    {
+                PlayerChange::Leave(edge, id, entity) => {
+                    // A leave ends the stay it names, and no later one of the player. One
+                    // that names none ends whatever stay there is: a player who quit while
+                    // entering the world has no entity yet that the edge knows of.
+                    let ended = |player: &Player| {
+                        player.edge == *edge
+                            && entity.is_none_or(|entity| player.entity_id == entity)
+                    };
+                    if self.players.get(id).is_some_and(ended) {
                         self.remove_player(*id, &mut output);
                     }
                 }
                 PlayerChange::Arrive(edge, id, transfer) => {
-                    let present = self.players.get(id);
                     let position = transfer.pose.position;
                     let chunk = ChunkPos::containing(position.x, position.z);
-                    if present.is_some() || !self.edges.contains_key(edge) {
-                        // The player is here already, or nobody could be told about
-                        // them. If that is with another entity, or not at all, the one
-                        // that was on its way has nowhere to go.
-                        if present.is_none_or(|present| present.entity_id != transfer.entity_id) {
+                    let present = self.players.get(id).map(|present| present.entity_id);
+                    // Of two stays of a player the one with the higher entity id is the
+                    // later: the home region gives the ids out in ascending order.
+                    let earlier = present.is_some_and(|present| present < transfer.entity_id);
+                    if !self.edges.contains_key(edge) || (present.is_some() && !earlier) {
+                        // Nobody could be told about the player, or they are here already
+                        // with this stay or a later one. Unless it is this very stay, the
+                        // entity that was on its way has nowhere to go.
+                        if present != Some(transfer.entity_id) {
                             output.events.push(RegionEvent::EntityRemoved {
                                 entity: transfer.entity_id,
                                 chunk,
@@ -441,16 +445,32 @@ impl Region {
                         }
                         continue;
                     }
+                    // The stay that is here has ended, though the leave that said so went
+                    // elsewhere: a region that was absorbed or split since. It goes where
+                    // it stood, and the arrival is that of a player the region lacks.
+                    if earlier {
+                        self.remove_player(*id, &mut output);
+                    }
                     if let Knowledge::Foreign(holder) = self.land.knowledge(chunk) {
-                        // The store has said that the chunk is another region's, so the
-                        // player is not taken in and goes on to that region. Nothing
-                        // says that the entity is gone: it is on its way still.
-                        let what = Misdirected::Arrival {
-                            player: *id,
-                            transfer: transfer.clone(),
-                        };
-                        self.send(*edge, Durable::NotMine { what, holder }, &mut output);
-                        continue;
+                        if self.land.is_pinned(chunk) {
+                            // A chunk of the region's own area that was split off and
+                            // given back is the region's again without anyone telling it,
+                            // and whoever sent the player was told so by the store. The
+                            // belief goes, and the player is taken in as into a chunk the
+                            // region knows nothing of.
+                            self.land.known.remove(&chunk);
+                        } else {
+                            // The store has said that the chunk is another region's, so
+                            // the player is not taken in and goes on to that region.
+                            // Nothing says that the entity is gone: it is on its way
+                            // still.
+                            let what = Misdirected::Arrival {
+                                player: *id,
+                                transfer: transfer.clone(),
+                            };
+                            self.send(*edge, Durable::NotMine { what, holder }, &mut output);
+                            continue;
+                        }
                     }
                     // Taken in whatever else the region knows of the chunk. A pinned
                     // region does not know that a chunk of its area is its own before
@@ -495,9 +515,8 @@ impl Region {
             let answer = self.apply_remote(action, &mut output);
             self.send(*edge, answer, &mut output);
         }
-        // The entity an input names is not looked at yet: it is applied by its number.
-        for (edge, id, _, number, input) in &inputs.inputs {
-            self.apply_input(*edge, *id, *number, input, &mut output);
+        for (edge, id, entity, number, input) in &inputs.inputs {
+            self.apply_input(*edge, *id, *entity, *number, input, &mut output);
         }
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
@@ -719,6 +738,7 @@ impl Region {
         &mut self,
         edge: EdgeId,
         id: PlayerId,
+        entity: EntityId,
         number: u64,
         input: &PlayerInput,
         output: &mut TickOutput,
@@ -730,6 +750,13 @@ impl Region {
         // Only the edge a player belongs to acts for them. What another one passes on is
         // from a connection the player had before.
         if player.edge != edge {
+            return;
+        }
+        // And only for the stay the input is of. An edge numbers a player's inputs from
+        // 1 with every connection, so one of an earlier stay that comes late would be
+        // taken for one of this stay by its number, and what the player really does up
+        // to that number would be passed over.
+        if player.entity_id != entity {
             return;
         }
         // Applied before: it was sent again in case the region the player came from had
@@ -869,11 +896,22 @@ impl Region {
         // that names none is never sent back by the edge to where it came from. So
         // regions that disagree about who has what cannot pass an action back and
         // forth for ever.
-        match self.land.knowledge(action.step.concerns().chunk()) {
+        let concerned = action.step.concerns().chunk();
+        match self.land.knowledge(concerned) {
             Knowledge::Held => {}
-            Knowledge::Foreign(holder) => {
+            Knowledge::Foreign(holder) if !self.land.is_pinned(concerned) => {
                 let what = Misdirected::Remote(action.clone());
                 return Durable::NotMine { what, holder };
+            }
+            // In its own areas the region doubts what it believes, as for an arrival:
+            // whoever sent the action here may know better. The belief goes, and the
+            // action is answered as one about a chunk the region knows nothing of.
+            Knowledge::Foreign(_) => {
+                self.land.known.remove(&concerned);
+                return Durable::Remote {
+                    action: action.clone(),
+                    to: None,
+                };
             }
             Knowledge::Asked | Knowledge::Unknown => {
                 return Durable::Remote {
@@ -1945,13 +1983,167 @@ mod tests {
         assert_eq!(told(&output).len(), 1);
     }
 
+    /// A join through the edge the player belongs to already is no mistake of the
+    /// edge's: the leave that ended the stay the region has may have gone to a region
+    /// that was absorbed or split since.
     #[test]
-    fn a_second_join_of_the_same_player_is_ignored() {
+    fn a_second_join_of_the_same_player_begins_a_new_stay() {
         let mut region = joined(&[1]);
+        region.tick(&moves(vec![
+            with_number(7, walk(1, 40.0, -1.0)),
+            with_number(8, select(1, 2)),
+        ]));
         let output = region.tick(&changes(vec![join(1)]));
-        assert!(told(&output).is_empty());
-        assert!(output.events.is_empty());
+        // The entity they had goes where it stood, and they enter the world anew.
+        let spawned = PlayerEvent::Spawned {
+            entity_id: EntityId(2),
+            position: SPAWN,
+            hotbar: hotbar(),
+            selected_slot: 0,
+        };
+        assert_eq!(told(&output), [(player(1), spawned)]);
+        assert_eq!(
+            output.events,
+            [
+                RegionEvent::EntityRemoved {
+                    entity: EntityId(1),
+                    chunk: ChunkPos::new(2, -1),
+                },
+                RegionEvent::EntitySpawned(state(1, 2, SPAWN)),
+            ]
+        );
         assert_eq!(region.player_count(), 1);
+        let begun = region.player_state(player(1)).unwrap();
+        assert_eq!((begun.last_input, begun.handled), (0, None));
+
+        // What the stay that ended did, which comes late, is not taken for what the new
+        // one does, whatever its number; and the new stay's inputs count from 1 again.
+        let output = region.tick(&moves(vec![
+            as_entity(1, with_number(9, walk(1, 41.0, -1.0))),
+            as_entity(2, with_number(1, walk(1, 3.5, 0.5))),
+        ]));
+        assert_eq!(output.events.len(), 1);
+        let (entity, pose) = region.player(player(1)).unwrap();
+        assert_eq!((entity, pose.position.x), (EntityId(2), 3.5));
+        assert_eq!(region.player_state(player(1)).unwrap().last_input, 1);
+
+        // A region without an entity id left has nothing to begin the new stay with:
+        // the old one has ended all the same.
+        let two = EntityIds {
+            first: EntityId(1),
+            end: EntityId(2),
+        };
+        let mut region = fresh(ChunkArea::EVERYWHERE, two);
+        region.tick(&changes(vec![join(1)]));
+        let output = region.tick(&changes(vec![join(1)]));
+        assert_eq!(told(&output), [(player(1), PlayerEvent::Refused)]);
+        assert!(output.events.iter().all(is_removal));
+        assert_eq!((output.events.len(), region.player_count()), (1, 0));
+    }
+
+    #[test]
+    fn a_leave_ends_the_stay_it_names_and_no_other() {
+        let mut region = joined(&[1, 2]);
+        // Player 1 has entity 1. A leave for another stay of theirs changes nothing, be
+        // that an earlier one or one the region has yet to hear of; nor does a leave
+        // that names their entity and comes through another edge.
+        let naming = |edge, entity| PlayerChange::Leave(edge, player(1), Some(EntityId(entity)));
+        let output = region.tick(&changes(vec![
+            naming(EDGE, 2),
+            naming(EDGE, 0),
+            naming(REMOTE, 1),
+            PlayerChange::Leave(REMOTE, player(1), None),
+        ]));
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(output.delta.changes_only_the_tick());
+        assert_eq!(region.player_count(), 2);
+
+        // One that names their entity ends the stay, and so does one that names none.
+        let output = region.tick(&changes(vec![naming(EDGE, 1), leave(2)]));
+        let removed = |entity| RegionEvent::EntityRemoved {
+            entity: EntityId(entity),
+            chunk: ChunkPos::new(0, 0),
+        };
+        assert_eq!(output.events, [removed(1), removed(2)]);
+        assert_eq!(region.player_count(), 0);
+    }
+
+    /// The order in which a tick is given changes and inputs, as [`TickInputs::change`]
+    /// and [`TickInputs::input`] keep it.
+    #[test]
+    fn a_leave_takes_nothing_from_what_waits_for_the_tick() {
+        let stale = PlayerChange::Leave(EDGE, player(1), Some(EntityId(9)));
+        let ending = PlayerChange::Leave(EDGE, player(1), Some(EntityId(1)));
+        let step = |inputs: &mut TickInputs, entity: i32, number: u64| {
+            let (edge, player, entity, number, input) =
+                as_entity(entity, with_number(number, walk(1, 5.5, 0.5)));
+            inputs.input(edge, player, entity, number, input);
+        };
+        let x = |region: &Region| region.player(player(1)).unwrap().1.position.x;
+
+        // A leave for a stay the region does not have: what the stay that is there did
+        // before it is applied.
+        let mut region = joined(&[1]);
+        let mut inputs = TickInputs::default();
+        step(&mut inputs, 1, 1);
+        inputs.change(stale.clone());
+        assert_eq!(inputs.inputs.len(), 1);
+        region.tick(&inputs);
+        assert_eq!(x(&region), 5.5);
+
+        // A leave that applies: the player is gone, and what they did before moved
+        // nobody.
+        let mut region = joined(&[1]);
+        let mut inputs = TickInputs::default();
+        step(&mut inputs, 1, 1);
+        inputs.change(ending.clone());
+        let output = region.tick(&inputs);
+        assert_eq!(output.events.len(), 1);
+        assert!(output.events.iter().all(is_removal));
+        assert_eq!(region.player_count(), 0);
+
+        // A leave and a join behind it: what the stay that ended did is not the first
+        // thing the new one does. The join drops what waited, and what still comes of
+        // the old stay behind the join names an entity the player no longer has.
+        let mut region = joined(&[1]);
+        let mut inputs = TickInputs::default();
+        step(&mut inputs, 1, 1);
+        inputs.change(ending);
+        inputs.change(join(1));
+        assert!(inputs.inputs.is_empty());
+        step(&mut inputs, 1, 2);
+        region.tick(&inputs);
+        assert_eq!(
+            region.player(player(1)),
+            Some((EntityId(2), Pose::at(SPAWN)))
+        );
+        assert_eq!(region.player_state(player(1)).unwrap().last_input, 0);
+    }
+
+    #[test]
+    fn an_input_is_applied_only_to_the_stay_it_names() {
+        // The player's second stay, which has entity 2 and has done nothing yet.
+        let mut region = joined(&[1]);
+        region.tick(&changes(vec![join(1)]));
+        let x = |region: &Region| region.player(player(1)).unwrap().1.position.x;
+        let last = |region: &Region| region.player_state(player(1)).unwrap().last_input;
+
+        // What the first stay did reaches the region late, with the high number it had
+        // there. It is passed over, and so the number does not count for the stay that
+        // is there: what that one does from 1 on is applied.
+        let output = region.tick(&moves(vec![
+            as_entity(1, with_number(41, walk(1, 9.5, 0.5))),
+            as_entity(1, with_number(42, dig(1, 9, -61, 0, 3))),
+        ]));
+        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(told(&output).is_empty());
+        assert!(output.delta.changes_only_the_tick());
+        assert_eq!((x(&region), last(&region)), (SPAWN.x, 0));
+        region.tick(&moves(vec![
+            as_entity(2, with_number(1, walk(1, 2.5, 0.5))),
+            as_entity(3, with_number(2, walk(1, 7.5, 0.5))),
+        ]));
+        assert_eq!((x(&region), last(&region)), (2.5, 1));
     }
 
     #[test]
@@ -3197,18 +3389,25 @@ mod tests {
 
     #[test]
     fn a_player_who_is_already_there_does_not_arrive_again() {
-        let mut region = joined_in(EAST, &[1]);
+        // The player has entity 60 here.
+        let ids = EntityIds {
+            first: EntityId(60),
+            end: EntityId(70),
+        };
+        let mut region = fresh(EAST, ids);
+        region.tick(&changes(vec![join(1)]));
         let mut untouched = region.clone();
 
         // With the entity the player has here, the handover is one that came twice.
-        let output = region.tick(&changes(vec![arrive(1, &transfer(1, 1, 20.5, 40))]));
+        let output = region.tick(&changes(vec![arrive(1, &transfer(1, 60, 20.5, 40))]));
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert!(told(&output).is_empty());
         untouched.tick(&TickInputs::default());
         assert_eq!(region, untouched);
 
-        // With another entity, that one was on its way and has nowhere to go now. It is
-        // removed where it was seen last, be that inside the area or outside.
+        // With a lower entity id it is an earlier stay of theirs that was on its way,
+        // and has nowhere to go now. Its entity is removed where it was seen last, be
+        // that inside the area or outside.
         for (x, chunk) in [(40.5, 2), (-40.5, -3)] {
             let output = region.tick(&changes(vec![arrive(1, &transfer(1, 50, x, 40))]));
             assert_eq!(
@@ -3325,10 +3524,14 @@ mod tests {
             assert_eq!(output.claims, claims);
         }
 
-        // A player who is there already is as before, wherever the entity that was on
-        // its way was seen last: it is reported removed, and nothing is sent on.
+        // A player who is there already with a later stay is as before, wherever the
+        // entity that was on its way was seen last: it is reported removed, and nothing
+        // is sent on.
         let mut region = between_neighbours();
-        checked(&mut region, &changes(vec![join(1)]));
+        checked(
+            &mut region,
+            &changes(vec![arrive(1, &transfer(1, 90, 8.5, 0))]),
+        );
         for x in [20.5, -8.5] {
             let output = checked(
                 &mut region,
@@ -3337,8 +3540,174 @@ mod tests {
             assert!(output.durable.is_empty(), "{:?}", output.durable);
             assert_eq!(output.events.len(), 1);
             assert!(output.events.iter().all(is_removal));
-            assert_eq!(region.player(player(1)).unwrap().0, EntityId(1));
+            assert_eq!(region.player(player(1)).unwrap().0, EntityId(90));
         }
+    }
+
+    /// Of two stays of a player the one with the higher entity id is the later. The
+    /// leave that ended the one the region has may have gone to a region that was
+    /// absorbed or split since, so an arrival of a later one ends it.
+    #[test]
+    fn an_arrival_of_a_later_stay_takes_the_place_of_the_one_that_is_there() {
+        let mut region = between_neighbours();
+        checked(&mut region, &changes(vec![join(1)]));
+        checked(
+            &mut region,
+            &moves(vec![with_number(5, walk(1, 20.5, 3.5))]),
+        );
+        let stood = RegionEvent::EntityRemoved {
+            entity: EntityId(1),
+            chunk: ChunkPos::new(1, 0),
+        };
+
+        // Into a chunk the region holds: the entity that was there goes where it stood,
+        // and the player is as the transfer says, with nothing left of the earlier stay.
+        let later = transfer(1, 77, 8.5, 2);
+        let arrived = EntityState {
+            pose: later.pose,
+            ..state(1, 77, SPAWN)
+        };
+        let output = checked(&mut region.clone(), &changes(vec![arrive(1, &later)]));
+        assert_eq!(
+            output.events,
+            [stood.clone(), RegionEvent::EntitySpawned(arrived)]
+        );
+        assert!(output.durable.is_empty(), "{:?}", output.durable);
+
+        // Through another edge it is the same, and the player is that edge's then.
+        let mut through_another = region.clone();
+        let change = PlayerChange::Arrive(REMOTE, player(1), later.clone());
+        checked(&mut through_another, &changes(vec![change]));
+        let taken = through_another.player_state(player(1)).unwrap();
+        assert_eq!((taken.entity_id, taken.edge), (EntityId(77), REMOTE));
+        assert_eq!((taken.last_input, taken.selected_slot), (2, 6));
+
+        // Into a chunk the region believes another's: the stay that was there has ended
+        // all the same, and the arrival goes on to the holder.
+        let beyond = transfer(1, 77, -8.5, 2);
+        let output = checked(&mut region.clone(), &changes(vec![arrive(1, &beyond)]));
+        assert_eq!(output.events, [stood]);
+        assert_eq!(
+            output.durable,
+            [(EDGE, 1, not_mine(1, &beyond, WEST_OF_MIDDLE))]
+        );
+
+        // Through an edge the region does not know nothing comes in, later or not: the
+        // stay that is there stays, and the entity on its way has nowhere to go.
+        let unknown = PlayerChange::Arrive(EdgeId(0x0DD), player(1), later.clone());
+        let output = checked(&mut region, &changes(vec![unknown]));
+        assert_eq!(
+            output.events,
+            [RegionEvent::EntityRemoved {
+                entity: EntityId(77),
+                chunk: ChunkPos::new(0, 0),
+            }]
+        );
+        assert_eq!(region.player(player(1)).unwrap().0, EntityId(1));
+    }
+
+    /// A region pinned to `MIDDLE` that holds the chunk the spawn point is in and
+    /// believes `DOUBTED`, a chunk of its own area, to be `EAST_OF_MIDDLE`'s, for a
+    /// viewer's sake: the store said so while a part that was split off held it.
+    fn believing_a_chunk_of_its_own_area_anothers() -> Region {
+        let mut region = asking(&[ChunkPos::new(0, 0)], &[MIDDLE]);
+        assert!(region.pins(DOUBTED) && !region.pins(ChunkPos::new(2, 3)));
+        let output = checked(&mut region, &tickets(vec![DOUBTED], vec![]));
+        assert_eq!(output.claims, [DOUBTED]);
+        checked(
+            &mut region,
+            &answers(vec![], vec![(DOUBTED, EAST_OF_MIDDLE)]),
+        );
+        assert_eq!(
+            region.knowledge(DOUBTED),
+            Knowledge::Foreign(EAST_OF_MIDDLE)
+        );
+        region
+    }
+
+    const DOUBTED: ChunkPos = ChunkPos::new(1, 3);
+
+    /// A chunk that was split off a pinned region and given back is the pinned region's
+    /// again, and nobody tells it so. Whoever sends it a player or an action for the
+    /// chunk was told by the store.
+    #[test]
+    fn in_its_own_area_a_region_drops_a_belief_when_a_player_arrives_for_the_chunk() {
+        let mut region = believing_a_chunk_of_its_own_area_anothers();
+        let mut transfer = transfer(1, 77, 20.5, 40);
+        transfer.pose.position.z = 50.5;
+        let output = checked(&mut region, &changes(vec![arrive(1, &transfer)]));
+        // The player is taken in, and the region asks.
+        assert!(output.durable.is_empty(), "{:?}", output.durable);
+        assert_eq!(
+            region.player(player(1)),
+            Some((EntityId(77), transfer.pose))
+        );
+        assert_eq!(output.claims, [DOUBTED]);
+        assert_eq!(region.knowledge(DOUBTED), Knowledge::Asked);
+
+        // What the store answers is the truth of that moment. Granted, they stay;
+        let mut granted = region.clone();
+        let output = checked(&mut granted, &answers(vec![DOUBTED], vec![]));
+        assert!(let_go(&output).is_empty());
+        assert_eq!(granted.player_count(), 1);
+        // told that it is another's, they are let go once more, to that region.
+        let foreign = vec![(DOUBTED, EAST_OF_MIDDLE)];
+        let output = checked(&mut region, &answers(vec![], foreign));
+        assert_eq!(let_go(&output), [(player(1), EAST_OF_MIDDLE)]);
+    }
+
+    #[test]
+    fn in_its_own_area_a_region_drops_a_belief_when_an_action_comes_for_the_chunk() {
+        let action = remote(1, 5, break_at(20, -61, 50));
+        assert_eq!(action.step.concerns().chunk(), DOUBTED);
+        let onward = [RemoteOutcome::Next(action.clone(), None)];
+
+        // The action goes on without a region named, as one about a chunk the region
+        // knows nothing of. The viewer's ticket still wants the chunk, so it is asked
+        // for again.
+        let mut region = believing_a_chunk_of_its_own_area_anothers();
+        let output = checked(&mut region, &remotely(vec![action.clone()]));
+        assert_eq!(outcomes(&output), onward);
+        assert_eq!(output.claims, [DOUBTED]);
+        assert_eq!(region.knowledge(DOUBTED), Knowledge::Asked);
+
+        // With nothing left that wants the chunk, the region knows nothing of it.
+        let mut region = believing_a_chunk_of_its_own_area_anothers();
+        let inputs = TickInputs {
+            remote_actions: from_remote(vec![action.clone()]),
+            ..tickets(vec![], vec![DOUBTED])
+        };
+        let output = checked(&mut region, &inputs);
+        assert_eq!(outcomes(&output), onward);
+        assert!(output.claims.is_empty());
+        assert_eq!(region.knowledge(DOUBTED), Knowledge::Unknown);
+
+        // Outside its areas a region stands by what the store said: the same chunk, in
+        // a region that is pinned elsewhere, for a player and for an action.
+        let mut region = asking(&[ChunkPos::new(0, 0)], &[WEST]);
+        checked(&mut region, &tickets(vec![DOUBTED], vec![]));
+        let foreign = vec![(DOUBTED, EAST_OF_MIDDLE)];
+        checked(&mut region, &answers(vec![], foreign));
+        let mut transfer = transfer(2, 78, 20.5, 40);
+        transfer.pose.position.z = 50.5;
+        let inputs = TickInputs {
+            player_changes: vec![arrive(2, &transfer)],
+            remote_actions: from_remote(vec![action.clone()]),
+            ..TickInputs::default()
+        };
+        let output = checked(&mut region, &inputs);
+        assert_eq!(
+            outcomes(&output),
+            [RemoteOutcome::NotMine(action, EAST_OF_MIDDLE)]
+        );
+        assert_eq!(
+            output.durable[0],
+            (EDGE, 1, not_mine(2, &transfer, EAST_OF_MIDDLE))
+        );
+        assert_eq!(
+            region.knowledge(DOUBTED),
+            Knowledge::Foreign(EAST_OF_MIDDLE)
+        );
     }
 
     /// An arrival that was sent on is a player on their way, as one who was let go is:

@@ -3988,7 +3988,8 @@ mod tests {
     }
 
     /// A transfer can still be on its way when the player has long connected anew and
-    /// joined. The region keeps the player it has.
+    /// joined. The region keeps the player it has: theirs is the later stay, which is
+    /// the one with the higher entity id.
     #[tokio::test]
     async fn an_arrival_does_not_take_a_player_from_the_link_they_belong_to() {
         let (first, first_end) = in_process(256);
@@ -4001,19 +4002,23 @@ mod tests {
             entity: None,
         };
 
+        // The stay that is still on its way had the first entity the region gave out,
+        // and the one that began since has the second.
+        first.send(join(player(), "Notch")).await.unwrap();
+        first.send(leave()).await.unwrap();
         first.send(join(player(), "Notch")).await.unwrap();
         step(&mut runner);
         second
             .send(EdgeToWorker::PlayerArrive {
                 player: player(),
-                transfer: transfer(EntityIds::block(3).unwrap().first),
+                transfer: transfer(EntityId(1)),
             })
             .await
             .unwrap();
         step(&mut runner);
         assert_eq!(
             runner.region().player(player()),
-            Some((EntityId(1), Pose::at(SPAWN)))
+            Some((EntityId(2), Pose::at(SPAWN)))
         );
         assert_eq!(status.arrivals.load(Ordering::Relaxed), 0);
 

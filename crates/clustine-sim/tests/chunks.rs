@@ -11,6 +11,11 @@
 //! storage. It also checks the five statements at the end of section 1.3 on what the
 //! region itself says, and that the delta turns the state before into the state after.
 //!
+//! Since `docs/adr/0014-merging-and-splitting.md` the model also drops what a region
+//! believes of a chunk of its own pinned areas when a player or an action is sent to it
+//! for the chunk (section 2.2 there), for which [`World::tick`] follows who is in the
+//! region through a tick's edge events and player changes (section 2.1 there).
+//!
 //! Beside the scenarios there are runs made up by a generator, of one region
 //! ([`Wander`]) and of three with one store ([`Cluster`]), which are held to the same
 //! in every tick. A test that is marked `ignore` with "finding" says what the record
@@ -548,6 +553,89 @@ impl Model {
         self.asked.extend(&claims);
         (returns, claims)
     }
+
+    /// ADR-0014, section 2.2, between steps 2 and 9 of a tick that begins with the
+    /// state `before`: where the region would have sent an arrival or a remote action
+    /// on to the region it believes to hold the chunk, and the chunk is of its own
+    /// pinned areas, it drops the belief instead and goes on as if it knew nothing of
+    /// the chunk.
+    ///
+    /// An arrival gets that far if it comes through an edge the region knows and the
+    /// region does not have the player with that entity id or a higher one; an action,
+    /// if it comes through an edge the region knows. So this follows who is in the
+    /// region through the tick's edge events and player changes, by section 2.1 there.
+    fn doubt(&mut self, before: &RegionState, inputs: &TickInputs) {
+        let mut edges: BTreeMap<EdgeId, u64> = before
+            .edges
+            .iter()
+            .map(|(edge, state)| (*edge, state.start))
+            .collect();
+        // Each player's edge and entity.
+        let mut stays: BTreeMap<PlayerId, (EdgeId, EntityId)> = before
+            .players
+            .iter()
+            .map(|(id, state)| (*id, (state.edge, state.entity_id)))
+            .collect();
+        for event in &inputs.edges {
+            match event {
+                EdgeEvent::Started { edge, start } => {
+                    if edges.get(edge).is_none_or(|known| known < start) {
+                        stays.retain(|_, (of, _)| of != edge);
+                        edges.insert(*edge, *start);
+                    }
+                }
+                EdgeEvent::Gone { edge } => {
+                    edges.remove(edge);
+                    stays.retain(|_, (of, _)| of != edge);
+                }
+                EdgeEvent::Confirmed { .. } => {}
+            }
+        }
+        let mut next_entity = before.next_entity_id;
+        for change in &inputs.player_changes {
+            match change {
+                PlayerChange::Join(edge, join) if edges.contains_key(edge) => {
+                    stays.remove(&join.player);
+                    if before.entity_ids.contains(next_entity) {
+                        stays.insert(join.player, (*edge, next_entity));
+                        next_entity.0 += 1;
+                    }
+                }
+                PlayerChange::Leave(edge, id, entity) => {
+                    let ended = |(of, has): &(EdgeId, EntityId)| {
+                        of == edge && entity.is_none_or(|named| named == *has)
+                    };
+                    if stays.get(id).is_some_and(ended) {
+                        stays.remove(id);
+                    }
+                }
+                PlayerChange::Arrive(edge, id, transfer) if edges.contains_key(edge) => {
+                    let entity = transfer.entity_id;
+                    if stays.get(id).is_some_and(|(_, has)| *has >= entity) {
+                        continue;
+                    }
+                    stays.remove(id);
+                    let chunk = chunk_of(transfer.pose.position);
+                    if self.is_pinned(chunk) {
+                        self.foreign.remove(&chunk);
+                    }
+                    // Sent on where the chunk is still believed another's.
+                    if !self.foreign.contains_key(&chunk) {
+                        stays.insert(*id, (*edge, entity));
+                    }
+                }
+                PlayerChange::Join(..)
+                | PlayerChange::Arrive(..)
+                | PlayerChange::Discard { .. } => {}
+            }
+        }
+        for (edge, action) in &inputs.remote_actions {
+            let chunk = action.step.concerns().chunk();
+            if edges.contains_key(edge) && self.is_pinned(chunk) {
+                self.foreign.remove(&chunk);
+            }
+        }
+    }
 }
 
 /// A region with the [`Model`] of what it should know beside it.
@@ -558,7 +646,9 @@ struct World {
     /// which the region and the model are compared.
     seen: BTreeSet<ChunkPos>,
     /// The model as it was while the last tick ran, between its steps 2 and 9: what the
-    /// region knew of chunks when it judged what players did and let players go.
+    /// region knew of chunks when it judged what players did and let players go, with
+    /// the beliefs gone that the tick dropped for a player or an action
+    /// ([`Model::doubt`]).
     during: Model,
 }
 
@@ -731,6 +821,7 @@ impl World {
         self.seen.extend(self.standing());
 
         let requests = self.model.start(inputs);
+        self.model.doubt(&before, inputs);
         self.during = self.model.clone();
         let output = self.region.tick(inputs);
         let after = self.region.state();
@@ -2148,14 +2239,16 @@ fn an_arrival_for_a_chunk_believed_anothers_goes_on_to_that_region() {
 #[test]
 fn an_arrival_in_the_tick_its_chunk_is_called_anothers_goes_on_although_nothing_wants_the_chunk() {
     // Between a `foreign` and the end of its tick the chunk is believed that region's in
-    // either case (section 1.3).
+    // either case (section 1.3). `EAST` is outside the area the region is pinned to;
+    // of a chunk of its own area it would drop the belief (the test below).
     let mut world = at_the_line();
-    world.tick(&remove(&[viewer(SOUTH)]));
-    let mut inputs = foreign(&[(SOUTH, OTHER)]);
+    world.tick(&remove(&[viewer(EAST)]));
+    assert_eq!(world.knowledge(EAST), Knowledge::Unknown);
+    let mut inputs = foreign(&[(EAST, OTHER)]);
     inputs.change(PlayerChange::Arrive(
         E,
         player(5),
-        transfer(TRAVELLER, 3, IN_SOUTH),
+        transfer(TRAVELLER, 3, IN_EAST),
     ));
     let output = world.tick(&inputs);
     assert!(matches!(
@@ -2170,7 +2263,57 @@ fn an_arrival_in_the_tick_its_chunk_is_called_anothers_goes_on_although_nothing_
         )]
     ));
     assert!(world.region.player(player(5)).is_none());
-    assert_eq!(world.knowledge(SOUTH), Knowledge::Unknown);
+    assert_eq!(world.knowledge(EAST), Knowledge::Unknown);
+}
+
+#[test]
+fn an_arrival_for_a_chunk_of_the_regions_own_area_believed_anothers_is_taken_in() {
+    // ADR-0014, section 2.2. `SOUTH` is of the stripe the region is pinned to, and the
+    // store calls it another's: a part that was split off holds it. Whoever sends a
+    // player there since was told by the store that it is this region's again, so the
+    // region drops what it believes and asks, in the tick of the answer
+    let mut world = at_the_line();
+    let mut inputs = foreign(&[(SOUTH, OTHER)]);
+    inputs.change(PlayerChange::Arrive(
+        E,
+        player(5),
+        transfer(TRAVELLER, 3, IN_SOUTH),
+    ));
+    let output = world.tick(&inputs);
+    assert!(output.durable.is_empty(), "{:?}", output.durable);
+    assert_eq!(world.state_of(player(5)).entity_id, TRAVELLER);
+    assert_eq!(output.claims, [SOUTH]);
+    assert_eq!(world.knowledge(SOUTH), Knowledge::Asked);
+
+    // and in a later one.
+    let mut world = at_the_line();
+    world.tick(&foreign(&[(SOUTH, OTHER)]));
+    assert_eq!(world.knowledge(SOUTH), Knowledge::Foreign(OTHER));
+    let output = world.tick(&arrive(E, player(5), transfer(TRAVELLER, 3, IN_SOUTH)));
+    assert!(output.durable.is_empty(), "{:?}", output.durable);
+    assert!(world.region.player(player(5)).is_some());
+    assert_eq!(output.claims, [SOUTH]);
+    // What the store answers then is the truth of that moment: if the part still holds
+    // the chunk, the player is let go to it.
+    let output = world.tick(&foreign(&[(SOUTH, OTHER)]));
+    assert!(matches!(
+        entries(&output).as_slice(),
+        [Durable::Departed { to: OTHER, .. }]
+    ));
+
+    // An arrival that is not taken in for another reason leaves the belief alone:
+    // through an edge the region does not know, and of a stay that is no later than the
+    // one the region has.
+    let mut world = at_the_line();
+    world.tick(&foreign(&[(SOUTH, OTHER)]));
+    let own = world.state_of(player(1)).entity_id;
+    world.tick(&arrive(
+        EdgeId(99),
+        player(5),
+        transfer(TRAVELLER, 3, IN_SOUTH),
+    ));
+    world.tick(&arrive(E, player(1), transfer(own, 3, IN_SOUTH)));
+    assert_eq!(world.knowledge(SOUTH), Knowledge::Foreign(OTHER));
 }
 
 #[test]
@@ -2191,14 +2334,17 @@ fn an_arrival_in_the_tick_a_belief_is_doubted_is_taken_in() {
 }
 
 #[test]
-fn an_arrival_of_a_player_who_is_there_changes_nothing_whatever_the_chunk() {
+fn an_arrival_of_an_earlier_stay_of_a_player_who_is_there_changes_nothing_whatever_the_chunk() {
     for position in [IN_HOME, IN_NORTH, IN_SOUTH, IN_EAST] {
         let mut world = at_the_line();
         let mut expected = world.region.state();
         let own = expected.players[&player(1)].entity_id;
-        let output = world.tick(&arrive(F, player(1), transfer(TRAVELLER, 9, position)));
+        // Of two stays of a player the one with the lower entity id is the earlier
+        // (ADR-0014, section 2.1).
+        let earlier = EntityId(own.0 - 1);
+        let output = world.tick(&arrive(F, player(1), transfer(earlier, 9, position)));
         let gone: Vec<EntityId> = removed(&output).iter().map(|(entity, _)| *entity).collect();
-        assert_eq!(gone, [TRAVELLER], "the entity on its way is removed");
+        assert_eq!(gone, [earlier], "the entity on its way is removed");
         assert!(output.durable.is_empty(), "at {position:?}");
         assert!(output.claims.is_empty(), "nobody came to stand there");
         expected.tick += 1;
@@ -2209,6 +2355,54 @@ fn an_arrival_of_a_player_who_is_there_changes_nothing_whatever_the_chunk() {
         assert!(output.events.is_empty() && output.durable.is_empty());
         expected.tick += 1;
         assert_eq!(world.region.state(), expected);
+    }
+}
+
+#[test]
+fn an_arrival_of_a_later_stay_takes_the_place_of_the_one_that_is_there() {
+    // ADR-0014, section 2.1: `TRAVELLER` is above the entity the player has here.
+    let stood = chunk_of(SPAWN);
+    for (position, taken_in) in [
+        (IN_HOME, true),
+        (IN_NORTH, true),
+        (IN_SOUTH, true),
+        (IN_EAST, false),
+    ] {
+        let mut world = at_the_line();
+        let own = world.state_of(player(1)).entity_id;
+        assert!(own < TRAVELLER);
+        let arriving = transfer(TRAVELLER, 9, position);
+        let output = world.tick(&arrive(F, player(1), arriving.clone()));
+        // The entity that was there is removed where it stood, and then it is an
+        // arrival like any other: taken in, or sent on where the chunk is believed
+        // another's.
+        assert_eq!(removed(&output), [(own, stood)], "at {position:?}");
+        if taken_in {
+            let state = world.state_of(player(1));
+            assert_eq!(
+                (state.entity_id, state.edge, state.last_input),
+                (TRAVELLER, F, 9)
+            );
+            assert_eq!(state.pose.position, position);
+            assert_eq!(spawned(&output), [TRAVELLER]);
+            assert!(output.durable.is_empty());
+        } else {
+            assert!(world.region.player(player(1)).is_none());
+            assert_eq!(
+                output.durable,
+                vec![(
+                    F,
+                    1,
+                    Durable::NotMine {
+                        what: Misdirected::Arrival {
+                            player: player(1),
+                            transfer: arriving,
+                        },
+                        holder: REGION_B,
+                    }
+                )]
+            );
+        }
     }
 }
 
@@ -3130,10 +3324,14 @@ fn a_remote_placement_against_no_block_of_a_held_chunk_is_done_and_goes_nowhere(
 
 #[test]
 fn a_remote_action_in_the_tick_its_chunk_is_called_anothers_goes_on_to_that_region() {
+    // `EAST` is outside the area the region is pinned to, and nothing wants it any
+    // more; of a chunk of its own area the region would drop the belief (the test
+    // below).
     let mut world = at_the_line();
-    let action = remote(player(9), 4, break_at(SOUTH_BLOCK));
+    world.tick(&remove(&[viewer(EAST)]));
+    let action = remote(player(9), 4, break_at(BORDER_BLOCK_B));
     let output = world.tick(&TickInputs {
-        foreign: vec![(SOUTH, OTHER)],
+        foreign: vec![(EAST, OTHER)],
         remote_actions: vec![(F, action.clone())],
         ..TickInputs::default()
     });
@@ -3144,6 +3342,59 @@ fn a_remote_action_in_the_tick_its_chunk_is_called_anothers_goes_on_to_that_regi
             holder: OTHER,
         }]
     );
+}
+
+#[test]
+fn a_remote_action_about_a_chunk_of_the_regions_own_area_believed_anothers_goes_on_without_a_region()
+ {
+    // ADR-0014, section 2.2: the belief goes, and the action is answered as one about a
+    // chunk the region knows nothing of. The viewer's ticket on `SOUTH` still wants the
+    // chunk, so the region asks again.
+    for step in steps_about(SOUTH_BLOCK) {
+        let mut world = at_the_line();
+        world.tick(&foreign(&[(SOUTH, OTHER)]));
+        assert_eq!(world.knowledge(SOUTH), Knowledge::Foreign(OTHER));
+        let action = remote(player(9), 4, step);
+        let output = world.tick(&TickInputs {
+            remote_actions: vec![(F, action.clone())],
+            ..TickInputs::default()
+        });
+        assert_eq!(
+            output.durable,
+            vec![(F, 1, Durable::Remote { action, to: None })]
+        );
+        assert_eq!(output.claims, [SOUTH]);
+        assert_eq!(world.knowledge(SOUTH), Knowledge::Asked);
+    }
+
+    // With nothing that wants the chunk it is unknown afterwards, and an action through
+    // an edge the region does not know, which is not answered, changes nothing.
+    let action = remote(player(9), 4, break_at(SOUTH_BLOCK));
+    let mut world = at_the_line();
+    let output = world.tick(&TickInputs {
+        foreign: vec![(SOUTH, OTHER)],
+        tickets_removed: vec![viewer(SOUTH)],
+        remote_actions: vec![(F, action.clone())],
+        ..TickInputs::default()
+    });
+    assert_eq!(
+        entries(&output),
+        [Durable::Remote {
+            action: action.clone(),
+            to: None
+        }]
+    );
+    assert!(output.claims.is_empty());
+    assert_eq!(world.knowledge(SOUTH), Knowledge::Unknown);
+
+    let mut world = at_the_line();
+    world.tick(&foreign(&[(SOUTH, OTHER)]));
+    let output = world.tick(&TickInputs {
+        remote_actions: vec![(EdgeId(99), action)],
+        ..TickInputs::default()
+    });
+    assert!(output.durable.is_empty() && output.claims.is_empty());
+    assert_eq!(world.knowledge(SOUTH), Knowledge::Foreign(OTHER));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -4305,7 +4556,9 @@ fn dropped(
 /// walk and dig, and whose remote actions only break: who is removed with an edge, who
 /// is taken in, what of each player is applied, which entries are made in which order,
 /// what is acknowledged, and who is let go with what. `during` is what the region knows
-/// of chunks while the tick runs.
+/// of chunks while the tick runs, without what it stopped believing of a chunk of its
+/// own area because a player or an action came for it ([`Model::doubt`]): such an
+/// arrival is taken in, and such an action goes on without a region.
 fn check_made_up_tick(
     before: &RegionState,
     inputs: &TickInputs,
@@ -4425,13 +4678,14 @@ fn check_made_up_tick(
         made.push(Made::Entry(*edge, entry));
     }
 
-    // Step 6. The entity an input names is not looked at yet.
-    for (edge, id, _, number, input) in &inputs.inputs {
+    // Step 6. An input is applied only to the stay it names (ADR-0014, section 2.1).
+    for (edge, id, entity, number, input) in &inputs.inputs {
         let Some(walker) = here.get_mut(id) else {
             continue;
         };
         // Nothing is applied of a player who stands in a chunk believed another's.
         if walker.edge != *edge
+            || walker.entity != *entity
             || believed(walker.position).is_some()
             || *number <= walker.last_input
         {
@@ -4645,7 +4899,8 @@ fn a_made_up_run_keeps_to_the_record_in_every_tick() {
 /// tickets of both kinds, claims that are granted and refused, a doubt, blocks either
 /// side of the line and in chunks the region has no answer for, actions of other
 /// regions' players, a hand-over in the tick of the step and one in the tick of the
-/// answer, and arrivals that are taken in and sent on.
+/// answer, and arrivals that are taken in and sent on; and, of ADR-0014, an arrival for
+/// a chunk of the region's own stripe that it believes another's.
 fn script() -> Vec<TickInputs> {
     let mut script = vec![
         add(&[viewer(HOME), viewer(EAST), guest(WEST), viewer(SOUTH)]),
@@ -4721,7 +4976,15 @@ fn script() -> Vec<TickInputs> {
         tickets_added: vec![guest(NORTH), viewer(WEST)],
         ..TickInputs::default()
     });
-    script.push(delivered(&[NORTH, WEST]));
+    // `EAST` is beyond the stripe, so this arrival goes on; the one for `SOUTH`
+    // above, which is of the stripe and believed another's, was taken in.
+    let mut inputs = delivered(&[NORTH, WEST]);
+    inputs.change(PlayerChange::Arrive(
+        F,
+        player(7),
+        transfer(EntityId(7_000_003), 1, IN_EAST),
+    ));
+    script.push(inputs);
     script.push(single_input(
         F,
         player(5),

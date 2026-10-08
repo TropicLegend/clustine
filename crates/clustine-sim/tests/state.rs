@@ -505,19 +505,26 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
 }
 
 #[test]
-fn a_leave_through_another_edge_keeps_what_the_players_edge_passed_on() {
+fn a_leave_keeps_what_waits_for_the_tick_and_a_join_drops_it() {
+    // A leave drops nothing, through whichever edge it comes and whatever it names:
+    // only the tick can tell whether it applies, and one for a stay the region does
+    // not have must not take away what the stay that is there did
+    // (`docs/adr/0014-merging-and-splitting.md`, section 2.1).
+    let waiting = [
+        (A, player(1), EntityId(1), 1, walk(3.5)),
+        (B, player(1), EntityId(1), 2, walk(4.5)),
+    ];
     let mut inputs = TickInputs::default();
     inputs.input(A, player(1), EntityId(1), 1, walk(3.5));
     inputs.change(PlayerChange::Leave(B, player(1), None));
     inputs.input(B, player(1), EntityId(1), 2, walk(4.5));
     inputs.change(PlayerChange::Leave(B, player(1), None));
-    assert_eq!(inputs.inputs, [(A, player(1), EntityId(1), 1, walk(3.5))]);
+    inputs.change(PlayerChange::Leave(A, player(1), Some(EntityId(9))));
     inputs.change(PlayerChange::Leave(A, player(1), None));
-    assert!(inputs.inputs.is_empty());
+    assert_eq!(inputs.inputs, waiting);
+    assert_eq!(inputs.player_changes.len(), 4);
 
     // A join or an arrival ends whatever came before, through any edge.
-    inputs.input(A, player(1), EntityId(1), 1, walk(3.5));
-    inputs.input(B, player(1), EntityId(1), 2, walk(4.5));
     inputs.change(join(B, 1));
     assert!(inputs.inputs.is_empty());
 }
@@ -540,7 +547,8 @@ fn a_join_through_another_edge_replaces_the_player() {
     assert_eq!(output.player_events.len(), 1);
     assert_eq!(region.state().players[&player(1)].edge, B);
 
-    // Through the same edge, a join is ignored.
+    // Through the same edge it is no different: a join begins a new stay whatever the
+    // region has (`docs/adr/0014-merging-and-splitting.md`, section 2.1).
     let output = tick(
         &mut region,
         &TickInputs {
@@ -548,8 +556,13 @@ fn a_join_through_another_edge_replaces_the_player() {
             ..TickInputs::default()
         },
     );
-    assert!(output.events.is_empty() && output.player_events.is_empty());
-    assert!(output.delta.changes_only_the_tick());
+    assert_eq!(output.events.len(), 2);
+    assert_eq!(output.events[0], removed(3, ChunkPos::new(0, 0)));
+    assert!(
+        matches!(&output.events[1], RegionEvent::EntitySpawned(state) if state.entity == EntityId(4))
+    );
+    assert_eq!(output.player_events.len(), 1);
+    assert_eq!(region.state().players[&player(1)].edge, B);
 
     // The edge the player had has no say any more.
     tick(
@@ -559,7 +572,7 @@ fn a_join_through_another_edge_replaces_the_player() {
             ..TickInputs::default()
         },
     );
-    assert_eq!(region.player(player(1)).unwrap().0, EntityId(3));
+    assert_eq!(region.player(player(1)).unwrap().0, EntityId(4));
 }
 
 #[test]

@@ -101,31 +101,37 @@ pub struct PlayerTransfer {
 pub enum PlayerChange {
     /// A player enters the world through the edge, and is that edge's from then on.
     ///
-    /// If the region has the player already under another edge, they have connected
-    /// anew: the entity they had is reported removed and they enter the world afresh. If
-    /// it has them under this edge, the join is ignored. A join through an edge the
-    /// region does not know is ignored.
+    /// A join begins a new stay whatever the region has: a stay is a player's time in
+    /// the world from one join to the leave that ends it, and has one entity for all of
+    /// it. If the region has the player already, under this edge or another, they have
+    /// connected anew: the entity they had is reported removed and they enter the world
+    /// afresh. A join through an edge the region does not know is ignored. See
+    /// `docs/adr/0014-merging-and-splitting.md`, section 2.1.
     Join(EdgeId, PlayerJoin),
     /// A player's connection through the edge has ended. It removes the player only if
     /// they are that edge's: what another edge says is about an earlier connection,
     /// which must not end the current one.
     ///
-    /// The entity names the stay that has ended, a stay being a player's time in the
-    /// world from one join to the leave that ends it; with none, the leave is for the
-    /// player whatever their entity. The region does not look at it yet, and removes
-    /// the player either way. See `docs/adr/0014-merging-and-splitting.md`, section
-    /// 2.1.
+    /// The entity names the stay that has ended: the player is removed only if they
+    /// have that entity, as a leave that comes late must not end a later stay. With
+    /// none, the leave is for the player whatever their entity.
     Leave(EdgeId, PlayerId, Option<EntityId>),
     /// A player comes in from another region, as that region let them go with
-    /// [`Durable::Departed`], and is the edge's from then on. A player the region has
-    /// already stays as they are, and the entity that was on its way is reported removed
-    /// if it is another one; so is the entity of an arrival through an edge the region
-    /// does not know, as nobody could be told about the player.
+    /// [`Durable::Departed`], and is the edge's from then on.
+    ///
+    /// Of two stays of a player the one with the higher entity id is the later, so an
+    /// arrival takes the place of a player the region has with a lower entity id: the
+    /// entity that was there is reported removed where it stood. A player the region
+    /// has with a higher entity id or the same stays as they are, and the entity that
+    /// was on its way is reported removed if it is another one; so is the entity of an
+    /// arrival through an edge the region does not know, as nobody could be told about
+    /// the player.
     ///
     /// A player who arrives in a chunk the region believes another to hold is not taken
-    /// in: the arrival goes on to that region with a [`Durable::NotMine`]. Whatever else
-    /// the region knows of the chunk, it takes the player in, and claims the chunk if it
-    /// knows nothing of it.
+    /// in: the arrival goes on to that region with a [`Durable::NotMine`]. Not so in
+    /// the areas the region is pinned to, where it drops the belief instead. Whatever
+    /// else the region knows of the chunk, it takes the player in, and claims the chunk
+    /// if it knows nothing of it.
     Arrive(EdgeId, PlayerId, PlayerTransfer),
     /// An entity that another region let go will not arrive anywhere, because its player
     /// left in the meantime. It is reported as removed to those watching `chunk`, where
@@ -275,7 +281,9 @@ pub enum Durable {
     /// `holder` to hold, and goes there. For an arrival the player is on their way as
     /// after a `Departed`. A region that does not know who holds the chunk never says
     /// this: it takes an arrival in, and passes an action on as a `Remote` without a
-    /// region. See `docs/adr/0012-the-tick-on-chunks.md`, sections 2.2 and 2.4.
+    /// region. Nor does a region say it of a chunk of its own pinned areas, where it
+    /// drops the belief and does the same. See `docs/adr/0012-the-tick-on-chunks.md`,
+    /// sections 2.2 and 2.4, and `docs/adr/0014-merging-and-splitting.md`, section 2.2.
     NotMine { what: Misdirected, holder: RegionId },
     /// This region has absorbed `region`, and what follows in the outbox, as far as
     /// `numbers` reaches, is what that region had in its outbox for the edge, under
@@ -346,7 +354,7 @@ pub enum EdgeEvent {
 /// of `remote_actions`, and then all of `inputs`. What players did
 /// and what became of them arrives as one sequence, though, and its order is lost when
 /// it is sorted into the two. [`TickInputs::change`] and [`TickInputs::input`] sort it
-/// so that nothing a player did before a change is applied after it.
+/// so that nothing a player did before they came to the region is applied after it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickInputs {
     /// What became of edges, in the order it happened. Applied before anything else.
@@ -370,12 +378,12 @@ pub struct TickInputs {
     ///
     /// Each names, between the player and the number, the entity of the stay it is of:
     /// an edge numbers a player's inputs from 1 with every connection, so the number
-    /// alone does not say which of two stays an input belongs to. The region does not
-    /// look at the entity yet. See `docs/adr/0014-merging-and-splitting.md`, section
-    /// 2.1.
+    /// alone does not say which of two stays an input belongs to. An input for a stay
+    /// the region does not have is ignored. See
+    /// `docs/adr/0014-merging-and-splitting.md`, section 2.1.
     ///
-    /// Only what a player did after the last of their changes in `player_changes`
-    /// belongs here; see [`TickInputs::change`].
+    /// Only what a player did after the last join or arrival of theirs in
+    /// `player_changes` belongs here; see [`TickInputs::change`].
     pub inputs: Vec<(EdgeId, PlayerId, EntityId, u64, PlayerInput)>,
     /// What players of other regions did to blocks of this one, in the order it arrived,
     /// each with the edge that passed it on. It is applied after `player_changes` and
@@ -423,34 +431,26 @@ pub enum Ticket {
 impl TickInputs {
     /// Adds what became of a player, which came after everything added so far.
     ///
-    /// What that player did before, as far as it waits here for the coming tick, is
-    /// dropped. It was meant for a player who was not in the region or no longer is:
+    /// For a join or an arrival, what that player did before, through any edge and as
+    /// far as it waits here for the coming tick, is dropped. The player was not there
+    /// then, so the region would have ignored it. Applied after the arrival instead, it
+    /// would be taken for what the player did since, and an input sent to the region
+    /// while the player was away would be applied ahead of earlier ones that are sent
+    /// again with the arrival, which then count as applied already and are lost.
     ///
-    /// - Before a join or an arrival the player was not there, so the region would have
-    ///   ignored it. Applied after the arrival instead, it would be taken for what the
-    ///   player did since, and an input sent to the region while the player was away
-    ///   would be applied ahead of earlier ones that are sent again with the arrival,
-    ///   which then count as applied already and are lost.
-    /// - Before leaving, it was the last a player did. If they are back within the
-    ///   tick, it must not be the first thing their new self does, and its number must
-    ///   not make the region ignore what they really do.
-    ///
-    /// A leave drops only what came through its own edge. Should the player belong to
-    /// another edge, the leave changes nothing and what that edge passed on still
-    /// counts; should they belong to this one, what came through another edge is
-    /// ignored anyway. A join or an arrival drops what the player did through any edge:
-    /// all of it was done by an earlier self.
+    /// A leave drops nothing. Whether it applies only the tick can tell: one for a stay
+    /// the region does not have changes nothing, and must not take away what the stay
+    /// that is there did. Nor is anything lost by keeping it all. A tick applies
+    /// changes before inputs, so what a player did before a leave that takes effect
+    /// finds nobody; and if they are back within the tick, the join or the arrival
+    /// that brings them drops it.
     pub fn change(&mut self, change: PlayerChange) {
         match &change {
             PlayerChange::Join(_, PlayerJoin { player, .. })
             | PlayerChange::Arrive(_, player, _) => {
                 self.inputs.retain(|(_, actor, ..)| actor != player);
             }
-            PlayerChange::Leave(edge, player, _) => {
-                self.inputs
-                    .retain(|(from, actor, ..)| !(actor == player && from == edge));
-            }
-            PlayerChange::Discard { .. } => {}
+            PlayerChange::Leave(..) | PlayerChange::Discard { .. } => {}
         }
         self.player_changes.push(change);
     }
