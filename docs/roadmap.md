@@ -188,7 +188,7 @@ differently, so that each leaves everything working.
 | # | Scope | Verified by | Status |
 |---|---|---|---|
 | C0 | The messages and types of ADR-0010, refused or ignored by everyone | All existing tests | done |
-| C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each. Designed in [ADR-0011](adr/0011-the-world-store-and-regions.md), in steps C1.1 to C1.7 | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | built; independent tests being written |
+| C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each. Designed in [ADR-0011](adr/0011-the-world-store-and-regions.md), in steps C1.1 to C1.7 | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | done |
 | C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | done |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos. Designed in [ADR-0012](adr/0012-the-tick-on-chunks.md), in steps C2b.1 to C2b.5 | Hand-over, block, takeover, chaos and move tests on two pinned regions | designed and reviewed; to build |
 | C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | to do |
@@ -419,8 +419,10 @@ merge and a split (`kill_regions.rs`), which found a fault in the chunk store ol
 than this work: a section file left behind by two faults in a row was taken for stored.
 Nothing asks the store for any of the new things yet: the stripes are pinned regions
 and work as before. What the builder decided where the record was silent is at the
-record's end. The scenarios of its section 9 are being written by someone else from
-the record alone.
+record's end. The scenarios of its section 9 were then written by someone else from
+the record alone (`services/worldstore/src/scenarios.rs`, 79 tests, the thread for
+chunks held at chosen points and the store killed there): they found nothing, and
+catch each of ten faults that were put into the store to see whether they can.
 
 C2b.2 is built: the sim has no area any more. A region knows of each chunk whether it
 holds it, has asked for it, believes another region to hold it, or knows nothing; it
