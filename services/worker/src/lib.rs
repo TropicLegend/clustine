@@ -397,6 +397,27 @@ struct Warm {
     since: u64,
 }
 
+/// How long a region did not tick for a merge or a split, and what it was then. See
+/// [`RegionRunner::with_standstills`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Standstill {
+    /// The players the region had after its last tick before it stopped: those who
+    /// stood still in it.
+    pub players: u64,
+    /// The chunks it held then by the world store's word, as [`RegionStatus::held`].
+    pub held: u64,
+    /// From when it stopped ticking until its next tick had run.
+    pub milliseconds: u64,
+}
+
+/// When a region stopped ticking for a merge or a split, and what it was then: what a
+/// [`Standstill`] is made of once the region has ticked on.
+struct Stopped {
+    at: Instant,
+    players: u64,
+    held: u64,
+}
+
 /// What a runner that has let go of its region has in place of a store handle. Putting
 /// it there drops the handle, which is what closes the region at the store.
 struct Closed;
@@ -782,6 +803,12 @@ pub struct RegionRunner {
     /// Set from another thread to have [`RegionRunner::run`] release the region.
     release_asked: Arc<AtomicBool>,
     status: Arc<RegionStatus>,
+    /// Whom to tell how long the region stood still for a merge or a split, if anyone;
+    /// see [`RegionRunner::with_standstills`].
+    standstills: Option<Box<dyn Fn(Standstill) + Send>>,
+    /// Since when the region has not ticked for a merge or a split, until its next
+    /// tick has run. Noted only if there is somebody to tell.
+    stopped: Option<Stopped>,
 }
 
 impl RegionRunner {
@@ -842,6 +869,8 @@ impl RegionRunner {
             flushes_answered: 0,
             release_asked: Arc::new(AtomicBool::new(false)),
             status: Arc::new(RegionStatus::default()),
+            standstills: None,
+            stopped: None,
         };
         runner.show_status();
         runner
@@ -893,6 +922,51 @@ impl RegionRunner {
         self
     }
 
+    /// Has `tell` called, on the runner's thread, each time the region has ticked on
+    /// after it had stopped ticking for a merge or a split, whether that was made or
+    /// came to nothing. `tell` must not wait.
+    ///
+    /// Only the runner knows the two moments: when the store has the first checkpoint
+    /// and the region stops, and when its next tick has run. That is how long the
+    /// region did not tick, and a little less than a player waits, whose edge has to
+    /// find the region again besides. Nothing is told of a release, after which the
+    /// region never ticks on, nor by a runner that ends in the middle. See
+    /// `docs/adr/0017-the-end-of-the-stripes.md`, section 5.6.
+    pub fn with_standstills(mut self, tell: Box<dyn Fn(Standstill) + Send>) -> Self {
+        self.standstills = Some(tell);
+        self
+    }
+
+    /// Notes that the region stops ticking, and what it is as it does, if that is for
+    /// a merge or a split and somebody is told how long it stood still.
+    fn note_the_stop(&mut self) {
+        // A stop that is noted already stays: no tick has run since, so the region
+        // has stood still from then.
+        if self.standstills.is_some() && self.reshaping.is_some() && self.stopped.is_none() {
+            self.stopped = Some(Stopped {
+                at: Instant::now(),
+                players: self.region.player_count() as u64,
+                held: self.region.held_chunk_count() as u64,
+            });
+        }
+    }
+
+    /// Tells how long the region stood still, if the tick that has just run is its
+    /// first since it stopped for a merge or a split.
+    fn tell_the_standstill(&mut self) {
+        let Some(stopped) = self.stopped.take() else {
+            return;
+        };
+        if let Some(tell) = &self.standstills {
+            let milliseconds = stopped.at.elapsed().as_millis();
+            tell(Standstill {
+                players: stopped.players,
+                held: stopped.held,
+                milliseconds: u64::try_from(milliseconds).unwrap_or(u64::MAX),
+            });
+        }
+    }
+
     pub fn region(&self) -> &Region {
         &self.region
     }
@@ -937,6 +1011,7 @@ impl RegionRunner {
                         "the store has the first checkpoint of a release, a merge or a split; \
                          the region stops ticking"
                     );
+                    self.note_the_stop();
                     self.phase = Phase::Settling;
                     return;
                 }
@@ -967,6 +1042,7 @@ impl RegionRunner {
         self.publish_committed();
         if self.pending.len() < MAX_TICKS_AHEAD {
             self.tick();
+            self.tell_the_standstill();
             // A tick that changed nothing has nothing to wait for.
             self.publish_committed();
         }
@@ -10375,5 +10451,218 @@ mod tests {
         step(&mut runner);
         assert!(runner.region().edge(edge.edge).unwrap().outbox.is_empty());
         assert!(runner.parted.is_empty());
+    }
+
+    // -----------------------------------------------------------------------------------
+    // How long a region stood still for a merge or a split: section 5.6 of
+    // `docs/adr/0017-the-end-of-the-stripes.md`.
+    // -----------------------------------------------------------------------------------
+
+    /// A time the tests below have a region stand still for at least, by sleeping
+    /// while it has stopped. What it is told has to be no less; how much more it is,
+    /// is the machine's.
+    const STOOD: Duration = Duration::from_millis(30);
+
+    /// The western stripe of `world` on a runner that is told to say how long its
+    /// region stood still, with a link, the gate before its store, and where what it
+    /// says shows.
+    fn west_that_tells(
+        world: &Divided,
+    ) -> (
+        RegionRunner,
+        TestEdge,
+        Arc<GateControl>,
+        Receiver<Standstill>,
+    ) {
+        let (edge, worker_end) = in_process(256);
+        let (west, gate) = world.gated(RegionId(0), config(0));
+        let (said, told) = mpsc::channel();
+        let tell = move |standstill| {
+            // Whoever listened may have stopped looking.
+            let _ = said.send(standstill);
+        };
+        let west = west.with_standstills(Box::new(tell));
+        west.links().attach(worker_end);
+        (west, edge, gate, told)
+    }
+
+    /// The players and the held chunks of the region of `runner` as it is.
+    fn players_and_held(runner: &RegionRunner) -> (u64, u64) {
+        let region = runner.region();
+        (
+            region.player_count() as u64,
+            region.held_chunk_count() as u64,
+        )
+    }
+
+    /// Steps `runner`, whose merge or split has just had its outcome, once more, which
+    /// runs its next tick, and returns the one thing it tells then. Nothing was told
+    /// before that tick, and nothing is in the ticks that follow.
+    fn told_as_it_ticks_on(runner: &mut RegionRunner, told: &Receiver<Standstill>) -> Standstill {
+        assert_eq!(runner.stage(), None);
+        let before: Vec<Standstill> = told.try_iter().collect();
+        assert_eq!(before, [], "told before the region had ticked on");
+        let tick = runner.region().tick_number();
+        runner.step();
+        assert_eq!(runner.region().tick_number(), tick + 1);
+        let at_the_tick: Vec<Standstill> = told.try_iter().collect();
+        let [standstill] = at_the_tick[..] else {
+            panic!("told {at_the_tick:?} at the first tick after");
+        };
+        for _ in 0..5 {
+            step(runner);
+        }
+        assert_eq!(told.try_iter().count(), 0, "told a second time");
+        standstill
+    }
+
+    /// A split that is made: the runner says nothing when it has the outcome, and with
+    /// its next tick, once, how long the region did not tick, with the players and the
+    /// chunks it had when it stopped, those that went with the part among them.
+    #[tokio::test]
+    async fn a_runner_tells_how_long_its_region_stood_still_for_a_split_once_it_ticks_on() {
+        let world = Divided::stripes();
+        let (mut west, mut edge, _gate, told) = west_that_tells(&world);
+        two_players_apart(&mut west, &mut edge).await;
+
+        let (done, outcome) = outcome();
+        west.reshape(split_off(&[FAR_WEST]), done);
+        // The region still ticks until the store has the first checkpoint.
+        step_to(&mut west, Stage::Settling);
+        let as_it_stopped = players_and_held(&west);
+        assert_eq!(as_it_stopped, (2, 3));
+        thread::sleep(STOOD);
+        let Reshaped::Split { .. } = reshaped(&mut west, &outcome) else {
+            panic!("no split");
+        };
+        assert_eq!(players_and_held(&west), (1, 2));
+
+        let standstill = told_as_it_ticks_on(&mut west, &told);
+        assert_eq!((standstill.players, standstill.held), as_it_stopped);
+        assert!(
+            u128::from(standstill.milliseconds) >= STOOD.as_millis(),
+            "{standstill:?}"
+        );
+    }
+
+    /// A merge that is made: the same, with the survivor's players and chunks as they
+    /// were before those of the absorbed region came.
+    #[tokio::test]
+    async fn a_runner_tells_how_long_its_region_stood_still_for_a_merge_once_it_ticks_on() {
+        let world = Divided::stripes();
+        let (mut west, mut edge, _gate, told) = west_that_tells(&world);
+        look_east(&mut west, &mut edge);
+        joined(&edge, &mut west).await;
+        let east = released_east(&world, &edge).await;
+        step(&mut west);
+
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        step_to(&mut west, Stage::Settling);
+        let as_it_stopped = players_and_held(&west);
+        assert_eq!(as_it_stopped.0, 1);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        // Two players came. No chunk did: what the absorbed region held was of the
+        // area it was pinned to, which is the survivor's to claim from here on.
+        assert_eq!(players_and_held(&west), (3, as_it_stopped.1));
+
+        let standstill = told_as_it_ticks_on(&mut west, &told);
+        assert_eq!((standstill.players, standstill.held), as_it_stopped);
+    }
+
+    /// A merge that the store declines and a split that is off when it is worked out
+    /// have stood the region still as well, from the first checkpoint on: each is told
+    /// with the first tick after, like one that was made.
+    #[tokio::test]
+    async fn a_runner_tells_of_a_merge_that_is_declined_and_of_a_split_that_is_off() {
+        // Not the epoch the region to absorb is open with.
+        let world = Divided::stripes();
+        let (mut west, mut edge, _gate, told) = west_that_tells(&world);
+        two_players_apart(&mut west, &mut edge).await;
+        let east = untouched_east(&world);
+        let reshape = Reshape::Absorb {
+            absorbed: EAST,
+            absorbed_epoch: 3,
+            state: east.state.clone(),
+        };
+        let (done, outcome) = outcome();
+        west.reshape(reshape, done);
+        let declined = Reshaped::Off {
+            why: Off::Declined(Decline::NotOpened { epoch: Some(2) }),
+        };
+        assert_eq!(reshaped(&mut west, &outcome), declined);
+        let standstill = told_as_it_ticks_on(&mut west, &told);
+        assert_eq!((standstill.players, standstill.held), (2, 3));
+
+        // The same runner, a while later: nobody stands in the chunk named.
+        let (done, outcome) = self::outcome();
+        west.reshape(split_off(&[WEST_OF_HOME]), done);
+        step_to(&mut west, Stage::Settling);
+        thread::sleep(STOOD);
+        let off = Reshaped::Off { why: Off::Nobody };
+        assert_eq!(reshaped(&mut west, &outcome), off);
+        let standstill = told_as_it_ticks_on(&mut west, &told);
+        assert_eq!((standstill.players, standstill.held), (2, 3));
+        assert!(
+            u128::from(standstill.milliseconds) >= STOOD.as_millis(),
+            "{standstill:?}"
+        );
+    }
+
+    /// A runner that is not asked to tell notes nothing when its region stops. One
+    /// that is asked tells nothing of a release, after which the region never ticks
+    /// on, and nothing if it ends in the middle of a split: with the store lost, or
+    /// stopped while the store has the split.
+    #[tokio::test]
+    async fn a_runner_tells_nothing_of_a_release_nor_when_it_ends_in_the_middle() {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, _gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        two_players_apart(&mut west, &mut edge).await;
+        let (done, _outcome) = outcome();
+        west.reshape(split_off(&[FAR_WEST]), done);
+        step_to(&mut west, Stage::Settling);
+        assert!(west.stopped.is_none());
+
+        let world = Divided::stripes();
+        let (mut west, mut edge, _gate, told) = west_that_tells(&world);
+        two_players_apart(&mut west, &mut edge).await;
+        west.begin_release();
+        step_to(&mut west, Stage::Settling);
+        assert!(west.stopped.is_none());
+        assert_eq!(released(&mut west), Ended::Released);
+        west.step();
+        assert_eq!(told.try_iter().count(), 0);
+
+        let world = Divided::stripes();
+        let (mut west, mut edge, gate, told) = west_that_tells(&world);
+        two_players_apart(&mut west, &mut edge).await;
+        let (done, outcome) = self::outcome();
+        west.reshape(split_off(&[FAR_WEST]), done);
+        step_to(&mut west, Stage::Settling);
+        assert!(west.stopped.is_some());
+        gate.lose();
+        west.step();
+        let lost = Reshaped::Off {
+            why: Off::StoreLost,
+        };
+        assert_eq!(outcome.try_recv(), Ok(lost.clone()));
+        assert_eq!(west.ended(), Some(Ended::StoreLost));
+        west.step();
+        assert_eq!(told.try_iter().count(), 0);
+
+        let world = Divided::stripes();
+        let (mut west, mut edge, gate, told) = west_that_tells(&world);
+        two_players_apart(&mut west, &mut edge).await;
+        gate.hold_reshapes();
+        let (done, outcome) = self::outcome();
+        west.reshape(split_off(&[FAR_WEST]), done);
+        step_to(&mut west, Stage::Committing);
+        assert_eq!(west.run(&AtomicBool::new(true)), Ended::Abandoned);
+        assert_eq!(outcome.try_recv(), Ok(lost));
+        west.step();
+        assert_eq!(told.try_iter().count(), 0);
     }
 }
