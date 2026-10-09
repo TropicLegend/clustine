@@ -242,10 +242,6 @@ pub struct Edge {
 
 impl Edge {
     /// Starts listening on `address`. Port 0 picks a free port; see [`Edge::local_addr`].
-    ///
-    /// # Panics
-    ///
-    /// If `routing` has a link to a region that its layout does not have.
     pub async fn bind(
         address: SocketAddr,
         config: EdgeConfig,

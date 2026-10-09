@@ -117,7 +117,6 @@ mod tests {
         RegionHello {
             region: RegionId(3),
             epoch: 77,
-            layout: u64::MAX,
         }
     }
 

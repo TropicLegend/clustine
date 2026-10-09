@@ -3255,7 +3255,7 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    use clustine_region::{Layout, RegionId};
+    use clustine_region::RegionId;
     use clustine_rpc::RegionHello;
     use clustine_rpc::link::{self, EdgeEnd, LinkError};
     use clustine_sim::api::{
@@ -3732,7 +3732,6 @@ mod tests {
         RegionHello {
             region: RegionId(0),
             epoch: 1,
-            layout: Layout::single().fingerprint(),
         }
     }
 
@@ -7098,19 +7097,18 @@ mod tests {
     /// one region and plays another through a handle of its own.
     struct Divided {
         store: Store,
-        division: Division,
     }
 
     impl Divided {
         fn new(division: Division) -> Self {
             let generator = Arc::new(FlatGenerator::classic());
-            let store = Store::memory_divided(generator, division.clone()).unwrap();
-            Self { store, division }
+            let store = Store::memory_divided(generator, division).unwrap();
+            Self { store }
         }
 
         /// The division of [`Divided::stripes`].
         fn line_at_one() -> Division {
-            Division::stripes(ORIGIN, &Layout::new(vec![1]).unwrap())
+            Division::side_by_side(ORIGIN, &[1]).unwrap()
         }
 
         /// Two stripes with the line at x = 1: region 0 west of it, which has the chunk
@@ -7123,8 +7121,8 @@ mod tests {
         fn stripes_in(directory: &std::path::Path) -> Self {
             let generator = Arc::new(FlatGenerator::classic());
             let division = Self::line_at_one();
-            let store = Store::local_divided(directory, generator, division.clone()).unwrap();
-            Self { store, division }
+            let store = Store::local_divided(directory, generator, division).unwrap();
+            Self { store }
         }
 
         /// The division with a gap of ADR-0011: region 0 is pinned to the chunks west of
@@ -7143,16 +7141,11 @@ mod tests {
             Self::new(Division {
                 home: ORIGIN,
                 pinned: vec![west, east],
-                layout: None,
             })
         }
 
         fn hello(&self, region: RegionId, epoch: u64) -> RegionHello {
-            RegionHello {
-                region,
-                epoch,
-                layout: self.division.layout.unwrap_or(0),
-            }
+            RegionHello { region, epoch }
         }
 
         /// Opens `region` as its owner with `epoch`, for a test that plays the region
@@ -10843,8 +10836,8 @@ mod tests {
         fn open_land_in(directory: &std::path::Path) -> Divided {
             let generator = Arc::new(FlatGenerator::classic());
             let division = Division::open(ORIGIN);
-            let store = Store::local_divided(directory, generator, division.clone()).unwrap();
-            Divided { store, division }
+            let store = Store::local_divided(directory, generator, division).unwrap();
+            Divided { store }
         }
 
         /// Two regions pinned side by side: `A`, region 0, to x < 30, with the home
@@ -10868,7 +10861,6 @@ mod tests {
             Divided::new(Division {
                 home: ORIGIN,
                 pinned: vec![west, east],
-                layout: None,
             })
         }
 

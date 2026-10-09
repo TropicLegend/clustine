@@ -18,6 +18,26 @@ use clustine_region::RegionId;
 use clustine_world::ChunkPos;
 use tracing::info;
 
+/// What each command says when it is given `--boundaries`, which divided a world into
+/// stripes until regions followed their players
+/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 8). The flag stays in the
+/// parser, hidden from the help, so that whoever still writes it is told what to write
+/// instead, and not that the argument is unexpected.
+const NO_BOUNDARIES: &str = "--boundaries is no more: regions follow their players now, and a \
+    world begins as one. For regions pinned side by side as before, say --pin 4 --reshape \
+    by-hand (with your coordinates for 4).";
+
+/// [`NO_BOUNDARIES`] for `clustine coordinator`.
+const NO_BOUNDARIES_FOR_THE_COORDINATOR: &str = "--boundaries is no more: the coordinator \
+    learns which regions there are from the world store. Regions pinned side by side are the \
+    store's to be told (clustine worldstore --pin 4); say --reshape by-hand here if they are \
+    to stay as they are.";
+
+/// [`NO_BOUNDARIES`] for `clustine worldstore`.
+const NO_BOUNDARIES_FOR_THE_STORE: &str = "--boundaries is --pin now: --pin 4 pins two \
+    regions side by side at chunk x = 4. Without it the world is one home region, and \
+    regions follow their players.";
+
 /// A Minecraft: Java Edition server. Without a subcommand, all of it in one process.
 #[derive(Parser)]
 #[command(version, args_conflicts_with_subcommands = true)]
@@ -160,14 +180,15 @@ struct Standalone {
     #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
     pin: Vec<i32>,
 
-    /// Another name for --pin, from when a world was divided into stripes.
+    /// Refused with [`NO_BOUNDARIES`], whatever it is given.
     #[arg(
         long,
-        value_delimiter = ',',
-        allow_negative_numbers = true,
-        conflicts_with = "pin"
+        hide = true,
+        num_args = 0..=1,
+        default_missing_value = "",
+        allow_hyphen_values = true
     )]
-    boundaries: Vec<i32>,
+    boundaries: Option<String>,
 
     #[command(flatten)]
     reshaping: Reshaping,
@@ -183,10 +204,15 @@ enum Service {
         #[arg(long, default_value_t = SocketAddr::from(([127, 0, 0, 1], COORDINATOR_PORT)))]
         listen: SocketAddr,
 
-        /// Chunk x coordinates at which to divide the world into regions, in ascending
-        /// order and separated by commas. The workers that are there share the regions.
-        #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
-        boundaries: Vec<i32>,
+        /// Refused with [`NO_BOUNDARIES_FOR_THE_COORDINATOR`], whatever it is given.
+        #[arg(
+            long,
+            hide = true,
+            num_args = 0..=1,
+            default_missing_value = "",
+            allow_hyphen_values = true
+        )]
+        boundaries: Option<String>,
 
         /// Seconds a worker may be silent before its region is given to another. Workers
         /// make themselves heard once a second, so this has to be several seconds. A
@@ -196,9 +222,8 @@ enum Service {
         lease_seconds: u64,
 
         /// Host and port of the world store, whose list tells the coordinator which
-        /// regions there are once regions have been merged and split. While the store
-        /// cannot be reached, the coordinator goes by --boundaries and by what the
-        /// workers report, and refuses to merge and to split.
+        /// regions there are. While the store cannot be reached, the coordinator goes
+        /// by what the workers report, and refuses to merge and to split.
         #[arg(long, default_value_t = format!("127.0.0.1:{WORLDSTORE_PORT}"))]
         store: String,
 
@@ -222,24 +247,21 @@ enum Service {
         #[arg(long, default_value = "world")]
         world: PathBuf,
 
-        /// Chunk x coordinates at which the world is divided into regions, in ascending
-        /// order and separated by commas: the same as the coordinator is given. The
-        /// store keeps which region holds which chunk, and refuses workers that divide
-        /// the world otherwise. A world that was divided otherwise before is made over:
-        /// its regions start anew, and what was built in it stays.
+        /// Refused with [`NO_BOUNDARIES_FOR_THE_STORE`], whatever it is given.
         #[arg(
             long,
-            value_delimiter = ',',
-            allow_negative_numbers = true,
-            conflicts_with = "pin"
+            hide = true,
+            num_args = 0..=1,
+            default_missing_value = "",
+            allow_hyphen_values = true
         )]
-        boundaries: Vec<i32>,
+        boundaries: Option<String>,
 
         /// Chunk x coordinates at which regions are pinned side by side, in ascending
-        /// order and separated by commas: the regions --boundaries makes, without the
-        /// store holding workers to how they say the world is divided. Without this
-        /// and without --boundaries the world is one home region that is pinned to
-        /// nothing, and every other chunk is whoever's asks for it first.
+        /// order and separated by commas. Without this the world is one home region
+        /// that is pinned to nothing, and every other chunk is whoever's asks for it
+        /// first. A world that was divided otherwise before is made over: its regions
+        /// start anew, and what was built in it stays.
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         pin: Vec<i32>,
     },
@@ -277,7 +299,9 @@ enum Service {
         #[arg(long, default_value_t = format!("127.0.0.1:{COORDINATOR_PORT}"))]
         coordinator: String,
 
-        /// The region to move: regions are numbered from 0, from west to east.
+        /// The region to move. Regions are numbered as the world store makes them: a
+        /// new world's home region is 0, and the routing table in the coordinator's
+        /// log names the others.
         #[arg(long)]
         region: u32,
 
@@ -362,12 +386,15 @@ async fn main() -> Result<()> {
             let refuse =
                 |why: String| -> ! { Cli::command().error(ErrorKind::ValueValidation, why).exit() };
             let standalone = cli.standalone;
+            if standalone.boundaries.is_some() {
+                refuse(NO_BOUNDARIES.to_owned());
+            }
             let view_distance = standalone.players.view_distance as u32;
             let follow = match standalone.reshaping.follow(view_distance) {
                 Ok(follow) => follow,
                 Err(why) => refuse(why),
             };
-            let pins = match pins(&standalone.pin, &standalone.boundaries) {
+            let pins = match pins(&standalone.pin) {
                 Ok(pins) => pins,
                 Err(why) => refuse(why),
             };
@@ -383,16 +410,21 @@ async fn main() -> Result<()> {
         }) => {
             // Refused as the parser refuses what it finds wrong itself, with how the
             // coordinator is started below it.
-            let follow = reshaping.follow(view_distance).unwrap_or_else(|why| {
+            let refuse = |why: String| -> ! {
                 let mut command = Cli::command();
                 command.build();
                 let coordinator = command.find_subcommand_mut("coordinator");
                 let coordinator = coordinator.expect("the coordinator is a subcommand");
                 coordinator.error(ErrorKind::ValueValidation, why).exit()
-            });
+            };
+            if boundaries.is_some() {
+                refuse(NO_BOUNDARIES_FOR_THE_COORDINATOR.to_owned());
+            }
+            let follow = reshaping
+                .follow(view_distance)
+                .unwrap_or_else(|why| refuse(why));
             cluster::coordinator(CoordinatorArgs {
                 listen,
-                boundaries,
                 lease: Duration::from_secs(lease_seconds),
                 store,
                 follow,
@@ -406,14 +438,18 @@ async fn main() -> Result<()> {
             boundaries,
             pin,
         }) => {
-            let pins = pins(&pin, &[]).unwrap_or_else(|why| {
+            let refuse = |why: String| -> ! {
                 let mut command = Cli::command();
                 command.build();
                 let store = command.find_subcommand_mut("worldstore");
                 let store = store.expect("the world store is a subcommand");
                 store.error(ErrorKind::ValueValidation, why).exit()
-            });
-            cluster::worldstore(listen, world, boundaries, pins).await
+            };
+            if boundaries.is_some() {
+                refuse(NO_BOUNDARIES_FOR_THE_STORE.to_owned());
+            }
+            let pins = pins(&pin).unwrap_or_else(|why| refuse(why));
+            cluster::worldstore(listen, world, pins).await
         }
         Some(Service::Worker {
             coordinator,
@@ -502,10 +538,9 @@ fn chunk(written: &str) -> Result<ChunkPos, String> {
         .ok_or_else(|| format!("`{written}` is not a chunk; write its coordinates as x,z"))
 }
 
-/// The chunk x coordinates regions are pinned side by side at: those of --pin, or of
-/// its other name. An error says what --pin takes, if they are not that.
-fn pins(pin: &[i32], boundaries: &[i32]) -> Result<Vec<i32>, String> {
-    let pins = if pin.is_empty() { boundaries } else { pin };
+/// The chunk x coordinates regions are pinned side by side at: those of --pin. An
+/// error says what --pin takes, if they are not that.
+fn pins(pins: &[i32]) -> Result<Vec<i32>, String> {
     if pins.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(format!("--pin takes {}", clustine_worldstore::NotAscending));
     }

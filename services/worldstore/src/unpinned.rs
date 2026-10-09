@@ -39,11 +39,6 @@ fn pinned_at(cuts: &[i32]) -> Division {
     Division::side_by_side(HOME, cuts).unwrap()
 }
 
-/// The stripes of a layout with these boundaries, as a store was told until now.
-fn stripes(boundaries: &[i32]) -> Division {
-    Division::stripes(HOME, &Layout::new(boundaries.to_vec()).unwrap())
-}
-
 /// The block of entity ids of a region that has none.
 pub(crate) const NO_ENTITY_IDS: EntityIds = EntityIds {
     first: EntityId(0),
@@ -420,13 +415,8 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
         assert_eq!(restored.pinned, []);
         assert_eq!(store.regions().unwrap().regions[0].epoch, 5);
         assert_eq!(store.regions().unwrap().next, RegionId(1));
-        // A hello is held to no layout: whatever fingerprint it names, it is a region
-        // and an epoch.
-        let named = RegionHello {
-            layout: Layout::new(vec![4]).unwrap().fingerprint(),
-            ..hello_of(&told, 0, 5)
-        };
-        let (home, restored) = store.open_region(named).unwrap();
+        // A hello is a region and an epoch: said again, it is the same owner come back.
+        let (home, restored) = store.open_region(hello_of(&told, 0, 5)).unwrap();
         assert_eq!(restored.held, [(HOME, 0)]);
 
         // The home chunk is its own, and every other chunk is nobody's.
@@ -1062,13 +1052,13 @@ fn as_side_by_side_lived_in(
 }
 
 /// T7: a world that was served with `--boundaries 4` and is started with `--pin 4` is
-/// found as it was, regions and states and all; and the other way round, for as long
-/// as there are both.
+/// found as it was, regions and states and all. The table of such a world is the one
+/// these pins make, which `table.rs` has a test of; nothing else was kept of stripes.
 #[test]
 fn a_world_of_stripes_started_with_its_boundaries_as_pins_is_found_as_it_was() {
     for cut in [4, 0] {
         let disk = Arc::new(MemoryDisk::default());
-        let built = side_by_side_lived_in(&disk, &stripes(&[cut]), cut);
+        let built = side_by_side_lived_in(&disk, &pinned_at(&[cut]), cut);
         let table = disk.read(Path::new("/world/regions/table")).unwrap();
         let pins = pinned_at(&[cut]);
         started_at_every_kill_point(&disk, &pins, |store, left, epoch, case| {
@@ -1078,14 +1068,6 @@ fn a_world_of_stripes_started_with_its_boundaries_as_pins_is_found_as_it_was() {
             as_side_by_side_lived_in(store, &pins, cut, &built, epoch, case);
         });
     }
-
-    let disk = Arc::new(MemoryDisk::default());
-    let built = side_by_side_lived_in(&disk, &pinned_at(&[4]), 4);
-    let table = disk.read(Path::new("/world/regions/table")).unwrap();
-    let left = Arc::new(disk.crashed(Survival::Nothing));
-    let store = started(&left, &stripes(&[4]), false, "pins, then stripes");
-    assert_eq!(left.read(Path::new("/world/regions/table")).unwrap(), table);
-    as_side_by_side_lived_in(&store, &stripes(&[4]), 4, &built, 10, "pins, then stripes");
 }
 
 /// Starts a store for `told` on what is durable of `world`, which has to make the
@@ -1120,7 +1102,7 @@ fn a_world_of_stripes_started_without_pins_is_made_over_into_one_home_region() {
     // the home region then does not keep.
     for cut in [4, 0] {
         let disk = Arc::new(MemoryDisk::default());
-        let built = side_by_side_lived_in(&disk, &stripes(&[cut]), cut);
+        let built = side_by_side_lived_in(&disk, &pinned_at(&[cut]), cut);
         let told = open_world();
 
         let left = Arc::new(disk.crashed(Survival::Nothing));
@@ -1198,13 +1180,6 @@ fn a_world_without_pins_started_with_pins_is_made_over_into_pinned_regions() {
         });
     }
 
-    // A store from before this step, which is told the stripes of a layout, makes such
-    // a world over into its stripes in the same way: that is the way back.
-    let told = stripes(&[4]);
-    made_over(&disk, &told, false, |store, _, epoch, case| {
-        as_made_over(store, &told, 2, &built, epoch, case);
-    });
-
     // A world whose part was absorbed again: nothing is remembered as absorbed, and
     // the id that was is that of a region again.
     let disk = Arc::new(MemoryDisk::default());
@@ -1246,9 +1221,8 @@ fn built_today() -> Built {
     built
 }
 
-/// T5: a world from before there was a table is made over by a store that is told no
-/// fingerprint, also with the boundaries it had as pins, and the file `layout` is gone
-/// when the table is durable.
+/// T5: a world from before there was a table is made over, also with the boundaries
+/// it had as pins, and the file `layout` is gone when the table is durable.
 #[test]
 fn a_world_from_before_there_was_a_table_is_made_over_whatever_its_layout_was() {
     let world = world_of_today();
@@ -1278,18 +1252,14 @@ fn a_world_from_before_there_was_a_table_is_made_over_whatever_its_layout_was() 
     }
 }
 
-/// The file says nothing that such a store reads. Told a fingerprint, as a store of
-/// stripes still is, it holds the file to being one, as before.
+/// The file says nothing that a store reads: whatever is in it, the world is made
+/// over.
 #[test]
-fn a_layout_file_is_not_read_by_a_store_that_is_told_no_fingerprint() {
+fn a_layout_file_is_not_read() {
     let built = built_today();
     for says in [&b"anything at all\n"[..], b"", b"00000000000000zz"] {
         let world = world_of_today();
         put(&world, "/world/layout", says);
-        assert!(matches!(
-            store_on(&Arc::new(world.crashed(Survival::Nothing)), &stripes(&[0])),
-            Err(StoreError::MalformedMeta(_))
-        ));
         for told in [open_world(), pinned_at(&[0])] {
             let left = Arc::new(world.crashed(Survival::Nothing));
             let store = started(&left, &told, true, "at once");
@@ -1320,7 +1290,7 @@ fn a_layout_file_is_not_read_by_a_store_that_is_told_no_fingerprint() {
 #[test]
 fn a_world_that_cannot_be_read_is_not_made_over() {
     let disk = Arc::new(MemoryDisk::default());
-    side_by_side_lived_in(&disk, &stripes(&[4]), 4);
+    side_by_side_lived_in(&disk, &pinned_at(&[4]), 4);
     let damaged = |name: &str| {
         let path = Path::new("/world").join(name);
         let mut bytes = disk.read(&path).unwrap().expect(name);
@@ -1331,7 +1301,7 @@ fn a_world_that_cannot_be_read_is_not_made_over() {
         (Arc::new(damaged.with(Fault::Fail(u64::MAX))), path)
     };
     for name in ["regions/table", "regions/1.region", "regions/2.state"] {
-        for told in [open_world(), pinned_at(&[0]), stripes(&[4])] {
+        for told in [open_world(), pinned_at(&[0]), pinned_at(&[4])] {
             let (left, path) = damaged(name);
             let (refused, lines) = logged(|| store_on(&left, &told));
             assert!(
@@ -1363,7 +1333,7 @@ fn a_world_that_cannot_be_read_is_not_made_over() {
 fn a_world_whose_regions_had_nothing_says_that_they_begin_anew_all_the_same() {
     // A world of stripes that nobody ever opened a region of.
     let disk = Arc::new(MemoryDisk::default());
-    drop(started(&disk, &stripes(&[4]), false, "a new world"));
+    drop(started(&disk, &pinned_at(&[4]), false, "a new world"));
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let store = started(&left, &open_world(), true, "never opened");
     assert_eq!(store.regions().unwrap(), alone(HOME, 2));
@@ -1376,12 +1346,9 @@ fn a_world_whose_regions_had_nothing_says_that_they_begin_anew_all_the_same() {
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let store = started(&left, &pinned_at(&[4]), true, "opened and no more");
     assert_eq!(store.regions().unwrap().regions[0].epoch, 7);
-    // And nothing is said by the start after it, or by one with the same areas told
-    // as stripes.
-    for told in [pinned_at(&[4]), stripes(&[4])] {
-        let again = Arc::new(left.crashed(Survival::Nothing));
-        drop(started(&again, &told, false, "again"));
-    }
+    // And nothing is said by the start after it.
+    let again = Arc::new(left.crashed(Survival::Nothing));
+    drop(started(&again, &pinned_at(&[4]), false, "again"));
 }
 
 /// The same in a directory of the file system, where the next store finds what the

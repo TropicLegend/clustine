@@ -15,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use clustine_data::{BlockState, blocks, items};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
     EdgeMessage, EdgeToWorker, Presence, RegionHello, Restored, Welcome, WorkerToEdge,
@@ -84,9 +84,9 @@ const STEPS: usize = 4000;
 /// far more than any test leaves unread.
 const CAPACITY: usize = 8192;
 
-fn layout() -> Layout {
-    Layout::new(vec![1]).expect("one boundary is a layout")
-}
+/// The chunk x coordinate the world of these tests is cut at: the region under test
+/// is pinned to the chunks west of it.
+const CUT: i32 = 1;
 
 fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     let mut hotbar = [None; HOTBAR_SLOTS];
@@ -97,8 +97,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     hotbar
 }
 
-/// Of every chunk the region asks the store, which is divided into the stripes of the
-/// layout, whether it is its own (`docs/adr/0012-the-tick-on-chunks.md`, section 1).
+/// Of every chunk the region asks the store, which is divided into two stripes at
+/// [`CUT`], whether it is its own (`docs/adr/0012-the-tick-on-chunks.md`, section 1).
 fn config() -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
@@ -119,10 +119,10 @@ struct World {
     _directory: Option<tempfile::TempDir>,
 }
 
-/// How the stores of these tests divide the world: into the stripes of [`layout`],
-/// which is what the hellos name.
+/// How the stores of these tests divide the world: into two regions pinned side by
+/// side, cut at [`CUT`].
 fn division() -> Division {
-    Division::stripes(ChunkPos::containing(SPAWN.x, SPAWN.z), &layout())
+    Division::side_by_side(ChunkPos::containing(SPAWN.x, SPAWN.z), &[CUT]).expect("one cut ascends")
 }
 
 impl World {
@@ -158,7 +158,6 @@ impl World {
             .open_region(RegionHello {
                 region: REGION,
                 epoch: self.epoch,
-                layout: layout().fingerprint(),
             })
             .expect("a higher epoch opens the region")
     }
@@ -792,9 +791,7 @@ impl Witness {
         self.entities
             .iter()
             .filter(|(_, pose)| {
-                layout()
-                    .area(REGION)
-                    .expect("the layout has region 0")
+                division().pinned[REGION.0 as usize]
                     .contains(ChunkPos::containing(pose.position.x, pose.position.z))
             })
             .map(|(entity, pose)| (*entity, *pose))

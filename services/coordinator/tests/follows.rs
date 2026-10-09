@@ -57,7 +57,7 @@ use std::time::Instant;
 use clustine_coordinator::{
     Asked, Changes, Coordinator, CoordinatorConfig, Order, Policy, Wanted, named,
 };
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::{Assignment, Off, PlayersOf, Vouch};
 use clustine_world::{ChunkPos, Vec3};
 
@@ -92,12 +92,12 @@ fn address(name: &str) -> String {
     format!("{name}:25600")
 }
 
-/// A coordinator that knows the stripes of its layout from the start, as every
-/// coordinator did before it learnt its regions from the world store's list
+/// A coordinator that knows `regions` stripes from the start, numbered from 0, as
+/// every coordinator did before it learnt its regions from the world store's list
 /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). These tests are about
 /// what a coordinator does with regions it knows.
-fn knowing(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
-    let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
+fn knowing(config: CoordinatorConfig, regions: u32, now: Instant, first_epoch: u64) -> Coordinator {
+    let stripes: Vec<RegionId> = (0..regions).map(RegionId).collect();
     Coordinator::knowing(config, now, first_epoch, &stripes)
 }
 
@@ -394,14 +394,10 @@ impl Cluster {
     /// for a run that a script plays.
     fn with(variant: Variant, players: &[(u32, i32, i32)]) -> Self {
         let world = World::new(variant.regions, variant.pinned, players);
-        // The coordinator knows the regions of its layout from the start. Where the
-        // stripes are does not matter to it or to the model: the list says which
+        // The coordinator knows the regions of the world from the start. Where their
+        // chunks are does not matter to it or to the model: the list says which
         // regions there are, and nothing here goes by where a region's chunks are.
-        let boundaries = (1..variant.regions)
-            .map(|id| 28 * i32::try_from(id).expect("a small number") - 12)
-            .collect();
         let config = CoordinatorConfig {
-            layout: Layout::new(boundaries).expect("the boundaries ascend"),
             spawn: Vec3::new(0.5, 64.0, 0.5),
             lease: LEASE,
             follow: variant.follow.then(|| variant.told.unwrap_or_else(policy)),
@@ -412,7 +408,7 @@ impl Cluster {
             seed,
             variant,
             dice,
-            coordinator: knowing(config.clone(), started, FIRST_EPOCH),
+            coordinator: knowing(config.clone(), variant.regions, started, FIRST_EPOCH),
             config,
             started,
             lanes: world
@@ -949,15 +945,10 @@ impl Cluster {
     /// The worker registers with what it runs. The service reads the list then.
     fn register(&mut self, name: &'static str) {
         let holding: Vec<Assignment> = self.workers[name].runs.values().copied().collect();
-        let fingerprint = self.config.layout.fingerprint();
         let now = self.now();
-        let registered =
-            self.coordinator
-                .register(now, name, &address(name), &holding, Some(fingerprint));
-        let changes = match registered {
-            Ok(changes) => changes,
-            Err(refusal) => self.fail(format!("{name} is refused: {refusal}")),
-        };
+        let changes = self
+            .coordinator
+            .register(now, name, &address(name), &holding);
         let process = self.process(name);
         process.connected = true;
         process.registers = None;
@@ -1069,7 +1060,8 @@ impl Cluster {
             }
             Act::Anew => {
                 self.highest += 1_000;
-                self.coordinator = knowing(self.config.clone(), self.now(), self.highest);
+                let regions = self.variant.regions;
+                self.coordinator = knowing(self.config.clone(), regions, self.now(), self.highest);
                 for name in WORKERS {
                     let registers = step + self.dice.below(3);
                     self.lose_connection(name, registers);

@@ -12,7 +12,7 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clustine_coordinator::{ClientError, Orders, Reach, WorkerClient, WorkerEvent};
+use clustine_coordinator::{Orders, Reach, WorkerClient, WorkerEvent};
 use clustine_region::RegionId;
 use clustine_rpc::{
     Assignment, EdgeMessage, Off, PlayersOf, RegionHello, Restored, Vouch, WorkerToEdge, tcp,
@@ -316,10 +316,9 @@ fn vouches(regions: &Regions) -> Vec<(RegionId, Vouch)> {
 }
 
 /// What the worker holds, as it says when it registers again.
-fn holdings(regions: &Regions) -> Vec<(Assignment, u64)> {
+fn holdings(regions: &Regions) -> Vec<Assignment> {
     let held = regions.values().map(Phase::held);
-    held.map(|held| (held.assignment, held.hello.layout))
-        .collect()
+    held.map(|held| held.assignment).collect()
 }
 
 /// Where the players of the regions this worker runs are, for the coordinator: of every
@@ -431,8 +430,6 @@ fn passing_on(
 enum Word {
     /// New orders, a region to release, or what is to be done for a merge or a split.
     Event(WorkerEvent),
-    /// The coordinator refuses the worker, for the reason given.
-    Refused(String),
     /// A worker that is leaving may exit: the coordinator has closed its connection, or
     /// cannot be reached.
     Dismissed,
@@ -725,9 +722,6 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
             word = words.recv() => {
                 let event = match word {
                     Some(Word::Event(event)) => event,
-                    Some(Word::Refused(reason)) => {
-                        break Err(anyhow!("the coordinator refused: {reason}"));
-                    }
                     Some(Word::Dismissed) => break Ok(()),
                     None => break Err(anyhow!("lost the coordinator for good")),
                 };
@@ -818,7 +812,6 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                                 let hello = RegionHello {
                                     region: absorbed,
                                     epoch: as_epoch,
-                                    layout: held.hello.layout,
                                 };
                                 let fetching = Box::pin(fetch(store.clone(), hello));
                                 reshapes_begun += 1;
@@ -1218,7 +1211,6 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                         let hello = RegionHello {
                             region: part,
                             epoch: as_epoch,
-                            layout: held.hello.layout,
                         };
                         let assignment = Assignment {
                             region: part,
@@ -1353,14 +1345,13 @@ async fn told(stop: &mut mpsc::UnboundedReceiver<Stop>) -> Stop {
 
 /// What it takes to run the region of `assignment` under `orders`. Whether the world
 /// has such a region is the store's to say: it refuses the hello of one it does not
-/// have, which ends the worker as a hello for another layout does.
+/// have, which ends the worker.
 fn hold(orders: &Orders, assignment: Assignment) -> Held {
     Held {
         assignment,
         hello: RegionHello {
             region: assignment.region,
             epoch: assignment.epoch,
-            layout: orders.layout.fingerprint(),
         },
         // The region's entity ids are the store's to say, not the coordinator's, and so
         // are the chunks it holds and the areas it is pinned to.
@@ -1415,10 +1406,9 @@ async fn fetch(store: Opener, hello: RegionHello) -> Fetched {
 async fn register(args: &WorkerArgs) -> Result<(WorkerClient, Orders)> {
     loop {
         let registered =
-            WorkerClient::register(&args.coordinator, &args.name, &args.advertise, &[], None);
+            WorkerClient::register(&args.coordinator, &args.name, &args.advertise, &[]);
         match registered.await {
             Ok(registered) => return Ok(registered),
-            Err(ClientError::Refused(reason)) => bail!("the coordinator refused: {reason}"),
             Err(error) => {
                 info!(%error, coordinator = %args.coordinator, "the coordinator cannot be reached yet");
                 sleep(RETRY).await;
@@ -1431,9 +1421,8 @@ async fn register(args: &WorkerArgs) -> Result<(WorkerClient, Orders)> {
 struct Reports {
     /// What the worker vouches for.
     vouched: watch::Receiver<Vec<(RegionId, Vouch)>>,
-    /// The regions the worker holds, each with the fingerprint of the layout it is
-    /// part of.
-    held: watch::Receiver<Vec<(Assignment, u64)>>,
+    /// The regions the worker holds.
+    held: watch::Receiver<Vec<Assignment>>,
     /// Whether the worker has been told to stop.
     left: watch::Receiver<bool>,
     /// The regions the worker has split off others and that no orders have named yet:
@@ -1521,16 +1510,12 @@ async fn stay_registered(
                                 }
                             }
                         }
-                        let held = reports.held.borrow().clone();
-                        let holding: Vec<_> = held.iter().map(|(held, _)| *held).collect();
-                        // Every region of a worker is of the one layout it was told.
-                        let layout = held.first().map(|(_, layout)| *layout);
+                        let holding = reports.held.borrow().clone();
                         let registered = WorkerClient::register(
                             &reach,
                             &setup.name,
                             &setup.advertise,
                             &holding,
-                            layout,
                         );
                         match registered.await {
                             Ok((coordinator, next)) => {
@@ -1557,10 +1542,6 @@ async fn stay_registered(
                                     return;
                                 }
                                 break coordinator;
-                            }
-                            Err(ClientError::Refused(reason)) => {
-                                let _ = words.send(Word::Refused(reason));
-                                return;
                             }
                             Err(error) => debug!(%error, "the coordinator cannot be reached"),
                         }
@@ -1659,15 +1640,14 @@ async fn greet_edge(stream: TcpStream, serving: watch::Receiver<Serving>) -> Res
     };
     if asked != region {
         let reason = format!(
-            "this worker runs region {} with epoch {} of layout {:016x}",
-            region.region, region.epoch, region.layout
+            "this worker runs region {} with epoch {}",
+            region.region, region.epoch
         );
         incoming.refuse(reason).await?;
         bail!(
-            "it asked for region {} with epoch {} of layout {:016x}",
+            "it asked for region {} with epoch {}",
             asked.region,
-            asked.epoch,
-            asked.layout
+            asked.epoch
         );
     }
     let link = incoming
@@ -1687,7 +1667,6 @@ mod tests {
 
     use clustine_botswarm::Bot;
     use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Routing};
-    use clustine_region::Layout;
     use clustine_rpc::link::{self, End};
     use clustine_rpc::{FromCoordinator, ToCoordinator};
     use clustine_world::ChunkPos;
@@ -1695,7 +1674,7 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::{division, generator, spawn_point};
+    use crate::{generator, spawn_point};
 
     const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -1706,15 +1685,17 @@ mod tests {
             .expect("what the test waits for comes about")
     }
 
-    /// How the world of these tests is divided: at chunk x 4, so that players enter it
-    /// in region 0 and nobody is in region 1.
-    fn layout() -> Layout {
-        Layout::new(vec![4]).expect("one boundary divides a world")
+    /// How the world of these tests is divided: into two regions pinned side by side
+    /// at chunk x 4, so that players enter it in region 0 and nobody is in region 1.
+    fn division() -> Division {
+        let spawn = spawn_point();
+        Division::side_by_side(ChunkPos::containing(spawn.x, spawn.z), &[4])
+            .expect("one cut divides a world")
     }
 
     /// Such a world, kept in memory.
     fn world() -> Store {
-        Store::memory_divided(generator(), division(&layout())).expect("a world in memory")
+        Store::memory_divided(generator(), division()).expect("a world in memory")
     }
 
     fn assignment(region: u32, epoch: u64) -> Assignment {
@@ -1730,7 +1711,6 @@ mod tests {
     fn held(region: u32, epoch: u64) -> Held {
         let assignment = assignment(region, epoch);
         let orders = Orders {
-            layout: layout(),
             spawn: spawn_point(),
             assignments: vec![assignment],
         };
@@ -1988,7 +1968,6 @@ mod tests {
                 panic!("a worker registers before it says anything else");
             };
             let orders = FromCoordinator::Assigned {
-                layout: layout(),
                 spawn: spawn_point(),
                 assignments,
             };
@@ -2011,7 +1990,7 @@ mod tests {
     /// The loop's side of the task that holds a worker's connection: where the loop
     /// puts what the task is to say, and where the task shows it what it needs.
     struct Looping {
-        holding: watch::Sender<Vec<(Assignment, u64)>>,
+        holding: watch::Sender<Vec<Assignment>>,
         splitting: watch::Sender<Vec<(RegionId, u64, RegionId)>>,
         endings: mpsc::UnboundedSender<Outcome>,
         registration: watch::Receiver<Option<u64>>,
@@ -2172,11 +2151,8 @@ mod tests {
             outcome: Ok(RegionId(2)),
         };
         looping.endings.send(split).expect("the task is there");
-        let fingerprint = layout().fingerprint();
         let holds = [assignment(0, 4), assignment(2, 7)];
-        looping
-            .holding
-            .send_replace(holds.map(|held| (held, fingerprint)).to_vec());
+        looping.holding.send_replace(holds.to_vec());
         looping
             .splitting
             .send_replace(vec![(RegionId(0), 7, RegionId(2))]);
@@ -2223,7 +2199,7 @@ mod tests {
     /// Registers a worker with `played`, which gives it nothing to run, and runs its
     /// loop. Returns the loop and the coordinator's end of its connection.
     async fn run_by(played: &Played) -> (Run, Heard) {
-        let registering = WorkerClient::register(&played.address, "worker", "worker:1", &[], None);
+        let registering = WorkerClient::register(&played.address, "worker", "worker:1", &[]);
         let (registered, (heard, _)) = tokio::join!(registering, played.registers(Vec::new()));
         let setup = Setup {
             name: "worker".to_owned(),
@@ -2366,7 +2342,6 @@ mod tests {
                 }
             };
             let config = CoordinatorConfig {
-                layout: Layout::single(),
                 spawn: spawn_point(),
                 lease: CoordinatorConfig::DEFAULT_LEASE,
                 follow: None,
@@ -2379,8 +2354,7 @@ mod tests {
                 advertise: "in this process".to_owned(),
                 checkpoint_interval: 6000,
             };
-            let registering =
-                WorkerClient::register(&reach, &setup.name, &setup.advertise, &[], None);
+            let registering = WorkerClient::register(&reach, &setup.name, &setup.advertise, &[]);
             let registered = within(registering).await.expect("the worker is registered");
             let (serving, shown) = watch::channel(Serving::default());
             let (stop, stopped) = mpsc::unbounded_channel();

@@ -6,8 +6,9 @@
 //! section 5, for the list. Whoever wrote these read the records, the messages and the
 //! coordinator's public signatures with their comments, and neither its code nor its
 //! own tests, so that a test here says what the record asks for and not what the code
-//! happens to do. Q8 is of a later step (the fingerprint goes with the layout) and Q11
-//! is the edge's process, in `bin/clustine/tests/edge_start.rs`.
+//! happens to do. Q8 is at the end, and was written with the step that took the layout
+//! away, by its builder. Q11 is the edge's process, in
+//! `bin/clustine/tests/edge_start.rs`.
 //!
 //! The first part drives the state machine, [`Coordinator`], with the time handed in.
 //! The second is the service, over TCP and in its own process, with a list that the
@@ -39,8 +40,10 @@ use clustine_coordinator::{
     Orders, Policy, Reach, ReleaseOrder, ReshapeOrder, ReshapeRefusal, Reshaped, RoutingWatch,
     Undone, WorkerClient, WorkerEvent, serve, serve_local, serve_with,
 };
-use clustine_region::{Layout, RegionId, RoutingTable};
-use clustine_rpc::{Assignment, PlayersOf, RegionInfo, RegionList, Vouch};
+use clustine_region::{RegionId, RoutingTable};
+use clustine_rpc::{
+    Assignment, FromCoordinator, PlayersOf, RegionInfo, RegionList, ToCoordinator, Vouch,
+};
 use clustine_world::{ChunkArea, ChunkPos, EntityIds, Vec3};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -91,10 +94,9 @@ fn region(id: u32) -> RegionId {
     RegionId(id)
 }
 
-/// A world without a boundary, which is what is left of the layout until it goes.
+/// What the coordinators of these tests are created with.
 fn config(lease: Duration, follow: Option<Policy>) -> CoordinatorConfig {
     CoordinatorConfig {
-        layout: Layout::single(),
         spawn: SPAWN,
         lease,
         follow,
@@ -189,7 +191,6 @@ struct World {
     /// When the coordinator was made.
     made: Instant,
     now: Instant,
-    fingerprint: u64,
     /// The workers that send heartbeats while time passes, which vouch for all they
     /// were given, in the order they registered.
     heard: Vec<String>,
@@ -230,7 +231,6 @@ impl World {
 
     fn around(coordinator: Coordinator, now: Instant, answering: bool) -> Self {
         Self {
-            fingerprint: coordinator.config().layout.fingerprint(),
             coordinator,
             made: now,
             now,
@@ -279,14 +279,7 @@ impl World {
         }
         let changes = self
             .coordinator
-            .register(
-                self.now,
-                name,
-                &address(name),
-                holding,
-                Some(self.fingerprint),
-            )
-            .expect("the worker has the coordinator's layout");
+            .register(self.now, name, &address(name), holding);
         self.take(changes)
     }
 
@@ -2593,7 +2586,6 @@ struct Served {
     /// Where it listens, if it is reached over TCP.
     listens: Option<String>,
     lists: Lists,
-    fingerprint: u64,
     /// Hears of every reading of the list when it has looked at it.
     looked: mpsc::UnboundedReceiver<()>,
     serving: tokio::task::JoinHandle<()>,
@@ -2634,7 +2626,6 @@ impl Served {
             reach: Reach::Tcp(listens.clone()),
             listens: Some(listens),
             lists,
-            fingerprint: Layout::single().fingerprint(),
             looked,
             serving,
         }
@@ -2651,7 +2642,6 @@ impl Served {
             .expect("the listener has an address")
             .to_string();
         let (lists, looked) = Lists::new(list, false);
-        let fingerprint = config.layout.fingerprint();
         let reader = lists.reader();
         let serving = tokio::spawn(async move {
             let served = serve(listener, config, reader).await;
@@ -2661,7 +2651,6 @@ impl Served {
             reach: Reach::Tcp(listens.clone()),
             listens: Some(listens),
             lists,
-            fingerprint,
             looked,
             serving,
         }
@@ -2671,13 +2660,11 @@ impl Served {
     /// with its workers.
     fn local(config: CoordinatorConfig, list: Option<RegionList>, held: bool) -> Self {
         let (lists, looked) = Lists::new(list, held);
-        let fingerprint = config.layout.fingerprint();
         let (local, serving) = serve_local(config, lists.reader());
         Self {
             reach: Reach::Local(local),
             listens: None,
             lists,
-            fingerprint,
             looked,
             serving: tokio::spawn(serving),
         }
@@ -2703,7 +2690,6 @@ impl Served {
             name,
             &address(name),
             holding,
-            Some(self.fingerprint),
             heartbeat,
         ))
         .await
@@ -3138,14 +3124,7 @@ async fn those_who_are_there_are_served_on_when_the_way_to_a_local_coordinator_i
     let (lists, _looked) = Lists::new(Some(home_alone()), false);
     let (local, serving) = serve_local(config(SHORT_LEASE, None), lists.reader());
     let serving = tokio::spawn(serving);
-    let registered = WorkerClient::register_with_heartbeat(
-        local,
-        "a",
-        "a:25600",
-        &[],
-        Some(Layout::single().fingerprint()),
-        HEARTBEAT,
-    );
+    let registered = WorkerClient::register_with_heartbeat(local, "a", "a:25600", &[], HEARTBEAT);
     // The one way to it went into that call, and is gone when the call returns.
     let (mut a, _) = within(registered).await.expect("the worker registers");
     let (given, _) = orders_naming(&mut a, 0, 0).await;
@@ -3162,14 +3141,8 @@ async fn nobody_comes_to_a_local_coordinator_that_is_served_no_more() {
     let (lists, _looked) = Lists::new(None, false);
     let (local, serving) = serve_local(config(SHORT_LEASE, None), lists.reader());
     drop(serving);
-    let registered = WorkerClient::register_with_heartbeat(
-        local.clone(),
-        "a",
-        "a:25600",
-        &[],
-        Some(Layout::single().fingerprint()),
-        HEARTBEAT,
-    );
+    let registered =
+        WorkerClient::register_with_heartbeat(local.clone(), "a", "a:25600", &[], HEARTBEAT);
     assert!(within(registered).await.is_err());
     assert!(
         within(RoutingWatch::connect(Reach::Local(local)))
@@ -3376,4 +3349,125 @@ async fn the_service_of_a_coordinator_made_with_new_closes_the_connection_of_a_s
             Err(other) => panic!("expected the connection to be lost: {other:?}"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------------
+// Q8. A registration names no layout, and nobody is refused.
+// ---------------------------------------------------------------------------------
+
+// Q8: "`register` takes no fingerprint and refuses nobody." It answers with what it
+// changed, and has nothing to refuse with. So whoever registers is a worker of the
+// coordinator afterwards, whatever it says it holds and however the coordinator was
+// made. What becomes of a holding is another matter, which Q2 and section 2.3 have:
+// it is taken on the worker's word or left out of what the worker is to run.
+#[test]
+fn whoever_registers_is_registered_whatever_it_says_it_holds() {
+    let listed = |kind| {
+        let mut world = World::made(kind, None);
+        world.listed(&with_region_five(7));
+        world
+    };
+    let worlds = [
+        ("made with `new`", World::made(Made::New, None)),
+        ("made alone", World::made(Made::Alone, None)),
+        ("made knowing its regions", World::knowing(&[0, 5])),
+        ("made with `new`, after a list", listed(Made::New)),
+        ("made alone, after a list", listed(Made::Alone)),
+    ];
+    // Nothing; a region nobody has named; a region of the list with an epoch below
+    // the list's, with the list's, and with one far above any that was issued; and
+    // the same region twice.
+    let far = 1_000_000;
+    let holdings: [&[Assignment]; 6] = [
+        &[],
+        &[held(9, 3)],
+        &[held(5, 1)],
+        &[held(5, 7)],
+        &[held(0, far), held(5, far), held(9, far)],
+        &[held(5, 7), held(5, 8)],
+    ];
+    for (made, world) in &worlds {
+        for holding in holdings {
+            let case = format!("{made}, holding {holding:?}");
+            let mut world = world.clone();
+            assert!(!world.is_registered("a"), "{case}");
+            // The answer is the changes themselves: a refusal has no place in it.
+            let _: Changes = world
+                .coordinator
+                .register(world.now, "a", &address("a"), holding);
+            assert!(world.is_registered("a"), "{case}");
+            // Nor is a second worker refused that says the same of itself, though the
+            // first may have what it names; nor either of them when it comes again.
+            world.register("b", holding);
+            assert!(world.is_registered("b"), "{case}");
+            world.register_again("a");
+            world.register("b", holding);
+            assert!(
+                world.is_registered("a") && world.is_registered("b"),
+                "{case}"
+            );
+            // Nobody runs what another runs for it.
+            let mut run = world.runs("a");
+            run.extend(world.runs("b"));
+            let all = run.len();
+            run.sort_unstable();
+            run.dedup();
+            assert_eq!(run.len(), all, "{case}");
+        }
+    }
+}
+
+// Q8: "a registration says `Assigned` with the spawn point and the assignments." Said
+// by hand over a connection of the test's own, so that the two messages are seen as
+// they are on the wire and not as the client reads them: the registration is a name,
+// an address and what the worker holds, and its answer is the spawn point and the
+// assignments, and nothing else. The coordinator knows regions 0 and 3 and is within
+// its grace period, so it gives nothing away by itself.
+#[tokio::test]
+async fn a_registration_is_answered_assigned_with_the_spawn_point_and_the_assignments() {
+    let made = |now| {
+        let known = [region(0), region(3)];
+        Coordinator::knowing(config(LONG_LEASE, None), now, FIRST_EPOCH, &known)
+    };
+    let served = Served::over_tcp(made, None, false).await;
+    let listens = served.listens.clone().expect("it is served over TCP");
+    // What the worker says it holds, and what it is told to run: nothing; a region
+    // the coordinator knows without an owner; the same region, which another worker
+    // has by now; and a region the coordinator did not know. None of them is refused.
+    let cases: [(&str, &[Assignment], &[Assignment]); 4] = [
+        ("a", &[], &[]),
+        ("b", &[held(3, 13)], &[held(3, 13)]),
+        ("c", &[held(3, 13)], &[]),
+        ("d", &[held(9, 2)], &[held(9, 2)]),
+    ];
+    let mut connections = Vec::new();
+    for (name, holding, runs) in cases {
+        let stream = within(TcpStream::connect(&listens))
+            .await
+            .expect("the coordinator listens");
+        let mut worker = clustine_rpc::tcp::link::<ToCoordinator, FromCoordinator>(stream, 8);
+        // Said twice: the connection of a worker that was answered stays open.
+        for round in 0..2 {
+            let registration = ToCoordinator::RegisterWorker {
+                name: name.to_owned(),
+                address: address(name),
+                holding: holding.to_vec(),
+            };
+            worker
+                .send(registration)
+                .await
+                .expect("the connection is open");
+            let answer = within(worker.recv()).await;
+            let Some(FromCoordinator::Assigned { spawn, assignments }) = answer else {
+                panic!("{name}, round {round}: expected `Assigned`: {answer:?}");
+            };
+            assert_eq!(spawn, SPAWN, "{name}, round {round}");
+            assert_eq!(assignments, runs, "{name}, round {round}");
+        }
+        connections.push(worker);
+    }
+    // And what a client makes of that answer is all of it.
+    let (_e, orders) = served.worker("e", &[], HEARTBEAT).await;
+    let Orders { spawn, assignments } = orders;
+    assert_eq!((spawn, assignments), (SPAWN, Vec::new()));
 }

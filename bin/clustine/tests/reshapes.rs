@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clustine_botswarm::Bot;
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::link::End;
 use clustine_rpc::{Assignment, FromCoordinator, RegionList, ToCoordinator, tcp};
 use clustine_world::{EntityId, EntityIds, Vec3};
@@ -1147,8 +1147,6 @@ fn orders(regions: &[(Region, u64)]) -> FromCoordinator {
         },
     });
     FromCoordinator::Assigned {
-        // What is left of the layout until it goes: a world without a boundary.
-        layout: Layout::single(),
         spawn: SPAWN,
         assignments: assignments.collect(),
     }

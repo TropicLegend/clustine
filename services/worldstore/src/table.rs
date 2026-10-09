@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use clustine_format::{TableFile, TableRegion};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList};
 use clustine_world::{ChunkArea, ChunkPos};
 
@@ -25,9 +25,8 @@ pub(crate) const ABSORBED_KEPT: usize = 4096;
 ///
 /// A world whose regions follow their players is [`Division::open`]: one home region
 /// that is pinned to nothing. Regions with a boundary at a known place are
-/// [`Division::side_by_side`]. Until nothing reads a [`Layout`] any more, a division
-/// can also be that of one, with its stripes as the pinned regions. Areas that leave
-/// a gap are for tests that need both pinned regions and chunks nobody holds.
+/// [`Division::side_by_side`]. Areas that leave a gap are for tests that need both
+/// pinned regions and chunks nobody holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Division {
     /// The chunk players enter the world in.
@@ -35,8 +34,6 @@ pub struct Division {
     /// The areas of the pinned regions, which must not overlap. Region `i` is pinned
     /// to area `i`.
     pub pinned: Vec<ChunkArea>,
-    /// The fingerprint a hello has to name, if the division is that of a layout.
-    pub layout: Option<u64>,
 }
 
 /// Why chunk x coordinates are no cuts between regions pinned side by side.
@@ -54,7 +51,6 @@ impl Division {
         Self {
             home,
             pinned: Vec::new(),
-            layout: None,
         }
     }
 
@@ -64,8 +60,8 @@ impl Division {
     /// Region 0 is pinned to every chunk west of the first cut, each region after it
     /// to the chunks from its cut up to the next, and the last to those from the last
     /// cut on; with no cut, one region is pinned to the whole world. These are the
-    /// areas [`Division::stripes`] makes of a layout with the cuts as its boundaries,
-    /// so a world of that layout is found as it was. A hello is held to no fingerprint.
+    /// areas a world had that was divided into stripes at the cuts, so such a world is
+    /// found as it was.
     pub fn side_by_side(home: ChunkPos, cuts: &[i32]) -> Result<Self, NotAscending> {
         if cuts.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(NotAscending);
@@ -78,21 +74,7 @@ impl Division {
             .zip(east)
             .map(|(min_x, max_x)| ChunkArea { min_x, max_x })
             .collect();
-        Ok(Self {
-            home,
-            pinned,
-            layout: None,
-        })
-    }
-
-    /// The division of `layout`: its stripes as the pinned areas, in their order, and
-    /// its fingerprint.
-    pub fn stripes(home: ChunkPos, layout: &Layout) -> Self {
-        Self {
-            home,
-            pinned: layout.regions().map(|(_, area)| area).collect(),
-            layout: Some(layout.fingerprint()),
-        }
+        Ok(Self { home, pinned })
     }
 
     /// Refuses a division in which two areas have a chunk in common: who holds it
@@ -532,25 +514,29 @@ mod tests {
         Division {
             home: ChunkPos::new(0, 0),
             pinned: vec![area(None, Some(0)), area(Some(16), None)],
-            layout: None,
         }
     }
 
     #[test]
-    fn the_stripes_of_a_layout_are_pinned_regions_with_the_ids_of_the_layout() {
-        let layout = Layout::new(vec![0, 4]).unwrap();
-        let division = Division::stripes(ChunkPos::new(2, -7), &layout);
-        assert_eq!(division.layout, Some(layout.fingerprint()));
+    fn regions_side_by_side_are_pinned_regions_numbered_from_west_to_east() {
+        let cuts = [0, 4];
+        let division = Division::side_by_side(ChunkPos::new(2, -7), &cuts).unwrap();
         division.check().unwrap();
         let table = Table::made_from(&division, 0, 1);
         assert_eq!(table.next_region, 3);
         assert_eq!(table.home_region, RegionId(1));
-        for (region, area) in layout.regions() {
+        let areas = [
+            area(None, Some(0)),
+            area(Some(0), Some(4)),
+            area(Some(4), None),
+        ];
+        for (region, area) in (0..).map(RegionId).zip(areas) {
             assert_eq!(table.pinned(region), [area]);
         }
         for x in -40..40 {
             let chunk = ChunkPos::new(x, x * 3);
-            let holder = layout.region_of(chunk);
+            // A cut belongs to the region east of it.
+            let holder = RegionId(cuts.partition_point(|cut| *cut <= x) as u32);
             assert_eq!(table.holder(chunk), Some(holder));
             for region in table.regions() {
                 let held = (region == holder).then_some(0);
@@ -558,7 +544,7 @@ mod tests {
             }
         }
         // One region pinned to the whole world.
-        let single = Division::stripes(ChunkPos::new(0, 0), &Layout::single());
+        let single = Division::side_by_side(ChunkPos::new(0, 0), &[]).unwrap();
         let table = Table::made_from(&single, 0, 1);
         assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
         assert_eq!(table.pinned(RegionId(0)), [ChunkArea::EVERYWHERE]);
@@ -583,7 +569,6 @@ mod tests {
         let alone = Division {
             home: ChunkPos::new(3, 3),
             pinned: Vec::new(),
-            layout: None,
         };
         let table = Table::made_from(&alone, 0, 1);
         assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
@@ -596,10 +581,7 @@ mod tests {
     fn an_open_world_is_one_home_region_that_is_pinned_to_nothing() {
         let home = ChunkPos::new(3, -7);
         let open = Division::open(home);
-        assert_eq!(
-            (open.home, &open.pinned, open.layout),
-            (home, &vec![], None)
-        );
+        assert_eq!((open.home, &open.pinned), (home, &vec![]));
         open.check().unwrap();
         let table = Table::made_from(&open, 0, 1);
         assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
@@ -642,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn regions_side_by_side_are_the_stripes_of_a_layout_but_for_its_fingerprint() {
+    fn regions_side_by_side_are_cut_where_they_are_told_and_cover_the_world() {
         let area = |min_x, max_x| ChunkArea { min_x, max_x };
         let home = ChunkPos::new(2, -7);
         let three = Division::side_by_side(home, &[-2, 4]).unwrap();
@@ -656,22 +638,23 @@ mod tests {
         assert_eq!(one.pinned, [ChunkArea::EVERYWHERE]);
 
         for cuts in [vec![], vec![4], vec![0, 4], vec![-2, 0, 5]] {
-            let layout = Layout::new(cuts.clone()).unwrap();
             for home in [ChunkPos::new(0, 0), ChunkPos::new(4, 1), home] {
-                let stripes = Division::stripes(home, &layout);
                 let pins = Division::side_by_side(home, &cuts).unwrap();
                 pins.check().unwrap();
-                assert_eq!((pins.home, &pins.pinned), (stripes.home, &stripes.pinned));
-                // A hello is held to no fingerprint.
-                assert_eq!(pins.layout, None);
-                // The tables are the same, so a world made with the one is found as it
-                // was by a store that is started with the other.
-                let of_stripes = Table::made_from(&stripes, 0, 1);
+                assert_eq!(pins.home, home);
+                // The areas are those a world of stripes at these cuts had: each from
+                // its cut up to the next, and nothing between them.
+                assert_eq!(pins.pinned.len(), cuts.len() + 1);
+                for (index, area) in pins.pinned.iter().enumerate() {
+                    let west = index.checked_sub(1).map(|west| cuts[west]);
+                    let east = cuts.get(index).copied();
+                    assert_eq!((area.min_x, area.max_x), (west, east), "{cuts:?}");
+                }
+                // The table is the one such a world had, so it is found as it was.
                 let of_pins = Table::made_from(&pins, 0, 1);
-                assert_eq!(of_pins, of_stripes);
-                assert!(of_stripes.is_of(&pins), "{cuts:?}");
-                assert!(of_pins.is_of(&stripes), "{cuts:?}");
-                assert_eq!(of_pins.home_region, layout.region_of(home));
+                assert!(of_pins.is_of(&pins), "{cuts:?}");
+                let home_region = cuts.partition_point(|cut| *cut <= home.x) as u32;
+                assert_eq!(of_pins.home_region, RegionId(home_region));
             }
         }
     }
@@ -707,7 +690,6 @@ mod tests {
             let division = Division {
                 home: ChunkPos::new(0, 0),
                 pinned,
-                layout: None,
             };
             assert!(
                 matches!(division.check(), Err(StoreError::Division { .. })),
@@ -744,12 +726,6 @@ mod tests {
             ..gap()
         };
         assert!(!read.is_of(&narrower));
-        // The fingerprint is no part of it: it is what hellos are held to.
-        let named = Division {
-            layout: Some(7),
-            ..gap()
-        };
-        assert!(read.is_of(&named));
     }
 
     #[test]

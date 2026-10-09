@@ -220,7 +220,6 @@ pub(crate) async fn keep_linked(
     mut table: RoutingTable,
     mut relinks: Relinks,
 ) {
-    let layout = table.layout.fingerprint();
     // Whether the edge has said that the world has another home region than its own.
     let mut warned = false;
     // The regions that were absorbed before this edge started, before any link: what
@@ -255,11 +254,7 @@ pub(crate) async fn keep_linked(
             state.trying = Some(route.epoch);
             state.again = None;
             let (region, epoch, address) = (route.region, route.epoch, route.address.clone());
-            let hello = RegionHello {
-                region,
-                epoch,
-                layout,
-            };
+            let hello = RegionHello { region, epoch };
             let linking = linking.clone();
             attempts.spawn(async move {
                 let link = match linking.link(&address, hello).await {
@@ -398,7 +393,7 @@ async fn next_table(watch: &mut Option<RoutingWatch>) -> Option<RoutingTable> {
 
 #[cfg(test)]
 mod tests {
-    use clustine_region::{Layout, RegionRoute};
+    use clustine_region::RegionRoute;
     use clustine_world::Vec3;
 
     use super::*;
@@ -412,7 +407,6 @@ mod tests {
         };
         RoutingTable {
             version: 1,
-            layout: Layout::single(),
             spawn: Vec3::new(0.5, 64.0, 0.5),
             routes: routed.iter().map(route).collect(),
             home: home.map(RegionId),

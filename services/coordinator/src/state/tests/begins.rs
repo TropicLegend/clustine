@@ -11,11 +11,10 @@ use super::*;
 /// A cluster whose coordinator `make` made at the cluster's start, for a world that
 /// was never divided into stripes.
 fn cluster(make: fn(CoordinatorConfig, Instant, u64) -> Coordinator) -> Cluster {
-    let layout = Layout::single();
     let start = Instant::now();
     Cluster {
-        coordinator: make(config(&layout), start, FIRST_EPOCH),
-        layout,
+        coordinator: make(config(), start, FIRST_EPOCH),
+        regions: stripes_of(&[]),
         start,
         addresses: BTreeMap::new(),
         last: None,
@@ -205,9 +204,8 @@ fn a_reading_that_fails_leaves_a_new_coordinator_waiting_for_its_first_list() {
 #[test]
 fn a_coordinator_made_knowing_its_regions_has_them_without_owners_and_awaits_no_list() {
     let start = Instant::now();
-    let layout = Layout::single();
     let known = [RegionId(0), RegionId(1), RegionId(6)];
-    let coordinator = Coordinator::knowing(config(&layout), start, FIRST_EPOCH, &known);
+    let coordinator = Coordinator::knowing(config(), start, FIRST_EPOCH, &known);
     assert!(!coordinator.awaits_the_list());
     assert_eq!(coordinator.home(), None);
     assert_eq!(coordinator.waiting(), known);
@@ -218,7 +216,7 @@ fn a_coordinator_made_knowing_its_regions_has_them_without_owners_and_awaits_no_
     );
 
     // Also when it is made knowing none: it is not what `new` makes.
-    let coordinator = Coordinator::knowing(config(&layout), start, FIRST_EPOCH, &[]);
+    let coordinator = Coordinator::knowing(config(), start, FIRST_EPOCH, &[]);
     assert!(!coordinator.awaits_the_list());
     assert_eq!(coordinator.waiting(), []);
 }
@@ -266,7 +264,6 @@ impl Lone {
         make: fn(CoordinatorConfig, Instant, u64) -> Coordinator,
         rest: u64,
     ) -> Self {
-        let layout = Layout::single();
         let start = Instant::now();
         let config = CoordinatorConfig {
             follow: Some(Policy {
@@ -274,11 +271,11 @@ impl Lone {
                 split_distance: 5,
                 rest: Duration::from_millis(rest),
             }),
-            ..config(&layout)
+            ..config()
         };
         let mut cluster = Cluster {
             coordinator: make(config, start, FIRST_EPOCH),
-            layout,
+            regions: stripes_of(&[]),
             start,
             addresses: BTreeMap::new(),
             last: None,

@@ -339,7 +339,6 @@ version = "0.0.0"
 dependencies = [
  "clustine-world",
  "serde",
- "thiserror",
 ]
 
 [[package]]

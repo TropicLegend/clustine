@@ -20,8 +20,8 @@
 //! regions/table        the regions there are and the chunks each holds
 //! regions/<r>.region   per region, its highest epoch and its entity ids
 //! regions/<r>.state    per region, its state as of its last checkpoint
-//! layout               only in a world from before there was a table: the fingerprint
-//!                      of the layout its regions were part of
+//! layout               only in a world from before there was a table; that it is
+//!                      there says so, and what it says is not read
 //! ```
 //!
 //! The table of regions is this thread's alone: it decides who holds a chunk, in the
@@ -74,8 +74,6 @@ pub(crate) struct Lanes {
     root: PathBuf,
     jobs: Sender<Job>,
     log: Log,
-    /// The fingerprint a hello has to name, if the world is divided as a layout is.
-    layout: Option<u64>,
     /// The regions there are and the chunks each holds.
     table: Table,
     /// A lane for every living region, and for no other.
@@ -424,25 +422,15 @@ impl Lanes {
             log.next = log.next.max(table.from);
         }
 
-        // A world from before there was a table says in this file how it was divided:
-        // the fingerprint of its layout. A store that is told no fingerprint has
-        // nothing to hold against it, and does not read what the file says.
+        // A world from before there was a table has this file, which said how it was
+        // divided. The store has nothing to hold against that any more, and does not
+        // read what the file says.
         let layout_path = root.join("layout");
-        let before = disk.read(&layout_path)?;
-        let as_before = match (&before, told.layout) {
-            (Some(bytes), Some(told)) => {
-                let layout = parse_layout(bytes).ok_or_else(|| {
-                    StoreError::MalformedMeta("the layout file is not a fingerprint".to_owned())
-                })?;
-                layout == told
-            }
-            _ => false,
-        };
         let remake = match &stored {
             Some(table) => !table.is_of(told),
-            // Such a world is kept as it is only if it was last served with the very
-            // layout the store is told, so it is made over whenever it is told none.
-            None => before.is_some() && !as_before,
+            // Such a world is made over whatever it was divided into (ADR-0017,
+            // section 2.2).
+            None => disk.exists(&layout_path)?,
         };
         let keep = stored.is_some() && !remake;
         let tabled = stored.is_some();
@@ -452,7 +440,6 @@ impl Lanes {
             root: root.to_owned(),
             jobs,
             log,
-            layout: told.layout,
             // Where there is none, this one stands in until the table is written below.
             table: stored.unwrap_or_else(|| Table::made_from(told, 0, 0)),
             regions,
@@ -1141,19 +1128,7 @@ impl Lanes {
         ),
         StoreError,
     > {
-        let RegionHello {
-            region,
-            epoch,
-            layout,
-        } = hello;
-        if let Some(expected) = self.layout
-            && expected != layout
-        {
-            return Err(StoreError::LayoutMismatch {
-                expected,
-                offered: layout,
-            });
-        }
+        let RegionHello { region, epoch } = hello;
         // Before anything is written: the regions are those the table has, and a hello
         // makes none.
         if !self.table.has(region) {
@@ -1788,10 +1763,6 @@ fn lose(lane: &mut Lane) {
     }
     lane.current = None;
     lane.installing = None;
-}
-
-fn parse_layout(bytes: &[u8]) -> Option<u64> {
-    u64::from_str_radix(std::str::from_utf8(bytes).ok()?.trim(), 16).ok()
 }
 
 /// The log, which all regions share so that one sync makes the commits of all of them

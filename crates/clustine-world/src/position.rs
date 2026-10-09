@@ -82,9 +82,9 @@ pub struct EntityId(pub i32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub Uuid);
 
-/// Identifies a region. Within a layout of stripes the regions are numbered from west
-/// to east; from `docs/adr/0010-regions-that-follow-players.md` on the world store gives
-/// a region its id, which is never used again.
+/// Identifies a region. The world store gives a region its id, which is never used
+/// again (`docs/adr/0010-regions-that-follow-players.md`); regions that it pins side
+/// by side are numbered from west to east.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RegionId(pub u32);
 

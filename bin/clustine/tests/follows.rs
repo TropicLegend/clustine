@@ -51,7 +51,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clustine_botswarm::{Ledger, LedgerReport, Progress, Random, audit_blocks, ledger};
 use clustine_coordinator::{Asked, Coordinator, CoordinatorConfig, Order, Policy, Reshaped};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, Crowds, PlayersOf, RegionInfo, RegionList, Vouch};
 use clustine_world::{ChunkArea, ChunkPos, Vec3};
 use tempfile::TempDir;
@@ -2235,8 +2235,6 @@ async fn regions_follow_their_players_when_the_coordinator_or_the_store_is_kille
 fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_that_failed() {
     let start = Instant::now();
     let config = CoordinatorConfig {
-        // One stripe: region 0 is the home region and holds everything.
-        layout: Layout::new(Vec::new()).expect("a world of one stripe"),
         spawn: Vec3::new(0.5, 64.0, 0.5),
         lease: Duration::from_secs(3),
         follow: Some(Policy {
@@ -2246,6 +2244,7 @@ fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_tha
         }),
     };
     let mut coordinator = Coordinator::new(config, start, 1_000);
+    // One region: region 0 is the home region and holds everything.
     let home = RegionId(0);
     let mut list = RegionList {
         home,
@@ -2259,8 +2258,7 @@ fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_tha
         next: RegionId(1),
     };
     for name in ["a", "b"] {
-        let registered = coordinator.register(start, name, &format!("{name}:25600"), &[], None);
-        registered.expect("it divides the world as the coordinator does");
+        coordinator.register(start, name, &format!("{name}:25600"), &[]);
     }
     // Two players stand in the chunk players enter in and one in chunk 6, as `A`
     // and `B` do after step 2 of the record's table.

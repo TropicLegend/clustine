@@ -44,9 +44,9 @@ use clustine_coordinator::{
     Asked, Changes, Coordinator, CoordinatorConfig, Order, Policy, ReleaseOrder, ReshapeOrder,
     Reshaped, Undone, named,
 };
-use clustine_region::{Layout, RegionId, RoutingTable};
+use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, PlayersOf, RegionInfo, RegionList, Vouch};
-use clustine_world::{ChunkPos, EntityIds, Vec3};
+use clustine_world::{ChunkArea, ChunkPos, EntityIds, Vec3};
 
 /// The lease of the coordinators of these tests, and so how often the list is read
 /// (`LIST_EVERY`).
@@ -87,12 +87,12 @@ fn region(id: u32) -> RegionId {
     RegionId(id)
 }
 
-/// A coordinator that knows the stripes of its layout from the start, as every
-/// coordinator did before it learnt its regions from the world store's list
+/// A coordinator that knows `regions` stripes from the start, numbered from 0, as
+/// every coordinator did before it learnt its regions from the world store's list
 /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). These tests are about
 /// what a coordinator does with regions it knows.
-fn knowing(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
-    let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
+fn knowing(config: CoordinatorConfig, regions: u32, now: Instant, first_epoch: u64) -> Coordinator {
+    let stripes: Vec<RegionId> = (0..regions).map(RegionId).collect();
     Coordinator::knowing(config, now, first_epoch, &stripes)
 }
 
@@ -245,7 +245,6 @@ struct World {
     /// When the coordinator was made.
     made: Instant,
     now: Instant,
-    fingerprint: u64,
     /// The workers that send heartbeats and reports, in the order they registered.
     heard: Vec<String>,
     /// The workers that say where their players are and send no heartbeats.
@@ -296,35 +295,36 @@ impl World {
 
     /// As [`World::anew`], with players entering the world at `spawn`.
     fn anew_at(follow: Option<Policy>, regions: u32, spawn: Vec3) -> Self {
+        // Each stripe is four chunks wide, but for the first and the last, which have
+        // no end in the west and in the east.
         let boundaries: Vec<i32> = (1..regions as i32).map(|stripe| stripe * 4).collect();
-        let layout = Layout::new(boundaries).expect("the boundaries ascend");
-        let fingerprint = layout.fingerprint();
+        let area = |stripe: usize| ChunkArea {
+            min_x: stripe.checked_sub(1).map(|west| boundaries[west]),
+            max_x: boundaries.get(stripe).copied(),
+        };
         let list = RegionList {
             home: region(0),
-            regions: layout
-                .regions()
-                .map(|(id, area)| RegionInfo {
-                    region: id,
+            regions: (0..regions)
+                .map(|id| RegionInfo {
+                    region: region(id),
                     epoch: 0,
                     bounds: None,
-                    pinned: vec![area],
+                    pinned: vec![area(id as usize)],
                 })
                 .collect(),
             absorbed: Vec::new(),
             next: region(regions),
         };
         let config = CoordinatorConfig {
-            layout,
             spawn,
             lease: LEASE,
             follow,
         };
         let now = Instant::now();
         Self {
-            coordinator: knowing(config, now, FIRST_EPOCH),
+            coordinator: knowing(config, regions, now, FIRST_EPOCH),
             made: now,
             now,
-            fingerprint,
             heard: Vec::new(),
             beatless: BTreeSet::new(),
             unvouched: BTreeSet::new(),
@@ -469,14 +469,7 @@ impl World {
         }
         let changes = self
             .coordinator
-            .register(
-                self.now,
-                name,
-                &address(name),
-                holding,
-                Some(self.fingerprint),
-            )
-            .expect("the worker has the coordinator's layout");
+            .register(self.now, name, &address(name), holding);
         self.take("register", changes)
     }
 
@@ -4830,7 +4823,7 @@ fn a_new_coordinator_begins_nothing_before_every_region_has_been_reported() {
 fn a_new_coordinator_begins_nothing_before_a_region_has_been_reported_that_the_first_reading_shows_as_having_taken_in_another()
  {
     let mut world = World::anew(follow(), 3);
-    // The store has region 1 of the layout absorbed by the home region.
+    // The store has region 1, which the coordinator knows, absorbed by the home region.
     world.merged(0, 1);
     world.register("a", &[held(0, 10), held(2, 12)]);
     world.mute.insert(0);

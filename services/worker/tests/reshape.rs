@@ -38,7 +38,7 @@ use std::thread;
 use std::time::Duration;
 
 use clustine_data::{BlockState, blocks, items};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
     Decline, EdgeMessage, EdgeToWorker, Off, Presence, RegionHello, RegionList, Restored,
@@ -173,10 +173,12 @@ enum Shape {
 }
 
 impl Shape {
-    fn layout(self) -> Option<Layout> {
+    /// The chunk x coordinates the stripes of the world are cut at, if it is one of
+    /// stripes.
+    fn cuts(self) -> Option<&'static [i32]> {
         match self {
-            Self::Stripes => Some(Layout::new(vec![1]).expect("one boundary is a layout")),
-            Self::Three => Some(Layout::new(vec![0, 4]).expect("two boundaries are a layout")),
+            Self::Stripes => Some(&[1]),
+            Self::Three => Some(&[0, 4]),
             Self::Gap => None,
         }
     }
@@ -204,8 +206,8 @@ struct World {
 
 impl World {
     fn new(shape: Shape, on_disk: bool) -> Self {
-        let division = match shape.layout() {
-            Some(layout) => Division::stripes(HOME, &layout),
+        let division = match shape.cuts() {
+            Some(cuts) => Division::side_by_side(HOME, cuts).expect("the cuts ascend"),
             None => Division {
                 home: HOME,
                 pinned: vec![
@@ -218,7 +220,6 @@ impl World {
                         max_x: None,
                     },
                 ],
-                layout: None,
             },
         };
         let generator = Arc::new(FlatGenerator::classic());
@@ -245,12 +246,7 @@ impl World {
     }
 
     fn hello(&self, region: RegionId, epoch: u64) -> RegionHello {
-        RegionHello {
-            region,
-            epoch,
-            // The division with a gap is that of no layout, and its store asks for none.
-            layout: self.shape.layout().map_or(0, |layout| layout.fingerprint()),
-        }
+        RegionHello { region, epoch }
     }
 
     /// An epoch above every one issued so far.
@@ -2558,12 +2554,10 @@ fn a_leave_that_names_the_entity_of_a_presence_answer_ends_that_stay_and_another
 
 /// The areas the stripes of a world are pinned to, in the order of their regions.
 fn areas(shape: Shape) -> Vec<ChunkArea> {
-    shape
-        .layout()
-        .expect("a world of stripes")
-        .regions()
-        .map(|(_, area)| area)
-        .collect()
+    let cuts = shape.cuts().expect("a world of stripes");
+    Division::side_by_side(HOME, cuts)
+        .expect("the cuts ascend")
+        .pinned
 }
 
 /// On stripes: region 0 with player 1, and region 1 with player 2, who walked over

@@ -18,7 +18,7 @@ mod common;
 use std::time::Duration;
 
 use clustine_botswarm::Bot;
-use clustine_region::{Layout, RegionId, RegionRoute, RoutingTable};
+use clustine_region::{RegionId, RegionRoute, RoutingTable};
 use clustine_rpc::link::End;
 use clustine_rpc::{
     EdgeMessage, EdgeToWorker, FromCoordinator, Presence, ToCoordinator, Welcome, WorkerToEdge, tcp,
@@ -72,8 +72,6 @@ fn table(
     });
     FromCoordinator::Routing(RoutingTable {
         version,
-        // What is left of the layout until it goes: a world without a boundary.
-        layout: Layout::single(),
         spawn: SPAWN,
         routes: routes.collect(),
         home: home.map(RegionId),
@@ -345,8 +343,8 @@ async fn a_join_goes_to_the_home_region_of_the_first_table_whatever_later_tables
     let second = Worker::new("the second worker of the home region").await;
     let another = Worker::new("the second worker of region 0").await;
 
-    // The home region is region 2, and not the region that has the chunk players
-    // enter in by any layout: only the table says so.
+    // The home region is region 2, and not the region that had the chunk players
+    // enter in when a world was divided into stripes: only the table says so.
     let edge = stage.watched().await;
     let routes = [
         (0, 5, other.address.as_str()),

@@ -30,7 +30,7 @@ use clustine_coordinator::{
     ReleaseOrder, ReshapeOrder, ReshapeRefusal, Reshaped, RoutingWatch, Undone, WorkerClient,
     WorkerEvent, serve_with,
 };
-use clustine_region::{Layout, RegionId, RoutingTable};
+use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, RegionInfo, RegionList, Vouch};
 use clustine_world::{ChunkPos, EntityIds, Vec3};
 use tokio::net::TcpListener;
@@ -52,9 +52,8 @@ fn region(id: u32) -> RegionId {
     RegionId(id)
 }
 
-fn config(boundaries: &[i32], lease: Duration) -> CoordinatorConfig {
+fn config(lease: Duration) -> CoordinatorConfig {
     CoordinatorConfig {
-        layout: Layout::new(boundaries.to_vec()).expect("the boundaries ascend"),
         spawn: Vec3::new(0.5, 64.0, 0.5),
         lease,
         follow: None,
@@ -65,13 +64,14 @@ fn address(name: &str) -> String {
     format!("{name}:25600")
 }
 
-/// A coordinator that knows the stripes of its layout from the start, as every
-/// coordinator did before it learnt its regions from the world store's list
+/// A coordinator that knows the stripes of a world with these boundaries from the
+/// start, one more than there are boundaries, as every coordinator did before it
+/// learnt its regions from the world store's list
 /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). These tests are about
 /// what a coordinator does with regions it knows.
-fn knowing(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
-    let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
-    Coordinator::knowing(config, now, first_epoch, &stripes)
+fn knowing(boundaries: &[i32], lease: Duration, now: Instant, first_epoch: u64) -> Coordinator {
+    let stripes: Vec<RegionId> = (0..=boundaries.len() as u32).map(RegionId).collect();
+    Coordinator::knowing(config(lease), now, first_epoch, &stripes)
 }
 
 /// What a worker reports of a region it runs already.
@@ -150,7 +150,6 @@ fn add(total: &mut Changes, more: Changes) {
 struct Cluster {
     coordinator: Coordinator,
     now: Instant,
-    fingerprint: u64,
     /// The workers that send heartbeats while time passes.
     heard: Vec<String>,
     /// Those of them whose heartbeats vouch for nothing.
@@ -163,13 +162,10 @@ impl Cluster {
 
     /// A coordinator that has just been made, and knows of no worker.
     fn anew(boundaries: &[i32]) -> Self {
-        let config = config(boundaries, LEASE);
-        let fingerprint = config.layout.fingerprint();
         let now = Instant::now();
         Self {
-            coordinator: knowing(config, now, FIRST_EPOCH),
+            coordinator: knowing(boundaries, LEASE, now, FIRST_EPOCH),
             now,
-            fingerprint,
             heard: Vec::new(),
             vouchless: Vec::new(),
         }
@@ -219,14 +215,7 @@ impl Cluster {
             self.heard.push(name.to_owned());
         }
         self.coordinator
-            .register(
-                self.now,
-                name,
-                &address(name),
-                holding,
-                Some(self.fingerprint),
-            )
-            .expect("the worker has the coordinator's layout")
+            .register(self.now, name, &address(name), holding)
     }
 
     /// The worker registers again with what it was told to run, as one does that
@@ -1855,7 +1844,8 @@ fn a_split_orders_the_next_id_of_the_list_and_an_epoch_above_every_other() {
     assert!(!changes.routing);
     assert_eq!(cluster.table(), before.table());
 
-    // The id is that of the reading before it, whatever regions the layout has.
+    // The id is that of the reading before it, whatever regions the coordinator was
+    // made knowing.
     let mut later = before.clone();
     later.listed(&list(&[0, 1, 2, 5, 8], &[(3, 0), (4, 8)], 9));
     assert_eq!(later.split(1).1, 9);
@@ -2490,13 +2480,12 @@ fn the_routing_table_is_complete_when_every_known_region_has_an_owner() {
     assert!(!table.is_complete());
     assert!(table.version > version);
 
-    // A table with fewer routes than the layout has stripes is complete when the
-    // regions are fewer.
+    // A table with fewer routes than the coordinator was made knowing regions, which
+    // were three, is complete when the regions are fewer.
     cluster.absorb_ended(1, 2, Ok(()));
     cluster.listed(&list(&[0, 1], &[(3, 0), (2, 1)], 4));
     let table = cluster.table();
     assert_eq!(table.routes.len(), 2);
-    assert_eq!(table.layout.region_count(), 3);
     assert!(table.is_complete());
 }
 
@@ -3823,7 +3812,7 @@ fn the_other_regions_of_a_leaving_worker_are_released_while_its_reserved_one_wai
 #[test]
 fn a_merge_and_a_split_are_refused_when_epochs_have_run_out() {
     let mut cluster = Cluster::anew(&[0, 4]);
-    cluster.coordinator = knowing(config(&[0, 4], LEASE), cluster.now, u64::MAX);
+    cluster.coordinator = knowing(&[0, 4], LEASE, cluster.now, u64::MAX);
     cluster.register("a", &[held(0, 10)]);
     cluster.register("b", &[held(1, 11)]);
     cluster.register("c", &[held(2, 12)]);
@@ -4204,7 +4193,6 @@ struct Run {
     /// How far the time moves when it does: a quarter of a second, a second or a tenth,
     /// by the seed. With a second, a lease is soon over and much is overdue.
     pace: Duration,
-    config: CoordinatorConfig,
     coordinator: Coordinator,
     started: Instant,
     now: Instant,
@@ -4251,15 +4239,13 @@ impl Run {
     const PACE: Duration = Duration::from_millis(250);
 
     fn new(seed: u64, faults: Faults) -> Self {
-        let config = config(&Self::BOUNDARIES, LEASE);
         let now = Instant::now();
         let mut run = Self {
             seed,
             dice: Dice(seed),
             faults,
             pace: Duration::from_millis([250, 1_000, 100][(seed % 3) as usize]),
-            coordinator: knowing(config.clone(), now, FIRST_EPOCH),
-            config,
+            coordinator: knowing(&Self::BOUNDARIES, LEASE, now, FIRST_EPOCH),
             started: now,
             now,
             store: Store::stripes(Self::BOUNDARIES.len() as u32 + 1),
@@ -4917,14 +4903,9 @@ impl Run {
     /// The worker registers with what it runs. The service reads the list then.
     fn register(&mut self, name: &str) {
         let holding: Vec<Assignment> = self.workers[name].runs.values().copied().collect();
-        let fingerprint = self.config.layout.fingerprint();
-        let registered =
-            self.coordinator
-                .register(self.now, name, &address(name), &holding, Some(fingerprint));
-        let changes = match registered {
-            Ok(changes) => changes,
-            Err(refusal) => self.fail(format!("{name} is refused: {refusal}")),
-        };
+        let changes = self
+            .coordinator
+            .register(self.now, name, &address(name), &holding);
         self.process(name).connected = true;
         // Its first answer is its orders, whether or not they changed.
         if !changes.workers.iter().any(|changed| changed == name) {
@@ -5158,7 +5139,7 @@ impl Run {
         } else {
             "coordinators made anew in the middle of a merge or a split"
         });
-        self.coordinator = knowing(self.config.clone(), self.now, self.highest + 1_000);
+        self.coordinator = knowing(&Self::BOUNDARIES, LEASE, self.now, self.highest + 1_000);
         self.highest += 1_000;
         for name in Self::names() {
             self.process(&name).connected = false;
@@ -5548,7 +5529,6 @@ impl Lists {
 struct Service {
     address: String,
     lists: Lists,
-    fingerprint: u64,
     /// Hears of every reading of the list when it has looked at it.
     looked: mpsc::UnboundedReceiver<()>,
 }
@@ -5564,8 +5544,7 @@ impl Service {
             .local_addr()
             .expect("the listener has an address")
             .to_string();
-        let config = config(boundaries, lease);
-        let fingerprint = config.layout.fingerprint();
+        let boundaries = boundaries.to_vec();
         let (looked, hears) = mpsc::unbounded_channel();
         let lists = Lists(Arc::new(Reading {
             list: Mutex::new(list),
@@ -5579,12 +5558,16 @@ impl Service {
         // `serve` makes its own.
         tokio::spawn(async move {
             let now = tokio::time::Instant::now().into_std();
-            serve_with(listener, knowing(config, now, FIRST_EPOCH), reader).await
+            serve_with(
+                listener,
+                knowing(&boundaries, lease, now, FIRST_EPOCH),
+                reader,
+            )
+            .await
         });
         Self {
             address,
             lists,
-            fingerprint,
             looked: hears,
         }
     }
@@ -5615,7 +5598,6 @@ impl Service {
             name,
             &address(name),
             &holding,
-            Some(self.fingerprint),
             HEARTBEAT,
         ))
         .await
@@ -5749,7 +5731,8 @@ async fn merge_to_absorb(a: &mut WorkerClient, b: &mut WorkerClient) -> u64 {
 
 #[tokio::test]
 async fn the_service_reads_the_list_when_it_starts() {
-    // The list has a region more than the layout, and one that was absorbed.
+    // The list has a region more than the coordinator knows, and one that was
+    // absorbed.
     let listed = list(&[0, 1, 2, 4], &[(3, 0)], 5);
     let service = Service::start(&[0, 4], LONG_LEASE, Some(listed)).await;
     let mut watch = service.watch().await;
@@ -6091,7 +6074,6 @@ async fn the_service_does_not_judge_a_merge_by_a_reading_from_before_its_workers
     // A worker registers, for which the list is read; the reading sees both regions
     // living and is held back.
     let address = service.address.clone();
-    let fingerprint = service.fingerprint;
     let mut late = None;
     service
         .hold_a_reading(async {
@@ -6100,7 +6082,6 @@ async fn the_service_does_not_judge_a_merge_by_a_reading_from_before_its_workers
                 "d",
                 "d:25600",
                 &[],
-                Some(fingerprint),
                 HEARTBEAT,
             ))
             .await
@@ -6135,7 +6116,6 @@ async fn the_service_does_not_judge_a_request_by_a_reading_from_before_it() {
     let (_a, mut b, _c, _watch, _) = three_workers_of(&service).await;
 
     let address = service.address.clone();
-    let fingerprint = service.fingerprint;
     let mut late = None;
     service
         .hold_a_reading(async {
@@ -6144,7 +6124,6 @@ async fn the_service_does_not_judge_a_request_by_a_reading_from_before_it() {
                 "d",
                 "d:25600",
                 &[],
-                Some(fingerprint),
                 HEARTBEAT,
             ))
             .await
@@ -6198,17 +6177,10 @@ fn the_coordinator_reads_the_list_again_after_a_split_whose_worker_lost_the_stor
         absorbed: Vec::new(),
         next: RegionId(next),
     };
-    let config = CoordinatorConfig {
-        layout: Layout::new(Vec::new()).expect("a world of one region"),
-        spawn: Vec3::new(0.5, 64.0, 0.5),
-        lease,
-        follow: None,
-    };
     let start = Instant::now();
-    let mut coordinator = knowing(config, start, 1_000);
-    coordinator
-        .register(start, "a", "a:25600", &[], None)
-        .expect("the worker is let in");
+    // A world of one region.
+    let mut coordinator = knowing(&[], lease, start, 1_000);
+    coordinator.register(start, "a", "a:25600", &[]);
     coordinator.listed(start, &list(&[0], 1));
     // A new coordinator gives nothing away for a lease, and the worker goes on saying
     // that it is there.

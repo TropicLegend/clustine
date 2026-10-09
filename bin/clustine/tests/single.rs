@@ -32,7 +32,7 @@ use clustine_botswarm::Bot;
 use clustine_coordinator::Policy;
 use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, RegionHello, RegionInfo, RegionList, StoreRequest};
 use clustine_world::ChunkPos;
 use clustine_worldgen::FlatGenerator;
@@ -476,7 +476,6 @@ fn make_a_world_that_cannot_be_restored(world: &Path) {
     let hello = RegionHello {
         region: HOME,
         epoch: 1,
-        layout: Layout::single().fingerprint(),
     };
     let (handle, _) = store.open_region(hello).unwrap();
     let unreadable = vec![0, clustine_worker::STATE_FORMAT, 0xff, 0xff, 0xff];
@@ -1447,7 +1446,7 @@ const PINNED: &str = "the world has regions that are pinned to an area: a region
                       off here cannot grow. Start the coordinator with --reshape by-hand to keep \
                       pinned regions as they are";
 
-// P8, but for the refusal of `--boundaries`, which is a later step's.
+// P8, but for the refusal of `--boundaries`, which is further down.
 //
 /// `clustine` started with nothing logs that it reshapes by itself, with the distances
 /// that follow from the view distance it has when it is told none, 22 and 30, and so
@@ -1571,6 +1570,141 @@ async fn the_single_process_refuses_pins_that_do_not_ascend() {
         assert!(complained.contains(sentence), "--pin={pins}: {complained}");
     }
     assert!(!directory.path().join("refused").exists());
+}
+
+/// Runs `clustine` with `arguments`, which it is expected not to start with: the
+/// status it ended with, what it printed and what it complained of. A process that
+/// takes them would not end, so this does not wait for it for ever.
+async fn ended(arguments: &[&str]) -> (Option<i32>, String, String) {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_clustine"));
+    command
+        .args(arguments)
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let Ok(output) = tokio::time::timeout(PATIENCE, command.output()).await else {
+        panic!("clustine {arguments:?} did not end");
+    };
+    let output = output.expect("the server binary runs");
+    let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+    let complained = String::from_utf8_lossy(&output.stderr).into_owned();
+    (output.status.code(), printed, complained)
+}
+
+// P8, "`clustine --boundaries 4` exits with 2 and the sentence of section 8; so do the
+// two subcommands", which is T6's refusal for the store as well. Written with the step
+// that took the layout away, by its builder.
+//
+/// `--boundaries` is refused by each of the three commands that took it, with exit
+/// code 2 and the sentence section 8 has for that command, as the command line
+/// refuses anything else: however the flag is written, and whatever stands beside it.
+/// Nothing is made of a world for it.
+#[tokio::test]
+async fn boundaries_are_refused_by_each_command_that_took_them_with_what_to_say_instead() {
+    if a_repetition() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let world = directory.path().join("refused");
+    let world = world.to_str().expect("a path in words");
+    let address = free_address().await;
+    // Each command with where it would listen and keep its world, should it start
+    // after all; its sentence; something to stand beside the flag: pins that are
+    // refused by themselves, and the two things the sentences say to write instead;
+    // and how the command is started, which a refusal has below it.
+    let commands: [(&[&str], &str, &[&str], &str); 3] = [
+        (
+            &["--bind", &address, "--world", world],
+            "--boundaries is no more: regions follow their players now, and a world begins \
+             as one. For regions pinned side by side as before, say --pin 4 --reshape \
+             by-hand (with your coordinates for 4).",
+            &["--pin", "5,4"],
+            "Usage: clustine [OPTIONS]",
+        ),
+        (
+            &["coordinator", "--listen", "127.0.0.1:0"],
+            "--boundaries is no more: the coordinator learns which regions there are from \
+             the world store. Regions pinned side by side are the store's to be told \
+             (clustine worldstore --pin 4); say --reshape by-hand here if they are to stay \
+             as they are.",
+            &["--reshape", "by-hand"],
+            "Usage: clustine coordinator [OPTIONS]",
+        ),
+        (
+            &["worldstore", "--listen", "127.0.0.1:0", "--world", world],
+            "--boundaries is --pin now: --pin 4 pins two regions side by side at chunk x = \
+             4. Without it the world is one home region, and regions follow their players.",
+            &["--pin", "4"],
+            "Usage: clustine worldstore [OPTIONS]",
+        ),
+    ];
+    // As it was written: one boundary, several, a first one that is negative, with an
+    // equals sign, and with nothing behind it.
+    let writings: [&[&str]; 6] = [
+        &["--boundaries", "4"],
+        &["--boundaries", "0,4"],
+        &["--boundaries", "-2,0,5"],
+        &["--boundaries=4"],
+        &["--boundaries=-2,0,5"],
+        &["--boundaries"],
+    ];
+    for (command, sentence, beside, usage) in commands {
+        for writing in writings {
+            for with in [&[][..], beside] {
+                let arguments = [command, with, writing].concat();
+                let (code, printed, complained) = ended(&arguments).await;
+                assert_eq!(code, Some(2), "{arguments:?}: {complained}");
+                assert!(complained.contains(sentence), "{arguments:?}: {complained}");
+                // As the parser refuses: with how the command is started below it.
+                assert!(complained.contains(usage), "{arguments:?}: {complained}");
+                assert!(printed.is_empty(), "{arguments:?} printed {printed}");
+            }
+        }
+    }
+    assert!(!Path::new(world).exists());
+}
+
+// Section 8: "the flag stays in the parser, hidden from the help", and what the help
+// of `clustine move --region` says instead of "from west to east".
+//
+/// No help names `--boundaries`, and each command that pins regions names `--pin`.
+/// The help of `clustine move` says how regions are numbered now.
+#[tokio::test]
+async fn no_help_names_boundaries_and_the_help_of_a_move_says_how_regions_are_numbered() {
+    if a_repetition() {
+        return;
+    }
+    // What a help says, with its lines joined: where a line breaks is the terminal's.
+    let help = |printed: String| printed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let commands: [(&[&str], bool); 5] = [
+        (&[], true),
+        (&["coordinator"], false),
+        (&["worldstore"], true),
+        (&["worker"], false),
+        (&["edge"], false),
+    ];
+    for (command, pins) in commands {
+        for flag in ["--help", "-h"] {
+            let arguments = [command, &[flag][..]].concat();
+            let (code, printed, complained) = ended(&arguments).await;
+            assert_eq!(code, Some(0), "{arguments:?}: {complained}");
+            let said = help(printed);
+            assert!(!said.contains("--boundaries"), "{arguments:?}: {said}");
+            assert_eq!(said.contains("--pin"), pins, "{arguments:?}: {said}");
+        }
+    }
+    let (code, printed, complained) = ended(&["move", "--help"]).await;
+    assert_eq!(code, Some(0), "{complained}");
+    let said = help(printed);
+    // Without its full stop, which a help does not print at its end.
+    assert!(
+        said.contains(
+            "Regions are numbered as the world store makes them: a new world's home region \
+             is 0, and the routing table in the coordinator's log names the others"
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("from west to east"), "{said}");
 }
 
 /// A single process that is started with `pins`, which pin four regions side by side

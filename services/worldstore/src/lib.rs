@@ -56,9 +56,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use clustine_format::{FormatError, Hash};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest};
-use clustine_world::{ChunkGenerator, ChunkPos};
+use clustine_world::{ChunkArea, ChunkGenerator, ChunkPos};
 
 use crate::chunks::{ChunkService, Chunks, FileChunks, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk};
@@ -96,9 +96,6 @@ pub enum StoreError {
         /// The highest epoch the region has been opened with.
         seen: u64,
     },
-    /// The store's regions are part of another layout than the one in the hello.
-    #[error("the store's regions are part of layout {expected:016x}, not of layout {offered:016x}")]
-    LayoutMismatch { expected: u64, offered: u64 },
     /// The region has been absorbed by another, and is none any more.
     #[error("region {region} has been absorbed by region {into}")]
     Absorbed { region: RegionId, into: RegionId },
@@ -258,7 +255,7 @@ pub struct Store {
 
 impl Store {
     /// Starts a store that keeps everything in memory only, for a world that is one
-    /// region: [`Store::memory_divided`] with the one stripe of [`Layout::single`] and
+    /// region: [`Store::memory_divided`] with one region pinned to the whole world and
     /// the home chunk at the origin.
     pub fn memory(generator: Arc<dyn ChunkGenerator>) -> Store {
         Self::memory_divided(generator, undivided())
@@ -294,10 +291,10 @@ impl Store {
     /// If the world there was divided otherwise, by other areas or with another home
     /// chunk, it is made over: what its regions committed is put into the stored
     /// chunks, their states are dropped, and its regions are those of `division`. So
-    /// is a world from before there was a table of regions, unless `division` is that
-    /// of the layout it was last served with. The store says in its log, once, that
-    /// it has made the world over, and that whoever was in the world has to join
-    /// again: whoever still runs a region of it finds the region gone, or begun anew.
+    /// is a world from before there was a table of regions, whatever it was divided
+    /// into. The store says in its log, once, that it has made the world over, and
+    /// that whoever was in the world has to join again: whoever still runs a region
+    /// of it finds the region gone, or begun anew.
     pub fn local_divided(
         root: &Path,
         generator: Arc<dyn ChunkGenerator>,
@@ -375,9 +372,8 @@ impl Store {
     /// handles: what the previous owner asked for before it is done first, and the
     /// commits among that are what the region is restored with.
     ///
-    /// The regions are those of the division the store was started with: a hello for
-    /// a region there is none of is refused, and so is one that names another layout
-    /// than the division's. A region has one owner at a time. A hello with
+    /// The regions are those the store's table has: a hello for a region there is
+    /// none of is refused. A region has one owner at a time. A hello with
     /// the epoch of the owner, or a higher one, replaces the owner, whose handle is lost
     /// from then on: what it asks for is not done and it is not answered. A hello with a
     /// lower epoch than the highest the region has been opened with is refused, also
@@ -505,7 +501,10 @@ impl StoreHandle {
 
 /// A world that is one region, which players enter at the origin.
 fn undivided() -> Division {
-    Division::stripes(ChunkPos::new(0, 0), &Layout::single())
+    Division {
+        home: ChunkPos::new(0, 0),
+        pinned: vec![ChunkArea::EVERYWHERE],
+    }
 }
 
 /// The hello of the first owner of a region that covers the whole world.
@@ -513,7 +512,6 @@ fn whole_world() -> RegionHello {
     RegionHello {
         region: RegionId(0),
         epoch: 1,
-        layout: Layout::single().fingerprint(),
     }
 }
 

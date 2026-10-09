@@ -761,7 +761,7 @@ mod tests {
     use std::sync::Barrier;
 
     use clustine_data::{BLOCK_STATE_COUNT, BlockState, blocks};
-    use clustine_region::{Layout, RegionId};
+    use clustine_region::RegionId;
     use clustine_world::{BlockPos, Chunk, ChunkPos};
 
     use super::*;
@@ -1035,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn refusals_for_a_lower_epoch_and_for_another_layout_arrive_with_their_reason() {
+    fn refusals_for_a_lower_epoch_and_for_a_region_there_is_none_of_arrive_with_their_reason() {
         let directory = tempfile::tempdir().unwrap();
         let origin = ChunkPos::new(0, 0);
         for store in stores(directory.path()) {
@@ -1068,18 +1068,13 @@ mod tests {
                 );
                 assert!(error.to_string().ends_with(&reason.to_string()), "{error}");
             };
-            let other = RegionHello {
-                layout: Layout::single().fingerprint(),
-                ..hello(0, 1)
+            let reason = StoreError::UnknownRegion {
+                region: RegionId(2),
             };
-            let reason = StoreError::LayoutMismatch {
-                expected: hello(0, 1).layout,
-                offered: other.layout,
-            };
-            refused(other, reason);
+            refused(hello(2, 1), reason);
 
-            // The owner is none the worse for it, and the region that was asked for
-            // with another layout was not taken.
+            // The owner is none the worse for it, and no region was taken by a hello
+            // that was refused.
             assert!(!owner.is_lost());
             assert_eq!(load(&owner, origin), edited());
             let west = connect(&address, hello(0, 1));
@@ -1315,11 +1310,7 @@ mod tests {
         let (origin, far) = (ChunkPos::new(0, 0), ChunkPos::new(-9, 9));
         // A world of three regions, so that there is one for the connection that stops
         // in the middle of a request: a hello for a region there is none of is refused.
-        let stripes = Layout::new(vec![0, 16]).unwrap();
-        let three = Division {
-            pinned: stripes.regions().map(|(_, area)| area).collect(),
-            ..division()
-        };
+        let three = Division::side_by_side(division().home, &[0, 16]).unwrap();
         let stores = [
             Store::memory_divided(generator(), three.clone()).unwrap(),
             Store::local_divided(directory.path(), generator(), three).unwrap(),

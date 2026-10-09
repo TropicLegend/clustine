@@ -47,17 +47,16 @@ fn following(boundaries: &[i32]) -> Cluster {
 
 /// [`following`] for a coordinator that goes by `policy`.
 fn following_by(policy: Policy, boundaries: &[i32]) -> Cluster {
-    let layout = Layout::new(boundaries.to_vec()).unwrap();
+    let regions = stripes_of(boundaries);
     let start = Instant::now();
     let config = CoordinatorConfig {
-        layout: layout.clone(),
         spawn: SPAWN,
         lease: Duration::from_millis(LEASE),
         follow: Some(policy),
     };
     Cluster {
-        coordinator: Coordinator::knowing(config, start, FIRST_EPOCH, &stripes_of(&layout)),
-        layout,
+        coordinator: Coordinator::knowing(config, start, FIRST_EPOCH, &regions),
+        regions,
         start,
         addresses: BTreeMap::new(),
         last: None,

@@ -53,9 +53,9 @@ release.
   into directories of 32×32 chunks (`rx = x >> 5`, `rz = z >> 5`).
 
 A world from before the store kept a table of regions has a file `layout` instead of
-`regions/table`, with the fingerprint of the layout its regions were last part of, in
-hexadecimal. It is read once, when such a world is started (see "Regions" below), and
-removed when the table is durable.
+`regions/table`. What the file says is not read: that it is there makes the store make
+the world over when such a world is started (see "Regions" below), and it is removed
+when the table is durable.
 
 A world from before regions had a state has a log per region instead, `logs/<region>.wal`,
 and one from before there were regions a single log, `wal` next to `meta`. Their records
@@ -222,13 +222,12 @@ segment, and the segments before it go.
   a region that a split makes. A region that is in neither list of the table has gone
   for good. The store remembers the latest 4096 regions that were absorbed.
 - When a store starts on a world whose table was made from **another division**, by
-  other areas or with another home chunk, or on a world from before with another
-  layout, the world is made over: the block changes of every region's commits that
-  count are applied to the chunks and made durable, an opened record with `restored` 0
-  is written for every region that had anything, the state files are removed, and then
-  the table of the new division is written. Until that table is durable, a store that
-  starts finds the old one and does all of it again. A world from before with the
-  layout it is started with keeps its regions as they are, and only gets its table.
+  other areas or with another home chunk, or on a world from before, which has a
+  `layout` file and no table, the world is made over: the block changes of every
+  region's commits that count are applied to the chunks and made durable, an opened
+  record with `restored` 0 is written for every region that had anything, the state
+  files are removed, and then the table of the new division is written. Until that
+  table is durable, a store that starts finds the old one and does all of it again.
 - When a region is opened, a block change of its commits is applied to the stored chunk
   only if the region holds the chunk now and the commit's tick is above the tick it
   holds the chunk from (0 for a chunk it holds by being pinned): what it did to a chunk

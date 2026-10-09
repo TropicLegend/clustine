@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clustine_coordinator::{CoordinatorConfig, Policy};
-use clustine_region::Layout;
 use clustine_worldstore::StoreError;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
@@ -17,8 +16,6 @@ use crate::spawn_point;
 #[derive(Debug, Clone)]
 pub struct CoordinatorArgs {
     pub listen: SocketAddr,
-    /// The chunk x coordinates at which the world is divided into regions, ascending.
-    pub boundaries: Vec<i32>,
     /// How long a worker may be silent before its region is given to another.
     pub lease: Duration,
     /// Host and port of the world store, whose list says which regions there are.
@@ -69,29 +66,25 @@ pub(crate) fn say_how_it_reshapes(follow: Option<&Policy>, view_distance: u32) {
 
 /// Runs a coordinator until the process is asked to stop.
 pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
-    let layout = Layout::new(args.boundaries).context("dividing the world into regions")?;
     let listener = TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
     info!(
         address = %listener.local_addr()?,
-        regions = layout.region_count(),
         store = %args.store,
         "coordinating"
     );
     say_how_it_reshapes(args.follow.as_ref(), args.view_distance);
     let config = CoordinatorConfig {
-        layout,
         spawn: spawn_point(),
         lease: args.lease,
         follow: args.follow,
     };
     // Which regions there are, and which of them were absorbed, the world store says
     // (`docs/adr/0014-merging-and-splitting.md`, section 5.2). While it cannot be
-    // reached the coordinator goes by what its workers report, and by its stripes if
-    // it was told any, and refuses to merge and to split. One that was told no
-    // boundary knows no region until the store has answered, and reads until it has
-    // (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
+    // reached the coordinator goes by what its workers report and refuses to merge
+    // and to split: it knows no other region until the store has answered, and reads
+    // until it has (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
     let store = args.store;
     let lists = move || {
         clustine_worldstore::regions(&store).map_err(|error| match error {

@@ -21,7 +21,7 @@ use clustine_coordinator::{CoordinatorConfig, Policy, Reach, WorkerClient, serve
 use clustine_data::items;
 pub use clustine_edge::EdgeConfig;
 use clustine_edge::{Edge, EdgeIdentity, Routing};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_world::{ChunkGenerator, ChunkPos, Vec3};
@@ -68,13 +68,6 @@ pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
 /// Where players enter the world: above the middle of the block at the origin.
 pub(crate) fn spawn_point() -> Vec3 {
     Vec3::new(0.5, f64::from(FlatGenerator::classic().surface_y()), 0.5)
-}
-
-/// How the world store is told the world is divided: the stripes of `layout` as its
-/// pinned regions, with the chunk of [`spawn_point`] as the one players enter in.
-pub(crate) fn division(layout: &Layout) -> Division {
-    let spawn = spawn_point();
-    Division::stripes(ChunkPos::containing(spawn.x, spawn.z), layout)
 }
 
 /// Resolves when the process is asked to stop: by an interrupt from the terminal or,
@@ -225,9 +218,6 @@ impl Server {
             })
         };
         let coordinator_config = CoordinatorConfig {
-            // Until nothing carries a layout any more. It has no boundary, and a
-            // coordinator knows no region by one that has none.
-            layout: Layout::single(),
             spawn,
             lease: CoordinatorConfig::DEFAULT_LEASE,
             follow: config.follow,
@@ -246,7 +236,7 @@ impl Server {
                 None => Err(StoreError::Io(stopping())),
             }
         });
-        let registered = WorkerClient::register(&reach, WORKER, HERE, &[], None)
+        let registered = WorkerClient::register(&reach, WORKER, HERE, &[])
             .await
             .context("registering the worker with the coordinator of this process")?;
         let (serving_sender, serving) = watch::channel(Serving::default());

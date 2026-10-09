@@ -1,7 +1,8 @@
 //! The store's scenarios of the end of the stripes: T1 to T5, T7, T9 and T10 of section
 //! 9.3 of `docs/adr/0017-the-end-of-the-stripes.md`, written from that record by
-//! someone who did not write what they test. T6 is the command line's, and T8 belongs
-//! to the step that takes the layout out of a hello: neither is here.
+//! someone who did not write what they test. T6 is the command line's and is not
+//! here. T8 is at the end, and was written with the step that took the layout out of a
+//! hello, by its builder.
 //!
 //! Every test names its scenario. Where the record leaves something open, the comment
 //! at the test says how it was read.
@@ -62,9 +63,10 @@ fn pinned_at(cuts: &[i32]) -> Division {
     Division::side_by_side(HOME, cuts).expect("cuts that ascend")
 }
 
-/// The two stripes of a layout cut at [`CUT`], as a store was told before this step.
+/// The two stripes of a world cut at [`CUT`], as a store was told before there were
+/// pins: the regions [`pinned_at`] pins there, which is all that was ever kept of them.
 fn stripes() -> Division {
-    Division::stripes(HOME, &Layout::new(vec![CUT]).expect("one boundary"))
+    pinned_at(&[CUT])
 }
 
 fn area(min_x: Option<i32>, max_x: Option<i32>) -> ChunkArea {
@@ -390,16 +392,17 @@ fn a_division_is_open_or_side_by_side_at_cuts_that_ascend() {
         );
     }
 
-    // They are the areas of the stripes of a layout with the same boundaries, with the
-    // same home chunk: what a store compares a world with.
+    // They are the areas stripes with the same boundaries had, with the same home
+    // chunk: what a store compares a world with.
     for cuts in [&[4][..], &[0, 4], &[-2, 0, 5]] {
         let told = Division::side_by_side(HOME, cuts).unwrap();
-        let stripes = Division::stripes(HOME, &Layout::new(cuts.to_vec()).unwrap());
-        assert_eq!(
-            (told.home, &told.pinned),
-            (stripes.home, &stripes.pinned),
-            "{cuts:?}"
-        );
+        let stripes: Vec<ChunkArea> = (0..=cuts.len())
+            .map(|index| {
+                let west = index.checked_sub(1).map(|west| cuts[west]);
+                area(west, cuts.get(index).copied())
+            })
+            .collect();
+        assert_eq!((told.home, &told.pinned), (HOME, &stripes), "{cuts:?}");
         // And a store that is started with them has that many pinned regions, of
         // which the one with the home chunk is home.
         let store = Store::memory_divided(generator(), told.clone()).unwrap();
@@ -1111,13 +1114,14 @@ fn world_from_before(layout: &[u8]) -> (Arc<MemoryDisk>, Before) {
 }
 
 /// What a `layout` file can say: the layout the world was last served with, another,
-/// one region, nothing, and nothing a store ever wrote.
+/// one region, nothing, and nothing a store ever wrote. The first three are what a
+/// store of then wrote for stripes cut at x = 0, for stripes cut at [`CUT`] and for a
+/// world that was not divided.
 fn layouts() -> Vec<Vec<u8>> {
-    let of = |layout: Layout| format!("{:016x}\n", layout.fingerprint()).into_bytes();
     vec![
-        of(Layout::new(vec![0]).unwrap()),
-        of(Layout::new(vec![CUT]).unwrap()),
-        of(Layout::single()),
+        b"9c191507aacacf62\n".to_vec(),
+        b"9c191107aacac896\n".to_vec(),
+        b"4d25767f9dce13f5\n".to_vec(),
         Vec::new(),
         b"no fingerprint at all\n".to_vec(),
     ]
@@ -1344,60 +1348,58 @@ fn a_world_of_stripes_in_a_directory_is_made_over_for_no_pins() {
 // T9: "After T3's start, a hello for region 1 of the world of stripes is refused as
 // for a region the table does not have, and one for region 0 with the epoch stripe 0
 // was last opened with is taken and restores a region without a state." The hellos
-// are said as a worker that lived through the start says them (N16), which still
-// names the layout of the stripes, and as one that was started since.
+// are a region and an epoch, so a worker that lived through the start (N16) says
+// them as one that was started since.
 #[test]
 fn after_stripes_are_made_over_a_hello_for_stripe_1_is_refused_and_one_for_stripe_0_begins_anew() {
     let (world, before) = world_of_stripes();
     let told = following();
-    for from in [stripes(), told.clone()] {
-        let case = format!("a hello that names layout {:?}", from.layout);
-        let left = Arc::new(world.crashed(Survival::Nothing));
-        let (store, lines) = logged(|| store_on(&left, &told));
-        let store = store.unwrap();
-        assert!(says(&lines, &case), "{case}: {lines:?}");
+    let case = "after the start";
+    let left = Arc::new(world.crashed(Survival::Nothing));
+    let (store, lines) = logged(|| store_on(&left, &told));
+    let store = store.unwrap();
+    assert!(says(&lines, case), "{case}: {lines:?}");
 
-        // The eastern stripe, the part that was split off the western one, and the
-        // part that it had absorbed again.
-        for gone in [1, 2, 3] {
-            for epoch in [1, 4, 5, 6, 1000] {
-                let refused = store.open_region(hello_of(&from, gone, epoch)).err();
-                assert!(
-                    matches!(
-                        &refused,
-                        Some(StoreError::UnknownRegion { region }) if *region == RegionId(gone)
-                    ),
-                    "{case}: region {gone} with epoch {epoch}: {refused:?}"
-                );
-            }
+    // The eastern stripe, the part that was split off the western one, and the
+    // part that it had absorbed again.
+    for gone in [1, 2, 3] {
+        for epoch in [1, 4, 5, 6, 1000] {
+            let refused = store.open_region(hello_of(&told, gone, epoch)).err();
+            assert!(
+                matches!(
+                    &refused,
+                    Some(StoreError::UnknownRegion { region }) if *region == RegionId(gone)
+                ),
+                "{case}: region {gone} with epoch {epoch}: {refused:?}"
+            );
         }
-
-        // Region 0 has the epoch stripe 0 had (section 2.2): a lower one is refused,
-        // and that one is taken.
-        let refused = store.open_region(hello_of(&from, 0, 2)).err();
-        assert!(
-            matches!(
-                &refused,
-                Some(StoreError::EpochRefused {
-                    region: RegionId(0),
-                    offered: 2,
-                    seen: 3
-                })
-            ),
-            "{case}: {refused:?}"
-        );
-        let (_, restored) = store
-            .open_region(hello_of(&from, 0, 3))
-            .unwrap_or_else(|error| panic!("{case}: {error}"));
-        assert_eq!(
-            (restored.state, restored.deltas),
-            (None, Vec::new()),
-            "{case}"
-        );
-        assert_eq!(restored.held, [(HOME, 0)], "{case}");
-        assert_eq!(restored.pinned, Vec::new(), "{case}");
-        assert_eq!(restored.entity_ids, before.files[0].entity_ids, "{case}");
     }
+
+    // Region 0 has the epoch stripe 0 had (section 2.2): a lower one is refused,
+    // and that one is taken.
+    let refused = store.open_region(hello_of(&told, 0, 2)).err();
+    assert!(
+        matches!(
+            &refused,
+            Some(StoreError::EpochRefused {
+                region: RegionId(0),
+                offered: 2,
+                seen: 3
+            })
+        ),
+        "{case}: {refused:?}"
+    );
+    let (_, restored) = store
+        .open_region(hello_of(&told, 0, 3))
+        .unwrap_or_else(|error| panic!("{case}: {error}"));
+    assert_eq!(
+        (restored.state, restored.deltas),
+        (None, Vec::new()),
+        "{case}"
+    );
+    assert_eq!(restored.held, [(HOME, 0)], "{case}");
+    assert_eq!(restored.pinned, Vec::new(), "{case}");
+    assert_eq!(restored.entity_ids, before.files[0].entity_ids, "{case}");
 }
 
 // T4, and T9 for the lines of its log: two pinned regions, ids 0 and 1, home the one
@@ -1576,12 +1578,6 @@ fn a_world_of_stripes_started_with_its_boundary_as_a_pin_is_found_as_it_was() {
         );
         assert_eq!(file_at(&left.disk, TABLE), table, "{case}");
         as_lived_on_stripes(&store, &told, &before, &case);
-
-        // A hello is held to no fingerprint: one that still names the layout of the
-        // stripes, as a worker from before the start says it, is taken as well.
-        let left = Arc::new(world.crashed(survival));
-        let store = store_on(&left, &told).unwrap_or_else(|error| panic!("{case}: {error}"));
-        as_lived_on_stripes(&store, &stripes(), &before, &case);
     }
 }
 
@@ -1838,7 +1834,6 @@ fn a_store_that_is_told_no_division_has_one_region_pinned_to_the_whole_world() {
         let hello = RegionHello {
             region: RegionId(0),
             epoch: 1,
-            layout: Layout::single().fingerprint(),
         };
         let (handle, restored) = store.open_region(hello).unwrap();
         assert_eq!(restored.pinned, [ChunkArea::EVERYWHERE], "{kind}");
@@ -2344,4 +2339,106 @@ fn wherever_the_disk_fails_the_store_comes_to_rest_and_has_all_that_it_answered(
             }
         }
     }
+}
+
+// T8: "A hello is a region and an epoch; one for a region the table does not have,
+// for one that was absorbed, and with a lower epoch is refused as today." The world
+// of stripes has all three: its table has no region 4 or beyond, region 3 was
+// absorbed by region 0, and regions 0, 1 and 2 were opened with the epochs 3, 4 and
+// 5. "As today" is read as: with the error that names what is wrong, with nothing
+// written for it, the same over a connection, and without taking the region from
+// whoever has it.
+#[test]
+fn a_hello_is_a_region_and_an_epoch_and_is_refused_for_what_it_was_refused_for_before() {
+    // The two are all a hello has: this would not compile if it named anything more.
+    let RegionHello { region, epoch } = hello_of(&stripes(), 1, 4);
+    assert_eq!((region, epoch), (RegionId(1), 4));
+    let hello = |region: u32, epoch: u64| RegionHello {
+        region: RegionId(region),
+        epoch,
+    };
+
+    let (world, before) = world_of_stripes();
+    let told = stripes();
+    let left = Noting::of(world.crashed(Survival::Nothing));
+    let store = left.started(&told).unwrap();
+    let list = store.regions().unwrap();
+    let written = left.changed();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = serve(store.clone(), listener).unwrap();
+    let address = server.local_addr().to_string();
+    // What a hello is answered in the store's process, and over a connection.
+    let both = |region: u32, epoch: u64| {
+        let here = store.open_region(hello(region, epoch)).err();
+        let there = StoreHandle::connect(&address, hello(region, epoch)).err();
+        let case = format!("region {region} with epoch {epoch}: {here:?}, {there:?}");
+        (here.expect(&case), there.expect(&case), case)
+    };
+
+    // A region the table does not have. Over a connection that is said in words.
+    for region in [4, 5, u32::MAX] {
+        for epoch in [0, 1, 1000] {
+            let (here, there, case) = both(region, epoch);
+            assert!(
+                matches!(&here, StoreError::UnknownRegion { region: unknown } if *unknown == RegionId(region)),
+                "{case}"
+            );
+            assert!(
+                matches!(&there, StoreError::Refused(reason) if *reason == here.to_string()),
+                "{case}"
+            );
+        }
+    }
+    // One that was absorbed, whatever the epoch: it is told which region it went into.
+    for epoch in [0, 6, 7, 1000] {
+        let (here, there, case) = both(3, epoch);
+        for refused in [here, there] {
+            assert!(
+                matches!(
+                    refused,
+                    StoreError::Absorbed {
+                        region: RegionId(3),
+                        into: RegionId(0)
+                    }
+                ),
+                "{case}"
+            );
+        }
+    }
+    // A lower epoch than the region was last opened with: it is told the epoch.
+    for (region, seen) in [(0, 3), (1, 4), (2, 5)] {
+        for offered in [0, seen - 1] {
+            let (here, there, case) = both(region, offered);
+            for refused in [here, there] {
+                assert!(
+                    matches!(
+                        refused,
+                        StoreError::EpochRefused { region: of, offered: with, seen: last }
+                            if (of, with, last) == (RegionId(region), offered, seen)
+                    ),
+                    "{case}"
+                );
+            }
+        }
+    }
+    // Nothing was written for any of them, and the regions are what they were.
+    assert_eq!(left.changed(), written);
+    assert_eq!(store.regions().unwrap(), list);
+
+    // The epoch a region was last opened with is taken, and restores what it had.
+    as_lived_on_stripes(&store, &told, &before, "after the refusals");
+
+    // A hello that is refused takes no region from whoever has it.
+    let (owner, _) = store.open_region(hello(1, 9)).unwrap();
+    let (here, there, case) = both(1, 8);
+    for refused in [here, there] {
+        assert!(
+            matches!(refused, StoreError::EpochRefused { seen: 9, .. }),
+            "{case}"
+        );
+    }
+    let (_, _, case) = both(4, 9);
+    owner.request(StoreRequest::Flush);
+    assert_eq!(next(&owner, &case), StoreReply::Flushed, "{case}");
+    assert!(!owner.is_lost(), "{case}");
 }

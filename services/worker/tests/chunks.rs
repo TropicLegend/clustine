@@ -22,7 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use clustine_data::{BlockState, blocks, items};
-use clustine_region::{Layout, RegionId};
+use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
     EdgeMessage, EdgeToWorker, Presence, RegionHello, Restored, StoreReply, StoreRequest, Welcome,
@@ -104,10 +104,6 @@ const STEPS: usize = 4000;
 /// far more than any test leaves unread.
 const CAPACITY: usize = 8192;
 
-fn layout() -> Layout {
-    Layout::new(vec![1]).expect("one boundary is a layout")
-}
-
 fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     let mut hotbar = [None; HOTBAR_SLOTS];
     hotbar[0] = Some(ItemStack {
@@ -158,7 +154,7 @@ impl World {
         // A new world knows no edge, whatever a test before on this thread was told.
         SINCE.with(|since| since.borrow_mut().clear());
         let division = match shape {
-            Shape::Stripes => Division::stripes(HOME, &layout()),
+            Shape::Stripes => Division::side_by_side(HOME, &[1]).expect("one cut ascends"),
             Shape::Gap => Division {
                 home: HOME,
                 pinned: vec![
@@ -171,7 +167,6 @@ impl World {
                         max_x: None,
                     },
                 ],
-                layout: None,
             },
         };
         let generator = Arc::new(FlatGenerator::classic());
@@ -211,15 +206,7 @@ impl World {
     }
 
     fn hello(&self, region: RegionId, epoch: u64) -> RegionHello {
-        RegionHello {
-            region,
-            epoch,
-            // The division with a gap is that of no layout, and its store asks for none.
-            layout: match self.shape {
-                Shape::Stripes => layout().fingerprint(),
-                Shape::Gap => 0,
-            },
-        }
+        RegionHello { region, epoch }
     }
 
     /// Opens the region under test as its next owner. Whoever had it before has lost it.

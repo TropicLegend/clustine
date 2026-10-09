@@ -1,7 +1,7 @@
 //! The messages services exchange.
 
 use clustine_data::BlockState;
-use clustine_region::{Layout, RegionId, RoutingTable};
+use clustine_region::{RegionId, RoutingTable};
 use clustine_sim::api::{
     Durable, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, Pose, RegionEvent, RemoteAction,
@@ -640,8 +640,6 @@ pub struct RegionHello {
     pub region: RegionId,
     /// The epoch of the region's owner; see [`Assignment::epoch`].
     pub epoch: u64,
-    /// [`Layout::fingerprint`] of the layout the region is part of.
-    pub layout: u64,
 }
 
 /// The answer to a [`RegionHello`].
@@ -667,18 +665,15 @@ pub struct Assignment {
 /// What a worker or an edge tells the coordinator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToCoordinator {
-    /// A worker offers to run regions. Answered with [`FromCoordinator::Assigned`] or
-    /// [`FromCoordinator::Refused`].
+    /// A worker offers to run regions. Answered with [`FromCoordinator::Assigned`].
     RegisterWorker {
         /// Identifies the worker across restarts and reconnections.
         name: String,
         /// Host and port at which edges reach the worker.
         address: String,
         /// What the worker is running already, which is the case when it registers
-        /// again after losing its connection, with the fingerprint of the layout those
-        /// regions belong to.
+        /// again after losing its connection.
         holding: Vec<Assignment>,
-        layout: Option<u64>,
     },
     /// The worker is still there, and vouches for the regions it names. A worker that is
     /// silent for too long loses its regions, and so does a region it holds and does not
@@ -781,16 +776,13 @@ pub enum Vouch {
 /// What the coordinator tells a worker or an edge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FromCoordinator {
-    /// To a worker: how the world is divided and which regions the worker is to run.
-    /// Sent again whenever that changes.
+    /// To a worker: which regions the worker is to run. Sent again whenever that
+    /// changes.
     Assigned {
-        layout: Layout,
         /// Where players enter the world.
         spawn: Vec3,
         assignments: Vec<Assignment>,
     },
-    /// To a worker: it cannot take part, for the reason given.
-    Refused { reason: String },
     /// To an edge: the current routing table.
     Routing(RoutingTable),
     /// To a worker: let go of `region`, which you hold with `epoch`, so that another

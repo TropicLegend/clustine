@@ -80,14 +80,13 @@ pub(crate) fn hello(region: u32, epoch: u64) -> RegionHello {
     RegionHello {
         region: RegionId(region),
         epoch,
-        layout: Layout::new(vec![0]).unwrap().fingerprint(),
     }
 }
 
 /// How the stores of these tests divide the world: into the two regions [`hello`]
 /// says hello for, with the home chunk at the origin, which is the eastern region's.
 pub(crate) fn division() -> Division {
-    Division::stripes(ChunkPos::new(0, 0), &Layout::new(vec![0]).unwrap())
+    Division::side_by_side(ChunkPos::new(0, 0), &[0]).unwrap()
 }
 
 /// A store in memory for the two regions of [`division`].
@@ -510,11 +509,11 @@ fn regions_commit_and_checkpoint_independently() {
     assert_eq!(deltas(&restored_east), [(1, delta(1))]);
 }
 
-/// When a world is opened with another layout than it was last run with, what the
+/// When a world is opened with another division than it was last run with, what the
 /// regions of the old one committed goes into the chunks: the regions of the new one
 /// know nothing of it.
 #[test]
-fn a_world_opened_with_another_layout_has_what_the_regions_of_the_old_one_committed() {
+fn a_world_opened_with_another_division_has_what_the_regions_of_the_old_one_committed() {
     let directory = tempfile::tempdir().unwrap();
     {
         let store = local(directory.path());
@@ -549,14 +548,15 @@ fn a_world_opened_with_another_layout_has_what_the_regions_of_the_old_one_commit
         let west_chunk = load(&owner, ChunkPos::new(-1, 0));
         assert_eq!(west_chunk.get(13, -61, 4), Some(blocks::AIR));
     }
-    // Nothing of the old regions is left to be restored when the old layout comes back.
+    // Nothing of the old regions is left to be restored when the old division comes
+    // back.
     let store = local(directory.path());
     let (_, restored) = store.open_region(hello(1, 4)).unwrap();
     assert_eq!((restored.state, restored.deltas), (None, Vec::new()));
     // The world is divided as the store was told when it started: the list has the two
-    // stripes, and no file says the layout any more.
+    // regions side by side, and there is no file `layout`.
     let list = store.regions().unwrap();
-    let stripes: Vec<_> = Layout::new(vec![0]).unwrap().regions().collect();
+    let area = |min_x, max_x| ChunkArea { min_x, max_x };
     let listed: Vec<_> = list
         .regions
         .iter()
@@ -565,8 +565,8 @@ fn a_world_opened_with_another_layout_has_what_the_regions_of_the_old_one_commit
     assert_eq!(
         listed,
         [
-            (stripes[0].0, vec![stripes[0].1]),
-            (stripes[1].0, vec![stripes[1].1])
+            (RegionId(0), vec![area(None, Some(0))]),
+            (RegionId(1), vec![area(Some(0), None)])
         ]
     );
     assert_eq!(list.home, RegionId(1));
@@ -958,36 +958,6 @@ fn entity_ids_and_the_highest_epoch_outlive_the_store() {
     let (_, again) = store.open_region(hello(1, 2)).unwrap();
     assert_ne!(first.entity_ids, second.entity_ids);
     assert_eq!(first.entity_ids, again.entity_ids);
-}
-
-/// The layout is the one the store was started with, whoever says hello first.
-#[test]
-fn a_hello_with_another_layout_than_the_stores_is_refused() {
-    let directory = tempfile::tempdir().unwrap();
-    for store in stores(directory.path()) {
-        let first = hello(0, 1);
-        let other = RegionHello {
-            layout: Layout::single().fingerprint(),
-            ..hello(1, 1)
-        };
-        let refused = || {
-            matches!(
-                store.open_region(other),
-                Err(StoreError::LayoutMismatch { expected, offered })
-                    if expected == first.layout && offered == other.layout
-            )
-        };
-        assert!(refused());
-        let west = open(&store, first);
-        assert!(refused());
-        // The layout stays when no region is open any more.
-        drop(west);
-        assert!(refused());
-        // The refused hello has not taken the region either.
-        let east = open(&store, hello(1, 1));
-        let position = ChunkPos::new(0, 0);
-        assert_eq!(load(&east, position), generator().generate(position));
-    }
 }
 
 #[test]

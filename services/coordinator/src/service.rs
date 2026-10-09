@@ -97,10 +97,6 @@ type Reading = (u64, io::Result<RegionList>);
 /// nobody a region that no worker reports, and refuses to merge and to split; it has
 /// the list read again at its every tick until the store answers
 /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
-///
-/// **Until the layout goes** (step C5.9 of that record), a coordinator whose
-/// [`CoordinatorConfig::layout`] has a boundary knows the stripes of it from the
-/// start, as every coordinator did, and has the list read on events only.
 pub async fn serve<L>(listener: TcpListener, config: CoordinatorConfig, lists: L) -> io::Result<()>
 where
     L: Fn() -> io::Result<RegionList> + Send + Sync + 'static,
@@ -174,27 +170,9 @@ async fn serve_from(
     info!(%address, "the coordinator is listening");
     let lease = config.lease;
     info!(?lease, first_epoch, "the coordinator is serving");
-    let coordinator = of_its_layout(config, now(), first_epoch);
+    let coordinator = Coordinator::new(config, now(), first_epoch);
     run(Door::Tcp(listener), coordinator, lists).await;
     Ok(())
-}
-
-/// The coordinator that [`serve`] makes.
-///
-/// One whose layout has a boundary is of a process that was started with
-/// `--boundaries`. Until that flag and the layout go, it knows the stripes from the
-/// start, so that such a process gives its regions out as it did, store or no store
-/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 9.1, step C5.2 and "What is
-/// true between the steps"). It awaits the list all the same, and has it read until
-/// it has been: the list is where the home region comes from, which an edge waits
-/// for. Any other knows no region until it has read the list, which is what every
-/// coordinator does from step C5.9 on.
-fn of_its_layout(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
-    if config.layout.boundaries().is_empty() {
-        return Coordinator::new(config, now, first_epoch);
-    }
-    let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
-    Coordinator::knowing_its_stripes(config, now, first_epoch, &stripes)
 }
 
 /// Where clients come in.
@@ -600,9 +578,8 @@ impl Service {
                     name,
                     address,
                     holding,
-                    layout,
                 },
-            ) if role.admits(&name) => self.register(now, id, name, &address, &holding, layout),
+            ) if role.admits(&name) => self.register(now, id, name, &address, &holding),
             (Role::Worker(name), ToCoordinator::Heartbeat { regions }) => {
                 if !self.coordinator.heartbeat(now, name, &regions) {
                     // The worker has to register again, and nothing but the end of its
@@ -729,34 +706,15 @@ impl Service {
         name: String,
         address: &str,
         holding: &[Assignment],
-        layout: Option<u64>,
     ) {
         info!(
             worker = %name,
             address,
             holding = %Holdings(holding),
-            layout = %Fingerprint(layout),
             connection = id,
             "a worker registers"
         );
-        let changes = match self
-            .coordinator
-            .register(now, &name, address, holding, layout)
-        {
-            Ok(changes) => changes,
-            Err(refusal) => {
-                info!(
-                    worker = %name,
-                    connection = id,
-                    reason = %refusal,
-                    "refused a worker"
-                );
-                let reason = refusal.to_string();
-                self.tell(id, FromCoordinator::Refused { reason });
-                self.close(id);
-                return;
-            }
-        };
+        let changes = self.coordinator.register(now, &name, address, holding);
 
         // From now on this is the connection the worker is told things over. An
         // earlier one is of no use to it any more, or belongs to another process that
@@ -951,7 +909,6 @@ impl Service {
         };
         let config = self.coordinator.config();
         let orders = FromCoordinator::Assigned {
-            layout: config.layout.clone(),
             spawn: config.spawn,
             assignments: self.coordinator.assignments(name),
         };
@@ -1089,19 +1046,6 @@ impl fmt::Display for Holdings<'_> {
     }
 }
 
-/// The fingerprint of the layout a worker reports, for the log; written the way a
-/// refusal writes it.
-struct Fingerprint(Option<u64>);
-
-impl fmt::Display for Fingerprint {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Some(fingerprint) => write!(formatter, "{fingerprint:#018x}"),
-            None => formatter.write_str("none"),
-        }
-    }
-}
-
 /// Every region of a routing table with where its worker is reached and the epoch, and
 /// the regions that have no owner, which the table only counts, in the order of their
 /// ids; for the log.
@@ -1137,7 +1081,7 @@ mod tests {
     use std::future::Future;
     use std::sync::Mutex;
 
-    use clustine_region::{Layout, RegionId, RegionRoute};
+    use clustine_region::{RegionId, RegionRoute};
     use clustine_rpc::{PlayersOf, RegionInfo, Vouch, link};
     use clustine_world::{EntityId, EntityIds, Vec3};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1149,7 +1093,6 @@ mod tests {
     use crate::client::{
         Asker, ClientError, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient, WorkerEvent,
     };
-    use crate::state::Refusal;
 
     /// The lease of the coordinators in these tests: long enough for a worker to keep it
     /// on a busy machine, short enough to wait until one has run out.
@@ -1170,13 +1113,12 @@ mod tests {
     struct Served {
         /// Where clients reach it.
         address: String,
-        layout: Layout,
         task: JoinHandle<io::Result<()>>,
     }
 
     impl Served {
-        /// Starts a coordinator for a world with region boundaries at these chunk x
-        /// coordinates, which it knows from the start.
+        /// Starts a coordinator that knows the regions of a world with region
+        /// boundaries at these chunk x coordinates from the start.
         async fn start(boundaries: &[i32]) -> Self {
             Self::start_at(boundaries, unix_milliseconds()).await
         }
@@ -1192,7 +1134,6 @@ mod tests {
             L: Fn() -> io::Result<RegionList> + Send + Sync + 'static,
         {
             let (listener, address) = listen().await;
-            let layout = config(boundaries).layout;
             let boundaries = boundaries.to_vec();
             // Made when the service is first polled, as `serve` makes its own.
             let serving = async move {
@@ -1201,7 +1142,6 @@ mod tests {
             };
             Self {
                 address,
-                layout,
                 task: tokio::spawn(serving),
             }
         }
@@ -1223,13 +1163,11 @@ mod tests {
             address: &str,
             holding: &[Assignment],
         ) -> (WorkerClient, Orders) {
-            let layout = Some(self.layout.fingerprint());
             let registering = WorkerClient::register_with_heartbeat(
                 &self.address,
                 name,
                 address,
                 holding,
-                layout,
                 HEARTBEAT,
             );
             within(registering).await.unwrap()
@@ -1248,7 +1186,6 @@ mod tests {
         /// What a worker is told that is to run `assignments`.
         fn orders(&self, assignments: &[Assignment]) -> Orders {
             Orders {
-                layout: self.layout.clone(),
                 spawn: SPAWN,
                 assignments: assignments.to_vec(),
             }
@@ -1256,7 +1193,8 @@ mod tests {
     }
 
     /// A world store that cannot be reached. The coordinators of most of these tests
-    /// have none, and go by their layout and by what their workers report.
+    /// have none, and go by the regions they were made knowing and by what their
+    /// workers report.
     fn no_store() -> io::Result<RegionList> {
         Err(io::Error::other("there is no world store"))
     }
@@ -1268,9 +1206,8 @@ mod tests {
         (listener, address)
     }
 
-    fn config(boundaries: &[i32]) -> CoordinatorConfig {
+    fn config() -> CoordinatorConfig {
         CoordinatorConfig {
-            layout: Layout::new(boundaries.to_vec()).unwrap(),
             spawn: SPAWN,
             lease: LEASE,
             follow: None,
@@ -1287,7 +1224,7 @@ mod tests {
         let regions: Vec<RegionId> = (0..=boundaries.len())
             .map(|region| RegionId(u32::try_from(region).unwrap()))
             .collect();
-        Coordinator::knowing(config(boundaries), now, first_epoch, &regions)
+        Coordinator::knowing(config(), now, first_epoch, &regions)
     }
 
     /// A coordinator of a world with two regions, the workers `a` and `b` with one
@@ -1327,7 +1264,6 @@ mod tests {
 
             let table = table_where(&mut watch, |table| table.routes.len() == 2).await;
             assert_eq!(table.routes, [route(held_a, "a"), route(held_b, "b")]);
-            assert_eq!(table.layout, served.layout);
             assert_eq!(table.spawn, SPAWN);
             Self {
                 served,
@@ -1370,11 +1306,10 @@ mod tests {
         }
     }
 
-    /// What a worker of a world with this layout is told that is to run `assignments`,
-    /// as the message that it is on a connection.
-    fn assigned(layout: &Layout, assignments: &[Assignment]) -> FromCoordinator {
+    /// What a worker is told that is to run `assignments`, as the message that it is
+    /// on a connection.
+    fn assigned(assignments: &[Assignment]) -> FromCoordinator {
         FromCoordinator::Assigned {
-            layout: layout.clone(),
             spawn: SPAWN,
             assignments: assignments.to_vec(),
         }
@@ -1385,7 +1320,6 @@ mod tests {
             name: name.to_owned(),
             address: address_of(name),
             holding: holding.to_vec(),
-            layout: None,
         }
     }
 
@@ -1626,29 +1560,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_worker_with_another_layout_is_refused_and_told_why() {
-        let served = Served::start(&[0]).await;
-        let expected = served.layout.fingerprint();
-        let reported = Layout::single().fingerprint();
-        let registering =
-            WorkerClient::register(&served.address, "a", "a:25601", &[], Some(reported));
-        let refused = within(registering).await;
-        let reason = Refusal::Layout { reported, expected }.to_string();
-        assert!(
-            matches!(&refused, Err(ClientError::Refused(told)) if *told == reason),
-            "{refused:?}"
-        );
-
-        // With the coordinator's layout the same worker is welcome, and so is one that
-        // names none.
-        let (_a, orders) = served.worker("a", &[]).await;
-        assert_eq!(orders, served.orders(&[]));
-        let registering = WorkerClient::register(&served.address, "b", "b:25601", &[], None);
-        let (_b, orders) = within(registering).await.unwrap();
-        assert_eq!(orders, served.orders(&[]));
-    }
-
-    #[tokio::test]
     async fn workers_keep_their_regions_under_a_new_coordinator_and_it_issues_higher_epochs() {
         // The clock of the first coordinator is a day ahead, so the one after it
         // cannot rely on its own to stay clear of what was issued.
@@ -1739,7 +1650,7 @@ mod tests {
         let kept = assignment(1, 5, 1);
         for _ in 0..2 {
             link.send(registration("first", &[kept])).await.unwrap();
-            let answer = assigned(&served.layout, &[kept]);
+            let answer = assigned(&[kept]);
             assert_eq!(within(link.recv()).await, Some(answer));
         }
         // Another may not, and is not registered: the region it says it runs stays free.
@@ -1791,7 +1702,7 @@ mod tests {
             assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
         }
         // And nobody listens at its address any more.
-        let registering = WorkerClient::register(&address, "a", "a:25601", &[], None);
+        let registering = WorkerClient::register(&address, "a", "a:25601", &[]);
         let unreachable = within(registering).await;
         assert!(
             matches!(unreachable, Err(ClientError::Io(_))),
@@ -1844,7 +1755,6 @@ mod tests {
                 name: "a".to_owned(),
                 address: address.clone(),
                 holding: vec![held],
-                layout: None,
             };
             worker.send(registration).await.unwrap();
             hear_next(&mut service, now).await;
@@ -1896,10 +1806,9 @@ mod tests {
         // Silence for exactly a lease is not too long. A moment more is.
         service.tick(heard + LEASE);
         service.tick(heard + LEASE + Duration::from_millis(1));
-        let layout = Layout::single();
         for assignments in [&[held][..], &[]] {
             let told = within(worker.recv()).await;
-            assert_eq!(told, Some(assigned(&layout, assignments)));
+            assert_eq!(told, Some(assigned(assignments)));
         }
         assert_eq!(within(worker.recv()).await, None);
 
@@ -1932,7 +1841,6 @@ mod tests {
         hear_next(&mut service, start).await;
         assert_eq!(next_table(&mut edge).await.unwrap().version, first);
 
-        let layout = Layout::single();
         let mut workers = Vec::new();
         for (name, holding) in [("a", vec![held]), ("b", Vec::new())] {
             let (mut worker, end) = link::in_process(8);
@@ -1940,7 +1848,7 @@ mod tests {
             worker.send(registration(name, &holding)).await.unwrap();
             hear_next(&mut service, start).await;
             let told = within(worker.recv()).await;
-            assert_eq!(told, Some(assigned(&layout, &holding)));
+            assert_eq!(told, Some(assigned(&holding)));
             workers.push(worker);
         }
         let table = next_table(&mut edge).await.unwrap();
@@ -1988,10 +1896,9 @@ mod tests {
         }
         service.tick(later);
 
-        let layout = Layout::single();
-        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[])));
+        assert_eq!(within(a.recv()).await, Some(assigned(&[])));
         let taken = assignment(0, FIRST + 1, 1);
-        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[taken])));
+        assert_eq!(within(b.recv()).await, Some(assigned(&[taken])));
         let table = next_table(&mut edge).await.unwrap();
         assert_eq!(table.version, FIRST + 2);
         assert_eq!(table.routes, [route(taken, "b")]);
@@ -2043,10 +1950,9 @@ mod tests {
         hear_next(&mut service, later).await;
         service.tick(later);
 
-        let layout = Layout::single();
-        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[])));
+        assert_eq!(within(a.recv()).await, Some(assigned(&[])));
         let taken = assignment(0, FIRST + 1, 1);
-        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[taken])));
+        assert_eq!(within(b.recv()).await, Some(assigned(&[taken])));
         let table = next_table(&mut edge).await.unwrap();
         assert_eq!(table.version, FIRST + 2);
         assert_eq!(table.routes, [route(taken, "b")]);
@@ -2169,8 +2075,7 @@ mod tests {
         };
         a.send(refused).await.unwrap();
         hear_next(&mut service, start).await;
-        let layout = Layout::single();
-        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[])));
+        assert_eq!(within(a.recv()).await, Some(assigned(&[])));
         let table = next_table(&mut edge).await.unwrap();
         assert_eq!(table.version, FIRST + 2);
         assert!(table.routes.is_empty());
@@ -2179,7 +2084,7 @@ mod tests {
         // worker that registered first, which is the same one, above the epoch seen.
         service.tick(start + LEASE);
         let again = assignment(0, seen + 1, 1);
-        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[again])));
+        assert_eq!(within(a.recv()).await, Some(assigned(&[again])));
         let table = next_table(&mut edge).await.unwrap();
         assert_eq!(table.routes, [route(again, "a")]);
         // `b` was told nothing beyond its first answer.
@@ -2407,7 +2312,7 @@ mod tests {
         let held = assignment(0, 5, 0);
         let mut leaves = served.connect().await;
         leaves.send(registration("a", &[held])).await.unwrap();
-        let answer = assigned(&served.layout, &[held]);
+        let answer = assigned(&[held]);
         assert_eq!(within(leaves.recv()).await, Some(answer));
         leaves.send(ToCoordinator::Leaving).await.unwrap();
         drop(leaves);
@@ -2452,9 +2357,8 @@ mod tests {
         // It dies instead. The other worker has the region before any time passes.
         drop(a);
         hear_next(&mut service, now).await;
-        let layout = Layout::single();
         let taken = assignment(0, FIRST + 1, 1);
-        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[taken])));
+        assert_eq!(within(b.recv()).await, Some(assigned(&[taken])));
         let table = next_table(&mut edge).await.unwrap();
         assert_eq!(table.version, FIRST + 2);
         assert_eq!(table.routes, [route(taken, "b")]);
@@ -2520,10 +2424,9 @@ mod tests {
         assert_eq!(service.connections.len(), 4);
         service.tick(asked + LEASE + Duration::from_millis(1));
 
-        let layout = Layout::single();
         let taken = assignment(0, FIRST + 1, 1);
-        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[])));
-        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[taken])));
+        assert_eq!(within(a.recv()).await, Some(assigned(&[])));
+        assert_eq!(within(b.recv()).await, Some(assigned(&[taken])));
         let done = FromCoordinator::MoveDone {
             to: "b".to_owned(),
             epoch: taken.epoch,
@@ -2942,8 +2845,7 @@ mod tests {
         };
         b.send(released).await.unwrap();
         hear_next(&mut service, now).await;
-        let layout = Layout::new(vec![0]).unwrap();
-        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[])));
+        assert_eq!(within(b.recv()).await, Some(assigned(&[])));
         let absorb = FromCoordinator::Absorb {
             region: RegionId(0),
             epoch: 5,
@@ -3109,23 +3011,16 @@ mod tests {
             "region 1 at epoch 30 with entity ids 2097152..3145728, \
              region 0 at epoch 12 with entity ids 1..1048576"
         );
-        assert_eq!(Fingerprint(None).to_string(), "none");
-        assert_eq!(
-            Fingerprint(Some(Layout::single().fingerprint())).to_string(),
-            "0x4d25767f9dce13f5"
-        );
-
         let table = RoutingTable {
             home: None,
             absorbed: Vec::new(),
             waiting: 2,
             version: 7,
-            layout: Layout::new(vec![-8, 8]).unwrap(),
             spawn: SPAWN,
             routes: vec![route(holding[1], "a"), route(assignment(2, 31, 1), "c")],
         };
         // The regions without an owner are named, which the table only counts: one
-        // of the layout, and one that was split off another.
+        // that the world began with, and one that was split off another.
         let waiting = [RegionId(1), RegionId(5)];
         assert_eq!(
             Routes(&table, &waiting).to_string(),
@@ -3185,7 +3080,7 @@ mod tests {
         fn served() -> (LocalCoordinator, JoinHandle<()>) {
             let stored = Stored::default();
             stored.set(listing(&[(0, 0)], &[], 1));
-            let (local, serving) = serve_local(config(&[]), stored.reader());
+            let (local, serving) = serve_local(config(), stored.reader());
             (local, tokio::spawn(serving))
         }
 
@@ -3196,7 +3091,6 @@ mod tests {
                 name,
                 &address,
                 &[],
-                Some(config(&[]).layout.fingerprint()),
                 HEARTBEAT,
             );
             within(registering).await.unwrap()
@@ -3318,7 +3212,7 @@ mod tests {
             stored.set(listing(&[(0, 0)], &[], 1));
             let config = CoordinatorConfig {
                 lease: Duration::from_secs(3600),
-                ..config(&[])
+                ..config()
             };
             let (local, serving) = serve_local(config, stored.reader());
             let _serving = tokio::spawn(serving);
@@ -3355,7 +3249,7 @@ mod tests {
         async fn the_list_is_read_at_every_tick_until_the_coordinator_has_been_handed_one() {
             let start = Instant::now();
             let (hand_in, lists) = readings();
-            let mut service = Service::new(Coordinator::new(config(&[]), start, FIRST), lists);
+            let mut service = Service::new(Coordinator::new(config(), start, FIRST), lists);
             // As the service does when it begins to serve.
             service.read_the_list();
             assert_eq!(readings_of(&service), (1, Some(1)));
@@ -3413,10 +3307,7 @@ mod tests {
                 split_distance: 5,
                 rest: LEASE,
             });
-            let config = CoordinatorConfig {
-                follow,
-                ..config(&[])
-            };
+            let config = CoordinatorConfig { follow, ..config() };
             let mut service = Service::new(Coordinator::new(config, start, FIRST), lists);
             service.read_the_list();
             let pace = tick_interval(LEASE, true);
@@ -3504,7 +3395,7 @@ mod tests {
                 let _ = called.send(());
                 store_is_down()
             };
-            let coordinator = Coordinator::new(config(&[]), now(), FIRST);
+            let coordinator = Coordinator::new(config(), now(), FIRST);
             let serving = tokio::spawn(serve_with(listener, coordinator, lists));
             // Nobody registers and nobody asks for anything: every reading but the
             // first is one that a tick called for.
@@ -3517,15 +3408,13 @@ mod tests {
 
         // N12.
         #[tokio::test]
-        async fn a_coordinator_served_without_boundaries_knows_no_region_until_the_store_answers() {
+        async fn a_coordinator_that_is_served_knows_no_region_until_the_store_answers() {
             // The store is away when the coordinator starts.
             let stored = Stored::default();
             let (listener, address) = listen().await;
-            let config = config(&[]);
             let served = Served {
                 address,
-                layout: config.layout.clone(),
-                task: tokio::spawn(serve(listener, config, stored.reader())),
+                task: tokio::spawn(serve(listener, config(), stored.reader())),
             };
             let mut watch = served.watch().await;
             let (mut worker, orders) = served.worker("a", &[]).await;
@@ -3548,32 +3437,14 @@ mod tests {
             served.stop().await;
         }
 
-        /// Until the layout goes: a coordinator that is started with boundaries is in
-        /// everything what it was.
+        /// A coordinator whose store is not there yet, when it starts and for some
+        /// time after, learns the home region as soon as the store answers, with no
+        /// worker registering and nobody asking for anything: it has the list read at
+        /// its ticks until it has been read. An edge lets nobody in before it is told
+        /// the home region, and would wait for ever if the store came up a moment
+        /// after the workers had registered.
         #[tokio::test]
-        async fn a_coordinator_served_with_boundaries_knows_its_stripes_without_a_store() {
-            let (listener, address) = listen().await;
-            let config = config(&[0]);
-            let served = Served {
-                address,
-                layout: config.layout.clone(),
-                task: tokio::spawn(serve(listener, config, no_store)),
-            };
-            // The two regions are given to the two workers when the coordinator has
-            // been there for a lease, though no list was ever read.
-            let cluster = Cluster::of(served).await;
-            assert_eq!(cluster.table.home, None);
-            cluster.served.stop().await;
-        }
-
-        /// A coordinator that is told stripes and whose store is not there yet, when
-        /// it starts and for some time after, learns the home region as soon as the
-        /// store answers, with no worker registering and nobody asking for anything:
-        /// it has the list read at its ticks until it has been read. An edge lets
-        /// nobody in before it is told the home region, and waited for ever when the
-        /// store came up a moment after the workers had registered.
-        #[tokio::test]
-        async fn a_coordinator_that_is_told_stripes_reads_until_its_store_answers() {
+        async fn a_coordinator_that_is_served_reads_until_its_store_answers() {
             let (listener, address) = listen().await;
             let asked = Arc::new(Mutex::new(0_u32));
             let counted = Arc::clone(&asked);
@@ -3586,7 +3457,7 @@ mod tests {
                 }
                 Ok(listing(&[(0, 0), (1, 0)], &[], 2))
             };
-            let serving = tokio::spawn(serve(listener, config(&[4]), lists));
+            let serving = tokio::spawn(serve(listener, config(), lists));
             let mut watch = within(RoutingWatch::connect(&address)).await.unwrap();
             let table = table_where(&mut watch, |table| table.home.is_some()).await;
             assert_eq!(table.home, Some(RegionId(0)));
@@ -3594,39 +3465,22 @@ mod tests {
             serving.abort();
         }
 
-        #[test]
-        fn the_coordinator_that_is_served_knows_its_stripes_only_if_its_layout_has_a_boundary() {
-            let start = Instant::now();
-            let without = of_its_layout(config(&[]), start, FIRST);
-            assert!(without.awaits_the_list());
-            assert_eq!(without.waiting(), []);
-            assert!(!without.keeps_its_workers());
-
-            // It knows its stripes, and still awaits the list, which names the home
-            // region for the edges.
-            let with = of_its_layout(config(&[-3, 4]), start, FIRST);
-            assert!(with.awaits_the_list());
-            assert_eq!(with.waiting(), [RegionId(0), RegionId(1), RegionId(2)]);
-            assert!(!with.keeps_its_workers());
-        }
-
         // Q12 and N18.
         #[tokio::test]
         async fn a_region_released_before_the_first_list_is_assigned_when_the_list_is_read() {
             let start = Instant::now();
             let (hand_in, lists) = readings();
-            let mut service = Service::new(Coordinator::new(config(&[]), start, FIRST), lists);
+            let mut service = Service::new(Coordinator::new(config(), start, FIRST), lists);
             service.read_the_list();
 
             // A worker registers holding nothing, which has the list read anew, and
             // says what it let go of while there was no coordinator. Neither answer
             // of the store is back yet.
-            let layout = Layout::single();
             let (mut worker, end) = link::in_process(8);
             service.attach(end, start);
             worker.send(registration("a", &[])).await.unwrap();
             hear_next(&mut service, start).await;
-            assert_eq!(within(worker.recv()).await, Some(assigned(&layout, &[])));
+            assert_eq!(within(worker.recv()).await, Some(assigned(&[])));
             let released = ToCoordinator::Released {
                 region: RegionId(5),
                 epoch: FIRST + 40,
@@ -3646,10 +3500,7 @@ mod tests {
             hand_in.send(Ok(list)).unwrap();
             assert_eq!(read_next(&mut service, start).await, 2);
             let given = assignment(5, FIRST + 41, 0);
-            assert_eq!(
-                within(worker.recv()).await,
-                Some(assigned(&layout, &[given]))
-            );
+            assert_eq!(within(worker.recv()).await, Some(assigned(&[given])));
             assert_eq!(service.coordinator.waiting(), [RegionId(0)]);
         }
 
@@ -3657,18 +3508,14 @@ mod tests {
         #[tokio::test]
         async fn a_coordinator_that_is_alone_has_no_workers_connection_closed_for_silence() {
             let start = Instant::now();
-            let coordinator = Coordinator::alone(config(&[]), start, FIRST);
+            let coordinator = Coordinator::alone(config(), start, FIRST);
             let mut service = Service::new(coordinator, Arc::new(no_store));
-            let layout = Layout::single();
             let held = assignment(0, 5, 0);
             let (mut worker, end) = link::in_process(8);
             service.attach(end, start);
             worker.send(registration("a", &[held])).await.unwrap();
             hear_next(&mut service, start).await;
-            assert_eq!(
-                within(worker.recv()).await,
-                Some(assigned(&layout, &[held]))
-            );
+            assert_eq!(within(worker.recv()).await, Some(assigned(&[held])));
             // And a client that never says what it is.
             let (mut stranger, end) = link::in_process(8);
             service.attach(end, start);
@@ -3690,10 +3537,7 @@ mod tests {
             assert_eq!(service.coordinator.assignments("a"), [held]);
             worker.send(registration("a", &[held])).await.unwrap();
             hear_next(&mut service, later).await;
-            assert_eq!(
-                within(worker.recv()).await,
-                Some(assigned(&layout, &[held]))
-            );
+            assert_eq!(within(worker.recv()).await, Some(assigned(&[held])));
         }
     }
 }

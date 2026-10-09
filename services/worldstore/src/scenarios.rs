@@ -3761,7 +3761,7 @@ fn a_world_with_an_absorbed_region_and_a_part_is_made_over_at_every_kill_point()
 #[test]
 fn a_stripe_whose_id_was_a_parts_keeps_the_epoch_and_is_issued_entity_ids() {
     let (disk, was) = merged_and_split();
-    let four = Division::stripes(ORIGIN, &Layout::new(vec![0, 16, 32]).unwrap());
+    let four = Division::side_by_side(ORIGIN, &[0, 16, 32]).unwrap();
     let left = Arc::new(disk.crashed(Survival::Everything));
     let store = store_on(&left, &four).unwrap();
     let list = store.regions().unwrap();

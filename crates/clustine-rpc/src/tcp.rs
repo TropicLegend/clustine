@@ -123,7 +123,6 @@ mod tests {
         RegionHello {
             region: RegionId(1),
             epoch: 5,
-            layout: 42,
         }
     }
 

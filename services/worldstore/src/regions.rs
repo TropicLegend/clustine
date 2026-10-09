@@ -52,22 +52,23 @@ pub(crate) fn gap() -> Division {
                 max_x: None,
             },
         ],
-        layout: None,
     }
 }
 
-/// The hello for a region of a world divided as `division` says.
-pub(crate) fn hello_of(division: &Division, region: u32, epoch: u64) -> RegionHello {
+/// The hello for a region of a world divided as `division` says. A hello names a
+/// region and an epoch and nothing of the division, which the tests go on handing in
+/// so that each says which world its hello is for.
+pub(crate) fn hello_of(_division: &Division, region: u32, epoch: u64) -> RegionHello {
     RegionHello {
         region: RegionId(region),
         epoch,
-        layout: division.layout.unwrap_or(0),
     }
 }
 
-/// The stripes of a layout with these boundaries, with the home chunk at the origin.
+/// Regions pinned side by side as stripes with these boundaries, with the home chunk
+/// at the origin.
 fn stripes(boundaries: &[i32]) -> Division {
-    Division::stripes(ORIGIN, &Layout::new(boundaries.to_vec()).unwrap())
+    Division::side_by_side(ORIGIN, boundaries).unwrap()
 }
 
 /// The table file of the world on `disk`.
@@ -169,21 +170,12 @@ fn a_region_the_world_does_not_have_is_refused_before_anything_is_written() {
                 refused.err()
             );
         }
-        // Another layout is said before that: it is what is wrong with the hello.
-        let other = RegionHello {
-            layout: Layout::single().fingerprint(),
-            ..hello(2, 1)
-        };
-        assert!(matches!(
-            store.open_region(other),
-            Err(StoreError::LayoutMismatch { .. })
-        ));
         assert_eq!(store.regions().unwrap().regions.len(), 2);
     }
     assert!(!directory.path().join("regions/2.region").exists());
     assert!(!directory.path().join("regions/9.region").exists());
 
-    // Over a connection it is refused in words, as another layout is.
+    // Over a connection it is refused in words.
     let store = crate::tests::memory();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = serve(store, listener).unwrap();
@@ -447,11 +439,10 @@ fn gap_at_the_east() -> Division {
             min_x: None,
             max_x: Some(4),
         }],
-        layout: None,
     }
 }
 
-/// The ids of the stripes are used again by the stripes of another layout, with the
+/// The ids of the stripes are used again by the stripes of another division, with the
 /// epochs their region files have and the entity ids they were issued; and no block of
 /// entity ids is issued twice, whatever has become of the region that has one.
 #[test]
@@ -552,54 +543,18 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
     saved.set(3, -61, 4, blocks::AIR);
     chunks.save(ORIGIN, 1, &saved).unwrap();
     chunks.sync().unwrap();
-    let fingerprint = Layout::new(vec![0]).unwrap().fingerprint();
-    put(
-        &disk,
-        "/world/layout",
-        format!("{fingerprint:016x}\n").as_bytes(),
-    );
+    // What such a store wrote there for stripes divided at x = 0. Nothing reads it.
+    put(&disk, "/world/layout", b"9c191507aacacf62\n");
     disk
 }
 
-/// A world from before there was a table, started with the layout it was last served
-/// with, is opened as it is: the stripes keep their states, logs, epochs and entity
-/// ids, the table is written and the layout file goes.
+/// A world from before there was a table is made over, whether it is started with the
+/// stripes it had, with others, or with a division that is none: nothing says any
+/// more how it was divided (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.2).
 #[test]
-fn a_world_of_today_with_the_same_layout_keeps_its_regions() {
+fn a_world_of_today_is_made_over_whatever_it_is_started_with() {
     let world = world_of_today();
-    let check = |store: &Store, epoch: u64, case: &str| {
-        // The stripes have the epochs they had.
-        assert!(
-            matches!(
-                store.open_region(hello(0, 2)),
-                Err(StoreError::EpochRefused { seen: 3.., .. })
-            ),
-            "{case}"
-        );
-        let list = store.regions().unwrap();
-        assert_eq!(
-            listed(&list),
-            listed(&table::Table::made_from(&division(), 0, 1).list(|_| 0))
-        );
-        let (_, east) = store.open_region(hello(1, epoch)).unwrap();
-        assert_eq!(east.entity_ids, EntityIds::block(1).unwrap(), "{case}");
-        as_lived_in(store, epoch, case);
-    };
-    let disk = Arc::new(world.crashed(Survival::Nothing));
-    let store = store_on(&disk, &division()).unwrap();
-    check(&store, 10, "at once");
-    let file = table_file(&disk.crashed(Survival::Nothing));
-    // What changes the table is in segments after those the world had.
-    assert_eq!((file.from, file.next_region), (2, 2));
-    assert_eq!(disk.read(Path::new("/world/layout")).unwrap(), None);
-    started_at_every_kill_point(&world, &division(), check);
-}
-
-/// Started with another layout, or with a division that is none, it is made over.
-#[test]
-fn a_world_of_today_with_another_layout_is_made_over() {
-    let world = world_of_today();
-    for told in [stripes(&[]), stripes(&[0, 16]), gap()] {
+    for told in [division(), stripes(&[]), stripes(&[0, 16]), gap()] {
         // A world of today has no table.
         started_at_every_kill_point(&world, &told, |store, epoch, case| {
             as_made_over(store, &told, 0, epoch, case);
@@ -613,10 +568,8 @@ fn a_world_of_today_with_another_layout_is_made_over() {
 fn a_layout_file_beside_a_table_is_removed() {
     let disk = Arc::new(MemoryDisk::default());
     lived_in(&disk);
-    // Of another layout than the world has, which would make a world without a table
-    // over.
-    let other = Layout::single().fingerprint();
-    put(&disk, "/world/layout", format!("{other:016x}\n").as_bytes());
+    // By itself the file would make a world without a table over.
+    put(&disk, "/world/layout", b"4d25767f9dce13f5\n");
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let store = store_on(&left, &division()).unwrap();
     as_lived_in(&store, 10, "a layout file beside a table");

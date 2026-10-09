@@ -1358,9 +1358,9 @@ mod tests {
     }
 
     impl Grants {
-        /// A world divided into stripes at the chunk x coordinates `boundaries`, as a
-        /// layout divides it: the regions are numbered from west to east, and each is
-        /// pinned to its stripe.
+        /// A world divided into stripes at the chunk x coordinates `boundaries`, as
+        /// the world store pins regions side by side: the regions are numbered from
+        /// west to east, and each is pinned to its stripe.
         fn stripes(boundaries: &[i32]) -> Self {
             let stripe = |index: usize| ChunkArea {
                 min_x: index.checked_sub(1).map(|west| boundaries[west]),

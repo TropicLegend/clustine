@@ -77,7 +77,7 @@ of its own, by naming the chunk x coordinates where they meet. Players are hande
 region to region as they walk, and build across the boundaries, without noticing them:
 
 ```bash
-cargo run -p clustine -- --boundaries 4
+cargo run -p clustine -- --pin 4 --reshape by-hand
 ```
 
 ### Running a cluster
@@ -87,11 +87,11 @@ world of two regions on one machine; the processes find each other on their defa
 ports and can be started in any order:
 
 ```bash
-cargo run -p clustine -- coordinator --boundaries 4
+cargo run -p clustine -- coordinator --reshape by-hand
 ```
 
 ```bash
-cargo run -p clustine -- worldstore --world world --boundaries 4
+cargo run -p clustine -- worldstore --world world --pin 4
 ```
 
 ```bash

@@ -27,7 +27,7 @@ pub use service::serve_with;
 pub use service::{serve, serve_local};
 pub use state::{
     Asked, Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, MoveRefusal, Order,
-    Refusal, ReleaseOrder, ReshapeOrder, ReshapeRefusal, Reshaped, Undone,
+    ReleaseOrder, ReshapeOrder, ReshapeRefusal, Reshaped, Undone,
 };
 
 /// Messages that may wait in each direction of a connection between the coordinator and

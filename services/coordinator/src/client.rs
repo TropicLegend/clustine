@@ -8,7 +8,7 @@
 use std::io;
 use std::time::Duration;
 
-use clustine_region::{Layout, RegionId, RoutingTable};
+use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::link::{self, End};
 use clustine_rpc::{Assignment, FromCoordinator, Off, PlayersOf, ToCoordinator, Vouch, tcp};
 use clustine_world::{ChunkPos, Vec3};
@@ -104,18 +104,14 @@ pub enum ClientError {
     /// The coordinator could not be reached, or what it sent makes no sense.
     #[error("{0}")]
     Io(#[from] io::Error),
-    /// The coordinator does not let the worker take part, for the reason given.
-    #[error("the coordinator refused: {0}")]
-    Refused(String),
     /// The connection has ended. The coordinator may well be there still, or again.
     #[error("the connection to the coordinator is lost")]
     Lost,
 }
 
-/// What a worker is told: how the world is divided and what it is to run.
+/// What a worker is told: where players enter the world and what it is to run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Orders {
-    pub layout: Layout,
     /// Where players enter the world.
     pub spawn: Vec3,
     /// The regions the worker is to run, in ascending order. It has to stop running
@@ -185,8 +181,7 @@ pub struct WorkerClient {
 
 impl WorkerClient {
     /// Connects to the coordinator at `coordinator` (an address as host:port, or a [`Reach`]) and registers the worker
-    /// `name`, which edges reach at `address`, reporting what it runs already: `holding`,
-    /// and the fingerprint of the layout those regions belong to.
+    /// `name`, which edges reach at `address`, reporting what it runs already: `holding`.
     ///
     /// Returns with the coordinator's first answer. What is not among those orders, the
     /// worker has to stop running.
@@ -195,17 +190,8 @@ impl WorkerClient {
         name: &str,
         address: &str,
         holding: &[Assignment],
-        layout: Option<u64>,
     ) -> Result<(Self, Orders), ClientError> {
-        Self::register_with_heartbeat(
-            coordinator,
-            name,
-            address,
-            holding,
-            layout,
-            HEARTBEAT_INTERVAL,
-        )
-        .await
+        Self::register_with_heartbeat(coordinator, name, address, holding, HEARTBEAT_INTERVAL).await
     }
 
     /// [`WorkerClient::register`] for a worker that says every `heartbeat` that it is
@@ -217,7 +203,6 @@ impl WorkerClient {
         name: &str,
         address: &str,
         holding: &[Assignment],
-        layout: Option<u64>,
         heartbeat: Duration,
     ) -> Result<(Self, Orders), ClientError> {
         let mut link = connect(&coordinator.into()).await?;
@@ -225,7 +210,6 @@ impl WorkerClient {
             name: name.to_owned(),
             address: address.to_owned(),
             holding: holding.to_vec(),
-            layout,
         };
         link.send(registration)
             .await
@@ -502,7 +486,6 @@ impl RoutingWatch {
     pub async fn next(&mut self) -> Result<RoutingTable, ClientError> {
         match self.link.recv().await {
             Some(FromCoordinator::Routing(table)) => Ok(table),
-            Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
             Some(FromCoordinator::Assigned { .. } | FromCoordinator::Release { .. }) => {
                 Err(unexpected("orders to an edge"))
             }
@@ -593,7 +576,6 @@ impl Asker {
     pub async fn answer(mut self) -> Result<Result<RegionId, String>, ClientError> {
         match self.link.recv().await {
             Some(FromCoordinator::Asked(answer)) => Ok(answer),
-            Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
             Some(
                 FromCoordinator::Assigned { .. }
                 | FromCoordinator::Release { .. }
@@ -658,7 +640,6 @@ impl Mover {
                 epoch,
                 released,
             }),
-            Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
             Some(FromCoordinator::Assigned { .. } | FromCoordinator::Release { .. }) => {
                 Err(unexpected("orders to somebody who asked for a move"))
             }
@@ -704,19 +685,12 @@ fn orders_from(message: Option<FromCoordinator>) -> Result<Orders, ClientError> 
 /// What the coordinator said to a worker, or why it says no more.
 fn event_from(message: Option<FromCoordinator>) -> Result<WorkerEvent, ClientError> {
     match message {
-        Some(FromCoordinator::Assigned {
-            layout,
-            spawn,
-            assignments,
-        }) => Ok(WorkerEvent::Orders(Orders {
-            layout,
-            spawn,
-            assignments,
-        })),
+        Some(FromCoordinator::Assigned { spawn, assignments }) => {
+            Ok(WorkerEvent::Orders(Orders { spawn, assignments }))
+        }
         Some(FromCoordinator::Release { region, epoch }) => {
             Ok(WorkerEvent::Release { region, epoch })
         }
-        Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
         Some(FromCoordinator::Routing(_)) => Err(unexpected("a routing table to a worker")),
         Some(
             FromCoordinator::MoveRefused { .. }
@@ -813,23 +787,14 @@ mod tests {
 
     fn orders(assignments: &[Assignment]) -> Orders {
         Orders {
-            layout: Layout::new(vec![0]).unwrap(),
             spawn: Vec3::new(0.5, -60.0, 0.5),
             assignments: assignments.to_vec(),
         }
     }
 
     fn assigned(assignments: &[Assignment]) -> FromCoordinator {
-        let Orders {
-            layout,
-            spawn,
-            assignments,
-        } = orders(assignments);
-        FromCoordinator::Assigned {
-            layout,
-            spawn,
-            assignments,
-        }
+        let Orders { spawn, assignments } = orders(assignments);
+        FromCoordinator::Assigned { spawn, assignments }
     }
 
     fn table(version: u64) -> RoutingTable {
@@ -838,7 +803,6 @@ mod tests {
             absorbed: Vec::new(),
             waiting: 1,
             version,
-            layout: Layout::new(vec![0]).unwrap(),
             spawn: Vec3::new(0.5, -60.0, 0.5),
             routes: vec![RegionRoute {
                 region: RegionId(1),
@@ -851,7 +815,7 @@ mod tests {
     /// Registers the worker `a`, which runs nothing, with the coordinator at `address`.
     async fn register(address: &str) -> Result<(WorkerClient, Orders), ClientError> {
         let registering =
-            WorkerClient::register_with_heartbeat(address, "a", "a:25601", &[], None, HEARTBEAT);
+            WorkerClient::register_with_heartbeat(address, "a", "a:25601", &[], HEARTBEAT);
         within(registering).await
     }
 
@@ -874,7 +838,6 @@ mod tests {
             "worker-1",
             "10.0.0.1:25601",
             &held,
-            Some(42),
             HEARTBEAT,
         );
         let (_client, first) = within(registering).await.unwrap();
@@ -886,7 +849,6 @@ mod tests {
                 name: "worker-1".to_owned(),
                 address: "10.0.0.1:25601".to_owned(),
                 holding: held.to_vec(),
-                layout: Some(42),
             })
         );
     }
@@ -1549,26 +1511,6 @@ mod tests {
             let lost = within(client.next()).await;
             assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
         }
-    }
-
-    #[tokio::test]
-    async fn a_refusal_carries_its_reason() {
-        let (listener, address) = listen().await;
-        tokio::spawn(async move {
-            let mut link = accept(&listener).await;
-            assert!(within(link.recv()).await.is_some());
-            let reason = "not today".to_owned();
-            link.send(FromCoordinator::Refused { reason })
-                .await
-                .unwrap();
-        });
-        let refused = register(&address).await;
-        assert!(
-            matches!(&refused, Err(ClientError::Refused(reason)) if reason == "not today"),
-            "{refused:?}"
-        );
-        let error = refused.unwrap_err().to_string();
-        assert_eq!(error, "the coordinator refused: not today");
     }
 
     #[tokio::test]

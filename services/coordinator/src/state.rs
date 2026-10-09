@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use clustine_region::{Layout, RegionId, RegionRoute, RoutingTable};
+use clustine_region::{RegionId, RegionRoute, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, PlayersOf, RegionList, Vouch};
 use clustine_world::{ChunkPos, EntityId, EntityIds, Vec3};
 use tracing::{info, warn};
@@ -28,12 +28,6 @@ const LOG: &str = module_path!();
 /// What a coordinator is created with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoordinatorConfig {
-    /// The stripes the world was divided into before its regions followed their
-    /// players. The coordinator no longer takes its regions from it: those it learns
-    /// from the world store's list (`docs/adr/0017-the-end-of-the-stripes.md`,
-    /// section 2.3). Until the layout goes altogether it is still what a worker's
-    /// fingerprint is compared with and what workers and edges are sent.
-    pub layout: Layout,
     /// Where players enter the world.
     pub spawn: Vec3,
     /// How long a worker may be silent before it loses its regions, and how long a
@@ -46,16 +40,6 @@ pub struct CoordinatorConfig {
     /// `docs/adr/0016-when-to-merge-and-split.md`, section 8, and "Deciding by
     /// itself" at [`Coordinator`].
     pub follow: Option<Policy>,
-}
-
-/// Why a worker's registration is refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum Refusal {
-    #[error(
-        "the worker's layout has the fingerprint {reported:#018x}, \
-         but the world is divided by one with {expected:#018x}"
-    )]
-    Layout { reported: u64, expected: u64 },
 }
 
 /// Why a region is not moved.
@@ -856,8 +840,6 @@ impl Holder {
 #[derive(Debug, Clone)]
 pub struct Coordinator {
     config: CoordinatorConfig,
-    /// [`Layout::fingerprint`] of the layout.
-    fingerprint: u64,
     /// When the grace period ends: before this the coordinator gives nothing away
     /// that its owner did not let go of, evens nothing out and begins nothing by
     /// itself. One lease from when it was made; for a coordinator that is alone with
@@ -960,7 +942,6 @@ impl Coordinator {
     /// for that ([`Coordinator::released`]).
     pub fn new(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Self {
         Self {
-            fingerprint: config.layout.fingerprint(),
             grace_until: follow::after(now, config.lease),
             awaiting: true,
             words: Vec::new(),
@@ -991,11 +972,10 @@ impl Coordinator {
     /// ([`Coordinator::awaits_the_list`] is false from the start). In everything else
     /// it is [`Coordinator::new`].
     ///
-    /// For tests, and until the layout goes for a coordinator that is started with
-    /// stripes: most tests of the coordinator are about what it does with regions it
-    /// knows, and handing each a list instead would change the version of its routing
-    /// table, its home region and what it may be asked
-    /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
+    /// For tests, and no process makes one: most tests of the coordinator are about
+    /// what it does with regions it knows, and handing each a list instead would
+    /// change the version of its routing table, its home region and what it may be
+    /// asked (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
     #[doc(hidden)]
     pub fn knowing(
         config: CoordinatorConfig,
@@ -1007,26 +987,6 @@ impl Coordinator {
             regions: regions.iter().map(|id| (*id, Region::default())).collect(),
             awaiting: false,
             ..Self::new(config, now, first_epoch)
-        }
-    }
-
-    /// A coordinator that knows `regions` from the start, as [`Coordinator::knowing`],
-    /// and awaits the list all the same, as [`Coordinator::new`]: that of a process
-    /// that was told stripes, until stripes go. It gives its stripes out without the
-    /// store, as it always did. But which region is home only the list says, and an
-    /// edge lets nobody in before it is told (`docs/adr/0017-the-end-of-the-stripes.md`,
-    /// section 5.4): a coordinator whose store was not there yet when it started, and
-    /// when its workers registered, would never read the list again and its edges
-    /// would wait for ever. So the list is read until it has been read.
-    pub(crate) fn knowing_its_stripes(
-        config: CoordinatorConfig,
-        now: Instant,
-        first_epoch: u64,
-        regions: &[RegionId],
-    ) -> Self {
-        Self {
-            awaiting: true,
-            ..Self::knowing(config, now, first_epoch, regions)
         }
     }
 
@@ -1087,11 +1047,9 @@ impl Coordinator {
 
     /// A worker offers to run regions, or is back after losing its connection.
     ///
-    /// It is refused if `layout`, the fingerprint of the layout it works with, is not
-    /// that of the coordinator's layout; nothing changes then. Otherwise it is
-    /// registered under `name`. If a worker of that name is registered already, this is
-    /// taken to be the same worker: edges are sent to `address` from now on, and what it
-    /// owns stays.
+    /// Nobody is refused. The worker is registered under `name`. If a worker of that
+    /// name is registered already, this is taken to be the same worker: edges are sent
+    /// to `address` from now on, and what it owns stays.
     ///
     /// `holding` is what the worker runs already. It goes on running such a region, with
     /// the epoch and the entity ids it reports, unless
@@ -1131,17 +1089,7 @@ impl Coordinator {
         name: &str,
         address: &str,
         holding: &[Assignment],
-        layout: Option<u64>,
-    ) -> Result<Changes, Refusal> {
-        if let Some(reported) = layout.filter(|reported| *reported != self.fingerprint) {
-            let expected = self.fingerprint;
-            warn!(
-                worker = name,
-                reported, expected, "refused a worker that divides the world differently"
-            );
-            return Err(Refusal::Layout { reported, expected });
-        }
-
+    ) -> Changes {
         let before = self.seen();
         match self.workers.get_mut(name) {
             Some(worker) => {
@@ -1253,7 +1201,7 @@ impl Coordinator {
                 self.order_absorb(absorbed);
             }
         }
-        Ok(self.finish(&before, now))
+        self.finish(&before, now)
     }
 
     /// A worker says that it is still there, and vouches for the regions it names, in
@@ -2862,7 +2810,6 @@ impl Coordinator {
             absorbed: self.absorbed.clone(),
             waiting: self.waiting_count(),
             version: self.version,
-            layout: self.config.layout.clone(),
             spawn: self.config.spawn,
             routes,
         }
@@ -3228,7 +3175,8 @@ mod tests {
     /// have changed, and what can be seen must be in order.
     struct Cluster {
         coordinator: Coordinator,
-        layout: Layout,
+        /// The regions the coordinator is made knowing.
+        regions: Vec<RegionId>,
         start: Instant,
         /// The address each worker gave when it last registered.
         addresses: BTreeMap<String, String>,
@@ -3237,18 +3185,18 @@ mod tests {
     }
 
     impl Cluster {
-        /// A new coordinator for a world with region boundaries at these chunk x
-        /// coordinates.
+        /// A new coordinator that knows the regions of a world with region boundaries
+        /// at these chunk x coordinates: one more than there are boundaries.
         fn new(boundaries: &[i32]) -> Self {
             Self::with_first_epoch(boundaries, FIRST_EPOCH)
         }
 
         fn with_first_epoch(boundaries: &[i32], first_epoch: u64) -> Self {
-            let layout = Layout::new(boundaries.to_vec()).unwrap();
+            let regions = stripes_of(boundaries);
             let start = Instant::now();
             Self {
-                coordinator: coordinator(&layout, start, first_epoch),
-                layout,
+                coordinator: coordinator(&regions, start, first_epoch),
+                regions,
                 start,
                 addresses: BTreeMap::new(),
                 last: None,
@@ -3257,14 +3205,14 @@ mod tests {
 
         /// Replaces the coordinator by a new one, which knows nothing of what was.
         fn restart(&mut self, at: u64, first_epoch: u64) {
-            self.coordinator = coordinator(&self.layout, self.at(at), first_epoch);
+            self.coordinator = coordinator(&self.regions, self.at(at), first_epoch);
         }
 
         fn at(&self, milliseconds: u64) -> Instant {
             self.start + Duration::from_millis(milliseconds)
         }
 
-        /// Registers a worker that has the coordinator's layout.
+        /// Registers a worker.
         fn register(
             &mut self,
             at: u64,
@@ -3272,19 +3220,6 @@ mod tests {
             address: &str,
             holding: &[Assignment],
         ) -> Changes {
-            let layout = Some(self.layout.fingerprint());
-            self.register_as(at, name, address, holding, layout)
-                .unwrap()
-        }
-
-        fn register_as(
-            &mut self,
-            at: u64,
-            name: &str,
-            address: &str,
-            holding: &[Assignment],
-            layout: Option<u64>,
-        ) -> Result<Changes, Refusal> {
             let before = self.view();
             let now = self.at(at);
             let mut releases = self.coordinator.releases.values();
@@ -3299,21 +3234,14 @@ mod tests {
                 .splits
                 .values()
                 .any(|split| split.owner == name);
-            let result = self
-                .coordinator
-                .register(now, name, address, holding, layout);
-            match &result {
-                Ok(changes) => {
-                    self.addresses.insert(name.to_owned(), address.to_owned());
-                    self.verify(&before, changes);
-                    // A registration is nobody else's business, unless the worker
-                    // was asked to release a region and comes back without it.
-                    let own = changes.workers.iter().all(|worker| worker == name);
-                    assert!(asked || reshaping || own);
-                }
-                Err(_) => assert_eq!(self.view(), before, "a refusal changed something"),
-            }
-            result
+            let changes = self.coordinator.register(now, name, address, holding);
+            self.addresses.insert(name.to_owned(), address.to_owned());
+            self.verify(&before, &changes);
+            // A registration is nobody else's business, unless the worker was asked
+            // to release a region and comes back without it.
+            let own = changes.workers.iter().all(|worker| worker == name);
+            assert!(asked || reshaping || own);
+            changes
         }
 
         /// A heartbeat that vouches for everything the worker owns as committed, which
@@ -3582,7 +3510,6 @@ mod tests {
             }
             routes.sort_by_key(|route| route.region);
             assert_eq!(now.table.routes, routes);
-            assert_eq!(now.table.layout, self.layout);
             assert_eq!(now.table.spawn, SPAWN);
             // And counts the regions that have none.
             let known = &self.coordinator.regions;
@@ -3748,15 +3675,13 @@ mod tests {
         }
     }
 
-    fn coordinator(layout: &Layout, now: Instant, first_epoch: u64) -> Coordinator {
-        Coordinator::knowing(config(layout), now, first_epoch, &stripes_of(layout))
+    fn coordinator(regions: &[RegionId], now: Instant, first_epoch: u64) -> Coordinator {
+        Coordinator::knowing(config(), now, first_epoch, regions)
     }
 
-    /// What the coordinators of these tests are created with, for a world that was
-    /// divided by `layout`.
-    fn config(layout: &Layout) -> CoordinatorConfig {
+    /// What the coordinators of these tests are created with.
+    fn config() -> CoordinatorConfig {
         CoordinatorConfig {
-            layout: layout.clone(),
             spawn: SPAWN,
             lease: Duration::from_millis(LEASE),
             follow: None,
@@ -3764,10 +3689,10 @@ mod tests {
     }
 
     /// The regions a coordinator of these tests is made knowing: one for every stripe
-    /// of `layout`, as a coordinator knew them before it learnt its regions from the
-    /// world store's list.
-    fn stripes_of(layout: &Layout) -> Vec<RegionId> {
-        layout.regions().map(|(id, _)| id).collect()
+    /// of a world with these boundaries, numbered from 0, as a coordinator knew them
+    /// before it learnt its regions from the world store's list.
+    fn stripes_of(boundaries: &[i32]) -> Vec<RegionId> {
+        (0..=boundaries.len() as u32).map(RegionId).collect()
     }
 
     fn ids(block: u32) -> EntityIds {
@@ -3858,7 +3783,6 @@ mod tests {
                 route(1, FIRST_EPOCH + 2, "a:25601"),
             ]
         );
-        assert_eq!(table.layout, Layout::new(vec![0]).unwrap());
         assert_eq!(table.spawn, SPAWN);
 
         // There is nothing left to do.
@@ -3895,7 +3819,7 @@ mod tests {
         assert!(table.is_complete());
     }
 
-    /// The layout of a world with five regions.
+    /// The boundaries of a world with five regions.
     const FIVE: [i32; 4] = [-16, -8, 0, 8];
 
     /// The numbers of the regions that the worker `name` runs.
@@ -4482,7 +4406,6 @@ mod tests {
         assert!(cluster.assignments("b").is_empty());
         let table = cluster.table();
         assert!(table.is_complete());
-        assert_eq!(table.layout, Layout::single());
         assert_eq!(table.routes, [route(0, FIRST_EPOCH + 1, "a:25601")]);
 
         assert!(cluster.heartbeat(LEASE, "a"));
@@ -4756,8 +4679,7 @@ mod tests {
         cluster.register(0, "a", "a:25601", &[]);
         cluster.register(0, "b", "b:25601", &[]);
         assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
-        // `b` runs region 1 and names region 0 as well, as does a worker of a world
-        // with another layout.
+        // `b` runs region 1 and names region 0 as well, and a region nobody knows.
         let both = [
             (RegionId(0), Vouch::Committed),
             (RegionId(1), Vouch::Committed),
@@ -4864,7 +4786,7 @@ mod tests {
 
         // A refusal under an earlier assignment of the same worker, of a region that
         // another worker runs or nobody does, from a worker that is not registered,
-        // and of a region the layout does not have.
+        // and of a region the coordinator does not know.
         let refusals = [
             ("a", 0, epoch),
             ("a", 0, epoch - 1),
@@ -5242,9 +5164,9 @@ mod tests {
         assert_eq!(cluster.assignments("b"), [claim]);
     }
 
-    /// Until regions split, a holding for a region the layout does not have was turned
-    /// away. Such a region is one that was split off another now, and nobody but its
-    /// worker may know of it.
+    /// Until regions split, a holding for a region the coordinator did not know was
+    /// turned away. Such a region is one that was split off another now, and nobody
+    /// but its worker may know of it.
     #[test]
     fn a_holding_for_a_region_the_coordinator_does_not_know_is_honoured_on_the_workers_word() {
         let mut cluster = Cluster::new(&[]);
@@ -5254,7 +5176,7 @@ mod tests {
             changes(&["a"], true)
         );
         assert_eq!(cluster.assignments("a"), [claim]);
-        // The region of the layout still waits for an owner.
+        // The region the coordinator knew still waits for an owner.
         assert!(!cluster.table().is_complete());
 
         // Its epoch and its entity ids are left out from now on.
@@ -5425,48 +5347,6 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_with_another_layout_is_refused() {
-        let mut cluster = Cluster::new(&[0]);
-        let ours = cluster.layout.fingerprint();
-        let theirs = Layout::single().fingerprint();
-        let refusal = Refusal::Layout {
-            reported: theirs,
-            expected: ours,
-        };
-        let held = assignment(0, 5, 0);
-        assert_eq!(
-            cluster.register_as(0, "a", "a:25601", &[held], Some(theirs)),
-            Err(refusal)
-        );
-        assert!(!cluster.heartbeat(0, "a"));
-        assert_eq!(cluster.table().version, FIRST_EPOCH);
-        // The worker is told both fingerprints.
-        let reason = refusal.to_string();
-        assert!(reason.contains(&format!("{theirs:#018x}")), "{reason}");
-        assert!(reason.contains(&format!("{ours:#018x}")), "{reason}");
-
-        // The coordinator's layout is fine, and so is none: a worker that runs nothing
-        // has no reason to have one.
-        assert_eq!(
-            cluster.register_as(0, "a", "a:25601", &[held], Some(ours)),
-            Ok(changes(&["a"], true))
-        );
-        assert_eq!(
-            cluster.register_as(0, "b", "b:25601", &[], None),
-            Ok(Changes::default())
-        );
-
-        // A refusal leaves a registered worker as it was. It is not even a sign of
-        // life.
-        assert_eq!(
-            cluster.register_as(1, "a", "elsewhere:25601", &[], Some(theirs)),
-            Err(refusal)
-        );
-        assert_eq!(cluster.table().routes, [route(0, 5, "a:25601")]);
-        assert_eq!(cluster.tick(LEASE + 1), changes(&["a"], true));
-    }
-
-    #[test]
     fn a_region_is_assigned_all_the_same_when_the_entity_ids_run_out() {
         let mut cluster = Cluster::new(&[0]);
         let mut now = LEASE;
@@ -5494,7 +5374,7 @@ mod tests {
 
     #[test]
     fn no_entity_ids_are_filled_in_when_every_block_has_an_owner() {
-        let mut coordinator = coordinator(&Layout::single(), Instant::now(), FIRST_EPOCH);
+        let mut coordinator = coordinator(&stripes_of(&[]), Instant::now(), FIRST_EPOCH);
         coordinator.used_blocks = (0..EntityIds::BLOCK_COUNT).collect();
         let everything = EntityIds {
             first: EntityId(1),
@@ -6593,7 +6473,7 @@ mod tests {
     fn epochs_only_rise_and_nothing_is_shared_whatever_workers_do() {
         const WORKERS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
         let (mut issued, mut resumed, mut turned_away, mut lost) = (0, 0, 0, 0);
-        let (mut refused, mut restarts, mut dropped) = (0, 0, 0);
+        let (mut restarts, mut dropped) = (0, 0);
         let (mut moves, mut unmoved, mut let_go, mut overdue) = (0, 0, 0, 0);
         let (mut left, mut vanished, mut asked_to_leave, mut cut_off) = (0, 0, 0, 0);
         let (mut compared, mut meant, mut shared, mut handed_on) = (0, 0, 0, 0);
@@ -6606,7 +6486,6 @@ mod tests {
             // In every other run the workers only report what a coordinator gave them.
             let honest = seed % 2 == 0;
             let mut cluster = Cluster::new(&[-8, 0, 8]);
-            let fingerprint = cluster.layout.fingerprint();
             let mut now = 0;
             let mut grace_ends = LEASE;
             // The regions that a worker said it let go of and nobody was given since:
@@ -6699,20 +6578,8 @@ mod tests {
                             entity_ids,
                         });
                     }
-                    let layout = match random.below(20) {
-                        0 => Some(fingerprint ^ 1),
-                        1..=4 => None,
-                        _ => Some(fingerprint),
-                    };
                     let address = format!("{name}:{}", 25601 + random.below(3));
-                    if cluster
-                        .register_as(now, name, &address, &holding, layout)
-                        .is_err()
-                    {
-                        assert_eq!(layout, Some(fingerprint ^ 1));
-                        refused += 1;
-                        continue;
-                    }
+                    cluster.register(now, name, &address, &holding);
                     let has = cluster.assignments(name);
                     // Whatever the worker has that it did not have, it reported.
                     for gained in has.iter().filter(|a| !before.assignments(name).contains(a)) {
@@ -7185,7 +7052,6 @@ mod tests {
             resumed,
             turned_away,
             lost,
-            refused,
             restarts,
             dropped,
             moves,
@@ -8498,7 +8364,7 @@ mod tests {
     fn a_new_coordinator_assigns_what_the_list_shows_when_its_grace_period_is_over() {
         let mut cluster = Cluster::new(&[0]);
         cluster.register(0, "a", "a:25601", &[]);
-        // Three regions more than the layout has; one of them was opened with an
+        // Three regions more than the coordinator knows; one of them was opened with an
         // epoch far above the coordinator's.
         let list = RegionList {
             regions: vec![living(0, 0), living(1, 0), living(4, E + 70), living(6, 3)],

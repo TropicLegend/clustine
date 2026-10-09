@@ -1,6 +1,6 @@
 [package]
 name = "clustine-region"
-description = "Region model: how the world is divided into regions and who runs each."
+description = "Region model: which regions a world has and who runs each."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,4 +10,3 @@ publish.workspace = true
 [dependencies]
 clustine-world.workspace = true
 serde.workspace = true
-thiserror.workspace = true

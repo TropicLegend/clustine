@@ -9,7 +9,7 @@ mod common;
 use std::time::Duration;
 
 use clustine_botswarm::Bot;
-use clustine_region::{Layout, RegionId, RegionRoute, RoutingTable};
+use clustine_region::{RegionId, RegionRoute, RoutingTable};
 use clustine_rpc::link::End;
 use clustine_rpc::{Assignment, FromCoordinator, PlayersOf, ToCoordinator, tcp};
 use clustine_world::{ChunkPos, EntityId, EntityIds, Vec3};
@@ -50,7 +50,6 @@ async fn within<T>(what: &str, waited: impl Future<Output = T>) -> T {
 /// and the test decides what it answers.
 struct Played {
     listener: TcpListener,
-    layout: Layout,
 }
 
 impl Played {
@@ -71,7 +70,6 @@ impl Played {
             panic!("expected a worker to register, and heard {first:?}");
         };
         let orders = FromCoordinator::Assigned {
-            layout: self.layout.clone(),
             spawn: SPAWN,
             assignments: assignments.to_vec(),
         };
@@ -90,7 +88,6 @@ impl Played {
         });
         FromCoordinator::Routing(RoutingTable {
             version,
-            layout: self.layout.clone(),
             spawn: SPAWN,
             routes: routes.collect(),
             home: Some(RegionId(0)),
@@ -182,12 +179,8 @@ async fn a_worker_says_where_the_players_of_the_regions_it_runs_are() {
             Err(error) => panic!("listening as the coordinator: {error}"),
         }
     };
-    let played = Played {
-        listener,
-        // What is left of the layout until it goes: a world without a boundary, which
-        // is what a coordinator says that is told none. The regions are the store's.
-        layout: Layout::single(),
-    };
+    // It says nothing of how the world is divided: the regions are the store's.
+    let played = Played { listener };
     let both = [assignment(0, 3), assignment(1, 5)];
 
     // The worker is given both regions while there is no world store to open them at.
