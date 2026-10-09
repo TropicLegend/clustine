@@ -216,8 +216,8 @@ segment, and the segments before it go.
 - The store is started with a **division**: the areas of the pinned regions, and the
   chunk players enter the world in, the home chunk. Region `i` is pinned to area `i`.
   The home region is the pinned region whose area has the home chunk, or else a region
-  made after the pinned ones and granted that chunk. Until regions follow players
-  everywhere, the division is the stripes of the layout the cluster is started with.
+  made after the pinned ones and granted that chunk. A world is started with no
+  pinned region unless its store is told `--pin`, which pins regions side by side.
 - Every region has an id below "the next region id", and an id is never used again for
   a region that a split makes. A region that is in neither list of the table has gone
   for good. The store remembers the latest 4096 regions that were absorbed.

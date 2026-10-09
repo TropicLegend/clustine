@@ -198,7 +198,7 @@ struct Standalone {
 /// their ports must only be reachable from within the cluster.
 #[derive(Subcommand)]
 enum Service {
-    /// Divides the world into regions and decides which worker runs which.
+    /// Decides which worker runs which region, and when regions merge and split.
     Coordinator {
         /// Address workers and edges connect to.
         #[arg(long, default_value_t = SocketAddr::from(([127, 0, 0, 1], COORDINATOR_PORT)))]
