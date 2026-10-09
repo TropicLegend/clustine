@@ -93,8 +93,16 @@ struct Stage {
 impl Stage {
     /// Starts an edge that looks for its coordinator where the test listens.
     async fn new(directory: &std::path::Path) -> Self {
-        let mut cluster = Cluster::new(directory, 0, "").await;
-        let coordinator = TcpListener::bind(&cluster.coordinator.0).await.unwrap();
+        // The address is one that nothing listened on a moment ago. Another test's
+        // process can have taken it since, and then another address is tried.
+        let (mut cluster, coordinator) = loop {
+            let cluster = Cluster::new(directory, 0, "").await;
+            match TcpListener::bind(&cluster.coordinator.0).await {
+                Ok(coordinator) => break (cluster, coordinator),
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+                Err(error) => panic!("listening as the coordinator: {error}"),
+            }
+        };
         let edge = cluster.spawn(
             "edge",
             &[
