@@ -3078,7 +3078,6 @@ fn a_reading_that_takes_the_region_of_a_split_away_ends_the_split() {
 /// What `Undone::Gone` says of itself in the coordinator's interface: "The world
 /// store's list no longer has this region of it."
 #[test]
-#[ignore = "finding: a split or a survivor that a reading took away is called disowned, not gone"]
 fn whoever_asked_is_told_that_the_list_no_longer_has_the_region() {
     // Each of these is a merge or a split of which a reading takes a region away: it
     // has the region among the absorbed (gone into another region than the merge was

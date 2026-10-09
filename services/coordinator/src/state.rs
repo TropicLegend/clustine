@@ -1724,7 +1724,7 @@ impl Coordinator {
     fn broken_merge(&self, absorbed: RegionId) -> Option<Undone> {
         let merge = self.merges.get(&absorbed)?;
         if !self.holds(merge.survivor, &merge.owner, merge.epoch) {
-            return Some(Undone::Disowned(merge.survivor));
+            return Some(self.lost(merge.survivor));
         }
         let intact = match &merge.stage {
             MergeStage::Releasing { from, epoch } => self.holds(absorbed, from, *epoch),
@@ -1733,7 +1733,18 @@ impl Coordinator {
                 state.is_some_and(|state| state.owner.is_none())
             }
         };
-        (!intact).then_some(Undone::Disowned(absorbed))
+        (!intact).then(|| self.lost(absorbed))
+    }
+
+    /// Why a merge or a split cannot go on with `region`, which is not its owner's
+    /// with the epoch it had any more: a reading of the world store's list took the
+    /// region away, or it lost its owner or changed hands.
+    fn lost(&self, region: RegionId) -> Undone {
+        if self.regions.contains_key(&region) {
+            Undone::Disowned(region)
+        } else {
+            Undone::Gone(region)
+        }
     }
 
     /// Ends the reservations that no longer hold: a merge whose survivor is not its
@@ -1763,7 +1774,8 @@ impl Coordinator {
             .collect();
         for region in broken {
             info!(%region, "a split no longer holds, as the region is not that owner's");
-            self.lapse_split(now, region, Undone::Disowned(region));
+            let why = self.lost(region);
+            self.lapse_split(now, region, why);
         }
     }
 
@@ -7481,7 +7493,7 @@ mod tests {
             absorbed: vec![(RegionId(1), RegionId(0))],
             ..list.clone()
         };
-        let disowned = Err(Undone::Disowned(RegionId(1)));
+        let taken_away = Err(Undone::Gone(RegionId(1)));
 
         // At the first stage the other region is taken from its owner all the same,
         // and goes to the worker that has just lost the survivor.
@@ -7489,7 +7501,7 @@ mod tests {
         cluster.merge(LEASE + 1, 1, 2, Some(7)).unwrap();
         let ended = cluster.listed(LEASE + 2, &gone(&list));
         let expected = Changes {
-            reshaped: vec![merged(Some(7), 1, 2, disowned)],
+            reshaped: vec![merged(Some(7), 1, 2, taken_away)],
             ..changes(&["b", "c"], true)
         };
         assert_eq!(ended, expected);
@@ -7505,7 +7517,7 @@ mod tests {
         cluster.released(LEASE + 2, "c", 2, E + 3);
         let ended = cluster.listed(LEASE + 3, &gone(&list));
         let expected = Changes {
-            reshaped: vec![merged(Some(7), 1, 2, disowned)],
+            reshaped: vec![merged(Some(7), 1, 2, taken_away)],
             ..changes(&["b"], true)
         };
         assert_eq!(ended, expected);
@@ -7706,7 +7718,7 @@ mod tests {
         assert_eq!(found, Changes::default());
         assert_eq!(cluster.assignments("c")[1], part(3, E + 4));
 
-        // The same when a reading of the list takes the region away.
+        // When a reading of the list takes the region away, it is gone, not disowned.
         let (mut cluster, list) = three_stripes();
         cluster.split(LEASE + 1, 2, &CHUNKS, Some(7)).unwrap();
         let gone = RegionList {
@@ -7716,7 +7728,7 @@ mod tests {
         };
         let ended = cluster.listed(LEASE + 2, &gone);
         let expected = Changes {
-            reshaped: vec![was_split(Some(7), 2, disowned)],
+            reshaped: vec![was_split(Some(7), 2, Err(Undone::Gone(RegionId(2))))],
             ..changes(&["c"], true)
         };
         assert_eq!(ended, expected);
