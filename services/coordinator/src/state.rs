@@ -149,20 +149,24 @@ pub enum Undone {
     /// The region to absorb was not released within the lease, and was taken from its
     /// owner.
     NotReleased,
-    /// A lease has passed since it was asked without the worker's word, and the world
-    /// store's list does not show it done.
+    /// A lease has passed since it was asked without the worker's word. Of a merge,
+    /// the world store's list was read and does not show it done. Of a split, nobody
+    /// knows: the list shows which regions there are, and only the worker's word says
+    /// which of them a split made.
     Overdue,
     /// This region of it lost its owner, or its owner's epoch changed, before the
-    /// worker said what came of it. If anybody had been told to absorb or to split by
-    /// then, the world store's list was read and does not show it done.
+    /// worker said what came of it. Of a merge whose worker had been told to absorb,
+    /// the world store's list was read and does not show it done; of a split, nobody
+    /// knows, as for [`Undone::Overdue`].
     Disowned(RegionId),
     /// The world store's list no longer has this region of it.
     Gone(RegionId),
     /// The worker said that the merge was done, and the world store's list still has
     /// the region that was to be absorbed.
     Contradicted,
-    /// The reservation ended without the worker's word, and the world store's list
-    /// could not be read then: it may have been done all the same.
+    /// The reservation of a merge ended without the worker's word when a worker had
+    /// been told to absorb, and the world store's list could not be read then: it may
+    /// have been done all the same.
     Unread,
     /// Epochs have run out, so the region to absorb could not be opened anew.
     NoEpoch,
@@ -177,8 +181,8 @@ impl std::fmt::Display for Undone {
                  from its owner",
             ),
             Self::Overdue => formatter.write_str(
-                "the worker did not say what came of it within the lease, and the world \
-                 store's list of regions does not show it done",
+                "the worker did not say within the lease what came of it, and it is not \
+                 known to be done",
             ),
             Self::Disowned(region) => write!(
                 formatter,
@@ -417,25 +421,14 @@ struct Split {
     owner: String,
     epoch: u64,
     /// The epoch the owner was told to run the new region with, which is how its
-    /// answer is known.
+    /// answer is known. The id it was told to give the region is not kept: the store
+    /// can have made the region under another, so only the worker's answer says
+    /// which region the split made.
     as_epoch: u64,
-    /// The id the new region was told to have: the next one of the store's list.
-    part: RegionId,
     /// When it was asked for.
     asked: Instant,
     /// Who asked, if somebody did.
     asker: Option<u64>,
-}
-
-/// A split whose reservation ended without the worker's word. The world store's list
-/// is being read to find out what came of it.
-#[derive(Debug, Clone)]
-struct Unheard {
-    region: RegionId,
-    part: RegionId,
-    asker: Option<u64>,
-    /// Why the reservation ended.
-    why: Undone,
 }
 
 /// What a call has to tell the service besides what can be seen of the owners before and
@@ -725,15 +718,20 @@ impl Holder {
 /// is no longer what it was, the reservation ends:
 ///
 /// - a merge at its first stage, like a release that was not answered: the region to
-///   absorb is taken from its owner, which has failed it, and assigned;
+///   absorb is taken from its owner and assigned. That owner has failed the region
+///   only if the merge's time is up: where the survivor's side ended the reservation,
+///   it did nothing wrong;
 /// - a merge at its second stage, by asking for the list first. If that shows the
 ///   region absorbed, the merge was done; if not, or if the list cannot be read, the
 ///   region is assigned, with an epoch above the one the survivor's owner was told,
 ///   so that the world store declines an absorb that is still on its way;
-/// - a split, by asking for the list, which shows whether the new region is there.
+/// - a split, as one of which nobody knows what came, and by asking for the list.
 ///   While a split is reserved, a region the list shows and the coordinator does not
 ///   know is left out: it is the part of that split, which its worker runs from
-///   memory and has yet to say so. The reading after the reservation adds it.
+///   memory and has yet to say so. The reading after the reservation adds it, as a
+///   region nobody runs. Whoever asked is not told by it that the split was done: a
+///   region with the id that was ordered can be another split's, and only the
+///   worker's word says which region a split made.
 #[derive(Debug, Clone)]
 pub struct Coordinator {
     config: CoordinatorConfig,
@@ -768,17 +766,15 @@ pub struct Coordinator {
     merges: BTreeMap<RegionId, Merge>,
     /// The splits under way, each under the region that is split.
     splits: BTreeMap<RegionId, Split>,
-    /// The splits whose reservations ended without the worker's word, until the list
-    /// has been read for them.
-    unheard: Vec<Unheard>,
     /// When a merge or a split last ended.
     reshaped: Option<Instant>,
     /// Whether the list has been asked for and neither [`Coordinator::listed`] nor
     /// [`Coordinator::unlisted`] has been called since.
     reading: bool,
-    /// Whether a reading that was to show what came of a split failed, so that the
-    /// part, if there is one, may be a region nobody knows of. The list is asked for
-    /// at every tick until it has been read.
+    /// Whether the reservation of a split has ended without the worker's word and the
+    /// list has not been read since, so that the part, if there is one, may be a
+    /// region nobody knows of. The list is asked for at every tick until it has been
+    /// read.
     owed: bool,
     /// What the call that is being made has to tell the service; empty between calls.
     pending: Pending,
@@ -829,7 +825,6 @@ impl Coordinator {
             next: None,
             merges: BTreeMap::new(),
             splits: BTreeMap::new(),
-            unheard: Vec::new(),
             reshaped: None,
             reading: false,
             owed: false,
@@ -1289,8 +1284,8 @@ impl Coordinator {
     ///
     /// A merge or a split that was asked for more than a lease ago ends here as well;
     /// see [`Coordinator`]. And the world store's list is asked for again
-    /// ([`Changes::read`]) if a merge waits for it, or a split did, and the reading
-    /// that was to show what came of it failed.
+    /// ([`Changes::read`]) if a merge waits for it, or the reservation of a split
+    /// ended without the worker's word, and the reading that was to follow failed.
     ///
     /// Last of all, and only here, a release is begun to even regions out, if a worker
     /// runs two regions more than another, no release is under way, and no merge or
@@ -1326,9 +1321,9 @@ impl Coordinator {
     /// - The home region and the absorbed pairs are noted for the routing table, and
     ///   the next id for the next split.
     /// - A merge of which a worker has said what came, or whose reservation has run
-    ///   out at its second stage, ends by what the list has of the region to absorb;
-    ///   so does a split whose reservation ended without the worker's word, by
-    ///   whether the region it was to make is among the living.
+    ///   out at its second stage, ends by what the list has of the region to absorb.
+    ///   Nothing is said of a split by it: whoever asked for one whose reservation
+    ///   ended without the worker's word has been told so then.
     ///
     /// No epoch issued from now on is at or below one the list has, and a region
     /// without an owner has had the epoch the list has for it: a holding below that
@@ -1381,21 +1376,9 @@ impl Coordinator {
             }
             self.end_broken_reshapes(now);
         }
-        for unheard in std::mem::take(&mut self.unheard) {
-            let made = living.contains_key(&unheard.part);
-            self.pending.reshaped.push(Reshaped {
-                asker: unheard.asker,
-                asked: Asked::Split {
-                    region: unheard.region,
-                },
-                outcome: if made {
-                    Ok(unheard.part)
-                } else {
-                    Err(unheard.why)
-                },
-            });
-        }
-        // Every reservation that waited for a reading has had this one.
+        // Every reservation that waited for a reading has had this one, and so has
+        // a split that ended without the worker's word: what it made, if anything,
+        // is added below like any region nobody is known to run.
         self.reading = false;
         self.owed = false;
         self.pending.read = false;
@@ -1435,11 +1418,11 @@ impl Coordinator {
     ///
     /// A merge whose reservation has run out at its second stage ends all the same,
     /// with the region to absorb assigned: should it have been absorbed, the worker
-    /// that is given it is refused by the world store and says so. A split whose
-    /// reservation ended without the worker's word ends as one of which nobody knows
-    /// what came, and the list is asked for at every tick until it has been read, as
-    /// the part may be a region that nobody runs. A merge of which a worker has said
-    /// what came waits on, and the list is asked for again at the next tick.
+    /// that is given it is refused by the world store and says so. After a split
+    /// whose reservation ended without the worker's word, the list is asked for at
+    /// every tick until it has been read, as the part may be a region that nobody
+    /// runs. A merge of which a worker has said what came waits on, and the list is
+    /// asked for again at the next tick.
     pub fn unlisted(&mut self, now: Instant) -> Changes {
         let before = self.seen();
         self.reading = false;
@@ -1456,16 +1439,6 @@ impl Coordinator {
             );
             self.let_go(absorbed);
             self.end_merge(now, absorbed, Err(Undone::Unread));
-        }
-        for unheard in std::mem::take(&mut self.unheard) {
-            self.owed = true;
-            self.pending.reshaped.push(Reshaped {
-                asker: unheard.asker,
-                asked: Asked::Split {
-                    region: unheard.region,
-                },
-                outcome: Err(Undone::Unread),
-            });
         }
         self.assign(now);
         self.finish(&before, now)
@@ -1633,7 +1606,6 @@ impl Coordinator {
             owner,
             epoch,
             as_epoch,
-            part,
             asked: now,
             asker,
         };
@@ -1768,7 +1740,8 @@ impl Coordinator {
     /// owner's with the epoch it had, or whose region to absorb changed hands
     /// otherwise than by being released for it; a split whose region is not its
     /// owner's with that epoch. A merge at its first stage ends like a release that
-    /// was not answered; for the others the list is asked for first.
+    /// was not answered, and one at its second waits for the list, which is asked
+    /// for. A split ends at once, and the list is asked for as well.
     fn end_broken_reshapes(&mut self, now: Instant) {
         let merges: Vec<RegionId> = self.merges.keys().copied().collect();
         for absorbed in merges {
@@ -1834,10 +1807,13 @@ impl Coordinator {
     /// without a worker's word of what came of it.
     ///
     /// At the first stage the region to absorb, if it is still its owner's, is taken
-    /// from it like one that was not released in time (ADR-0009): the owner has
-    /// failed it, and the region is assigned. At the second stage the region has no
-    /// owner and may have been absorbed, so the list is asked for and the merge waits
-    /// for it, with both regions held back until then.
+    /// from it like one that was not released in time (ADR-0009), and assigned. Its
+    /// owner has failed it only if that is so, and the merge's time is up
+    /// ([`Undone::NotReleased`]): where the reservation ends because the survivor is
+    /// no longer its owner's, or no more, the owner of the other region was asked to
+    /// let go and did nothing wrong, and is not passed over for it. At the second
+    /// stage the region has no owner and may have been absorbed, so the list is asked
+    /// for and the merge waits for it, with both regions held back until then.
     fn lapse_merge(&mut self, now: Instant, absorbed: RegionId, why: Undone) {
         let merge = self
             .merges
@@ -1851,26 +1827,31 @@ impl Coordinator {
         let (from, epoch) = (from.clone(), *epoch);
         self.end_merge(now, absorbed, Err(why));
         if self.holds(absorbed, &from, epoch) {
-            self.note_failure(now, &from);
+            if why == Undone::NotReleased {
+                self.note_failure(now, &from);
+            }
             self.hand_over(now, absorbed, false);
         }
     }
 
     /// The reservation of the split of `region` ends for `why`, without the worker's
-    /// word of what came of it: the list is asked for, which shows whether the new
-    /// region is there.
+    /// word of what came of it. Whoever asked is told so at once, whatever the list
+    /// will show: a region with the id that was ordered can be another split's, the
+    /// store having made this one's under the next id, so nothing but the worker's
+    /// word says that the split was done. The list is asked for all the same: what
+    /// the split made, if anything, is a region nobody may be running.
     fn lapse_split(&mut self, now: Instant, region: RegionId, why: Undone) {
         let split = self
             .splits
             .remove(&region)
             .expect("only a split that is noted lapses");
         self.reshape_ended(now, &[region]);
-        self.unheard.push(Unheard {
-            region,
-            part: split.part,
+        self.pending.reshaped.push(Reshaped {
             asker: split.asker,
-            why,
+            asked: Asked::Split { region },
+            outcome: Err(why),
         });
+        self.owed = true;
         self.ask_for_the_list();
     }
 
@@ -3138,7 +3119,6 @@ mod tests {
                 assert!(held, "{split:?} outlived its owner");
                 assert!(!coordinator.releases.contains_key(region), "{split:?}");
             }
-            assert!(coordinator.unheard.is_empty() || coordinator.reading);
             // Whoever asked for a merge or a split hears of it once, when it is over.
             for reshaped in &changes.reshaped {
                 let region = match reshaped.asked {
@@ -7304,7 +7284,59 @@ mod tests {
         };
         assert_eq!(lost, expected);
         assert!(cluster.table().is_complete());
-        assert!(cluster.coordinator.workers["b"].failed.is_some());
+        // Its owner was asked to let go and still had the time to: it has not failed
+        // the region, and is given the survivor like any worker that runs nothing.
+        assert_eq!(cluster.coordinator.workers["b"].failed, None);
+        assert_eq!(regions_of(&cluster, "b"), [0]);
+        assert_eq!(regions_of(&cluster, "c"), [1, 2]);
+    }
+
+    /// A worker that has failed a region is passed over for six leases. That is for
+    /// the owner that did not release in time, and for no other.
+    #[test]
+    fn only_a_merge_whose_time_is_up_counts_against_the_owner_that_was_to_release() {
+        // The time is up: the owner has failed the region.
+        let (mut cluster, _) = three_stripes();
+        cluster.merge(LEASE + 1, 0, 1, None).unwrap();
+        beat(&mut cluster, 2 * LEASE);
+        let late = 2 * LEASE + 2;
+        let ended = cluster.tick(late);
+        assert_eq!(
+            ended.reshaped,
+            [merged(None, 0, 1, Err(Undone::NotReleased))]
+        );
+        assert_eq!(
+            cluster.coordinator.workers["b"].failed,
+            Some(cluster.at(late))
+        );
+        assert_eq!(regions_of(&cluster, "a"), [0, 1]);
+        assert!(cluster.assignments("b").is_empty());
+
+        // The survivor's owner says by itself that it lets go of the survivor, well
+        // within the merge's time. The merge is off, and the other region is taken
+        // from its owner all the same, which was told to release it and may be in the
+        // middle of that; but that owner has not failed it, and is passed over for
+        // nothing.
+        let (mut cluster, _) = three_stripes();
+        cluster.merge(LEASE + 1, 0, 1, Some(7)).unwrap();
+        let ended = cluster.released(LEASE + 2, "a", 0, E + 1);
+        let disowned = Err(Undone::Disowned(RegionId(0)));
+        let expected = Changes {
+            reshaped: vec![merged(Some(7), 0, 1, disowned)],
+            ..changes(&["a", "b"], true)
+        };
+        assert_eq!(ended, expected);
+        assert_eq!(cluster.coordinator.workers["b"].failed, None);
+        // The survivor went to the first of the others, and the other region to the
+        // worker with the fewest then.
+        assert_eq!(regions_of(&cluster, "b"), [0]);
+        assert_eq!(regions_of(&cluster, "a"), [1]);
+        assert_eq!(regions_of(&cluster, "c"), [2]);
+        // What it says of the region it was to release changes nothing any more.
+        assert_eq!(
+            cluster.released(LEASE + 3, "b", 1, E + 2),
+            Changes::default()
+        );
     }
 
     #[test]
@@ -7463,6 +7495,8 @@ mod tests {
         assert_eq!(ended, expected);
         assert_eq!(regions_of(&cluster, "b"), [2]);
         assert!(cluster.table().is_complete());
+        // Its owner has not failed it: the survivor's side ended the merge.
+        assert_eq!(cluster.coordinator.workers["c"].failed, None);
 
         // At the second it has no owner, and is assigned by the reading that ended
         // the merge.
@@ -7595,48 +7629,44 @@ mod tests {
     }
 
     #[test]
-    fn a_split_without_the_workers_word_ends_after_a_lease_by_what_the_list_shows() {
+    fn a_split_without_the_workers_word_is_overdue_after_a_lease_whatever_the_list_shows() {
         let late = 2 * LEASE + 2;
         let lapsing = || {
             let (mut cluster, list) = three_stripes();
             cluster.split(LEASE + 1, 2, &CHUNKS, Some(7)).unwrap();
             beat(&mut cluster, 2 * LEASE);
             assert_eq!(cluster.tick(2 * LEASE + 1), Changes::default());
-            assert_eq!(cluster.tick(late), reads());
-            // The region is free again; whoever asked still waits for the list.
+            // Whoever asked is told at once, and the list is asked for.
+            let expected = Changes {
+                read: true,
+                reshaped: vec![was_split(Some(7), 2, Err(Undone::Overdue))],
+                ..Changes::default()
+            };
+            assert_eq!(cluster.tick(late), expected);
+            // The region is free again.
             assert!(cluster.coordinator.splits.is_empty());
             (cluster, list)
         };
 
-        // The list has the new region, which nobody is known to run: it is assigned.
+        // The list has a region with the id that was ordered, which nobody is known
+        // to run: it is assigned. That it is this split's nobody can tell, as the
+        // store may have made this one's under the next id; nobody is told anything.
         let (mut cluster, list) = lapsing();
         let found = cluster.listed(late + 1, &after_the_split(&list));
-        let expected = Changes {
-            reshaped: vec![was_split(Some(7), 2, Ok(3))],
-            ..changes(&["a"], true)
-        };
-        assert_eq!(found, expected);
+        assert_eq!(found, changes(&["a"], true));
         assert_eq!(cluster.assignments("a")[1], assignment(3, E + 5, 3));
         assert!(cluster.table().is_complete());
+        assert_eq!(cluster.tick(late + 2), Changes::default());
 
         // The list has none.
         let (mut cluster, list) = lapsing();
-        let none = cluster.listed(late + 1, &list);
-        let expected = Changes {
-            reshaped: vec![was_split(Some(7), 2, Err(Undone::Overdue))],
-            ..Changes::default()
-        };
-        assert_eq!(none, expected);
+        assert_eq!(cluster.listed(late + 1, &list), Changes::default());
+        assert_eq!(cluster.tick(late + 2), Changes::default());
 
-        // The list cannot be read: whoever asked is told so, and it is asked for at
-        // every tick until it can be, as there may be a region that nobody runs.
+        // The list cannot be read: it is asked for at every tick until it can be, as
+        // there may be a region that nobody runs.
         let (mut cluster, list) = lapsing();
-        let unread = cluster.unlisted(late + 1);
-        let expected = Changes {
-            reshaped: vec![was_split(Some(7), 2, Err(Undone::Unread))],
-            ..Changes::default()
-        };
-        assert_eq!(unread, expected);
+        assert_eq!(cluster.unlisted(late + 1), Changes::default());
         assert_eq!(cluster.tick(late + 2), reads());
         assert_eq!(cluster.tick(late + 3), Changes::default());
         assert_eq!(cluster.unlisted(late + 4), Changes::default());
@@ -7653,9 +7683,12 @@ mod tests {
         // The world store refuses the owner's epoch: the worker has dropped the
         // region, and is given it anew, with another epoch. The split was of the
         // one it had.
+        // Whoever asked is told that nobody knows what came of it.
         let refused = cluster.epoch_refused(LEASE + 2, "c", 2, E + 20);
+        let disowned = Err(Undone::Disowned(RegionId(2)));
         let expected = Changes {
             read: true,
+            reshaped: vec![was_split(Some(7), 2, disowned)],
             ..changes(&["c"], true)
         };
         assert_eq!(refused, expected);
@@ -7668,14 +7701,26 @@ mod tests {
             ..changes(&["c"], true)
         };
         assert_eq!(late, expected);
-        // Whoever asked is told by the list.
+        // The list has nothing to add to that, and says nothing to whoever asked.
         let found = cluster.listed(LEASE + 4, &after_the_split(&list));
-        let expected = Changes {
-            reshaped: vec![was_split(Some(7), 2, Ok(3))],
-            ..Changes::default()
-        };
-        assert_eq!(found, expected);
+        assert_eq!(found, Changes::default());
         assert_eq!(cluster.assignments("c")[1], part(3, E + 4));
+
+        // The same when a reading of the list takes the region away.
+        let (mut cluster, list) = three_stripes();
+        cluster.split(LEASE + 1, 2, &CHUNKS, Some(7)).unwrap();
+        let gone = RegionList {
+            regions: vec![living(0, E + 1), living(1, E + 2)],
+            absorbed: vec![(RegionId(2), RegionId(1))],
+            ..list
+        };
+        let ended = cluster.listed(LEASE + 2, &gone);
+        let expected = Changes {
+            reshaped: vec![was_split(Some(7), 2, disowned)],
+            ..changes(&["c"], true)
+        };
+        assert_eq!(ended, expected);
+        assert_eq!(cluster.tick(LEASE + 3), Changes::default());
     }
 
     #[test]
@@ -7698,13 +7743,12 @@ mod tests {
         let (mut cluster, _) = three_stripes();
         cluster.split(LEASE + 1, 2, &CHUNKS, None).unwrap();
         beat(&mut cluster, 2 * LEASE);
-        assert_eq!(cluster.tick(2 * LEASE + 2), reads());
+        let lapsed = cluster.tick(2 * LEASE + 2);
+        assert_eq!(lapsed.reshaped, [was_split(None, 2, Err(Undone::Overdue))]);
+        assert!(lapsed.read);
         let found = cluster.listed(2 * LEASE + 3, &split_list);
-        let expected = Changes {
-            reshaped: vec![was_split(None, 2, Ok(3))],
-            ..changes(&["a"], true)
-        };
-        assert_eq!(found, expected);
+        assert_eq!(found, changes(&["a"], true));
+        assert_eq!(cluster.assignments("a")[1], assignment(3, E + 5, 3));
     }
 
     #[test]
@@ -8567,7 +8611,7 @@ mod tests {
             let coordinator = &self.cluster.coordinator;
             assert!(coordinator.merges.is_empty(), "{:?}", coordinator.merges);
             assert!(coordinator.splits.is_empty(), "{:?}", coordinator.splits);
-            assert!(coordinator.unheard.is_empty() && !coordinator.reading);
+            assert!(!coordinator.owed && !coordinator.reading);
             assert!(self.askers.is_empty(), "{:?}", self.askers);
             let known: Vec<&RegionId> = coordinator.regions.keys().collect();
             let there: Vec<&RegionId> = self.store.living.keys().collect();

@@ -693,8 +693,9 @@ pub enum ToCoordinator {
         to: Option<String>,
     },
     /// A worker says where the players of its regions are. Sent with heartbeats. See
-    /// ADR-0010, section 7. No worker says this yet, and the coordinator ignores it,
-    /// as it does the four below.
+    /// ADR-0010, section 7. No worker says this yet: regions are merged and split when
+    /// somebody asks, and until the coordinator decides that by itself it closes the
+    /// connection of whoever says this.
     Players { regions: Vec<(RegionId, Crowds)> },
     /// Whoever operates the cluster wants `absorbed` merged into `survivor`. Answered
     /// with [`FromCoordinator::Asked`].
@@ -792,8 +793,10 @@ pub enum FromCoordinator {
     },
     /// To a worker: have `region`, which you hold with `epoch`, absorb the region
     /// `absorbed`, which nobody runs; open that one with `as_epoch`. Answered with
-    /// [`ToCoordinator::AbsorbEnded`]. See ADR-0010, section 4. The coordinator does
-    /// not say this yet, and a worker ignores it, as it does the next.
+    /// [`ToCoordinator::AbsorbEnded`]. The coordinator says it when the owner of
+    /// `absorbed` has released that region for the merge, and again, with the same
+    /// epoch, if the worker registers anew before it has answered. See
+    /// `docs/adr/0014-merging-and-splitting.md`, sections 4 and 5.3.
     Absorb {
         region: RegionId,
         epoch: u64,
@@ -813,9 +816,9 @@ pub enum FromCoordinator {
     },
     /// To a worker: `region`, which you hold with `epoch`, is about to absorb a region
     /// that is being released for it. Checkpoint it now, so that the merge finds less
-    /// to wait for. Not answered. See `docs/adr/0014-merging-and-splitting.md`,
-    /// sections 3.1 and 5.3. The coordinator does not say this yet, and a worker takes
-    /// it as it takes [`FromCoordinator::Absorb`].
+    /// to wait for. Not answered. The coordinator says it once, when it asks the other
+    /// region's owner to release. See `docs/adr/0014-merging-and-splitting.md`,
+    /// sections 3.1 and 5.3.
     Prepare { region: RegionId, epoch: u64 },
     /// To whoever asked for a merge or a split: what came of it. `region` is the
     /// region that absorbed the other or the one that was split off.
