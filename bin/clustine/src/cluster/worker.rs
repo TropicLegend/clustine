@@ -12,7 +12,7 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clustine_coordinator::{ClientError, Orders, WorkerClient, WorkerEvent};
+use clustine_coordinator::{ClientError, Orders, Reach, WorkerClient, WorkerEvent};
 use clustine_region::RegionId;
 use clustine_rpc::{
     Assignment, EdgeMessage, Off, PlayersOf, RegionHello, Restored, Vouch, WorkerToEdge, tcp,
@@ -378,7 +378,7 @@ fn served(regions: &Regions) -> Serving {
 
 /// What edges can link to at a worker: for each region it runs, what a link has to ask
 /// for and where it is attached.
-type Serving = Arc<BTreeMap<RegionId, (RegionHello, Links)>>;
+pub(crate) type Serving = Arc<BTreeMap<RegionId, (RegionHello, Links)>>;
 
 /// Whether `orders` name the region of `assignment` with its epoch. Assignments are
 /// told apart by those two and not by their entity ids, which nothing reads: the
@@ -438,6 +438,62 @@ enum Word {
     Dismissed,
 }
 
+/// What a worker is, wherever it runs.
+#[derive(Debug, Clone)]
+pub(crate) struct Setup {
+    /// Its name at the coordinator.
+    pub name: String,
+    /// Where edges are told to reach it.
+    pub advertise: String,
+    /// Ticks between two checkpoints of each region.
+    pub checkpoint_interval: u64,
+}
+
+/// How a worker opens a region at the world store; see [`Outside::store`].
+pub(crate) type Opener =
+    Arc<dyn Fn(RegionHello) -> Result<(StoreHandle, Restored), StoreError> + Send + Sync>;
+
+/// A region the world store did not let a worker open, with the epoch the store has
+/// seen; see [`Outside::refusals`].
+pub(crate) type Refusal = (RegionId, u64);
+
+/// Everything a worker's loop reaches the outside through.
+pub(crate) struct Outside {
+    /// The registration the worker begins with: its client and its first orders.
+    pub registered: (WorkerClient, Orders),
+    /// Where it registers again when that connection ends.
+    pub coordinator: Reach,
+    /// Opens a region at the world store, or one that another is to absorb. It
+    /// blocks, and is called on a thread that may. `StoreError::Io` says that the
+    /// store cannot be reached yet, and the loop tries again; any other error is
+    /// the store's refusal. The loop says nothing when it tries again: where the
+    /// store is, and so what there is to say of it, only this knows.
+    pub store: Opener,
+    /// Where the loop shows the regions it serves: those that are restored and
+    /// tick, each with its hello and where links to it are attached. Whoever lets
+    /// edges in reads it. The loop lets go of it when it ends, before it stops its
+    /// regions: a watch that is closed is a worker that serves nothing any more.
+    pub serving: watch::Sender<Serving>,
+    /// What the store refused, each a region and the epoch the store has seen, on
+    /// its way to the coordinator as `EpochRefused`. The loop puts its own in at
+    /// `refusals.0`; whoever holds a clone of that end can say one too.
+    pub refusals: (
+        mpsc::UnboundedSender<Refusal>,
+        mpsc::UnboundedReceiver<Refusal>,
+    ),
+    /// The word to stop: `Leave` has the worker say that it leaves and go on until
+    /// it is relieved, for twenty seconds at most; `AtOnce` stops it. A loop that
+    /// nobody is left to tell goes on.
+    pub stop: mpsc::UnboundedReceiver<Stop>,
+}
+
+/// How a worker's loop is told to stop; see [`Outside::stop`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stop {
+    Leave,
+    AtOnce,
+}
+
 /// Runs a worker until the process is asked to stop: registers with the coordinator,
 /// opens the regions it is given at the world store, restores and runs each on a thread
 /// of its own, and accepts the links of edges while it does.
@@ -472,12 +528,79 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
 
+    // Edges are let in to the regions that are restored, and to no others; and to none
+    // once the loop has ended and shows nothing more, which closes the listener before
+    // the regions are stopped, as it always was. An edge whose link a stopping region
+    // closes would otherwise be let in again to a region that is gone.
+    let (serving, served_to) = watch::channel(Serving::default());
+    let mut shown = served_to.clone();
+    let accepting = tokio::spawn(async move {
+        tokio::select! {
+            () = accept_edges(listener, served_to) => {}
+            () = async { while shown.changed().await.is_ok() {} } => {}
+        }
+    });
+    let address = args.store;
+    let store: Opener = Arc::new(move |hello| {
+        let opened = StoreHandle::connect(&address, hello);
+        // Said here, where the store has an address. It is the loop that tries again.
+        if let Err(StoreError::Io(error)) = &opened {
+            info!(%error, store = %address, "the world store cannot be reached yet");
+        }
+        opened
+    });
+    // The first signal has the worker say that it leaves, and the second stops it at
+    // once. The second is listened for when the first has come, and none after it.
+    let (stopping, stopped) = mpsc::unbounded_channel();
+    let signals = async {
+        stop.await;
+        // Nobody takes either if the loop has ended.
+        let _ = stopping.send(Stop::Leave);
+        crate::stop_signal().await;
+        let _ = stopping.send(Stop::AtOnce);
+        std::future::pending::<()>().await;
+    };
+    let setup = Setup {
+        name: args.name,
+        advertise: args.advertise,
+        checkpoint_interval: (args.checkpoint_interval.as_millis()
+            / clustine_worker::TICK.as_millis()) as u64,
+    };
+    let outside = Outside {
+        registered: (coordinator, first),
+        coordinator: Reach::Tcp(args.coordinator),
+        store,
+        serving,
+        // Nobody else holds it: only the world store refuses this worker a region.
+        refusals: mpsc::unbounded_channel(),
+        stop: stopped,
+    };
+    let outcome = tokio::select! {
+        outcome = run(setup, outside) => outcome,
+        () = signals => unreachable!("it listens for nothing more and never ends"),
+    };
+    accepting.abort();
+    outcome
+}
+
+/// Runs a worker until it is told to stop or cannot go on: what [`worker`] says of
+/// one, from its first orders on. It is given everything it reaches the outside
+/// through, and names no address, no listener and no signal; see
+/// `docs/adr/0017-the-end-of-the-stripes.md`, section 6.2.
+pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
+    let Outside {
+        registered: (coordinator, first),
+        coordinator: reach,
+        store,
+        serving,
+        refusals: (refusals, refused),
+        mut stop,
+    } = outside;
     // What the task that holds the connection to the coordinator is told, and tells.
     let (vouching, vouched) = watch::channel(Vec::new());
     let (holding, held) = watch::channel(Vec::new());
     let (leaving, left) = watch::channel(false);
     let (splitting, split) = watch::channel(Vec::new());
-    let (refusals, refused) = mpsc::unbounded_channel();
     let (releases, released) = mpsc::unbounded_channel();
     let (endings, ended) = mpsc::unbounded_channel();
     // And what that task shows the loop: under which registration it holds a
@@ -488,7 +611,8 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     let _ = words_in.send(Word::Event(WorkerEvent::Orders(first)));
     let registered = tokio::spawn(stay_registered(
         coordinator,
-        args.clone(),
+        reach,
+        setup.clone(),
         Reports {
             vouched,
             held,
@@ -501,12 +625,8 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
         },
         words_in,
     ));
-    // Edges are let in to the regions that are restored, and to no others.
-    let (serving, served_to) = watch::channel(Serving::default());
-    let accepting = tokio::spawn(accept_edges(listener, served_to));
 
-    let checkpoint_interval =
-        (args.checkpoint_interval.as_millis() / clustine_worker::TICK.as_millis()) as u64;
+    let checkpoint_interval = setup.checkpoint_interval;
     let mut regions = Regions::new();
     // Assignments this worker is not to take up again while the coordinator still names
     // them: the world store did not let it open the region, it released the region, or
@@ -529,10 +649,8 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     // dropped for that.
     let mut unnamed: BTreeMap<RegionId, (RegionId, u64)> = BTreeMap::new();
     let mut look = tokio::time::interval(LOOK);
-    // Set when the worker has been told to stop: when it stops waiting, and what
-    // listens for its being told again.
+    // Set when the worker has been told to stop: when it stops waiting.
     let mut leave_by: Option<Instant> = None;
-    let mut again: Option<Pin<Box<dyn Future<Output = ()> + Send>>> = None;
     let outcome = loop {
         // A part that this worker no longer holds has nothing left to wait for.
         unnamed.retain(|part, _| regions.contains_key(part));
@@ -558,16 +676,19 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
             !same
         });
         tokio::select! {
-            _ = &mut stop, if leave_by.is_none() => {
-                info!("told to stop; asking for what this worker runs to be moved first");
-                leave_by = Some(Instant::now() + LEAVE_WITHIN);
-                again = Some(Box::pin(crate::stop_signal()));
-                leaving.send_replace(true);
-            }
-            () = told_again(&mut again), if again.is_some() => {
-                info!("told to stop again; stopping at once");
-                break Ok(());
-            }
+            told = told(&mut stop) => match told {
+                Stop::Leave if leave_by.is_none() => {
+                    info!("told to stop; asking for what this worker runs to be moved first");
+                    leave_by = Some(Instant::now() + LEAVE_WITHIN);
+                    leaving.send_replace(true);
+                }
+                // It has said so already, and waits.
+                Stop::Leave => {}
+                Stop::AtOnce => {
+                    info!("told to stop again; stopping at once");
+                    break Ok(());
+                }
+            },
             () = sleep_until_some(leave_by), if leave_by.is_some() => {
                 warn!("nobody took over in time; stopping with what this worker runs");
                 break Ok(());
@@ -675,7 +796,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                                     epoch: as_epoch,
                                     layout: held.hello.layout,
                                 };
-                                let fetching = Box::pin(fetch(args.store.clone(), hello));
+                                let fetching = Box::pin(fetch(store.clone(), hello));
                                 reshapes_begun += 1;
                                 let reshaping = Reshaping {
                                     number: reshapes_begun,
@@ -802,7 +923,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                                 epoch = assignment.epoch,
                                 "given a region"
                             );
-                            let opening = Box::pin(open_region(args.store.clone(), held.hello));
+                            let opening = Box::pin(open_region(store.clone(), held.hello));
                             regions.insert(assignment.region, Phase::Opening { held, opening });
                         }
                     }
@@ -840,7 +961,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                                 %region,
                                 epoch = held.assignment.epoch,
                                 tick,
-                                address = %args.advertise,
+                                address = %setup.advertise,
                                 "running a region"
                             );
                             let phase = Phase::Running {
@@ -880,8 +1001,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             declined.push(held.assignment);
                         }
                         Err(error) => {
-                            let context =
-                                format!("opening region {region} at the world store {}", args.store);
+                            let context = format!("opening region {region} at the world store");
                             break Err(anyhow::Error::new(error).context(context));
                         }
                     }
@@ -1048,7 +1168,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             entity_ids: NO_ENTITY_IDS,
                         };
                         let held = Held { assignment, hello, config: held.config };
-                        let opening = Box::pin(open_region(args.store.clone(), hello));
+                        let opening = Box::pin(open_region(store.clone(), hello));
                         let starting = Phase::Starting { held, part: Box::new(memory), opening };
                         // The store gives an id to one region, so nothing was there.
                         let there = regions.insert(part, starting);
@@ -1111,7 +1231,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                         failed = Some(error);
                         break;
                     }
-                    let opening = Box::pin(open_region(args.store.clone(), held.hello));
+                    let opening = Box::pin(open_region(store.clone(), held.hello));
                     regions.insert(region, Phase::Opening { held, opening });
                 }
                 if let Some(error) = failed {
@@ -1121,7 +1241,8 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
         }
     };
     info!("shutting down");
-    accepting.abort();
+    // Whoever lets edges in sees by this that the loop serves nothing any more.
+    drop(serving);
     registered.abort();
     // Each waits for its current tick and for the world store to have what changed, all
     // at the same time. A release that is under way is let go of as it is, and so is a
@@ -1154,10 +1275,11 @@ fn replace<T: PartialEq>(said: &mut T, now: T) -> bool {
     changed
 }
 
-/// Resolves when the process is told to stop once more, if `again` listens for that.
-async fn told_again(again: &mut Option<Pin<Box<dyn Future<Output = ()> + Send>>>) {
-    match again {
-        Some(again) => again.as_mut().await,
+/// Resolves when the worker is told to stop, with how. Never once nobody is left to
+/// tell it.
+async fn told(stop: &mut mpsc::UnboundedReceiver<Stop>) -> Stop {
+    match stop.recv().await {
+        Some(how) => how,
         None => std::future::pending().await,
     }
 }
@@ -1186,19 +1308,17 @@ fn hold(orders: &Orders, assignment: Assignment) -> Held {
 /// Opens the region at the world store, trying until the store can be reached. An
 /// error is the store's refusal.
 async fn open_region(
-    address: String,
+    store: Opener,
     hello: RegionHello,
 ) -> Result<(StoreHandle, Restored), StoreError> {
     loop {
-        let store = address.clone();
-        let opened = tokio::task::spawn_blocking(move || StoreHandle::connect(&store, hello))
+        let open = store.clone();
+        let opened = tokio::task::spawn_blocking(move || open(hello))
             .await
             .map_err(io::Error::other)?;
         match opened {
-            Err(StoreError::Io(error)) => {
-                info!(%error, store = %address, "the world store cannot be reached yet");
-                sleep(RETRY).await;
-            }
+            // Whoever gave `store` has said so.
+            Err(StoreError::Io(_)) => sleep(RETRY).await,
             opened => return opened,
         }
     }
@@ -1209,8 +1329,8 @@ async fn open_region(
 ///
 /// If the region's owner did not finish releasing it, this waits for the store to
 /// have a checkpoint of it, without which the store declines the merge.
-async fn fetch(address: String, hello: RegionHello) -> Fetched {
-    let (handle, restored) = open_region(address, hello)
+async fn fetch(store: Opener, hello: RegionHello) -> Fetched {
+    let (handle, restored) = open_region(store, hello)
         .await
         .map_err(Unabsorbable::Store)?;
     let reading = tokio::task::spawn_blocking(move || {
@@ -1292,7 +1412,8 @@ struct Reports {
 /// to.
 async fn stay_registered(
     mut coordinator: WorkerClient,
-    args: WorkerArgs,
+    reach: Reach,
+    setup: Setup,
     mut reports: Reports,
     words: mpsc::UnboundedSender<Word>,
 ) {
@@ -1338,9 +1459,9 @@ async fn stay_registered(
                         // Every region of a worker is of the one layout it was told.
                         let layout = held.first().map(|(_, layout)| *layout);
                         let registered = WorkerClient::register(
-                            &args.coordinator,
-                            &args.name,
-                            &args.advertise,
+                            &reach,
+                            &setup.name,
+                            &setup.advertise,
                             &holding,
                             layout,
                         );
@@ -1899,7 +2020,13 @@ mod tests {
             ended,
             registration: registering,
         };
-        tokio::spawn(stay_registered(client, args, reports, words_in));
+        let setup = Setup {
+            name: args.name,
+            advertise: args.advertise,
+            checkpoint_interval: 6000,
+        };
+        let reach = Reach::Tcp(args.coordinator);
+        tokio::spawn(stay_registered(client, reach, setup, reports, words_in));
         let looping = Looping {
             holding,
             splitting,
@@ -2010,5 +2137,101 @@ mod tests {
             panic!("the new orders are passed on");
         };
         assert_eq!(orders.assignments, [assignment(0, 4)]);
+    }
+
+    /// A worker's loop as [`run`] is given one: whether it has ended and how, and
+    /// where it is told to stop.
+    struct Run {
+        ended: tokio::task::JoinHandle<Result<()>>,
+        stop: mpsc::UnboundedSender<Stop>,
+    }
+
+    impl Run {
+        /// How the loop ends, which it has to within [`PATIENCE`].
+        async fn ended(self) -> Result<()> {
+            within(self.ended).await.expect("the loop does not panic")
+        }
+    }
+
+    /// Registers a worker with `played`, which gives it nothing to run, and runs its
+    /// loop. Returns the loop and the coordinator's end of its connection.
+    async fn run_by(played: &Played) -> (Run, Heard) {
+        let registering = WorkerClient::register(&played.address, "worker", "worker:1", &[], None);
+        let (registered, (heard, _)) = tokio::join!(registering, played.registers(Vec::new()));
+        let setup = Setup {
+            name: "worker".to_owned(),
+            advertise: "worker:1".to_owned(),
+            checkpoint_interval: 6000,
+        };
+        // Nobody links to a worker that runs nothing.
+        let (serving, _) = watch::channel(Serving::default());
+        let (stop, stopped) = mpsc::unbounded_channel();
+        let outside = Outside {
+            registered: registered.expect("the worker is registered"),
+            coordinator: Reach::Tcp(played.address.clone()),
+            store: Arc::new(|_| unreachable!("the worker is given no region to open")),
+            serving,
+            refusals: mpsc::unbounded_channel(),
+            stop: stopped,
+        };
+        let ended = tokio::spawn(run(setup, outside));
+        (Run { ended, stop }, heard)
+    }
+
+    #[tokio::test]
+    async fn a_loop_that_is_told_to_stop_at_once_ends() {
+        let played = Played::listening().await;
+        let (run, _heard) = run_by(&played).await;
+
+        run.stop.send(Stop::AtOnce).expect("the loop is there");
+        run.ended().await.expect("it ends as one that was stopped");
+    }
+
+    #[tokio::test]
+    async fn a_loop_that_is_told_to_leave_says_so_and_ends_when_the_coordinator_lets_it_go() {
+        let played = Played::listening().await;
+        let (run, mut heard) = run_by(&played).await;
+
+        run.stop.send(Stop::Leave).expect("the loop is there");
+        // Among where its players are, which it goes on saying.
+        while said(&mut heard).await != ToCoordinator::Leaving {}
+
+        // The coordinator closes the connection of a worker that owns nothing.
+        drop(heard);
+        run.ended().await.expect("it ends as one that was let go");
+    }
+
+    #[tokio::test]
+    async fn a_loop_that_is_leaving_ends_when_it_is_told_to_stop_at_once() {
+        let played = Played::listening().await;
+        let (run, mut heard) = run_by(&played).await;
+
+        run.stop.send(Stop::Leave).expect("the loop is there");
+        while said(&mut heard).await != ToCoordinator::Leaving {}
+
+        // Told to leave once more, which it does already, and then to stop. The
+        // coordinator is still there and has not let it go.
+        run.stop.send(Stop::Leave).expect("the loop is there");
+        run.stop.send(Stop::AtOnce).expect("the loop is there");
+        run.ended().await.expect("it ends as one that was stopped");
+        drop(heard);
+    }
+
+    #[tokio::test]
+    async fn a_loop_that_nobody_is_left_to_tell_to_stop_goes_on() {
+        let played = Played::listening().await;
+        let (Run { ended, stop }, mut heard) = run_by(&played).await;
+        drop(stop);
+
+        // It answers what the coordinator asks of it, time after time: a region it
+        // does not hold is as released as it can be.
+        for region in [RegionId(7), RegionId(8), RegionId(9)] {
+            let release = FromCoordinator::Release { region, epoch: 1 };
+            heard.send(release).await.expect("the worker listens");
+            let released = ToCoordinator::Released { region, epoch: 1 };
+            while said(&mut heard).await != released {}
+        }
+        assert!(!ended.is_finished());
+        ended.abort();
     }
 }
