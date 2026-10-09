@@ -1197,8 +1197,16 @@ this record: the merge ends as `Disowned` or by the list. If it was made, the su
 is given an owner and rests. If not, both regions are given owners, rest, and are left
 alone for `LONG`. The sightings stay meanwhile, so the players of both still hold back
 splits of their neighbours, and nothing is begun with either before its new owner has
-reported. The same for the absorbed region's worker dying while it releases, and for
-the worker of a region that is being split.
+reported. The same for the absorbed region's worker dying while it releases.
+
+**The worker of a region that is being split** is another matter, because the list
+does not say whether a split was made (ADR-0014: a region with the id that was ordered
+can be another split's). The reservation ends as `Disowned` without the worker's word,
+and section 5.5 holds whatever the store did: the region is given an owner, is left
+alone for `LONG` and has a failure counted, and the part, if the store made it, is
+added by the list as a region nobody is known to run and rests as one that is given an
+owner. The tests under bots found this sentence saying "the same" until step C4.7;
+"Found while building" has it.
 
 **K8. The store away.** Regions wait for the store and stand still: their ticks do not
 go up, their sightings stop being fresh within a second, and nothing is wanted of them.
@@ -2010,7 +2018,10 @@ nobody is handed over after the start.
   step 3 for the merge and as in step 2 for the split, and standing where it arrives:
   every region runs again within what `merges.rs` allows after a kill, the merge or
   the split is whole or not at all by the list, and afterwards the regions are again
-  what the table above says after that step, which can take `LONG` and a rest.
+  what the table above says after that step, which can take `LONG` and a rest, and
+  twice `LONG` and a rest where two kills in a row struck the same region. A split
+  that the store made and whose worker was killed before it said so is left alone for
+  `LONG` like one that was not made (K7), so the test does not hold that time to less.
 - E7. The same with the coordinator killed and started again with the same
   arguments, and with the world store killed and started again.
 - E8. The bound, over the ten rounds of E3 or the same again: from the coordinator's

@@ -2188,8 +2188,8 @@ async fn regions_follow_their_players_when_the_coordinator_or_the_store_is_kille
     .await;
 }
 
-// What these tests found in the server, and what the test below keeps found: the
-// sequence, what the record says, and what happened instead.
+// What these tests found, and what the test below keeps: the sequence, what the record
+// said, and what was decided.
 //
 // **A split that the store made is counted as an attempt that failed when its worker
 // died before it could say so** (`Coordinator::lapse_split` and `note_split_ended` in
@@ -2208,15 +2208,13 @@ async fn regions_follow_their_players_when_the_coordinator_or_the_store_is_kille
 // 4. The coordinator notes the split as one that came to nothing: the region has a
 //    failure counted and is left alone for `LONG`, three rests, not for one.
 //
-// What the record says. Section 9, K7: a merge whose worker died "ends as `Disowned`
-// or by the list. If it was made, the survivor is given an owner and rests. If not,
-// both regions are given owners, rest, and are left alone for `LONG`. [...] The same
-// for [...] the worker of a region that is being split." And section 11, E6: after a
-// kill "the regions are again what the table above says after that step, which can
-// take `LONG` and a rest". Section 5.5 on the other hand lists `Disowned` and
-// `Overdue` among the ways a split "comes to nothing", and the reservation of a split
-// never ends otherwise without the worker's word, whatever the list shows; that is
-// what the coordinator goes by.
+// The record said two things of it. Section 9, K7, said of a merge whose worker died
+// that it rests if it was made and is left alone for `LONG` if not, and "the same"
+// of the worker of a region that is being split. Section 5.5 lists `Disowned` among
+// the ways a split comes to nothing, and the coordinator goes by that: nothing but
+// the worker's word says that a split was made, as a region with the id that was
+// ordered can be another split's (ADR-0014). **The record was changed, not the
+// coordinator**: K7 now says of a split what section 5.5 says.
 //
 // What a player notices: for `LONG` after a worker died in the middle of a split,
 // half a minute with the numbers of section 3, nothing is merged into the region
@@ -2226,16 +2224,15 @@ async fn regions_follow_their_players_when_the_coordinator_or_the_store_is_kille
 // above that kills workers (seed 554989) killed the worker as it handed the store
 // the split of step 2 and the survivor's worker in the merge of step 3 after it, and
 // `A` and `B` stood three chunks apart in two regions for 30 s until the merge was
-// tried again, where one failure costs 15 s.
+// tried again, where one failure costs 15 s. They saw each other across the boundary
+// all that time.
 
-/// What was found, on the coordinator's state machine alone, with the time handed
-/// in: a region is split by itself, the store makes the split, and the region's
-/// worker dies before it says so. When the region has been given to the other worker,
-/// it is to rest, as after a split that was made (K7); it is left alone for `LONG`
-/// instead, as after an attempt that failed.
+/// On the coordinator's state machine alone, with the time handed in: a region is
+/// split by itself, the store makes the split, and the region's worker dies before
+/// it says so. The region is left alone for `LONG` from when the reservation ended,
+/// as after any split that came to nothing, whatever the list shows (K7).
 #[test]
-#[ignore = "finding: a split that the store made counts as a failed attempt when its worker died before saying so"]
-fn a_region_that_was_split_as_its_worker_died_rests_and_is_not_left_alone_for_long() {
+fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_that_failed() {
     let start = Instant::now();
     let config = CoordinatorConfig {
         // One stripe: region 0 is the home region and holds everything.
@@ -2354,10 +2351,16 @@ fn a_region_that_was_split_as_its_worker_died_rests_and_is_not_left_alone_for_lo
         held.iter().any(|held| held.region == region)
     };
     let mut ended = Vec::new();
-    let mut given = None;
+    let (mut lapsed, mut parted, mut given) = (None, None, None);
     for _ in 0..200 {
         let (at, changes) = look(&mut coordinator, &list, &crowds, &alive);
+        if !changes.reshaped.is_empty() {
+            lapsed.get_or_insert(at);
+        }
         ended.extend(changes.reshaped);
+        if runs(&coordinator, part) {
+            parted.get_or_insert(at);
+        }
         if runs(&coordinator, home) && runs(&coordinator, part) {
             given = Some(at);
             break;
@@ -2376,16 +2379,22 @@ fn a_region_that_was_split_as_its_worker_died_rests_and_is_not_left_alone_for_lo
         "{ended:?}"
     );
 
-    // K7: the split was made, so the region that was given an owner rests, and is
-    // not left alone for longer than that.
-    let alone_until = coordinator.alone_until(home);
-    assert!(
-        alone_until.is_some_and(|until| until <= given + REST),
-        "region 0 was split, by the list, and given an owner {:?} after the start; it is left \
-         alone until {:?} after the start, which is longer than a rest of {REST:?}",
-        given - start,
-        alone_until.map(|until| until - start)
+    // K7 and section 5.5: nothing but the worker's word says that the split was
+    // made, so the region is left alone for `LONG`, three rests, from when the
+    // reservation ended, and being given an owner after that shortens nothing.
+    let lapsed = lapsed.expect("the reservation ended");
+    assert!(lapsed <= given);
+    assert_eq!(
+        coordinator.alone_until(home),
+        Some(lapsed + 3 * REST),
+        "the reservation ended {:?} after the start and the region was given an owner {:?} \
+         after it",
+        lapsed - start,
+        given - start
     );
+    // The part is a region that was given an owner, and rests as one from then.
+    let parted = parted.expect("the part was given an owner");
+    assert_eq!(coordinator.alone_until(part), Some(parted + REST));
 }
 
 /// The times of two lines of a log are compared across midnight and across the end
