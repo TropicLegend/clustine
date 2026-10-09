@@ -2301,4 +2301,608 @@ mod tests {
         assert!(!ended.is_finished());
         ended.abort();
     }
+
+    // The scenarios P7 and P9 of `docs/adr/0017-the-end-of-the-stripes.md`, section 9.5:
+    // the loop as a single process runs it, put together by the tests. They were
+    // written from the record by someone who had not read `run`.
+
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+
+    use clustine_coordinator::{CoordinatorConfig, serve_local};
+    use clustine_edge::Relinks;
+    use clustine_rpc::{EdgeMessage, EdgeToWorker, Welcome, WorkerToEdge};
+    use clustine_world::EdgeId;
+    use clustine_worldstore::Division;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const HOME: RegionId = RegionId(0);
+    const AIR: Option<i32> = Some(clustine_data::blocks::AIR.0 as i32);
+
+    /// The height of the block players stand on.
+    const FLOOR: i32 = -61;
+
+    /// How often a state that is waited for is looked at.
+    const LOOKING: Duration = Duration::from_millis(20);
+
+    /// A world that is one home region, pinned to nothing, kept in memory.
+    fn open_world() -> Store {
+        Store::memory_divided(generator(), Division::open(ORIGIN)).expect("a world in memory")
+    }
+
+    /// How a loop opens its regions at a store in its own process.
+    fn opener_of(world: &Store) -> Opener {
+        let world = world.clone();
+        Arc::new(move |hello| world.open_region(hello))
+    }
+
+    /// The highest epoch the store has seen `region` opened with.
+    fn opened_with(world: &Store, region: RegionId) -> u64 {
+        let list = world.regions().expect("the store lists its regions");
+        let info = list.regions.iter().find(|info| info.region == region);
+        info.expect("the region lives").epoch
+    }
+
+    /// A worker's loop with what the single process gives it (section 6.1): a
+    /// coordinator in its process, alone with it, that reads the list of `world` and
+    /// is reached through `Reach::Local`; a way to open regions; and a watch of what
+    /// it serves.
+    struct Alone {
+        run: Run,
+        /// What the loop shows of the regions it serves.
+        serving: watch::Receiver<Serving>,
+        /// Where a refusal of the store is said for the loop, as `Server::take_over`
+        /// says one (section 6.4).
+        refusals: mpsc::UnboundedSender<Refusal>,
+        coordinator: tokio::task::JoinHandle<()>,
+    }
+
+    impl Alone {
+        async fn start(world: &Store, store: Opener) -> Self {
+            let lists = {
+                let world = world.clone();
+                move || {
+                    let list = world.regions();
+                    list.map_err(|error| io::Error::other(error.to_string()))
+                }
+            };
+            let config = CoordinatorConfig {
+                layout: Layout::single(),
+                spawn: spawn_point(),
+                lease: CoordinatorConfig::DEFAULT_LEASE,
+                follow: None,
+            };
+            let (local, served) = serve_local(config, lists);
+            let coordinator = tokio::spawn(served);
+            let reach = Reach::Local(local);
+            let setup = Setup {
+                name: "local".to_owned(),
+                advertise: "in this process".to_owned(),
+                checkpoint_interval: 6000,
+            };
+            let registering =
+                WorkerClient::register(&reach, &setup.name, &setup.advertise, &[], None);
+            let registered = within(registering).await.expect("the worker is registered");
+            let (serving, shown) = watch::channel(Serving::default());
+            let (stop, stopped) = mpsc::unbounded_channel();
+            let (refusals, refused) = mpsc::unbounded_channel();
+            let outside = Outside {
+                registered,
+                coordinator: reach,
+                store,
+                serving,
+                refusals: (refusals.clone(), refused),
+                stop: stopped,
+            };
+            let ended = tokio::spawn(run(setup, outside));
+            Self {
+                run: Run { ended, stop },
+                serving: shown,
+                refusals,
+                coordinator,
+            }
+        }
+
+        /// What the loop shows of `region`, if it serves it with an epoch above
+        /// `above`: its hello, and where links to it are attached.
+        fn shows(&self, region: RegionId, above: u64) -> Option<(RegionHello, Links)> {
+            let serving = self.serving.borrow();
+            let (hello, links) = serving.get(&region)?;
+            (hello.epoch > above).then(|| (*hello, links.clone()))
+        }
+
+        /// Waits until the loop shows `region` with an epoch above `above`, while
+        /// `bots` stay connected.
+        async fn shown(
+            &self,
+            bots: &mut [&mut Bot],
+            region: RegionId,
+            above: u64,
+        ) -> (RegionHello, Links) {
+            let waiting = Instant::now();
+            loop {
+                if let Some(shown) = self.shows(region, above) {
+                    return shown;
+                }
+                assert!(
+                    !self.run.ended.is_finished(),
+                    "the loop ended before it served the region"
+                );
+                assert!(
+                    waiting.elapsed() <= PATIENCE,
+                    "the loop does not serve region {region} with an epoch above {above}"
+                );
+                idle(bots).await;
+            }
+        }
+
+        /// Tells the loop to stop at once and waits for it to return, by when it has
+        /// let go of its watch.
+        async fn stopped(self) {
+            let stop = self.run.stop.clone();
+            stop.send(Stop::AtOnce).expect("the loop is there");
+            self.run
+                .ended()
+                .await
+                .expect("it ends as one that was stopped");
+            assert!(
+                self.serving.has_changed().is_err(),
+                "a loop that has ended serves nothing any more"
+            );
+            self.coordinator.abort();
+        }
+    }
+
+    /// Lets a moment pass, in which `bots` stay connected.
+    async fn idle(bots: &mut [&mut Bot]) {
+        if bots.is_empty() {
+            sleep(LOOKING).await;
+        }
+        for bot in bots.iter_mut() {
+            bot.idle(LOOKING).await.expect("the player stays connected");
+        }
+    }
+
+    /// An edge of a test's own, which the test keeps linked.
+    struct Linked {
+        address: String,
+        relinks: Relinks,
+        edge: tokio::task::JoinHandle<clustine_edge::Stopped>,
+    }
+
+    /// Starts an edge called `name` with `links`.
+    async fn edge_with(name: &str, links: Vec<RegionLink>) -> Linked {
+        let identity = EdgeIdentity::starting_now(name);
+        let (routing, relinks) = Routing::new(HOME, spawn_point(), identity, links);
+        let config = EdgeConfig {
+            description: "a test".to_owned(),
+            max_players: 7,
+            keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
+            view_distance: 2,
+            client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
+            compression_threshold: None,
+            region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
+        };
+        let anywhere = SocketAddr::from(([127, 0, 0, 1], 0));
+        let edge = Edge::bind(anywhere, config, routing)
+            .await
+            .expect("an edge listens");
+        let address = edge.local_addr().expect("it has an address").to_string();
+        Linked {
+            address,
+            relinks,
+            edge: tokio::spawn(edge.run()),
+        }
+    }
+
+    /// A link to the region a loop serves with `hello`, attached where the loop says
+    /// links to it are. Its messages are serialised, as between processes.
+    fn link_to(hello: RegionHello, links: &Links) -> RegionLink {
+        let (end, worker_end) = link::framed(LINK_CAPACITY);
+        links.attach(worker_end);
+        RegionLink {
+            region: hello.region,
+            epoch: hello.epoch,
+            end,
+        }
+    }
+
+    /// Joins at `address` and waits for the four chunks that meet where players enter
+    /// the world, which have every block these tests touch. What is done to a block
+    /// of a chunk that has not been sent is acknowledged without effect.
+    async fn joined(address: &str, name: &str) -> Bot {
+        let mut bot = Bot::join(address, name).await.expect("a player joins");
+        let sent = |bot: &Bot| {
+            let corners = [(0, 0), (-1, 0), (0, -1), (-1, -1)];
+            corners.iter().all(|(x, z)| floor(bot, *x, *z).is_some())
+        };
+        let waited = bot.wait_until(PATIENCE, sent).await;
+        waited.expect("the player is sent the chunks around where they enter");
+        bot
+    }
+
+    /// The block of the floor at `x` and `z`, as `bot` has been shown it.
+    fn floor(bot: &Bot, x: i32, z: i32) -> Option<i32> {
+        bot.block_at(x, FLOOR, z).expect("a height of the world")
+    }
+
+    /// `bot` breaks the block of the floor at `x` and `z` and waits until that is
+    /// acknowledged, by when it has to have been shown the block gone.
+    async fn digs(bot: &mut Bot, x: i32, z: i32) -> i32 {
+        let sequence = bot.dig(x, FLOOR, z).await.expect("the player is connected");
+        let acknowledged = |bot: &Bot| bot.acknowledged_sequence >= sequence;
+        let waited = bot.wait_until(PATIENCE, acknowledged).await;
+        waited.expect("what the player did is acknowledged");
+        assert_eq!(floor(bot, x, z), AIR, "the block at {x}, {z}");
+        sequence
+    }
+
+    /// Fails unless every acknowledgement `bot` has had came once: no number twice,
+    /// and none behind a higher one.
+    fn acknowledged_once(bot: &Bot) {
+        let numbers: Vec<i32> = bot.acknowledgements.iter().map(|(n, _)| *n).collect();
+        assert!(
+            numbers.windows(2).all(|pair| pair[0] < pair[1]),
+            "an action was acknowledged twice, or behind a later one: {numbers:?}"
+        );
+    }
+
+    // P7.
+    //
+    /// The worker's loop, given a store in its process and a coordinator through
+    /// `Reach::Local`, runs the region it is assigned and shows it in its watch; a
+    /// link attached there is welcomed. Told to stop at once, it returns, and the
+    /// store has what its region had done.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_loop_with_its_store_and_its_coordinator_in_its_process_runs_its_region_and_leaves_the_store_what_it_did()
+     {
+        let world = open_world();
+        let alone = Alone::start(&world, opener_of(&world)).await;
+
+        // The coordinator reads the store's list and gives out its one region, at
+        // once; the loop shows it when it runs, with the hello it opened it with.
+        let (hello, links) = alone.shown(&mut [], HOME, 0).await;
+        assert_eq!(hello.region, HOME);
+        assert_eq!(opened_with(&world, HOME), hello.epoch);
+        assert_eq!(alone.serving.borrow().len(), 1);
+
+        // A link that is attached there is welcomed: as that of an edge the region
+        // has not heard of.
+        let (mut end, worker_end) = link::in_process::<EdgeMessage, WorkerToEdge>(LINK_CAPACITY);
+        links.attach(worker_end);
+        let stranger = EdgeToWorker::Hello {
+            edge: EdgeId::from_name("a stranger"),
+            start: 1,
+            since: 0,
+            seen: 0,
+            players: Vec::new(),
+            chunks: Vec::new(),
+            guests: Vec::new(),
+        };
+        end.send(EdgeMessage::unnumbered(stranger))
+            .await
+            .expect("the link is open");
+        let welcome = within(end.recv()).await;
+        assert!(
+            matches!(
+                welcome,
+                Some(WorkerToEdge::Welcome(Welcome::Unknown { .. }))
+            ),
+            "{welcome:?}"
+        );
+        drop(end);
+
+        // And so is an edge's, through which somebody plays.
+        let edge = edge_with("edge", vec![link_to(hello, &links)]).await;
+        let mut alice = joined(&edge.address, "Alice").await;
+        digs(&mut alice, 2, 1).await;
+        digs(&mut alice, -1, 2).await;
+        acknowledged_once(&alice);
+
+        alone.stopped().await;
+        edge.edge.abort();
+        drop(alice);
+
+        // The store has what the region had done, and nobody holds the region any
+        // more: another loop is given it, opens it with a higher epoch, and whoever
+        // joins is shown what was dug.
+        let again = Alone::start(&world, opener_of(&world)).await;
+        let (next, links) = again.shown(&mut [], HOME, hello.epoch).await;
+        assert_eq!(opened_with(&world, HOME), next.epoch);
+        let edge = edge_with("another edge", vec![link_to(next, &links)]).await;
+        let bob = joined(&edge.address, "Bob").await;
+        for (x, z) in [(2, 1), (-1, 2)] {
+            assert_eq!(floor(&bob, x, z), AIR, "the block at {x}, {z}");
+        }
+        assert_ne!(floor(&bob, 3, 3), AIR);
+        again.stopped().await;
+        edge.edge.abort();
+    }
+
+    /// What stands between a worker's loop and a world store that is served at an
+    /// address. Every connection the loop makes to the store goes through it, and a
+    /// test can have it hold back what the store says on the connections there are,
+    /// while the store hears, does and makes durable everything it is asked.
+    struct Between {
+        address: String,
+        /// The connections with a number below this have what the store says held
+        /// back; the first connection is number 0.
+        below: watch::Sender<u64>,
+        /// How many connections were made.
+        made: Arc<AtomicU64>,
+        /// How many bytes the store has said on connections while they were held.
+        kept: Arc<AtomicUsize>,
+    }
+
+    impl Between {
+        /// Listens, and connects whoever comes to the store at `store`.
+        async fn before(store: SocketAddr) -> Self {
+            let anywhere = SocketAddr::from(([127, 0, 0, 1], 0));
+            let listener = TcpListener::bind(anywhere).await.expect("a free port");
+            let address = listener.local_addr().expect("it has an address");
+            let (below, held) = watch::channel(0);
+            let (made, kept) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicUsize::new(0)));
+            let between = Self {
+                address: address.to_string(),
+                below,
+                made: Arc::clone(&made),
+                kept: Arc::clone(&kept),
+            };
+            tokio::spawn(async move {
+                loop {
+                    let Ok((near, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let Ok(far) = TcpStream::connect(store).await else {
+                        continue;
+                    };
+                    let number = made.fetch_add(1, Ordering::SeqCst);
+                    let _ = (near.set_nodelay(true), far.set_nodelay(true));
+                    let (mut asked, mut answered) = near.into_split();
+                    let (mut answers, mut asks) = far.into_split();
+                    // What the loop asks reaches the store as it comes.
+                    tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut asked, &mut asks).await;
+                        let _ = asks.shutdown().await;
+                    });
+                    // What the store says waits for as long as the connection is held,
+                    // and so does the end of the connection.
+                    let (mut held, kept) = (held.clone(), Arc::clone(&kept));
+                    tokio::spawn(async move {
+                        let mut bytes = vec![0; 64 * 1024];
+                        loop {
+                            let read = answers.read(&mut bytes).await.unwrap_or(0);
+                            if number < *held.borrow() {
+                                kept.fetch_add(read.max(1), Ordering::SeqCst);
+                            }
+                            if held.wait_for(|below| number >= *below).await.is_err() {
+                                return;
+                            }
+                            if read == 0 || answered.write_all(&bytes[..read]).await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = answered.shutdown().await;
+                    });
+                }
+            });
+            between
+        }
+
+        /// How a loop opens its regions through this.
+        fn opener(&self) -> Opener {
+            let address = self.address.clone();
+            Arc::new(move |hello| StoreHandle::connect(&address, hello))
+        }
+
+        /// Holds back, from now on, what the store says on the connections there are.
+        fn hold(&self) {
+            self.below.send_replace(self.made.load(Ordering::SeqCst));
+        }
+
+        /// Lets everything that was held back go on its way.
+        fn let_go(&self) {
+            self.below.send_replace(0);
+        }
+
+        /// How much the store has said that was held back, counting the end of a
+        /// connection as something said.
+        fn kept(&self) -> usize {
+            self.kept.load(Ordering::SeqCst)
+        }
+    }
+
+    // P9. A `Server` has no way to hold back what its store answers, so this is of
+    // the worker's loop as P7 drives it: the store is served at an address, as a
+    // cluster's is, and the loop reaches it through something that can hold its
+    // answers back. The takeover is said as `Server::take_over` says it (section 6.4,
+    // point 2), and the test links the edge to the new runner as the link-keeper
+    // would. What it cannot see is how the old runner ended, `StoreLost` or `Stopped`:
+    // the loop shows nobody the status of a runner.
+    //
+    /// A region that is taken over is fenced while it runs. A player breaks a block;
+    /// the store makes the tick that applied it durable, and its answer is held back,
+    /// so the runner cannot confirm the tick and the player is not acknowledged. The
+    /// region is taken over. The player is acknowledged once, by the new runner, while
+    /// the old one's answers are still held back; the block is gone; and when the
+    /// answers are let go, nothing is acknowledged again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_region_is_fenced_while_its_runner_waits_for_the_store_and_the_next_runner_acknowledges_once()
+     {
+        let world = open_world();
+        let anywhere = SocketAddr::from(([127, 0, 0, 1], 0));
+        let listener = std::net::TcpListener::bind(anywhere).expect("a free port");
+        let served = clustine_worldstore::serve(world.clone(), listener).expect("it is served");
+        let between = Between::before(served.local_addr()).await;
+        let alone = Alone::start(&world, between.opener()).await;
+        let (first, links) = alone.shown(&mut [], HOME, 0).await;
+        let edge = edge_with("edge", vec![link_to(first, &links)]).await;
+        let mut alice = joined(&edge.address, "Alice").await;
+        // While the store's answers arrive, a block that is broken is acknowledged.
+        digs(&mut alice, 2, 1).await;
+
+        // From here the runner hears nothing of the store. A region that nobody does
+        // anything in commits nothing, so the first thing the store says is its
+        // answer to the commit of the tick that broke the block: by then that tick
+        // is durable, and the runner does not know.
+        between.hold();
+        let kept = between.kept();
+        let sequence = alice.dig(-1, FLOOR, 2).await.expect("connected");
+        let waiting = Instant::now();
+        while between.kept() == kept {
+            assert!(waiting.elapsed() <= PATIENCE, "the store answered nothing");
+            idle(&mut [&mut alice]).await;
+        }
+        assert!(
+            alice.acknowledged_sequence < sequence,
+            "a tick the store's answer was held back of was shown as confirmed"
+        );
+        assert_ne!(floor(&alice, -1, 2), AIR);
+
+        // The takeover: the store is said to have seen an epoch one above.
+        alone
+            .refusals
+            .send((HOME, first.epoch + 1))
+            .expect("the loop is there");
+        let (second, links) = alone.shown(&mut [&mut alice], HOME, first.epoch).await;
+        assert!(second.epoch > first.epoch + 1, "{second:?} after {first:?}");
+        assert_eq!(opened_with(&world, HOME), second.epoch);
+        assert!(edge.relinks.replace(link_to(second, &links)).await);
+
+        // Acknowledged by the new runner: the old one has still not heard the store.
+        let acknowledged = |bot: &Bot| bot.acknowledged_sequence >= sequence;
+        let waited = alice.wait_until(PATIENCE, acknowledged).await;
+        waited.expect("the new runner acknowledges what the old one had applied");
+        // And the block is gone. The player is shown that behind the acknowledgement
+        // here, and not before it as when a tick is published: no runner ever
+        // published the tick that broke the block, so the edge learns of the action
+        // from the answer about its player and of the block from the snapshot of the
+        // chunk, which comes later (ADR-0008, section 5, points 5 and 6 of resuming).
+        let gone = |bot: &Bot| floor(bot, -1, 2) == AIR;
+        let waited = alice.wait_until(PATIENCE, gone).await;
+        waited.expect("the player is shown that the block is gone");
+
+        // The old runner hears what the store had said, and that it has lost it.
+        between.let_go();
+        digs(&mut alice, 3, -1).await;
+        digs(&mut alice, -2, -2).await;
+        acknowledged_once(&alice);
+        assert_eq!(alice.stats.teleports_confirmed, 1);
+        let bob = joined(&edge.address, "Bob").await;
+        for (x, z) in [(2, 1), (-1, 2), (3, -1), (-2, -2)] {
+            assert_eq!(floor(&bob, x, z), AIR, "the block at {x}, {z}");
+        }
+
+        // The loop returns only when every runner it ever had has ended, the one
+        // that was fenced among them.
+        alone.stopped().await;
+        edge.edge.abort();
+        drop((alice, bob));
+
+        // And the store has each block broken once: whoever runs the region next
+        // shows the same.
+        let again = Alone::start(&world, opener_of(&world)).await;
+        let (third, links) = again.shown(&mut [], HOME, second.epoch).await;
+        let edge = edge_with("another edge", vec![link_to(third, &links)]).await;
+        let carol = joined(&edge.address, "Carol").await;
+        for (x, z) in [(2, 1), (-1, 2), (3, -1), (-2, -2)] {
+            assert_eq!(floor(&carol, x, z), AIR, "the block at {x}, {z}");
+        }
+        again.stopped().await;
+        edge.edge.abort();
+        served.stop();
+    }
+
+    // P9, and section 6.2 of the record: "a region that is named with another epoch
+    // is opened before its runner is stopped."
+    //
+    /// The hello that takes a region from its runner is held back on its way to the
+    /// store. Until the store has answered it, the runner goes on: the region is in
+    /// no `Serving`, as one that is being opened, and the player whose edge is linked
+    /// to the runner breaks a block and is acknowledged. When the hello is let
+    /// through, the loop shows the region with the new epoch, and the new runner has
+    /// what the old one had confirmed in the meantime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runner_whose_region_is_named_with_another_epoch_goes_on_until_the_store_has_answered_the_hello()
+     {
+        let world = open_world();
+        // Hellos that are held back say so here, and wait for a word each.
+        let holding = Arc::new(AtomicBool::new(false));
+        let (entered, mut waits) = mpsc::unbounded_channel();
+        let (let_through, word) = std::sync::mpsc::channel::<()>();
+        let word = std::sync::Mutex::new(word);
+        let store: Opener = {
+            let (world, holding) = (world.clone(), Arc::clone(&holding));
+            Arc::new(move |hello| {
+                if holding.load(Ordering::SeqCst) {
+                    let _ = entered.send(hello);
+                    let _ = word.lock().expect("no test panics with it").recv();
+                }
+                world.open_region(hello)
+            })
+        };
+        let alone = Alone::start(&world, store).await;
+        let (first, links) = alone.shown(&mut [], HOME, 0).await;
+        let edge = edge_with("edge", vec![link_to(first, &links)]).await;
+        let mut alice = joined(&edge.address, "Alice").await;
+        digs(&mut alice, 2, 1).await;
+
+        holding.store(true, Ordering::SeqCst);
+        alone
+            .refusals
+            .send((HOME, first.epoch + 1))
+            .expect("the loop is there");
+        let waiting = Instant::now();
+        let hello = loop {
+            if let Ok(hello) = waits.try_recv() {
+                break hello;
+            }
+            assert!(
+                waiting.elapsed() <= PATIENCE,
+                "the loop did not open the region it was named with another epoch"
+            );
+            idle(&mut [&mut alice]).await;
+        };
+        assert_eq!(hello.region, HOME);
+        assert!(hello.epoch > first.epoch + 1, "{hello:?} after {first:?}");
+        // The store has not heard of it, and the old runner is its region's owner.
+        assert_eq!(opened_with(&world, HOME), first.epoch);
+
+        // The region is being opened, for everything else in the loop.
+        let waiting = Instant::now();
+        while alone.serving.borrow().contains_key(&HOME) {
+            assert!(
+                waiting.elapsed() <= PATIENCE,
+                "a region that is being opened is shown as served"
+            );
+            idle(&mut [&mut alice]).await;
+        }
+        // And its runner runs: what the player does is applied, confirmed by the
+        // store and acknowledged.
+        digs(&mut alice, -1, 2).await;
+        digs(&mut alice, 3, -1).await;
+        assert!(alone.shows(HOME, 0).is_none());
+        assert_eq!(opened_with(&world, HOME), first.epoch);
+
+        holding.store(false, Ordering::SeqCst);
+        let_through.send(()).expect("the hello waits");
+        let (second, links) = alone.shown(&mut [&mut alice], HOME, first.epoch).await;
+        assert_eq!(second, hello);
+        assert_eq!(opened_with(&world, HOME), second.epoch);
+        assert!(edge.relinks.replace(link_to(second, &links)).await);
+
+        // The new runner has what the old one had confirmed, and the player goes on.
+        digs(&mut alice, -2, -2).await;
+        acknowledged_once(&alice);
+        assert_eq!(alice.stats.teleports_confirmed, 1);
+        let dug = [(2, 1), (-1, 2), (3, -1), (-2, -2)];
+        for (x, z) in dug {
+            assert_eq!(floor(&alice, x, z), AIR, "the block at {x}, {z}");
+        }
+        let bob = joined(&edge.address, "Bob").await;
+        for (x, z) in dug {
+            assert_eq!(floor(&bob, x, z), AIR, "the block at {x}, {z}");
+        }
+        alone.stopped().await;
+        edge.edge.abort();
+    }
 }
