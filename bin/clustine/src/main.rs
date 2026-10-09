@@ -106,8 +106,9 @@ struct Reshaping {
 
     /// Seconds a coordinator that reshapes by itself leaves a region alone after a
     /// merge, a split or a change of owner. A region without players is absorbed
-    /// after three times as long.
-    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+    /// after three times as long. A day at most, so that the times the coordinator
+    /// reckons from it (up to twenty-four times as long) are times it can add up.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=86_400))]
     rest_seconds: u64,
 }
 
@@ -597,6 +598,10 @@ mod tests {
             Ok(Some(policy(22, 30, 1)))
         );
         assert_eq!(
+            by_itself(&["--rest-seconds", "86400"]),
+            Ok(Some(policy(22, 30, 86_400)))
+        );
+        assert_eq!(
             by_itself(&["--view-distance", "12", "--split-distance", "33"]),
             Ok(Some(policy(30, 33, 10)))
         );
@@ -625,7 +630,8 @@ mod tests {
                 let complaint = follow(&arguments).expect_err(view_distance);
                 assert!(complaint.contains("--view-distance"), "{complaint}");
             }
-            for rest in ["0", "0.5", "soon"] {
+            // A day is the longest rest there is.
+            for rest in ["0", "0.5", "soon", "86401"] {
                 let arguments = ["--reshape", reshape, "--rest-seconds", rest];
                 let complaint = follow(&arguments).expect_err(rest);
                 assert!(complaint.contains("--rest-seconds"), "{complaint}");
