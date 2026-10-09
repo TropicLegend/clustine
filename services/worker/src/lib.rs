@@ -570,6 +570,11 @@ struct Subscription {
     /// what it asked last from one to a subscription it has changed or ended since.
     ask: u64,
     condition: Condition,
+    /// The part the region was told the chunk is of for this subscription, by the
+    /// runner and not by the store ([`RegionRunner::of_a_part`]). The belief is the
+    /// subscription's: when it ends or becomes a guest's, the belief is taken back,
+    /// unless another subscription to the chunk has it too.
+    taken: Option<RegionId>,
 }
 
 /// How many chunks one message of a link asked for that the region took for a part's,
@@ -2511,6 +2516,9 @@ impl RegionRunner {
                     if let Some(subscription) = link.subscriptions.remove(&position) {
                         link.waiting.remove(&position);
                         self.release(position, subscription.kind);
+                        if let Some(part) = subscription.taken {
+                            self.take_back(position, part);
+                        }
                     }
                 }
             }
@@ -2766,22 +2774,30 @@ impl RegionRunner {
         ask: u64,
     ) -> Option<(RegionId, bool)> {
         let Some(subscription) = link.subscriptions.get_mut(&position) else {
+            // As if the store had said so: the coming tick believes it, claims nothing
+            // for the chunk while the ticket lasts, and answers that the part holds it.
+            let for_part = match kind {
+                Ticket::Viewer => self.of_a_part(link, position),
+                Ticket::Guest => None,
+            };
             let subscription = Subscription {
                 kind,
                 ask,
                 condition: Condition::Waiting,
+                taken: for_part.map(|(part, _)| part),
             };
             link.subscriptions.insert(position, subscription);
             link.waiting.insert(position);
             self.inputs.tickets_added.push((position, kind));
-            if kind != Ticket::Viewer {
-                return None;
+            if let Some((part, _)) = for_part {
+                // A belief of the same that a subscription which has just ended was
+                // to take back with the coming tick is this one's from now on.
+                self.inputs
+                    .unbelieve
+                    .retain(|doubt| *doubt != (position, part));
+                self.inputs.foreign.push((position, part));
             }
-            // As if the store had said so: the coming tick believes it, claims nothing
-            // for the chunk while the ticket lasts, and answers that the part holds it.
-            let (part, free) = self.of_a_part(link, position)?;
-            self.inputs.foreign.push((position, part));
-            return Some((part, free));
+            return for_part;
         };
         subscription.ask = ask;
         if let Condition::Elsewhere(region) = subscription.condition {
@@ -2793,8 +2809,11 @@ impl RegionRunner {
             link.waiting.insert(position);
             if kind == Ticket::Viewer {
                 self.inputs.unbelieve.push((position, region));
+                // The edge doubts it, so it is no longer this subscription's to keep.
+                subscription.taken = None;
             }
         }
+        let mut took = None;
         if subscription.kind != kind {
             // The new ticket is counted before the old one is released, so the chunk
             // stays loaded.
@@ -2803,8 +2822,32 @@ impl RegionRunner {
                 .tickets_removed
                 .push((position, subscription.kind));
             subscription.kind = kind;
+            // A guest is told what the region knows, not what the runner took.
+            took = subscription.taken.take();
+        }
+        if let Some(part) = took {
+            self.take_back(position, part);
         }
         None
+    }
+
+    /// Takes back the belief that the chunk at `position` is `part`'s, which the
+    /// runner put in for a subscription that has ended or become a guest's, unless
+    /// a subscription of another link has it too. That subscription's link must not
+    /// be among `self.links`, or the subscription no longer be marked.
+    ///
+    /// A belief that is not the store's lasts as long as what it was put in for, and
+    /// no longer: left to the tickets alone, it would outlive its link whenever
+    /// another ticket is counted for the chunk in the tick that takes the first back,
+    /// as when an edge links again within a tick.
+    fn take_back(&mut self, position: ChunkPos, part: RegionId) {
+        let has = |link: &EdgeLink| {
+            let subscription = link.subscriptions.get(&position);
+            subscription.is_some_and(|subscription| subscription.taken == Some(part))
+        };
+        if !self.links.values().any(has) {
+            self.inputs.unbelieve.push((position, part));
+        }
     }
 
     /// The part this region takes the chunk at `position` to be of, when the edge of
@@ -2822,9 +2865,17 @@ impl RegionRunner {
     /// `docs/adr/0017-the-end-of-the-stripes.md`, section 3.6.2, also for what follows
     /// where the chunk is a third region's or somebody who stayed sees it as well.
     fn of_a_part(&self, link: &EdgeLink, position: ChunkPos) -> Option<(RegionId, bool)> {
-        if self.parted.is_empty() || self.region.knowledge(position) != Knowledge::Unknown {
+        if self.parted.is_empty() {
             return None;
         }
+        // A chunk the region already believes a part's can be one this runner took for
+        // it, for a subscription that ends with the coming tick: the belief is then
+        // kept for this one.
+        let believed = match self.region.knowledge(position) {
+            Knowledge::Unknown => None,
+            Knowledge::Foreign(part) => Some(part),
+            Knowledge::Held | Knowledge::Asked => return None,
+        };
         // The state is that of the last tick, so it still has an entry the edge has
         // said on this link that it has: the number tells.
         let state = self.region.edge(link.edge?)?;
@@ -2837,12 +2888,13 @@ impl RegionRunner {
                 _ => None,
             })
             .collect();
-        parts.into_iter().find_map(|part| {
+        let of = parts.into_iter().find_map(|part| {
             let parted = self.parted.get(&part)?;
             let went = parted.gone.contains(&position);
             let goes = went || (!self.region.pins(position) && parted.sides.goes(position));
             goes.then_some((part, !went))
-        })
+        });
+        of.filter(|(part, _)| believed.is_none_or(|believed| believed == *part))
     }
 
     /// Forgets the splits every edge has heard of: those no outbox names any more,
@@ -2955,6 +3007,9 @@ impl RegionRunner {
         }
         for (position, subscription) in link.subscriptions {
             self.release(position, subscription.kind);
+            if let Some(part) = subscription.taken {
+                self.take_back(position, part);
+            }
         }
     }
 
@@ -4481,6 +4536,7 @@ mod tests {
                 kind: Ticket::Viewer,
                 ask: 1,
                 condition,
+                taken: None,
             };
             assert_eq!(
                 conditions,
@@ -10393,6 +10449,50 @@ mod tests {
         assert_eq!(claimed(&gate), BTreeSet::new());
     }
 
+    /// A belief the runner put in is its subscription's. An edge that lost its link
+    /// before it read of the split links again within the same tick and names the
+    /// same chunks: the belief that the first link's end takes back is kept for the
+    /// second link's subscription, and the row ahead is still not claimed. When that
+    /// link ends as well and nobody asks again, the belief goes with it.
+    #[tokio::test]
+    async fn a_belief_is_kept_for_an_edge_that_links_again_before_it_has_heard_and_goes_with_its_link()
+     {
+        let world = Divided::gap();
+        let (mut runner, gate, edge, part, _) = split_in_the_gap(&world).await;
+        let sees = [ORIGIN, OUT_EAST, BEYOND];
+        let players = [player(), other_player()];
+
+        let (edge_end, worker_end) = link::in_process(256);
+        let first = edge.again(edge_end, &runner);
+        runner.links().attach(worker_end);
+        first.send(first.hello(0, &players, &sees)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.region().knowledge(BEYOND), Knowledge::Foreign(part));
+        gate.asked();
+
+        // The link is lost and another is there before the next tick.
+        let (edge_end, worker_end) = link::in_process(256);
+        let second = edge.again(edge_end, &runner);
+        runner.links().attach(worker_end);
+        drop(first);
+        second.send(second.hello(0, &players, &sees)).await.unwrap();
+        step(&mut runner);
+        step(&mut runner);
+        for chunk in [OUT_EAST, BEYOND] {
+            assert_eq!(runner.region().knowledge(chunk), Knowledge::Foreign(part));
+        }
+        assert_eq!(claimed(&gate), BTreeSet::new());
+
+        // With the last link that asked for them the beliefs go, and nothing is
+        // claimed for chunks nobody asks for.
+        drop(second);
+        step_until(&mut runner, |runner| {
+            runner.region().knowledge(BEYOND) == Knowledge::Unknown
+        });
+        assert_eq!(runner.region().knowledge(OUT_EAST), Knowledge::Unknown);
+        assert_eq!(claimed(&gate), BTreeSet::new());
+    }
+
     /// An edge that says with its hello that it has the entry of the split has read
     /// it, on a link before this one, and has moved the view of whoever went: what it
     /// names as a viewer's is the view of somebody who stayed, and is claimed as ever.
@@ -12075,7 +12175,6 @@ mod tests {
         /// The record does not say that R11 needs that tick, and an edge that links
         /// again 20 ms after its link ended will often be within the same one.
         #[tokio::test]
-        #[ignore = "finding: a resume taken in the tick that ends the link before it keeps that link's beliefs, so a chunk on the part's side is not claimed"]
         async fn an_edge_that_resumes_in_the_tick_that_ends_its_link_has_its_chunks_claimed_as_ever()
          {
             // R11.
