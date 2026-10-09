@@ -1105,7 +1105,18 @@ async fn every_region_is_run_again_when_the_world_store_is_killed_in_the_middle_
     // asking: no merge is left half done in a worker.
     if found != "the merge done" {
         reshapes.settled().await;
-        let merged = reshapes.merge(0, 1).await;
+        // The survivor's worker can still be at what the store's death left of the
+        // first merge when the routing table has every region running again: it
+        // then says that the region is in the middle of something, which is no
+        // merge left half done, and it is asked again until it has got over it.
+        let asked_again = Instant::now();
+        let merged = loop {
+            let merged = reshapes.merge(0, 1).await;
+            let busy = merged.was_told_no_because("in the middle of a release, a merge or a split");
+            if !busy || asked_again.elapsed() > PATIENCE {
+                break merged;
+            }
+        };
         if !merged.says("region 0 has absorbed region 1") {
             let outcome = merged.outcome();
             reshapes.fail(&format!(
