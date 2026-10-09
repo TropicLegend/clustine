@@ -3,6 +3,11 @@
 // Not every test binary starts processes.
 #[allow(dead_code)]
 pub mod processes;
+// Nor does every one run a world without pins.
+#[allow(dead_code)]
+pub mod following;
+#[allow(dead_code)]
+pub mod wandering;
 
 use std::time::Duration;
 
