@@ -516,8 +516,8 @@ This part needs the time, the owners and the list, so it is the state machine's
 (section 5.3). **A region is absorbed** if all of this holds of it:
 
 - it is not the home region, and the list does not have it pinned to an area;
-- its sighting is fresh and has no players, and it has had none for `EMPTY_FOR`
-  (`empty_since`);
+- its sighting is fresh and has no players, and it has had none for `EMPTY_FOR` or
+  longer (`empty_since`, the time of the first report without players);
 - it is free (section 5.2);
 - it has a survivor.
 
@@ -745,7 +745,8 @@ the time that decides the order was not protected against the same look.
 
 When one of its regions is absorbed, a merge's `waiting` goes to the merge of the
 other region with the survivor, which takes the earlier of the two times if it has
-one (section 2.4), and its `missed` is forgotten. **If the other region is that
+one (section 2.4); the `missed` of the merge that is moved is forgotten, and the
+merge it goes to keeps its own. **If the other region is that
 survivor**, which is so when the merge itself was made and when both its regions
 have gone into one region, it would be a merge of a region with itself: it is
 forgotten. When a region goes otherwise, what waited for a merge with it is
@@ -940,7 +941,9 @@ one region, which was split last as after every split that has ended.
 
 The counters go back to 0 only when a split of the region, or a merge it survived
 that was not an absorption, ends well; a region that is given an owner keeps them, as
-what failed need not have been the owner's doing.
+what failed need not have been the owner's doing. The one exception is the one said
+above: the count of answers "not yet" also begins anew when its third is counted as a
+failure, and a failure of another kind leaves that count as it is.
 
 #### 5.6 `Prepare` before a split
 
@@ -2611,3 +2614,69 @@ merge's place in the order is still lost where a region between two groups is
 reserved for more than a second. Both are in "Risks", and nothing was built for
 either: this is the last revision before the state machine is built, and a rule
 that is added now is one more that nobody has reviewed.
+
+## Found while building
+
+What the builders decided where the record could be read in two ways, and what the
+tests written from it found. Where a sentence above was sharpened for it, that is
+said.
+
+**Step C4.2, `decide`.** The survivor "with more players by the two sightings" is by
+the whole of each sighting, the players of groups that are to go included: the merge
+is of the region as it is. The home region's extra place is known whatever the home
+region's sighting is, or whether it has one; with the usual distances twice `D_m` is
+more than `D_s`, so two players of a region at 20 chunks to either side of the origin
+are held together by it and wanted for a merge with the home region, not split.
+`why` is `Near` for every merge and `Apart` for every split. A thousand occupied
+chunks are decided in 8 to 79 ms in an unoptimised build, by how they are spread over
+regions, and in 1 to 5 ms optimised.
+
+**Steps C4.4 and C4.5, the worker process and the flags.** The number of a new
+registration is shown to the worker's loop only after `stay_registered` has said the
+`SplitEnded` it keeps in its watch, so that no report read before that word can
+follow it. A worker that runs nothing says `Players` with no region at every look.
+The distances and the rest are checked whoever decides, and do nothing for a
+coordinator that reshapes by hand. `--rest-seconds` is a day at most, so that every
+time reckoned from it can be added to the time.
+
+**Step C4.3, the state machine.**
+
+1. Section 4.4, "it has had none for `EMPTY_FOR`": for `EMPTY_FOR` or longer, counted
+   from the time of the first report without players.
+2. Section 5.5, the two counters: sharpened above.
+3. Section 5.3, a `waiting` that goes to the merge with the survivor: the `missed` of
+   the merge that is moved is forgotten; the merge it goes to keeps its own, with its
+   own `since` and the earlier of the two `waiting`.
+4. Section 2.4, a split that ends with `Ok(N)`: if the split region has no sighting
+   (a split by hand under a coordinator that has heard nothing of the region), none
+   is made for `N`; if `N` has a sighting already, the crowds are added to it and it
+   is not fresh; if the coordinator does not take `N` as a region of that worker, the
+   crowds stay where they were.
+5. Sections 2.4 and 5.4, a region "given an owner or an epoch the coordinator did not
+   have for it": told by comparing each region's owner and epoch with what was noted
+   last, at the end of every call and in `tick` after `settle`, not at each place
+   that changes an owner.
+6. Section 7: the timer asks at the end of the tick, after what section 5 begins and
+   after evening out, so a tick that asks can still begin a split; an answer to any
+   reading counts, also to one the service asked for by itself.
+7. Section 7: a region that a good reading does not show as living is no longer
+   pinned, whatever an earlier reading said.
+8. Section 5.2, a refusal "all the same": both regions are left alone for a rest,
+   the survivor of an absorption too. No sequence was found that reaches it.
+9. Section 6, "wanted at that tick": by what that tick's own `decide` gave; a tick
+   that decides nothing (no home region yet) has nothing wanted.
+10. Section 10: the three new lines are written in `state/follow.rs` under the log
+    target `clustine_coordinator::state`, so they read as the table has them. One
+    more line is written when `Prepare` is said before a split: `a region is to
+    prepare for being split` with `region`, `worker` and `epoch`.
+11. What whoever drives the state machine has to do (step C5's single process as
+    well): one step is the outcomes with the readings they ask for, then `players`,
+    then `tick`; every `Changes::read` is answered with `listed` or `unlisted`, or no
+    split is ever begun by itself; `players` vouches for nothing, so heartbeats go on;
+    the ticks in reports rise for each region, and the first report of a part has
+    tick 1 or more, as the sighting made for it has tick 0.
+
+Thirty faults were put into the state machine on purpose, one at a time (no rest, no
+standing, no turns, the order by gap, every group named, a pinned region absorbed, a
+region without a sighting not holding back, and others); each failed at least one of
+its builder's tests.
