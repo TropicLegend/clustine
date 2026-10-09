@@ -231,24 +231,31 @@ step "Deploying"
 # they are: every part below names that boundary or those two regions.
 k apply --kustomize "${root}/deploy/kind/pinned"
 
+# Waits until every service is ready. In no particular order but for the edge, which
+# is last: it becomes ready only once every region has a worker, so its being ready is
+# the whole cluster being ready.
+wait_for_services() {
+  local workload
+  for workload in \
+    deployment/clustine-coordinator \
+    statefulset/clustine-worldstore \
+    statefulset/clustine-worker \
+    statefulset/clustine-edge; do
+    k rollout status "$workload" --timeout="${rollout_timeout}s"
+  done
+}
+
 step "Waiting for the services"
-# In no particular order but for the edge, which is last: it becomes ready only once
-# every region has a worker, so its being ready is the whole cluster being ready.
-for workload in \
-  deployment/clustine-coordinator \
-  statefulset/clustine-worldstore \
-  statefulset/clustine-worker \
-  statefulset/clustine-edge; do
-  k rollout status "$workload" --timeout="${rollout_timeout}s"
-done
+wait_for_services
 
 # Waits for the Job `$1` to end, shows its log and fails the test unless it succeeded.
+# It may take `$2` seconds, or what the bots are given unless told.
 wait_for_job() {
-  local job="$1" result=timeout deadline conditions
+  local job="$1" patience="${2:-$bots_timeout}" result=timeout deadline conditions
   # `kubectl wait` waits for one condition, and waiting for "Complete" alone would sit
   # out the whole timeout when the bots have failed in the first seconds. So ask for
   # both.
-  deadline=$((SECONDS + bots_timeout))
+  deadline=$((SECONDS + patience))
   while [ "$SECONDS" -lt "$deadline" ]; do
     # A request that fails once is asked again; nothing but the deadline ends the wait.
     conditions="$(k get job "$job" \
@@ -271,7 +278,7 @@ wait_for_job() {
   case "$result" in
     complete) ;;
     failed) die "${job} failed; its log is above" ;;
-    *) die "${job} did not finish within ${bots_timeout} seconds" ;;
+    *) die "${job} did not finish within ${patience} seconds" ;;
   esac
 }
 
@@ -535,3 +542,56 @@ if grep -q -F -e 'a merge was not done within the lease' \
   "${scratch}/coordinator-merges.log"; then
   die "the coordinator waited out a lease for a merge or a split"
 fi
+
+step "Deploying a world without pins, whose regions follow their players"
+# The manifests as they are: one home region that holds what its players see, three
+# workers, and a coordinator that merges and splits by itself by the distances of the
+# usual view distance. The namespace goes first, and the world of the parts above
+# with it.
+k delete namespace "$namespace" --ignore-not-found --wait --timeout=120s
+k apply --kustomize "${root}/deploy/kubernetes"
+wait_for_services
+
+step "Sending bots further from where players enter than regions reach"
+k delete job clustine-wanders --ignore-not-found --cascade=foreground --wait --timeout=60s
+k apply --filename "${root}/deploy/kubernetes/test/wanders.yaml"
+# They walk five hundred blocks, play for three minutes and are audited by a bot that
+# walks out to them.
+wait_for_job clustine-wanders 600
+
+step "Checking that the regions followed the bots"
+k logs deployment/clustine-coordinator >"${scratch}/coordinator-wanders.log"
+# In this order: the bots are split off when they have gone far enough, their region
+# is moved to another worker when it has rested, and it is merged into the home region
+# again when the bot that audits them has walked out to them.
+seen=0
+for line in \
+  'a split is begun by itself' \
+  'a worker says what came of a split' \
+  'a region is moved to even regions out' \
+  'a merge is begun by the distances' \
+  'a merge has ended'; do
+  at="$(tail -n "+$((seen + 1))" "${scratch}/coordinator-wanders.log" |
+    grep -n -m 1 -F -- "$line" | cut -d: -f1 || true)"
+  if [ -z "$at" ]; then
+    die "the coordinator did not log \"${line}\" after what comes before it"
+  fi
+  seen=$((seen + at))
+  printf 'line %s of the coordinator: %s\n' "$seen" "$line"
+done
+if ! grep -F 'a worker says what came of a split' "${scratch}/coordinator-wanders.log" |
+  grep -q -F 'outcome=Ok('; then
+  die "no split that the coordinator began by itself was made"
+fi
+running="$(running_regions)"
+printf '%s workers ran a region\n' "$running"
+if [ "$running" -lt 2 ]; then
+  die "the bots' region was not run by another worker than the home region's"
+fi
+if grep -q -F -e 'a region was taken from its owner' \
+  -e 'a merge was not done within the lease' \
+  -e 'a worker did not say within the lease what came of a split' \
+  "${scratch}/coordinator-wanders.log"; then
+  die "the coordinator waited out a lease"
+fi
+

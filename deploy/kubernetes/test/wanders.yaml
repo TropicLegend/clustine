@@ -1,0 +1,82 @@
+# The fifth test of a deployed cluster, and the only one on the manifests as they
+# are, without pins: bots that keep a ledger walk further from where players enter the
+# world than the split distance, and play there. deploy/kind/test.sh then looks in the
+# coordinator's log for what regions that follow their players do by themselves: the
+# bots are split off into a region of their own, that region is moved to another
+# worker, and it is merged into the home region again when the bot that joins at the
+# end, to see what the others built, walks out to them. The Job succeeds only if no
+# bot was disconnected, every acknowledged block is there, also for that last bot,
+# and nobody was seen twice or vanished.
+#
+# Not in the kustomization one directory up, because it is a test and not part of the
+# deployment.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clustine-wanders
+  namespace: clustine
+  labels:
+    app.kubernetes.io/name: clustine-wanders
+    app.kubernetes.io/component: test
+    app.kubernetes.io/part-of: clustine
+spec:
+  # One attempt. Whether the scenario held is the exit status of that attempt, and a
+  # second one after a failure would cover it up.
+  backoffLimit: 0
+  # In case the bots get stuck: a run that works is over long before.
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clustine-wanders
+        app.kubernetes.io/component: test
+        app.kubernetes.io/part-of: clustine
+    spec:
+      restartPolicy: Never
+      # The bots have nothing to save when they are told to stop.
+      terminationGracePeriodSeconds: 5
+      automountServiceAccountToken: false
+      # See ../coordinator.yaml.
+      enableServiceLinks: false
+      securityContext:
+        # The user the Dockerfile creates.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bots
+          image: clustine:dev
+          imagePullPolicy: IfNotPresent
+          # `command` and not `args`, since the image's entry point is the server.
+          command:
+            - clustine-botswarm
+            - ledger
+            - clustine-edge:25565
+            # A pod that has just become ready is not reached through its Service at
+            # once. A client would try again, and so do the bots before they begin.
+            - --wait-for-server=60
+            - --bots=4
+            # Long enough to be split off, to be moved to another worker a rest later,
+            # and to play in the part after that.
+            - --seconds=180
+            # Chunk 31, which is more than the split distance of thirty chunks from
+            # where players enter the world. There is no boundary to count steps
+            # across: the world has no pins.
+            - --west=498.5
+            - --east=509.5
+            # How long an action may wait for its acknowledgement. Nobody dies here, so
+            # nobody is to wait even for the lease of 5 seconds; this is only to end a
+            # run that hangs.
+            - --patience=30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

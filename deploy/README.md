@@ -52,7 +52,7 @@ nobody was seen twice or vanished, every pod is another one than before, and two
 the new workers run a region, which they can only have restored from the world store.
 
 
-Last it has Kubernetes replace every worker in turn
+Then it has Kubernetes replace every worker in turn
 (`kubectl rollout restart statefulset/clustine-worker`) under such bots
 (`kubernetes/test/rollout.yaml`). A worker that is told to stop hands its region to the
 worker that waits before it goes. That part passes if no bot was disconnected, the
@@ -60,6 +60,18 @@ ledger holds, every worker's pod is another one than before, at least two region
 released by their workers, and the coordinator took no region from a worker whose
 lease ran out. The bots print how long each of them waited at most for an
 acknowledgement, which is how long it stood still when its region moved.
+
+Then it merges the two regions, splits one off where the bots walk and merges it
+again, by asking the coordinator (`kubernetes/test/merges.yaml`), and that part passes
+if the ledger holds and no merge and no split waited for a lease.
+
+Last it deletes all of that and applies `kubernetes/` as it is: a world without pins,
+whose regions follow their players. Bots that keep a ledger walk five hundred blocks
+from where players enter the world and play there (`kubernetes/test/wanders.yaml`).
+That part passes if the ledger holds, and the coordinator's log shows, in this order,
+that it split the bots off by itself, moved their region to another worker, and
+merged it into the home region again when the bot that joins at the end had walked
+out to them; if two workers ran a region; and if no lease ran out.
 
 If the test fails, it
 prints the end of every pod's log, the events and the list of pods. The cluster is
