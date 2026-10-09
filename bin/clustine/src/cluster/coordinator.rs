@@ -28,6 +28,23 @@ pub struct CoordinatorArgs {
     pub follow: Option<Policy>,
 }
 
+/// Says in the log how regions are reshaped and with which numbers, for whoever reads
+/// it to know which of the two this server is
+/// (`docs/adr/0016-when-to-merge-and-split.md`, section 8). The coordinator's process
+/// says it, and the single process, which has its coordinator within.
+pub(crate) fn say_how_it_reshapes(follow: Option<&Policy>) {
+    match follow {
+        None => info!("reshaping by hand: regions merge and split when somebody asks"),
+        Some(policy) => info!(
+            merge_distance = policy.merge_distance,
+            split_distance = policy.split_distance,
+            margin = policy.margin(),
+            rest_seconds = policy.rest.as_secs(),
+            "reshaping by itself: regions merge and split by where their players are"
+        ),
+    }
+}
+
 /// Runs a coordinator until the process is asked to stop.
 pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
     let layout = Layout::new(args.boundaries).context("dividing the world into regions")?;
@@ -40,19 +57,7 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
         store = %args.store,
         "coordinating"
     );
-    // How it reshapes and with which numbers, for whoever reads the log to know which
-    // of the two this coordinator is (`docs/adr/0016-when-to-merge-and-split.md`,
-    // section 8).
-    match &args.follow {
-        None => info!("reshaping by hand: regions merge and split when somebody asks"),
-        Some(policy) => info!(
-            merge_distance = policy.merge_distance,
-            split_distance = policy.split_distance,
-            margin = policy.margin(),
-            rest_seconds = policy.rest.as_secs(),
-            "reshaping by itself: regions merge and split by where their players are"
-        ),
-    }
+    say_how_it_reshapes(args.follow.as_ref());
     let config = CoordinatorConfig {
         layout,
         spawn: spawn_point(),

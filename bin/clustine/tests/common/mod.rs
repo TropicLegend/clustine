@@ -23,7 +23,9 @@ pub fn config() -> Config {
         world: None,
         checkpoint_interval: Duration::from_secs(300),
         serialise_link: false,
-        boundaries: boundaries(),
+        pins: boundaries(),
+        // Regions stay as they are unless a test says otherwise.
+        follow: None,
     }
 }
 

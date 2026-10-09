@@ -31,7 +31,7 @@ const GROUND: f64 = -60.0;
 /// A server whose world is two regions.
 fn divided(serialise_link: bool) -> Config {
     Config {
-        boundaries: vec![BOUNDARY],
+        pins: vec![BOUNDARY],
         serialise_link,
         ..config()
     }

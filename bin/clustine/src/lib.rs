@@ -4,31 +4,36 @@
 //! own.
 //!
 //! The services are wired together the same way they are across processes: the edge
-//! shares nothing with a region but a link, and a region reaches the world store through
-//! messages. The world can be divided into several regions here too, each ticking on a
-//! thread of its own.
+//! shares nothing with a region but a link, a region reaches the world store through
+//! messages, and a coordinator says which regions run. The single process is those
+//! services in one process, with channels where the processes have sockets.
 
 pub mod cluster;
 
+use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
+use clustine_coordinator::{CoordinatorConfig, Policy, Reach, WorkerClient, serve_local};
 use clustine_data::items;
 pub use clustine_edge::EdgeConfig;
-use clustine_edge::{Edge, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
+use clustine_edge::{Edge, EdgeIdentity, Routing};
 use clustine_region::{Layout, RegionId};
-use clustine_rpc::link::EdgeEnd;
-use clustine_rpc::{RegionHello, Restored, link};
-use clustine_sim::RegionConfig;
+use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
-use clustine_worker::{DEFAULT_RETURN_AFTER, RegionRunner, Worker};
 use clustine_world::{ChunkGenerator, ChunkPos, Vec3};
 use clustine_worldgen::FlatGenerator;
-use clustine_worldstore::{Division, Store, StoreError, StoreHandle};
+use clustine_worldstore::{Division, Store, StoreError};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
+use tracing::warn;
+
+use crate::cluster::edge::{Linking, keep_linked, whole_world};
+use crate::cluster::worker::{self, Opener, Outside, Refusal, Serving, Setup, Stop};
 
 /// Messages that may wait in each direction between the edge and a region. A region
 /// never waits for the edge, so this has to cover the chunks of many players joining at
@@ -131,145 +136,178 @@ pub struct Config {
     /// Serialise every message between the edge and the regions, as a deployment with
     /// separate processes does. Slower; meant for testing that boundary.
     pub serialise_link: bool,
-    /// The chunk x coordinates at which the world is divided into regions, ascending.
-    /// Each region is simulated on its own; players are handed from one to the next as
-    /// they walk, and what they do to blocks on the other side of a boundary is passed
-    /// on to the region that has them. Empty for a world that is one region.
-    pub boundaries: Vec<i32>,
+    /// The chunk x coordinates at which regions are pinned side by side, ascending:
+    /// each is simulated on its own, players are handed from one to the next as they
+    /// walk, and what they do to blocks on the other side of a boundary is passed on
+    /// to the region that has them. Empty for a world that is one home region, which
+    /// holds what its players see.
+    pub pins: Vec<i32>,
+    /// What the regions are merged and split by, or `None` for a server that does
+    /// neither.
+    pub follow: Option<Policy>,
 }
 
-/// A running server. Dropping it without calling [`Server::stop`] leaves it running
-/// until the runtime shuts down.
+/// The name of the one worker of a single process, and what stands for its address in
+/// the routing table: the edge links to it in this process and connects to nothing.
+const WORKER: &str = "local";
+const HERE: &str = "in this process";
+
+/// How long [`Server::take_over`] waits for a region that does not run yet.
+const TAKE_OVER_PATIENCE: Duration = Duration::from_secs(10);
+
+/// The world store of a single process, for as long as the server runs. Whoever uses
+/// it holds the lock for as long as the call lasts, so that [`Server::stop`], which
+/// takes the store out, has waited for every call that was under way and is the last
+/// to speak to it.
+type Kept = Arc<Mutex<Option<Store>>>;
+
+/// Why the store of a server that is stopping does not answer.
+fn stopping() -> io::Error {
+    io::Error::other("the server is stopping")
+}
+
+/// A running server: the services of a cluster in one process, joined by channels
+/// where the processes use TCP (`docs/adr/0017-the-end-of-the-stripes.md`, section 6).
+/// A coordinator's service, the loop of one worker and an edge with its link-keeper
+/// run as they do in processes of their own, so regions merge, split and are taken
+/// over here by the very code that does it there.
+///
+/// Dropping it without calling [`Server::stop`] leaves it running until the runtime
+/// shuts down.
 pub struct Server {
     address: SocketAddr,
-    edge: JoinHandle<Stopped>,
-    /// Gives the edge a new link to a region.
-    relinks: Relinks,
-    /// What it takes to run the regions, kept to run one of them anew.
-    regions: Regions,
-    /// The runner of each region and the epoch it runs it with, by region id.
-    workers: Vec<(u64, Worker)>,
-}
-
-/// What every region of the world is run with.
-struct Regions {
-    store: Store,
-    layout: Layout,
-    spawn: Vec3,
-    /// Ticks between two checkpoints.
-    checkpoint_interval: u64,
-    serialise_link: bool,
-}
-
-impl Regions {
-    /// Opens `region` at the store as its owner with `epoch`, restores it and starts
-    /// to run it. Returns the runner and the edge's end of a link to it.
-    ///
-    /// The region carries on with what the store has of it: for a world kept on disk
-    /// where the server before this one left it, and after a takeover where the store
-    /// had the previous runner.
-    fn run(&self, region: RegionId, epoch: u64) -> Result<(Worker, RegionLink)> {
-        let hello = RegionHello {
-            region,
-            epoch,
-            layout: self.layout.fingerprint(),
-        };
-        let (store, restored) = self
-            .store
-            .open_region(hello)
-            .with_context(|| format!("opening region {region}"))?;
-        self.started(region, epoch, store, restored)
-    }
-
-    /// Opens `region` as its first owner in this process: with an epoch above every one
-    /// the world has seen for it. A world on disk remembers the owners its regions have
-    /// had, in this process's predecessors or in a cluster that served it before.
-    /// Returns the epoch with the rest.
-    fn run_first(&self, region: RegionId) -> Result<(u64, Worker, RegionLink)> {
-        let mut epoch = 1;
-        loop {
-            let hello = RegionHello {
-                region,
-                epoch,
-                layout: self.layout.fingerprint(),
-            };
-            match self.store.open_region(hello) {
-                Ok((store, restored)) => {
-                    let (worker, link) = self.started(region, epoch, store, restored)?;
-                    return Ok((epoch, worker, link));
-                }
-                // Nobody else has the world open, so the next epoch is this process's.
-                Err(StoreError::EpochRefused { seen, .. }) if seen >= epoch => {
-                    epoch = seen
-                        .checked_add(1)
-                        .context("the region has run out of epochs")?;
-                }
-                Err(error) => {
-                    return Err(error).with_context(|| format!("opening region {region}"));
-                }
-            }
-        }
-    }
-
-    /// Restores `region` from what the store returned on opening it and starts to run
-    /// it.
-    fn started(
-        &self,
-        region: RegionId,
-        epoch: u64,
-        store: StoreHandle,
-        restored: Restored,
-    ) -> Result<(Worker, RegionLink)> {
-        let (end, worker_end): (EdgeEnd, _) = if self.serialise_link {
-            link::framed(LINK_CAPACITY)
-        } else {
-            link::in_process(LINK_CAPACITY)
-        };
-        let config = RegionConfig {
-            spawn: self.spawn,
-            starting_hotbar: starting_hotbar(),
-            return_after: DEFAULT_RETURN_AFTER,
-        };
-        let runner = RegionRunner::restore(config, store, restored)
-            .with_context(|| format!("restoring region {region}"))?
-            .with_checkpoint_interval(self.checkpoint_interval);
-        runner.links().attach(worker_end);
-        let link = RegionLink { region, epoch, end };
-        Ok((Worker::spawn(runner), link))
-    }
+    /// The edge and what keeps it linked to the regions.
+    edge: JoinHandle<()>,
+    /// The loop of the one worker, with what it ended for.
+    worker: JoinHandle<Result<()>>,
+    coordinator: JoinHandle<()>,
+    store: Kept,
+    /// The regions the worker serves, each with the epoch it runs it with.
+    serving: watch::Receiver<Serving>,
+    /// Where the worker says what the store refused it; see [`Server::take_over`].
+    refusals: mpsc::UnboundedSender<Refusal>,
+    stop: mpsc::UnboundedSender<Stop>,
 }
 
 impl Server {
-    /// Starts all services and returns once the server accepts connections.
+    /// Starts all services and returns once the server accepts connections. Every
+    /// region of the world runs by then: a world that cannot be restored does not
+    /// start, and the error says why.
     pub async fn start(config: Config) -> Result<Self> {
         let spawn = spawn_point();
-        let generator = generator();
-        let layout = Layout::new(config.boundaries).context("dividing the world into regions")?;
-        // One store for all regions, as in a cluster. It is told how the world is
-        // divided when it starts, and its regions are those of the layout.
+        let home = ChunkPos::containing(spawn.x, spawn.z);
+        let division = if config.pins.is_empty() {
+            Division::open(home)
+        } else {
+            Division::side_by_side(home, &config.pins)
+                .map_err(|error| anyhow!("the pins have to be {error}"))?
+        };
         let store = match &config.world {
-            Some(directory) => {
-                Store::local_divided(directory, Arc::clone(&generator), division(&layout))
-                    .with_context(|| format!("opening the world in {}", directory.display()))?
-            }
-            None => Store::memory_divided(Arc::clone(&generator), division(&layout))
+            Some(directory) => Store::local_divided(directory, generator(), division)
+                .with_context(|| format!("opening the world in {}", directory.display()))?,
+            None => Store::memory_divided(generator(), division)
                 .context("starting a world in memory")?,
         };
-        let regions = Regions {
-            store,
-            layout: layout.clone(),
-            spawn,
-            checkpoint_interval: config.checkpoint_interval.as_millis() as u64 / 50,
-            serialise_link: config.serialise_link,
-        };
+        let store: Kept = Arc::new(Mutex::new(Some(store)));
 
-        let mut links = Vec::new();
-        let mut workers = Vec::new();
-        for (region, _) in layout.regions() {
-            let (epoch, worker, link) = regions.run_first(region)?;
-            links.push(link);
-            workers.push((epoch, worker));
+        // The coordinator, which learns which regions there are from the store's list
+        // and has nobody to wait for: its one worker is in this process.
+        cluster::coordinator::say_how_it_reshapes(config.follow.as_ref());
+        let listed = Arc::clone(&store);
+        let lists = move || {
+            let store = listed.lock().unwrap_or_else(PoisonError::into_inner);
+            let store = store.as_ref().ok_or_else(stopping)?;
+            store.regions().map_err(|error| match error {
+                StoreError::Io(error) => error,
+                other => io::Error::other(other),
+            })
+        };
+        let coordinator_config = CoordinatorConfig {
+            // Until nothing carries a layout any more. It has no boundary, and a
+            // coordinator knows no region by one that has none.
+            layout: Layout::single(),
+            spawn,
+            lease: CoordinatorConfig::DEFAULT_LEASE,
+            follow: config.follow,
+        };
+        let (local, serving_coordinator) = serve_local(coordinator_config, lists);
+        let coordinator = tokio::spawn(serving_coordinator);
+        let reach = Reach::Local(local);
+
+        // The one worker: the loop of a worker's process, which opens its regions at
+        // the store of this process and shows what it serves in a watch.
+        let opened = Arc::clone(&store);
+        let open: Opener = Arc::new(move |hello| {
+            let store = opened.lock().unwrap_or_else(PoisonError::into_inner);
+            match store.as_ref() {
+                Some(store) => store.open_region(hello),
+                None => Err(StoreError::Io(stopping())),
+            }
+        });
+        let registered = WorkerClient::register(&reach, WORKER, HERE, &[], None)
+            .await
+            .context("registering the worker with the coordinator of this process")?;
+        let (serving_sender, serving) = watch::channel(Serving::default());
+        let (refusals, refused) = mpsc::unbounded_channel();
+        let (stop, stopped) = mpsc::unbounded_channel();
+        let setup = Setup {
+            name: WORKER.to_owned(),
+            advertise: HERE.to_owned(),
+            checkpoint_interval: (config.checkpoint_interval.as_millis()
+                / clustine_worker::TICK.as_millis()) as u64,
+        };
+        let outside = Outside {
+            registered,
+            coordinator: reach.clone(),
+            store: open,
+            serving: serving_sender,
+            refusals: (refusals.clone(), refused),
+            stop: stopped,
+        };
+        let mut worker = tokio::spawn(worker::run(setup, outside));
+
+        // The first routing table that names the home region with a worker and has no
+        // region waiting, and then every region of the table running: the worker shows
+        // each with the epoch of its route when it is restored and ticks. A loop that
+        // ends before that could not restore a region, and says why.
+        let running = async {
+            let (mut tables, mut table, home) = whole_world(&reach).await;
+            let mut shown = serving.clone();
+            loop {
+                let runs = |route: &clustine_region::RegionRoute| {
+                    let shown = shown.borrow();
+                    let served = shown.get(&route.region);
+                    served.is_some_and(|(hello, _)| hello.epoch == route.epoch)
+                };
+                if table.routes.iter().all(runs) {
+                    return Ok((tables, table, home));
+                }
+                tokio::select! {
+                    changed = shown.changed() => {
+                        if changed.is_err() {
+                            bail!("the worker of this process has ended");
+                        }
+                    }
+                    // The latest table is the one to go by, should a route change
+                    // before its region runs.
+                    next = tables.next() => {
+                        table = next.context("the coordinator of this process is gone")?;
+                    }
+                }
+            }
+        };
+        let (tables, table, home) = tokio::select! {
+            running = running => running,
+            ended = &mut worker => Err(match ended {
+                Ok(Ok(())) => anyhow!("the worker of this process ended before its regions ran"),
+                Ok(Err(error)) => error,
+                Err(error) => anyhow!(error).context("the worker of this process failed"),
+            }),
         }
+        .inspect_err(|_| {
+            coordinator.abort();
+            worker.abort();
+        })?;
 
         let edge_config = EdgeConfig {
             description: config.description,
@@ -281,39 +319,82 @@ impl Server {
             region_patience: config.region_patience,
         };
         let identity = EdgeIdentity::starting_now("edge");
-        // The region that has the spawn point, which the store pins as home.
-        let home = layout.region_of(ChunkPos::containing(spawn.x, spawn.z));
-        let (routing, relinks) = Routing::new(home, spawn, identity, links);
+        let (routing, relinks) = Routing::new(home, table.spawn, identity, Vec::new());
         let edge = Edge::bind(config.bind, edge_config, routing)
             .await
-            .with_context(|| format!("listening on {}", config.bind))?;
+            .with_context(|| format!("listening on {}", config.bind))
+            .inspect_err(|_| {
+                coordinator.abort();
+                worker.abort();
+            })?;
         let address = edge.local_addr()?;
+        let linking = Linking::Local {
+            serving: serving.clone(),
+            serialise: config.serialise_link,
+        };
+        // Either ends only if the edge is gone, which nothing here brings about.
+        let edge = tokio::spawn(async move {
+            tokio::select! {
+                _ = edge.run() => {}
+                () = keep_linked(&reach, linking, home, tables, table, relinks) => {}
+            }
+        });
         Ok(Self {
             address,
-            edge: tokio::spawn(edge.run()),
-            relinks,
-            regions,
-            workers,
+            edge,
+            worker,
+            coordinator,
+            store,
+            serving,
+            refusals,
+            stop,
         })
     }
 
+    /// The world store's list of regions.
+    pub fn regions(&self) -> Result<RegionList> {
+        let store = self.store.lock().unwrap_or_else(PoisonError::into_inner);
+        let store = store.as_ref().context("the server is stopping")?;
+        Ok(store.regions()?)
+    }
+
     /// Has `region` taken over by a new runner, as when another worker is given a
-    /// region whose owner is believed dead. The runner it had is not asked: the store
-    /// takes the region from it, so that it can make nothing durable any more and stops
-    /// without a word, and the new one carries on from what the store has. The edge is
-    /// given a link to the new runner and resumes with it; nobody is disconnected.
+    /// region whose owner is believed dead. The runner it has is not asked: the region
+    /// is opened with a higher epoch while that runner still runs, which takes the
+    /// region from it at the store, so that it can make nothing durable any more and
+    /// stops without a word; the new one carries on from what the store has. The edge
+    /// links to the new runner and resumes with it; nobody is disconnected.
+    ///
+    /// It is done by saying, as the worker, that the store refused the region for a
+    /// higher epoch, which the store did not say. From there on everything goes the
+    /// way it goes in a cluster: the coordinator gives the region out anew, to the one
+    /// worker there is, whose loop opens a region that is named with another epoch
+    /// before it stops the runner it has.
     pub async fn take_over(&mut self, region: RegionId) -> Result<()> {
-        let index = region.0 as usize;
-        let epoch = match self.workers.get(index) {
-            Some((epoch, _)) => epoch + 1,
-            None => anyhow::bail!("the world has no region {region}"),
+        let listed = self.regions()?;
+        if !listed.regions.iter().any(|info| info.region == region) {
+            bail!("the world has no region {region}");
+        }
+        // A region that is being opened runs in a moment; one that was absorbed or is
+        // being released meanwhile never does.
+        let epoch_of = |serving: &Serving| serving.get(&region).map(|(hello, _)| hello.epoch);
+        let runs = self.serving.wait_for(|serving| epoch_of(serving).is_some());
+        let had = match timeout(TAKE_OVER_PATIENCE, runs).await {
+            Ok(Ok(serving)) => epoch_of(&serving).expect("it was just found to run"),
+            Ok(Err(_)) => bail!("the worker of this process has ended"),
+            Err(_) => bail!("region {region} does not run"),
         };
-        let (worker, link) = self.regions.run(region, epoch)?;
-        let (_, replaced) = std::mem::replace(&mut self.workers[index], (epoch, worker));
-        // It finds its store handle lost and ends by itself.
-        tokio::task::spawn_blocking(move || replaced.stop()).await?;
-        anyhow::ensure!(self.relinks.replace(link).await, "the edge is gone");
-        Ok(())
+        let seen = had
+            .checked_add(1)
+            .context("the region has run out of epochs")?;
+        let said = self.refusals.send((region, seen));
+        said.ok().context("the worker of this process has ended")?;
+        let taken = |serving: &Serving| epoch_of(serving).is_some_and(|epoch| epoch > had);
+        let taken_over = self.serving.wait_for(taken).await;
+        taken_over
+            .map(|_| ())
+            .ok()
+            .context("the worker of this process has ended")
     }
 
     /// The address the server listens on.
@@ -324,23 +405,45 @@ impl Server {
     /// Waits until the server has stopped by itself, which only happens when one of its
     /// services fails.
     pub async fn stopped(&mut self) {
-        let _ = (&mut self.edge).await;
+        tokio::select! {
+            _ = &mut self.edge => {}
+            _ = &mut self.worker => {}
+            _ = &mut self.coordinator => {}
+        }
     }
 
     /// Stops accepting connections, closes the existing ones, stops the simulation and
-    /// stores what has changed in the world.
+    /// stores what has changed in the world. When it returns, nothing of the server
+    /// holds the world store any more and nothing is being written: a server that is
+    /// started on the same directory right away finds the world as the last confirmed
+    /// tick left it.
     pub async fn stop(self) {
+        // The edge first, which closes every client and every link.
         self.edge.abort();
-        // The task was cancelled on purpose, so its result carries no information.
+        // The tasks are ended on purpose, so how they ended carries no information.
         let _ = self.edge.await;
-        // Waits for the current ticks and for the world to be stored.
-        let workers = self.workers;
-        let stop = move || {
-            for (_, worker) in workers {
-                // A region that lost the store has stopped already and said so.
-                worker.stop();
+        // The worker's loop stops every runner and waits for it: each has stored what
+        // changed, or, in the middle of a merge or a split, let go as it was.
+        let _ = self.stop.send(Stop::AtOnce);
+        match self.worker.await {
+            Ok(Ok(())) | Err(_) => {}
+            Ok(Err(error)) => warn!(%error, "the worker of this process ended badly"),
+        }
+        self.coordinator.abort();
+        let _ = self.coordinator.await;
+        // Taking the store out waits for a hello or a reading of the list that was
+        // under way, on whichever thread; the store is then waited for until it is at
+        // rest with all that was asked of it, which a runner that let go in the middle
+        // did not wait for.
+        let store = self.store;
+        let rest = move || {
+            let store = store.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(store) = store
+                && let Err(error) = store.flush()
+            {
+                warn!(%error, "the world store did not come to rest");
             }
         };
-        let _ = tokio::task::spawn_blocking(stop).await;
+        let _ = tokio::task::spawn_blocking(rest).await;
     }
 }

@@ -63,7 +63,7 @@ fn within_chunk(chunk: i32) -> (f64, f64) {
 /// Returns it with its address and with the first block east of each boundary.
 async fn server(boundaries: &[i32]) -> (clustine::Server, String, Vec<i32>) {
     let (server, address) = start_with(Config {
-        boundaries: boundaries.to_vec(),
+        pins: boundaries.to_vec(),
         // Everything between the edge and the regions goes through the codec, as it
         // does between processes.
         serialise_link: true,

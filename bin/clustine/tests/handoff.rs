@@ -29,7 +29,7 @@ const GROUND: f64 = -60.0;
 /// A server whose world is two regions.
 fn divided() -> Config {
     Config {
-        boundaries: vec![BOUNDARY],
+        pins: vec![BOUNDARY],
         ..config()
     }
 }
@@ -467,7 +467,7 @@ async fn a_divided_world_survives_a_restart() {
     let directory = tempfile::tempdir().unwrap();
     let on_disk = |boundaries: Vec<i32>| Config {
         world: Some(directory.path().to_owned()),
-        boundaries,
+        pins: boundaries,
         ..config()
     };
 
@@ -529,7 +529,7 @@ async fn the_crossing_scenario_passes_on_a_divided_world() {
     let (server, address) = start_with(Config {
         max_players: 20,
         // Between the two places the walkers walk between.
-        boundaries: vec![3],
+        pins: vec![3],
         ..config()
     })
     .await;

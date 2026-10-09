@@ -85,13 +85,6 @@ struct Reshaping {
     #[arg(long, value_enum, default_value_t = Reshape::ByHand)]
     reshape: Reshape,
 
-    /// Largest view distance the edges grant, in chunks: what they are started with
-    /// as --view-distance. Nothing checks that the two agree. A coordinator that
-    /// reshapes by itself takes its two distances from it, so that a boundary between
-    /// regions is in nobody's view as a rule, and uses it for nothing else.
-    #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE as u32, value_parser = clap::value_parser!(u32).range(2..=32))]
-    view_distance: u32,
-
     /// Regions with players this many chunks apart or nearer are merged by a
     /// coordinator that reshapes by itself. Unless told, twice the view distance and
     /// 6. It has to be 1 at least.
@@ -120,8 +113,11 @@ impl Reshaping {
     /// The distances are checked whoever decides: a command line that is wrong is
     /// refused when it is written, not on the day somebody changes --reshape. But for
     /// that, a coordinator that reshapes by hand does nothing with the numbers.
-    fn follow(&self) -> Result<Option<Policy>, String> {
-        let mut policy = Policy::for_view_distance(self.view_distance);
+    ///
+    /// `view_distance` is the largest the edges grant, which the two distances follow
+    /// from unless they are told.
+    fn follow(&self, view_distance: u32) -> Result<Option<Policy>, String> {
+        let mut policy = Policy::for_view_distance(view_distance);
         if let Some(distance) = self.merge_distance {
             policy.merge_distance = distance;
         }
@@ -155,11 +151,24 @@ struct Standalone {
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
     checkpoint_interval: u64,
 
-    /// Chunk x coordinates at which to divide the world into regions that are simulated
-    /// separately, in ascending order and separated by commas. Without this the world
-    /// is one region.
+    /// Chunk x coordinates at which regions are pinned side by side, in ascending
+    /// order and separated by commas: each is simulated separately, and players are
+    /// handed from one to the next as they walk. Without this the world is one home
+    /// region, which holds what its players see.
     #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+    pin: Vec<i32>,
+
+    /// Another name for --pin, from when a world was divided into stripes.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        allow_negative_numbers = true,
+        conflicts_with = "pin"
+    )]
     boundaries: Vec<i32>,
+
+    #[command(flatten)]
+    reshaping: Reshaping,
 }
 
 /// One service of a cluster. The services reach each other without authentication, so
@@ -191,6 +200,13 @@ enum Service {
         #[arg(long, default_value_t = format!("127.0.0.1:{WORLDSTORE_PORT}"))]
         store: String,
 
+        /// Largest view distance the edges grant, in chunks: what they are started with
+        /// as --view-distance. Nothing checks that the two agree. A coordinator that
+        /// reshapes by itself takes its two distances from it, so that a boundary
+        /// between regions is in nobody's view as a rule, and uses it for nothing else.
+        #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE as u32, value_parser = clap::value_parser!(u32).range(2..=32))]
+        view_distance: u32,
+
         #[command(flatten)]
         reshaping: Reshaping,
     },
@@ -209,8 +225,21 @@ enum Service {
         /// store keeps which region holds which chunk, and refuses workers that divide
         /// the world otherwise. A world that was divided otherwise before is made over:
         /// its regions start anew, and what was built in it stays.
-        #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+        #[arg(
+            long,
+            value_delimiter = ',',
+            allow_negative_numbers = true,
+            conflicts_with = "pin"
+        )]
         boundaries: Vec<i32>,
+
+        /// Chunk x coordinates at which regions are pinned side by side, in ascending
+        /// order and separated by commas: the regions --boundaries makes, without the
+        /// store holding workers to how they say the world is divided. Without this
+        /// and without --boundaries the world is one home region that is pinned to
+        /// nothing, and every other chunk is whoever's asks for it first.
+        #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+        pin: Vec<i32>,
     },
     /// Simulates the region the coordinator gives it.
     Worker {
@@ -326,17 +355,33 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.service {
-        None => standalone(cli.standalone).await,
+        None => {
+            // Refused as the parser refuses what it finds wrong itself.
+            let refuse =
+                |why: String| -> ! { Cli::command().error(ErrorKind::ValueValidation, why).exit() };
+            let standalone = cli.standalone;
+            let view_distance = standalone.players.view_distance as u32;
+            let follow = match standalone.reshaping.follow(view_distance) {
+                Ok(follow) => follow,
+                Err(why) => refuse(why),
+            };
+            let pins = match pins(&standalone.pin, &standalone.boundaries) {
+                Ok(pins) => pins,
+                Err(why) => refuse(why),
+            };
+            run_standalone(standalone, pins, follow).await
+        }
         Some(Service::Coordinator {
             listen,
             boundaries,
             lease_seconds,
             store,
+            view_distance,
             reshaping,
         }) => {
             // Refused as the parser refuses what it finds wrong itself, with how the
             // coordinator is started below it.
-            let follow = reshaping.follow().unwrap_or_else(|why| {
+            let follow = reshaping.follow(view_distance).unwrap_or_else(|why| {
                 let mut command = Cli::command();
                 command.build();
                 let coordinator = command.find_subcommand_mut("coordinator");
@@ -356,7 +401,17 @@ async fn main() -> Result<()> {
             listen,
             world,
             boundaries,
-        }) => cluster::worldstore(listen, world, boundaries).await,
+            pin,
+        }) => {
+            let pins = pins(&pin, &[]).unwrap_or_else(|why| {
+                let mut command = Cli::command();
+                command.build();
+                let store = command.find_subcommand_mut("worldstore");
+                let store = store.expect("the world store is a subcommand");
+                store.error(ErrorKind::ValueValidation, why).exit()
+            });
+            cluster::worldstore(listen, world, boundaries, pins).await
+        }
         Some(Service::Worker {
             coordinator,
             store,
@@ -444,8 +499,18 @@ fn chunk(written: &str) -> Result<ChunkPos, String> {
         .ok_or_else(|| format!("`{written}` is not a chunk; write its coordinates as x,z"))
 }
 
+/// The chunk x coordinates regions are pinned side by side at: those of --pin, or of
+/// its other name. An error says what --pin takes, if they are not that.
+fn pins(pin: &[i32], boundaries: &[i32]) -> Result<Vec<i32>, String> {
+    let pins = if pin.is_empty() { boundaries } else { pin };
+    if pins.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(format!("--pin takes {}", clustine_worldstore::NotAscending));
+    }
+    Ok(pins.to_vec())
+}
+
 /// Runs every service in this process until it is asked to stop.
-async fn standalone(args: Standalone) -> Result<()> {
+async fn run_standalone(args: Standalone, pins: Vec<i32>, follow: Option<Policy>) -> Result<()> {
     let edge = args.players.edge_config();
     let mut server = Server::start(Config {
         bind: args.bind,
@@ -459,7 +524,8 @@ async fn standalone(args: Standalone) -> Result<()> {
         world: Some(args.world),
         checkpoint_interval: Duration::from_secs(args.checkpoint_interval),
         serialise_link: false,
-        boundaries: args.boundaries,
+        pins,
+        follow,
     })
     .await?;
     info!(address = %server.address(), "listening");
@@ -531,7 +597,11 @@ mod tests {
         let words = words.iter().chain(arguments);
         let cli = Cli::try_parse_from(words).map_err(|error| error.to_string())?;
         match cli.service {
-            Some(Service::Coordinator { reshaping, .. }) => reshaping.follow(),
+            Some(Service::Coordinator {
+                reshaping,
+                view_distance,
+                ..
+            }) => reshaping.follow(view_distance),
             _ => Err("not a coordinator".to_owned()),
         }
     }

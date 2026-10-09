@@ -20,9 +20,9 @@
 use std::time::{Duration, Instant};
 
 mod commands;
-mod coordinator;
-mod edge;
-mod worker;
+pub(crate) mod coordinator;
+pub(crate) mod edge;
+pub(crate) mod worker;
 mod worldstore;
 
 pub use commands::{MergeArgs, MoveArgs, SplitArgs, merge_regions, move_region, split_region};

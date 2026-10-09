@@ -11,11 +11,14 @@ use anyhow::{Context, Result, bail};
 use clustine_coordinator::{ClientError, Reach, RoutingWatch};
 use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{RegionId, RoutingTable};
+use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{EdgeMessage, RegionHello, WorkerToEdge, tcp};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
+use super::worker::Serving;
 use super::{RETRY, sleep_until_some};
 use crate::LINK_CAPACITY;
 
@@ -72,7 +75,7 @@ pub async fn edge(args: EdgeArgs) -> Result<()> {
             ),
             Stopped::Abandoned => bail!("the edge stopped unexpectedly"),
         },
-        () = keep_linked(&coordinator, home, watch, table, relinks) => {
+        () = keep_linked(&coordinator, Linking::Tcp, home, watch, table, relinks) => {
             bail!("the edge is gone")
         }
     }
@@ -85,7 +88,7 @@ pub async fn edge(args: EdgeArgs) -> Result<()> {
 /// A table without a home region is that of a coordinator that has not read the world
 /// store's list yet: it knows no region, or only those its workers report, and nothing
 /// says where players enter.
-async fn whole_world(coordinator: &Reach) -> (RoutingWatch, RoutingTable, RegionId) {
+pub(crate) async fn whole_world(coordinator: &Reach) -> (RoutingWatch, RoutingTable, RegionId) {
     loop {
         let watching = async {
             let mut watch = RoutingWatch::connect(coordinator).await?;
@@ -128,6 +131,59 @@ fn whole(table: &RoutingTable) -> Option<RegionId> {
     (table.route(home).is_some() && table.is_complete()).then_some(home)
 }
 
+/// How an edge links to the regions of its routing table.
+#[derive(Clone)]
+pub(crate) enum Linking {
+    /// Over TCP, to the address the table has for each region.
+    Tcp,
+    /// In this process, to the regions a worker of this process shows that it serves:
+    /// through a pair of queues, or through bytes in memory as a link between two
+    /// processes works, if `serialise`.
+    Local {
+        serving: watch::Receiver<Serving>,
+        serialise: bool,
+    },
+}
+
+impl Linking {
+    /// A link to the region of `hello` at `address`, or why there is none yet.
+    async fn link(&self, address: &str, hello: RegionHello) -> Result<EdgeEnd, String> {
+        match self {
+            Self::Tcp => {
+                let connecting =
+                    tcp::connect::<EdgeMessage, WorkerToEdge>(address, hello, LINK_CAPACITY);
+                match timeout(LINK_TIMEOUT, connecting).await {
+                    Ok(Ok(end)) => Ok(end),
+                    // A worker that restores its region takes no links until it is done.
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(_) => Err("the worker did not answer in time".to_owned()),
+                }
+            }
+            Self::Local { serving, serialise } => {
+                // As a worker greets an edge that connects: by what it serves at this
+                // moment, and only the region as it is asked for.
+                let serving = serving.borrow().clone();
+                let Some((served, links)) = serving.get(&hello.region) else {
+                    return Err("the worker does not run the region at the moment".to_owned());
+                };
+                if *served != hello {
+                    return Err(format!(
+                        "the worker runs the region with epoch {}",
+                        served.epoch
+                    ));
+                }
+                let (end, worker_end): (EdgeEnd, _) = if *serialise {
+                    link::framed(LINK_CAPACITY)
+                } else {
+                    link::in_process(LINK_CAPACITY)
+                };
+                links.attach(worker_end);
+                Ok(end)
+            }
+        }
+    }
+}
+
 /// How often the edge tries to link to a region's owner while that is new: the owner
 /// of a region that was moved takes links a moment after the routing table names it, and
 /// its players stand still until the edge is through.
@@ -156,8 +212,9 @@ struct LinkState {
 /// waiting, and a new route is taken up also while the old one is still being tried. A
 /// worker that cannot be reached is tried again, often at first; a coordinator that
 /// goes away is waited for, with the regions where they were.
-async fn keep_linked(
+pub(crate) async fn keep_linked(
     coordinator: &Reach,
+    linking: Linking,
     home: RegionId,
     watch: RoutingWatch,
     mut table: RoutingTable,
@@ -203,18 +260,12 @@ async fn keep_linked(
                 epoch,
                 layout,
             };
+            let linking = linking.clone();
             attempts.spawn(async move {
-                let connecting =
-                    tcp::connect::<EdgeMessage, WorkerToEdge>(&address, hello, LINK_CAPACITY);
-                let link = match timeout(LINK_TIMEOUT, connecting).await {
-                    Ok(Ok(end)) => Some(end),
-                    // A worker that restores its region takes no links until it is done.
-                    Ok(Err(error)) => {
+                let link = match linking.link(&address, hello).await {
+                    Ok(end) => Some(end),
+                    Err(error) => {
                         debug!(%region, %address, %error, "a region cannot be linked to yet");
-                        None
-                    }
-                    Err(_) => {
-                        debug!(%region, %address, "a worker did not answer in time");
                         None
                     }
                 };
