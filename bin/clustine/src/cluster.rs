@@ -85,6 +85,9 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
         layout,
         spawn: spawn_point(),
         lease: args.lease,
+        // Regions merge and split when somebody asks, until the command line can say
+        // otherwise (`docs/adr/0016-when-to-merge-and-split.md`, section 8).
+        follow: None,
     };
     // Which regions there are, and which of them were absorbed, the world store says
     // (`docs/adr/0014-merging-and-splitting.md`, section 5.2). While it cannot be
@@ -655,13 +658,17 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             }
                         }
                     }
-                    // A merge is coming: what is saved now is not saved while the
-                    // players of the region to absorb stand still. Not answered.
+                    // A merge or a split is coming: what is saved now is not saved
+                    // while players stand still for it. Not answered.
                     WorkerEvent::Prepare { region, epoch } => {
                         if let Some(Phase::Running { held, running, .. }) = regions.get(&region)
                             && held.assignment.epoch == epoch
                         {
-                            debug!(%region, epoch, "asked to checkpoint a region that is to absorb");
+                            debug!(
+                                %region,
+                                epoch,
+                                "asked to checkpoint a region before a merge or a split"
+                            );
                             running.reshape(Reshape::Prepare, Box::new(|_| {}));
                         }
                     }

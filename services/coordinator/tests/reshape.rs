@@ -57,6 +57,7 @@ fn config(boundaries: &[i32], lease: Duration) -> CoordinatorConfig {
         layout: Layout::new(boundaries.to_vec()).expect("the boundaries ascend"),
         spawn: Vec3::new(0.5, 64.0, 0.5),
         lease,
+        follow: None,
     }
 }
 
@@ -6186,6 +6187,7 @@ fn the_coordinator_reads_the_list_again_after_a_split_whose_worker_lost_the_stor
         layout: Layout::new(Vec::new()).expect("a world of one region"),
         spawn: Vec3::new(0.5, 64.0, 0.5),
         lease,
+        follow: None,
     };
     let start = Instant::now();
     let mut coordinator = Coordinator::new(config, start, 1_000);

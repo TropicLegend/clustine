@@ -9,6 +9,7 @@
 //! regions merged or one split with an [`Asker`].
 
 mod client;
+mod policy;
 mod service;
 mod state;
 
@@ -16,6 +17,7 @@ pub use client::{
     Asker, ClientError, HEARTBEAT_INTERVAL, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
     WorkerEvent,
 };
+pub use policy::Policy;
 pub use service::serve;
 pub use state::{
     Asked, Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, MoveRefusal, Order,

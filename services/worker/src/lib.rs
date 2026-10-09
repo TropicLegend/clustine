@@ -210,9 +210,9 @@ pub enum Ended {
 /// `docs/adr/0014-merging-and-splitting.md`, section 3.1.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reshape {
-    /// Checkpoint now and tick on: a merge is coming, and what is saved now is not
-    /// saved while the players of the region to absorb stand still. Changes nothing
-    /// else, and has no outcome.
+    /// Checkpoint now and tick on: a merge or a split is coming, and what is saved
+    /// now is not saved while players stand still for it. Changes nothing else, and
+    /// has no outcome.
     Prepare,
     /// Absorb the region `absorbed`, which this worker has open with `absorbed_epoch`
     /// and whose whole state is `state` ([`absorbable`]). The handle of that region is

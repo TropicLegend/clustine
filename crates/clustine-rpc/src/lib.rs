@@ -12,7 +12,8 @@ pub mod wire;
 
 pub use messages::{
     Assignment, ChunkBox, Crowds, Decline, EdgeMessage, EdgeToWorker, FromCoordinator, Off,
-    Presence, RegionHello, RegionInfo, RegionList, RegionWelcome, Restored, RestoredItem,
-    RestoredPart, RestoredPiece, SplitPart, StoreHello, StoreReply, StoreRequest, StoreWelcome,
-    TickState, ToCoordinator, Vouch, Welcome, WorkerToEdge, held_bytes, held_from_bytes,
+    PlayersOf, Presence, RegionHello, RegionInfo, RegionList, RegionWelcome, Restored,
+    RestoredItem, RestoredPart, RestoredPiece, SplitPart, StoreHello, StoreReply, StoreRequest,
+    StoreWelcome, TickState, ToCoordinator, Vouch, Welcome, WorkerToEdge, held_bytes,
+    held_from_bytes,
 };

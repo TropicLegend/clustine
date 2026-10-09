@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_rpc::link::End;
-use clustine_rpc::{Assignment, FromCoordinator, Off, ToCoordinator, Vouch, tcp};
+use clustine_rpc::{Assignment, FromCoordinator, Off, PlayersOf, ToCoordinator, Vouch, tcp};
 use clustine_world::{ChunkPos, Vec3};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
@@ -64,10 +64,12 @@ pub enum WorkerEvent {
     /// [`WorkerClient::released`]. If it does not hold the region with that epoch, it
     /// says so at once all the same. See `docs/adr/0009-moving-a-region.md`.
     Release { region: RegionId, epoch: u64 },
-    /// `region`, which the worker holds with `epoch`, is about to absorb a region that
-    /// is being released for it: the worker is to checkpoint it now, so that the merge
-    /// finds less to wait for. Not answered. This and the two below are of
-    /// `docs/adr/0014-merging-and-splitting.md`, section 4.
+    /// A merge or a split of `region`, which the worker holds with `epoch`, is coming:
+    /// it is about to absorb a region that is being released for it, or to be split.
+    /// The worker is to checkpoint it now, so that the merge or the split finds less
+    /// to wait for. Not answered. This and the two below are of
+    /// `docs/adr/0014-merging-and-splitting.md`, section 4; when it comes before a
+    /// split is in `docs/adr/0016-when-to-merge-and-split.md`, section 5.6.
     Prepare { region: RegionId, epoch: u64 },
     /// The worker is to have `region`, which it holds with `epoch`, absorb the region
     /// `absorbed`, which nobody runs and which it opens with `as_epoch` for that, and
@@ -280,6 +282,21 @@ impl WorkerClient {
             as_epoch,
             outcome,
         });
+    }
+
+    /// Tells the coordinator where the players of the worker's regions are: of every
+    /// region it runs, also of those without players, each time the whole of what it
+    /// knows. See `docs/adr/0016-when-to-merge-and-split.md`, section 2.
+    ///
+    /// Sent at once, ahead of the next heartbeat, and behind whatever was said before
+    /// it with [`WorkerClient::absorb_ended`], [`WorkerClient::split_ended`] or any
+    /// other of these calls. The coordinator goes by that order: what it is told here
+    /// behind the word of a merge or a split, it takes to be of the regions as they
+    /// are after it. If the connection is lost, nothing is sent, and
+    /// [`WorkerClient::event`] says that the connection is lost. Nothing has to be
+    /// remembered for that case: the next call says it all again.
+    pub fn players(&self, regions: Vec<PlayersOf>) {
+        let _ = self.reports.send(ToCoordinator::Players { regions });
     }
 
     /// Waits for the next thing the coordinator says: new orders, that a region is to
@@ -1117,6 +1134,81 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A report that is said behind the word of a split was made after the split:
+    /// the coordinator goes by that order, so the client must keep it.
+    #[tokio::test]
+    async fn where_the_players_are_is_said_in_order_with_what_came_of_merges_and_splits() {
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let mut link = accept(&listener).await;
+            assert!(within(link.recv()).await.is_some());
+            link.send(assigned(&[assignment(0, 5)])).await.unwrap();
+            link
+        });
+        let (mut client, _) = register(&address).await.unwrap();
+        let mut link = coordinator.await.unwrap();
+
+        let region = RegionId(0);
+        let players_of = |region: u32, epoch: u64, tick: u64, crowds: &[(ChunkPos, u32)]| {
+            let crowds = crowds.to_vec();
+            PlayersOf {
+                region: RegionId(region),
+                epoch,
+                tick,
+                crowds,
+            }
+        };
+        let (near, far) = (ChunkPos::new(3, -2), ChunkPos::new(40, -2));
+        let before = vec![players_of(0, 5, 40, &[(near, 2), (far, 1)])];
+        let after = vec![
+            players_of(0, 5, 40, &[(near, 2)]),
+            players_of(2, 10, 0, &[(far, 1)]),
+        ];
+        client.players(before.clone());
+        client.split_ended(region, 10, Ok(RegionId(2)));
+        client.players(after.clone());
+        client.absorb_ended(region, RegionId(1), Err(Off::Busy));
+        // A worker that runs nothing says so as well.
+        client.players(Vec::new());
+        let said = [
+            ToCoordinator::Players { regions: before },
+            ToCoordinator::SplitEnded {
+                region,
+                as_epoch: 10,
+                outcome: Ok(RegionId(2)),
+            },
+            ToCoordinator::Players { regions: after },
+            ToCoordinator::AbsorbEnded {
+                region,
+                absorbed: RegionId(1),
+                outcome: Err(Off::Busy),
+            },
+            ToCoordinator::Players {
+                regions: Vec::new(),
+            },
+        ];
+        for expected in said {
+            loop {
+                match within(link.recv()).await {
+                    Some(ToCoordinator::Heartbeat { .. }) => {}
+                    other => {
+                        assert_eq!(other, Some(expected));
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Once the connection is lost, what the worker says of its players goes
+        // nowhere, like everything else it says.
+        drop(link);
+        for _ in 0..2 {
+            let lost = within(client.event()).await;
+            assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
+            client.players(Vec::new());
         }
     }
 

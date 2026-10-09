@@ -617,6 +617,21 @@ pub struct ChunkBox {
 /// section 7.
 pub type Crowds = Vec<(ChunkPos, u32)>;
 
+/// Where the players of one region are, as the worker that runs it says. See
+/// `docs/adr/0016-when-to-merge-and-split.md`, section 2.1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayersOf {
+    pub region: RegionId,
+    /// The epoch the worker runs the region with.
+    pub epoch: u64,
+    /// A tick of the region: `crowds` is of this tick, of the one before it, or of a
+    /// later one.
+    pub tick: u64,
+    /// The chunks with players in them, each with how many, ascending; empty if the
+    /// region has no player.
+    pub crowds: Crowds,
+}
+
 /// What a service says first on a connection to a worker, and, in a
 /// [`StoreHello::Region`], on one to the world store: which region the connection is
 /// about and who the service takes its owner to be.
@@ -692,11 +707,14 @@ pub enum ToCoordinator {
         region: RegionId,
         to: Option<String>,
     },
-    /// A worker says where the players of its regions are. Sent with heartbeats. See
-    /// ADR-0010, section 7. No worker says this yet: regions are merged and split when
-    /// somebody asks, and until the coordinator decides that by itself it closes the
-    /// connection of whoever says this.
-    Players { regions: Vec<(RegionId, Crowds)> },
+    /// A worker says where the players of its regions are: of every region it runs,
+    /// also of those without players, and the whole of what it knows each time, never
+    /// a difference. It is a message of its own and not part of the heartbeat, so
+    /// that it travels behind [`ToCoordinator::AbsorbEnded`] and
+    /// [`ToCoordinator::SplitEnded`] in the order the worker made them. To say it is
+    /// to be heard from; it vouches for nothing. See
+    /// `docs/adr/0016-when-to-merge-and-split.md`, section 2.
+    Players { regions: Vec<PlayersOf> },
     /// Whoever operates the cluster wants `absorbed` merged into `survivor`. Answered
     /// with [`FromCoordinator::Asked`].
     Merge {
@@ -814,11 +832,14 @@ pub enum FromCoordinator {
         as_epoch: u64,
         part: RegionId,
     },
-    /// To a worker: `region`, which you hold with `epoch`, is about to absorb a region
-    /// that is being released for it. Checkpoint it now, so that the merge finds less
-    /// to wait for. Not answered. The coordinator says it once, when it asks the other
-    /// region's owner to release. See `docs/adr/0014-merging-and-splitting.md`,
-    /// sections 3.1 and 5.3.
+    /// To a worker: a merge or a split of `region`, which you hold with `epoch`, is
+    /// coming: it is about to absorb a region that is being released for it, or to be
+    /// split. Checkpoint it now, so that the merge or the split finds less to wait
+    /// for. Not answered, and nothing is owed if neither comes after all. Before a
+    /// merge the coordinator says it once, when it asks the other region's owner to
+    /// release (`docs/adr/0014-merging-and-splitting.md`, sections 3.1 and 5.3);
+    /// when it says it before a split is in
+    /// `docs/adr/0016-when-to-merge-and-split.md`, section 5.6.
     Prepare { region: RegionId, epoch: u64 },
     /// To whoever asked for a merge or a split: what came of it. `region` is the
     /// region that absorbed the other or the one that was split off.

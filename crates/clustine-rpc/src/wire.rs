@@ -121,6 +121,13 @@ mod tests {
         }
     }
 
+    /// `message` comes out as it went in.
+    fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(message: T) {
+        // Without the length that goes before a message on a stream.
+        let decoded: T = decode(&encode(&message)[4..]).unwrap();
+        assert_eq!(decoded, message);
+    }
+
     /// What one side writes, the other reads, whichever of the two kinds each side is.
     #[tokio::test]
     async fn both_kinds_of_stream_share_one_format() {
@@ -156,15 +163,10 @@ mod tests {
         use clustine_world::{ChunkArea, ChunkPos, EntityId, PlayerId};
 
         use crate::{
-            ChunkBox, Decline, EdgeMessage, EdgeToWorker, FromCoordinator, Off, RegionInfo,
-            RegionList, SplitPart, StoreReply, StoreRequest, ToCoordinator, Welcome, WorkerToEdge,
+            ChunkBox, Decline, EdgeMessage, EdgeToWorker, FromCoordinator, Off, PlayersOf,
+            RegionInfo, RegionList, SplitPart, StoreReply, StoreRequest, ToCoordinator, Welcome,
+            WorkerToEdge,
         };
-
-        fn round_trip<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(message: T) {
-            // Without the length that goes before a message on a stream.
-            let decoded: T = decode(&encode(&message)[4..]).unwrap();
-            assert_eq!(decoded, message);
-        }
 
         let chunks = vec![ChunkPos::new(-3, 7), ChunkPos::new(4, -1)];
         let region = RegionId(9);
@@ -348,7 +350,12 @@ mod tests {
         });
         for said in [
             ToCoordinator::Players {
-                regions: vec![(region, vec![(chunks[0], 3)])],
+                regions: vec![PlayersOf {
+                    region,
+                    epoch: 5,
+                    tick: 1_200,
+                    crowds: vec![(chunks[0], 3)],
+                }],
             },
             ToCoordinator::Merge {
                 survivor: RegionId(0),
@@ -419,6 +426,41 @@ mod tests {
         ] {
             round_trip(said);
         }
+    }
+
+    /// Where a worker says its players are comes out as it went in: of no region, of
+    /// a region without players, and of regions with them, in the order they were
+    /// named and with numbers at the ends of what they can be.
+    #[test]
+    fn where_a_worker_says_its_players_are_round_trips() {
+        use clustine_world::ChunkPos;
+
+        use crate::{PlayersOf, ToCoordinator};
+
+        round_trip(ToCoordinator::Players {
+            regions: Vec::new(),
+        });
+        let empty = PlayersOf {
+            region: RegionId(0),
+            epoch: 0,
+            tick: 0,
+            crowds: Vec::new(),
+        };
+        let crowded = PlayersOf {
+            region: RegionId(u32::MAX),
+            epoch: u64::MAX,
+            tick: u64::MAX,
+            crowds: vec![
+                (ChunkPos::new(i32::MIN, i32::MAX), 1),
+                (ChunkPos::new(-1, 0), u32::MAX),
+                (ChunkPos::new(i32::MAX, i32::MIN), 0),
+            ],
+        };
+        round_trip(empty.clone());
+        round_trip(crowded.clone());
+        round_trip(ToCoordinator::Players {
+            regions: vec![crowded.clone(), empty, crowded],
+        });
     }
 
     /// What the world store answers a hello and a commit with comes out as it went in.

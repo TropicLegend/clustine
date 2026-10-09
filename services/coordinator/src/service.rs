@@ -476,6 +476,18 @@ impl Service {
                     self.close(id);
                 }
             }
+            (Role::Worker(name), ToCoordinator::Players { regions }) => {
+                if !self.coordinator.players(now, name, &regions) {
+                    // As for a heartbeat: the worker has to register again, and only
+                    // the end of its connection tells it so.
+                    info!(
+                        worker = %name,
+                        connection = id,
+                        "heard where the players of a worker are that is not registered"
+                    );
+                    self.close(id);
+                }
+            }
             (Role::Worker(name), ToCoordinator::EpochRefused { region, seen }) => {
                 info!(worker = %name, %region, seen, "the world store refused an epoch");
                 let name = name.clone();
@@ -551,8 +563,6 @@ impl Service {
                     ToCoordinator::Released { .. } => "that it released a region",
                     ToCoordinator::Leaving => "that it is leaving",
                     ToCoordinator::Move { .. } => "a request to move a region",
-                    // Of regions that merge and split by themselves (ADR-0010), which
-                    // the coordinator does not have them do yet.
                     ToCoordinator::Players { .. } => "where its players are",
                     ToCoordinator::Merge { .. } => "a request to merge regions",
                     ToCoordinator::Split { .. } => "a request to split a region",
@@ -968,7 +978,7 @@ mod tests {
     use std::sync::Mutex;
 
     use clustine_region::{Layout, RegionId, RegionRoute};
-    use clustine_rpc::{RegionInfo, Vouch, link};
+    use clustine_rpc::{PlayersOf, RegionInfo, Vouch, link};
     use clustine_world::{EntityId, EntityIds, Vec3};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -1100,6 +1110,7 @@ mod tests {
             layout: Layout::new(boundaries.to_vec()).unwrap(),
             spawn: SPAWN,
             lease: LEASE,
+            follow: None,
         }
     }
 
@@ -1811,6 +1822,159 @@ mod tests {
         // Nobody was cut off: `a` is still there, and waits.
         assert_eq!(service.connections.len(), 3);
         assert_eq!(service.workers.len(), 2);
+    }
+
+    /// What a worker says of the players of the region it runs as `held`.
+    fn players(held: Assignment) -> ToCoordinator {
+        ToCoordinator::Players {
+            regions: vec![PlayersOf {
+                region: held.region,
+                epoch: held.epoch,
+                tick: 7,
+                crowds: vec![(ChunkPos::new(2, -1), 3)],
+            }],
+        }
+    }
+
+    /// To say where its players are is to be heard from, and not to vouch for
+    /// anything. The times are made up, as in the coordinator's own tests.
+    #[tokio::test]
+    async fn a_worker_that_only_says_where_its_players_are_is_not_cut_off_and_vouches_for_nothing()
+    {
+        const FIRST: u64 = 1000;
+        let start = Instant::now();
+        let held = assignment(0, 5, 0);
+        let (mut service, mut edge, mut a, mut b) = two_workers(start, FIRST, held).await;
+
+        // `a` says every quarter of a lease where its players are, and sends no
+        // heartbeat; `b` sends heartbeats.
+        let mut now = start;
+        for step in 1..=4 {
+            now = start + LEASE / 4 * step;
+            a.send(players(held)).await.unwrap();
+            hear_next(&mut service, now).await;
+            b.send(heartbeat(&[])).await.unwrap();
+            hear_next(&mut service, now).await;
+            service.tick(now);
+        }
+        // A lease after `a` registered with the region, which is the last that
+        // vouched for it, it is still `a`'s; a moment later it is not.
+        assert_eq!(service.coordinator.assignments("a"), [held]);
+        let later = now + Duration::from_millis(1);
+        a.send(players(held)).await.unwrap();
+        hear_next(&mut service, later).await;
+        b.send(heartbeat(&[])).await.unwrap();
+        hear_next(&mut service, later).await;
+        service.tick(later);
+
+        let layout = Layout::single();
+        assert_eq!(within(a.recv()).await, Some(assigned(&layout, &[])));
+        let taken = assignment(0, FIRST + 1, 1);
+        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[taken])));
+        let table = next_table(&mut edge).await.unwrap();
+        assert_eq!(table.version, FIRST + 2);
+        assert_eq!(table.routes, [route(taken, "b")]);
+
+        // `a` goes on like that for two leases more. It is neither cut off for being
+        // silent nor forgotten: a heartbeat from a worker that is not registered
+        // would end its connection.
+        for step in 1..=8 {
+            now = later + LEASE / 4 * step;
+            a.send(players(held)).await.unwrap();
+            hear_next(&mut service, now).await;
+            b.send(heartbeat(&[(taken.region, Vouch::Committed)]))
+                .await
+                .unwrap();
+            hear_next(&mut service, now).await;
+            service.tick(now);
+        }
+        a.send(heartbeat(&[])).await.unwrap();
+        hear_next(&mut service, now).await;
+        assert_eq!(service.connections.len(), 3);
+        assert_eq!(service.workers.len(), 2);
+        assert_eq!(service.coordinator.assignments("b"), [taken]);
+        // And it was told nothing but that the region is no longer its.
+        drop(service);
+        assert_eq!(within(a.recv()).await, None);
+    }
+
+    /// A coordinator forgets a silent worker at the tick at which the service closes
+    /// its connection, so a worker that is forgotten and still connected takes a
+    /// coordinator that was ticked without the service. Here it is.
+    #[tokio::test]
+    async fn whoever_says_where_its_players_are_and_is_no_registered_worker_is_cut_off() {
+        const FIRST: u64 = 1000;
+        let start = Instant::now();
+        let held = assignment(0, 5, 0);
+        let (mut service, mut edge, a, mut b) = two_workers(start, FIRST, held).await;
+
+        let later = start + LEASE + Duration::from_millis(1);
+        a.send(heartbeat(&[(held.region, Vouch::Committed)]))
+            .await
+            .unwrap();
+        hear_next(&mut service, later).await;
+        assert_eq!(service.coordinator.tick(later), Changes::default());
+        // `b` was silent for more than a lease and has to register again, which
+        // nothing but the end of its connection can tell it.
+        b.send(players(held)).await.unwrap();
+        hear_next(&mut service, later).await;
+        assert_eq!(within(b.recv()).await, None);
+        assert_eq!(service.connections.len(), 2);
+        assert_eq!(service.workers.len(), 1);
+
+        // A worker that is registered says the same and is served on.
+        a.send(players(held)).await.unwrap();
+        hear_next(&mut service, later).await;
+        assert_eq!(service.connections.len(), 2);
+        assert_eq!(service.coordinator.assignments("a"), [held]);
+
+        // An edge may not say it, nor somebody who has not said what it is.
+        edge.send(players(held)).await.unwrap();
+        hear_next(&mut service, later).await;
+        assert_eq!(within(edge.recv()).await, None);
+        let (mut hasty, end) = link::in_process(8);
+        service.attach(end, later);
+        hasty.send(players(held)).await.unwrap();
+        hear_next(&mut service, later).await;
+        assert_eq!(within(hasty.recv()).await, None);
+        assert_eq!(service.connections.len(), 1);
+        assert_eq!(service.workers.len(), 1);
+    }
+
+    /// Over the worker's client, and in order with what else it says: were the worker
+    /// cut off for saying where its players are, the coordinator would not hear that
+    /// it let go of its region.
+    #[tokio::test]
+    async fn a_worker_says_where_its_players_are_over_its_client_and_is_served_on() {
+        let Cluster {
+            served,
+            mut a,
+            mut b,
+            held_a,
+            held_b,
+            ..
+        } = Cluster::start(&[0]).await;
+        a.players(vec![
+            PlayersOf {
+                region: held_a.region,
+                epoch: held_a.epoch,
+                tick: 12,
+                crowds: vec![(ChunkPos::new(-3, 0), 2), (ChunkPos::new(-2, 5), 1)],
+            },
+            // What is not its own does no harm either.
+            PlayersOf {
+                region: held_b.region,
+                epoch: held_b.epoch,
+                tick: 0,
+                crowds: Vec::new(),
+            },
+        ]);
+        a.players(Vec::new());
+        a.released(held_a.region, held_a.epoch);
+        assert_eq!(within(a.next()).await.unwrap(), served.orders(&[]));
+        let orders = within(b.next()).await.unwrap();
+        let regions: Vec<RegionId> = orders.assignments.iter().map(|held| held.region).collect();
+        assert_eq!(regions, [held_a.region, held_b.region]);
     }
 
     #[tokio::test]

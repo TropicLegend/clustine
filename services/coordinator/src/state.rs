@@ -9,9 +9,11 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use clustine_region::{Layout, RegionId, RegionRoute, RoutingTable};
-use clustine_rpc::{Assignment, Decline, Off, RegionList, Vouch};
+use clustine_rpc::{Assignment, Decline, Off, PlayersOf, RegionList, Vouch};
 use clustine_world::{ChunkPos, EntityId, EntityIds, Vec3};
 use tracing::{info, warn};
+
+use crate::policy::Policy;
 
 /// What a coordinator is created with.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +27,11 @@ pub struct CoordinatorConfig {
     /// coordinator also waits this long before it gives any region away; see
     /// [`Coordinator::new`].
     pub lease: Duration,
+    /// What the coordinator goes by when it merges and splits regions by itself, or
+    /// `None` for one that does so only when somebody asks. See
+    /// `docs/adr/0016-when-to-merge-and-split.md`, section 8. Nothing reads it yet:
+    /// with either, regions are merged and split by hand.
+    pub follow: Option<Policy>,
 }
 
 /// Why a worker's registration is refused.
@@ -99,8 +106,10 @@ pub enum ReshapeRefusal {
 /// `docs/adr/0014-merging-and-splitting.md`, sections 4 and 5.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Order {
-    /// `region`, which the worker owns with `epoch`, is about to absorb a region:
-    /// checkpoint it now. Not answered.
+    /// A merge or a split of `region`, which the worker owns with `epoch`, is coming:
+    /// it is about to absorb a region, or to be split. Checkpoint it now. Not
+    /// answered. See `docs/adr/0016-when-to-merge-and-split.md`, section 5.6, for
+    /// when it is said before a split.
     Prepare { region: RegionId, epoch: u64 },
     /// Have `region`, which the worker owns with `epoch`, absorb `absorbed`, which
     /// nobody runs; open that one with `as_epoch`.
@@ -795,6 +804,11 @@ impl Coordinator {
     /// that had a bad moment to be of use again soon.
     pub const FAULT_MEMORY: u32 = 6;
 
+    /// How often [`Coordinator::tick`] is to be called when the coordinator decides by
+    /// itself, which is as often as a worker says where its players are. See
+    /// `docs/adr/0016-when-to-merge-and-split.md`, section 3.
+    pub const LOOK: Duration = Duration::from_millis(250);
+
     /// A coordinator that knows of no worker yet.
     ///
     /// Every epoch it issues is above `first_epoch`, and the version of its routing
@@ -1032,6 +1046,28 @@ impl Coordinator {
                 owner.vouch(now, *vouch);
             }
         }
+        true
+    }
+
+    /// A worker says where the players of the regions it runs are; see
+    /// `docs/adr/0016-when-to-merge-and-split.md`, section 2.3. Returns whether the
+    /// coordinator knows the worker, as [`Coordinator::heartbeat`] does: one it does
+    /// not know has to register again.
+    ///
+    /// To say it is to be heard from, so a worker that says nothing else is not
+    /// forgotten for being silent. It vouches for nothing: a region whose owner says
+    /// only this loses that owner a lease after it was last vouched for. Like a
+    /// heartbeat it changes no owner here; that is left to the next tick.
+    ///
+    /// A coordinator that decides nothing by itself keeps nothing of it, and none
+    /// decides by itself yet.
+    pub fn players(&mut self, now: Instant, name: &str, regions: &[PlayersOf]) -> bool {
+        let Some(worker) = self.workers.get_mut(name) else {
+            return false;
+        };
+        worker.heard = worker.heard.max(now);
+        // Nothing is kept of where the players are.
+        let _ = regions;
         true
     }
 
@@ -2848,6 +2884,14 @@ mod tests {
             known
         }
 
+        /// The worker says where the players of `regions` are.
+        fn players(&mut self, at: u64, name: &str, regions: &[PlayersOf]) -> bool {
+            let before = self.view();
+            let known = self.coordinator.players(self.at(at), name, regions);
+            assert_eq!(self.view(), before, "word of players changed something");
+            known
+        }
+
         fn epoch_refused(&mut self, at: u64, name: &str, region: u32, seen: u64) -> Changes {
             let before = self.view();
             let now = self.at(at);
@@ -3259,6 +3303,7 @@ mod tests {
             layout: layout.clone(),
             spawn: SPAWN,
             lease: Duration::from_millis(LEASE),
+            follow: None,
         };
         Coordinator::new(config, now, first_epoch)
     }
@@ -4407,6 +4452,99 @@ mod tests {
         cluster.register(LEASE, "a", "a:25601", &[]);
         assert_eq!(cluster.tick(3 * LEASE), Changes::default());
         assert_eq!(cluster.tick(0), Changes::default());
+    }
+
+    /// What a worker says of the players of a region it runs as `held`: a tick of the
+    /// region, and the chunks with players in them, each with how many.
+    fn players_of(held: Assignment, tick: u64, crowds: &[((i32, i32), u32)]) -> PlayersOf {
+        let crowd = |((x, z), count): &((i32, i32), u32)| (ChunkPos::new(*x, *z), *count);
+        PlayersOf {
+            region: held.region,
+            epoch: held.epoch,
+            tick,
+            crowds: crowds.iter().map(crowd).collect(),
+        }
+    }
+
+    #[test]
+    fn a_worker_that_says_where_its_players_are_is_known_and_one_that_never_registered_is_not() {
+        let mut cluster = a_runs_and_b_waits();
+        let held = cluster.assignments("a")[0];
+        let report = [players_of(held, 40, &[((3, -2), 2), ((4, -2), 1)])];
+        // Whether it names what it runs, nothing at all, or a region that is not its
+        // own.
+        assert!(cluster.players(LEASE + 250, "a", &report));
+        assert!(cluster.players(LEASE + 250, "a", &[]));
+        assert!(cluster.players(LEASE + 250, "b", &report));
+        assert!(cluster.players(LEASE + 250, "b", &[]));
+        // A worker the coordinator does not know has to register again, as after a
+        // heartbeat.
+        assert!(!cluster.players(LEASE + 250, "c", &report));
+        assert!(!cluster.players(LEASE + 250, "c", &[]));
+        // Nothing comes of any of it.
+        assert_eq!(cluster.tick(LEASE + 250), Changes::default());
+        assert_eq!(cluster.assignments("a"), [held]);
+    }
+
+    #[test]
+    fn a_worker_that_only_says_where_its_players_are_stays_registered_and_vouches_for_nothing() {
+        let mut cluster = a_runs_and_b_waits();
+        let held = cluster.assignments("a")[0];
+        // `a` says four times a second where the players of its region are, and sends
+        // no heartbeat. `b` sends heartbeats.
+        let mut now = LEASE;
+        while now < 2 * LEASE {
+            now += 250;
+            let report = [players_of(held, now / 50, &[((0, 0), 1)])];
+            assert!(cluster.players(now, "a", &report));
+            assert!(cluster.heartbeat(now, "b"));
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+        }
+        // The region was vouched for when it was assigned, at `LEASE`, and not since:
+        // to say where its players are is not to vouch for it. A lease after that was
+        // not too long; a moment more is.
+        let report = [players_of(held, now / 50 + 1, &[((0, 0), 1)])];
+        assert!(cluster.players(2 * LEASE + 1, "a", &report));
+        assert!(cluster.heartbeat(2 * LEASE + 1, "b"));
+        assert_eq!(cluster.tick(2 * LEASE + 1), changes(&["a", "b"], true));
+        assert!(cluster.assignments("a").is_empty());
+        assert_eq!(
+            cluster.assignments("b"),
+            [assignment(0, FIRST_EPOCH + 2, 1)]
+        );
+
+        // The worker is heard from all the same, and stays registered for as long as
+        // it says so once per lease, which a worker that says nothing does not.
+        let mut now = 2 * LEASE + 1;
+        for _ in 0..3 {
+            now += LEASE;
+            assert!(cluster.players(now, "a", &[]));
+            assert!(cluster.heartbeat(now, "b"));
+            assert_eq!(cluster.tick(now), Changes::default(), "at {now}");
+        }
+        // Then it says nothing more. A lease of that is not too long; a moment more
+        // is, and it has to register again.
+        assert!(cluster.heartbeat(now + LEASE, "b"));
+        assert_eq!(cluster.tick(now + LEASE), Changes::default());
+        assert!(cluster.coordinator.workers.contains_key("a"));
+        assert!(cluster.heartbeat(now + LEASE + 1, "b"));
+        assert_eq!(cluster.tick(now + LEASE + 1), Changes::default());
+        assert!(!cluster.players(now + LEASE + 1, "a", &[]));
+        assert!(!cluster.heartbeat(now + LEASE + 1, "a"));
+    }
+
+    #[test]
+    fn word_of_players_with_an_earlier_time_does_not_shorten_a_lease() {
+        let mut cluster = a_runs_and_b_waits();
+        // `b` was silent for two leases, but nobody looked. And the service may well
+        // make its calls a little out of order.
+        assert!(cluster.players(3 * LEASE, "b", &[]));
+        assert!(cluster.players(LEASE, "b", &[]));
+        for at in [3 * LEASE, 4 * LEASE] {
+            assert!(cluster.heartbeat(at, "a"));
+            assert_eq!(cluster.tick(at), Changes::default(), "at {at}");
+        }
+        assert!(cluster.players(4 * LEASE, "b", &[]));
     }
 
     #[test]
