@@ -75,11 +75,11 @@ const ROVER_CHUNK: ChunkPos = ChunkPos::new(6, 0);
 const TOWARDS_ROVER: (f64, f64) = (56.5, 0.5);
 
 /// Whether this run of the tests is the one that repeats the end-to-end tests on a
-/// world divided into regions, which `CLUSTINE_TEST_BOUNDARIES` asks for. These tests
+/// world divided into regions, which `CLUSTINE_TEST_PINS` asks for. These tests
 /// say themselves how their worlds are divided, so they run once, in the run without
 /// it.
 fn a_repetition() -> bool {
-    std::env::var_os("CLUSTINE_TEST_BOUNDARIES").is_some()
+    std::env::var_os("CLUSTINE_TEST_PINS").is_some()
 }
 
 /// A server whose world is one home region, kept in `world` if there is one.
