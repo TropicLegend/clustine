@@ -1,8 +1,9 @@
 //! The model alone, with the test in the coordinator's place: a script says what "the
 //! coordinator" begins at which look, and the model's one worker does it. So a property
-//! can be shown to fail, by a run in which it is broken on purpose, before there is a
-//! coordinator that could break it; and a run played as the record asks shows that a
-//! property does not fail what is right.
+//! can be shown to fail, by a run in which it is broken on purpose, whatever the
+//! coordinator there is does; and a run played as the record asks shows that a property
+//! does not fail what is right. Each of the six faults that step C4.6 is to catch has
+//! its run here, named in the comment of its test.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -819,7 +820,8 @@ fn an_absorption_into_the_higher_region_or_of_a_region_that_had_a_player_is_caug
     assert_eq!(left_before(EMPTY_FOR - 1), BTreeSet::from([Property::R4b]));
     assert_eq!(left_before(EMPTY_FOR), BTreeSet::new());
 
-    // The survivor had a player in a report a second ago or less.
+    // The survivor has not been without players for more than a second: its first
+    // report without the player is of the step at which they left.
     let left_before = |steps: u64| {
         let mut stage = Stage::new(2, false, &[(0, 0, 0)]);
         stage.turns(EMPTY_FOR + 2);
@@ -828,8 +830,8 @@ fn an_absorption_into_the_higher_region_or_of_a_region_that_had_a_player_is_caug
         assert_eq!(stage.begin(merge(0, 1), 2, true), Kind::Absorption);
         stage.broken()
     };
-    assert_eq!(left_before(FRESH - 1), BTreeSet::from([Property::R4b]));
-    assert_eq!(left_before(FRESH), BTreeSet::new());
+    assert_eq!(left_before(FRESH), BTreeSet::from([Property::R4b]));
+    assert_eq!(left_before(FRESH + 1), BTreeSet::new());
 }
 
 /// Section 4.4: a region that a merge is wanted of is no survivor. Somebody of another

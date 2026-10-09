@@ -18,6 +18,14 @@
 //!   fail, a coordinator made anew). And a script plays the same cluster through what
 //!   players who walk at random seldom bring up: K2 (b), K4, K10, K12 and K22.
 //!
+//! Whoever writes these runs cannot put a fault into a state machine they do not read.
+//! That the runs catch the faults step C4.6 names is shown three ways: by the scripted
+//! runs of `follows/stage.rs`; by a decider in the test that asks by hand in the place
+//! of a coordinator which decides nothing, carefully or with a fault
+//! (`Cluster::decide_in_its_place`); and by misleading the coordinator itself, with
+//! other numbers than the judge goes by or a list that is not the model's, so that
+//! what it rightly does by what it was told is a fault to the judge.
+//!
 //! In every step the model first says what came of what and hands in a reading of the
 //! list if one is due, then gives its reports, and then calls `tick` once, all at one
 //! time of the test's clock. That call is the look of the step.
@@ -46,7 +54,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
 
-use clustine_coordinator::{Asked, Changes, Coordinator, CoordinatorConfig, Order, Wanted, named};
+use clustine_coordinator::{
+    Asked, Changes, Coordinator, CoordinatorConfig, Order, Policy, Wanted, named,
+};
 use clustine_region::{Layout, RegionId};
 use clustine_rpc::{Assignment, Off, PlayersOf, Vouch};
 use clustine_world::{ChunkPos, Vec3};
@@ -62,49 +72,6 @@ use judge::{Begun, Breach, Judge, Property};
 use model::{
     DELAY, Dice, HOME, Known, LEASE, LOOK, ORIGIN, Player, Stale, World, crowds, policy, steps,
 };
-
-// =================================================================================
-// TEMPORARY, until the state machine of step C4.3 is on `main`. This module is the one
-// place that stands in for what does not exist yet; phase 2 of step C4.6 takes it out:
-// `under_way` and `alone_until` become the coordinator's own, `BUILT` and every `if`
-// that asks it go, and with them the word "TEMPORARY" wherever else it stands in this
-// file (the decider that asks by hand in the coordinator's place, and its two tests).
-// =================================================================================
-mod not_yet {
-    use std::time::Instant;
-
-    use clustine_coordinator::{Asked, Coordinator};
-    use clustine_region::RegionId;
-
-    /// Whether the coordinator decides by itself yet. While it does not, it begins
-    /// nothing with `follow: Some(..)` and evens out without a rest, so the runs are
-    /// played and counted, and what the properties make of them is said and not
-    /// asserted. Everything else in this file is asserted now.
-    pub const BUILT: bool = false;
-
-    /// The merges and splits that the test has asked for by hand, with nobody as asker,
-    /// and that have not ended: see `Cluster::decide_in_its_place`. A stand-in for a
-    /// coordinator that decides by itself, so that the cluster and the properties can
-    /// be tried on merges and splits that really happen before there is one.
-    #[derive(Debug, Default)]
-    pub struct StandIn {
-        pub under_way: Vec<Asked>,
-    }
-
-    /// `Coordinator::under_way` (section 10): the merges and splits under way, whoever
-    /// asked for them. Until there is such a call, those are the stand-in's, which is
-    /// true where nobody else asks by hand.
-    pub fn under_way(_coordinator: &Coordinator, stand_in: &StandIn) -> Vec<Asked> {
-        stand_in.under_way.clone()
-    }
-
-    /// `Coordinator::alone_until` (section 10): before when the coordinator begins
-    /// nothing with the region by itself, if it has noted such a time.
-    pub fn alone_until(_coordinator: &Coordinator, _region: RegionId) -> Option<Instant> {
-        None
-    }
-}
-// =================================================================================
 
 /// Every epoch a coordinator of these runs issues is above this.
 const FIRST_EPOCH: u64 = 1_000;
@@ -147,11 +114,29 @@ struct Variant {
     anew: bool,
     /// Whether the coordinator decides by itself.
     follow: bool,
+    /// What the coordinator is told to go by, if not by the distances and the rest
+    /// that the judge holds it to: to show that a coordinator which goes by others is
+    /// caught.
+    told: Option<Policy>,
+    /// How the store's list misleads the coordinator, if it does, for the same.
+    list: Option<Misleads>,
     /// Whether the crowds of every report are given in descending order (R6).
     reversed: bool,
     /// Whether the test asks by hand for what a coordinator that decides by itself
-    /// would begin, in the place of one (`not_yet::StandIn`), and how well it does that.
-    stand_in: Option<Decider>,
+    /// would begin, in the place of one that decides nothing, and how well it does
+    /// that (`Cluster::decide_in_its_place`).
+    decider: Option<Decider>,
+}
+
+/// How the list of a run misleads the coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Misleads {
+    /// It has no region pinned, where the model has: to the judge, a coordinator that
+    /// goes by it absorbs pinned regions for being empty.
+    Unpinned,
+    /// No reading succeeds once the players stand: to the judge, a coordinator that
+    /// does not get the list read and begins nothing, as it then must.
+    Lost,
 }
 
 /// How the test decides in the coordinator's place: as the record asks, or with one of
@@ -167,6 +152,9 @@ enum Decider {
     /// The fault "a group that goes on its first look": a split that has stood names
     /// every group there is at its look.
     Greedy,
+    /// The fault "the list never read on the timer", where what holds back for the age
+    /// of the last reading went with the timer: how old the list is is not looked at.
+    Unread,
 }
 
 impl Variant {
@@ -181,8 +169,10 @@ impl Variant {
         failing: false,
         anew: false,
         follow: true,
+        told: None,
+        list: None,
         reversed: false,
-        stand_in: None,
+        decider: None,
     };
     const ONE_HOME: Self = Self {
         name: "one home region, reports a step old",
@@ -322,7 +312,6 @@ struct Cluster {
     judge: Judge,
     lanes: BTreeMap<RegionId, Lane>,
     workers: BTreeMap<&'static str, Process>,
-    stand_in: not_yet::StandIn,
     /// What the coordinator has after its last call.
     knows: Known,
     /// Whether what a worker is told in this step can still be done in it: only while
@@ -345,6 +334,13 @@ struct Cluster {
     record: Vec<u64>,
     /// What happened last, for the message of a failed check.
     story: VecDeque<String>,
+    /// What had happened last when a property was first broken, if one was.
+    led: Option<Vec<String>>,
+    /// The step of the last call that said anything but to read the list.
+    last_word: u64,
+    /// How many steps the coordinator went on saying things after `s'`, and how many
+    /// R5 allowed it.
+    spent: Option<(u64, u64)>,
     seen: BTreeMap<&'static str, u32>,
 }
 
@@ -399,7 +395,7 @@ impl Cluster {
             layout: Layout::new(boundaries).expect("the boundaries ascend"),
             spawn: Vec3::new(0.5, 64.0, 0.5),
             lease: LEASE,
-            follow: variant.follow.then(policy),
+            follow: variant.follow.then(|| variant.told.unwrap_or_else(policy)),
         };
         let (seed, dice, sites) = (0, Dice(0), vec![ORIGIN]);
         let started = Instant::now();
@@ -427,7 +423,6 @@ impl Cluster {
                 .iter()
                 .map(|name| (*name, Process::default()))
                 .collect(),
-            stand_in: not_yet::StandIn::default(),
             knows: Known::default(),
             early: false,
             // The service reads the list when it starts.
@@ -440,6 +435,9 @@ impl Cluster {
             hushed: false,
             record: Vec::new(),
             story: VecDeque::new(),
+            led: None,
+            last_word: 0,
+            spent: None,
             seen: BTreeMap::new(),
         };
         // Three workers are there from the start, and the fourth is a spare.
@@ -499,7 +497,7 @@ impl Cluster {
                 })
                 .collect(),
             waiting: self.coordinator.waiting(),
-            under_way: not_yet::under_way(&self.coordinator, &self.stand_in),
+            under_way: self.coordinator.under_way(),
         }
     }
 
@@ -544,11 +542,6 @@ impl Cluster {
     /// does. `look` is whether the call is the `tick` of a step.
     fn after(&mut self, what: String, look: bool, changes: Changes) {
         let step = self.world.step;
-        for ended in &changes.reshaped {
-            self.stand_in
-                .under_way
-                .retain(|asked| *asked != ended.asked);
-        }
         let before = std::mem::take(&mut self.knows);
         let known = self.known();
         // The answer of a call is what it says it changed and what the coordinator has
@@ -557,6 +550,13 @@ impl Cluster {
             .push(number(&format!("{what} -> {changes:?}, {known:?}")));
         if changes != Changes::default() {
             self.note(format!("{what} -> {changes:?}"));
+        }
+        let only_read = Changes {
+            read: changes.read,
+            ..Changes::default()
+        };
+        if changes != only_read {
+            self.last_word = step;
         }
 
         // What the coordinator has begun by itself: nobody asks by hand in these runs.
@@ -622,9 +622,10 @@ impl Cluster {
             if leaver {
                 // A leaving worker's regions are released whether they rest or not.
                 self.count("releases of a leaving worker's regions");
-            } else if look && first && self.variant.stand_in.is_none() {
-                // (Under the stand-in the coordinator decides nothing by itself, and
-                // evens out as it always has, a lease after a merge or a split.)
+            } else if look && first && self.variant.decider.is_none() {
+                // (Where the test decides in its place, the coordinator decides nothing
+                // by itself and evens out as it always has, a lease after a merge or a
+                // split and whether the region rests or not.)
                 let what = Begun::EvenOut {
                     region: release.region,
                 };
@@ -636,7 +637,7 @@ impl Cluster {
         }
         self.judge.routes(step, &known.routes);
         self.judge.under_way(step, &known.under_way);
-        if !self.variant.follow && self.variant.stand_in.is_none() {
+        if !self.variant.follow && self.variant.decider.is_none() {
             self.judge.begins_nothing(step, &changes, &known.under_way);
         }
         if self.hushed {
@@ -676,6 +677,9 @@ impl Cluster {
         }
         for name in &changes.gone {
             self.exit(name);
+        }
+        if self.led.is_none() && !self.judge.breaches.is_empty() {
+            self.led = Some(self.story.iter().cloned().collect());
         }
     }
 
@@ -816,6 +820,9 @@ impl Cluster {
                             self.world.merge(region, absorbed);
                             self.lanes.remove(&absorbed);
                             self.count("merges the workers made");
+                            if self.dies_of_it(name) {
+                                return;
+                            }
                             Ok(())
                         }
                     }
@@ -851,12 +858,32 @@ impl Cluster {
                     process.runs.insert(part, held);
                     process.parts.insert(part, (region, as_epoch));
                     self.count("splits the workers made");
+                    if self.dies_of_it(name) {
+                        return;
+                    }
                 } else {
                     self.count("splits that found nobody or no runner");
                 }
                 self.say(name, Said::SplitEnded(region, as_epoch, outcome));
             }
         }
+    }
+
+    /// Where workers die, one in eight dies when it has made a merge or a split and
+    /// before it says so: the list has what it did, and nobody has its word (K7).
+    /// Whether this one does.
+    fn dies_of_it(&mut self, name: &'static str) -> bool {
+        let others = WORKERS
+            .iter()
+            .any(|other| *other != name && self.workers[other].alive);
+        let dies =
+            self.variant.deaths && self.world.step < ACTIVE && others && self.dice.chance(125);
+        if dies {
+            self.note(format!("{name} dies before it says what it has done"));
+            self.kill(name);
+            self.count("workers that died of a merge or a split before saying so");
+        }
+        dies
     }
 
     /// The worker drops what its orders no longer name and opens what is new to it.
@@ -1096,7 +1123,8 @@ impl Cluster {
             if !std::mem::take(&mut self.wanted) {
                 break;
             }
-            let failed = self.variant.failing && step < ACTIVE && self.dice.chance(200);
+            let lost = self.variant.list == Some(Misleads::Lost) && step > ACTIVE + CALM;
+            let failed = lost || self.variant.failing && step < ACTIVE && self.dice.chance(200);
             if failed {
                 self.count("readings that failed");
                 self.call(
@@ -1108,6 +1136,9 @@ impl Cluster {
                 let mut list = self.world.list();
                 for info in &mut list.regions {
                     info.epoch = self.lanes[&info.region].epoch;
+                    if self.variant.list == Some(Misleads::Unpinned) {
+                        info.pinned.clear();
+                    }
                 }
                 self.judge
                     .listed(step, self.world.regions.keys().copied(), &self.knows);
@@ -1188,25 +1219,31 @@ impl Cluster {
         self.call("a tick".to_owned(), true, |coordinator, now| {
             coordinator.tick(now)
         });
-        if let Some(decider) = self.variant.stand_in {
+        if let Some(decider) = self.variant.decider {
             self.decide_in_its_place(decider);
         }
         self.world.check();
     }
 
-    /// TEMPORARY, with `not_yet`: the test asks by hand, with nobody as asker, for what
-    /// a coordinator that decides by itself might begin at this look, and the judge is
-    /// told that it was begun by itself. It is no build of section 5 and not meant as
-    /// one: it asks for one thing at a time, only at a look that is plain like the
-    /// five before it, for what `decide` wanted unchanged at all six, and only when the
-    /// regions have rested by the judge's own reckoning. That is less than the record
-    /// allows and nothing it forbids, so R1 to R4 hold of it if the cluster and the
-    /// judge are right; it absorbs nothing and is in no hurry, so R5 does not. A decider
-    /// that is not careful has one of the faults of step C4.6, to show that runs like
-    /// these catch it.
+    /// The test decides in the place of a coordinator that decides nothing by itself:
+    /// it asks by hand, with nobody as asker, for what one that does might begin at
+    /// this look, and the judge takes it for begun by itself. Whoever writes these
+    /// runs does not read the state machine and cannot put a fault into it; a fault
+    /// can be put into this, to show that generated runs catch it.
+    ///
+    /// It is no build of section 5 and not meant as one. The careful decider asks for
+    /// one thing at a time, only at a look that is plain like the five before it, for
+    /// what `decide` wanted unchanged at all six, and only when the regions have rested
+    /// by the judge's own reckoning. That is less than the record allows and nothing it
+    /// forbids, so R1 to R4 hold of it; it absorbs nothing and is in no hurry, so R5
+    /// does not.
     fn decide_in_its_place(&mut self, decider: Decider) {
         let step = self.world.step;
-        if !self.stand_in.under_way.is_empty() || !self.judge.listed_lately(step) {
+        // A coordinator that decides nothing reads the list on events only, so the
+        // last reading is often older than two `LIST_EVERY`, and nothing is asked for
+        // then.
+        let listed = decider == Decider::Unread || self.judge.listed_lately(step);
+        if !self.knows.under_way.is_empty() || !listed {
             return;
         }
         let Some(first) = step.checked_sub(model::FRESH + 1) else {
@@ -1262,32 +1299,22 @@ impl Cluster {
             return;
         };
         let now = self.now();
-        let (asked, answer) = match &stood {
+        let answer = match &stood {
             Wanted::Merge {
                 survivor, absorbed, ..
-            } => (
-                Asked::Merge {
-                    survivor: *survivor,
-                    absorbed: *absorbed,
-                },
-                self.coordinator.merge(now, *survivor, *absorbed, None),
-            ),
+            } => self.coordinator.merge(now, *survivor, *absorbed, None),
             Wanted::Split { region, groups, .. } => {
                 let groups: Vec<&[ChunkPos]> =
                     groups.iter().map(|group| group.as_slice()).collect();
                 let chunks = named(&policy(), &groups);
-                (
-                    Asked::Split { region: *region },
-                    self.coordinator.split(now, *region, &chunks, None),
-                )
+                self.coordinator.split(now, *region, &chunks, None)
             }
         };
+        // What is under way after the call and was not before is taken for begun by
+        // itself, as after a tick.
         match answer {
-            Ok(changes) => {
-                self.stand_in.under_way.push(asked);
-                self.after(format!("the stand-in asks for {stood:?}"), true, changes);
-            }
-            Err(refusal) => self.note(format!("the stand-in is refused {stood:?}: {refusal}")),
+            Ok(changes) => self.after(format!("the test asks for {stood:?}"), true, changes),
+            Err(refusal) => self.note(format!("the test is refused {stood:?}: {refusal}")),
         }
     }
 
@@ -1448,18 +1475,29 @@ impl Cluster {
         }
         self.judge
             .end(&self.world, &self.knows, !self.releasing.is_empty());
+        // How much of the time R5 allows was used: from `s'` to the last call that said
+        // anything but to read the list, against from `s'` to the deadline.
+        let settling = self.judge.settling.clone().expect("the run has settled");
+        self.spent = Some((
+            self.last_word.max(settling.at) - settling.at,
+            settling.deadline() - settling.at,
+        ));
         self.hushed = true;
         for _ in 0..HUSH {
             self.step(Vec::new());
         }
-        self.in_order();
+        // (A coordinator that cannot get the list read does not learn what became of a
+        // merge, and need not agree with the model.)
+        if self.variant.list != Some(Misleads::Lost) {
+            self.in_order();
+        }
         self.finish()
     }
 
     /// The first step at or after the time before which the coordinator begins nothing
     /// with the region by itself, if it has noted such a time.
     fn alone_until(&self, region: RegionId) -> Option<u64> {
-        let until = not_yet::alone_until(&self.coordinator, region)?;
+        let until = self.coordinator.alone_until(region)?;
         let since = until.saturating_duration_since(self.started);
         let steps = since.as_millis().div_ceil(LOOK.as_millis());
         Some(u64::try_from(steps).expect("a time of a run"))
@@ -1506,6 +1544,8 @@ impl Cluster {
                 .map(|(what, times)| (*what, *times))
                 .collect(),
             record: std::mem::take(&mut self.record),
+            led: self.led.take(),
+            spent: self.spent,
             story: self.story.into_iter().collect(),
         }
     }
@@ -1554,6 +1594,11 @@ struct Played {
     breaches: Vec<Breach>,
     seen: BTreeMap<&'static str, u32>,
     record: Vec<u64>,
+    /// What had happened last when a property was first broken, and at the end.
+    led: Option<Vec<String>>,
+    /// How many steps the coordinator went on saying things after `s'`, and how many
+    /// R5 allowed it, if the run came that far.
+    spent: Option<(u64, u64)>,
     story: Vec<String>,
 }
 
@@ -1565,14 +1610,20 @@ impl Played {
 
     /// Fails if one of these properties was broken, or any if none is named.
     fn assert_holds(&self, properties: &[Property]) {
+        if let Some(wrong) = self.wrong(properties) {
+            panic!("{wrong}");
+        }
+    }
+
+    /// What is wrong with the run, if one of these properties was broken, or any if
+    /// none is named: the seed, the breaches, and what led to the first there was.
+    fn wrong(&self, properties: &[Property]) -> Option<String> {
         let broken: Vec<&Breach> = self
             .breaches
             .iter()
             .filter(|breach| properties.is_empty() || properties.contains(&breach.property))
             .collect();
-        let Some(first) = broken.first() else {
-            return;
-        };
+        let first = broken.first()?;
         let lines: Vec<String> = broken
             .iter()
             .take(12)
@@ -1583,21 +1634,21 @@ impl Played {
                 )
             })
             .collect();
-        panic!(
+        Some(format!(
             "seed {seed}, {name}: {} breaches, the first of {:?} at step {}\n\n{}\n\nwhat led \
-             to the end of the run:\n{}\n\nseed {seed}, {name} (CLUSTINE_FOLLOWS_SEED={seed}): \
-             {:?} at step {}: {}",
+             to the first breach of the run:\n{}\n\nseed {seed}, {name} \
+             (CLUSTINE_FOLLOWS_SEED={seed}): {:?} at step {}: {}",
             broken.len(),
             first.property,
             first.step,
             lines.join("\n"),
-            self.story.join("\n"),
+            self.led.as_ref().unwrap_or(&self.story).join("\n"),
             first.property,
             first.step,
             first.what,
             seed = self.seed,
             name = self.name,
-        );
+        ))
     }
 }
 
@@ -1625,15 +1676,29 @@ fn seeds() -> Vec<u64> {
 fn play(variant: Variant) {
     let seeds = seeds();
     let mut seen: BTreeMap<&'static str, u32> = BTreeMap::new();
-    let mut broken: BTreeMap<Property, u32> = BTreeMap::new();
     let mut steps = 0;
+    // Every seed is played, so that a failure says how many runs it is of.
+    let mut failed: Vec<(u64, Vec<Property>)> = Vec::new();
+    let mut first = None;
+    // The steps used and allowed after `s'` of the run that used the largest share.
+    let mut tightest: (u64, u64, u64) = (0, 1, 0);
     for seed in &seeds {
         let played = Cluster::new(*seed, variant).play();
-        if not_yet::BUILT {
-            played.assert_holds(&[]);
+        if let Some(wrong) = played.wrong(&[]) {
+            let mut broken: Vec<Property> = played
+                .breaches
+                .iter()
+                .map(|breach| breach.property)
+                .collect();
+            broken.sort_unstable();
+            broken.dedup();
+            failed.push((*seed, broken));
+            first.get_or_insert(wrong);
         }
-        for breach in &played.breaches {
-            *broken.entry(breach.property).or_default() += 1;
+        if let Some((used, allowed)) = played.spent
+            && used * tightest.1 > tightest.0 * allowed
+        {
+            tightest = (used, allowed, *seed);
         }
         for (what, times) in played.seen {
             *seen.entry(what).or_default() += times;
@@ -1644,9 +1709,17 @@ fn play(variant: Variant) {
     for (what, times) in &seen {
         println!("    {times:>7} {what}");
     }
-    if !not_yet::BUILT {
-        println!("    not asserted, as the coordinator does not decide by itself yet: {broken:?}");
-        return;
+    println!(
+        "    R5: the run that came nearest its deadline (seed {}) was quiet {} steps after \
+         s', of {} allowed",
+        tightest.2, tightest.0, tightest.1
+    );
+    if let Some(first) = first {
+        panic!(
+            "{first}\n\n{} of {} runs break a property, by seed: {failed:?}",
+            failed.len(),
+            seeds.len()
+        );
     }
     // A run of a kind is about what the kind is for.
     if seeds.len() >= 8 {
@@ -1691,12 +1764,13 @@ fn runs_with_a_coordinator_made_anew_hold_r1_to_r5() {
     play(Variant::ANEW);
 }
 
-/// TEMPORARY, with `not_yet`: the cluster and the properties, tried on merges and
-/// splits that really happen before the coordinator begins any. The test asks for them
-/// by hand, as `Cluster::decide_in_its_place` says, the workers of the model carry
-/// them out through the coordinator's paths for a merge and a split, and the judge is
-/// told that the coordinator began them by itself. R1 to R4 hold of what is asked for
-/// like that, whatever else goes wrong in the run.
+/// The cluster and the properties, tried on merges and splits that are not the
+/// coordinator's own choice. The test asks for them by hand, as
+/// `Cluster::decide_in_its_place` says, the workers of the model carry them out through
+/// the coordinator's paths for a merge and a split, and the judge takes them for begun
+/// by itself. R1 to R4 hold of what is asked for like that, whatever else goes wrong
+/// in the run: so a breach in the runs below is of the decider's fault and not of how
+/// the runs are played.
 #[test]
 fn merges_and_splits_asked_for_in_the_coordinators_place_hold_r1_to_r4() {
     let mut seen: BTreeMap<&'static str, u32> = BTreeMap::new();
@@ -1709,7 +1783,7 @@ fn merges_and_splits_asked_for_in_the_coordinators_place_hold_r1_to_r4() {
         for seed in seeds() {
             let in_its_place = Variant {
                 follow: false,
-                stand_in: Some(Decider::Careful),
+                decider: Some(Decider::Careful),
                 ..variant
             };
             let played = Cluster::new(seed, in_its_place).play();
@@ -1745,17 +1819,18 @@ fn merges_and_splits_asked_for_in_the_coordinators_place_hold_r1_to_r4() {
     }
 }
 
-/// TEMPORARY, with `not_yet`: two of the six faults of step C4.6, put into the decider
-/// that stands in for the coordinator, are caught in generated runs by the property
-/// that the record's table names for each. A third is said and not asserted.
+/// Three of the six faults of step C4.6, put into the decider that asks in the
+/// coordinator's place, are caught in generated runs by the property that the record's
+/// table names for each. A fourth is said and not asserted. The other two, and these
+/// as well, are caught in the scripted runs of `follows/stage.rs`.
 #[test]
-fn a_decider_without_rest_or_without_standing_is_caught_in_generated_runs() {
+fn a_decider_without_rest_without_standing_or_without_the_list_is_caught_in_generated_runs() {
     let caught = |decider: Decider, variant: Variant| {
         let mut broken: BTreeMap<Property, u32> = BTreeMap::new();
         for seed in seeds() {
             let faulty = Variant {
                 follow: false,
-                stand_in: Some(decider),
+                decider: Some(decider),
                 ..variant
             };
             for breach in Cluster::new(seed, faulty).play().breaches {
@@ -1780,12 +1855,76 @@ fn a_decider_without_rest_or_without_standing_is_caught_in_generated_runs() {
     let broken = caught(Decider::Hasty, Variant::HANDED);
     assert!(!enough || broken.contains_key(&Property::R4e), "{broken:?}");
     assert!(!broken.contains_key(&Property::R4a), "{broken:?}");
+    // The list not read: R3's clause on the age of the last reading, in a run that is
+    // quiet for more than two `LIST_EVERY` before something is wanted.
+    let broken = caught(Decider::Unread, Variant::QUIET);
+    assert!(!enough || broken.contains_key(&Property::R3), "{broken:?}");
+    assert!(broken.keys().all(|property| *property == Property::R3));
     // A group that goes on its first look: R4 (e), where a run has it. It takes a
     // region with a split that has stood and a group that is new at the look at which
     // the split is begun (K22), which players who walk at random bring up in one run
     // of many; the scripted run of K22 is what catches this fault, and how often these
     // runs do is only said.
     caught(Decider::Greedy, Variant::HANDED);
+}
+
+/// The state machine itself is caught where it does other than the judge holds it to.
+/// Nobody can put a fault into it from here, but it can be misled, so that what it
+/// rightly does by what it was told is to the judge one of the faults of step C4.6:
+///
+/// - told half the rest, it begins with a region again after five seconds ("no rest");
+/// - told a merge distance one chunk longer, it merges regions whose players were
+///   never near enough, and that have not stood by the judge's distances;
+/// - handed a list that has no region pinned, it absorbs pinned regions for being
+///   empty;
+/// - with no reading of the list that succeeds once the players stand, it begins
+///   nothing, and the end is not reached ("the list never read").
+#[test]
+fn a_coordinator_that_is_misled_is_caught_in_generated_runs() {
+    let caught = |misled: Variant| {
+        let mut broken: BTreeMap<Property, u32> = BTreeMap::new();
+        for seed in seeds() {
+            for breach in Cluster::new(seed, misled).play().breaches {
+                *broken.entry(breach.property).or_default() += 1;
+            }
+        }
+        println!(
+            "a coordinator told {:?} with a list that is {:?}: {broken:?}",
+            misled.told, misled.list
+        );
+        broken
+    };
+    let enough = seeds().len() >= 8;
+    let broken = caught(Variant {
+        told: Some(Policy {
+            rest: policy().rest / 2,
+            ..policy()
+        }),
+        ..Variant::QUIET
+    });
+    assert!(!enough || broken.contains_key(&Property::R1), "{broken:?}");
+    assert!(!enough || broken.contains_key(&Property::R2), "{broken:?}");
+    let broken = caught(Variant {
+        told: Some(Policy {
+            merge_distance: policy().merge_distance + 1,
+            ..policy()
+        }),
+        ..Variant::QUIET
+    });
+    assert!(!enough || broken.contains_key(&Property::R4a), "{broken:?}");
+    assert!(!enough || broken.contains_key(&Property::R4e), "{broken:?}");
+    let broken = caught(Variant {
+        list: Some(Misleads::Unpinned),
+        ..Variant::PINNED
+    });
+    assert!(!enough || broken.contains_key(&Property::R3), "{broken:?}");
+    assert!(!enough || broken.contains_key(&Property::R4b), "{broken:?}");
+    let broken = caught(Variant {
+        list: Some(Misleads::Lost),
+        ..Variant::QUIET
+    });
+    assert!(!enough || broken.contains_key(&Property::R5), "{broken:?}");
+    assert!(broken.keys().all(|property| *property == Property::R5));
 }
 
 /// R6: the same calls give the same answers, and crowds given in another order do. A
@@ -1890,19 +2029,6 @@ fn settled() -> u64 {
     steps(LEASE) + DELAY + 2 + model::REST
 }
 
-/// Whether what a script expects of a coordinator that decides by itself can be held
-/// to: only when there is one.
-fn decides(played: &Played) -> bool {
-    if !not_yet::BUILT {
-        println!(
-            "{}: played for {} steps and not asserted, as the coordinator does not decide by \
-             itself yet",
-            played.name, played.steps
-        );
-    }
-    not_yet::BUILT
-}
-
 /// K4, across the whole band and back: a merge when the two have been within the merge
 /// distance for a second, a split when they have been further apart than the split
 /// distance for a second, and a merge again, each at least a rest after the one before.
@@ -1927,9 +2053,6 @@ fn a_player_who_walks_across_the_band_and_back_is_merged_split_and_merged_again(
     cluster.pass(model::REST);
     cluster.in_order();
     let played = cluster.finish();
-    if !decides(&played) {
-        return;
-    }
     assert!(
         merged && split && again,
         "merged: {merged}, split: {split}, merged again: {again}\n{}",
@@ -1972,9 +2095,6 @@ fn a_player_who_is_in_two_reports_for_one_look_merges_nothing() {
     cluster.pass(model::REST);
     cluster.in_order();
     let played = cluster.finish();
-    if !decides(&played) {
-        return;
-    }
     assert_eq!(
         on_one_look,
         0,
@@ -2029,9 +2149,6 @@ fn a_group_that_appears_as_its_region_becomes_free_stays_when_the_one_that_has_s
     );
     cluster.pass(2);
     let played = cluster.finish();
-    if !decides(&played) {
-        return;
-    }
     assert!(early_enough, "the home region's rest ends at step {free}");
     assert!(
         split,
@@ -2064,9 +2181,6 @@ fn a_region_whose_groups_players_of_another_region_join_is_merged_with_it_and_no
     cluster.pass(2 * model::REST);
     cluster.in_order();
     let played = cluster.finish();
-    if !decides(&played) {
-        return;
-    }
     assert!(merged, "no merge\n{}", played.story.join("\n"));
     played.assert_holds(&[]);
     assert_eq!(played.seen("splits begun"), 0);
@@ -2102,9 +2216,6 @@ fn a_region_is_not_split_while_the_region_that_joins_its_groups_is_silent() {
     cluster.pass(model::REST);
     cluster.in_order();
     let played = cluster.finish();
-    if !decides(&played) {
-        return;
-    }
     assert!(merged, "no merge\n{}", played.story.join("\n"));
     played.assert_holds(&[]);
     assert_eq!(played.seen("splits begun"), 0);

@@ -319,6 +319,7 @@ impl Judge {
             // it rests: from that report, if somebody is in it (section 5.5).
             if self.absorbed_into.remove(&region) && players {
                 self.rests_from(region, step);
+                self.count("survivors that rest for who came as they absorbed");
             }
             self.taken.insert(
                 region,
@@ -557,6 +558,7 @@ impl Judge {
             if let Asked::Merge { survivor, absorbed } = asked
                 && self.still.is_some_and(|still| step > still)
             {
+                self.count("merges begun while the players stand");
                 let mut members = world.members(survivor);
                 members.extend(world.members(absorbed));
                 let mut points: Vec<ChunkPos> = members.iter().map(|(_, at)| *at).collect();
@@ -739,8 +741,12 @@ impl Judge {
                 })
                 .map(|(at, _)| *at)
         };
+        // The absorbed region has been without players for `EMPTY_FOR` or longer, and
+        // the survivor for more than a second (section 4.4): its run of reports without
+        // players began five looks ago or earlier, so the report of that look, if one
+        // was given, is without players too.
         let in_absorbed = reported_with_players(absorbed, EMPTY_FOR);
-        let in_survivor = reported_with_players(survivor, FRESH);
+        let in_survivor = reported_with_players(survivor, FRESH + 1);
         if let Some(at) = in_absorbed {
             self.breach(
                 Property::R4b,
@@ -757,7 +763,7 @@ impl Judge {
                 step,
                 format!(
                     "{what}: the report of step {at} had a player in the survivor, which \
-                     is within a second"
+                     has not been without players for more than a second"
                 ),
             );
         }
@@ -879,6 +885,7 @@ impl Judge {
         if self.still.is_none_or(|still| step <= still) {
             return;
         }
+        self.count("splits begun while the players stand");
         let members = world.members(region);
         let (go, stay): (Members, Members) =
             members.into_iter().partition(|(_, at)| chunks.contains(at));
@@ -910,11 +917,19 @@ impl Judge {
         }
     }
 
-    /// The looks of the second before a step and that step's, if all of them are plain.
+    /// The looks of the second before a step and that step's, if all of them are plain:
+    /// those R4 (e) names. And before them the look one earlier, if that is plain as
+    /// well: what has stood has been wanted for more than a second (section 5.3), which
+    /// with looks a quarter of a second apart is at six looks, so where the test knows
+    /// the sightings of the sixth, it holds what is begun to that one too.
     fn plain_looks(&self, step: u64) -> Option<Vec<&Look>> {
-        (step.checked_sub(FRESH)?..=step)
-            .map(|at| self.looks.get(&at).filter(|look| look.plain))
-            .collect()
+        let plain = |at: u64| self.looks.get(&at).filter(|look| look.plain);
+        let named: Option<Vec<&Look>> = (step.checked_sub(FRESH)?..=step).map(plain).collect();
+        let mut looks = named?;
+        if let Some(earlier) = step.checked_sub(FRESH + 1).and_then(plain) {
+            looks.insert(0, earlier);
+        }
+        Some(looks)
     }
 
     /// R4 (e) for a merge by the distances: nothing on one look, by the reports.
@@ -930,15 +945,16 @@ impl Judge {
                         || (*survivor, *absorbed) == (other, one))
             })
         });
+        // The step of the first of those looks at which it was not wanted.
+        let unwanted = unwanted.map(|at| step + 1 + at as u64 - looks.len() as u64);
         self.count("merges by the distances that R4 (e) checked");
-        if let Some(unwanted) = unwanted {
-            let at = step - FRESH + unwanted as u64;
+        if let Some(at) = unwanted {
             self.breach(
                 Property::R4e,
                 step,
                 format!(
                     "{what} is begun, and by the reports of the look at step {at} no merge \
-                     of the two was wanted: it has not stood for a second"
+                     of the two was wanted: it has not stood for more than a second"
                 ),
             );
         }
@@ -1222,6 +1238,23 @@ impl Judge {
             wrong.push("a region is being released".to_owned());
         }
         let settling = self.settling.clone().expect("the run has settled");
+        // What R5 counted and what was begun since, to see how near its bounds come.
+        for (what, times) in [
+            (
+                "R5: merges by the distances and splits left to do (n)",
+                settling.n,
+            ),
+            (
+                "R5: merges by the distances and splits begun since",
+                settling.reshapes,
+            ),
+            ("R5: regions without players to absorb (e)", settling.e),
+            ("R5: absorptions begun since", settling.absorptions),
+            ("R5: regions to change workers (k)", settling.k),
+            ("R5: releases to even out begun since (m)", settling.moves),
+        ] {
+            *self.seen.entry(what).or_default() += times;
+        }
         for wrong in wrong {
             self.breach(
                 Property::R5,
