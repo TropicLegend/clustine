@@ -143,7 +143,15 @@ impl Reshapes {
             deeds: Vec::new(),
             coordinator_since: 0,
         };
-        reshapes.settled().await;
+        let list = reshapes.settled().await;
+        // The edge links to the regions a moment after they run. A test that counts
+        // its links, to see whether a merge or a split made it link anew, begins when
+        // the first ones are there.
+        let regions = Self::living(&list);
+        let linked = |reshapes: &Self| regions.iter().all(|region| reshapes.links_to(*region) > 0);
+        reshapes
+            .until("the edge has linked to every region", linked)
+            .await;
         reshapes
     }
 
