@@ -2581,10 +2581,12 @@ impl Merges {
 /// its players were disconnected when the edge's patience was over.
 ///
 /// Whether a kill lands between the store's record and its answer is a matter of a
-/// few milliseconds, so the test tries up to forty times, which has always been
-/// enough (the first or the second did it). If the case does not come about, the
-/// test says so and has still killed the store in forty splits; it does not fail
-/// for what it could not bring about.
+/// few milliseconds: the first or the second try did it where this was found, and
+/// fifteen to twenty-seven were needed on another day. So the test tries eight times,
+/// or four times `CLUSTINE_CHAOS_KILLS`, and if the case does not come about it says
+/// so and has still killed the store in that many splits; it does not fail for what
+/// it could not bring about. What it is about is tested without the luck on the
+/// coordinator's state machine (`services/coordinator/tests/reshape.rs`).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_split() {
     if a_repetition() {
@@ -2605,7 +2607,8 @@ async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_spl
     let moment = "handing the store a merge or a split";
     let named = [(3, 0)];
     let mut found = None;
-    for attempt in 1..=40 {
+    let tries = 4 * rounds_from("CLUSTINE_CHAOS_KILLS", 2);
+    for attempt in 1..=tries {
         let Some(owner) = merges.owner(0) else {
             merges.fail("region 0 has no owner though the cluster was whole");
         };
@@ -2662,11 +2665,10 @@ async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_spl
         }
     }
     let Some((part, killed)) = found else {
-        merges.note(
-            "in forty splits the store was never killed between its record of the split and \
-             its answer"
-                .to_owned(),
-        );
+        merges.note(format!(
+            "in {tries} splits the store was never killed between its record of the split \
+             and its answer"
+        ));
         merges.served().await;
         merges.played_on(2).await;
         played(&merges.finish(true).await);
