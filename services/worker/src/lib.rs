@@ -26,6 +26,15 @@
 //! runner prepares: it brings the store up to date, lets go of the region and closes its
 //! links, so that the next owner restores it from a state file alone. See
 //! `docs/adr/0009-moving-a-region.md`, section 1, and [`RegionRunner::begin_release`].
+//!
+//! A region **absorbs** another, or a part of it is **split off** as a region of its
+//! own, in one tick in which nothing else happens ([`RegionRunner::reshape`]). The
+//! runner brings the store up to date as for a release, works the tick out aside and
+//! hands it to the store, and takes it only when the store has it on disk. Then the
+//! region and the runner begin anew, as after a restore but without leaving the
+//! worker: every link is closed, and the edges link again and are told what happened
+//! among the entries of a welcome. See `docs/adr/0014-merging-and-splitting.md`,
+//! section 3.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
@@ -38,15 +47,15 @@ use std::time::{Duration, Instant};
 
 use clustine_rpc::link::WorkerEnd;
 use clustine_rpc::{
-    Crowds, EdgeMessage, EdgeToWorker, Presence, Restored, StoreReply, StoreRequest, Welcome,
-    WorkerToEdge,
+    Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Presence, Restored, SplitPart, StoreReply,
+    StoreRequest, Welcome, WorkerToEdge,
 };
 use clustine_sim::api::{PlayerInput, RegionEvent};
 use clustine_sim::{
-    Durable, EdgeEvent, Holdings, Knowledge, Misdirected, PlayerChange, PlayerEvent, Region,
-    RegionConfig, RegionState, RemoteStep, StateDelta, TickInputs, Ticket,
+    Durable, EdgeEvent, Holdings, Knowledge, Misdirected, NoSplit, Part, PlayerChange, PlayerEvent,
+    Region, RegionConfig, RegionState, RemoteStep, Splitting, StateDelta, TickInputs, Ticket,
 };
-use clustine_world::{BlockPos, ChunkPos, EdgeId, EntityId, PlayerId, RegionId};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId};
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
 
@@ -78,6 +87,18 @@ const MAX_CATCH_UP_TICKS: u32 = 10;
 /// How often a runner that waits for its next tick looks whether the store has confirmed
 /// a commit, so that what a tick did reaches players a write later and not a tick later.
 const COMMIT_POLL: Duration = Duration::from_millis(1);
+
+/// How long what the store is handed for a merge or a split may be: the merged state,
+/// or the two states of a split and its chunks, counted at 16 bytes each. A request to
+/// a store in another process is at most 16 MiB, and one that is longer loses the
+/// handle, which is no answer to give a large region; so the runner sends nothing
+/// longer than half of that, and says [`Off::TooLarge`] instead.
+pub const MAX_RESHAPE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Ticks a runner keeps a chunk warm after the merge or the split it has it from: the
+/// time after which an edge that stays away is gone. A chunk nobody has asked for by
+/// then is not coming back to a screen soon.
+const WARM_FOR: u64 = DEFAULT_GONE_AFTER;
 
 /// Counters of a region that others may read while its runner runs.
 #[derive(Debug, Default)]
@@ -153,8 +174,10 @@ pub struct Links {
 
 impl Links {
     /// Hands `link` to the runner, which serves it from its next tick on. If the runner
-    /// is gone, has ended, or has stopped ticking in order to release its region, the
-    /// link is closed instead, which its other end notices.
+    /// is gone, has ended, or has stopped ticking in order to release its region, or to
+    /// merge or split it, the link is closed instead, which its other end notices. An
+    /// edge whose link a merge or a split closed is let in again as soon as that is
+    /// through or off.
     pub fn attach(&self, link: WorkerEnd) {
         // Nobody is left to serve the link, and dropping it is what closes it.
         let _ = self.attached.send(link);
@@ -175,17 +198,82 @@ pub enum Ended {
     /// published, the region is closed at the store and the links are closed. Another
     /// owner can open the region and restores it from a state file alone.
     Released,
-    /// It was asked to stop while it was releasing the region, and let go of the region
-    /// without waiting for the store any longer. Nothing was published that the store had
-    /// not confirmed, so this is a crash like any other: the next owner restores what
-    /// the store has.
+    /// It was asked to stop while it was releasing the region, or in the middle of a
+    /// merge or a split, and let go of the region without waiting for the store any
+    /// longer. Nothing was published that the store had not confirmed, so this is a
+    /// crash like any other: the next owner restores what the store has, which is the
+    /// region before the merge or the split, or after it.
     Abandoned,
 }
 
-/// How far a runner is with releasing its region.
+/// What a runner is told to do to its region besides ticking and releasing it. See
+/// `docs/adr/0014-merging-and-splitting.md`, section 3.1.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reshape {
+    /// Checkpoint now and tick on: a merge is coming, and what is saved now is not
+    /// saved while the players of the region to absorb stand still. Changes nothing
+    /// else, and has no outcome.
+    Prepare,
+    /// Absorb the region `absorbed`, which this worker has open with `absorbed_epoch`
+    /// and whose whole state is `state` ([`absorbable`]). The handle of that region is
+    /// to stay open until the outcome is there: the store declines a merge whose
+    /// absorbed region has no owner with that epoch.
+    Absorb {
+        absorbed: RegionId,
+        absorbed_epoch: u64,
+        state: RegionState,
+    },
+    /// Split the players standing in `chunks` off as the region `part`, to be opened
+    /// with `as_epoch`. If the store has another id next, the split is made with that.
+    SplitOff {
+        chunks: Vec<ChunkPos>,
+        as_epoch: u64,
+        part: RegionId,
+    },
+}
+
+/// What came of a [`Reshape::Absorb`] or a [`Reshape::SplitOff`].
+// One is made for a merge or a split and handed over once, so the room a part takes in
+// every one of them costs nothing that a box would save.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reshaped {
+    /// The region has absorbed `absorbed`, which is no more. Its links are closed.
+    Absorbed { absorbed: RegionId },
+    /// The region `region` has been split off, and is to be opened with `as_epoch` and
+    /// run from `part` ([`RegionRunner::of_part`]). The links of the region that was
+    /// split are closed.
+    Split {
+        region: RegionId,
+        as_epoch: u64,
+        part: Part,
+    },
+    /// Nothing came of it, and the region is as it was. [`Off::StoreLost`] alone
+    /// leaves open whether the store has the record: the runner lost its handle, or
+    /// was stopped or dropped, before it had the store's answer.
+    Off { why: Off },
+}
+
+/// How far a runner is with a release, a merge or a split; see
+/// [`RegionRunner::stage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// A checkpoint and a flush have been asked for. The region ticks and serves its
+    /// links until the flush is answered.
+    Preparing,
+    /// The region ticks no more and takes nothing from its links, and links attached
+    /// now are closed. The ticks that ran are published as their commits are confirmed.
+    Settling,
+    /// A second checkpoint and a flush have been asked for.
+    Closing,
+    /// Only for a merge or a split: the store has been handed it, and has not answered.
+    Committing,
+}
+
+/// How far a runner is with releasing its region, or with merging or splitting it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// Nobody has asked for a release.
+    /// Nobody has asked for anything of the kind, or what was asked is done or off.
     Running,
     /// The first checkpoint and a flush have been asked for. The region ticks on and
     /// serves its links until the store has answered the flush, so that the checkpoint
@@ -196,9 +284,116 @@ enum Phase {
     Settling,
     /// The last checkpoint and a flush have been asked for.
     Closing,
+    /// The store has been handed a merge or a split, and its answer is waited for.
+    Committing,
     /// The runner has ended, for whichever reason, and does nothing but close the links
     /// it is handed.
     Ended,
+}
+
+/// The call that takes the outcome of a merge or a split. It is made once, whatever
+/// becomes of the runner: if this is dropped before there is an outcome, the outcome is
+/// that nothing came of it, for the reason `otherwise`.
+struct Done {
+    call: Option<Box<dyn FnOnce(Reshaped) + Send>>,
+    otherwise: Off,
+}
+
+impl Done {
+    /// For a command that no runner has taken up yet. A runner that never does has
+    /// ended, and is busy with nothing else any more.
+    fn new(call: Box<dyn FnOnce(Reshaped) + Send>) -> Self {
+        Self {
+            call: Some(call),
+            otherwise: Off::Busy,
+        }
+    }
+
+    /// For a command that has no outcome.
+    fn never() -> Self {
+        Self {
+            call: None,
+            otherwise: Off::Busy,
+        }
+    }
+
+    fn call(mut self, outcome: Reshaped) {
+        if let Some(call) = self.call.take() {
+            call(outcome);
+        }
+    }
+
+    fn off(self, why: Off) {
+        self.call(Reshaped::Off { why });
+    }
+}
+
+impl Drop for Done {
+    fn drop(&mut self) {
+        if let Some(call) = self.call.take() {
+            call(Reshaped::Off {
+                why: self.otherwise,
+            });
+        }
+    }
+}
+
+/// A [`Reshape`] on its way to a runner's thread, with the call for its outcome.
+struct Command {
+    reshape: Reshape,
+    done: Done,
+}
+
+impl Command {
+    fn new(reshape: Reshape, done: Box<dyn FnOnce(Reshaped) + Send>) -> Self {
+        let done = match reshape {
+            // Dropped uncalled, here and now.
+            Reshape::Prepare => Done::never(),
+            Reshape::Absorb { .. } | Reshape::SplitOff { .. } => Done::new(done),
+        };
+        Self { reshape, done }
+    }
+}
+
+/// A merge or a split that a runner is in the middle of.
+struct Reshaping {
+    plan: Plan,
+    done: Done,
+}
+
+/// What a runner that is merging or splitting its region was told, and what it has
+/// handed the store, once it has.
+enum Plan {
+    Absorb {
+        absorbed: RegionId,
+        absorbed_epoch: u64,
+        /// The whole state of the region to absorb.
+        other: RegionState,
+        /// The merged state the store was handed, while its answer is waited for.
+        state: Option<RegionState>,
+    },
+    Split {
+        /// The chunks named, whose players go.
+        named: Vec<ChunkPos>,
+        as_epoch: u64,
+        /// The id of the new region: the one the command named, or the one the store
+        /// has said is next.
+        part: RegionId,
+        /// Whether the store has declined the split once for its id, and named the
+        /// next. Another split can have taken the one the command named; a second
+        /// time is a decline like any other.
+        renamed: bool,
+        /// The split the store was handed, while its answer is waited for.
+        splitting: Option<Splitting>,
+    },
+}
+
+/// A chunk a runner has in memory that its region holds and has not loaded, known to
+/// be what the store has; see [`RegionRunner::warm`].
+struct Warm {
+    chunk: Chunk,
+    /// The tick of the merge or the split the chunk is kept from.
+    since: u64,
 }
 
 /// What a runner that has let go of its region has in place of a store handle. Putting
@@ -504,10 +699,33 @@ pub struct RegionRunner {
     checkpoint_interval: u64,
     /// How many ticks an edge may be without a link before it is gone.
     gone_after: u64,
+    /// Chunks the runner has in memory that the region holds and has not loaded, each
+    /// known to be what the store has: every chunk the region had loaded at its last
+    /// merge or split, and for a region that a split made, every chunk of it that the
+    /// split region had loaded. When a tick asks storage for one, the runner hands it
+    /// to the next tick instead of asking the store, and forgets it; so a resume after
+    /// a merge or a split does not read back from the store what was in memory a
+    /// moment before. That is safe because only the holder saves a chunk and nothing
+    /// was unsaved at that tick: until the region loads the chunk, nothing can have
+    /// changed what the store has of it. One is also forgotten when the region gives
+    /// the chunk back, and after [`WARM_FOR`] ticks.
+    warm: BTreeMap<ChunkPos, Warm>,
     /// Whether the store handle is lost, after which the runner does nothing any more.
     lost: bool,
-    /// How far the runner is with releasing the region.
+    /// How far the runner is with releasing the region, or with a merge or a split.
     phase: Phase,
+    /// The merge or the split that is under way: from the first checkpoint for it
+    /// until the store has answered, or the runner has ended.
+    reshaping: Option<Reshaping>,
+    /// The store's answer to the merge or the split it was handed, until the step that
+    /// finds it acts on it.
+    answer: Option<StoreReply>,
+    /// Commands that were handed in from another thread and have not been taken.
+    commands: Receiver<Command>,
+    /// Kept to give to a [`Worker`].
+    command: Sender<Command>,
+    /// [`MAX_RESHAPE_BYTES`], unless a test has lowered it.
+    max_reshape_bytes: usize,
     /// How the runner ended, once it has.
     ended: Option<Ended>,
     /// How many flushes the runner has asked the store for, and how many of them the
@@ -544,67 +762,62 @@ impl RegionRunner {
     /// last tick.
     fn with_store(region: Region, store: Box<dyn RegionStore>) -> Self {
         let (attach, attached) = mpsc::channel();
+        let (command, commands) = mpsc::channel();
         let state = region.state();
-        // Edges count as away from now, however long they were before: they could not
-        // have had a link to a region that was not running.
-        let edges = state
-            .edges
-            .iter()
-            .map(|(id, edge)| {
-                let known = KnownEdge {
-                    start: edge.start,
-                    settled: true,
-                    received: edge.applied,
-                    applied: edge.applied,
-                    link: None,
-                    away_since: state.tick,
-                };
-                (*id, known)
-            })
-            .collect();
-        let last_inputs = state
-            .players
-            .iter()
-            .map(|(id, player)| (*id, player.last_input))
-            .collect();
-        let crowds = region.crowds();
-        let status = RegionStatus {
-            crowds: Mutex::new(crowds.clone()),
-            ..RegionStatus::default()
-        };
-        status.tick.store(state.tick, Ordering::Relaxed);
-        status
-            .players
-            .store(state.players.len() as u64, Ordering::Relaxed);
-        let held = region.held_chunk_count() as u64;
-        status.held.store(held, Ordering::Relaxed);
-        Self {
+        let mut runner = Self {
             region,
             store,
             links: BTreeMap::new(),
             next_link: 0,
             attached,
             attach,
-            edges,
-            last_inputs,
+            edges: known_edges(&state),
+            last_inputs: last_inputs(&state),
             inputs: TickInputs::default(),
             discards: Vec::new(),
             pending: VecDeque::new(),
             committed: state.tick,
             unreadable: BTreeSet::new(),
             loads: BTreeMap::new(),
-            crowds,
+            crowds: Crowds::new(),
             unsaved: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             gone_after: DEFAULT_GONE_AFTER,
+            warm: BTreeMap::new(),
             lost: false,
             phase: Phase::Running,
+            reshaping: None,
+            answer: None,
+            commands,
+            command,
+            max_reshape_bytes: MAX_RESHAPE_BYTES,
             ended: None,
             flushes_asked: 0,
             flushes_answered: 0,
             release_asked: Arc::new(AtomicBool::new(false)),
-            status: Arc::new(status),
-        }
+            status: Arc::new(RegionStatus::default()),
+        };
+        runner.show_status();
+        runner
+    }
+
+    /// A runner for the region a split has made, of which `store` is the handle its
+    /// worker opened it with: one as [`RegionRunner::restore`] makes of what the store
+    /// has of the region, but that the chunks of the part that the split region had
+    /// loaded are kept warm, so that the part's first links are served from memory.
+    /// What the store said when the region was opened is not needed: the part is what
+    /// the store's record has. See `docs/adr/0014-merging-and-splitting.md`, section
+    /// 3.5.
+    pub fn of_part(part: Part, store: StoreHandle) -> Self {
+        Self::of_part_with(part, Box::new(store))
+    }
+
+    fn of_part_with(part: Part, store: Box<dyn RegionStore>) -> Self {
+        let mut runner = Self::with_store(part.region, store);
+        let since = runner.region.tick_number();
+        let warm = |(position, chunk)| (position, Warm { chunk, since });
+        runner.warm = part.chunks.into_iter().map(warm).collect();
+        runner
     }
 
     /// A handle through which links are attached, also while the runner runs.
@@ -650,11 +863,14 @@ impl RegionRunner {
     ///
     /// Once the store handle is lost, this does nothing but close links.
     ///
-    /// After [`RegionRunner::begin_release`] it does the same until the store has
-    /// answered the flush behind the first checkpoint, and from then on carries the
-    /// release on instead, a step at a time and without ever waiting: no tick runs, and
-    /// nothing is taken from links. Once the runner has ended, a step closes the links
-    /// attached since and does nothing else.
+    /// After [`RegionRunner::begin_release`], and after [`RegionRunner::reshape`] with
+    /// a merge or a split, it does the same until the store has answered the flush
+    /// behind the first checkpoint, and from then on carries the release, the merge or
+    /// the split on instead, a step at a time and without ever waiting: no tick runs,
+    /// and nothing is taken from links. Each such step gets at most one stage further
+    /// ([`RegionRunner::stage`]), so whoever steps a runner by hand sees every stage.
+    /// Once the runner has ended, a step closes the links attached since and does
+    /// nothing else.
     pub fn step(&mut self) {
         if self.lost {
             self.give_up();
@@ -671,15 +887,16 @@ impl RegionRunner {
                 if self.flushes_answered == self.flushes_asked {
                     info!(
                         tick = self.region.tick_number(),
-                        "the store has the first checkpoint of a release; the region stops ticking"
+                        reshaping = self.reshaping.is_some(),
+                        "the store has the first checkpoint of a release, a merge or a split; \
+                         the region stops ticking"
                     );
                     self.phase = Phase::Settling;
-                    self.carry_release_on();
                     return;
                 }
             }
-            Phase::Settling | Phase::Closing => {
-                self.carry_release_on();
+            Phase::Settling | Phase::Closing | Phase::Committing => {
+                self.carry_on();
                 return;
             }
             Phase::Ended => {
@@ -758,11 +975,17 @@ impl RegionRunner {
                 }
                 StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
                 StoreReply::Flushed => self.flushes_answered += 1,
-                // Answers to what no runner asks for yet (ADR-0010).
+                // The answer to the merge or the split the store was handed. It is
+                // acted on by the step that finds it, not here: taking it makes the
+                // runner begin anew, and this is also called between two ticks.
                 reply @ (StoreReply::Absorbed { .. }
                 | StoreReply::Split { .. }
                 | StoreReply::Declined { .. }) => {
-                    error!(?reply, "the world store answered what was not asked");
+                    if self.phase == Phase::Committing && self.answer.is_none() {
+                        self.answer = Some(reply);
+                    } else {
+                        error!(?reply, "the world store answered what was not asked");
+                    }
                 }
             }
         }
@@ -822,6 +1045,12 @@ impl RegionRunner {
             self.ended = Some(Ended::StoreLost);
             self.status.set_ended(Ended::StoreLost);
         }
+        // Whether a merge or a split that the store was handed has happened is for
+        // the store to say when the region is opened again.
+        self.answer = None;
+        if let Some(reshaping) = self.reshaping.take() {
+            reshaping.done.off(Off::StoreLost);
+        }
     }
 
     /// Closes the links that have been attached and not been taken up.
@@ -849,7 +1078,10 @@ impl RegionRunner {
     /// closes keeps the release where it is; nothing here waits for it, so whoever steps
     /// the runner decides how long to go on, and drops the runner to give up.
     ///
-    /// Asking again, or asking a runner that has ended, changes nothing.
+    /// Asking again, or asking a runner that has ended, changes nothing. Neither does
+    /// asking one that is in the middle of a merge or a split: a release waits for
+    /// that to end, by being asked for again, as [`RegionRunner::run`] does before
+    /// every step.
     pub fn begin_release(&mut self) {
         if self.phase != Phase::Running {
             return;
@@ -880,11 +1112,120 @@ impl RegionRunner {
         self.store.request(StoreRequest::Flush);
     }
 
-    /// Does what can be done of a release whose region has stopped ticking, without
-    /// waiting for anything.
-    fn carry_release_on(&mut self) {
+    /// Does to the region what `reshape` says, as section 3 of
+    /// `docs/adr/0014-merging-and-splitting.md` has it, for whoever steps the runner by
+    /// hand; [`Worker::reshape`] is the same for a runner on a thread of its own. This
+    /// returns at once, and [`RegionRunner::step`] does the rest.
+    ///
+    /// [`Reshape::Prepare`] asks the store for an ordinary checkpoint and nothing else,
+    /// and that only of a runner that neither releases nor reshapes its region. `done`
+    /// is never called for it.
+    ///
+    /// A merge and a split go through the stages of a release
+    /// ([`RegionRunner::stage`]) and one more:
+    ///
+    /// 1. The region goes on ticking and serving its links until the store has a
+    ///    checkpoint of it.
+    /// 2. Then it ticks no more, takes nothing more from its links and closes links
+    ///    that are attached from now on. The ticks that ran are published as the store
+    ///    confirms them.
+    /// 3. It checkpoints once more. When the store has that, it has answered everything
+    ///    asked of it before: no commit of the region is left that a checkpoint does
+    ///    not cover, every claim is answered, and nothing is being loaded or unsaved.
+    /// 4. The merge or the split is worked out, as the tick after the region's last,
+    ///    which changes nothing, and handed to the store. If none comes of it (nobody
+    ///    stands in the chunks named, or it is too large to hand over), the region
+    ///    ticks on.
+    /// 5. When the store has answered that it is on disk, the region takes that tick,
+    ///    and the runner begins anew as for a region just restored: **every link is
+    ///    closed**, what links sent and no tick took is dropped (their edges send it
+    ///    again), and the chunks that were loaded are kept warm, so that the links the
+    ///    edges make next are served without the store. If the store declines, the
+    ///    region ticks on from its last tick with its links, as if nothing had been
+    ///    asked; what they sent while it stood still is taken by its next tick.
+    ///
+    /// `done` is called once, with the outcome, by the step that has it. A runner that
+    /// is not just running (it releases its region, is in the middle of another merge
+    /// or split, or has ended) calls it at once with [`Off::Busy`]. If the store
+    /// handle is lost on the way, or the runner is stopped or dropped before the
+    /// store has answered, the outcome is [`Off::StoreLost`], and whether the merge or
+    /// the split happened is for the store's list of regions to say.
+    pub fn reshape(&mut self, reshape: Reshape, done: Box<dyn FnOnce(Reshaped) + Send>) {
+        self.take_command(Command::new(reshape, done));
+    }
+
+    fn take_command(&mut self, command: Command) {
+        let Command { reshape, mut done } = command;
+        if self.phase != Phase::Running {
+            done.off(Off::Busy);
+            return;
+        }
+        let plan = match reshape {
+            Reshape::Prepare => {
+                // What a lost handle does not take, the next step finds out.
+                self.checkpoint();
+                return;
+            }
+            Reshape::Absorb {
+                absorbed,
+                absorbed_epoch,
+                state,
+            } => Plan::Absorb {
+                absorbed,
+                absorbed_epoch,
+                other: state,
+                state: None,
+            },
+            Reshape::SplitOff {
+                chunks,
+                as_epoch,
+                part,
+            } => Plan::Split {
+                named: chunks,
+                as_epoch,
+                part,
+                renamed: false,
+                splitting: None,
+            },
+        };
+        // From here on, what becomes of it without an outcome is the store's to say.
+        done.otherwise = Off::StoreLost;
+        self.reshaping = Some(Reshaping { plan, done });
+        if self.lost || self.store.is_lost() {
+            self.give_up();
+            return;
+        }
+        info!(
+            tick = self.region.tick_number(),
+            unsaved = self.unsaved.len(),
+            "bringing the store up to date for a merge or a split"
+        );
+        self.checkpoint();
+        self.ask_for_flush();
+        self.phase = Phase::Preparing;
+    }
+
+    /// Where the runner is with a release, a merge or a split; `None` while it only
+    /// runs, and once it has ended. Each [`RegionRunner::step`] gets at most one stage
+    /// further, so whoever steps a runner by hand can stop at the first step of each.
+    pub fn stage(&self) -> Option<Stage> {
+        match self.phase {
+            Phase::Running | Phase::Ended => None,
+            Phase::Preparing => Some(Stage::Preparing),
+            Phase::Settling => Some(Stage::Settling),
+            Phase::Closing => Some(Stage::Closing),
+            Phase::Committing => Some(Stage::Committing),
+        }
+    }
+
+    /// Does what can be done of a release, a merge or a split whose region has stopped
+    /// ticking, without waiting for anything: at most one stage of it.
+    fn carry_on(&mut self) {
         // No new links: their edges find them closed and look for the region again,
-        // which they find at its next owner.
+        // which they find at its next owner, or here once the merge or the split is
+        // through or off. So no hello is answered between handing the store a merge or
+        // a split and taking it, and one that is said after the routing table knows of
+        // it is answered from after it.
         self.refuse_links();
         if !self.take_replies() {
             return;
@@ -902,11 +1243,289 @@ impl RegionRunner {
                 self.phase = Phase::Closing;
             }
             Phase::Closing if self.flushes_answered == self.flushes_asked => {
-                info!(tick = self.region.tick_number(), "the region is released");
-                self.end(Ended::Released);
+                if self.reshaping.is_none() {
+                    info!(tick = self.region.tick_number(), "the region is released");
+                    self.end(Ended::Released);
+                } else if self.loads.is_empty() {
+                    // The store answers a load before the flush asked behind it, so
+                    // none is under way now. It is looked at all the same: a chunk
+                    // that arrived after the tick of a merge or a split would be one
+                    // the region has not asked for.
+                    self.commit();
+                }
+            }
+            Phase::Committing => {
+                if let Some(answer) = self.answer.take() {
+                    self.take_answer(answer);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Works out the merge or the split as the tick after the region's last, which
+    /// changes nothing, and hands it to the store; or finds that nothing comes of it.
+    ///
+    /// The store has answered the flush behind the second checkpoint, and with it
+    /// everything asked before: every commit is confirmed, published and covered by
+    /// the checkpoint; every claim is answered, and the answers wait in the coming
+    /// tick's inputs; every return is through; no load is under way and no chunk is
+    /// unsaved, so every loaded chunk is, block for block, what the store has. See
+    /// `docs/adr/0014-merging-and-splitting.md`, section 3.2.
+    fn commit(&mut self) {
+        let Some(mut reshaping) = self.reshaping.take() else {
+            return;
+        };
+        let tick = self.region.tick_number() + 1;
+        let limit = self.max_reshape_bytes;
+        let request = match &mut reshaping.plan {
+            Plan::Absorb {
+                absorbed,
+                absorbed_epoch,
+                other,
+                state,
+            } => {
+                let merged = self.region.absorb(*absorbed, other);
+                let bytes = stored(&merged);
+                if bytes.len() > limit {
+                    Err(Off::TooLarge)
+                } else {
+                    *state = Some(merged);
+                    Ok(StoreRequest::AbsorbCommit {
+                        absorbed: *absorbed,
+                        absorbed_epoch: *absorbed_epoch,
+                        tick,
+                        state: bytes,
+                    })
+                }
+            }
+            Plan::Split {
+                named,
+                as_epoch,
+                part,
+                splitting,
+                ..
+            } => match self.region.split(named, *part) {
+                Err(NoSplit::Nobody) => Err(Off::Nobody),
+                Err(NoSplit::NothingStays) => Err(Off::NothingStays),
+                Ok(planned) => {
+                    let state = stored(&planned.state);
+                    let of_part = stored(&planned.part);
+                    if state.len() + of_part.len() + 16 * planned.chunks.len() > limit {
+                        Err(Off::TooLarge)
+                    } else {
+                        let request = StoreRequest::SplitCommit {
+                            tick,
+                            state,
+                            part: SplitPart {
+                                chunks: planned.chunks.clone(),
+                                state: of_part,
+                            },
+                            as_epoch: *as_epoch,
+                            region: *part,
+                        };
+                        *splitting = Some(planned);
+                        Ok(request)
+                    }
+                }
+            },
+        };
+        match request {
+            Ok(request) => {
+                info!(tick, "handing the store a merge or a split");
+                self.store.request(request);
+                self.reshaping = Some(reshaping);
+                self.phase = Phase::Committing;
+            }
+            Err(why) => self.tick_on(reshaping.done, why),
+        }
+    }
+
+    /// Goes on as if no merge or split had been asked for, as nothing came of it.
+    /// Nothing was said to anyone, no link the runner had was closed and no tick
+    /// number was used: the next tick is the one after the region's last, and takes
+    /// what links sent while the region stood still and what the store answered
+    /// meanwhile.
+    fn tick_on(&mut self, done: Done, why: Off) {
+        info!(
+            tick = self.region.tick_number(),
+            ?why,
+            "nothing comes of a merge or a split; the region ticks on"
+        );
+        self.phase = Phase::Running;
+        done.off(why);
+    }
+
+    /// Acts on the store's answer to the merge or the split it was handed.
+    fn take_answer(&mut self, answer: StoreReply) {
+        let Some(Reshaping { plan, done }) = self.reshaping.take() else {
+            return;
+        };
+        match (answer, plan) {
+            (
+                StoreReply::Absorbed {
+                    absorbed,
+                    chunks,
+                    pinned,
+                },
+                Plan::Absorb {
+                    state: Some(state), ..
+                },
+            ) => {
+                let (granted, delivered) = self.waiting_for_the_tick();
+                // The region holds what came with the merge, and what the store had
+                // granted it in answer to claims that no tick was told of.
+                let held: Vec<ChunkPos> = chunks.into_iter().chain(granted).collect();
+                let loaded = self.region.take_absorbed(state, &held, &pinned);
+                self.begin_anew(loaded.into_iter().chain(delivered));
+                info!(
+                    tick = self.region.tick_number(),
+                    absorbed = absorbed.0,
+                    "the region has absorbed another"
+                );
+                done.call(Reshaped::Absorbed { absorbed });
+            }
+            (
+                StoreReply::Split { region },
+                Plan::Split {
+                    splitting: Some(splitting),
+                    as_epoch,
+                    ..
+                },
+            ) => {
+                let (granted, delivered) = self.waiting_for_the_tick();
+                let gone: BTreeSet<ChunkPos> = splitting.chunks.iter().copied().collect();
+                let (loaded, mut part) = self.region.take_split(splitting, &granted);
+                // What the runner has of the part's chunks beyond those that were
+                // loaded goes with them: what the store had delivered for the coming
+                // tick, and what was still warm from an earlier merge or split.
+                let (theirs, ours): (Vec<_>, Vec<_>) = delivered
+                    .into_iter()
+                    .partition(|(position, _)| gone.contains(position));
+                let (warm, kept): (BTreeMap<_, _>, BTreeMap<_, _>) = mem::take(&mut self.warm)
+                    .into_iter()
+                    .partition(|(position, _)| gone.contains(position));
+                self.warm = kept;
+                let mut of_part: BTreeMap<ChunkPos, Chunk> = part.chunks.into_iter().collect();
+                let warm = warm
+                    .into_iter()
+                    .map(|(position, warm)| (position, warm.chunk));
+                for (position, chunk) in theirs.into_iter().chain(warm) {
+                    of_part.entry(position).or_insert(chunk);
+                }
+                part.chunks = of_part.into_iter().collect();
+                self.begin_anew(loaded.into_iter().chain(ours));
+                info!(
+                    tick = self.region.tick_number(),
+                    part = region.0,
+                    "a part of the region has been split off"
+                );
+                done.call(Reshaped::Split {
+                    region,
+                    as_epoch,
+                    part,
+                });
+            }
+            // The store gives out region ids, and another split can have taken the
+            // one the command named. It changes nothing when it declines, so the same
+            // tick can be named again; and it looks at the id last, so nothing else
+            // stands in the way.
+            (
+                StoreReply::Declined {
+                    reason: Decline::NotNext { next },
+                },
+                Plan::Split {
+                    named,
+                    as_epoch,
+                    renamed: false,
+                    ..
+                },
+            ) => {
+                info!(
+                    part = next.0,
+                    "the store has another id for the part of a split"
+                );
+                let plan = Plan::Split {
+                    named,
+                    as_epoch,
+                    part: next,
+                    renamed: true,
+                    splitting: None,
+                };
+                self.reshaping = Some(Reshaping { plan, done });
+                self.commit();
+            }
+            (StoreReply::Declined { reason }, _) => self.tick_on(done, Off::Declined(reason)),
+            // An answer to another request than was made: region and store disagree
+            // about what was asked, and nothing the runner goes on to do can be
+            // trusted.
+            (answer, plan) => {
+                error!(
+                    ?answer,
+                    "the world store answered a merge or a split with another answer"
+                );
+                self.reshaping = Some(Reshaping { plan, done });
+                self.give_up();
+            }
+        }
+    }
+
+    /// Takes what waits for the coming tick, which a merge or a split takes the place
+    /// of, and returns of it what that tick is given: the chunks the store has granted
+    /// the region in answer to claims that no tick was told of, and the chunks it has
+    /// delivered for requests of the region's last ticks.
+    ///
+    /// Everything else is dropped. What a link sent and no tick took was not applied,
+    /// is not counted as received, and is sent again by its edge on its next link.
+    /// What the store said is another region's is forgotten with everything else the
+    /// region believed or had asked. A delivered chunk is passed on only if the region
+    /// holds it by what its ticks were told: then it has held the chunk since it asked
+    /// for it, and the chunk is what the store has.
+    fn waiting_for_the_tick(&mut self) -> (Vec<ChunkPos>, Vec<(ChunkPos, Chunk)>) {
+        let inputs = mem::take(&mut self.inputs);
+        self.discards.clear();
+        let held = |position: ChunkPos| self.region.knowledge(position) == Knowledge::Held;
+        let delivered = inputs
+            .chunks_loaded
+            .into_iter()
+            .filter(|(position, _)| held(*position))
+            .collect();
+        (inputs.granted, delivered)
+    }
+
+    /// Makes the runner what it is for a region just restored, once its region has
+    /// taken the tick of a merge or a split and so is what a restore makes of its new
+    /// state and of what it holds. `in_memory` are the chunks the runner still has
+    /// that the region held and may hold on: those that were loaded, and those the
+    /// store had delivered. See `docs/adr/0014-merging-and-splitting.md`, section 3.3.
+    ///
+    /// From here on the runner does what it does after [`RegionRunner::restore`], but
+    /// that it has the handle already and has warm chunks. Nothing is published for
+    /// the tick: there is no link to hear it. The next tick is an ordinary one, and
+    /// answers the hellos of the links that edges make now from the state as of this
+    /// tick, with the entries the merge or the split made among the welcome's.
+    fn begin_anew(&mut self, in_memory: impl Iterator<Item = (ChunkPos, Chunk)>) {
+        // Dropping a link closes it, also one that was attached and not taken up. No
+        // ticket is given back for one: the region has none.
+        self.links.clear();
+        self.refuse_links();
+        // Edges count as away from this tick, as after a restore, and nothing is
+        // received of any beyond what the state has applied.
+        let state = self.region.state();
+        self.edges = known_edges(&state);
+        self.last_inputs = last_inputs(&state);
+        // The store has the tick, and every one before it: nothing is pending, unsaved
+        // or being loaded. What it could not read stays noted.
+        self.committed = state.tick;
+        for (position, chunk) in in_memory {
+            let since = state.tick;
+            self.warm.entry(position).or_insert(Warm { chunk, since });
+        }
+        let region = &self.region;
+        self.warm
+            .retain(|position, _| region.knowledge(*position) == Knowledge::Held);
+        self.phase = Phase::Running;
+        self.show_status();
     }
 
     /// Lets go of the region for good: of the store handle first, which closes the
@@ -920,6 +1539,12 @@ impl RegionRunner {
         self.phase = Phase::Ended;
         self.ended = Some(ended);
         self.status.set_ended(ended);
+        // A merge or a split that was under way is the next owner's to find done or
+        // not: the store still does what it was asked before it closes the region.
+        self.answer = None;
+        if let Some(reshaping) = self.reshaping.take() {
+            reshaping.done.off(Off::StoreLost);
+        }
     }
 
     /// Publishes the ticks that are committed, oldest first, as far as that goes. A link
@@ -1124,9 +1749,23 @@ impl RegionRunner {
         // what the region gives back, what it claims, and the checkpoint if it is time.
         // See `docs/adr/0012-the-tick-on-chunks.md`, section 4.2.
         for position in output.chunk_requests {
+            // A chunk that is warm is what the store has, and is handed to the next
+            // tick as the store's delivery would be, a tick sooner.
+            if let Some(warm) = self.warm.remove(&position) {
+                self.inputs.chunks_loaded.push((position, warm.chunk));
+                continue;
+            }
             *self.loads.entry(position).or_default() += 1;
             self.store.request(StoreRequest::Load { position });
         }
+        // Another region can hold and change a chunk that is given back, and one that
+        // nobody has asked for in all this time is not about to be shown.
+        for position in &output.returns {
+            self.warm.remove(position);
+        }
+        let tick = output.tick;
+        self.warm
+            .retain(|_, warm| tick.saturating_sub(warm.since) < WARM_FOR);
         let changes: Vec<_> = output
             .events
             .iter()
@@ -1327,7 +1966,13 @@ impl RegionRunner {
         // waited for its chunk finds it there, or another region's.
         self.release_held();
 
-        self.status.tick.store(output.tick, Ordering::Relaxed);
+        self.show_status();
+    }
+
+    /// Brings what others may read of the region up to date with its last tick.
+    fn show_status(&mut self) {
+        let tick = self.region.tick_number();
+        self.status.tick.store(tick, Ordering::Relaxed);
         let players = self.region.player_count() as u64;
         self.status.players.store(players, Ordering::Relaxed);
         let chunks = self.region.loaded_chunk_count() as u64;
@@ -1419,9 +2064,11 @@ impl RegionRunner {
     /// region is released, which [`Worker::begin_release`] asks for.
     ///
     /// A release is carried on by looking at the store's answers every millisecond, and
-    /// never by waiting for one. If `stop` is set while a release is under way, the
-    /// region is let go of as it is, without anything more being asked of the store or
-    /// waited for: this ends as [`Ended::Abandoned`].
+    /// never by waiting for one; so are a merge and a split, which are taken before a
+    /// step from what [`Worker::reshape`] handed in, as the wish for a release is
+    /// looked at. If `stop` is set while one of them is under way, the region is let
+    /// go of as it is, without anything more being asked of the store or waited for:
+    /// this ends as [`Ended::Abandoned`].
     pub fn run(&mut self, stop: &AtomicBool) -> Ended {
         let mut deadline = Instant::now() + TICK;
         loop {
@@ -1434,9 +2081,17 @@ impl RegionRunner {
             if self.release_asked.load(Ordering::Relaxed) {
                 self.begin_release();
             }
+            while let Ok(command) = self.commands.try_recv() {
+                self.take_command(command);
+            }
             self.step();
-            if matches!(self.phase, Phase::Settling | Phase::Closing) {
-                // No tick is due any more; all that is left is the store's answers.
+            if matches!(
+                self.phase,
+                Phase::Settling | Phase::Closing | Phase::Committing
+            ) {
+                // No tick is due meanwhile; all there is to do is to take the store's
+                // answers. A merge or a split that is through or off goes on ticking
+                // from here, late by as long as it took.
                 thread::sleep(COMMIT_POLL);
                 continue;
             }
@@ -1464,11 +2119,14 @@ impl RegionRunner {
             deadline += TICK;
         }
         if self.phase != Phase::Running {
-            // Whoever stops a release has waited long enough for the store. What the
-            // store was asked for it still does if it can, before it closes the region.
+            // Whoever stops a release, a merge or a split has waited long enough for
+            // the store. What the store was asked for it still does if it can, before
+            // it closes the region: a merge or a split that was handed to it is found
+            // done or not by whoever opens the region next.
             warn!(
                 tick = self.region.tick_number(),
-                "stopped in the middle of a release; letting go of the region as it is"
+                "stopped in the middle of a release, a merge or a split; letting go of the \
+                 region as it is"
             );
             self.end(Ended::Abandoned);
             return Ended::Abandoned;
@@ -2076,6 +2734,61 @@ impl RegionRunner {
     }
 }
 
+/// What a runner keeps for the edges that a region's state knows, when it begins with
+/// that state: after a restore, and after a merge or a split. Edges count as away from
+/// the state's tick, however long they were before: they could not have had a link to
+/// a region that was not running, and a merge or a split closes every link. Nothing is
+/// received of an edge beyond what the state has applied.
+fn known_edges(state: &RegionState) -> BTreeMap<EdgeId, KnownEdge> {
+    let mut edges = BTreeMap::new();
+    for (id, edge) in &state.edges {
+        let known = KnownEdge {
+            start: edge.start,
+            settled: true,
+            received: edge.applied,
+            applied: edge.applied,
+            link: None,
+            away_since: state.tick,
+        };
+        edges.insert(*id, known);
+    }
+    edges
+}
+
+/// The number of the last applied input of each player of `state`.
+fn last_inputs(state: &RegionState) -> BTreeMap<PlayerId, u64> {
+    let players = state.players.iter();
+    players
+        .map(|(id, player)| (*id, player.last_input))
+        .collect()
+}
+
+/// The whole state of a region that is to be absorbed, as [`Reshape::Absorb`] takes
+/// it: what the store has of the region, `restored` being what it returned when the
+/// region was opened for that and `handle` the handle it came with.
+///
+/// The store declines a merge while a commit of either region is not covered by a
+/// checkpoint. A released region has none. One whose owner lost the store on its way
+/// out has, and for that one this asks the store for a checkpoint of the state and
+/// waits until the store has it. The store has put the block changes of those commits
+/// into the chunks before it answered the hello, so the checkpoint needs no save.
+///
+/// This waits for the store for as long as the store neither answers nor closes the
+/// handle. A handle that is lost on the way shows in the merge being declined.
+pub fn absorbable(handle: &StoreHandle, restored: Restored) -> Result<RegionState, RestoreError> {
+    let tick = restored.tick();
+    let uncovered = !restored.deltas.is_empty();
+    let state = restored_state(restored)?;
+    if uncovered {
+        handle.request(StoreRequest::Checkpoint {
+            tick,
+            state: stored(&state),
+        });
+        handle.flush();
+    }
+    Ok(state)
+}
+
 /// What the store says of the region's chunks when it opens the region: the chunks it
 /// has granted the region, without the ticks they are held from, which only the store
 /// needs, and the areas the region is pinned to.
@@ -2151,6 +2864,7 @@ pub struct Worker {
     thread: JoinHandle<Ended>,
     stop: Arc<AtomicBool>,
     release: Arc<AtomicBool>,
+    commands: Sender<Command>,
 }
 
 impl Worker {
@@ -2159,6 +2873,7 @@ impl Worker {
     pub fn spawn(runner: RegionRunner) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let release = Arc::clone(&runner.release_asked);
+        let commands = runner.command.clone();
         let thread = thread::Builder::new()
             .name("region".to_owned())
             .spawn({
@@ -2175,7 +2890,22 @@ impl Worker {
             thread,
             stop,
             release,
+            commands,
         }
+    }
+
+    /// Hands `reshape` to the region's thread, which takes it before its next step,
+    /// and returns at once; see [`RegionRunner::reshape`] for what becomes of it.
+    ///
+    /// `done` is called with the outcome, once, and never for [`Reshape::Prepare`]: on
+    /// the region's thread, so it must not wait for anything; a closure that sends
+    /// into a channel is what it is meant to be. If the thread has ended, or ends
+    /// before it has taken the command, the outcome is that nothing came of it, and
+    /// `done` is called on whichever thread finds that out.
+    pub fn reshape(&self, reshape: Reshape, done: Box<dyn FnOnce(Reshaped) + Send>) {
+        // A thread that has ended takes nothing more. The command that comes back is
+        // dropped, which calls `done`.
+        let _ = self.commands.send(Command::new(reshape, done));
     }
 
     /// Asks the region thread to release the region, as [`RegionRunner::begin_release`]
@@ -2214,9 +2944,10 @@ impl Worker {
     /// Stops ticking, waits for the thread to finish its current tick and to store what
     /// has changed, and says how the runner ended. Its links are closed by then.
     ///
-    /// A worker that is releasing its region stores nothing more and does not wait for
-    /// the store: it lets go of the region as it is, which is [`Ended::Abandoned`]. One
-    /// that has ended already says how.
+    /// A worker that is releasing its region, or is in the middle of a merge or a
+    /// split, stores nothing more and does not wait for the store: it lets go of the
+    /// region as it is, which is [`Ended::Abandoned`]. One that has ended already says
+    /// how.
     pub fn stop(self) -> Ended {
         self.stop.store(true, Ordering::Relaxed);
         // A panic in the region thread has already been reported by the panic hook, and
@@ -2474,6 +3205,8 @@ mod tests {
         /// Whether the answers to claims are held back, and whether those to loads are.
         holding_claims: AtomicBool,
         holding_loads: AtomicBool,
+        /// Whether the answer to a merge or a split is held back.
+        holding_reshapes: AtomicBool,
         /// Everything the runner asked for, in that order.
         asked: Mutex<Vec<Asked>>,
         lost: AtomicBool,
@@ -2518,6 +3251,10 @@ mod tests {
             self.holding_loads.store(false, Ordering::SeqCst);
         }
 
+        fn hold_reshapes(&self) {
+            self.holding_reshapes.store(true, Ordering::SeqCst);
+        }
+
         /// Loses the handle, as the store does when it gives the region to another
         /// owner or cannot be reached.
         fn lose(&self) {
@@ -2531,6 +3268,9 @@ mod tests {
                 StoreReply::Flushed => self.holding_flushes.load(Ordering::SeqCst),
                 StoreReply::Claimed { .. } => self.holding_claims.load(Ordering::SeqCst),
                 StoreReply::Loaded { .. } => self.holding_loads.load(Ordering::SeqCst),
+                StoreReply::Absorbed { .. }
+                | StoreReply::Split { .. }
+                | StoreReply::Declined { .. } => self.holding_reshapes.load(Ordering::SeqCst),
                 _ => false,
             }
         }
@@ -2549,6 +3289,18 @@ mod tests {
         /// How many answers to loads are held back.
         fn kept_loads(&self) -> usize {
             self.kept_of(|reply| matches!(reply, StoreReply::Loaded { .. }))
+        }
+
+        /// How many answers to a merge or a split are held back.
+        fn kept_reshapes(&self) -> usize {
+            self.kept_of(|reply| {
+                matches!(
+                    reply,
+                    StoreReply::Absorbed { .. }
+                        | StoreReply::Split { .. }
+                        | StoreReply::Declined { .. }
+                )
+            })
         }
 
         /// What the runner has asked for since this was last called, in that order.
@@ -2591,7 +3343,10 @@ mod tests {
         Claim(Vec<ChunkPos>),
         Checkpoint(u64),
         Flush,
-        Other,
+        /// A merge, with its tick.
+        Absorb(u64),
+        /// A split, with its tick and the id it names for the new region.
+        Split(u64, RegionId),
     }
 
     impl Asked {
@@ -2604,7 +3359,8 @@ mod tests {
                 StoreRequest::Claim { chunks } => Self::Claim(chunks.clone()),
                 StoreRequest::Checkpoint { tick, .. } => Self::Checkpoint(*tick),
                 StoreRequest::Flush => Self::Flush,
-                StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. } => Self::Other,
+                StoreRequest::AbsorbCommit { tick, .. } => Self::Absorb(*tick),
+                StoreRequest::SplitCommit { tick, region, .. } => Self::Split(*tick, *region),
             }
         }
     }
@@ -7601,5 +8357,1293 @@ mod tests {
         edge.send(arrive(50)).await.unwrap();
         step(&mut runner);
         assert_eq!(status.arrivals.load(Ordering::Relaxed), 1);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Merging and splitting: sections 3.1 to 3.5 and 3.8 of
+    // `docs/adr/0014-merging-and-splitting.md`, and the builder's own tests of its
+    // section 10, which need the gate before the store.
+    // -----------------------------------------------------------------------------------
+
+    /// The chunk two to the west of the one players enter the world in.
+    const FAR_WEST: ChunkPos = ChunkPos::new(-2, 0);
+
+    /// A chunk of the eastern stripe, away from the line.
+    const FAR_EAST: ChunkPos = ChunkPos::new(2, 0);
+
+    /// A call for the outcome of a merge or a split, and where the outcome shows.
+    fn outcome() -> (Box<dyn FnOnce(Reshaped) + Send>, Receiver<Reshaped>) {
+        let (said, outcome) = mpsc::channel();
+        let done = move |reshaped| {
+            // Whoever asked may have stopped looking.
+            let _ = said.send(reshaped);
+        };
+        (Box::new(done), outcome)
+    }
+
+    /// Steps `runner` until the merge or the split it was told to make has an outcome.
+    fn reshaped(runner: &mut RegionRunner, outcome: &Receiver<Reshaped>) -> Reshaped {
+        for _ in 0..20_000 {
+            if let Ok(outcome) = outcome.try_recv() {
+                return outcome;
+            }
+            runner.step();
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the merge or the split had no outcome");
+    }
+
+    /// Steps `runner` until it is at `stage` of what it was told to do.
+    fn step_to(runner: &mut RegionRunner, stage: Stage) {
+        for _ in 0..20_000 {
+            if runner.stage() == Some(stage) {
+                return;
+            }
+            runner.step();
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the runner never came to {stage:?}");
+    }
+
+    /// What the runner asked of the store since this was last looked at, without the
+    /// commits of its ticks.
+    fn asked_beside_commits(gate: &GateControl) -> Vec<Asked> {
+        let asked = gate.asked().into_iter();
+        asked
+            .filter(|asked| !matches!(asked, Asked::Commit(_)))
+            .collect()
+    }
+
+    /// A gate before `inner`, for a runner that is not made by opening a region.
+    fn gate_before(inner: StoreHandle) -> (Box<dyn RegionStore>, Arc<GateControl>) {
+        let control = Arc::new(GateControl::default());
+        let gate = Gate {
+            inner,
+            control: Arc::clone(&control),
+        };
+        (Box::new(gate), control)
+    }
+
+    /// The eastern stripe as a test has it that plays the worker that is told to
+    /// absorb it: opened with the epoch 2, read, and kept open.
+    struct East {
+        /// Kept open until the merge has an outcome: the store declines a merge whose
+        /// absorbed region has no owner with the epoch named.
+        handle: StoreHandle,
+        state: RegionState,
+        /// An edge that only this region knew, which has [`third_player`] here.
+        stranger: EdgeId,
+    }
+
+    impl East {
+        fn absorb(&self) -> Reshape {
+            Reshape::Absorb {
+                absorbed: EAST,
+                absorbed_epoch: 2,
+                state: self.state.clone(),
+            }
+        }
+    }
+
+    /// Someone who arrives in [`FAR_EAST`] with `entity`.
+    fn arriving_in_the_east(player: PlayerId, entity: i32) -> EdgeToWorker {
+        EdgeToWorker::PlayerArrive {
+            player,
+            transfer: PlayerTransfer {
+                pose: Pose::at(Vec3::new(40.5, -60.0, 0.5)),
+                ..transfer(EntityId(entity))
+            },
+        }
+    }
+
+    /// Runs the eastern stripe of `world` with a runner of its own, releases it and
+    /// opens it again as whoever absorbs it does. While it ran, [`other_player`] of
+    /// `edge` arrived there, and something they did to a block west of the line was
+    /// passed on, which left an entry in the region's outbox for the edge that nobody
+    /// has confirmed; and [`third_player`] arrived through an edge that no other
+    /// region knows.
+    async fn released_east(world: &Divided, edge: &TestEdge) -> East {
+        let mut east = world.runner(EAST, 1);
+        let (end, worker_end) = link::in_process(256);
+        let there = TestEdge::silent(end, edge.edge, edge.start);
+        east.links().attach(worker_end);
+        let (stranger, stranger_end) = in_process(256);
+        east.links().attach(stranger_end);
+
+        there.send(there.hello(0, &[], &[])).await.unwrap();
+        there
+            .send(arriving_in_the_east(other_player(), 40))
+            .await
+            .unwrap();
+        let beyond = RemoteAction {
+            player: other_player(),
+            sequence: 3,
+            step: RemoteStep::Break {
+                position: BlockPos::new(3, -61, 0),
+            },
+        };
+        there.send(EdgeToWorker::Remote(beyond)).await.unwrap();
+        stranger
+            .send(arriving_in_the_east(third_player(), 41))
+            .await
+            .unwrap();
+        step_until(&mut east, |runner| {
+            runner.region().knowledge(FAR_EAST) == Knowledge::Held
+        });
+        assert_eq!(east.region().player_count(), 2);
+        assert_eq!(outbox(&east, &there), (1, vec![1]));
+        east.begin_release();
+        assert_eq!(released(&mut east), Ended::Released);
+
+        let (handle, restored) = world.open(EAST, 2);
+        let state = absorbable(&handle, restored).unwrap();
+        assert_eq!(state, east.region().state());
+        East {
+            handle,
+            state,
+            stranger: stranger.edge,
+        }
+    }
+
+    /// The eastern stripe of `world` as it is when it has never run, opened and read
+    /// as whoever absorbs it does.
+    fn untouched_east(world: &Divided) -> East {
+        let (handle, restored) = world.open(EAST, 2);
+        let state = absorbable(&handle, restored).unwrap();
+        assert_eq!(state.tick, 0);
+        East {
+            handle,
+            state,
+            stranger: EdgeId::from_name("nobody"),
+        }
+    }
+
+    /// A link of the edge of `before` that says hello to `runner` as an edge does that
+    /// had a link to the region before a merge or a split closed it: it names
+    /// `players` and `chunks`, and has seen nothing of the outbox.
+    async fn linked_again(
+        runner: &RegionRunner,
+        before: &TestEdge,
+        players: &[PlayerId],
+        chunks: &[ChunkPos],
+    ) -> TestEdge {
+        let (end, worker_end) = link::in_process(256);
+        let again = before.again(end, runner);
+        runner.links().attach(worker_end);
+        again.send(again.hello(0, players, chunks)).await.unwrap();
+        again
+    }
+
+    /// The entries of the outbox among `told`, with their numbers.
+    fn entries(told: &[WorkerToEdge]) -> Vec<(u64, Durable)> {
+        let entry = |message: &WorkerToEdge| match message {
+            WorkerToEdge::Outbox { number, entry } => Some((*number, entry.clone())),
+            _ => None,
+        };
+        told.iter().filter_map(entry).collect()
+    }
+
+    /// The chunks `told` has snapshots of, in the order they came.
+    fn shown(told: &[WorkerToEdge]) -> Vec<ChunkPos> {
+        let position = |message: &WorkerToEdge| match message {
+            WorkerToEdge::ChunkSnapshot { position, .. } => Some(*position),
+            _ => None,
+        };
+        told.iter().filter_map(position).collect()
+    }
+
+    /// A merge is one tick of the survivor in which nothing else happens, and it is
+    /// taken when the store has it. Then the survivor has the players and the entries
+    /// of both regions and is pinned to both areas, has closed its links without a
+    /// word, and begins as a restored region does: it believes nothing of any chunk,
+    /// and answers the next hello with what the merge made among the welcome's
+    /// entries and with every stay it has for the edge. The chunks it had loaded are
+    /// served again without the store, and the resume is three ticks.
+    #[tokio::test]
+    async fn a_region_that_absorbs_another_closes_its_links_and_begins_anew_with_both_states() {
+        for on_disk_too in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let world = match on_disk_too {
+                true => Divided::stripes_in(directory.path()),
+                false => Divided::stripes(),
+            };
+            let (mut edge, worker_end) = in_process(256);
+            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            west.links().attach(worker_end);
+            look_east(&mut west, &mut edge);
+            joined(&edge, &mut west).await;
+            let east = released_east(&world, &edge).await;
+            step(&mut west);
+            edge.everything();
+            gate.asked();
+            let before = west.region().state();
+            let chunk = west.region().chunk(ORIGIN).unwrap().clone();
+            assert_eq!(west.region().knowledge(BESIDE), Knowledge::Foreign(EAST));
+
+            let (done, outcome) = outcome();
+            west.reshape(east.absorb(), done);
+            assert_eq!(west.stage(), Some(Stage::Preparing));
+            let absorbed = Reshaped::Absorbed { absorbed: EAST };
+            assert_eq!(reshaped(&mut west, &outcome), absorbed);
+            assert_eq!((west.stage(), west.ended()), (None, None));
+            drop(east.handle);
+
+            // What it cost at the store: a checkpoint while the region ticks, one when
+            // it has stopped, and the merge as the tick after its last.
+            let merged = west.region().state();
+            let tick = merged.tick;
+            assert_eq!(
+                asked_beside_commits(&gate),
+                [
+                    Asked::Checkpoint(before.tick),
+                    Asked::Flush,
+                    Asked::Checkpoint(tick - 1),
+                    Asked::Flush,
+                    Asked::Absorb(tick),
+                ]
+            );
+            assert_eq!(west.status().tick.load(Ordering::Relaxed), tick);
+            assert_eq!(west.status().players.load(Ordering::Relaxed), 3);
+            assert_eq!(west.status().chunks.load(Ordering::Relaxed), 0);
+
+            // Both regions' players, and the store's list has one region.
+            let players: Vec<_> = merged.players.keys().copied().collect();
+            assert_eq!(players, [player(), other_player(), third_player()]);
+            let list = world.store.regions().unwrap();
+            assert_eq!(list.absorbed, [(EAST, RegionId(0))]);
+            assert_eq!(list.regions.len(), 1);
+            assert_eq!(list.regions[0].pinned.len(), 2);
+
+            // The links are closed, and nothing was said on them of the merge.
+            assert_eq!(edge.everything(), []);
+            assert!(closed(&mut edge).await);
+            assert!(west.links.is_empty());
+            // As after a restore: nothing is loaded, nothing believed, and the areas
+            // that came with the merge are the region's.
+            assert_eq!(west.region().loaded_chunk_count(), 0);
+            assert_eq!(west.region().knowledge(BESIDE), Knowledge::Unknown);
+            assert!(west.region().pins(BESIDE));
+            assert_eq!(west.region().knowledge(ORIGIN), Knowledge::Held);
+            assert_eq!(west.committed, tick);
+            assert!(west.pending.is_empty() && west.unsaved.is_empty() && west.loads.is_empty());
+
+            // The edge is back, names what it had here, and sends what its player did
+            // meanwhile behind its hello. Three ticks: the hello and the tickets, the
+            // chunks from memory and their snapshots, and what was held.
+            let mut again = linked_again(&west, &edge, &[player()], &[ORIGIN]).await;
+            again.send(walk(player(), 3.0)).await.unwrap();
+            for _ in 0..3 {
+                west.step();
+            }
+            assert_eq!(west.region().tick_number(), tick + 3);
+            assert_eq!(x_of(&west, player()), Some(3.0));
+            // The store is asked for no chunk the region had loaded. What it is asked
+            // is whose the chunk is that the absorbed region's players stand in: of
+            // an area that came with the merge the store names no chunks, and the
+            // region claims each as it is wanted.
+            assert_eq!(asked_beside_commits(&gate), [Asked::Claim(vec![FAR_EAST])]);
+            settle(&mut west);
+
+            let told = again.everything();
+            let welcome = Welcome::Resumed {
+                entries: 2,
+                presences: 2,
+                applied: before.edges[&edge.edge].applied,
+            };
+            assert_eq!(again.welcomed, Some(welcome));
+            let theirs = &east.state.edges[&edge.edge];
+            let entry = Durable::Absorbed {
+                region: EAST,
+                since: theirs.since,
+                applied: theirs.applied,
+                numbers: vec![1],
+            };
+            assert_eq!(theirs.applied, 2);
+            assert_eq!(entries(&told), [(1, entry), (2, theirs.outbox[&1].clone())]);
+            assert_eq!(
+                presences(&told),
+                [
+                    (player(), Some(EntityId(1))),
+                    (other_player(), Some(EntityId(40)))
+                ]
+            );
+            let as_it_was = |message: &WorkerToEdge| matches!(message, WorkerToEdge::ChunkSnapshot { chunk: shown, .. } if *shown == chunk);
+            assert_eq!(shown(&told), [ORIGIN]);
+            assert!(told.iter().any(as_it_was));
+
+            // An edge that only the absorbed region knew is told since when this one
+            // knows it, which is the tick of the merge, and whom it has here.
+            let (end, worker_end) = link::in_process(256);
+            let mut stranger = TestEdge::silent(end, east.stranger, 1);
+            west.links().attach(worker_end);
+            stranger.send(stranger.hello(0, &[], &[])).await.unwrap();
+            step(&mut west);
+            let told = stranger.everything();
+            let welcome = Welcome::Unknown {
+                since: tick,
+                entries: 1,
+                presences: 1,
+                applied: 0,
+            };
+            assert_eq!(stranger.welcomed, Some(welcome));
+            let theirs = &east.state.edges[&east.stranger];
+            let entry = Durable::Absorbed {
+                region: EAST,
+                since: theirs.since,
+                applied: 1,
+                numbers: vec![],
+            };
+            assert_eq!(entries(&told), [(1, entry)]);
+            assert_eq!(presences(&told), [(third_player(), Some(EntityId(41)))]);
+
+            // Whoever opens the region next finds the merged state as of that tick.
+            settle(&mut west);
+            let now = west.region().state();
+            let (_handle, restored) = world.open(RegionId(0), 2);
+            let stored = restored.state.clone().unwrap();
+            assert_eq!(stored.tick, tick);
+            let as_of_the_merge = Restored {
+                deltas: Vec::new(),
+                ..restored.clone()
+            };
+            assert_eq!(restored_state(as_of_the_merge).unwrap(), merged);
+            assert_eq!(restored.pinned.len(), 2);
+            // A tick that changed nothing has no commit, and is not counted by the store.
+            let mut stored = restored_state(restored).unwrap();
+            assert!(tick < stored.tick && stored.tick <= now.tick);
+            stored.tick = now.tick;
+            assert_eq!(stored, now);
+        }
+    }
+
+    /// The chunks a region has loaded at a merge are kept in memory, and handed to the
+    /// tick that asks storage for them. One that the region gives back is forgotten:
+    /// another region can hold and change it, so when the region is granted it again
+    /// it asks the store.
+    #[tokio::test]
+    async fn a_warm_chunk_is_served_from_memory_and_forgotten_when_the_region_gives_it_back() {
+        let world = Divided::gap();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = world.gated(HOME, config(0));
+        runner.links().attach(worker_end);
+        joined(&edge, &mut runner).await;
+        edge.everything();
+        edge.send(asking_for(vec![BESIDE])).await.unwrap();
+        assert_eq!(
+            answers(&mut runner, &mut edge, 1),
+            [(BESIDE, edge.asked(), Told::Snapshot)]
+        );
+        let east = untouched_east(&world);
+
+        let (done, outcome) = outcome();
+        runner.reshape(east.absorb(), done);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut runner, &outcome), absorbed);
+        let warm: Vec<_> = runner.warm.keys().copied().collect();
+        assert_eq!(warm, [ORIGIN, BESIDE]);
+        assert!(runner.region().pins(ChunkPos::new(16, 0)));
+        gate.asked();
+
+        // The edge is back for the home chunk alone. Nothing uses the other, which
+        // the region gives back, as nothing keeps it.
+        let mut again = linked_again(&runner, &edge, &[player()], &[ORIGIN]).await;
+        assert_eq!(
+            answers(&mut runner, &mut again, 1),
+            [(ORIGIN, 0, Told::Snapshot)]
+        );
+        step_until(&mut runner, |runner| {
+            runner.region().knowledge(BESIDE) == Knowledge::Unknown
+        });
+        assert!(runner.warm.is_empty());
+        let loads = |asked: Vec<Asked>| -> Vec<Asked> {
+            let loads = asked.into_iter();
+            loads
+                .filter(|asked| matches!(asked, Asked::Load(_)))
+                .collect()
+        };
+        assert_eq!(loads(gate.asked()), []);
+
+        again.send(asking_for(vec![BESIDE])).await.unwrap();
+        assert_eq!(
+            answers(&mut runner, &mut again, 1),
+            [(BESIDE, again.asked(), Told::Snapshot)]
+        );
+        assert_eq!(loads(gate.asked()), [Asked::Load(BESIDE)]);
+    }
+
+    /// When the store has answered the flush behind the second checkpoint, it has
+    /// answered every load asked before. The runner looks all the same, and hands the
+    /// store no merge while a chunk is on its way to it; the chunk that then comes is
+    /// kept like those that were loaded.
+    #[tokio::test]
+    async fn a_merge_is_not_handed_to_the_store_while_a_chunk_is_being_loaded() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        let east = untouched_east(&world);
+
+        gate.hold_loads();
+        edge.send(asking_for(vec![WEST_OF_HOME])).await.unwrap();
+        step_until(&mut west, |runner| runner.loads.contains_key(&WEST_OF_HOME));
+        wait_for_kept_answers(&mut west, &gate, GateControl::kept_loads, 1);
+        gate.asked();
+
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        step_to(&mut west, Stage::Closing);
+        step_until(&mut west, |runner| {
+            runner.flushes_answered == runner.flushes_asked
+        });
+        for _ in 0..20 {
+            west.step();
+        }
+        assert_eq!(west.stage(), Some(Stage::Closing));
+        assert!(outcome.try_recv().is_err());
+        let asked = gate.asked();
+        assert!(
+            !asked.iter().any(|asked| matches!(asked, Asked::Absorb(_))),
+            "{asked:?}"
+        );
+
+        gate.release_loads();
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        let warm: Vec<_> = west.warm.keys().copied().collect();
+        assert_eq!(warm, [WEST_OF_HOME, ORIGIN]);
+        gate.asked();
+
+        // Both are shown to the edge that is back without the store being asked.
+        let chunks = [ORIGIN, WEST_OF_HOME];
+        let mut again = linked_again(&west, &edge, &[player()], &chunks).await;
+        assert_eq!(
+            answers(&mut west, &mut again, 2),
+            [
+                (WEST_OF_HOME, 0, Told::Snapshot),
+                (ORIGIN, 0, Told::Snapshot)
+            ]
+        );
+        assert_eq!(asked_beside_commits(&gate), []);
+    }
+
+    /// A runner that is stopped while the store has the merge and has not answered
+    /// lets go of the region as it is. It has said nothing of the merge to anyone, and
+    /// says of its outcome that the store knows: here the store did it, and whoever
+    /// opens the region next finds it merged.
+    #[tokio::test]
+    async fn a_runner_stopped_while_the_store_has_a_merge_is_abandoned_and_has_said_nothing() {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        let east = released_east(&world, &edge).await;
+        step(&mut west);
+        edge.everything();
+
+        gate.hold_reshapes();
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        step_to(&mut west, Stage::Committing);
+        let tick = west.region().tick_number();
+        wait_for_kept_answers(&mut west, &gate, GateControl::kept_reshapes, 1);
+        for _ in 0..5 {
+            west.step();
+        }
+        assert_eq!(west.stage(), Some(Stage::Committing));
+        assert!(outcome.try_recv().is_err());
+
+        assert_eq!(west.run(&AtomicBool::new(true)), Ended::Abandoned);
+        assert_eq!(west.ended(), Some(Ended::Abandoned));
+        let off = Reshaped::Off {
+            why: Off::StoreLost,
+        };
+        assert_eq!(outcome.try_recv(), Ok(off));
+        assert_eq!(west.region().tick_number(), tick);
+        assert_eq!(edge.everything(), []);
+        assert!(closed(&mut edge).await);
+
+        let list = world.store.regions().unwrap();
+        assert_eq!(list.absorbed, [(EAST, RegionId(0))]);
+        let (_handle, restored) = world.open(RegionId(0), 2);
+        assert_eq!(restored.deltas, []);
+        let state = restored_state(restored).unwrap();
+        assert_eq!(state.tick, tick + 1);
+        assert_eq!(state.players.len(), 3);
+    }
+
+    /// A region that has stopped ticking for a merge, with two things taken from links
+    /// that no tick has taken: a step of [`player`] that came when the region was as
+    /// far ahead of the store as it may be, and the join of [`other_player`], which
+    /// waited behind the hello of a second edge until the region's last tick had shown
+    /// that edge its chunk.
+    struct Stalled {
+        west: RegionRunner,
+        gate: Arc<GateControl>,
+        edge: TestEdge,
+        second: TestEdge,
+        /// The number of the step, and the step.
+        late: (u64, EdgeToWorker),
+        /// The region it was told to absorb, which is kept open.
+        east: East,
+        outcome: Receiver<Reshaped>,
+        /// The number of the region's last tick.
+        tick: u64,
+    }
+
+    /// Tells the western stripe of `world` to absorb the eastern one, as opened with
+    /// `absorbed_epoch`, which is 2 if the store is to do it, and stops it so.
+    async fn stalled(world: &Divided, absorbed_epoch: u64) -> Stalled {
+        let (edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        step(&mut west);
+        let east = untouched_east(world);
+        let reshape = Reshape::Absorb {
+            absorbed: EAST,
+            absorbed_epoch,
+            state: east.state.clone(),
+        };
+
+        // Eight ticks that the store does not confirm, the last of which takes the
+        // second edge's hello and, as the chunk is loaded, answers it at once.
+        gate.hold();
+        gate.hold_flushes();
+        for x in 1..MAX_TICKS_AHEAD {
+            edge.send(walk(player(), x as f64)).await.unwrap();
+            west.step();
+        }
+        let (end, worker_end) = link::in_process(256);
+        let second = TestEdge::silent(end, EdgeId::from_name("second"), 1);
+        west.links().attach(worker_end);
+        second.send(second.hello(0, &[], &[ORIGIN])).await.unwrap();
+        second.send(join(other_player(), "Jeb")).await.unwrap();
+        edge.send(walk(player(), 8.0)).await.unwrap();
+        west.step();
+        assert_eq!(west.pending.len(), MAX_TICKS_AHEAD);
+        let tick = west.region().tick_number();
+        assert!(west.links.values().all(|link| link.held.is_empty()));
+        assert_eq!(west.edges[&second.edge].received, 1);
+        assert_eq!(west.region().edge(second.edge).unwrap().applied, 0);
+
+        let (done, outcome) = outcome();
+        west.reshape(reshape, done);
+        let late = walk(player(), 20.0);
+        edge.send(late.clone()).await.unwrap();
+        let number = edge.sent.load(Ordering::Relaxed);
+        // This step takes it from the link, and does not tick.
+        west.step();
+        assert_eq!(west.region().tick_number(), tick);
+        assert_eq!(west.edges[&edge.edge].received, number);
+        assert_eq!(west.region().edge(edge.edge).unwrap().applied, number - 1);
+
+        wait_for_kept_flush(&mut west, &gate);
+        gate.release_flushes();
+        step_to(&mut west, Stage::Settling);
+        assert_eq!(west.region().tick_number(), tick);
+        gate.release();
+        Stalled {
+            west,
+            gate,
+            edge,
+            second,
+            late: (number, late),
+            east,
+            outcome,
+            tick,
+        }
+    }
+
+    /// What a link sent and no tick took when the region stopped is not in the state
+    /// the merge is made of. With the tick of the merge it is dropped and not counted
+    /// as received, so that its edge, which was not told that it was applied, sends
+    /// it again on its next link, where it is applied once.
+    #[tokio::test]
+    async fn what_no_tick_took_before_a_merge_is_not_counted_and_is_applied_when_sent_again() {
+        let world = Divided::stripes();
+        let mut stalled = stalled(&world, 2).await;
+        let west = &mut stalled.west;
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(west, &stalled.outcome), absorbed);
+        assert_eq!(west.region().tick_number(), stalled.tick + 1);
+        // The absorbed region is no more, and its handle with it.
+        assert!(stalled.east.handle.is_lost());
+        let (number, late) = stalled.late;
+
+        assert_eq!(x_of(west, player()), Some(8.0));
+        assert_eq!(west.region().player_count(), 1);
+        let known = &west.edges[&stalled.edge.edge];
+        assert_eq!((known.received, known.applied), (number - 1, number - 1));
+        assert_eq!(west.edges[&stalled.second.edge].received, 0);
+        assert_eq!(west.inputs, TickInputs::default());
+
+        // The welcome says how far the region had got, and each edge sends again what
+        // is beyond that.
+        let mut again = linked_again(west, &stalled.edge, &[player()], &[ORIGIN]).await;
+        again.send_as(number, late).await;
+        let mut second = linked_again(west, &stalled.second, &[], &[ORIGIN]).await;
+        second.send_as(1, join(other_player(), "Jeb")).await;
+        step_until(west, |runner| {
+            x_of(runner, player()) == Some(20.0) && runner.region().player_count() == 2
+        });
+        settle(west);
+        assert_eq!(west.region().edge(again.edge).unwrap().applied, number);
+        assert_eq!(west.region().edge(second.edge).unwrap().applied, 1);
+        again.everything();
+        second.everything();
+        let applied = |welcome: Option<Welcome>| match welcome {
+            Some(Welcome::Resumed { applied, .. }) => applied,
+            other => panic!("welcomed {other:?}"),
+        };
+        assert_eq!(applied(again.welcomed), number - 1);
+        assert_eq!(applied(second.welcomed), 0);
+    }
+
+    /// If the store declines the merge, what a link sent while the region stood still
+    /// is where it was, and the region's next tick takes it. That tick is the one a
+    /// merge would have been: no tick number was used, and no link was closed or told
+    /// anything.
+    #[tokio::test]
+    async fn after_a_merge_that_is_declined_the_region_ticks_on_with_what_its_links_sent() {
+        let world = Divided::stripes();
+        // Not the epoch the region to absorb is open with.
+        let mut stalled = stalled(&world, 3).await;
+        let west = &mut stalled.west;
+        let declined = Decline::NotOpened { epoch: Some(2) };
+        let off = Reshaped::Off {
+            why: Off::Declined(declined),
+        };
+        assert_eq!(reshaped(west, &stalled.outcome), off);
+        assert_eq!((west.stage(), west.ended()), (None, None));
+        assert_eq!(west.region().tick_number(), stalled.tick);
+        assert_eq!(west.links.len(), 2);
+        assert_eq!(world.store.regions().unwrap().absorbed, []);
+        assert!(!stalled.east.handle.is_lost());
+
+        step(west);
+        assert_eq!(west.region().tick_number(), stalled.tick + 1);
+        assert_eq!(x_of(west, player()), Some(20.0));
+        assert_eq!(west.region().player_count(), 2);
+        assert_eq!(stalled.gate.commits().last(), Some(&(stalled.tick + 1)));
+        // What the edges were told is what ticks tell: no entry of a merge.
+        let told = stalled.edge.everything();
+        assert_eq!(entries(&told), []);
+        assert_eq!(moves(&told).last(), Some(&20.0));
+        assert!(stalled.second.everything().contains(&UNKNOWN));
+    }
+
+    /// Two players of one edge in the western stripe: [`player`] where players enter
+    /// the world and [`other_player`] in [`FAR_WEST`]. The edge is subscribed to the
+    /// chunks they stand in and to the one between, and all three are loaded.
+    async fn two_players_apart(runner: &mut RegionRunner, edge: &mut TestEdge) {
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(join(other_player(), "Jeb")).await.unwrap();
+        edge.send(asking_for(vec![ORIGIN, WEST_OF_HOME, FAR_WEST]))
+            .await
+            .unwrap();
+        edge.send(walk(other_player(), -20.5)).await.unwrap();
+        step_until(runner, |runner| {
+            runner.region().loaded_chunk_count() == 3 && x_of(runner, other_player()) == Some(-20.5)
+        });
+        step(runner);
+        edge.everything();
+    }
+
+    /// A split of `chunks`, with the id the store of two stripes gives out next.
+    fn split_off(chunks: &[ChunkPos]) -> Reshape {
+        Reshape::SplitOff {
+            chunks: chunks.to_vec(),
+            as_epoch: 5,
+            part: RegionId(2),
+        }
+    }
+
+    /// A split is one tick as well. The players standing in the chunks named go, with
+    /// the chunks nearer to them than to anyone who stays; the region tells their edge
+    /// so in its outbox, closes its links, and begins anew without the part. The part
+    /// is a region as any worker would restore it from the store's record, and a
+    /// runner made of it serves its chunks from memory.
+    #[tokio::test]
+    async fn a_split_makes_a_region_of_the_players_in_the_chunks_named_and_both_begin_anew() {
+        for on_disk_too in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let world = match on_disk_too {
+                true => Divided::stripes_in(directory.path()),
+                false => Divided::stripes(),
+            };
+            let (mut edge, worker_end) = in_process(256);
+            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            west.links().attach(worker_end);
+            two_players_apart(&mut west, &mut edge).await;
+            gate.asked();
+            let before = west.region().state();
+            let far = west.region().chunk(FAR_WEST).unwrap().clone();
+
+            let (done, outcome) = outcome();
+            west.reshape(split_off(&[FAR_WEST]), done);
+            let Reshaped::Split {
+                region: new,
+                as_epoch,
+                part,
+            } = reshaped(&mut west, &outcome)
+            else {
+                panic!("no split");
+            };
+            assert_eq!((new, as_epoch), (RegionId(2), 5));
+            let tick = west.region().tick_number();
+            assert_eq!(
+                asked_beside_commits(&gate),
+                [
+                    Asked::Checkpoint(before.tick),
+                    Asked::Flush,
+                    Asked::Checkpoint(tick - 1),
+                    Asked::Flush,
+                    Asked::Split(tick, new),
+                ]
+            );
+
+            // The part: the player who stood there, the chunk, as it was.
+            assert_eq!(part.chunks, [(FAR_WEST, far)]);
+            assert_eq!(part.region.tick_number(), tick);
+            assert_eq!(part.region.player_count(), 1);
+            assert_eq!(part.region.player(other_player()).unwrap().0, EntityId(2));
+            assert_eq!(part.region.knowledge(FAR_WEST), Knowledge::Held);
+            assert_eq!(part.region.knowledge(WEST_OF_HOME), Knowledge::Unknown);
+            // The region: without them, and knowing nothing of the chunk.
+            assert_eq!(west.region().player_count(), 1);
+            assert_eq!(west.region().knowledge(FAR_WEST), Knowledge::Unknown);
+            assert_eq!(west.region().knowledge(WEST_OF_HOME), Knowledge::Held);
+            assert_eq!(west.region().loaded_chunk_count(), 0);
+            let warm: Vec<_> = west.warm.keys().copied().collect();
+            assert_eq!(warm, [WEST_OF_HOME, ORIGIN]);
+            assert_eq!(west.status().players.load(Ordering::Relaxed), 1);
+            assert_eq!(edge.everything(), []);
+            assert!(closed(&mut edge).await);
+
+            // The store has the new region, to be opened with the epoch named.
+            let list = world.store.regions().unwrap();
+            let listed: Vec<_> = list
+                .regions
+                .iter()
+                .map(|info| (info.region, info.epoch))
+                .collect();
+            assert_eq!(listed, [(RegionId(0), 1), (EAST, 0), (new, 5)]);
+            let (handle, restored) = world.store.open_region(world.hello(new, 5)).unwrap();
+            let holdings = holdings(&restored);
+            let state = restored_state(restored).unwrap();
+            assert_eq!(Region::restore(config(0), state, holdings), part.region);
+
+            // The edge is back at the region that was split, with what it had there.
+            let both = [player(), other_player()];
+            let chunks = [ORIGIN, WEST_OF_HOME, FAR_WEST];
+            let mut again = linked_again(&west, &edge, &both, &chunks).await;
+            again.send(walk(player(), 3.0)).await.unwrap();
+            assert_eq!(
+                answers(&mut west, &mut again, 3),
+                [
+                    (FAR_WEST, 0, Told::Elsewhere(new)),
+                    (WEST_OF_HOME, 0, Told::Snapshot),
+                    (ORIGIN, 0, Told::Snapshot),
+                ]
+            );
+            step_until(&mut west, |runner| x_of(runner, player()) == Some(3.0));
+            let welcome = Welcome::Resumed {
+                entries: 1,
+                presences: 2,
+                applied: before.edges[&edge.edge].applied,
+            };
+            assert_eq!(again.welcomed, Some(welcome));
+            let went = Durable::SplitOff {
+                region: new,
+                players: vec![(other_player(), EntityId(2))],
+            };
+            let state = west.region().edge(edge.edge).unwrap();
+            assert_eq!(state.outbox.values().collect::<Vec<_>>(), [&went]);
+            assert_eq!(
+                presences(&again.aside),
+                [(player(), Some(EntityId(1))), (other_player(), None)]
+            );
+            let loads =
+                |asked: Vec<Asked>| asked.iter().any(|asked| matches!(asked, Asked::Load(_)));
+            assert!(!loads(gate.asked()));
+
+            // And at the part, which it has never said anything to: it is told since
+            // when the part knows it and whom the part has, and shown the chunk without
+            // the store being asked for it. Three ticks again.
+            let (store, gate) = gate_before(handle);
+            let mut part = RegionRunner::of_part_with(part, store);
+            let (end, worker_end) = link::in_process(256);
+            let mut there = TestEdge::silent(end, edge.edge, edge.start);
+            part.links().attach(worker_end);
+            there.send(there.hello(0, &[], &[FAR_WEST])).await.unwrap();
+            there.send(walk(other_player(), -22.5)).await.unwrap();
+            for _ in 0..3 {
+                part.step();
+            }
+            assert_eq!(x_of(&part, other_player()), Some(-22.5));
+            settle(&mut part);
+            let told = there.everything();
+            let welcome = Welcome::Unknown {
+                since: tick,
+                entries: 0,
+                presences: 1,
+                applied: 0,
+            };
+            assert_eq!(there.welcomed, Some(welcome));
+            assert_eq!(presences(&told), [(other_player(), Some(EntityId(2)))]);
+            assert_eq!(shown(&told), [FAR_WEST]);
+            assert_eq!(asked_beside_commits(&gate), []);
+        }
+    }
+
+    /// The store gives out the ids of regions, and another split can have taken the
+    /// one a command names. The runner makes the split again with the id the store
+    /// says is next, and what it tells the edge names the region the store has.
+    #[tokio::test]
+    async fn a_split_that_names_another_id_than_the_next_is_made_with_the_next() {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        two_players_apart(&mut west, &mut edge).await;
+        gate.asked();
+
+        let (done, outcome) = outcome();
+        let reshape = Reshape::SplitOff {
+            chunks: vec![FAR_WEST],
+            as_epoch: 5,
+            part: RegionId(9),
+        };
+        west.reshape(reshape, done);
+        let Reshaped::Split { region, part, .. } = reshaped(&mut west, &outcome) else {
+            panic!("no split");
+        };
+        assert_eq!(region, RegionId(2));
+        assert_eq!(part.region.player_count(), 1);
+        let tick = west.region().tick_number();
+        let asked = gate.asked();
+        let splits: Vec<_> = asked
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Split(..)))
+            .collect();
+        assert_eq!(
+            splits,
+            [
+                &Asked::Split(tick, RegionId(9)),
+                &Asked::Split(tick, RegionId(2))
+            ]
+        );
+        let state = west.region().edge(edge.edge).unwrap();
+        let went = Durable::SplitOff {
+            region: RegionId(2),
+            players: vec![(other_player(), EntityId(2))],
+        };
+        assert_eq!(state.outbox.values().collect::<Vec<_>>(), [&went]);
+        let list = world.store.regions().unwrap();
+        assert_eq!(list.regions.len(), 3);
+        assert_eq!(list.next, RegionId(3));
+    }
+
+    /// Nothing comes of a split that nobody stands in the chunks of, nor of a merge or
+    /// a split that is too large to hand to the store. The store is not asked, the
+    /// region ticks on from its last tick, and its link stays and is told nothing.
+    #[tokio::test]
+    async fn a_split_of_nobody_and_one_that_is_too_large_leave_the_region_as_it_was() {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        two_players_apart(&mut west, &mut edge).await;
+        let east = untouched_east(&world);
+        let list = world.store.regions().unwrap();
+
+        let attempts = [
+            (
+                split_off(&[WEST_OF_HOME, BESIDE]),
+                MAX_RESHAPE_BYTES,
+                Off::Nobody,
+            ),
+            // The home chunk never leaves the region that is joined.
+            (split_off(&[ORIGIN]), MAX_RESHAPE_BYTES, Off::Nobody),
+            (split_off(&[FAR_WEST]), 64, Off::TooLarge),
+            (east.absorb(), 64, Off::TooLarge),
+        ];
+        let mut x = 3.0;
+        for (reshape, limit, why) in attempts {
+            gate.asked();
+            west.max_reshape_bytes = limit;
+            let (done, outcome) = outcome();
+            west.reshape(reshape, done);
+            step_to(&mut west, Stage::Settling);
+            let tick = west.region().tick_number();
+            // Sent while the region stands still.
+            x += 1.0;
+            edge.send(walk(player(), x)).await.unwrap();
+            assert_eq!(reshaped(&mut west, &outcome), Reshaped::Off { why });
+            assert_eq!((west.stage(), west.ended()), (None, None));
+            let asked = gate.asked();
+            assert!(
+                !asked
+                    .iter()
+                    .any(|asked| matches!(asked, Asked::Absorb(_) | Asked::Split(..))),
+                "{asked:?}"
+            );
+            assert_eq!(west.region().tick_number(), tick);
+            assert_eq!(west.links.len(), 1);
+            assert_eq!(edge.everything(), []);
+
+            step(&mut west);
+            assert_eq!(west.region().tick_number(), tick + 1);
+            assert_eq!(x_of(&west, player()), Some(x));
+            assert_eq!(moves(&edge.everything()), [x]);
+        }
+        assert_eq!(world.store.regions().unwrap(), list);
+    }
+
+    /// One thing at a time. A runner that is in the middle of a merge says of a second
+    /// one that it is busy, at once, and so does one that is releasing its region or
+    /// has ended. A release that is asked for during a merge waits for it, and the
+    /// next owner is restored with the merged state. A checkpoint to prepare a merge
+    /// is made only by a runner that does nothing else, and has no outcome.
+    #[tokio::test]
+    async fn a_runner_does_one_thing_at_a_time_and_a_release_waits_for_a_merge() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        let east = untouched_east(&world);
+        let busy = Reshaped::Off { why: Off::Busy };
+        let never = || -> Box<dyn FnOnce(Reshaped) + Send> {
+            Box::new(|outcome: Reshaped| panic!("a checkpoint has an outcome: {outcome:?}"))
+        };
+
+        gate.asked();
+        west.reshape(Reshape::Prepare, never());
+        let tick = west.region().tick_number();
+        assert_eq!(asked_beside_commits(&gate), [Asked::Checkpoint(tick)]);
+        assert_eq!(west.stage(), None);
+
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        let (second_done, second) = self::outcome();
+        west.reshape(split_off(&[ORIGIN]), second_done);
+        assert_eq!(second.try_recv(), Ok(busy.clone()));
+        gate.asked();
+        west.reshape(Reshape::Prepare, never());
+        assert_eq!(asked_beside_commits(&gate), []);
+        west.begin_release();
+        assert_eq!(west.stage(), Some(Stage::Preparing));
+
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        assert_eq!((west.stage(), west.ended()), (None, None));
+        let merged = west.region().state();
+
+        // Asked again, as `run` does before every step.
+        west.begin_release();
+        assert_eq!(west.stage(), Some(Stage::Preparing));
+        let (done, during_release) = self::outcome();
+        west.reshape(split_off(&[ORIGIN]), done);
+        assert_eq!(during_release.try_recv(), Ok(busy.clone()));
+        assert_eq!(released(&mut west), Ended::Released);
+        let (done, after) = self::outcome();
+        west.reshape(split_off(&[ORIGIN]), done);
+        assert_eq!(after.try_recv(), Ok(busy));
+
+        // The ticks that ran while the release was prepared changed nothing but their
+        // number.
+        let (_handle, restored) = world.open(RegionId(0), 2);
+        assert_eq!(restored.deltas, []);
+        let mut state = restored_state(restored).unwrap();
+        assert!(state.tick >= merged.tick);
+        state.tick = merged.tick;
+        assert_eq!(state, merged);
+    }
+
+    /// A runner whose store handle is lost in the middle of a merge stops for good, as
+    /// it does at any time, and says of the merge that the store knows what came of
+    /// it. So does one that is dropped.
+    #[tokio::test]
+    async fn a_merge_whose_runner_loses_the_store_or_is_dropped_leaves_the_outcome_to_the_store() {
+        let lost = Reshaped::Off {
+            why: Off::StoreLost,
+        };
+        for stage in [Stage::Preparing, Stage::Settling, Stage::Closing] {
+            let world = Divided::stripes();
+            let (mut edge, worker_end) = in_process(256);
+            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            west.links().attach(worker_end);
+            joined(&edge, &mut west).await;
+            let east = untouched_east(&world);
+
+            let (done, outcome) = outcome();
+            west.reshape(east.absorb(), done);
+            step_to(&mut west, stage);
+            gate.lose();
+            west.step();
+            assert_eq!(outcome.try_recv(), Ok(lost.clone()));
+            assert_eq!(west.ended(), Some(Ended::StoreLost));
+            assert_eq!(west.stage(), None);
+            assert!(closed(&mut edge).await);
+            assert_eq!(world.store.regions().unwrap().absorbed, []);
+
+            let again = world.hello(RegionId(0), 2);
+            let (mut west, _) = gated_as(&world.store, again, config(0));
+            let (done, outcome) = self::outcome();
+            west.reshape(east.absorb(), done);
+            step_to(&mut west, stage);
+            drop(west);
+            assert_eq!(outcome.try_recv(), Ok(lost.clone()));
+        }
+    }
+
+    /// Chunks that nobody has asked for 600 ticks after the merge or the split they
+    /// are kept from are forgotten.
+    #[tokio::test]
+    async fn warm_chunks_are_forgotten_when_nobody_has_asked_for_them_for_600_ticks() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let (mut west, _) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        let east = untouched_east(&world);
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        let tick = west.region().tick_number();
+        assert_eq!(WARM_FOR, 600);
+
+        step_until(&mut west, |runner| {
+            runner.region().tick_number() == tick + WARM_FOR - 1
+        });
+        let warm: Vec<_> = west.warm.keys().copied().collect();
+        assert_eq!(warm, [ORIGIN]);
+        step(&mut west);
+        assert_eq!(west.region().tick_number(), tick + WARM_FOR);
+        assert!(west.warm.is_empty());
+        // The chunk is still the region's, and comes from the store when it is asked for.
+        assert_eq!(west.region().knowledge(ORIGIN), Knowledge::Held);
+    }
+
+    /// A worker takes a merge on the thread of its region and calls with the outcome
+    /// from there. One whose thread has ended calls with the word that nothing came of
+    /// it.
+    #[tokio::test]
+    async fn a_worker_reshapes_its_region_on_its_thread_and_says_so_once() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let west = world.runner(RegionId(0), 1);
+        west.links().attach(worker_end);
+        let status = west.status();
+        let east = untouched_east(&world);
+        let worker = Worker::spawn(west);
+        edge.send(join(player(), "Notch")).await.unwrap();
+
+        let never =
+            Box::new(|outcome: Reshaped| panic!("a checkpoint has an outcome: {outcome:?}"));
+        worker.reshape(Reshape::Prepare, never);
+        let (done, outcome) = outcome();
+        worker.reshape(east.absorb(), done);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        let patience = Duration::from_secs(10);
+        assert_eq!(outcome.recv_timeout(patience), Ok(absorbed));
+        assert_eq!(world.store.regions().unwrap().regions.len(), 1);
+        // It ticks on.
+        let tick = status.tick.load(Ordering::Relaxed);
+        for _ in 0..20_000 {
+            if status.tick.load(Ordering::Relaxed) > tick {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(status.tick.load(Ordering::Relaxed) > tick);
+
+        worker.begin_release();
+        wait_until_finished(&worker);
+        let (done, outcome) = self::outcome();
+        worker.reshape(split_off(&[ORIGIN]), done);
+        let busy = Reshaped::Off { why: Off::Busy };
+        assert_eq!(outcome.recv_timeout(patience), Ok(busy));
+        assert_eq!(worker.stop(), Ended::Released);
+    }
+
+    /// A region whose owner died instead of releasing it has commits that no checkpoint
+    /// covers, and the store declines to have it absorbed as it is. Whoever is told to
+    /// absorb it reads its state with [`absorbable`], which has the store keep that
+    /// state in place of those commits; then the merge is made.
+    #[tokio::test]
+    async fn a_region_whose_owner_died_is_checkpointed_before_it_is_absorbed() {
+        let world = Divided::stripes();
+        let mut east = world.runner(EAST, 1);
+        let (there, worker_end) = in_process(256);
+        east.links().attach(worker_end);
+        there
+            .send(arriving_in_the_east(other_player(), 40))
+            .await
+            .unwrap();
+        step_until(&mut east, |runner| runner.region().player_count() == 1);
+        settle(&mut east);
+        let players = east.region().state().players;
+        drop(east);
+
+        let (handle, restored) = world.open(EAST, 2);
+        assert!(!restored.deltas.is_empty());
+        let (mut west, _) = world.gated(RegionId(0), config(0));
+        let absorb = |state: RegionState| Reshape::Absorb {
+            absorbed: EAST,
+            absorbed_epoch: 2,
+            state,
+        };
+
+        // As it was read, without a word to the store.
+        let unchecked = restored_state(restored.clone()).unwrap();
+        let (done, outcome) = outcome();
+        west.reshape(absorb(unchecked), done);
+        let declined = Decline::Uncheckpointed { region: EAST };
+        let off = Reshaped::Off {
+            why: Off::Declined(declined),
+        };
+        assert_eq!(reshaped(&mut west, &outcome), off);
+
+        let state = absorbable(&handle, restored).unwrap();
+        assert_eq!(state.players, players);
+        let (done, outcome) = self::outcome();
+        west.reshape(absorb(state), done);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        assert_eq!(west.region().state().players, players);
+    }
+
+    /// What the store delivers for the coming tick is kept at a merge only if the
+    /// region held the chunk by what its ticks were told. A chunk it has given back
+    /// since it asked for it, and is granted again by an answer that no tick has
+    /// taken, can have been another region's in between: what was read for the first
+    /// request is not kept, and the chunk is asked of the store when it is wanted.
+    #[tokio::test]
+    async fn a_chunk_read_before_the_region_gave_it_back_is_not_kept_when_it_is_granted_again() {
+        let world = Divided::gap();
+        let (edge, worker_end) = in_process(256);
+        let (mut runner, gate) = world.gated(HOME, config(0));
+        runner.links().attach(worker_end);
+        joined(&edge, &mut runner).await;
+
+        // The chunk is granted and asked of the store, whose answer does not come.
+        gate.hold_loads();
+        edge.send(asking_for(vec![BESIDE])).await.unwrap();
+        step_until(&mut runner, |runner| runner.loads.contains_key(&BESIDE));
+        wait_for_kept_answers(&mut runner, &gate, GateControl::kept_loads, 1);
+        // The link lets go, and the region gives the chunk back; then the link asks
+        // again, and the store's word that the chunk is the region's does not come.
+        edge.send(done_with(vec![BESIDE])).await.unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().knowledge(BESIDE) == Knowledge::Unknown
+        });
+        gate.hold_claims();
+        edge.send(asking_for(vec![BESIDE])).await.unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().knowledge(BESIDE) == Knowledge::Asked
+        });
+        wait_for_kept_answers(&mut runner, &gate, GateControl::kept_claims, 1);
+
+        let east = untouched_east(&world);
+        let (done, outcome) = outcome();
+        runner.reshape(east.absorb(), done);
+        step_to(&mut runner, Stage::Closing);
+        gate.release_loads();
+        gate.release_claims();
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut runner, &outcome), absorbed);
+        // Granted by the answer that waited, and not kept from the answer before it.
+        assert_eq!(runner.region().knowledge(BESIDE), Knowledge::Held);
+        let warm: Vec<_> = runner.warm.keys().copied().collect();
+        assert_eq!(warm, [ORIGIN]);
+        gate.asked();
+
+        let chunks = [ORIGIN, BESIDE];
+        let mut again = linked_again(&runner, &edge, &[player()], &chunks).await;
+        assert_eq!(
+            answers(&mut runner, &mut again, 2),
+            [(ORIGIN, 0, Told::Snapshot), (BESIDE, 0, Told::Snapshot)]
+        );
+        let asked = gate.asked();
+        let loads: Vec<_> = asked
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Load(_)))
+            .collect();
+        assert_eq!(loads, [&Asked::Load(BESIDE)]);
+    }
+
+    /// A chunk that is still warm when its region is split goes where the split puts
+    /// it: a part that is split again before any edge has asked it for anything hands
+    /// the second part its chunks, and the runner of that one serves them from memory.
+    #[tokio::test]
+    async fn a_chunk_that_is_still_warm_goes_with_the_part_when_its_region_is_split_again() {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, _) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        two_players_apart(&mut west, &mut edge).await;
+        let further = ChunkPos::new(-4, 0);
+        edge.send(join(third_player(), "Dinnerbone")).await.unwrap();
+        edge.send(asking_for(vec![further])).await.unwrap();
+        edge.send(walk(third_player(), -60.5)).await.unwrap();
+        step_until(&mut west, |runner| {
+            runner.region().chunk(further).is_some() && x_of(runner, third_player()) == Some(-60.5)
+        });
+
+        // Two of the three players go, each with the chunk they stand in.
+        let (done, outcome) = outcome();
+        west.reshape(split_off(&[FAR_WEST, further]), done);
+        let Reshaped::Split { region, part, .. } = reshaped(&mut west, &outcome) else {
+            panic!("no split");
+        };
+        let positions = |part: &Part| -> Vec<ChunkPos> {
+            let chunks = part.chunks.iter();
+            chunks.map(|(position, _)| *position).collect()
+        };
+        assert_eq!(positions(&part), [further, FAR_WEST]);
+        let (handle, _) = world.store.open_region(world.hello(region, 5)).unwrap();
+        let mut first = RegionRunner::of_part(part, handle);
+
+        let (done, outcome) = self::outcome();
+        let again = Reshape::SplitOff {
+            chunks: vec![further],
+            as_epoch: 6,
+            part: RegionId(3),
+        };
+        first.reshape(again, done);
+        let Reshaped::Split { region, part, .. } = reshaped(&mut first, &outcome) else {
+            panic!("no second split");
+        };
+        assert_eq!(region, RegionId(3));
+        assert_eq!(positions(&part), [further]);
+        assert_eq!(part.region.player(third_player()).unwrap().0, EntityId(3));
+        let warm: Vec<_> = first.warm.keys().copied().collect();
+        assert_eq!(warm, [FAR_WEST]);
+        assert_eq!(first.region().player_count(), 1);
+
+        let (handle, _) = world.store.open_region(world.hello(region, 6)).unwrap();
+        let (store, gate) = gate_before(handle);
+        let mut second = RegionRunner::of_part_with(part, store);
+        let (end, worker_end) = link::in_process(256);
+        let mut there = TestEdge::silent(end, edge.edge, edge.start);
+        second.links().attach(worker_end);
+        there
+            .send(there.hello(0, &[third_player()], &[further]))
+            .await
+            .unwrap();
+        assert_eq!(
+            answers(&mut second, &mut there, 1),
+            [(further, 0, Told::Snapshot)]
+        );
+        assert_eq!(asked_beside_commits(&gate), []);
+        assert_eq!(
+            presences(&there.aside),
+            [(third_player(), Some(EntityId(3)))]
+        );
     }
 }
