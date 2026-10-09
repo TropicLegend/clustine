@@ -183,16 +183,18 @@ async fn serve_from(
 ///
 /// One whose layout has a boundary is of a process that was started with
 /// `--boundaries`. Until that flag and the layout go, it knows the stripes from the
-/// start and waits for no list, so that such a process is in everything what it
-/// was (`docs/adr/0017-the-end-of-the-stripes.md`, section 9.1, step C5.2 and "What
-/// is true between the steps"). Any other knows no region until it has read the
-/// list, which is what every coordinator does from step C5.9 on.
+/// start, so that such a process gives its regions out as it did, store or no store
+/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 9.1, step C5.2 and "What is
+/// true between the steps"). It awaits the list all the same, and has it read until
+/// it has been: the list is where the home region comes from, which an edge waits
+/// for. Any other knows no region until it has read the list, which is what every
+/// coordinator does from step C5.9 on.
 fn of_its_layout(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
     if config.layout.boundaries().is_empty() {
         return Coordinator::new(config, now, first_epoch);
     }
     let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
-    Coordinator::knowing(config, now, first_epoch, &stripes)
+    Coordinator::knowing_its_stripes(config, now, first_epoch, &stripes)
 }
 
 /// Where clients come in.
@@ -3564,6 +3566,34 @@ mod tests {
             cluster.served.stop().await;
         }
 
+        /// A coordinator that is told stripes and whose store is not there yet, when
+        /// it starts and for some time after, learns the home region as soon as the
+        /// store answers, with no worker registering and nobody asking for anything:
+        /// it has the list read at its ticks until it has been read. An edge lets
+        /// nobody in before it is told the home region, and waited for ever when the
+        /// store came up a moment after the workers had registered.
+        #[tokio::test]
+        async fn a_coordinator_that_is_told_stripes_reads_until_its_store_answers() {
+            let (listener, address) = listen().await;
+            let asked = Arc::new(Mutex::new(0_u32));
+            let counted = Arc::clone(&asked);
+            let lists = move || {
+                let mut asked = counted.lock().unwrap();
+                *asked += 1;
+                // Away for the reading at the start and for two more.
+                if *asked <= 3 {
+                    return no_store();
+                }
+                Ok(listing(&[(0, 0), (1, 0)], &[], 2))
+            };
+            let serving = tokio::spawn(serve(listener, config(&[4]), lists));
+            let mut watch = within(RoutingWatch::connect(&address)).await.unwrap();
+            let table = table_where(&mut watch, |table| table.home.is_some()).await;
+            assert_eq!(table.home, Some(RegionId(0)));
+            assert!(*asked.lock().unwrap() > 3);
+            serving.abort();
+        }
+
         #[test]
         fn the_coordinator_that_is_served_knows_its_stripes_only_if_its_layout_has_a_boundary() {
             let start = Instant::now();
@@ -3572,8 +3602,10 @@ mod tests {
             assert_eq!(without.waiting(), []);
             assert!(!without.keeps_its_workers());
 
+            // It knows its stripes, and still awaits the list, which names the home
+            // region for the edges.
             let with = of_its_layout(config(&[-3, 4]), start, FIRST);
-            assert!(!with.awaits_the_list());
+            assert!(with.awaits_the_list());
             assert_eq!(with.waiting(), [RegionId(0), RegionId(1), RegionId(2)]);
             assert!(!with.keeps_its_workers());
         }

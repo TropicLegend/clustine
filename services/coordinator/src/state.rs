@@ -1010,6 +1010,26 @@ impl Coordinator {
         }
     }
 
+    /// A coordinator that knows `regions` from the start, as [`Coordinator::knowing`],
+    /// and awaits the list all the same, as [`Coordinator::new`]: that of a process
+    /// that was told stripes, until stripes go. It gives its stripes out without the
+    /// store, as it always did. But which region is home only the list says, and an
+    /// edge lets nobody in before it is told (`docs/adr/0017-the-end-of-the-stripes.md`,
+    /// section 5.4): a coordinator whose store was not there yet when it started, and
+    /// when its workers registered, would never read the list again and its edges
+    /// would wait for ever. So the list is read until it has been read.
+    pub(crate) fn knowing_its_stripes(
+        config: CoordinatorConfig,
+        now: Instant,
+        first_epoch: u64,
+        regions: &[RegionId],
+    ) -> Self {
+        Self {
+            awaiting: true,
+            ..Self::knowing(config, now, first_epoch, regions)
+        }
+    }
+
     /// A coordinator whose workers are in its own process: [`Coordinator::new`] with
     /// two differences (`docs/adr/0017-the-end-of-the-stripes.md`, sections 2.3 and
     /// 6.6; "Alone with its workers" at [`Coordinator`]).
