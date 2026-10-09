@@ -2409,20 +2409,12 @@ fn after_a_restore_edges_count_from_the_restore() {
     let restored = next.region().tick_number();
     let mut watcher = established(&mut next, F, 5);
 
-    // And for most of it again under the new one: more than the limit in all.
-    run_to_tick(&mut next, &mut [&mut watcher], restored + GONE_AFTER - 5);
-    sync(&mut next, &mut [&mut watcher], 0);
-    assert!(
-        removal(&watcher.log, entity).is_none(),
-        "the time under the old owner was counted: {}",
-        brief(&watcher.log)
-    );
-    assert!(
-        next.region().tick_number() < restored + GONE_AFTER - 1,
-        "the check above came too late to mean anything"
-    );
-
-    // An edge that never comes back to the new owner is forgotten all the same.
+    // An edge that never comes back to the new owner is forgotten all the same, and
+    // the tick in which its player goes says from when the new owner counted. Had the
+    // time under the old owner been counted, that would be five ticks after the
+    // restore; it is the whole time after it, more than the limit in all. The tick is
+    // read from what the watcher is told, so nothing here depends on how many ticks
+    // the store takes to answer anything.
     run_until(
         &mut next,
         &mut [&mut watcher],
@@ -2431,7 +2423,13 @@ fn after_a_restore_edges_count_from_the_restore() {
     );
     let (_, gone) = removal(&watcher.log, entity).expect("waited for it");
     assert!(
-        gone + 1 >= restored + GONE_AFTER && gone <= restored + GONE_AFTER + 3,
+        gone + 1 >= restored + GONE_AFTER,
+        "the time under the old owner was counted: restored at tick {restored}, gone in \
+         tick {gone}: {}",
+        brief(&watcher.log)
+    );
+    assert!(
+        gone <= restored + GONE_AFTER + 3,
         "restored at tick {restored}, gone in tick {gone}"
     );
     assert!(next.region().edge(E).is_none());
