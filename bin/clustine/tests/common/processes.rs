@@ -42,6 +42,11 @@ pub struct Cluster {
     /// The coordinator's lease in seconds, or `None` for the one it has when it is not
     /// told any.
     pub lease_seconds: Option<u64>,
+    /// How long each worker's log was when the worker was last started again or last
+    /// lost the world store: what it says after that is about its present life.
+    pub since: BTreeMap<usize, usize>,
+    /// How long the coordinator's log was when the coordinator was last started again.
+    pub coordinator_since: usize,
 }
 
 impl Cluster {
@@ -68,6 +73,8 @@ impl Cluster {
             // The shortest there is. It is also how long a new coordinator waits before
             // it gives regions away.
             lease_seconds: Some(3),
+            since: (0..workers).map(|worker| (worker, 0)).collect(),
+            coordinator_since: 0,
         }
     }
 
@@ -243,6 +250,152 @@ impl Cluster {
         let mut lines = log.lines().rev();
         let line = lines.find(|line| line.contains("the routing table changed"))?;
         Some(Table(line.to_owned()))
+    }
+
+    /// The last routing table the coordinator logged in its present life.
+    pub fn present_table(&self) -> Option<Table> {
+        self.table(self.coordinator_since)
+    }
+
+    /// The owner of every region that has one, as the coordinator last logged its
+    /// routing table: the address of the worker and the epoch.
+    pub fn routes(&self) -> BTreeMap<u32, (String, u64)> {
+        self.present_table()
+            .map(|table| table.routes())
+            .unwrap_or_default()
+    }
+
+    /// The number of the worker that listens on `address`.
+    pub fn worker_at(&self, address: &str) -> Option<usize> {
+        self.workers.iter().position(|worker| worker.0 == address)
+    }
+
+    /// The worker that runs `region` according to the routing table.
+    pub fn owner(&self, region: u32) -> Option<usize> {
+        let (address, _) = self.routes().remove(&region)?;
+        self.worker_at(&address)
+    }
+
+    /// The regions each worker runs according to the routing table.
+    pub fn loads(&self) -> Vec<Vec<u32>> {
+        let mut loads = vec![Vec::new(); self.workers.len()];
+        for (region, (address, _)) in self.routes() {
+            if let Some(worker) = self.worker_at(&address) {
+                loads[worker].push(region);
+            }
+        }
+        loads
+    }
+
+    /// What a worker has logged in its present life.
+    pub fn log_since(&self, worker: usize) -> String {
+        let log = self.log(&worker_name(worker));
+        log.get(self.since[&worker]..)
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    /// How many times a worker has logged `words`, in all its lives.
+    pub fn said(&self, worker: usize, words: &str) -> usize {
+        self.log(&worker_name(worker)).matches(words).count()
+    }
+
+    /// Whether `region` has an owner that is alive, has said in its present life that
+    /// it runs the region with the epoch the routing table names, and is the one the
+    /// edge last linked to for that region.
+    pub fn runs(&self, region: u32) -> bool {
+        let Some((address, epoch)) = self.routes().remove(&region) else {
+            return false;
+        };
+        let Some(worker) = self.worker_at(&address) else {
+            return false;
+        };
+        let running = format!("running a region region={region} epoch={epoch} ");
+        let linked = format!("linked to a region region={region} epoch=");
+        let edge = self.log("edge");
+        let last_link = edge.lines().rev().find(|line| line.contains(&linked));
+        self.workers[worker].1.is_some()
+            && self.log_since(worker).contains(&running)
+            && last_link.is_some_and(|line| line.contains(&format!("{linked}{epoch} ")))
+    }
+
+    /// Whether the loads of the workers that are there differ by one at most: then
+    /// the coordinator has evened out what it would, and begins no release of its own.
+    pub fn even(&self) -> bool {
+        let loads = self.loads();
+        let alive = (0..loads.len()).filter(|worker| self.workers[*worker].1.is_some());
+        let counts: Vec<usize> = alive.map(|worker| loads[worker].len()).collect();
+        let ends = counts.iter().max().zip(counts.iter().min());
+        ends.is_some_and(|(most, fewest)| most - fewest <= 1)
+    }
+
+    /// Waits until every worker of a cluster that has just been started has registered,
+    /// for `patience` at most and looking every `look`, and returns the name of a
+    /// process that ended instead because its address was in use, if there is one.
+    pub async fn taken_address(&mut self, patience: Duration, look: Duration) -> Option<String> {
+        let waiting = Instant::now();
+        loop {
+            let mut ended = None;
+            for (name, process) in self.processes() {
+                let gone = process.as_mut().and_then(|child| child.try_wait().unwrap());
+                if gone.is_some() {
+                    ended = Some(name);
+                }
+            }
+            if let Some(name) = ended {
+                let in_use = self.log(&name).contains("Address already in use");
+                // Anything else that ends a process is for the test to find.
+                return in_use.then_some(name);
+            }
+            let registered = (0..self.workers.len()).all(|worker| {
+                let log = self.log(&worker_name(worker));
+                log.contains("waiting to be given a region") || log.contains("given a region")
+            });
+            if registered || waiting.elapsed() > patience {
+                return None;
+            }
+            tokio::time::sleep(look).await;
+        }
+    }
+
+    /// Kills a worker without warning.
+    pub async fn kill_worker(&mut self, worker: usize) {
+        let name = worker_name(worker);
+        let mut process = self.workers[worker]
+            .1
+            .take()
+            .unwrap_or_else(|| panic!("{name} is not running"));
+        process.kill().await.unwrap();
+    }
+
+    /// Starts a worker that is not running. What it says from here on is about its
+    /// present life.
+    pub fn start_worker_again(&mut self, worker: usize) {
+        self.since
+            .insert(worker, self.log(&worker_name(worker)).len());
+        self.start_worker(worker);
+    }
+
+    /// Kills the world store without warning and starts it again. From here on what
+    /// the workers say about running a region has to be said anew.
+    pub async fn kill_and_start_the_store(&mut self) {
+        let mut store = self.store.1.take().expect("the store is running");
+        store.kill().await.unwrap();
+        for worker in 0..self.workers.len() {
+            let length = self.log(&worker_name(worker)).len();
+            self.since.insert(worker, length);
+        }
+        self.start_store();
+    }
+
+    /// Kills the coordinator without warning and starts another, which knows nothing
+    /// of the one before.
+    pub async fn kill_and_start_the_coordinator(&mut self) {
+        let coordinator = self.coordinator.1.take();
+        let mut coordinator = coordinator.expect("the coordinator is running");
+        coordinator.kill().await.unwrap();
+        self.coordinator_since = self.log("coordinator").len();
+        self.start_coordinator();
     }
 
     /// Waits until the process `name` has logged `message` at least `times` times.

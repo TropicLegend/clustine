@@ -372,11 +372,6 @@ struct Merges {
     started: Instant,
     /// What was done to the cluster and what it did about it, in order.
     deeds: Vec<String>,
-    /// How long each worker's log was when the worker was last started or last lost
-    /// the world store: what it says after that is about its present life.
-    since: BTreeMap<usize, usize>,
-    /// How long the coordinator's log was when the coordinator was last started.
-    coordinator_since: usize,
     /// Which region each bot stands in, for the tests that tell the bots' pauses apart
     /// by it. The others leave it as it began.
     division: Division,
@@ -423,7 +418,7 @@ impl Merges {
             // this machine made meanwhile. That says nothing about the server, so the
             // cluster is started anew, on other addresses.
             attempt += 1;
-            match Self::taken_address(&mut cluster).await {
+            match cluster.taken_address(PATIENCE, LOOK).await {
                 Some(name) if attempt < 3 => {
                     println!("{test}: the address picked for {name} was taken; starting anew");
                     cluster.kill().await;
@@ -481,8 +476,6 @@ impl Merges {
             scenario: Some(playing),
             started: Instant::now(),
             deeds: Vec::new(),
-            since: (0..setup.workers).map(|worker| (worker, 0)).collect(),
-            coordinator_since: 0,
             division,
             longest_pause,
         };
@@ -494,35 +487,6 @@ impl Merges {
             .await;
         merges.settled().await;
         merges
-    }
-
-    /// Waits until every worker of a cluster that has just been started has registered,
-    /// and returns the name of a process that ended instead because its address was in
-    /// use, if there is one.
-    async fn taken_address(cluster: &mut Cluster) -> Option<String> {
-        let waiting = Instant::now();
-        loop {
-            let mut ended = None;
-            for (name, process) in cluster.processes() {
-                let gone = process.as_mut().and_then(|child| child.try_wait().unwrap());
-                if gone.is_some() {
-                    ended = Some(name);
-                }
-            }
-            if let Some(name) = ended {
-                let in_use = cluster.log(&name).contains("Address already in use");
-                // Anything else that ends a process is for the test to find.
-                return in_use.then_some(name);
-            }
-            let registered = (0..cluster.workers.len()).all(|worker| {
-                let log = cluster.log(&worker_name(worker));
-                log.contains("waiting to be given a region") || log.contains("given a region")
-            });
-            if registered || waiting.elapsed() > PATIENCE {
-                return None;
-            }
-            tokio::time::sleep(LOOK).await;
-        }
     }
 
     /// Notes something that was done to the cluster, or that it did.
@@ -618,81 +582,46 @@ impl Merges {
 
     /// The last routing table the coordinator logged in its present life.
     fn table(&self) -> Option<Table> {
-        self.cluster.table(self.coordinator_since)
+        self.cluster.present_table()
     }
 
     /// The owner of every region that has one, as the coordinator last logged its
     /// routing table: the address of the worker and the epoch.
     fn routes(&self) -> BTreeMap<Region, (String, u64)> {
-        self.table().map(|table| table.routes()).unwrap_or_default()
-    }
-
-    /// The number of the worker that listens on `address`.
-    fn worker_at(&self, address: &str) -> Option<usize> {
-        let workers = &self.cluster.workers;
-        workers.iter().position(|worker| worker.0 == address)
+        self.cluster.routes()
     }
 
     /// The worker that runs `region` according to the routing table.
     fn owner(&self, region: Region) -> Option<usize> {
-        let (address, _) = self.routes().remove(&region)?;
-        self.worker_at(&address)
+        self.cluster.owner(region)
     }
 
     /// The regions each worker runs according to the routing table.
     fn loads(&self) -> Vec<Vec<Region>> {
-        let mut loads = vec![Vec::new(); self.cluster.workers.len()];
-        for (region, (address, _)) in self.routes() {
-            if let Some(worker) = self.worker_at(&address) {
-                loads[worker].push(region);
-            }
-        }
-        loads
+        self.cluster.loads()
     }
 
     /// What a worker has logged in its present life.
     fn log_since(&self, worker: usize) -> String {
-        let log = self.cluster.log(&worker_name(worker));
-        log.get(self.since[&worker]..)
-            .unwrap_or_default()
-            .to_owned()
+        self.cluster.log_since(worker)
     }
 
     /// How many times a worker has logged `words`, in all its lives.
     fn said(&self, worker: usize, words: &str) -> usize {
-        self.cluster
-            .log(&worker_name(worker))
-            .matches(words)
-            .count()
+        self.cluster.said(worker, words)
     }
 
     /// Whether `region` has an owner that is alive, has said in its present life that
     /// it runs the region with the epoch the routing table names, and is the one the
     /// edge last linked to for that region.
     fn runs(&self, region: Region) -> bool {
-        let Some((address, epoch)) = self.routes().remove(&region) else {
-            return false;
-        };
-        let Some(worker) = self.worker_at(&address) else {
-            return false;
-        };
-        let running = format!("running a region region={region} epoch={epoch} ");
-        let linked = format!("linked to a region region={region} epoch=");
-        let edge = self.cluster.log("edge");
-        let last_link = edge.lines().rev().find(|line| line.contains(&linked));
-        self.cluster.workers[worker].1.is_some()
-            && self.log_since(worker).contains(&running)
-            && last_link.is_some_and(|line| line.contains(&format!("{linked}{epoch} ")))
+        self.cluster.runs(region)
     }
 
     /// Whether the loads of the workers that are there differ by one at most: then
     /// the coordinator has evened out what it would, and begins no release of its own.
     fn even(&self) -> bool {
-        let loads = self.loads();
-        let alive = (0..loads.len()).filter(|worker| self.cluster.workers[*worker].1.is_some());
-        let counts: Vec<usize> = alive.map(|worker| loads[worker].len()).collect();
-        let ends = counts.iter().max().zip(counts.iter().min());
-        ends.is_some_and(|(most, fewest)| most - fewest <= 1)
+        self.cluster.even()
     }
 
     /// The living regions of `list`, in ascending order.
@@ -1265,19 +1194,14 @@ impl Merges {
     /// Kills a worker without warning.
     async fn kill_worker(&mut self, worker: usize, why: &str) {
         let name = worker_name(worker);
-        let mut process = self.cluster.workers[worker]
-            .1
-            .take()
-            .unwrap_or_else(|| panic!("{name} is not running"));
-        process.kill().await.unwrap();
+        self.cluster.kill_worker(worker).await;
         self.note(format!("killed {name}, {why}; {}", self.whereabouts()));
     }
 
     /// Starts a worker that is not running.
     fn start_worker(&mut self, worker: usize) {
         let name = worker_name(worker);
-        self.since.insert(worker, self.cluster.log(&name).len());
-        self.cluster.start_worker(worker);
+        self.cluster.start_worker_again(worker);
         self.note(format!("started {name}"));
     }
 
@@ -1726,13 +1650,7 @@ impl Merges {
     /// Kills the world store without warning and starts it again. From here on what
     /// the workers say about running a region has to be said anew.
     async fn kill_and_start_the_store(&mut self, why: &str) {
-        let mut store = self.cluster.store.1.take().expect("the store is running");
-        store.kill().await.unwrap();
-        for worker in 0..self.cluster.workers.len() {
-            let length = self.cluster.log(&worker_name(worker)).len();
-            self.since.insert(worker, length);
-        }
-        self.cluster.start_store();
+        self.cluster.kill_and_start_the_store().await;
         let whereabouts = self.whereabouts();
         self.note(format!(
             "killed the world store, {why}, and started it again; {whereabouts}"
@@ -1742,11 +1660,7 @@ impl Merges {
     /// Kills the coordinator without warning and starts another, which knows nothing
     /// of the one before.
     async fn kill_and_start_the_coordinator(&mut self, why: &str) {
-        let coordinator = self.cluster.coordinator.1.take();
-        let mut coordinator = coordinator.expect("the coordinator is running");
-        coordinator.kill().await.unwrap();
-        self.coordinator_since = self.cluster.log("coordinator").len();
-        self.cluster.start_coordinator();
+        self.cluster.kill_and_start_the_coordinator().await;
         let whereabouts = self.whereabouts();
         self.note(format!(
             "killed the coordinator, {why}, and started another; {whereabouts}"
