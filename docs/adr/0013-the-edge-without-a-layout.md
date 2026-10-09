@@ -158,6 +158,12 @@ Otherwise, with `ask` and `begun` of the subscription:
   is cleared if it was this region. If the edge has no subscription at `H` for the
   chunk, it makes a guest's one there, `Waiting`, and sends `SubscribeAsGuest` (rule
   13). `H` being the region that says it is logged as an error and passed over.
+  **If the edge has a viewer's subscription at `H` that is itself told elsewhere, `H`
+  is asked again** for it, by the rule of a second (below). One of the two regions is
+  behind then, and if they name each other nobody serves the chunk, with nothing left
+  that would have either asked again. A region can be behind for good: one that holds
+  a chunk by an area it is pinned to goes on believing the region that held it for a
+  while and gave it back (ADR-0014, section 2.2). Found by the tests of ADR-0015.
 - **`NotMine`** is taken only at the current `ask` and only for a guest's
   subscription; any other is passed over. The subscription is forgotten, also if it
   was `Served`; `served_by` is cleared if it was this region. Every viewer's

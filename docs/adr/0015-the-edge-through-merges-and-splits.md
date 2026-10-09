@@ -4,7 +4,8 @@
   C (step C3.7 of ADR-0014), against section 8 of
   [ADR-0014](0014-merging-and-splitting.md), rules 34 to 50. Written by whoever builds
   it, and revised after an independent review against the code and that contract (see
-  "Review"). Not built.
+  "Review"). Built, and tested from this record by someone who did not read the code;
+  what that found is at the end.
 - Date: 2026-10-08
 
 ## Context
@@ -151,7 +152,10 @@ whatever is done with it; when the count reaches 0 the link's presence is **thro
    `view.region = R`; the kept inputs up to `last_input` are dropped; for every chunk
    of the view `unwant(X, c)`, then for every chunk `want(R, c)`, and the messages are
    sent (as `hand_over` does); then every input still kept is sent to `R` as `Input {
-   P, e, number, input }`; `handled` as in case 1. There is no `PlayerArrive`.
+   P, e, number, input }`; `handled` as in case 1. There is no `PlayerArrive`. **What
+   `R` says of the entity `e` counts from then on** (`Shown::from` becomes `R`, if
+   the edge shows the entity): `R` does not introduce an entity it has had all along
+   before it says where it moves, and a tick's events come before its snapshots.
 4. **Anything else** (the edge has no `P`; or has `P` with another entity; or has `P`
    without an entity under another region): `PlayerLeave { player: P, entity: Some(e)
    }` to `R`. The edge's own stay of `P`, if it has one, is untouched. (Today a
@@ -319,7 +323,8 @@ until `retire` has made it a key.
 `(P, e)` of `players`, in order: **if the edge has the stay `(P, e)` under `A`, and no
 `PlayerArrive` of `P` is among what is kept for `A`**: `view.region = N`; for every
 chunk of the view `unwant(A, c)`, then `want(N, c)`, and the messages are sent; every
-input kept is sent to `N` as `Input { P, e, number, input }`. Anything else: nothing.
+input kept is sent to `N` as `Input { P, e, number, input }`; and what `N` says of the
+entity `e` counts from then on, as in case 3 of section 2.1. Anything else: nothing.
 The entry is confirmed.
 
 The entry says where the stay was when `A` was split, and is read at any time after.
@@ -586,3 +591,37 @@ section 4 are all there are. What it found, and what was decided:
 Of its doubts: an action sent on to a part could arrive before the edge had asked the
 part for the chunk; the edge now asks first (section 4). What `hand_over` and section
 5 rest on without making sure of it is in section 8.
+
+## Found by the tests written from this record
+
+Sixty-six tests, by someone who had this record, ADR-0013 and ADR-0014 and not the
+edge's code: the scenarios of section 9 and A1 to A9, those with two links under every
+order of their messages (up to 600 orders each), and generated runs in which regions
+merge and split while links are lost, against a second implementation of sections 1 to
+6. Sixty-three passed. The three that did not:
+
+1. **Two regions that each have a viewer of a chunk and each name the other for it.**
+   A region pinned to where a chunk lies is split, the chunk goes to the part, and a
+   player of the pinned region sees it: `Elsewhere` with the part. The part gives the
+   chunk back, which makes it the pinned region's again, and nobody tells that region.
+   A player of the part sees the chunk: `Elsewhere` with the pinned region. The edge
+   was a viewer at both, each told elsewhere with the other; statement E held; nothing
+   would ever have either asked again, and nobody served the chunk. This was a gap in
+   the records, which the edge had followed: ADR-0014 ends such a ring for players and
+   actions and says nothing of subscriptions. A region that is named as the holder
+   and has itself said that another holds the chunk is now asked again (ADR-0013,
+   section 3).
+2. **A step that a stay's new region reported before it had shown the entity was
+   passed over.** A presence answer moved a stay to a region; the edge sent the kept
+   input; the region applied the move in its next tick and reported it, ahead of that
+   tick's snapshots, while the edge still took the entity's moves from the region that
+   had shown it last. The view stayed behind until the snapshot came. The records
+   were silent; section 2.1, case 3, and section 6 now say whose word counts.
+3. **A presence answer that moved a stay had every kept input sent**, also those at
+   or below its `last_input`, against case 3. The region passed them over, so nothing
+   was applied twice; they are dropped first now.
+
+The regions of the generated runs do not play a pinned region that is behind as in 1,
+which the scripted test covers. What the runs cannot reach, and only scripted
+scenarios do: a link to a survivor from before a merge whose end the edge has not
+read, and a region that forgets the edge around a merge.

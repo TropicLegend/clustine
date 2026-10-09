@@ -1264,6 +1264,16 @@ impl Fanout {
             // The stay the edge has, under another region: it came here with a merge
             // or a split that the edge has not caught up with, and is this region's.
             Some((Some(shown), _)) if shown == entity => {
+                // What the region had applied of theirs is not sent to it.
+                if let Some(view) = self.players.get_mut(&player) {
+                    while view
+                        .kept_inputs
+                        .front()
+                        .is_some_and(|(number, ..)| *number <= last_input)
+                    {
+                        view.kept_inputs.pop_front();
+                    }
+                }
                 self.move_stay(player, from).await;
             }
             // A player who is entering the world. If their join is still among what is
@@ -1617,6 +1627,14 @@ impl Fanout {
         }
         debug!(name = %view.name, %from, %to, "a stay has moved without this edge");
         view.region = to;
+        // The region that has the stay is the one whose word on its entity counts from
+        // now on. It will not introduce the entity before it says where it moves: the
+        // player is there already, and a tick says what moved before it sends the
+        // chunks that were asked for. What the region it left says of the entity is
+        // about one it no longer has.
+        if let Some(shown) = self.entities.get_mut(&entity) {
+            shown.from = to;
+        }
         let again: Vec<_> = view
             .kept_inputs
             .iter()
@@ -2474,9 +2492,25 @@ impl Fanout {
             entry.served_by = None;
         }
         let there = self.regions.entry(holder).or_default();
-        if let std::collections::btree_map::Entry::Vacant(free) = there.subscriptions.entry(chunk) {
-            free.insert(Subscription::new(Kind::Guest, 0));
-            self.asking.push((holder, Asking::AsGuest, chunk, true));
+        match there.subscriptions.entry(chunk) {
+            std::collections::btree_map::Entry::Vacant(free) => {
+                free.insert(Subscription::new(Kind::Guest, 0));
+                self.asking.push((holder, Asking::AsGuest, chunk, true));
+            }
+            // The region that is named has said itself that another holds the chunk.
+            // One of the two is behind, and if they name each other nobody serves the
+            // chunk, with nothing left that would have either asked again: a region
+            // can hold a chunk by an area it is pinned to and go on believing the
+            // region that held it for a while and gave it back. So the one that was
+            // named is asked again, which has it ask the store.
+            std::collections::btree_map::Entry::Occupied(held) => {
+                let held = held.into_mut();
+                let told =
+                    held.kind == Kind::Viewer && matches!(held.condition, Condition::Elsewhere(_));
+                if told && Self::ask_again(held, Instant::now()) {
+                    self.asking.push((holder, Asking::Subscribe, chunk, true));
+                }
+            }
         }
         self.flush_asking().await;
     }
@@ -2518,18 +2552,26 @@ impl Fanout {
             {
                 continue;
             }
-            let lately = subscription
-                .asked_again
-                .is_some_and(|asked| now.duration_since(asked) < ASK_AGAIN_EVERY);
-            if lately {
-                // The check that the task makes every second asks then.
-                subscription.again_due = true;
-            } else {
-                subscription.condition = Condition::Waiting;
-                subscription.asked_again = Some(now);
+            if Self::ask_again(subscription, now) {
                 self.asking.push((*region, Asking::Subscribe, chunk, true));
             }
         }
+    }
+
+    /// Has a viewer's subscription that was told elsewhere asked again: at once, which
+    /// this says by returning true, and the caller sends the message; or, where it was
+    /// asked again less than a second ago, at the check the task makes every second.
+    fn ask_again(subscription: &mut Subscription, now: Instant) -> bool {
+        let lately = subscription
+            .asked_again
+            .is_some_and(|asked| now.duration_since(asked) < ASK_AGAIN_EVERY);
+        if lately {
+            subscription.again_due = true;
+            return false;
+        }
+        subscription.condition = Condition::Waiting;
+        subscription.asked_again = Some(now);
+        true
     }
 
     /// Asks again where a region was asked again less than a second before the last
@@ -8342,19 +8384,6 @@ mod scenarios {
             let mut ticked = Ticked::default();
             let mut taken = 0;
             while taken < take {
-                // In a run with merges and splits a region answers what it was asked
-                // for before it takes what the edge sent behind the asking, which a
-                // region may: it is slow. One that does not reports a player's step
-                // before it has shown the edge the player, where their stay came to
-                // it without an arrival, and the edge passes that over; see
-                // `a_move_that_a_stays_new_region_reports_before_its_snapshot_is_taken`.
-                let played = &self.played[index];
-                let waits = |ticket: &Ticket| ticket.answer == Answer::Waiting;
-                let asking = |message: &EdgeMessage| is_about_subscriptions(&message.body);
-                let behind = !played.inbox.front().is_some_and(asking);
-                if self.reshaping && behind && played.tickets.values().any(waits) {
-                    break;
-                }
                 let Some(message) = self.played[index].inbox.pop_front() else {
                     break;
                 };
@@ -9462,7 +9491,19 @@ mod scenarios {
                     }
                     let linked = self.linked(holder);
                     let there = &mut self.kept[holder.0 as usize];
-                    if there.contains_key(chunk) {
+                    if let Some(named) = there.get_mut(chunk) {
+                        // A region that is named and has itself said that another
+                        // holds the chunk is asked again: the two may name each other.
+                        if named.role == Role::Viewer && matches!(named.answer, Answer::Told(_)) {
+                            let lately = named.asked_again.is_some_and(|at| {
+                                Instant::now().duration_since(at) < ASK_AGAIN_AFTER
+                            });
+                            if lately {
+                                named.due = true;
+                            } else {
+                                named.at_once = true;
+                            }
+                        }
                         self.count("an elsewhere that names a region the edge is subscribed at");
                     } else {
                         there.insert(*chunk, Kept::new(Role::Guest, 0));
@@ -9914,7 +9955,10 @@ mod scenarios {
                     // A part keeps what it holds of the areas another region is
                     // pinned to. Given back, such a chunk is the pinned region's again
                     // and nobody tells it, so it goes on naming the part, which names
-                    // it: see `two_regions_that_name_each_other_for_a_chunk_are_asked_again`.
+                    // it. The edge then has the one that was named ask the store again;
+                    // the regions of these runs do not play a pinned region that is
+                    // behind in that way, and the case is tried by itself in
+                    // `two_regions_that_name_each_other_for_a_chunk_are_asked_again`.
                     !self.returning.contains(chunk)
                         && pinned(**chunk).is_none()
                         && !played.tickets.contains_key(chunk)
@@ -11817,7 +11861,6 @@ mod scenarios {
     /// Scenario 3, as far as it is about what the stay's new region is sent that is
     /// numbered: the inputs above the answer's `last_input`, and no others.
     #[tokio::test]
-    #[ignore = "finding: a Present that moves a stay has every kept input sent, also those up to its last_input"]
     async fn a_stay_another_region_says_it_has_is_sent_only_the_inputs_above_the_answers_last() {
         // The sequence: a player of the west makes three steps, kept as inputs 1 to
         // 3; the east says `Present { last_input: 1 }` for that stay in answer to a
@@ -14127,7 +14170,6 @@ mod scenarios {
     /// an arrival, and the region reports the player's next step before it has shown
     /// the edge the player.
     #[tokio::test]
-    #[ignore = "finding: a step that a stay's new region reports before its snapshot is passed over, and the view stays behind"]
     async fn a_move_that_a_stays_new_region_reports_before_its_snapshot_is_taken() {
         // The sequence: as `a_shown_stay_another_region_has`. The east then applies
         // the step in the tick that takes it, as a move is held by nothing (ADR-0014,
@@ -14176,7 +14218,6 @@ mod scenarios {
     /// those runs were kept from it). Two regions each have a viewer of a chunk and
     /// each name the other for it.
     #[tokio::test(start_paused = true)]
-    #[ignore = "finding: two viewer's subscriptions told elsewhere with each other are never asked again, and nobody serves the chunk"]
     async fn two_regions_that_name_each_other_for_a_chunk_are_asked_again() {
         // The sequence, as the run came to it: the west is pinned to where the chunk
         // lies and is split, and the chunk goes to the part. A player of the west
