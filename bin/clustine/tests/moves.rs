@@ -2265,9 +2265,11 @@ async fn players_keep_playing_while_every_worker_is_replaced_in_turn() {
 }
 
 /// What the pause of a bot is held to "when nothing happens" to its region: three
-/// times the longest any bot waited while nothing was done to the cluster, and this
-/// at least.
-const NOTHING_HAPPENS: Duration = Duration::from_millis(300);
+/// times the longest any bot waited while nothing was done to the cluster, and a
+/// second at least, as in `wanders.rs`: a machine that does other work keeps a bot
+/// waiting for half a second now and then, for the disk that every region's commits
+/// go through.
+const NOTHING_HAPPENS: Duration = Duration::from_secs(1);
 
 /// Y4, the twin of `a_worker_that_is_told_to_stop_hands_its_region_over_first` on a
 /// world that follows its players: the owner of a part is told to stop. It is gone

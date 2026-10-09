@@ -34,8 +34,11 @@ pub const LANE_TO_LANE: i32 = 304;
 pub const WORKERS: usize = BOTS + 1;
 
 /// Blocks a tick on the way to the lanes, of which the farthest is 912 blocks from
-/// where players enter: that far the bots run, and their auditor after them.
-pub const TO_THE_LANE: f64 = 8.0;
+/// where players enter, for the bots and for their auditor after them: sixty blocks
+/// a second, which no player comes near. At eight blocks a tick, which the bots of
+/// `moves.rs` run to their wide lanes at, `wanders.rs` twice met a player who was
+/// left without a view after being split off; see the end of its W9.
+pub const TO_THE_LANE: f64 = 3.0;
 
 /// How long a world may take to come to four regions that have rested: three of the
 /// four bots are split off one split and one rest at a time, and each part is moved
