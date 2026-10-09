@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use clustine_coordinator::{
     Asked, Asker, Changes, ClientError, Coordinator, CoordinatorConfig, MoveRefusal, Order,
     ReleaseOrder, ReshapeOrder, ReshapeRefusal, Reshaped, RoutingWatch, Undone, WorkerClient,
-    WorkerEvent, serve,
+    WorkerEvent, serve_with,
 };
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, RegionInfo, RegionList, Vouch};
@@ -5574,7 +5574,13 @@ impl Service {
             most: AtomicU32::new(0),
             looked,
         }));
-        tokio::spawn(serve(listener, config, lists.reader()));
+        let reader = lists.reader();
+        // Made when the service is first polled, on the clock its ticks follow, as
+        // `serve` makes its own.
+        tokio::spawn(async move {
+            let now = tokio::time::Instant::now().into_std();
+            serve_with(listener, knowing(config, now, FIRST_EPOCH), reader).await
+        });
         Self {
             address,
             lists,

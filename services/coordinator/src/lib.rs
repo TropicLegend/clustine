@@ -2,13 +2,15 @@
 //!
 //! For now there is one coordinator and it keeps what it knows in memory. It decides
 //! which worker runs which region, and has regions merged and split when somebody asks
-//! for that; which regions there are it learns from the world store's list of them.
+//! for that; which regions there are it learns from the world store's list of them,
+//! and it knows none until it has read that list.
 //! Those decisions are made by [`Coordinator`], which does no I/O. [`serve`] is the
 //! service around it, which workers reach with a [`WorkerClient`], edges with a
 //! [`RoutingWatch`], whoever wants a region moved with a [`Mover`], and whoever wants
 //! regions merged or one split with an [`Asker`]. [`serve_local`] is the same service
 //! for clients in its own process, which reach it through a [`Reach`] without a
-//! socket.
+//! socket, around a coordinator that is alone with its workers
+//! ([`Coordinator::alone`]).
 
 mod client;
 mod policy;
@@ -20,6 +22,8 @@ pub use client::{
     RoutingWatch, WorkerClient, WorkerEvent,
 };
 pub use policy::{Policy, Sighted, Wanted, Why, decide, named};
+#[doc(hidden)]
+pub use service::serve_with;
 pub use service::{serve, serve_local};
 pub use state::{
     Asked, Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, MoveRefusal, Order,
