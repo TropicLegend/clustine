@@ -20,7 +20,7 @@ use clustine_rpc::{
 use clustine_sim::{Part, RegionConfig, RegionState};
 use clustine_worker::{
     DEFAULT_RETURN_AFTER, Ended, Links, RegionRunner, RegionStatus, Reshape, Reshaped,
-    RestoreError, Worker, absorbable,
+    RestoreError, Standstill, Worker, absorbable,
 };
 use clustine_world::{EntityId, EntityIds};
 use clustine_worldstore::{StoreError, StoreHandle};
@@ -997,6 +997,20 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                                 },
                             };
                             let runner = runner.with_checkpoint_interval(checkpoint_interval);
+                            // Only the runner knows for how long its region did not
+                            // tick, and only this loop the region's number: so the
+                            // line is written here, on the runner's thread. It is what
+                            // a player of the region felt, less the moment their edge
+                            // takes to find the region again.
+                            let runner = runner.with_standstills(Box::new(move |stood: Standstill| {
+                                info!(
+                                    %region,
+                                    players = stood.players,
+                                    held = stood.held,
+                                    milliseconds = stood.milliseconds,
+                                    "a region stood still for a merge or a split"
+                                );
+                            }));
                             let tick = runner.region().tick_number();
                             let status = runner.status();
                             let links = runner.links();
