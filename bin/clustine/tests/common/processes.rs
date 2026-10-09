@@ -1,11 +1,14 @@
 //! The services as processes of their own on this machine, for the tests that start,
 //! stop and kill them: a coordinator, a world store, workers and an edge.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use clustine_rpc::RegionList;
 use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 use super::{VIEW_DISTANCE, free_address};
 
@@ -218,6 +221,25 @@ impl Cluster {
         command
     }
 
+    /// The regions of the world as the world store has them, which is what decides
+    /// which regions there are; or why the store does not say.
+    pub async fn regions(&self) -> Result<RegionList, String> {
+        let store = self.store.0.clone();
+        let read = tokio::task::spawn_blocking(move || clustine_worldstore::regions(&store));
+        let read = read.await.expect("reading the list does not panic");
+        read.map_err(|error| error.to_string())
+    }
+
+    /// The last routing table the coordinator has logged since its log was `since`
+    /// bytes long, which is where the log of its present life begins.
+    pub fn table(&self, since: usize) -> Option<Table> {
+        let log = self.log("coordinator");
+        let log = log.get(since..).unwrap_or_default();
+        let mut lines = log.lines().rev();
+        let line = lines.find(|line| line.contains("the routing table changed"))?;
+        Some(Table(line.to_owned()))
+    }
+
     /// Waits until the process `name` has logged `message` at least `times` times.
     pub async fn wait_for_log(&self, name: &str, message: &str, times: usize) {
         for _ in 0..600 {
@@ -300,6 +322,108 @@ impl Cluster {
         names.push("edge".to_owned());
         names
     }
+}
+
+/// A routing table as the coordinator logged it: the line it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table(pub String);
+
+impl Table {
+    /// What the table says of each region, in the words of the log: "region 1 at
+    /// 127.0.0.1:4000 with epoch 7" or "region 1 without an owner".
+    fn entries(&self) -> impl Iterator<Item = Vec<&str>> {
+        let regions = self.0.split("regions=").nth(1).unwrap_or_default();
+        regions
+            .split(", ")
+            .map(|entry| entry.split_whitespace().collect())
+    }
+
+    /// The owner of every region that has one: the address of the worker and the
+    /// epoch.
+    pub fn routes(&self) -> BTreeMap<u32, (String, u64)> {
+        let routed = self.entries().filter_map(|words| match words.as_slice() {
+            ["region", region, "at", address, "with", "epoch", epoch, ..] => Some((
+                region.parse().ok()?,
+                ((*address).to_owned(), epoch.parse().ok()?),
+            )),
+            _ => None,
+        });
+        routed.collect()
+    }
+
+    /// The regions the coordinator knows, with an owner or without, in ascending
+    /// order.
+    pub fn known(&self) -> Vec<u32> {
+        let known = self.entries().filter_map(|words| match words.as_slice() {
+            ["region", region, ..] => region.parse().ok(),
+            _ => None,
+        });
+        known.collect()
+    }
+}
+
+/// What a command that asks the coordinator for something came to: `clustine move`,
+/// `clustine merge` or `clustine split`.
+#[derive(Debug, Clone)]
+pub struct Asked {
+    /// What was asked, for a message.
+    pub what: String,
+    /// The status the command ended with, if it ended by itself.
+    pub code: Option<i32>,
+    /// What it printed, and what it complained of.
+    pub said: String,
+    pub complained: String,
+    /// How long the command ran.
+    pub took: Duration,
+}
+
+impl Asked {
+    /// Whether the command ended without an error and printed `words`.
+    pub fn says(&self, words: &str) -> bool {
+        self.code == Some(0) && self.said.contains(words)
+    }
+
+    /// Whether the command ended with an error, printed nothing, and gave a reason
+    /// with `words` in it.
+    pub fn was_told_no_because(&self, words: &str) -> bool {
+        self.code.is_some_and(|code| code != 0)
+            && self.said.trim().is_empty()
+            && self.complained.contains(words)
+    }
+
+    /// How long the command says it took, from asking to the coordinator's answer.
+    pub fn own_time(&self) -> Option<Duration> {
+        let (before, _) = self.said.split_once(" ms after asking")?;
+        let millis = before.split_whitespace().next_back()?.parse().ok()?;
+        Some(Duration::from_millis(millis))
+    }
+
+    /// In a line, for the list of what was done.
+    pub fn outcome(&self) -> String {
+        let said = self.said.trim().replace('\n', "; ");
+        let complained = self.complained.trim().replace('\n', "; ");
+        format!(
+            "exit status {:?} after {:.3} s; it printed \"{said}\" and complained \"{complained}\"",
+            self.code,
+            self.took.as_secs_f64()
+        )
+    }
+}
+
+/// Runs `command`, which asks the coordinator for `what`, without waiting for what
+/// comes of it.
+pub fn ask(what: String, mut command: Command) -> JoinHandle<Asked> {
+    tokio::spawn(async move {
+        let asking = Instant::now();
+        let output = command.output().await.expect("the server binary runs");
+        Asked {
+            what,
+            code: output.status.code(),
+            said: String::from_utf8_lossy(&output.stdout).into_owned(),
+            complained: String::from_utf8_lossy(&output.stderr).into_owned(),
+            took: asking.elapsed(),
+        }
+    })
 }
 
 /// A test's leave to run its cluster; the others that wait get theirs when it is

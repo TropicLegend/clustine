@@ -35,7 +35,7 @@ use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
-use common::processes::{Cluster, Turn, turn, worker_name};
+use common::processes::{Asked, Cluster, Turn, ask, turn, worker_name};
 
 /// How long anything may take that is merely waited for. It only ever runs out when
 /// something hangs.
@@ -55,53 +55,6 @@ type Region = u32;
 /// divide their worlds themselves, so they run once, in the run without it.
 fn a_repetition() -> bool {
     std::env::var_os("CLUSTINE_TEST_BOUNDARIES").is_some()
-}
-
-/// What a command that asks the coordinator for something came to.
-#[derive(Debug, Clone)]
-struct Asked {
-    /// What was asked, for a message.
-    what: String,
-    /// The status the command ended with, if it ended by itself.
-    code: Option<i32>,
-    /// What it printed, and what it complained of.
-    said: String,
-    complained: String,
-    /// How long the command ran.
-    took: Duration,
-}
-
-impl Asked {
-    /// Whether the command ended without an error and printed `words`.
-    fn says(&self, words: &str) -> bool {
-        self.code == Some(0) && self.said.contains(words)
-    }
-
-    /// Whether the command ended with an error, printed nothing, and gave a reason
-    /// with `words` in it.
-    fn was_told_no_because(&self, words: &str) -> bool {
-        self.code.is_some_and(|code| code != 0)
-            && self.said.trim().is_empty()
-            && self.complained.contains(words)
-    }
-
-    /// How long the command says it took, from asking to the coordinator's answer.
-    fn own_time(&self) -> Option<Duration> {
-        let (before, _) = self.said.split_once(" ms after asking")?;
-        let millis = before.split_whitespace().next_back()?.parse().ok()?;
-        Some(Duration::from_millis(millis))
-    }
-
-    /// In a line, for the list of what was done.
-    fn outcome(&self) -> String {
-        let said = self.said.trim().replace('\n', "; ");
-        let complained = self.complained.trim().replace('\n', "; ");
-        format!(
-            "exit status {:?} after {:.3} s; it printed \"{said}\" and complained \"{complained}\"",
-            self.code,
-            self.took.as_secs_f64()
-        )
-    }
 }
 
 /// A cluster without players, and the means to ask its coordinator for things and to
@@ -223,10 +176,7 @@ impl Reshapes {
     /// The regions of the world as the world store has them, which is what decides;
     /// or why the store does not say.
     async fn read_list(&self) -> Result<RegionList, String> {
-        let store = self.cluster.store.0.clone();
-        let read = tokio::task::spawn_blocking(move || clustine_worldstore::regions(&store));
-        let read = read.await.expect("reading the list does not panic");
-        read.map_err(|error| error.to_string())
+        self.cluster.regions().await
     }
 
     /// The regions of the world as the world store has them, from a store that runs.
@@ -245,47 +195,22 @@ impl Reshapes {
     /// The last routing table the coordinator logged in its present life, as the line
     /// it is.
     fn table(&self) -> Option<String> {
-        let log = self.cluster.log("coordinator");
-        let log = log.get(self.coordinator_since..).unwrap_or_default();
-        let mut lines = log.lines().rev();
-        let line = lines.find(|line| line.contains("the routing table changed"))?;
-        Some(line.to_owned())
+        let table = self.cluster.table(self.coordinator_since)?;
+        Some(table.0)
     }
 
     /// The owner of every region that has one, as the coordinator last logged its
     /// routing table: the address of the worker and the epoch.
     fn routes(&self) -> BTreeMap<Region, (String, u64)> {
-        let table = self.table().unwrap_or_default();
-        let regions = table.split("regions=").nth(1).unwrap_or_default();
-        regions
-            .split(", ")
-            .filter_map(|entry| {
-                // "region 1 at 127.0.0.1:4000 with epoch 7" or "region 1 without an owner".
-                let words: Vec<&str> = entry.split_whitespace().collect();
-                match words.as_slice() {
-                    ["region", region, "at", address, "with", "epoch", epoch, ..] => Some((
-                        region.parse().ok()?,
-                        ((*address).to_owned(), epoch.parse().ok()?),
-                    )),
-                    _ => None,
-                }
-            })
-            .collect()
+        let table = self.cluster.table(self.coordinator_since);
+        table.map(|table| table.routes()).unwrap_or_default()
     }
 
     /// The regions the coordinator last logged as known to it, with an owner or
     /// without, in ascending order.
     fn known(&self) -> Vec<Region> {
-        let table = self.table().unwrap_or_default();
-        let regions = table.split("regions=").nth(1).unwrap_or_default();
-        let known = regions.split(", ").filter_map(|entry| {
-            let words: Vec<&str> = entry.split_whitespace().collect();
-            match words.as_slice() {
-                ["region", region, ..] => region.parse().ok(),
-                _ => None,
-            }
-        });
-        known.collect()
+        let table = self.cluster.table(self.coordinator_since);
+        table.map(|table| table.known()).unwrap_or_default()
     }
 
     /// The number of the worker that listens on `address`.
@@ -395,19 +320,9 @@ impl Reshapes {
 
     /// Runs `command`, which asks the coordinator for `what`, without waiting for
     /// what comes of it.
-    fn asking(&mut self, what: String, mut command: Command) -> JoinHandle<Asked> {
+    fn asking(&mut self, what: String, command: Command) -> JoinHandle<Asked> {
         self.note(format!("asked for {what}"));
-        tokio::spawn(async move {
-            let asking = Instant::now();
-            let output = command.output().await.expect("the server binary runs");
-            Asked {
-                what,
-                code: output.status.code(),
-                said: String::from_utf8_lossy(&output.stdout).into_owned(),
-                complained: String::from_utf8_lossy(&output.stderr).into_owned(),
-                took: asking.elapsed(),
-            }
-        })
+        ask(what, command)
     }
 
     /// Waits for what a command comes to.
