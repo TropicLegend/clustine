@@ -199,7 +199,12 @@ pinned region's again by the store's table, and nobody tells the pinned region
 
 The player is taken in, and the chunk is claimed at the end of the tick because they
 stand in it; the action goes on as `Remote { action, to: None }`. Outside its pinned
-areas a region answers `NotMine` as before. What the store then answers is the truth
+areas a region answers `NotMine` as before. **The belief is dropped exactly where a
+`NotMine` would have been made**, and nowhere else: by an arrival that comes through
+an edge the region knows and is not passed over as an earlier or the same stay, and
+by a remote action that comes through such an edge and whose step concerns the chunk.
+What is passed over for another reason leaves the belief alone, and so does a
+player's own action on the chunk, which names the believed region as before. What the store then answers is the truth
 of that moment: `granted`, and the player stays; or `foreign`, and they are let go
 once more, to a region that holds the chunk and knows so.
 
@@ -1599,6 +1604,16 @@ tests that read a resume; "Not checked" says what was not read.
 | `an_ordinary_subscription_holds_nothing` (worker, `tests/specification.rs`) | It sends a move, which is still not held. Its name says more than is so now |
 | Tests of the worker whose hello names fewer players than the region has for the edge, and those that expect `Absent` after an `Unknown` that tells the edge again | More presence answers come, and the welcome counts them. No existing test can have a player of an edge in a state that has received nothing: until this step a state has one only by a numbered message of that edge |
 
+Found while building C3.2, and not in the table: in the sim,
+`a_player_who_arrives_is_taken_in_unless_the_chunk_is_believed_anothers` (its last
+part arrived with a higher entity than the player had), and in `tests/chunks.rs`
+`an_arrival_in_the_tick_its_chunk_is_called_anothers_goes_on_although_nothing_wants_the_chunk`
+and `a_remote_action_in_the_tick_its_chunk_is_called_anothers_goes_on_to_that_region`
+(both used a chunk of the region's own stripe, which is section 2.2's case now); in
+the worker, `an_arrival_does_not_take_a_player_from_the_link_they_belong_to` (it
+arrived with a higher entity). All 25 tests of the worker in which a player joins more
+than once or arrives were read; only that one rested on what changed.
+
 Every test of the hold behind a hello is as it was, and so is every test that sends
 a block action about a chunk the region does not hold.
 
@@ -1687,9 +1702,12 @@ the runner sees a lost handle either way, and that is K5 and K10.
   numbered 1 that names entity 2 is applied.
 - S23. A region pinned to an area that believes region `r` to hold a chunk of it: an
   arrival for that chunk is taken in, the chunk is `Asked` at the end of that tick and
-  in its `claims`; a remote action about it is answered `Remote { to: None }` and the
-  chunk is `Unknown`. The same chunk outside any pinned area: `NotMine` with `r`, as
-  before.
+  in its `claims`; a remote action about it is answered `Remote { to: None }`, and the
+  chunk is `Asked` and in the `claims` if something still wants it at the end of that
+  tick (the ticket that kept the belief alive), and `Unknown` only if nothing does.
+  The same chunk outside any pinned area: `NotMine` with `r`, as before. An arrival of
+  an earlier stay, and one through an edge the region does not know, leave the belief
+  as it is.
 - S24. `absorb` on two states with different players: all of them are in the state it
   gives, as they were.
 - S25. A player in both states: the higher entity id stays, whichever side has it.
@@ -2238,6 +2256,15 @@ its players are not stood still twice running.
    part, as a guest.
 8. **600 ticks for a warm chunk** is the time after which an edge is gone, taken for
    want of a better number.
+- **An arrival still drops every input of its player that waits for the tick**
+  (`TickInputs::change`, as before this step), whatever stay those inputs name. An
+  arrival of an earlier stay, which the tick then passes over, would so eat that
+  tick's inputs of the later stay that is there, as a leave did before review item 7.
+  With one edge it cannot be reached: the edge sends no arrival for a stay it no
+  longer has, and what it sends a region about a later stay is behind what it sent
+  about an earlier one. With several edges it can, and the rule should then be that
+  an arrival drops only the waiting inputs that name its own entity. Found while
+  building C3.2; left for the milestone that has several edges.
 
 ## Risks
 
