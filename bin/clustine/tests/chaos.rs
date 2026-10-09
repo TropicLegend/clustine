@@ -529,12 +529,21 @@ impl Chaos {
         self.since.insert(worker, length);
         self.signal(worker, "CONT", "woke up").await;
         // It lets go of the region, or ends and is started again to register afresh.
+        // What it says of that depends on which reaches it first when it wakes: the
+        // store's refusal of the region it tries to open again ("dropping it"), or
+        // the coordinator's orders, which no longer name the region ("letting go of
+        // it"). The orders are there first when the worker was frozen right after it
+        // was given the region: the region is then taken a lease after it was
+        // given, while the worker itself has not been silent for a lease, keeps its
+        // connection and any other region it runs, and so never says that it waits
+        // to be given one.
         self.until(
             "the worker that woke up has let go of its region",
             |chaos| {
                 let log = chaos.log_since(worker);
                 [
                     "dropping it",
+                    "letting go of it",
                     "waiting to be given a region",
                     "given a region",
                 ]
