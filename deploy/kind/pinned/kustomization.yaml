@@ -1,0 +1,36 @@
+# What the cluster test deploys: ../../kubernetes with the world pinned into two regions
+# that meet at chunk x = 4, which is block x = 64, and that stay as they are unless
+# somebody asks.
+#
+#     kubectl apply -k deploy/kind/pinned
+#
+# The test is about a boundary at a known place and regions with known numbers: bots
+# that walk across x = 64, region 0 west of it and region 1 east, each on a worker.
+# Told nothing, the world store makes one home region, which is what ../../kubernetes is.
+#
+# This is not beside the test's Jobs in ../../kubernetes/test because kustomize refuses
+# an overlay that lies inside the directory it builds on ("cycle detected").
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../kubernetes
+
+patches:
+  # The store alone is told where regions are pinned; the coordinator learns of them
+  # from its list.
+  - target:
+      kind: StatefulSet
+      name: clustine-worldstore
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --pin=4
+  # Pinning does not say who decides when regions merge and split.
+  - target:
+      kind: Deployment
+      name: clustine-coordinator
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --reshape=by-hand

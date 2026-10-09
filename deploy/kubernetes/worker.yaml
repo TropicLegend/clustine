@@ -38,13 +38,13 @@ metadata:
     app.kubernetes.io/component: worker
     app.kubernetes.io/part-of: clustine
 spec:
-  # One for each region and one to spare: `--boundaries=4` in coordinator.yaml makes
-  # two regions. The spare waits. A worker that is told to stop hands its region to it
-  # before it goes, and the players of the region stand still for a moment; a worker
-  # that died is found out when its lease is over, and its region goes to the spare
-  # then. The players stay connected either way. Without a spare a worker that is
-  # replaced has nobody to hand its region to, and its players wait until its pod is
-  # back.
+  # One for each region and one to spare, where the world is two regions as the
+  # cluster test pins it (../kind/pinned). The spare waits. A worker that is told to
+  # stop hands its region to it before it goes, and the players of the region stand
+  # still for a moment; a worker that died is found out when its lease is over, and
+  # its region goes to the spare then. The players stay connected either way. Without
+  # a spare a worker that is replaced has nobody to hand its region to, and its
+  # players wait until its pod is back.
   replicas: 3
   serviceName: clustine-worker
   # All at once instead of one after the other in the order of their numbers. No worker

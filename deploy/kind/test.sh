@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
 # The cluster test. Builds the image, starts a Kubernetes cluster in Docker with kind,
-# deploys Clustine on it with two regions and three workers and lets bots walk back and
-# forth across the boundary between the regions. It passes if no bot was disconnected, a
-# watching bot saw each walker as exactly one entity throughout, and two workers handed
-# players over. Then it deletes the pods of the workers and of the world store, one
-# after the other, under bots that keep a ledger of everything they did: nobody may be
-# disconnected, and nothing they were told was handled may be missing afterwards. Last
-# it has Kubernetes replace every worker in turn under such bots, as a new version of
-# the server would be rolled out: each worker has to hand its region to the one that
-# waits before it goes, so that the coordinator never waits for a lease. And at the very
-# end, since it leaves the world with one region, it has the two regions merged, the
-# one that is left split where the bots walk, and the part merged back, again under such
-# bots.
+# deploys Clustine on it with two regions, pinned side by side (deploy/kind/pinned), and
+# three workers and lets bots walk back and forth across the boundary between the
+# regions. It passes if no bot was disconnected, a watching bot saw each walker as
+# exactly one entity throughout, and two workers handed players over. Then it deletes
+# the pods of the workers and of the world store, one after the other, under bots that
+# keep a ledger of everything they did: nobody may be disconnected, and nothing they
+# were told was handled may be missing afterwards. Last it has Kubernetes replace every
+# worker in turn under such bots, as a new version of the server would be rolled out:
+# each worker has to hand its region to the one that waits before it goes, so that the
+# coordinator never waits for a lease. And at the very end, since it leaves the world
+# with one region, it has the two regions merged, the one that is left split where the
+# bots walk, and the part merged back, again under such bots.
 #
 # Usage: deploy/kind/test.sh [--reuse]
 #
@@ -227,7 +227,9 @@ step "Loading the image into the cluster"
 "$kind" load docker-image "$image" --name "$cluster"
 
 step "Deploying"
-k apply --kustomize "${root}/deploy/kubernetes"
+# The manifests with the world pinned into two regions at block x = 64, which stay as
+# they are: every part below names that boundary or those two regions.
+k apply --kustomize "${root}/deploy/kind/pinned"
 
 step "Waiting for the services"
 # In no particular order but for the edge, which is last: it becomes ready only once

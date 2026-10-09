@@ -56,8 +56,8 @@ spec:
             - --wait-for-server=60
             - --walkers=4
             - --rounds=3
-            # The regions meet at block x = 64 (`--boundaries=4` in ../coordinator.yaml),
-            # so walking between these two places crosses from one worker to the other.
+            # The regions meet at block x = 64 (`--pin=4` in ../../kind/pinned), so
+            # walking between these two places crosses from one worker to the other.
             - --west=40.5
             - --east=90.5
             # The first block of the eastern region. With it the bots also place and

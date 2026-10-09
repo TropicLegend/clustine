@@ -9,6 +9,7 @@ cluster and lets bots walk from one worker to another.
 | [`kubernetes/`](kubernetes) | A kustomize base in the namespace `clustine`: one coordinator, one world store with a volume, two workers and one edge |
 | [`kubernetes/test/bots.yaml`](kubernetes/test/bots.yaml) | A Job that lets bots walk and build across the boundary between the two workers |
 | [`kind/`](kind) | The scripts that run all of this on a cluster made with [kind](https://kind.sigs.k8s.io), which runs Kubernetes in Docker containers |
+| [`kind/pinned/`](kind/pinned) | What the test deploys: `kubernetes/` with the world pinned into two regions that meet at block x = 64 and stay as they are |
 
 ## Keep it inside the cluster
 
@@ -35,8 +36,8 @@ deploy/kind/test.sh
 ```
 
 It builds the image `clustine:dev`, creates the cluster `clustine-test`, loads the image
-into it, applies `kubernetes/`, waits until the services are ready and runs the bots.
-The world is divided at block x = 64, two of the three workers run a side each and the
+into it, applies `kind/pinned/`, waits until the services are ready and runs the bots.
+The world is pinned at block x = 64, two of the three workers run a side each and the
 third waits, and the bots walk back and forth between x = 40.5 and x = 90.5, placing
 and breaking blocks at either end and, from either side, across the boundary. That part
 passes if no bot was disconnected, every block came and went, a watching bot saw each
