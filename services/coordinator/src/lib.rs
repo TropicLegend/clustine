@@ -17,7 +17,7 @@ pub use client::{
     Asker, ClientError, HEARTBEAT_INTERVAL, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
     WorkerEvent,
 };
-pub use policy::Policy;
+pub use policy::{Policy, Sighted, Wanted, Why, decide, named};
 pub use service::serve;
 pub use state::{
     Asked, Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, MoveRefusal, Order,
