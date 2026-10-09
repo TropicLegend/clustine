@@ -424,17 +424,25 @@ impl Lanes {
             log.next = log.next.max(table.from);
         }
 
-        // A world from before there was a table says in this file how it was divided.
+        // A world from before there was a table says in this file how it was divided:
+        // the fingerprint of its layout. A store that is told no fingerprint has
+        // nothing to hold against it, and does not read what the file says.
         let layout_path = root.join("layout");
-        let before = match disk.read(&layout_path)? {
-            Some(bytes) => Some(parse_layout(&bytes).ok_or_else(|| {
-                StoreError::MalformedMeta("the layout file is not a fingerprint".to_owned())
-            })?),
-            None => None,
+        let before = disk.read(&layout_path)?;
+        let as_before = match (&before, told.layout) {
+            (Some(bytes), Some(told)) => {
+                let layout = parse_layout(bytes).ok_or_else(|| {
+                    StoreError::MalformedMeta("the layout file is not a fingerprint".to_owned())
+                })?;
+                layout == told
+            }
+            _ => false,
         };
         let remake = match &stored {
             Some(table) => !table.is_of(told),
-            None => before.is_some_and(|layout| Some(layout) != told.layout),
+            // Such a world is kept as it is only if it was last served with the very
+            // layout the store is told, so it is made over whenever it is told none.
+            None => before.is_some() && !as_before,
         };
         let keep = stored.is_some() && !remake;
         let tabled = stored.is_some();
@@ -465,6 +473,18 @@ impl Lanes {
             lanes.table = Table::made_from(told, used, from);
             lanes.write_table(from)?;
             lanes.table_last = None;
+        }
+        if remake {
+            // Said once the table is durable, by which the world is made over for
+            // good, and whether or not a region had anything left to put into the
+            // chunks: whoever runs a region of the world as it was finds it gone, or
+            // begun anew under its id (ADR-0017, section 2.2).
+            info!(
+                "the world was divided otherwise before; what its regions had is in the stored chunks now"
+            );
+            warn!(
+                "the regions of this world begin anew: whoever is in it has to join again. Stop the workers and the edges of a cluster before its world store is started with other pins"
+            );
         }
         // Only once the table is durable, by which a start after a crash knows that
         // there is nothing left to be made over; and also if a store died right here.
@@ -1620,9 +1640,6 @@ impl Lanes {
         finished
             .recv()
             .map_err(|_| io::Error::other("the thread for chunks has gone"))??;
-        info!(
-            "the world was divided otherwise before; what its regions had is in the stored chunks now"
-        );
 
         // The commits are passed over from now on, and the states go. What is known
         // here is changed only once that is durable.

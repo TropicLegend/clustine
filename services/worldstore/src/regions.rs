@@ -71,13 +71,13 @@ fn stripes(boundaries: &[i32]) -> Division {
 }
 
 /// The table file of the world on `disk`.
-fn table_file(disk: &MemoryDisk) -> TableFile {
+pub(crate) fn table_file(disk: &MemoryDisk) -> TableFile {
     let bytes = disk.read(Path::new("/world/regions/table")).unwrap();
     TableFile::decode(&bytes.expect("the world has a table")).unwrap()
 }
 
 /// The list without the epochs of the regions, which depend on who opened them.
-fn listed(list: &RegionList) -> RegionList {
+pub(crate) fn listed(list: &RegionList) -> RegionList {
     let mut list = list.clone();
     for info in &mut list.regions {
         info.epoch = 0;
@@ -502,7 +502,7 @@ fn epochs_and_entity_ids_outlive_a_change_of_the_division() {
 }
 
 /// Writes `contents` to the file at `path` of `disk`, for good.
-fn put(disk: &MemoryDisk, path: &str, contents: &[u8]) {
+pub(crate) fn put(disk: &MemoryDisk, path: &str, contents: &[u8]) {
     let path = Path::new(path);
     replace(disk, path, contents).unwrap();
     disk.sync_directory(path.parent().unwrap()).unwrap();
@@ -511,7 +511,7 @@ fn put(disk: &MemoryDisk, path: &str, contents: &[u8]) {
 /// A world as a store from before there was a table left it, which no store writes any
 /// more: two stripes divided at x = 0 that have what the regions of [`lived_in`] have,
 /// the file `layout`, and no table.
-fn world_of_today() -> Arc<MemoryDisk> {
+pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
     let disk = Arc::new(MemoryDisk::default());
     let file = |epoch, block| {
         let entity_ids = EntityIds::block(block).unwrap();
@@ -1475,12 +1475,17 @@ fn what_a_region_was_granted_is_restored_over_a_connection() {
 }
 
 /// The whole state of a region as a test makes it up.
-fn whole(name: &str, tick: u64) -> Vec<u8> {
+pub(crate) fn whole(name: &str, tick: u64) -> Vec<u8> {
     format!("{name} {tick}").into_bytes()
 }
 
 /// Has the region of `handle` absorb `absorbed`, and waits for the answer.
-fn absorb(handle: &StoreHandle, absorbed: u32, absorbed_epoch: u64, tick: u64) -> StoreReply {
+pub(crate) fn absorb(
+    handle: &StoreHandle,
+    absorbed: u32,
+    absorbed_epoch: u64,
+    tick: u64,
+) -> StoreReply {
     handle.request(StoreRequest::AbsorbCommit {
         absorbed: RegionId(absorbed),
         absorbed_epoch,
@@ -1493,7 +1498,7 @@ fn absorb(handle: &StoreHandle, absorbed: u32, absorbed_epoch: u64, tick: u64) -
 /// Splits `chunks` off the region of `handle` as the region `part`, and waits for the
 /// answer. The store makes the region only under the next id, which a test knows from
 /// the regions its world began with and the splits it has made.
-fn split(
+pub(crate) fn split(
     handle: &StoreHandle,
     tick: u64,
     chunks: &[ChunkPos],
@@ -1519,7 +1524,7 @@ fn declined(reason: Decline) -> StoreReply {
 
 /// Commits `tick` and makes a checkpoint of it, so that no commit of the region is
 /// behind its checkpoint.
-fn checkpoint(handle: &StoreHandle, tick: u64) {
+pub(crate) fn checkpoint(handle: &StoreHandle, tick: u64) {
     log(handle, tick, &[]);
     handle.request(StoreRequest::Checkpoint {
         tick,
@@ -1539,7 +1544,7 @@ fn restored_after(disk: &MemoryDisk, survival: Survival, region: u32, epoch: u64
         .1
 }
 
-fn state_of(restored: &Restored) -> Option<(u64, Vec<u8>)> {
+pub(crate) fn state_of(restored: &Restored) -> Option<(u64, Vec<u8>)> {
     let state = restored.state.as_ref();
     state.map(|state| (state.tick, state.state.clone()))
 }

@@ -34,11 +34,15 @@ mod kill;
 #[cfg(test)]
 mod kill_regions;
 #[cfg(test)]
+mod kill_unpinned;
+#[cfg(test)]
 mod regions;
 #[cfg(test)]
 mod scenarios;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unpinned;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -272,7 +276,11 @@ impl Store {
     ///
     /// If the world there was divided otherwise, by other areas or with another home
     /// chunk, it is made over: what its regions committed is put into the stored
-    /// chunks, their states are dropped, and its regions are those of `division`.
+    /// chunks, their states are dropped, and its regions are those of `division`. So
+    /// is a world from before there was a table of regions, unless `division` is that
+    /// of the layout it was last served with. The store says in its log, once, that
+    /// it has made the world over, and that whoever was in the world has to join
+    /// again: whoever still runs a region of it finds the region gone, or begun anew.
     pub fn local_divided(
         root: &Path,
         generator: Arc<dyn ChunkGenerator>,
