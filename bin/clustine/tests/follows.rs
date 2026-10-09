@@ -28,6 +28,10 @@
 //! coordinator's distances, so whatever a test counts, it has counted before it ends a
 //! group.
 //!
+//! What these tests found in the server is at the end of the file, with the sequence,
+//! what the record says and what happened, and a test that goes after it on the
+//! coordinator's state machine.
+//!
 //! What follows from a seed is what the bots choose, how often the workers checkpoint
 //! and, in the tests that kill, when and whom. Every test prints its seed; to run one
 //! again, set `CLUSTINE_FOLLOWS_SEED`. `CLUSTINE_FOLLOWS_ROUNDS` sets how many rounds
@@ -40,12 +44,16 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clustine_botswarm::{Ledger, LedgerReport, Progress, Random, audit_blocks, ledger};
-use clustine_rpc::RegionList;
+use clustine_coordinator::{Asked, Coordinator, CoordinatorConfig, Order, Policy, Reshaped};
+use clustine_region::{Layout, RegionId};
+use clustine_rpc::{ChunkBox, Crowds, PlayersOf, RegionInfo, RegionList, Vouch};
+use clustine_world::{ChunkArea, ChunkPos, Vec3};
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -2143,6 +2151,11 @@ async fn regions_follow_their_players_with_kills(test: &str, harm: impl Fn(u32) 
 /// or not at all by the list, and afterwards the regions are again what the record's
 /// table says after that step, with nobody disconnected and the ledgers equal to the
 /// world.
+///
+/// The record says that the last can take as long as a region is left alone after an
+/// attempt that failed, and a rest. How long it took is noted and not held to that:
+/// it took twice as long in two runs of ten, which is what the end of this file is
+/// about.
 #[tokio::test(flavor = "multi_thread")]
 async fn regions_follow_their_players_when_a_worker_is_killed_during_a_merge_or_a_split() {
     if a_repetition() {
@@ -2173,6 +2186,206 @@ async fn regions_follow_their_players_when_the_coordinator_or_the_store_is_kille
         }
     })
     .await;
+}
+
+// What these tests found in the server, and what the test below keeps found: the
+// sequence, what the record says, and what happened instead.
+//
+// **A split that the store made is counted as an attempt that failed when its worker
+// died before it could say so** (`Coordinator::lapse_split` and `note_split_ended` in
+// `services/coordinator/src/state.rs` and `state/follow.rs`).
+//
+// 1. The home region has players at the chunk players enter in and a group more than
+//    the split distance away. The coordinator begins a split by itself and orders
+//    `SplitOff`; the region's runner hands the store the split, and the store makes
+//    it: its list has the new region.
+// 2. The worker dies before its `SplitEnded` reaches the coordinator. (Here it is
+//    killed some milliseconds after it logged `handing the store a merge or a split`.)
+// 3. A lease later the region is no longer that owner's. The reservation ends as
+//    `Disowned` ("a split no longer holds, as the region is not that owner's"), the
+//    list is read and shows the part, and both regions are given to the other worker,
+//    which restores them. So far as ADR-0014 has it, and nobody is disconnected.
+// 4. The coordinator notes the split as one that came to nothing: the region has a
+//    failure counted and is left alone for `LONG`, three rests, not for one.
+//
+// What the record says. Section 9, K7: a merge whose worker died "ends as `Disowned`
+// or by the list. If it was made, the survivor is given an owner and rests. If not,
+// both regions are given owners, rest, and are left alone for `LONG`. [...] The same
+// for [...] the worker of a region that is being split." And section 11, E6: after a
+// kill "the regions are again what the table above says after that step, which can
+// take `LONG` and a rest". Section 5.5 on the other hand lists `Disowned` and
+// `Overdue` among the ways a split "comes to nothing", and the reservation of a split
+// never ends otherwise without the worker's word, whatever the list shows; that is
+// what the coordinator goes by.
+//
+// What a player notices: for `LONG` after a worker died in the middle of a split,
+// half a minute with the numbers of section 3, nothing is merged into the region
+// that was split and nobody else is split off it, although the split was made. That
+// is the home region as a rule. And because a failure was counted, the next attempt
+// that does fail is left alone for twice `LONG`. That is how this was seen: the test
+// above that kills workers (seed 554989) killed the worker as it handed the store
+// the split of step 2 and the survivor's worker in the merge of step 3 after it, and
+// `A` and `B` stood three chunks apart in two regions for 30 s until the merge was
+// tried again, where one failure costs 15 s.
+
+/// What was found, on the coordinator's state machine alone, with the time handed
+/// in: a region is split by itself, the store makes the split, and the region's
+/// worker dies before it says so. When the region has been given to the other worker,
+/// it is to rest, as after a split that was made (K7); it is left alone for `LONG`
+/// instead, as after an attempt that failed.
+#[test]
+#[ignore = "finding: a split that the store made counts as a failed attempt when its worker died before saying so"]
+fn a_region_that_was_split_as_its_worker_died_rests_and_is_not_left_alone_for_long() {
+    let start = Instant::now();
+    let config = CoordinatorConfig {
+        // One stripe: region 0 is the home region and holds everything.
+        layout: Layout::new(Vec::new()).expect("a world of one stripe"),
+        spawn: Vec3::new(0.5, 64.0, 0.5),
+        lease: Duration::from_secs(3),
+        follow: Some(Policy {
+            merge_distance: MERGE_DISTANCE,
+            split_distance: SPLIT_DISTANCE,
+            rest: REST,
+        }),
+    };
+    let mut coordinator = Coordinator::new(config, start, 1_000);
+    let home = RegionId(0);
+    let mut list = RegionList {
+        home,
+        regions: vec![RegionInfo {
+            region: home,
+            epoch: 0,
+            bounds: None,
+            pinned: vec![ChunkArea::EVERYWHERE],
+        }],
+        absorbed: Vec::new(),
+        next: RegionId(1),
+    };
+    for name in ["a", "b"] {
+        let registered = coordinator.register(start, name, &format!("{name}:25600"), &[], None);
+        registered.expect("it divides the world as the coordinator does");
+    }
+    // Two players stand in the chunk players enter in and one in chunk 6, as `A`
+    // and `B` do after step 2 of the record's table.
+    let mut crowds: BTreeMap<RegionId, Crowds> = BTreeMap::new();
+    crowds.insert(
+        home,
+        vec![(ChunkPos::new(0, 0), 2), (ChunkPos::new(6, 0), 1)],
+    );
+    let mut alive = vec!["a", "b"];
+    let (mut now, mut tick) = (start, 0);
+    // One look, a quarter of a second after the last: every worker that is alive
+    // vouches for its regions and says where their players are, the coordinator
+    // ticks, and the list is read if it asks for it.
+    let mut look = |coordinator: &mut Coordinator,
+                    list: &RegionList,
+                    crowds: &BTreeMap<RegionId, Crowds>,
+                    alive: &[&str]| {
+        now += Coordinator::LOOK;
+        tick += 1;
+        for name in alive {
+            let held = coordinator.assignments(name);
+            let vouched: Vec<(RegionId, Vouch)> = held
+                .iter()
+                .map(|held| (held.region, Vouch::Committed))
+                .collect();
+            coordinator.heartbeat(now, name, &vouched);
+            let players: Vec<PlayersOf> = held
+                .iter()
+                .map(|held| PlayersOf {
+                    region: held.region,
+                    epoch: held.epoch,
+                    tick,
+                    crowds: crowds.get(&held.region).cloned().unwrap_or_default(),
+                })
+                .collect();
+            coordinator.players(now, name, &players);
+        }
+        let mut changes = coordinator.tick(now);
+        if changes.read {
+            let more = coordinator.listed(now, list);
+            changes.orders.extend(more.orders);
+            changes.reshaped.extend(more.reshaped);
+        }
+        (now, changes)
+    };
+
+    // The region is given to `a` when the coordinator's grace is over, rests, and is
+    // split when the group has stood.
+    let mut ordered = None;
+    for _ in 0..200 {
+        let (_, changes) = look(&mut coordinator, &list, &crowds, &alive);
+        ordered = changes
+            .orders
+            .into_iter()
+            .find_map(|told| match told.order {
+                Order::SplitOff { part, as_epoch, .. } => Some((told.worker, part, as_epoch)),
+                _ => None,
+            });
+        if ordered.is_some() {
+            break;
+        }
+    }
+    let (worker, part, as_epoch) = ordered.expect("the coordinator splits the region by itself");
+    assert_eq!(worker, "a");
+    assert_eq!(coordinator.under_way(), [Asked::Split { region: home }]);
+
+    // The store makes the split, and `a` dies before it says so.
+    list.regions.push(RegionInfo {
+        region: part,
+        epoch: as_epoch,
+        bounds: Some(ChunkBox {
+            min: ChunkPos::new(4, -7),
+            max: ChunkPos::new(8, 7),
+        }),
+        pinned: Vec::new(),
+    });
+    list.next = RegionId(part.0 + 1);
+    crowds.insert(home, vec![(ChunkPos::new(0, 0), 2)]);
+    crowds.insert(part, vec![(ChunkPos::new(6, 0), 1)]);
+    let (died, _) = look(&mut coordinator, &list, &crowds, &alive);
+    coordinator.disconnected(died, "a");
+    alive.retain(|name| *name != "a");
+
+    // A lease later both regions are `b`'s: the split's reservation has ended
+    // without the worker's word, and the list has shown the part.
+    let runs = |coordinator: &Coordinator, region: RegionId| {
+        let held = coordinator.assignments("b");
+        held.iter().any(|held| held.region == region)
+    };
+    let mut ended = Vec::new();
+    let mut given = None;
+    for _ in 0..200 {
+        let (at, changes) = look(&mut coordinator, &list, &crowds, &alive);
+        ended.extend(changes.reshaped);
+        if runs(&coordinator, home) && runs(&coordinator, part) {
+            given = Some(at);
+            break;
+        }
+    }
+    let given = given.expect("the other worker is given both regions");
+    assert!(
+        matches!(
+            ended.as_slice(),
+            [Reshaped {
+                asker: None,
+                outcome: Err(_),
+                ..
+            }]
+        ),
+        "{ended:?}"
+    );
+
+    // K7: the split was made, so the region that was given an owner rests, and is
+    // not left alone for longer than that.
+    let alone_until = coordinator.alone_until(home);
+    assert!(
+        alone_until.is_some_and(|until| until <= given + REST),
+        "region 0 was split, by the list, and given an owner {:?} after the start; it is left \
+         alone until {:?} after the start, which is longer than a rest of {REST:?}",
+        given - start,
+        alone_until.map(|until| until - start)
+    );
 }
 
 /// The times of two lines of a log are compared across midnight and across the end
