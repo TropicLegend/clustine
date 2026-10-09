@@ -2,16 +2,16 @@
 //!
 //! Each of them has one connection to it. A worker registers over its connection and is
 //! told what to run, an edge asks for the routing table and is sent every new one, and
-//! whoever wants a region moved asks for that and is told how it went. The service at
-//! the other end is [`crate::serve`].
+//! whoever wants a region moved, two merged or one split asks for that and is told how
+//! it went. The service at the other end is [`crate::serve`].
 
 use std::io;
 use std::time::Duration;
 
 use clustine_region::{Layout, RegionId, RoutingTable};
 use clustine_rpc::link::End;
-use clustine_rpc::{Assignment, FromCoordinator, ToCoordinator, Vouch, tcp};
-use clustine_world::Vec3;
+use clustine_rpc::{Assignment, FromCoordinator, Off, ToCoordinator, Vouch, tcp};
+use clustine_world::{ChunkPos, Vec3};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -64,6 +64,31 @@ pub enum WorkerEvent {
     /// [`WorkerClient::released`]. If it does not hold the region with that epoch, it
     /// says so at once all the same. See `docs/adr/0009-moving-a-region.md`.
     Release { region: RegionId, epoch: u64 },
+    /// `region`, which the worker holds with `epoch`, is about to absorb a region that
+    /// is being released for it: the worker is to checkpoint it now, so that the merge
+    /// finds less to wait for. Not answered. This and the two below are of
+    /// `docs/adr/0014-merging-and-splitting.md`, section 4.
+    Prepare { region: RegionId, epoch: u64 },
+    /// The worker is to have `region`, which it holds with `epoch`, absorb the region
+    /// `absorbed`, which nobody runs and which it opens with `as_epoch` for that, and
+    /// to say what came of it with [`WorkerClient::absorb_ended`]. The order may come
+    /// twice.
+    Absorb {
+        region: RegionId,
+        epoch: u64,
+        absorbed: RegionId,
+        as_epoch: u64,
+    },
+    /// The worker is to split the players standing in `chunks` off `region`, which it
+    /// holds with `epoch`, as the region `part`, to run that with `as_epoch`, and to
+    /// say what came of it with [`WorkerClient::split_ended`]. The order comes once.
+    SplitOff {
+        region: RegionId,
+        epoch: u64,
+        chunks: Vec<ChunkPos>,
+        as_epoch: u64,
+        part: RegionId,
+    },
 }
 
 /// A worker's connection to the coordinator.
@@ -139,8 +164,8 @@ impl WorkerClient {
 
         // The task must never wait for the worker, or the heartbeats would stop while
         // the worker is busy; hence a queue without a limit. It stays short all the
-        // same: the coordinator only speaks when the worker's orders change or it is
-        // to release a region.
+        // same: the coordinator only speaks when the worker's orders change, or it is
+        // to release, merge or split a region.
         let (sender, events) = mpsc::unbounded_channel();
         let (vouches, vouched) = watch::channel(None);
         let (reports, reported) = mpsc::unbounded_channel();
@@ -220,9 +245,47 @@ impl WorkerClient {
         let _ = self.reports.send(ToCoordinator::Leaving);
     }
 
-    /// Waits for the next thing the coordinator says: new orders, or that a region is
-    /// to be released. What came while nobody waited is returned first, in the order
-    /// it came. An error means the connection is lost.
+    /// Tells the coordinator what came of [`WorkerEvent::Absorb`]: that `region` has
+    /// absorbed `absorbed`, or why not. A worker also says this, with `Ok`, of a region
+    /// that the world store refuses to let it open because `region` has absorbed it.
+    /// Either only makes the coordinator read the world store's list of regions, which
+    /// decides what happened.
+    ///
+    /// Sent at once, ahead of the next heartbeat. If the connection is lost, nothing is
+    /// sent, or what was sent may not have arrived, and [`WorkerClient::event`] says
+    /// that the connection is lost. Nothing has to be remembered for that case: the
+    /// coordinator reads the list when the merge has had a lease, and if the worker
+    /// registers again before that, it is given the order again.
+    pub fn absorb_ended(&self, region: RegionId, absorbed: RegionId, outcome: Result<(), Off>) {
+        let _ = self.reports.send(ToCoordinator::AbsorbEnded {
+            region,
+            absorbed,
+            outcome,
+        });
+    }
+
+    /// Tells the coordinator what came of the [`WorkerEvent::SplitOff`] of `region`
+    /// that named `as_epoch`: the new region, which the worker runs with that epoch,
+    /// or why there is none.
+    ///
+    /// Sent at once, ahead of the next heartbeat. If the connection is lost, nothing is
+    /// sent, or what was sent may not have arrived, and [`WorkerClient::event`] says
+    /// that the connection is lost. A worker that has split a region reports the new
+    /// one as held when it registers again, and says this again on the new client
+    /// until its orders have named the new region once: the order to split is not
+    /// given twice, so nothing else tells the coordinator whose the region is.
+    pub fn split_ended(&self, region: RegionId, as_epoch: u64, outcome: Result<RegionId, Off>) {
+        let _ = self.reports.send(ToCoordinator::SplitEnded {
+            region,
+            as_epoch,
+            outcome,
+        });
+    }
+
+    /// Waits for the next thing the coordinator says: new orders, that a region is to
+    /// be released, or what is to be done for a merge or a split. What came while
+    /// nobody waited is returned first, in the order it came. An error means the
+    /// connection is lost.
     ///
     /// Nothing is lost if the returned future is dropped before it is done.
     pub async fn event(&mut self) -> Result<WorkerEvent, ClientError> {
@@ -235,12 +298,13 @@ impl WorkerClient {
     /// orders. Orders that came while nobody waited are returned first, in the order
     /// they came. An error means the connection is lost.
     ///
-    /// This is [`WorkerClient::event`] for a worker that releases nothing: what the
-    /// coordinator asks it to release is passed over, and the region is taken from it
-    /// when the lease is out.
+    /// This is [`WorkerClient::event`] for a worker that releases nothing and neither
+    /// merges nor splits: what the coordinator asks of it is passed over. A region it
+    /// was to release is taken from it when the lease is out, and a merge or a split
+    /// is given up then.
     ///
     /// Nothing is lost if the returned future is dropped before it is done, but for
-    /// the requests to release that were passed over.
+    /// what was passed over.
     pub async fn next(&mut self) -> Result<Orders, ClientError> {
         loop {
             if let WorkerEvent::Orders(orders) = self.event().await? {
@@ -393,6 +457,76 @@ pub enum MoveAnswer {
     },
 }
 
+/// The connection of whoever asked the coordinator to merge two regions or to split
+/// one. See `docs/adr/0014-merging-and-splitting.md`, section 5.1.
+#[derive(Debug)]
+pub struct Asker {
+    link: CoordinatorEnd,
+}
+
+impl Asker {
+    /// Connects to the coordinator at `coordinator` (host:port) and asks it to have
+    /// the region `survivor` absorb the region `absorbed`.
+    pub async fn merge(
+        coordinator: &str,
+        survivor: RegionId,
+        absorbed: RegionId,
+    ) -> Result<Self, ClientError> {
+        Self::ask(coordinator, ToCoordinator::Merge { survivor, absorbed }).await
+    }
+
+    /// Connects to the coordinator at `coordinator` (host:port) and asks it to have
+    /// the players standing in `chunks` split off `region` as a region of its own.
+    pub async fn split(
+        coordinator: &str,
+        region: RegionId,
+        chunks: &[ChunkPos],
+    ) -> Result<Self, ClientError> {
+        let chunks = chunks.to_vec();
+        Self::ask(coordinator, ToCoordinator::Split { region, chunks }).await
+    }
+
+    async fn ask(coordinator: &str, request: ToCoordinator) -> Result<Self, ClientError> {
+        let link = connect(coordinator).await?;
+        link.send(request).await.map_err(|_| ClientError::Lost)?;
+        Ok(Self { link })
+    }
+
+    /// The coordinator's one answer: the region that absorbed the other, or the one
+    /// that was split off; or, in words, why there is none. It comes at once if the
+    /// coordinator refuses, and otherwise when the coordinator knows what came of it,
+    /// which is within its lease or little more; the coordinator does not cut the
+    /// connection off for being silent until then, and closes it after the answer.
+    ///
+    /// [`ClientError::Lost`] means that the connection ended without an answer. What
+    /// was asked for may go on all the same, and the world store's list of regions
+    /// shows what became of it.
+    pub async fn answer(mut self) -> Result<Result<RegionId, String>, ClientError> {
+        match self.link.recv().await {
+            Some(FromCoordinator::Asked(answer)) => Ok(answer),
+            Some(FromCoordinator::Refused { reason }) => Err(ClientError::Refused(reason)),
+            Some(
+                FromCoordinator::Assigned { .. }
+                | FromCoordinator::Release { .. }
+                | FromCoordinator::Absorb { .. }
+                | FromCoordinator::SplitOff { .. }
+                | FromCoordinator::Prepare { .. },
+            ) => Err(unexpected(
+                "orders to somebody who asked for a merge or a split",
+            )),
+            Some(FromCoordinator::Routing(_)) => Err(unexpected(
+                "a routing table to somebody who asked for a merge or a split",
+            )),
+            Some(
+                FromCoordinator::MoveRefused { .. }
+                | FromCoordinator::MoveBegun { .. }
+                | FromCoordinator::MoveDone { .. },
+            ) => Err(unexpected("word of a move nobody asked for")),
+            None => Err(ClientError::Lost),
+        }
+    }
+}
+
 /// The connection of whoever asked the coordinator to move a region.
 #[derive(Debug)]
 pub struct Mover {
@@ -466,6 +600,10 @@ fn orders_from(message: Option<FromCoordinator>) -> Result<Orders, ClientError> 
         WorkerEvent::Orders(orders) => Ok(orders),
         // A worker is asked to release what it was told to run, so orders come first.
         WorkerEvent::Release { .. } => Err(unexpected("a release before any orders")),
+        // The same holds of a region it is to merge or to split.
+        WorkerEvent::Prepare { .. } | WorkerEvent::Absorb { .. } | WorkerEvent::SplitOff { .. } => {
+            Err(unexpected("word of a merge or a split before any orders"))
+        }
     }
 }
 
@@ -491,13 +629,36 @@ fn event_from(message: Option<FromCoordinator>) -> Result<WorkerEvent, ClientErr
             | FromCoordinator::MoveBegun { .. }
             | FromCoordinator::MoveDone { .. },
         ) => Err(unexpected("word of a move nobody asked for")),
-        // The coordinator has no worker merge or split a region yet (ADR-0010).
-        Some(
-            FromCoordinator::Absorb { .. }
-            | FromCoordinator::SplitOff { .. }
-            | FromCoordinator::Prepare { .. }
-            | FromCoordinator::Asked(_),
-        ) => Err(unexpected("word of a merge or a split")),
+        Some(FromCoordinator::Prepare { region, epoch }) => {
+            Ok(WorkerEvent::Prepare { region, epoch })
+        }
+        Some(FromCoordinator::Absorb {
+            region,
+            epoch,
+            absorbed,
+            as_epoch,
+        }) => Ok(WorkerEvent::Absorb {
+            region,
+            epoch,
+            absorbed,
+            as_epoch,
+        }),
+        Some(FromCoordinator::SplitOff {
+            region,
+            epoch,
+            chunks,
+            as_epoch,
+            part,
+        }) => Ok(WorkerEvent::SplitOff {
+            region,
+            epoch,
+            chunks,
+            as_epoch,
+            part,
+        }),
+        Some(FromCoordinator::Asked(_)) => Err(unexpected(
+            "the answer to a merge or a split nobody asked for",
+        )),
         None => Err(ClientError::Lost),
     }
 }
@@ -581,6 +742,7 @@ mod tests {
         RoutingTable {
             home: None,
             absorbed: Vec::new(),
+            waiting: 1,
             version,
             layout: Layout::new(vec![0]).unwrap(),
             spawn: Vec3::new(0.5, -60.0, 0.5),
@@ -857,9 +1019,218 @@ mod tests {
         drop(coordinator.await.unwrap());
     }
 
-    /// A coordinator that answers one request for a move with `answers` and hangs up.
-    /// Returns what it was asked.
-    async fn answer_a_move(
+    #[tokio::test]
+    async fn what_a_worker_is_to_do_for_a_merge_or_a_split_comes_in_order_with_its_orders() {
+        let first = [assignment(0, 5)];
+        let chunks = vec![ChunkPos::new(3, -2), ChunkPos::new(4, -2)];
+        let (listener, address) = listen().await;
+        let split = chunks.clone();
+        let coordinator = tokio::spawn(async move {
+            let mut link = accept(&listener).await;
+            assert!(within(link.recv()).await.is_some());
+            let (region, epoch) = (RegionId(0), 5);
+            let told = [
+                assigned(&first),
+                FromCoordinator::Prepare { region, epoch },
+                FromCoordinator::Absorb {
+                    region,
+                    epoch,
+                    absorbed: RegionId(1),
+                    as_epoch: 9,
+                },
+                FromCoordinator::SplitOff {
+                    region,
+                    epoch,
+                    chunks: split,
+                    as_epoch: 10,
+                    part: RegionId(2),
+                },
+                assigned(&[assignment(0, 5), assignment(2, 10)]),
+            ];
+            for message in told {
+                link.send(message).await.unwrap();
+            }
+            link
+        });
+        let (mut client, _) = register(&address).await.unwrap();
+        let mut link = coordinator.await.unwrap();
+        let (region, epoch) = (RegionId(0), 5);
+        let expected = [
+            WorkerEvent::Prepare { region, epoch },
+            WorkerEvent::Absorb {
+                region,
+                epoch,
+                absorbed: RegionId(1),
+                as_epoch: 9,
+            },
+            WorkerEvent::SplitOff {
+                region,
+                epoch,
+                chunks,
+                as_epoch: 10,
+                part: RegionId(2),
+            },
+            WorkerEvent::Orders(orders(&[assignment(0, 5), assignment(2, 10)])),
+        ];
+        for event in expected {
+            assert_eq!(within(client.event()).await.unwrap(), event);
+        }
+
+        // What came of them is reported at once and in order.
+        client.absorb_ended(region, RegionId(1), Ok(()));
+        client.split_ended(region, 10, Ok(RegionId(2)));
+        client.absorb_ended(region, RegionId(1), Err(Off::StoreLost));
+        client.split_ended(region, 11, Err(Off::Nobody));
+        let said = [
+            ToCoordinator::AbsorbEnded {
+                region,
+                absorbed: RegionId(1),
+                outcome: Ok(()),
+            },
+            ToCoordinator::SplitEnded {
+                region,
+                as_epoch: 10,
+                outcome: Ok(RegionId(2)),
+            },
+            ToCoordinator::AbsorbEnded {
+                region,
+                absorbed: RegionId(1),
+                outcome: Err(Off::StoreLost),
+            },
+            ToCoordinator::SplitEnded {
+                region,
+                as_epoch: 11,
+                outcome: Err(Off::Nobody),
+            },
+        ];
+        for expected in said {
+            loop {
+                match within(link.recv()).await {
+                    Some(ToCoordinator::Heartbeat { regions }) => {
+                        // The new region is vouched for like any the orders name.
+                        let vouched: Vec<u32> = regions.iter().map(|(id, _)| id.0).collect();
+                        assert_eq!(vouched, [0, 2]);
+                    }
+                    other => {
+                        assert_eq!(other, Some(expected));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn word_of_a_merge_in_answer_to_a_registration_and_an_answer_nobody_asked_for_are_errors()
+    {
+        let (region, epoch) = (RegionId(0), 5);
+        // A worker is told to merge what it was told to run, so orders come first.
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let link = accept(&listener).await;
+            link.send(FromCoordinator::Prepare { region, epoch })
+                .await
+                .unwrap();
+            link
+        });
+        let answer = register(&address).await;
+        assert!(is_invalid_data(&answer), "{answer:?}");
+        drop(coordinator.await.unwrap());
+
+        // The answer to somebody who asked for a merge is not for a worker.
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let link = accept(&listener).await;
+            link.send(assigned(&[])).await.unwrap();
+            link.send(FromCoordinator::Asked(Ok(region))).await.unwrap();
+            link
+        });
+        let (mut client, _) = register(&address).await.unwrap();
+        let next = within(client.event()).await;
+        assert!(is_invalid_data(&next), "{next:?}");
+        drop(coordinator.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn whoever_asks_for_a_merge_or_a_split_is_given_the_one_answer() {
+        let answers = [Ok(RegionId(4)), Err("region 1 has no owner".to_owned())];
+        for answer in answers {
+            // A merge.
+            let (listener, address) = listen().await;
+            let answered = vec![FromCoordinator::Asked(answer.clone())];
+            let coordinator = tokio::spawn(answer_a_request(listener, answered));
+            let asker = within(Asker::merge(&address, RegionId(0), RegionId(1)))
+                .await
+                .unwrap();
+            let asked = ToCoordinator::Merge {
+                survivor: RegionId(0),
+                absorbed: RegionId(1),
+            };
+            assert_eq!(coordinator.await.unwrap(), Some(asked));
+            assert_eq!(within(asker.answer()).await.unwrap(), answer);
+
+            // A split.
+            let (listener, address) = listen().await;
+            let answered = vec![FromCoordinator::Asked(answer.clone())];
+            let coordinator = tokio::spawn(answer_a_request(listener, answered));
+            let chunks = [ChunkPos::new(-1, 7)];
+            let asker = within(Asker::split(&address, RegionId(2), &chunks))
+                .await
+                .unwrap();
+            let asked = ToCoordinator::Split {
+                region: RegionId(2),
+                chunks: chunks.to_vec(),
+            };
+            assert_eq!(coordinator.await.unwrap(), Some(asked));
+            assert_eq!(within(asker.answer()).await.unwrap(), answer);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_merge_that_is_answered_wrongly_or_not_at_all_is_an_error() {
+        // What is meant for a worker, an edge or somebody who asked for a move.
+        let (region, epoch) = (RegionId(0), 5);
+        let wrong = [
+            assigned(&[]),
+            FromCoordinator::Prepare { region, epoch },
+            FromCoordinator::Routing(table(1)),
+            FromCoordinator::MoveRefused {
+                reason: "not today".to_owned(),
+            },
+        ];
+        for wrong in wrong {
+            let (listener, address) = listen().await;
+            let coordinator = tokio::spawn(answer_a_request(listener, vec![wrong]));
+            let asker = within(Asker::merge(&address, RegionId(0), RegionId(1)))
+                .await
+                .unwrap();
+            coordinator.await.unwrap();
+            let answer = within(asker.answer()).await;
+            assert!(is_invalid_data(&answer), "{answer:?}");
+        }
+
+        // A coordinator that goes away without a word, and one that is not there.
+        let (listener, address) = listen().await;
+        let coordinator = tokio::spawn(async move {
+            let _ = accept(&listener).await;
+            listener
+        });
+        let asker = within(Asker::split(&address, RegionId(0), &[]))
+            .await
+            .unwrap();
+        let lost = within(asker.answer()).await;
+        assert!(matches!(lost, Err(ClientError::Lost)), "{lost:?}");
+        drop(coordinator.await.unwrap());
+        let unreachable = within(Asker::merge(&address, RegionId(0), RegionId(1))).await;
+        assert!(
+            matches!(unreachable, Err(ClientError::Io(_))),
+            "{unreachable:?}"
+        );
+    }
+
+    /// A coordinator that answers one request, for a move, a merge or a split, with
+    /// `answers` and hangs up. Returns what it was asked.
+    async fn answer_a_request(
         listener: TcpListener,
         answers: Vec<FromCoordinator>,
     ) -> Option<ToCoordinator> {
@@ -885,7 +1256,7 @@ mod tests {
                 released: false,
             },
         ];
-        let coordinator = tokio::spawn(answer_a_move(listener, answers));
+        let coordinator = tokio::spawn(answer_a_request(listener, answers));
         let mut mover = within(Mover::ask(&address, RegionId(2), Some("b")))
             .await
             .unwrap();
@@ -923,7 +1294,7 @@ mod tests {
         for answers in [vec![refused()], vec![begun, refused()]] {
             let (listener, address) = listen().await;
             let count = answers.len();
-            let coordinator = tokio::spawn(answer_a_move(listener, answers));
+            let coordinator = tokio::spawn(answer_a_request(listener, answers));
             let mut mover = within(Mover::ask(&address, RegionId(0), None))
                 .await
                 .unwrap();
@@ -950,7 +1321,7 @@ mod tests {
         // What is meant for a worker or an edge.
         for wrong in [assigned(&[]), FromCoordinator::Routing(table(1))] {
             let (listener, address) = listen().await;
-            let coordinator = tokio::spawn(answer_a_move(listener, vec![wrong]));
+            let coordinator = tokio::spawn(answer_a_request(listener, vec![wrong]));
             let mut mover = within(Mover::ask(&address, RegionId(0), None))
                 .await
                 .unwrap();

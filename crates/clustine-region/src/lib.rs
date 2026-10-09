@@ -107,19 +107,25 @@ pub struct RoutingTable {
     pub spawn: Vec3,
     /// The regions that have an owner, in ascending order of their ids.
     pub routes: Vec<RegionRoute>,
-    /// The region players enter the world in, once regions are sets of chunks that the
-    /// world store grants (`docs/adr/0010-regions-that-follow-players.md`, section 3).
-    /// `None` as long as the world is divided by a layout.
+    /// The region players enter the world in, as the world store's list of regions had
+    /// it when the coordinator last read it
+    /// (`docs/adr/0014-merging-and-splitting.md`, section 5.5). `None` until it has.
     pub home: Option<RegionId>,
-    /// The regions that were absorbed of late, each with the region it went into. What
-    /// names an absorbed region means the one it went into. Empty for now.
+    /// The regions that were absorbed, each with the region it went into, which may
+    /// have been absorbed since: all the world store keeps of them, as of the same
+    /// reading. An edge acts on what a region tells it of a merge, and uses these to
+    /// know which region to expect that from (ADR-0014, rule 39).
     pub absorbed: Vec<(RegionId, RegionId)>,
+    /// How many regions the coordinator knows that have no owner. The regions merge
+    /// and split, so nothing but the coordinator's count says whether `routes` is all
+    /// of them.
+    pub waiting: u32,
 }
 
 impl RoutingTable {
-    /// Whether every region has an owner.
+    /// Whether every region the coordinator knows has an owner.
     pub fn is_complete(&self) -> bool {
-        self.routes.len() == self.layout.region_count()
+        self.waiting == 0
     }
 
     pub fn route(&self, region: RegionId) -> Option<&RegionRoute> {
@@ -201,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn a_routing_table_is_complete_when_every_region_has_a_route() {
+    fn a_routing_table_is_complete_when_no_region_waits_for_an_owner() {
         let route = |region| RegionRoute {
             region: RegionId(region),
             epoch: 1,
@@ -210,6 +216,7 @@ mod tests {
         let mut table = RoutingTable {
             home: None,
             absorbed: Vec::new(),
+            waiting: 1,
             version: 1,
             layout: Layout::new(vec![0]).unwrap(),
             spawn: Vec3::new(0.5, -60.0, 0.5),
@@ -218,7 +225,17 @@ mod tests {
         assert!(!table.is_complete());
         assert_eq!(table.route(RegionId(0)), None);
         table.routes.insert(0, route(0));
+        table.waiting = 0;
         assert!(table.is_complete());
         assert_eq!(table.route(RegionId(1)).unwrap().address, "worker-1:25601");
+
+        // The layout does not come into it: a region that was split off has a route
+        // and no stripe, and one that was absorbed has a stripe and no route.
+        table.routes.push(route(2));
+        assert!(table.is_complete());
+        table.routes.truncate(1);
+        assert!(table.is_complete());
+        table.waiting = 2;
+        assert!(!table.is_complete());
     }
 }

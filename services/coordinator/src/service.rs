@@ -2,19 +2,34 @@
 //!
 //! Every client has one connection, and the first thing it says decides what the
 //! connection is: a worker registers, an edge asks for the routing table, and whoever
-//! operates the cluster asks for a region to be moved. A single task owns the
-//! [`Coordinator`] and all connections. It turns what clients say into calls
-//! and what the calls changed into messages, and it never waits for a client: what it
-//! has to say is queued, and a client that does not take it is dropped.
+//! operates the cluster asks for a region to be moved, for two to be merged or for one
+//! to be split. A single task owns the [`Coordinator`] and all connections. It turns
+//! what clients say into calls and what the calls changed into messages, and it never
+//! waits for a client: what it has to say is queued, and a client that does not take
+//! it is dropped.
+//!
+//! Nor does it wait for the world store, whose list of regions says which regions
+//! there are (`docs/adr/0014-merging-and-splitting.md`, section 5.2). The list is read
+//! on a thread of its own, and what was read comes back to the task like something a
+//! client said. It is read when the service starts, when a worker registers, before a
+//! merge or a split that somebody asks for is looked at, and whenever the coordinator
+//! asks for it ([`Changes::read`]): when a worker says what came of a merge or a
+//! split, and when one of them ends without a worker's word. One reading is under way
+//! at a time, and a reading that was asked for before something else called for one
+//! is thrown away and made again: the coordinator takes what it is handed for the
+//! state of things after everything it knows of.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::link::{End, Receiver, Sender};
-use clustine_rpc::{Assignment, FromCoordinator, ToCoordinator, tcp};
+use clustine_rpc::{Assignment, FromCoordinator, RegionList, ToCoordinator, tcp};
+use clustine_world::ChunkPos;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -22,7 +37,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::QUEUE;
-use crate::state::{Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome};
+use crate::state::{Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, Order};
 
 /// What clients have said and the service has not got to yet, for all of them together.
 /// While it is full the tasks that read from clients wait, which holds back nobody but
@@ -50,30 +65,52 @@ type ClientEnd = End<FromCoordinator, ToCoordinator>;
 /// has ended.
 type Said = (u64, Option<ToCoordinator>);
 
+/// Reads the world store's list of regions. It may take as long as the store takes to
+/// answer, and is called on a thread of its own.
+type Lists = Arc<dyn Fn() -> io::Result<RegionList> + Send + Sync>;
+
+/// The reading of the list with this number, as it came back.
+type Reading = (u64, io::Result<RegionList>);
+
 /// Runs a coordinator on `listener` until the future is dropped, which closes every
 /// connection. It only returns if the listener is of no use from the start.
 ///
 /// Workers reach the coordinator with [`crate::WorkerClient`], edges with
-/// [`crate::RoutingWatch`], and whoever wants a region moved with [`crate::Mover`]. A
-/// worker whose connection ends keeps its regions until its lease runs out, and for good
-/// if it registers again before that, unless it had said that it is leaving: then it is
+/// [`crate::RoutingWatch`], whoever wants a region moved with [`crate::Mover`], and
+/// whoever wants regions merged or one split with [`crate::Asker`]. A worker whose
+/// connection ends keeps its regions until its lease runs out, and for good if it
+/// registers again before that, unless it had said that it is leaving: then it is
 /// taken to be gone.
-pub async fn serve(listener: TcpListener, config: CoordinatorConfig) -> io::Result<()> {
+///
+/// `lists` reads the world store's list of regions: `clustine_worldstore::regions`
+/// over the store's address in a cluster. It is called on a thread of its own, one
+/// call at a time, and has to come back, with an error if the store does not answer:
+/// a merge that waits for the list waits for as long as the call takes. A coordinator
+/// whose `lists` fails knows the regions of its layout and those its workers report,
+/// and refuses to merge and to split.
+pub async fn serve<L>(listener: TcpListener, config: CoordinatorConfig, lists: L) -> io::Result<()>
+where
+    L: Fn() -> io::Result<RegionList> + Send + Sync + 'static,
+{
     // The wall clock is all a coordinator has of those before it: it went on while they
     // ran, so this one starts above whatever they issued.
-    serve_from(listener, config, unix_milliseconds()).await
+    serve_from(listener, config, Arc::new(lists), unix_milliseconds()).await
 }
 
 /// [`serve`] for a coordinator that issues no epoch at or below `first_epoch`.
 async fn serve_from(
     listener: TcpListener,
     config: CoordinatorConfig,
+    lists: Lists,
     first_epoch: u64,
 ) -> io::Result<()> {
     let address = listener.local_addr()?;
     let lease = config.lease;
     info!(%address, ?lease, first_epoch, "the coordinator is listening");
-    let mut service = Service::new(config, now(), first_epoch);
+    let mut service = Service::new(config, now(), first_epoch, lists);
+    // Which regions there are besides those of the layout, and which of those are no
+    // more. Until the store answers, the coordinator goes by the layout.
+    service.read_the_list();
 
     let mut ticks = tokio::time::interval(tick_interval(lease));
     // A tick that comes late does the work of those it would have to catch up with.
@@ -100,6 +137,9 @@ async fn serve_from(
             () = &mut pause, if !accepting => accepting = true,
             Some((connection, message)) = service.said.recv() => {
                 service.hear(now(), connection, message);
+            }
+            Some((number, list)) = service.read.recv() => {
+                service.listed(now(), number, list);
             }
             _ = ticks.tick() => service.tick(now()),
         }
@@ -139,6 +179,10 @@ enum Role {
     /// Somebody asked over it for a region to be moved, and waits to hear how that
     /// ended. The connection is closed once they have been told.
     Mover,
+    /// Somebody asked over it for two regions to be merged or for one to be split, and
+    /// waits to hear what came of it. The connection is closed once they have been
+    /// told.
+    Asker,
 }
 
 impl Role {
@@ -148,9 +192,23 @@ impl Role {
         match self {
             Self::Undecided => true,
             Self::Worker(registered) => registered == name,
-            Self::Watcher | Self::Mover => false,
+            Self::Watcher | Self::Mover | Self::Asker => false,
         }
     }
+}
+
+/// A merge or a split that somebody asked for and that waits for the list to be read
+/// before the coordinator looks at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ask {
+    Merge {
+        survivor: RegionId,
+        absorbed: RegionId,
+    },
+    Split {
+        region: RegionId,
+        chunks: Vec<ChunkPos>,
+    },
 }
 
 /// The connection to a client.
@@ -169,7 +227,6 @@ struct Connection {
 ///
 /// Nothing here waits, and every call is given the time, as with the [`Coordinator`]
 /// itself. [`serve`] makes the calls as things happen; a test can make them by hand.
-#[derive(Debug)]
 struct Service {
     coordinator: Coordinator,
     /// The open connections by their numbers.
@@ -188,11 +245,30 @@ struct Service {
     /// Where those tasks pass on what they read, and where it comes out.
     said_sender: mpsc::Sender<Said>,
     said: mpsc::Receiver<Said>,
+    /// Reads the world store's list of regions.
+    lists: Lists,
+    /// How many readings of the list have been called for. A reading has the number
+    /// this had when it was begun, so one with a lower number was begun before the
+    /// last thing that called for one.
+    wanted: u64,
+    /// The number of the reading that is under way, if one is.
+    reading: Option<u64>,
+    /// Whether the last reading failed, so that the log says it once and not at
+    /// every attempt.
+    unread: bool,
+    /// The merges and splits that were asked for and wait for the list to be read,
+    /// each with the connection it was asked over.
+    asks: Vec<(u64, Ask)>,
+    /// Where the readings come back, and where they come out.
+    read_sender: mpsc::UnboundedSender<Reading>,
+    read: mpsc::UnboundedReceiver<Reading>,
 }
 
 impl Service {
-    fn new(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Self {
+    fn new(config: CoordinatorConfig, now: Instant, first_epoch: u64, lists: Lists) -> Self {
         let (said_sender, said) = mpsc::channel(SAID_CAPACITY);
+        // At most one reading is under way, so at most one waits here.
+        let (read_sender, read) = mpsc::unbounded_channel();
         Self {
             coordinator: Coordinator::new(config, now, first_epoch),
             connections: BTreeMap::new(),
@@ -202,6 +278,114 @@ impl Service {
             readers: JoinSet::new(),
             said_sender,
             said,
+            lists,
+            wanted: 0,
+            reading: None,
+            unread: false,
+            asks: Vec::new(),
+            read_sender,
+            read,
+        }
+    }
+
+    /// Has the world store's list of regions read, as of now or later: at once if no
+    /// reading is under way, and otherwise when that one has come back, which is then
+    /// thrown away.
+    fn read_the_list(&mut self) {
+        self.wanted += 1;
+        if self.reading.is_none() {
+            self.begin_reading();
+        }
+    }
+
+    /// Begins a reading of the list, on a thread of its own. Not one of the runtime's:
+    /// a reading that waits for a store that does not answer must not keep the
+    /// process from stopping.
+    fn begin_reading(&mut self) {
+        let number = self.wanted;
+        self.reading = Some(number);
+        let (lists, back) = (Arc::clone(&self.lists), self.read_sender.clone());
+        let reader = thread::Builder::new().name("region-list".to_owned());
+        let begun = reader.spawn(move || {
+            // Nobody takes it if the service is gone.
+            let _ = back.send((number, lists()));
+        });
+        if let Err(error) = begun {
+            // Then the list could not be read, which is said like any other failure.
+            let _ = self.read_sender.send((number, Err(error)));
+        }
+    }
+
+    /// The reading of the list with the number `number` has come back. If nothing has
+    /// called for a reading since it was begun, the coordinator is handed it, and
+    /// then looks at the merges and splits that were asked for and waited for it: if
+    /// the list could not be read, they are refused. Otherwise it is read again.
+    fn listed(&mut self, now: Instant, number: u64, list: io::Result<RegionList>) {
+        self.reading = None;
+        if number < self.wanted {
+            debug!(
+                number,
+                wanted = self.wanted,
+                "reading the list of regions again, as it was called for since"
+            );
+            self.begin_reading();
+            return;
+        }
+        let changes = match &list {
+            Ok(list) => {
+                if std::mem::take(&mut self.unread) {
+                    info!("the world store's list of regions can be read again");
+                }
+                debug!(?list, "read the world store's list of regions");
+                self.coordinator.listed(now, list)
+            }
+            Err(error) => {
+                if std::mem::replace(&mut self.unread, true) {
+                    debug!(%error, "the world store's list of regions still cannot be read");
+                } else {
+                    warn!(%error, "the world store's list of regions cannot be read");
+                }
+                self.coordinator.unlisted(now)
+            }
+        };
+        self.announce(&changes, None);
+
+        for (id, ask) in std::mem::take(&mut self.asks) {
+            match &list {
+                Ok(_) => self.ask(now, id, &ask),
+                Err(error) => {
+                    info!(connection = id, ?ask, %error, "refused, as the list cannot be read");
+                    let reason =
+                        format!("the world store's list of regions could not be read: {error}");
+                    self.tell(id, FromCoordinator::Asked(Err(reason)));
+                    self.close(id);
+                }
+            }
+        }
+        self.report_lost(now);
+    }
+
+    /// The coordinator looks at a merge or a split that was asked for over the
+    /// connection `id`, with the list as it was read after that. If it refuses,
+    /// whoever asked is told at once; if not, when the coordinator knows what came of
+    /// it.
+    fn ask(&mut self, now: Instant, id: u64, ask: &Ask) {
+        let begun = match ask {
+            Ask::Merge { survivor, absorbed } => {
+                self.coordinator.merge(now, *survivor, *absorbed, Some(id))
+            }
+            Ask::Split { region, chunks } => self.coordinator.split(now, *region, chunks, Some(id)),
+        };
+        match begun {
+            Ok(changes) => {
+                info!(connection = id, ?ask, "a merge or a split has begun");
+                self.announce(&changes, None);
+            }
+            Err(refusal) => {
+                info!(connection = id, ?ask, reason = %refusal, "refused a merge or a split");
+                self.tell(id, FromCoordinator::Asked(Err(refusal.to_string())));
+                self.close(id);
+            }
         }
     }
 
@@ -315,6 +499,49 @@ impl Service {
                 connection.role = Role::Mover;
                 self.move_region(now, id, region, to.as_deref());
             }
+            (
+                Role::Worker(name),
+                ToCoordinator::AbsorbEnded {
+                    region,
+                    absorbed,
+                    outcome,
+                },
+            ) => {
+                let name = name.clone();
+                let changes = self
+                    .coordinator
+                    .absorb_ended(now, &name, region, absorbed, outcome);
+                self.announce(&changes, None);
+            }
+            (
+                Role::Worker(name),
+                ToCoordinator::SplitEnded {
+                    region,
+                    as_epoch,
+                    outcome,
+                },
+            ) => {
+                let name = name.clone();
+                let changes = self
+                    .coordinator
+                    .split_ended(now, &name, region, as_epoch, outcome);
+                self.announce(&changes, None);
+            }
+            (Role::Undecided, ToCoordinator::Merge { survivor, absorbed }) => {
+                connection.role = Role::Asker;
+                info!(connection = id, %survivor, %absorbed, "asked to merge two regions");
+                // The coordinator looks at it when it knows which regions there are
+                // now, and which of them is the home region.
+                self.asks.push((id, Ask::Merge { survivor, absorbed }));
+                self.read_the_list();
+            }
+            (Role::Undecided, ToCoordinator::Split { region, chunks }) => {
+                connection.role = Role::Asker;
+                info!(connection = id, %region, chunks = chunks.len(), "asked to split a region");
+                // The new region is to have the next id of the list as it is now.
+                self.asks.push((id, Ask::Split { region, chunks }));
+                self.read_the_list();
+            }
             (role, message) => {
                 let said = match message {
                     ToCoordinator::RegisterWorker { .. } => "a registration",
@@ -324,8 +551,8 @@ impl Service {
                     ToCoordinator::Released { .. } => "that it released a region",
                     ToCoordinator::Leaving => "that it is leaving",
                     ToCoordinator::Move { .. } => "a request to move a region",
-                    // Of regions that merge and split (ADR-0010), which the
-                    // coordinator does not do yet.
+                    // Of regions that merge and split by themselves (ADR-0010), which
+                    // the coordinator does not have them do yet.
                     ToCoordinator::Players { .. } => "where its players are",
                     ToCoordinator::Merge { .. } => "a request to merge regions",
                     ToCoordinator::Split { .. } => "a request to split a region",
@@ -399,6 +626,9 @@ impl Service {
         // The answer, whether or not anything is different for the worker.
         self.assign(&name);
         self.announce(&changes, Some(&name));
+        // What the worker reports may be a region nobody knew of, or one that is no
+        // more; and the first worker may register before the store can be reached.
+        self.read_the_list();
     }
 
     /// Somebody asks over the connection `id` for `region` to be moved, to the worker
@@ -430,12 +660,14 @@ impl Service {
         // Whoever has not even said what it is, or is a worker and has let its lease
         // run out, is taken to be gone without having closed its connection. Edges are
         // left alone: they have nothing to say once they have asked for the table. So
-        // is whoever waits to hear of a move, which ends within a lease by itself.
+        // is whoever waits to hear of a move, a merge or a split, which end within a
+        // lease by themselves, or little more.
         let lease = self.coordinator.config().lease;
+        let waits = |role: &Role| matches!(role, Role::Watcher | Role::Mover | Role::Asker);
         let silent: Vec<u64> = self
             .connections
             .iter()
-            .filter(|(_, connection)| !matches!(connection.role, Role::Watcher | Role::Mover))
+            .filter(|(_, connection)| !waits(&connection.role))
             .filter(|(_, connection)| now.saturating_duration_since(connection.heard) > lease)
             .map(|(id, _)| *id)
             .collect();
@@ -449,9 +681,10 @@ impl Service {
         self.report_lost(now);
     }
 
-    /// Tells workers, edges and movers what a call into the coordinator changed, and
-    /// closes the connections of the workers that have left. `told` is a worker that
-    /// has been told its assignments already.
+    /// Tells workers, edges and whoever asked for something what a call into the
+    /// coordinator changed, closes the connections of the workers that have left, and
+    /// has the list of regions read if the coordinator asks for it. `told` is a worker
+    /// that has been told its assignments already.
     fn announce(&mut self, changes: &Changes, told: Option<&str>) {
         for name in &changes.workers {
             if told != Some(name.as_str()) {
@@ -466,8 +699,33 @@ impl Service {
                 self.tell(id, FromCoordinator::Release { region, epoch });
             }
         }
+        // Likewise. An order to absorb is given again when a worker without a
+        // connection registers; one to split is lost with it, and the split given up
+        // when it has had its lease.
+        for order in &changes.orders {
+            if let Some(&id) = self.workers.get(&order.worker) {
+                self.tell(id, order_message(&order.order));
+            }
+        }
         if changes.routing {
             self.announce_routing();
+        }
+        for reshaped in &changes.reshaped {
+            info!(
+                asked = ?reshaped.asked,
+                outcome = ?reshaped.outcome,
+                connection = ?reshaped.asker,
+                "a merge or a split has ended"
+            );
+            let Some(id) = reshaped.asker else {
+                continue;
+            };
+            let answer = reshaped.outcome.map_err(|why| why.to_string());
+            self.tell(id, FromCoordinator::Asked(answer));
+            self.close(id);
+        }
+        if changes.read {
+            self.read_the_list();
         }
         for outcome in &changes.moves {
             let id = outcome.mover;
@@ -497,9 +755,12 @@ impl Service {
     /// Sends every edge the routing table.
     fn announce_routing(&mut self) {
         let table = self.coordinator.routing_table();
+        let waiting = self.coordinator.waiting();
         info!(
             version = table.version,
-            regions = %Routes(&table),
+            home = ?table.home.map(|home| home.0),
+            absorbed = table.absorbed.len(),
+            regions = %Routes(&table, &waiting),
             "the routing table changed"
         );
         let watchers: Vec<u64> = self
@@ -586,6 +847,38 @@ fn outcome_message(outcome: &MoveOutcome) -> FromCoordinator {
     }
 }
 
+/// What a worker is told about a merge or a split, as the message it is on its
+/// connection.
+fn order_message(order: &Order) -> FromCoordinator {
+    match order.clone() {
+        Order::Prepare { region, epoch } => FromCoordinator::Prepare { region, epoch },
+        Order::Absorb {
+            region,
+            epoch,
+            absorbed,
+            as_epoch,
+        } => FromCoordinator::Absorb {
+            region,
+            epoch,
+            absorbed,
+            as_epoch,
+        },
+        Order::SplitOff {
+            region,
+            epoch,
+            chunks,
+            as_epoch,
+            part,
+        } => FromCoordinator::SplitOff {
+            region,
+            epoch,
+            chunks,
+            as_epoch,
+            part,
+        },
+    }
+}
+
 /// Passes on what the client of the connection `id` says and, last of all, that the
 /// connection has ended.
 async fn pass_on(id: u64, mut client: Receiver<ToCoordinator>, said: mpsc::Sender<Said>) {
@@ -639,17 +932,25 @@ impl fmt::Display for Fingerprint {
     }
 }
 
-/// Every region of a routing table with where its worker is reached and the epoch, for
-/// the log.
-struct Routes<'a>(&'a RoutingTable);
+/// Every region of a routing table with where its worker is reached and the epoch, and
+/// the regions that have no owner, which the table only counts, in the order of their
+/// ids; for the log.
+struct Routes<'a>(&'a RoutingTable, &'a [RegionId]);
 
 impl fmt::Display for Routes<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, (region, _)) in self.0.layout.regions().enumerate() {
+        let routed = self
+            .0
+            .routes
+            .iter()
+            .map(|route| (route.region, Some(route)));
+        let waiting = self.1.iter().map(|region| (*region, None));
+        let regions: BTreeMap<RegionId, _> = waiting.chain(routed).collect();
+        for (index, (region, route)) in regions.into_iter().enumerate() {
             if index > 0 {
                 formatter.write_str(", ")?;
             }
-            match self.0.route(region) {
+            match route {
                 Some(route) => {
                     let (address, epoch) = (&route.address, route.epoch);
                     write!(formatter, "region {region} at {address} with epoch {epoch}")?;
@@ -664,10 +965,11 @@ impl fmt::Display for Routes<'_> {
 #[cfg(test)]
 mod tests {
     use std::future::Future;
+    use std::sync::Mutex;
 
     use clustine_region::{Layout, RegionId, RegionRoute};
-    use clustine_rpc::{Vouch, link};
-    use clustine_world::{EntityIds, Vec3};
+    use clustine_rpc::{RegionInfo, Vouch, link};
+    use clustine_world::{EntityId, EntityIds, Vec3};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::task::JoinHandle;
@@ -675,7 +977,7 @@ mod tests {
 
     use super::*;
     use crate::client::{
-        ClientError, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient, WorkerEvent,
+        Asker, ClientError, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient, WorkerEvent,
     };
     use crate::state::Refusal;
 
@@ -711,7 +1013,7 @@ mod tests {
             Self {
                 address,
                 layout: config.layout.clone(),
-                task: tokio::spawn(serve(listener, config)),
+                task: tokio::spawn(serve(listener, config, no_store)),
             }
         }
 
@@ -722,7 +1024,12 @@ mod tests {
             Self {
                 address,
                 layout: config.layout.clone(),
-                task: tokio::spawn(serve_from(listener, config, first_epoch)),
+                task: tokio::spawn(serve_from(
+                    listener,
+                    config,
+                    Arc::new(no_store),
+                    first_epoch,
+                )),
             }
         }
 
@@ -773,6 +1080,12 @@ mod tests {
                 assignments: assignments.to_vec(),
             }
         }
+    }
+
+    /// A world store that cannot be reached. The coordinators of most of these tests
+    /// have none, and go by their layout and by what their workers report.
+    fn no_store() -> io::Result<RegionList> {
+        Err(io::Error::other("there is no world store"))
     }
 
     /// Something for a coordinator to be served on, and its address.
@@ -1321,7 +1634,7 @@ mod tests {
     async fn a_client_whose_queue_is_full_is_dropped_and_the_others_are_not_held_up() {
         const FIRST: u64 = 1000;
         let now = Instant::now();
-        let mut service = Service::new(config(&[]), now, FIRST);
+        let mut service = Service::new(config(&[]), now, FIRST, Arc::new(no_store));
 
         // Two edges with room for two tables each. Only one of them reads.
         let (mut reads, end) = link::in_process(2);
@@ -1373,7 +1686,7 @@ mod tests {
     async fn a_worker_that_falls_silent_is_told_that_it_runs_nothing_and_is_cut_off() {
         const FIRST: u64 = 1000;
         let start = Instant::now();
-        let mut service = Service::new(config(&[]), start, FIRST);
+        let mut service = Service::new(config(&[]), start, FIRST, Arc::new(no_store));
         let (mut edge, end) = link::in_process(8);
         service.attach(end, start);
         edge.send(ToCoordinator::WatchRouting).await.unwrap();
@@ -1425,7 +1738,7 @@ mod tests {
         first: u64,
         held: Assignment,
     ) -> (Service, RawEnd, RawEnd, RawEnd) {
-        let mut service = Service::new(config(&[]), start, first);
+        let mut service = Service::new(config(&[]), start, first, Arc::new(no_store));
         let (mut edge, end) = link::in_process(8);
         service.attach(end, start);
         edge.send(ToCoordinator::WatchRouting).await.unwrap();
@@ -1992,6 +2305,467 @@ mod tests {
         assert_eq!(taken.region, held_a.region);
     }
 
+    /// A world store as far as a coordinator can tell: its list of regions, which a
+    /// test sets, or none while it cannot be reached.
+    #[derive(Clone, Default)]
+    struct Stored(Arc<Mutex<Option<RegionList>>>);
+
+    impl Stored {
+        fn set(&self, list: RegionList) {
+            *self.0.lock().unwrap() = Some(list);
+        }
+
+        fn lose(&self) {
+            *self.0.lock().unwrap() = None;
+        }
+
+        /// What a coordinator reads the list with.
+        fn reader(&self) -> impl Fn() -> io::Result<RegionList> + Send + Sync + 'static {
+            let list = Arc::clone(&self.0);
+            move || {
+                let list = list.lock().unwrap().clone();
+                list.ok_or_else(|| io::Error::other("the store is down"))
+            }
+        }
+    }
+
+    /// The list of a world with these living regions, each with the epoch it was last
+    /// opened with, of which the first is the home region.
+    fn listing(regions: &[(u32, u64)], absorbed: &[(u32, u32)], next: u32) -> RegionList {
+        let info = |(region, epoch): &(u32, u64)| RegionInfo {
+            region: RegionId(*region),
+            epoch: *epoch,
+            bounds: None,
+            pinned: Vec::new(),
+        };
+        let pair = |(gone, into): &(u32, u32)| (RegionId(*gone), RegionId(*into));
+        RegionList {
+            home: RegionId(regions[0].0),
+            regions: regions.iter().map(info).collect(),
+            absorbed: absorbed.iter().map(pair).collect(),
+            next: RegionId(next),
+        }
+    }
+
+    /// A coordinator of a world with two regions whose store has `stored`, with the
+    /// workers and the edge of [`Cluster`].
+    async fn cluster_with(stored: &Stored) -> Cluster {
+        stored.set(listing(&[(0, 0), (1, 0)], &[], 2));
+        let (listener, address) = listen().await;
+        let config = config(&[0]);
+        let served = Served {
+            address,
+            layout: config.layout.clone(),
+            task: tokio::spawn(serve(listener, config, stored.reader())),
+        };
+        Cluster::of(served).await
+    }
+
+    /// The next thing a worker is told, whatever it is.
+    async fn next_event(worker: &mut WorkerClient) -> WorkerEvent {
+        within(worker.event()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn two_regions_are_merged_when_somebody_asks_and_the_answer_comes_when_the_list_has_it() {
+        let stored = Stored::default();
+        let Cluster {
+            served,
+            mut a,
+            mut b,
+            held_a,
+            held_b,
+            mut watch,
+            table,
+        } = cluster_with(&stored).await;
+        // The table has had the home region since the list was first read, which was
+        // long before the coordinator gave any region away.
+        assert_eq!(table.home, Some(RegionId(0)));
+        assert!(table.is_complete() && table.absorbed.is_empty());
+
+        let (survivor, absorbed) = (held_a.region, held_b.region);
+        let asker = within(Asker::merge(&served.address, survivor, absorbed))
+            .await
+            .unwrap();
+        // The one worker is to let go of its region, the other to make ready.
+        assert_eq!(next_release(&mut b).await, (absorbed, held_b.epoch));
+        let prepare = WorkerEvent::Prepare {
+            region: survivor,
+            epoch: held_a.epoch,
+        };
+        assert_eq!(next_event(&mut a).await, prepare);
+
+        // It has let go: it is told that it runs nothing, the region goes to nobody,
+        // and the other worker is to open and absorb it.
+        b.released(absorbed, held_b.epoch);
+        assert_eq!(
+            next_event(&mut b).await,
+            WorkerEvent::Orders(served.orders(&[]))
+        );
+        let as_epoch = match next_event(&mut a).await {
+            WorkerEvent::Absorb {
+                region,
+                epoch,
+                absorbed: named,
+                as_epoch,
+            } => {
+                assert_eq!((region, epoch, named), (survivor, held_a.epoch, absorbed));
+                as_epoch
+            }
+            other => panic!("{other:?} is no order to absorb"),
+        };
+        assert!(as_epoch > held_b.epoch);
+        let table = table_where(&mut watch, |table| table.routes.len() == 1).await;
+        assert_eq!(table.routes, [route(held_a, "a")]);
+        assert_eq!(table.waiting, 1);
+        assert!(!table.is_complete());
+
+        // The worker does it, the store has it, and the worker says so.
+        stored.set(listing(&[(0, held_a.epoch)], &[(1, 0)], 2));
+        a.absorb_ended(survivor, absorbed, Ok(()));
+        assert_eq!(within(asker.answer()).await.unwrap(), Ok(survivor));
+        let table = table_where(&mut watch, |table| !table.absorbed.is_empty()).await;
+        assert_eq!(table.absorbed, [(absorbed, survivor)]);
+        assert_eq!(table.routes, [route(held_a, "a")]);
+        assert!(table.is_complete());
+        // Nobody is told anything more: the worker that let go waits.
+        let asker = within(Asker::merge(&served.address, survivor, absorbed))
+            .await
+            .unwrap();
+        let gone = Err("the world has no region 1".to_owned());
+        assert_eq!(within(asker.answer()).await.unwrap(), gone);
+    }
+
+    #[tokio::test]
+    async fn a_region_is_split_when_somebody_asks_and_the_new_region_is_its_workers() {
+        let stored = Stored::default();
+        let Cluster {
+            served,
+            a: _a,
+            mut b,
+            held_b,
+            mut watch,
+            ..
+        } = cluster_with(&stored).await;
+        let chunks = [ChunkPos::new(9, 2), ChunkPos::new(9, 3)];
+        let asker = within(Asker::split(&served.address, held_b.region, &chunks))
+            .await
+            .unwrap();
+        // The new region is to have the next id of the list as it was read for this.
+        let as_epoch = match next_event(&mut b).await {
+            WorkerEvent::SplitOff {
+                region,
+                epoch,
+                chunks: named,
+                as_epoch,
+                part,
+            } => {
+                assert_eq!((region, epoch), (held_b.region, held_b.epoch));
+                assert_eq!((named, part), (chunks.to_vec(), RegionId(2)));
+                as_epoch
+            }
+            other => panic!("{other:?} is no order to split"),
+        };
+        assert!(as_epoch > held_b.epoch);
+
+        stored.set(listing(&[(0, 0), (1, held_b.epoch), (2, as_epoch)], &[], 3));
+        b.split_ended(held_b.region, as_epoch, Ok(RegionId(2)));
+        assert_eq!(within(asker.answer()).await.unwrap(), Ok(RegionId(2)));
+        let made = Assignment {
+            region: RegionId(2),
+            epoch: as_epoch,
+            entity_ids: EntityIds {
+                first: EntityId(0),
+                end: EntityId(0),
+            },
+        };
+        let orders = served.orders(&[held_b, made]);
+        assert_eq!(next_event(&mut b).await, WorkerEvent::Orders(orders));
+        let table = table_where(&mut watch, |table| table.routes.len() == 3).await;
+        assert_eq!(table.route(RegionId(2)), Some(&route(made, "b")));
+        assert!(table.is_complete());
+    }
+
+    #[tokio::test]
+    async fn a_merge_or_a_split_that_is_refused_is_answered_at_once_with_the_reason() {
+        let stored = Stored::default();
+        let Cluster {
+            served,
+            a: _a,
+            b: _b,
+            ..
+        } = cluster_with(&stored).await;
+        let home = "the region to absorb is the home region, which is never absorbed";
+        assert_eq!(merge(&served, 1, 0).await, Err(home.to_owned()));
+        let same = "a region cannot absorb itself";
+        assert_eq!(merge(&served, 1, 1).await, Err(same.to_owned()));
+        let unknown = "the world has no region 7";
+        assert_eq!(merge(&served, 0, 7).await, Err(unknown.to_owned()));
+        assert_eq!(split(&served, 7, &[]).await, Err(unknown.to_owned()));
+        let no_chunks = "no chunks were named whose players are to be split off";
+        assert_eq!(split(&served, 1, &[]).await, Err(no_chunks.to_owned()));
+
+        // Nothing is merged or split by a coordinator that cannot read the list.
+        stored.lose();
+        let unread = "the world store's list of regions could not be read: the store is down";
+        assert_eq!(merge(&served, 0, 1).await, Err(unread.to_owned()));
+        let chunks = [ChunkPos::new(0, 0)];
+        assert_eq!(split(&served, 1, &chunks).await, Err(unread.to_owned()));
+    }
+
+    /// Asks the coordinator to have one region absorb another, and returns its answer.
+    async fn merge(served: &Served, survivor: u32, absorbed: u32) -> Result<RegionId, String> {
+        let (survivor, absorbed) = (RegionId(survivor), RegionId(absorbed));
+        let asker = within(Asker::merge(&served.address, survivor, absorbed)).await;
+        within(asker.unwrap().answer()).await.unwrap()
+    }
+
+    /// Asks the coordinator to split a region, and returns its answer.
+    async fn split(served: &Served, region: u32, chunks: &[ChunkPos]) -> Result<RegionId, String> {
+        let asker = within(Asker::split(&served.address, RegionId(region), chunks)).await;
+        within(asker.unwrap().answer()).await.unwrap()
+    }
+
+    /// A list for the coordinator to read that comes back when the test says so, with
+    /// what the test says: each reading waits for the next thing sent here.
+    fn readings() -> (std::sync::mpsc::Sender<io::Result<RegionList>>, Lists) {
+        let (hand_in, gate) = std::sync::mpsc::channel();
+        let gate = Mutex::new(gate);
+        let lists = move || {
+            let read = gate.lock().unwrap().recv();
+            read.unwrap_or_else(|_| Err(io::Error::other("the test is over")))
+        };
+        (hand_in, Arc::new(lists))
+    }
+
+    /// Lets a service that is not being served deal with the reading that comes back
+    /// next, as if it came at `now`, and returns its number.
+    async fn read_next(service: &mut Service, now: Instant) -> u64 {
+        let (number, list) = within(service.read.recv()).await.unwrap();
+        service.listed(now, number, list);
+        number
+    }
+
+    /// The store's list is read on a thread of its own, so a reading can be under way
+    /// when something happens that it does not show yet. Such a reading is not handed
+    /// to the coordinator: here it would call a merge off that was done.
+    #[tokio::test]
+    async fn a_reading_that_was_asked_for_before_something_called_for_one_is_made_again() {
+        const FIRST: u64 = 1000;
+        let now = Instant::now();
+        let (hand_in, lists) = readings();
+        let mut service = Service::new(config(&[0]), now, FIRST, lists);
+        let (held_a, held_b) = (assignment(0, 5, 0), assignment(1, 6, 1));
+        let before = listing(&[(0, 5), (1, 6)], &[], 2);
+
+        // Two workers register one after the other. The reading that the first one
+        // called for is under way when the second does, and is thrown away.
+        let (mut a, end) = link::in_process(8);
+        service.attach(end, now);
+        a.send(registration("a", &[held_a])).await.unwrap();
+        hear_next(&mut service, now).await;
+        let (mut b, end) = link::in_process(8);
+        service.attach(end, now);
+        b.send(registration("b", &[held_b])).await.unwrap();
+        hear_next(&mut service, now).await;
+        hand_in.send(Ok(before.clone())).unwrap();
+        assert_eq!(read_next(&mut service, now).await, 1);
+        assert_eq!(service.coordinator.routing_table().home, None);
+        hand_in.send(Ok(before.clone())).unwrap();
+        assert_eq!(read_next(&mut service, now).await, 2);
+        assert_eq!(service.coordinator.routing_table().home, Some(RegionId(0)));
+        for worker in [&mut a, &mut b] {
+            let told = within(worker.recv()).await;
+            assert!(matches!(told, Some(FromCoordinator::Assigned { .. })));
+        }
+
+        // Somebody asks for a merge. The coordinator looks at it when the list has
+        // been read for it, and not before.
+        let (mut asker, end) = link::in_process(8);
+        service.attach(end, now);
+        let ask = ToCoordinator::Merge {
+            survivor: RegionId(0),
+            absorbed: RegionId(1),
+        };
+        asker.send(ask).await.unwrap();
+        hear_next(&mut service, now).await;
+        assert!(service.coordinator.assignments("b") == [held_b]);
+        hand_in.send(Ok(before.clone())).unwrap();
+        assert_eq!(read_next(&mut service, now).await, 3);
+        let release = FromCoordinator::Release {
+            region: RegionId(1),
+            epoch: 6,
+        };
+        assert_eq!(within(b.recv()).await, Some(release));
+        let prepare = FromCoordinator::Prepare {
+            region: RegionId(0),
+            epoch: 5,
+        };
+        assert_eq!(within(a.recv()).await, Some(prepare));
+        let released = ToCoordinator::Released {
+            region: RegionId(1),
+            epoch: 6,
+        };
+        b.send(released).await.unwrap();
+        hear_next(&mut service, now).await;
+        let layout = Layout::new(vec![0]).unwrap();
+        assert_eq!(within(b.recv()).await, Some(assigned(&layout, &[])));
+        let absorb = FromCoordinator::Absorb {
+            region: RegionId(0),
+            epoch: 5,
+            absorbed: RegionId(1),
+            as_epoch: FIRST + 1,
+        };
+        assert_eq!(within(a.recv()).await, Some(absorb));
+
+        // The worker that let go registers again, for which the list is read. While
+        // that reading is under way, the other worker says that the merge is done.
+        b.send(registration("b", &[])).await.unwrap();
+        hear_next(&mut service, now).await;
+        let done = ToCoordinator::AbsorbEnded {
+            region: RegionId(0),
+            absorbed: RegionId(1),
+            outcome: Ok(()),
+        };
+        a.send(done).await.unwrap();
+        hear_next(&mut service, now).await;
+        // It comes back with the regions as they were before the merge. Handed to the
+        // coordinator, it would give the absorbed region away.
+        hand_in.send(Ok(before)).unwrap();
+        assert_eq!(read_next(&mut service, now).await, 4);
+        assert!(service.coordinator.assignments("b").is_empty());
+        assert_eq!(service.coordinator.routing_table().waiting, 1);
+        // The one that is made in its place shows the merge.
+        hand_in.send(Ok(listing(&[(0, 5)], &[(1, 0)], 2))).unwrap();
+        assert_eq!(read_next(&mut service, now).await, 5);
+        let answer = FromCoordinator::Asked(Ok(RegionId(0)));
+        assert_eq!(within(asker.recv()).await, Some(answer));
+        assert_eq!(within(asker.recv()).await, None);
+        let table = service.coordinator.routing_table();
+        assert!(table.is_complete());
+        assert_eq!(table.absorbed, [(RegionId(1), RegionId(0))]);
+        // Nothing more is read: nothing has called for it.
+        assert_eq!(service.reading, None);
+    }
+
+    /// With made-up times, to show when exactly a merge runs out.
+    #[tokio::test]
+    async fn whoever_asked_for_a_merge_is_not_cut_off_for_its_silence_and_is_told_when_it_ran_out()
+    {
+        const FIRST: u64 = 1000;
+        let start = Instant::now();
+        let stored = Stored::default();
+        stored.set(listing(&[(0, 5), (1, 6)], &[], 2));
+        let lists: Lists = Arc::new(stored.reader());
+        let mut service = Service::new(config(&[0]), start, FIRST, lists);
+        let mut workers = Vec::new();
+        for (name, held) in [("a", assignment(0, 5, 0)), ("b", assignment(1, 6, 1))] {
+            let (mut worker, end) = link::in_process(8);
+            service.attach(end, start);
+            worker.send(registration(name, &[held])).await.unwrap();
+            hear_next(&mut service, start).await;
+            assert!(within(worker.recv()).await.is_some());
+            workers.push(worker);
+        }
+        while service.reading.is_some() {
+            read_next(&mut service, start).await;
+        }
+
+        let (mut asker, end) = link::in_process(8);
+        service.attach(end, start);
+        let asked = start + LEASE / 2;
+        let ask = ToCoordinator::Merge {
+            survivor: RegionId(0),
+            absorbed: RegionId(1),
+        };
+        asker.send(ask).await.unwrap();
+        hear_next(&mut service, asked).await;
+        read_next(&mut service, asked).await;
+        let release = FromCoordinator::Release {
+            region: RegionId(1),
+            epoch: 6,
+        };
+        assert_eq!(within(workers[1].recv()).await, Some(release));
+
+        // Both workers are heard from, and the one does not let go. A lease after it
+        // was asked nothing has happened, and whoever asked has said nothing for as
+        // long; a moment later the merge is off.
+        for worker in &workers {
+            worker.send(heartbeat(&[])).await.unwrap();
+            hear_next(&mut service, asked + LEASE).await;
+        }
+        service.tick(asked + LEASE);
+        assert_eq!(service.connections.len(), 3);
+        service.tick(asked + LEASE + Duration::from_millis(1));
+        let reason = "the region to absorb was not released within the lease and was \
+                      taken from its owner";
+        let answer = FromCoordinator::Asked(Err(reason.to_owned()));
+        assert_eq!(within(asker.recv()).await, Some(answer));
+        assert_eq!(within(asker.recv()).await, None);
+        // The region went to the other worker, and both are still there.
+        assert_eq!(service.coordinator.assignments("a").len(), 2);
+        assert_eq!(service.workers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn only_workers_say_what_came_of_a_merge_and_only_somebody_new_asks_for_one() {
+        let stored = Stored::default();
+        let Cluster {
+            served,
+            a: _a,
+            mut b,
+            held_b,
+            ..
+        } = cluster_with(&stored).await;
+        let ended = ToCoordinator::AbsorbEnded {
+            region: RegionId(0),
+            absorbed: RegionId(1),
+            outcome: Ok(()),
+        };
+        let split = ToCoordinator::SplitEnded {
+            region: RegionId(1),
+            as_epoch: 9,
+            outcome: Ok(RegionId(2)),
+        };
+        // Neither somebody who has not said what it is nor an edge may say it.
+        for first in [None, Some(ToCoordinator::WatchRouting)] {
+            for said in [ended.clone(), split.clone()] {
+                let mut client = served.connect().await;
+                if let Some(first) = first.clone() {
+                    client.send(first).await.unwrap();
+                    assert!(within(client.recv()).await.is_some());
+                }
+                client.send(said).await.unwrap();
+                assert_eq!(within(client.recv()).await, None);
+            }
+        }
+        // A worker cannot ask for a merge or a split over its connection, nor an edge.
+        let merge = ToCoordinator::Merge {
+            survivor: RegionId(0),
+            absorbed: RegionId(1),
+        };
+        let ask = ToCoordinator::Split {
+            region: RegionId(1),
+            chunks: vec![ChunkPos::new(1, 1)],
+        };
+        for first in [registration("c", &[]), ToCoordinator::WatchRouting] {
+            for said in [merge.clone(), ask.clone()] {
+                let mut client = served.connect().await;
+                client.send(first.clone()).await.unwrap();
+                assert!(within(client.recv()).await.is_some());
+                client.send(said).await.unwrap();
+                assert_eq!(within(client.recv()).await, None);
+            }
+        }
+
+        // Whoever asks twice is cut off; the merge goes on.
+        let mut asker = served.connect().await;
+        asker.send(merge.clone()).await.unwrap();
+        asker.send(merge).await.unwrap();
+        assert_eq!(within(asker.recv()).await, None);
+        assert_eq!(next_release(&mut b).await, (held_b.region, held_b.epoch));
+    }
+
     #[test]
     fn the_log_names_what_a_worker_reports_and_whom_each_region_is_with() {
         assert_eq!(Holdings(&[]).to_string(), "nothing");
@@ -2010,15 +2784,19 @@ mod tests {
         let table = RoutingTable {
             home: None,
             absorbed: Vec::new(),
+            waiting: 2,
             version: 7,
             layout: Layout::new(vec![-8, 8]).unwrap(),
             spawn: SPAWN,
             routes: vec![route(holding[1], "a"), route(assignment(2, 31, 1), "c")],
         };
+        // The regions without an owner are named, which the table only counts: one
+        // of the layout, and one that was split off another.
+        let waiting = [RegionId(1), RegionId(5)];
         assert_eq!(
-            Routes(&table).to_string(),
+            Routes(&table, &waiting).to_string(),
             "region 0 at a:25601 with epoch 12, region 1 without an owner, \
-             region 2 at c:25601 with epoch 31"
+             region 2 at c:25601 with epoch 31, region 5 without an owner"
         );
     }
 

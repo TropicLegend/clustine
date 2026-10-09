@@ -1,23 +1,25 @@
 //! Coordinator service: region ownership leases, merge/split/migrate decisions, global world state.
 //!
-//! For now there is one coordinator, it keeps what it knows in memory, and the layout it
-//! is started with stays as it is: all it decides is which worker runs which region.
+//! For now there is one coordinator and it keeps what it knows in memory. It decides
+//! which worker runs which region, and has regions merged and split when somebody asks
+//! for that; which regions there are it learns from the world store's list of them.
 //! Those decisions are made by [`Coordinator`], which does no I/O. [`serve`] is the
 //! service around it, which workers reach with a [`WorkerClient`], edges with a
-//! [`RoutingWatch`], and whoever wants a region moved with a [`Mover`].
+//! [`RoutingWatch`], whoever wants a region moved with a [`Mover`], and whoever wants
+//! regions merged or one split with an [`Asker`].
 
 mod client;
 mod service;
 mod state;
 
 pub use client::{
-    ClientError, HEARTBEAT_INTERVAL, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
+    Asker, ClientError, HEARTBEAT_INTERVAL, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
     WorkerEvent,
 };
 pub use service::serve;
 pub use state::{
-    Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, MoveRefusal, Refusal,
-    ReleaseOrder,
+    Asked, Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, MoveRefusal, Order,
+    Refusal, ReleaseOrder, ReshapeOrder, ReshapeRefusal, Reshaped, Undone,
 };
 
 /// Messages that may wait in each direction of a connection between the coordinator and

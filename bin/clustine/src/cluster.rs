@@ -71,8 +71,12 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
         spawn: spawn_point(),
         lease: args.lease,
     };
+    // Where the world store is, the coordinator is told from step C3.6 on
+    // (`docs/adr/0014-merging-and-splitting.md`, section 5.1). Without its list of
+    // regions the coordinator goes by the layout, and refuses to merge and to split.
+    let lists = || Err(std::io::Error::other("no world store was named"));
     tokio::select! {
-        served = clustine_coordinator::serve(listener, config) => served.context("coordinating"),
+        served = clustine_coordinator::serve(listener, config, lists) => served.context("coordinating"),
         _ = crate::stop_signal() => Ok(()),
     }
 }
@@ -421,6 +425,14 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                                 let _ = releases.send((region, epoch));
                             }
                         }
+                    }
+                    // The worker's part of merging and splitting is step C3.6 (ADR-0014,
+                    // section 4). Until then it does nothing, and the coordinator
+                    // gives the merge or the split up when it has had a lease.
+                    WorkerEvent::Prepare { region, .. }
+                    | WorkerEvent::Absorb { region, .. }
+                    | WorkerEvent::SplitOff { region, .. } => {
+                        warn!(%region, "asked to merge or to split a region, which this worker cannot do yet");
                     }
                     WorkerEvent::Orders(next) => {
                         let ordered = |assignment: &Assignment| next.assignments.contains(assignment);
@@ -947,7 +959,7 @@ async fn whole_world(coordinator: &str) -> (RoutingWatch, RoutingTable) {
                 }
                 info!(
                     with_worker = table.routes.len(),
-                    regions = table.layout.region_count(),
+                    without = table.waiting,
                     "waiting for every region to have a worker"
                 );
             }
