@@ -701,7 +701,8 @@ fn check_tick(of_one_tick: &[WorkerToEdge], context: &dyn Fn() -> String) {
 ///
 /// - Section 5.2, item 1, and 5.3: the welcome is the first thing on a link that began
 ///   with a hello and the only one; exactly as many outbox entries as it announced
-///   follow it, then one presence answer for each player of the hello, and none later.
+///   follow it, then exactly as many presence answers as it announced, which is one
+///   for each player of the hello at the least, and none later.
 /// - Section 5.2: ticks are published one by one, so a `TickDelta` has a higher tick
 ///   than everything before it and a snapshot no lower one; what lies between two
 ///   messages of one tick is of that tick and in the order of the list there; a
@@ -742,9 +743,10 @@ fn check(log: &[WorkerToEdge], book: &mut Book) {
                 } => (*entries as usize, *presences as usize),
                 Welcome::Superseded => (0, 0),
             };
-            // One for each player the hello named, and for nobody else yet.
+            // One for each player the hello named, and one for every other stay the
+            // region has for the edge (ADR-0014, section 3.7).
             assert!(
-                matches!(welcome, Welcome::Superseded) || answers == book.named,
+                matches!(welcome, Welcome::Superseded) || answers >= book.named,
                 "a welcome that announces {answers} presence answers for {} players named: {}",
                 book.named,
                 context()
@@ -5792,6 +5794,32 @@ fn a_generated_run(shape: Shape, on_disk: bool, seed: u64, beside_a_neighbour: b
     }
 
     let mut all: Vec<&mut Link> = links.iter_mut().collect();
+    // What the player did last can still wait for its chunk: a dig into a chunk that
+    // the player's link asks for and the region is about to serve is judged when the
+    // chunk is there (ADR-0014, section 3.6), and what the link sent behind it waits
+    // with it. The run is followed until the region has applied all of it, so that
+    // nothing is dug after what is noted here.
+    let applied = |runner: &RegionRunner| runner.region().edge(E).map_or(0, |edge| edge.applied);
+    for _ in 0..STEPS {
+        if applied(&runner) >= pacer.message {
+            break;
+        }
+        let tick = one_tick(&mut runner, &mut all);
+        seen.note(&runner, tick);
+        // While the player's link waits, ticks have nothing to commit and do not wait
+        // for the store, which answers on its own threads; this gives them the
+        // processor.
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        applied(&runner) >= pacer.message,
+        "the region has applied {} of the {} messages of the player's edge; of the chunks it knows {:?}, and has loaded {:?}: {}",
+        applied(&runner),
+        pacer.message,
+        chunks.map(|chunk| runner.region().knowledge(chunk)),
+        chunks.map(|chunk| runner.region().chunk(chunk).is_some()),
+        brief(&all[0].log)
+    );
     if beside_a_neighbour {
         // The neighbour gives back what it has, and every link asks for the free
         // chunks as a viewer, twice: a region that believed the neighbour learns

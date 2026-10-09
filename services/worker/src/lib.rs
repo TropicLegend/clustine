@@ -41,12 +41,12 @@ use clustine_rpc::{
     Crowds, EdgeMessage, EdgeToWorker, Presence, Restored, StoreReply, StoreRequest, Welcome,
     WorkerToEdge,
 };
-use clustine_sim::api::RegionEvent;
+use clustine_sim::api::{PlayerInput, RegionEvent};
 use clustine_sim::{
     Durable, EdgeEvent, Holdings, Knowledge, Misdirected, PlayerChange, PlayerEvent, Region,
-    RegionConfig, RegionState, StateDelta, TickInputs, Ticket,
+    RegionConfig, RegionState, RemoteStep, StateDelta, TickInputs, Ticket,
 };
-use clustine_world::{ChunkPos, EdgeId, EntityId, PlayerId, RegionId};
+use clustine_world::{BlockPos, ChunkPos, EdgeId, EntityId, PlayerId, RegionId};
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
 
@@ -375,7 +375,9 @@ struct EdgeLink {
     /// The chunks named in the hello whose subscriptions have not been answered yet.
     /// While there are any, what the link sends is kept in `held`.
     hold: BTreeSet<ChunkPos>,
-    /// What the link sent while it was held, in the order it came.
+    /// What the link sent while it was held, in the order it came: behind its hello,
+    /// or behind an action on a block that waits for its chunk, which is then the
+    /// first of them ([`RegionRunner::waits_for_its_chunk`]).
     held: VecDeque<EdgeMessage>,
     /// The chunks the edge is subscribed to, each with what kind of subscription it is,
     /// its number and what has become of it.
@@ -986,14 +988,50 @@ impl RegionRunner {
                 _ => Vec::new(),
             };
             let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
-            // One presence answer follows for each player the hello names, and none
-            // for anyone else yet.
-            let presences = u32::try_from(resume.players.len()).unwrap_or(u32::MAX);
+            // Whom the region has for the edge, in the state the entries are of: one
+            // answer for each player the hello names, in the hello's order, and then
+            // one for every other stay of the edge, in ascending order of the
+            // players. A merge and a split put stays into a region that the edge did
+            // not send there, so its hello cannot name them. A state that the coming
+            // tick makes, or makes anew, has nobody of the edge: whoever is still
+            // there is of the edge's past and goes with that tick.
+            let from_state = matches!(resume.answer, Answer::Resumed | Answer::ToldAgain);
+            let present = |player: PlayerId| {
+                // A player of another edge has connected anew through that one; this
+                // edge's connection of theirs is of the past.
+                let state = self
+                    .region
+                    .player_state(player)
+                    .filter(|state| from_state && state.edge == edge)?;
+                Some(Presence::Present {
+                    entity: state.entity_id,
+                    pose: state.pose,
+                    hotbar: state.hotbar,
+                    selected_slot: state.selected_slot,
+                    last_input: state.last_input,
+                    handled: state.handled,
+                })
+            };
+            let mut answers: Vec<_> = resume
+                .players
+                .iter()
+                .map(|player| (*player, present(*player).unwrap_or(Presence::Absent)))
+                .collect();
+            if from_state {
+                // `last_inputs` has every player of the region as of its last tick.
+                let named: BTreeSet<_> = resume.players.iter().copied().collect();
+                let others = self.last_inputs.keys().copied();
+                let unnamed = others.filter(|player| !named.contains(player));
+                answers.extend(unnamed.filter_map(|player| Some((player, present(player)?))));
+            }
+            // The welcome says how many follow, so that the edge knows when it has
+            // heard of everyone.
+            let presences = u32::try_from(answers.len()).unwrap_or(u32::MAX);
             // How far the edge's messages are applied in the state that the entries
             // and the presence answers are made from. A state that the coming tick
             // makes, or makes anew, has applied none.
-            let applied = match (resume.answer, state) {
-                (Answer::Resumed | Answer::ToldAgain, Some(state)) => state.applied,
+            let applied = match (from_state, state) {
+                (true, Some(state)) => state.applied,
                 _ => 0,
             };
             let welcome = match resume.answer {
@@ -1013,24 +1051,7 @@ impl RegionRunner {
             for (number, entry) in entries {
                 outgoing.push((*id, WorkerToEdge::Outbox { number, entry }));
             }
-            for player in resume.players {
-                // A player of another edge has connected anew through that one; this
-                // edge's connection of theirs is of the past.
-                let state = self
-                    .region
-                    .player_state(player)
-                    .filter(|state| resume.answer == Answer::Resumed && state.edge == edge);
-                let answer = match state {
-                    Some(state) => Presence::Present {
-                        entity: state.entity_id,
-                        pose: state.pose,
-                        hotbar: state.hotbar,
-                        selected_slot: state.selected_slot,
-                        last_input: state.last_input,
-                        handled: state.handled,
-                    },
-                    None => Presence::Absent,
-                };
+            for (player, answer) in answers {
                 outgoing.push((*id, WorkerToEdge::Presence { player, answer }));
             }
         }
@@ -1060,16 +1081,20 @@ impl RegionRunner {
             }
         }
 
-        // Who comes in from another region, to be counted if the region takes them in.
-        let arriving: BTreeMap<_, _> = self
+        // Who comes in from another region, to be counted if the region takes them in:
+        // the stays it does not have. An arrival of a player it has with a lower
+        // entity takes that stay's place and is a player coming in like any other;
+        // one of the very stay it has changes nothing.
+        let arriving: Vec<_> = self
             .inputs
             .player_changes
             .iter()
             .filter_map(|change| match change {
-                PlayerChange::Arrive(_, player, transfer)
-                    if self.region.player(*player).is_none() =>
-                {
-                    Some((*player, transfer.entity_id))
+                PlayerChange::Arrive(_, player, transfer) => {
+                    let entity = transfer.entity_id;
+                    let has = self.region.player(*player);
+                    has.is_none_or(|(present, _)| present != entity)
+                        .then_some((*player, entity))
                 }
                 _ => None,
             })
@@ -1298,7 +1323,8 @@ impl RegionRunner {
             outgoing,
         });
         // What links sent behind a hello acts on chunks whose holder the region knows
-        // now, and which are loaded if it is the holder itself.
+        // now, and which are loaded if it is the holder itself; and an action that
+        // waited for its chunk finds it there, or another region's.
         self.release_held();
 
         self.status.tick.store(output.tick, Ordering::Relaxed);
@@ -1481,7 +1507,10 @@ impl RegionRunner {
     }
 
     /// Takes everything a link has received: into the inputs of the coming tick, or
-    /// aside while the link is held.
+    /// aside while the link is held. A link is held while a chunk of its hello is
+    /// unanswered, and while the first message of its queue is an action on a block
+    /// that waits for its chunk ([`RegionRunner::waits_for_its_chunk`]); behind what
+    /// waits, everything waits, in the order it came.
     fn drain(&mut self, id: LinkId) {
         // Taken out meanwhile, so that the links that are left are the other ones.
         let Some(mut link) = self.links.remove(&id) else {
@@ -1490,7 +1519,9 @@ impl RegionRunner {
         loop {
             match link.end.try_recv() {
                 Ok(Some(message)) => {
-                    if !link.hold.is_empty() {
+                    let held = !(link.hold.is_empty() && link.held.is_empty())
+                        || self.waits_for_its_chunk(&link, &message);
+                    if held {
                         link.held.push_back(message);
                     } else if !self.accept(id, &mut link, message) {
                         self.let_go(id, link);
@@ -1510,7 +1541,8 @@ impl RegionRunner {
         }
     }
 
-    /// Passes on what links sent while they were held, for those that no longer are.
+    /// Passes on what links sent while they were held, for those that no longer are:
+    /// each link's messages in the order they came, up to the first that has to wait.
     fn release_held(&mut self) {
         let free: Vec<_> = self
             .links
@@ -1523,7 +1555,15 @@ impl RegionRunner {
                 continue;
             };
             let mut useful = true;
-            while useful && let Some(message) = link.held.pop_front() {
+            // A hello among them can hold the link anew, with the chunks it names.
+            while useful
+                && link.hold.is_empty()
+                && let Some(message) = link.held.pop_front()
+            {
+                if self.waits_for_its_chunk(&link, &message) {
+                    link.held.push_front(message);
+                    break;
+                }
                 useful = self.accept(id, &mut link, message);
             }
             if useful {
@@ -1532,6 +1572,55 @@ impl RegionRunner {
                 self.let_go(id, link);
             }
         }
+    }
+
+    /// Whether `message` of `link` is an action on a block that has to wait: the link
+    /// has a subscription that waits for a chunk the action is about, and the region
+    /// is itself about to serve that chunk. That is a chunk it holds and has not
+    /// loaded, or one of an area it is pinned to of which the store has told it
+    /// nothing yet. Judged before the chunk is there, the action would be
+    /// acknowledged without effect, or passed on without a region for a chunk that
+    /// turns out to be this region's own. See
+    /// `docs/adr/0014-merging-and-splitting.md`, section 3.6.
+    ///
+    /// Nothing else waits so. A chunk the region has asked for outside its pinned
+    /// areas is, if a client can click it, another region's: the click behind one's
+    /// back right after a hand-over is judged at once and goes on without a region
+    /// named. A chunk the store cannot read is waited for without end, and holds
+    /// nothing.
+    fn waits_for_its_chunk(&self, link: &EdgeLink, message: &EdgeMessage) -> bool {
+        let chunk = |position: BlockPos| position.chunk();
+        let about = match &message.body {
+            EdgeToWorker::Input { input, .. } => match input {
+                PlayerInput::Dig { position, .. } => vec![chunk(*position)],
+                // The block that was clicked, and the spot beside the clicked face,
+                // where a block is placed.
+                PlayerInput::UseItemOn { position, face, .. } => {
+                    vec![chunk(*position), chunk(face.neighbour(*position))]
+                }
+                PlayerInput::Move { .. }
+                | PlayerInput::SelectSlot { .. }
+                | PlayerInput::SetHotbarSlot { .. } => return false,
+            },
+            EdgeToWorker::Remote(action) => match &action.step {
+                RemoteStep::Break { position } => vec![chunk(*position)],
+                RemoteStep::PlaceAgainst {
+                    against, target, ..
+                } => vec![chunk(*against), chunk(*target)],
+                RemoteStep::Place { target, .. } => vec![chunk(*target)],
+            },
+            // A move, an arrival, a join and a leave are about no chunk for this.
+            _ => return false,
+        };
+        about.into_iter().any(|position| {
+            link.waiting.contains(&position)
+                && !self.unreadable.contains(&position)
+                && match self.region.knowledge(position) {
+                    Knowledge::Held => self.region.chunk(position).is_none(),
+                    Knowledge::Unknown | Knowledge::Asked => self.region.pins(position),
+                    Knowledge::Foreign(_) => false,
+                }
+        })
     }
 
     /// Handles a message of the link `id`, which is not among `self.links` meanwhile.
@@ -2147,8 +2236,8 @@ mod tests {
     use clustine_sim::api::{
         EntityKind, EntityState, HOTBAR_SLOTS, PlayerInput, PlayerJoin, Pose, RegionEvent,
     };
-    use clustine_sim::{PlayerTransfer, RemoteAction, RemoteStep};
-    use clustine_world::{BlockPos, ChunkArea, EntityIds, Vec3};
+    use clustine_sim::{PlayerTransfer, RemoteAction};
+    use clustine_world::{ChunkArea, EntityIds, Vec3};
     use clustine_worldgen::FlatGenerator;
     use clustine_worldstore::{Division, Store, StoreHandle};
     use tokio::time::timeout;
@@ -3081,8 +3170,13 @@ mod tests {
             let mut runner = runner(first_end);
             runner.links().attach(second_end);
 
+            // One after the other, however long a link takes over a message: what the
+            // players do names the entities they are given, which are given out in the
+            // order the joins are taken.
             first.send(join(player(), "Notch")).await.unwrap();
+            step_until(&mut runner, |runner| runner.region().player_count() == 1);
             second.send(join(other_player(), "Jeb")).await.unwrap();
+            step_until(&mut runner, |runner| runner.region().player_count() == 2);
             // The region claims the chunk its players stand in. A block of a chunk it
             // does not know to hold yet it would pass on, to whoever serves the edge
             // the chunk, in place of acknowledging it.
@@ -7112,5 +7206,400 @@ mod tests {
         guest.send(done_with(vec![BESIDE])).await.unwrap();
         claim_until_granted(&mut runner, &neighbour, BESIDE);
         assert!(runner.region().chunk(BESIDE).is_none());
+    }
+
+    // -----------------------------------------------------------------------------------
+    // What waits for its chunk, and whom a region says it has: sections 3.6 and 3.7 of
+    // `docs/adr/0014-merging-and-splitting.md`.
+    // -----------------------------------------------------------------------------------
+
+    /// The first chunk of the western stripe west of the one players enter the world
+    /// in, which a player who stands there can reach into.
+    const WEST_OF_HOME: ChunkPos = ChunkPos::new(-1, 0);
+
+    /// Whether the block that [`dig`] breaks with `x` is broken, if its chunk is loaded.
+    fn dug(runner: &RegionRunner, x: i32) -> Option<bool> {
+        let position = BlockPos::new(x, -61, 0);
+        let (in_x, in_z) = position.in_chunk();
+        let chunk = runner.region().chunk(position.chunk())?;
+        Some(chunk.get(in_x, position.y, in_z) == Some(clustine_data::blocks::AIR))
+    }
+
+    /// Reads what `edge` is sent up to the word of a block that changed, however long
+    /// its link takes over it, and returns whether the snapshot of `chunk` came before.
+    async fn shown_before_it_changed(edge: &mut TestEdge, chunk: ChunkPos) -> bool {
+        let mut shown = false;
+        loop {
+            match next(edge).await {
+                WorkerToEdge::ChunkSnapshot { position, .. } => shown |= position == chunk,
+                WorkerToEdge::TickDelta { events, .. } => {
+                    let changed =
+                        |event: &RegionEvent| matches!(event, RegionEvent::BlockChanged { .. });
+                    if events.iter().any(changed) {
+                        return shown;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A chunk of the region's own stripe that nothing has asked about is the region's
+    /// to serve, though it does not know so yet. A dig that comes right behind the
+    /// subscription to it is judged when the chunk is there, and not passed on without
+    /// a region as for a chunk nobody is known to hold; what the link sent behind the
+    /// dig waits with it.
+    #[tokio::test]
+    async fn a_dig_behind_a_subscription_waits_for_a_chunk_of_the_regions_own_area() {
+        // Over a direct link, on which all three are there when the runner next looks.
+        let (mut edge, worker_end) = in_process(256);
+        let mut runner = west(worker_end);
+        joined(&edge, &mut runner).await;
+        settle(&mut runner);
+        edge.everything();
+        assert_eq!(runner.region().knowledge(WEST_OF_HOME), Knowledge::Unknown);
+        let applied = runner.region().edge(edge.edge).unwrap().applied;
+
+        edge.send(asking_for(vec![WEST_OF_HOME])).await.unwrap();
+        edge.send(dig(-1)).await.unwrap();
+        edge.send(walk(player(), 3.0)).await.unwrap();
+        step_until(&mut runner, |runner| {
+            runner.links[&LinkId(0)].held.len() == 2
+        });
+        // Neither is taken until the chunk is claimed, read and shown.
+        let mut waited = 0;
+        step_until(&mut runner, |runner| {
+            let loaded = runner.region().chunk(WEST_OF_HOME).is_some();
+            if !loaded {
+                waited += 1;
+                assert_eq!(runner.links[&LinkId(0)].held.len(), 2);
+                assert_eq!(runner.region().edge(edge.edge).unwrap().applied, applied);
+                assert_eq!(x_of(runner, player()), Some(SPAWN.x));
+            }
+            loaded
+        });
+        assert!(waited > 0);
+        step_until(&mut runner, |runner| x_of(runner, player()) == Some(3.0));
+        assert_eq!(dug(&runner, -1), Some(true));
+        assert_eq!(
+            runner.region().edge(edge.edge).unwrap().applied,
+            applied + 2
+        );
+        assert!(runner.links[&LinkId(0)].held.is_empty());
+        // Nothing was passed on to anyone.
+        assert_eq!(outbox(&runner, &edge), (0, vec![]));
+
+        // The edge is shown the chunk before it is told of the block.
+        settle(&mut runner);
+        assert!(shown_before_it_changed(&mut edge, WEST_OF_HOME).await);
+    }
+
+    /// The same for a chunk the region holds and has not loaded: one it was granted
+    /// for a viewer who has let go of it since.
+    #[tokio::test]
+    async fn a_dig_behind_a_subscription_waits_for_a_chunk_the_region_holds_and_has_not_loaded() {
+        let world = Divided::gap();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, _) = world.gated(HOME, config(40));
+        runner.links().attach(worker_end);
+        joined(&edge, &mut runner).await;
+        edge.everything();
+        edge.send(walk(player(), 14.5)).await.unwrap();
+        edge.send(asking_for(vec![BESIDE])).await.unwrap();
+        assert_eq!(
+            answers(&mut runner, &mut edge, 1),
+            [(BESIDE, edge.asked(), Told::Snapshot)]
+        );
+        edge.send(done_with(vec![BESIDE])).await.unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().chunk(BESIDE).is_none()
+        });
+        assert_eq!(runner.region().knowledge(BESIDE), Knowledge::Held);
+        settle(&mut runner);
+        edge.everything();
+        let applied = runner.region().edge(edge.edge).unwrap().applied;
+
+        edge.send(asking_for(vec![BESIDE])).await.unwrap();
+        edge.send(dig(16)).await.unwrap();
+        edge.send(walk(player(), 13.5)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.links[&LinkId(0)].held.len(), 2);
+        assert_eq!(runner.region().edge(edge.edge).unwrap().applied, applied);
+        step_until(&mut runner, |runner| x_of(runner, player()) == Some(13.5));
+        assert_eq!(dug(&runner, 16), Some(true));
+        assert_eq!(outbox(&runner, &edge), (0, vec![]));
+        settle(&mut runner);
+        assert!(shown_before_it_changed(&mut edge, BESIDE).await);
+    }
+
+    /// The hold is narrow. A chunk of another region's stripe is not this region's to
+    /// serve, whatever it knows of it: a dig into it is judged in the tick that takes
+    /// it and goes on without a region named, and a move behind it is applied in that
+    /// tick. So is a move behind a subscription that waits, and a dig into a chunk the
+    /// link has not asked for.
+    #[tokio::test]
+    async fn what_a_region_is_not_about_to_serve_holds_nothing() {
+        let (mut edge, worker_end) = in_process(256);
+        let mut runner = west(worker_end);
+        joined(&edge, &mut runner).await;
+        edge.send(walk(player(), 14.5)).await.unwrap();
+        step(&mut runner);
+        settle(&mut runner);
+        edge.everything();
+
+        // Another region's chunk, asked for and not yet answered.
+        edge.send(asking_for(vec![BESIDE])).await.unwrap();
+        edge.send(dig_by(player(), 16, 3)).await.unwrap();
+        edge.send(walk(player(), 13.5)).await.unwrap();
+        step(&mut runner);
+        assert!(runner.links[&LinkId(0)].held.is_empty());
+        assert_eq!(x_of(&runner, player()), Some(13.5));
+        let state = runner.region().edge(edge.edge).unwrap();
+        let entries: Vec<_> = state.outbox.values().collect();
+        assert!(
+            matches!(entries[..], [Durable::Remote { to: None, .. }]),
+            "{entries:?}"
+        );
+
+        // The region's own chunk: a move behind the subscription that waits for it,
+        // and on another link a dig into it without a subscription.
+        let (other, other_end) = in_process(256);
+        runner.links().attach(other_end);
+        other.send(join(other_player(), "Jeb")).await.unwrap();
+        step(&mut runner);
+        edge.send(asking_for(vec![WEST_OF_HOME])).await.unwrap();
+        edge.send(walk(player(), 3.0)).await.unwrap();
+        other
+            .send(of_entity(EntityId(2), dig_by(other_player(), -1, 1)))
+            .await
+            .unwrap();
+        step(&mut runner);
+        assert!(runner.region().chunk(WEST_OF_HOME).is_none());
+        assert_eq!(x_of(&runner, player()), Some(3.0));
+        let applied = |edge: &TestEdge| runner.region().edge(edge.edge).unwrap().applied;
+        assert_eq!(applied(&other), other.sent.load(Ordering::Relaxed));
+        assert_eq!(applied(&edge), edge.sent.load(Ordering::Relaxed));
+        assert!(runner.links.values().all(|link| link.held.is_empty()));
+    }
+
+    /// What a player of another region does to a block waits like a player's own
+    /// action: a remote action behind a guest's subscription to a chunk of the
+    /// region's own area is taken when the chunk is there, and done.
+    #[tokio::test]
+    async fn a_remote_action_behind_a_guests_subscription_waits_for_the_chunk() {
+        let (edge, worker_end) = in_process(256);
+        let mut runner = west(worker_end);
+        let action = RemoteAction {
+            player: player(),
+            sequence: 4,
+            step: RemoteStep::Break {
+                position: BlockPos::new(-1, -61, 0),
+            },
+        };
+
+        edge.send(asking_as_guest_for(vec![WEST_OF_HOME]))
+            .await
+            .unwrap();
+        edge.send(EdgeToWorker::Remote(action)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.links[&LinkId(0)].held.len(), 1);
+        assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 0);
+
+        step_until(&mut runner, |runner| {
+            runner.region().edge(edge.edge).unwrap().applied == 1
+        });
+        assert_eq!(dug(&runner, -1), Some(true));
+        let state = runner.region().edge(edge.edge).unwrap();
+        let entries: Vec<_> = state.outbox.values().collect();
+        let done = Durable::RemoteDone {
+            player: player(),
+            sequence: 4,
+        };
+        assert_eq!(entries, [&done]);
+    }
+
+    /// A chunk the store cannot read is waited for without end, and holds nothing: a
+    /// dig into it is taken at once.
+    #[tokio::test]
+    async fn a_chunk_that_cannot_be_read_holds_no_dig() {
+        let (edge, worker_end) = in_process(256);
+        let mut runner = west(worker_end);
+        joined(&edge, &mut runner).await;
+        // As the store's word that it cannot read the chunk leaves it.
+        runner.unreadable.insert(WEST_OF_HOME);
+
+        edge.send(asking_for(vec![WEST_OF_HOME])).await.unwrap();
+        edge.send(dig(-1)).await.unwrap();
+        step(&mut runner);
+        assert!(runner.links[&LinkId(0)].held.is_empty());
+        let applied = runner.region().edge(edge.edge).unwrap().applied;
+        assert_eq!(applied, edge.sent.load(Ordering::Relaxed));
+    }
+
+    /// The presence answers among `told`: the players in the order they were answered
+    /// for, each with their entity if they are present.
+    fn presences(told: &[WorkerToEdge]) -> Vec<(PlayerId, Option<EntityId>)> {
+        let answer = |message: &WorkerToEdge| match message {
+            WorkerToEdge::Presence { player, answer } => {
+                let entity = match answer {
+                    Presence::Present { entity, .. } => Some(*entity),
+                    Presence::Absent => None,
+                };
+                Some((*player, entity))
+            }
+            _ => None,
+        };
+        told.iter().filter_map(answer).collect()
+    }
+
+    /// A region says whom it has for an edge at every hello, named or not: an answer
+    /// for each player of the hello, in the hello's order, and then one for every
+    /// other stay of the edge, in ascending order. The welcome counts them.
+    #[tokio::test]
+    async fn a_hello_is_answered_with_every_stay_the_region_has_for_the_edge() {
+        let (first, first_end) = in_process(256);
+        let (bystander, bystander_end) = in_process(256);
+        let mut runner = runner(first_end);
+        runner.links().attach(bystander_end);
+        // In this order, so that the entities do not ascend with the players.
+        first.send(join(other_player(), "Jeb")).await.unwrap();
+        first.send(join(player(), "Notch")).await.unwrap();
+        // Somebody else's player is nobody's business but that edge's.
+        bystander
+            .send(join(third_player(), "Dinnerbone"))
+            .await
+            .unwrap();
+        step(&mut runner);
+        let applied = first.sent.load(Ordering::Relaxed);
+
+        // A hello that names neither.
+        let (end, worker_end) = link::in_process(256);
+        let mut again = first.again(end, &runner);
+        runner.links().attach(worker_end);
+        again.send(again.hello(0, &[], &[])).await.unwrap();
+        step(&mut runner);
+        let told = again.everything();
+        let welcome = Welcome::Resumed {
+            entries: 0,
+            presences: 2,
+            applied,
+        };
+        assert_eq!(again.welcomed, Some(welcome));
+        assert_eq!(
+            presences(&told),
+            [
+                (player(), Some(EntityId(2))),
+                (other_player(), Some(EntityId(1)))
+            ]
+        );
+        assert!(
+            matches!(
+                told[1..3],
+                [WorkerToEdge::Presence { .. }, WorkerToEdge::Presence { .. }]
+            ),
+            "{told:?}"
+        );
+
+        // One that names one of them, and somebody who is not there, or not this
+        // edge's.
+        for stranger in [PlayerId(Uuid::from_u128(9)), third_player()] {
+            let (end, worker_end) = link::in_process(256);
+            let mut again = first.again(end, &runner);
+            runner.links().attach(worker_end);
+            let named = [other_player(), stranger];
+            again.send(again.hello(0, &named, &[])).await.unwrap();
+            step(&mut runner);
+            let told = again.everything();
+            let welcome = Welcome::Resumed {
+                entries: 0,
+                presences: 3,
+                applied,
+            };
+            assert_eq!(again.welcomed, Some(welcome));
+            assert_eq!(
+                presences(&told),
+                [
+                    (other_player(), Some(EntityId(1))),
+                    (stranger, None),
+                    (player(), Some(EntityId(2)))
+                ]
+            );
+        }
+
+        // An edge the region does not know is answered for the names of its hello, and
+        // a start that resets the edge likewise: whoever is there goes with that tick.
+        let (end, worker_end) = link::in_process(256);
+        let mut later = TestEdge::silent(end, first.edge, first.start + 1);
+        runner.links().attach(worker_end);
+        later.send(later.hello(0, &[player()], &[])).await.unwrap();
+        step(&mut runner);
+        let told = later.everything();
+        let welcome = Welcome::Unknown {
+            since: runner.region().tick_number(),
+            entries: 0,
+            presences: 1,
+            applied: 0,
+        };
+        assert_eq!(later.welcomed, Some(welcome));
+        assert_eq!(presences(&told), [(player(), None)]);
+        assert_eq!(runner.region().player_count(), 1);
+    }
+
+    /// A leave that names the entity a presence answer showed ends that stay, and one
+    /// that names another entity ends nothing.
+    #[tokio::test]
+    async fn a_leave_ends_the_stay_a_presence_answer_showed_and_no_other() {
+        let (first, first_end) = in_process(256);
+        let mut runner = runner(first_end);
+        first.send(join(player(), "Notch")).await.unwrap();
+        step(&mut runner);
+
+        let (end, worker_end) = link::in_process(256);
+        let mut again = first.again(end, &runner);
+        runner.links().attach(worker_end);
+        again.send(again.hello(0, &[], &[])).await.unwrap();
+        step(&mut runner);
+        let shown = presences(&again.everything());
+        let [(shown_player, Some(entity))] = shown[..] else {
+            panic!("{shown:?}");
+        };
+        assert_eq!(shown_player, player());
+
+        let leave = |entity| EdgeToWorker::PlayerLeave {
+            player: player(),
+            entity: Some(entity),
+        };
+        again.send(leave(EntityId(entity.0 + 1))).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.region().player_count(), 1);
+        again.send(leave(entity)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.region().player_count(), 0);
+    }
+
+    /// An arrival that takes the place of an earlier stay of its player is a player
+    /// who came in from another region, and counted as one; the arrival of the very
+    /// stay the region has is not.
+    #[tokio::test]
+    async fn an_arrival_that_replaces_an_earlier_stay_is_counted_and_the_same_stay_is_not() {
+        let (edge, worker_end) = in_process(256);
+        let mut runner = runner(worker_end);
+        let status = runner.status();
+        edge.send(join(player(), "Notch")).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.region().player(player()).unwrap().0, EntityId(1));
+
+        let arrive = |entity| EdgeToWorker::PlayerArrive {
+            player: player(),
+            transfer: transfer(EntityId(entity)),
+        };
+        edge.send(arrive(50)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(runner.region().player(player()).unwrap().0, EntityId(50));
+        assert_eq!(status.arrivals.load(Ordering::Relaxed), 1);
+
+        edge.send(arrive(50)).await.unwrap();
+        step(&mut runner);
+        assert_eq!(status.arrivals.load(Ordering::Relaxed), 1);
     }
 }

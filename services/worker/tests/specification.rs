@@ -3725,9 +3725,10 @@ fn unknown_since(log: &[WorkerToEdge]) -> u64 {
 
 /// Holds the beginning of a link's log to the order of section 5.2: the welcome, then
 /// exactly as many outbox entries as it announced, in ascending order of their numbers,
-/// then one presence answer for each player of the hello, which is how many the
-/// welcome announced, and none after those. Returns the welcome and the numbers of its
-/// entries.
+/// then exactly as many presence answers as it announced: one for each player of the
+/// hello, and behind those one `Present` for every other stay the region has for the
+/// edge, in ascending order of the players (ADR-0014, section 3.7). None comes after
+/// those. Returns the welcome and the numbers of its entries.
 fn resume_of(log: &[WorkerToEdge], named: &[PlayerId]) -> (Welcome, Vec<u64>) {
     let welcome = welcomed(log);
     let (entries, presences) = match welcome {
@@ -3739,17 +3740,15 @@ fn resume_of(log: &[WorkerToEdge], named: &[PlayerId]) -> (Welcome, Vec<u64>) {
         } => (entries as usize, presences as usize),
         Welcome::Superseded => panic!("superseded: {}", brief(log)),
     };
-    assert_eq!(
-        presences,
-        named.len(),
+    assert!(
+        presences >= named.len(),
         "{welcome:?} for a hello that named {} players: {}",
         named.len(),
         brief(log)
     );
     assert!(
-        log.len() > entries + named.len(),
-        "{welcome:?} for {} players, and the link has less than that: {}",
-        named.len(),
+        log.len() > entries + presences,
+        "{welcome:?}, and the link has less than that: {}",
         brief(log)
     );
     let numbers: Vec<u64> = log[1..=entries]
@@ -3767,27 +3766,39 @@ fn resume_of(log: &[WorkerToEdge], named: &[PlayerId]) -> (Welcome, Vec<u64>) {
         "the entries of a welcome ascend: {}",
         brief(log)
     );
-    let mut answers: Vec<PlayerId> = log[1 + entries..1 + entries + named.len()]
+    let answers: Vec<(PlayerId, bool)> = log[1 + entries..1 + entries + presences]
         .iter()
         .map(|message| match message {
-            WorkerToEdge::Presence { player, .. } => *player,
+            WorkerToEdge::Presence { player, answer } => {
+                (*player, matches!(answer, Presence::Present { .. }))
+            }
             other => panic!(
                 "{welcome:?}, and {other:?} is where a presence answer belongs: {}",
                 brief(log)
             ),
         })
         .collect();
-    answers.sort();
+    let (of_the_hello, others) = answers.split_at(named.len());
+    let mut answered: Vec<PlayerId> = of_the_hello.iter().map(|(player, _)| *player).collect();
+    answered.sort();
     let mut expected = named.to_vec();
     expected.sort();
     assert_eq!(
-        answers,
+        answered,
         expected,
-        "one presence answer for each player of the hello: {}",
+        "one presence answer for each player of the hello, before any other: {}",
         brief(log)
     );
     assert!(
-        log[1 + entries + named.len()..]
+        others
+            .iter()
+            .all(|(player, present)| *present && !named.contains(player))
+            && others.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "behind the answers for the hello's players, one `Present` for every other stay, ascending: {}",
+        brief(log)
+    );
+    assert!(
+        log[1 + entries + presences..]
             .iter()
             .all(|message| !matches!(message, WorkerToEdge::Presence { .. })),
         "a presence answer behind the resume: {}",
