@@ -797,7 +797,21 @@ and `Release` are as they are. In `worker` (`bin/clustine/src/cluster.rs`):
 **Outcomes arrive on a channel of the process.** It makes an unbounded channel of
 `(RegionId, Reshaped)`, hands each `Worker::reshape` a closure that sends into it, and
 has a branch of its `select!` for the receiving end. Nothing a player waits for hangs
-on `LOOK` or on `RELEASE_LOOK`.
+on `LOOK` or on `RELEASE_LOOK`. As built, each outcome comes with a number
+of its own beside the region, which tells a stopped runner's `Off::StoreLost` from the
+outcome of that region's next merge or split; and what is under way is kept beside
+the regions, not in a region's phase, as a region can be asked to release, or lose the
+store, in the middle, and the outcome is handled all the same.
+
+What this section left open, and what was built: an `Absorb` or a `SplitOff` for a
+region that is being released is answered `Off::Busy`; one for a region that is being
+opened again after the store was lost, `Off::Busy` or `Off::NotRunning`, and if the
+region runs again with the same epoch when the region to absorb has been read, the
+merge goes on with the new runner. A region that orders take away in the middle of a
+merge has the absorbed region's handle closed after its runner has stopped, not
+before, so that a commit already sent is not declined for it; the same when the
+process stops. An outcome for a region taken since is dropped, a part included,
+without a word to the coordinator, which finds what happened in the list.
 
 **Assignments are told apart by region and epoch**, not by `entity_ids`, wherever
 orders are compared with what the worker holds (`ordered`, `declined`, `let_go`).
@@ -887,15 +901,21 @@ presence answers apply there, and a leave and an input name their entity.
 
 ```text
 clustine merge --survivor A --absorbed B [--coordinator host:port]
-clustine split --region A --chunks X,Z [X,Z ...] [--coordinator host:port]
+clustine split [--coordinator host:port] --region A --chunks X,Z [X,Z ...]
 ```
+
+`--chunks` comes last and takes everything behind it: a chunk coordinate can be
+negative, so what follows it cannot be told from an option. An option behind it is
+refused with a sentence that says so.
 
 Each connects, says `ToCoordinator::Merge { survivor, absorbed }` or `Split { region,
 chunks }`, and waits for one answer, `FromCoordinator::Asked`, after which the
 coordinator closes the connection: `Ok(region)`, with the survivor or the new region,
 or `Err(reason)` in words, at once if the coordinator refuses and otherwise when it
 knows what came of it. The connection is not closed for being silent meanwhile, as a
-mover's is not. The commands print the answer and the time from asking. `--chunks`
+mover's is not. The commands print the answer and the time from asking, and an `Err`
+as "the coordinator reports no merge of ...", not as a refusal: it is also the answer
+to a merge or a split that began and came to nothing. `--chunks`
 takes chunk coordinates (a block's coordinate divided by 16, rounded down), each pair
 `x,z`.
 
