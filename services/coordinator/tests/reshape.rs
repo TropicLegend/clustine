@@ -65,6 +65,15 @@ fn address(name: &str) -> String {
     format!("{name}:25600")
 }
 
+/// A coordinator that knows the stripes of its layout from the start, as every
+/// coordinator did before it learnt its regions from the world store's list
+/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). These tests are about
+/// what a coordinator does with regions it knows.
+fn knowing(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
+    let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
+    Coordinator::knowing(config, now, first_epoch, &stripes)
+}
+
 /// What a worker reports of a region it runs already.
 fn held(id: u32, epoch: u64) -> Assignment {
     Assignment {
@@ -158,7 +167,7 @@ impl Cluster {
         let fingerprint = config.layout.fingerprint();
         let now = Instant::now();
         Self {
-            coordinator: Coordinator::new(config, now, FIRST_EPOCH),
+            coordinator: knowing(config, now, FIRST_EPOCH),
             now,
             fingerprint,
             heard: Vec::new(),
@@ -3814,7 +3823,7 @@ fn the_other_regions_of_a_leaving_worker_are_released_while_its_reserved_one_wai
 #[test]
 fn a_merge_and_a_split_are_refused_when_epochs_have_run_out() {
     let mut cluster = Cluster::anew(&[0, 4]);
-    cluster.coordinator = Coordinator::new(config(&[0, 4], LEASE), cluster.now, u64::MAX);
+    cluster.coordinator = knowing(config(&[0, 4], LEASE), cluster.now, u64::MAX);
     cluster.register("a", &[held(0, 10)]);
     cluster.register("b", &[held(1, 11)]);
     cluster.register("c", &[held(2, 12)]);
@@ -4249,7 +4258,7 @@ impl Run {
             dice: Dice(seed),
             faults,
             pace: Duration::from_millis([250, 1_000, 100][(seed % 3) as usize]),
-            coordinator: Coordinator::new(config.clone(), now, FIRST_EPOCH),
+            coordinator: knowing(config.clone(), now, FIRST_EPOCH),
             config,
             started: now,
             now,
@@ -5149,7 +5158,7 @@ impl Run {
         } else {
             "coordinators made anew in the middle of a merge or a split"
         });
-        self.coordinator = Coordinator::new(self.config.clone(), self.now, self.highest + 1_000);
+        self.coordinator = knowing(self.config.clone(), self.now, self.highest + 1_000);
         self.highest += 1_000;
         for name in Self::names() {
             self.process(&name).connected = false;
@@ -6190,7 +6199,7 @@ fn the_coordinator_reads_the_list_again_after_a_split_whose_worker_lost_the_stor
         follow: None,
     };
     let start = Instant::now();
-    let mut coordinator = Coordinator::new(config, start, 1_000);
+    let mut coordinator = knowing(config, start, 1_000);
     coordinator
         .register(start, "a", "a:25600", &[], None)
         .expect("the worker is let in");

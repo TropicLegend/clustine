@@ -28,7 +28,11 @@ const LOG: &str = module_path!();
 /// What a coordinator is created with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoordinatorConfig {
-    /// How the world is divided into regions.
+    /// The stripes the world was divided into before its regions followed their
+    /// players. The coordinator no longer takes its regions from it: those it learns
+    /// from the world store's list (`docs/adr/0017-the-end-of-the-stripes.md`,
+    /// section 2.3). Until the layout goes altogether it is still what a worker's
+    /// fingerprint is compared with and what workers and edges are sent.
     pub layout: Layout,
     /// Where players enter the world.
     pub spawn: Vec3,
@@ -712,9 +716,12 @@ impl Holder {
 ///
 /// # The regions it knows, and the world store's list
 ///
-/// See `docs/adr/0014-merging-and-splitting.md`, section 5. The regions of the layout
-/// are known from the start. Since regions merge and split, the world store has a list
-/// of those there are, which the service reads and hands to [`Coordinator::listed`]:
+/// See `docs/adr/0014-merging-and-splitting.md`, section 5, and
+/// `docs/adr/0017-the-end-of-the-stripes.md`, section 2.3. **A coordinator knows no
+/// region when it is made**: nobody tells it how the world is divided, because it is
+/// not. The world store has a list of the regions there are, which the service reads
+/// and hands to [`Coordinator::listed`], and until it has been handed one the
+/// coordinator knows only what its workers report ([`Coordinator::awaits_the_list`]):
 /// a living region of the list that the coordinator does not know is added, without
 /// an owner, and assigned like any such region; a region the coordinator knows that
 /// the list has as absorbed, or neither has nor leaves room for, is removed, and its
@@ -820,16 +827,22 @@ pub struct Coordinator {
     config: CoordinatorConfig,
     /// [`Layout::fingerprint`] of the layout.
     fingerprint: u64,
-    /// When the coordinator was created.
-    started: Instant,
+    /// When the grace period ends: before this the coordinator gives nothing away
+    /// that its owner did not let go of, evens nothing out and begins nothing by
+    /// itself. One lease from when it was made.
+    grace_until: Instant,
+    /// Whether it still waits for its first list: it has been handed none, and was
+    /// not made knowing its regions. Set when it is made and cleared for good by the
+    /// first [`Coordinator::listed`].
+    awaiting: bool,
     /// The registered workers by name.
     workers: BTreeMap<String, Worker>,
     /// How many workers have registered, not counting those that were registered
     /// already.
     arrivals: u64,
-    /// Every region the coordinator knows: those of the layout, those the world
-    /// store's list showed, and those workers reported, less those a reading of the
-    /// list took away.
+    /// Every region the coordinator knows: those the world store's list showed and
+    /// those workers reported, less those a reading of the list took away; and those
+    /// it was made knowing, if it was ([`Coordinator::knowing`]).
     regions: BTreeMap<RegionId, Region>,
     /// The highest epoch issued or reported so far.
     last_epoch: u64,
@@ -886,7 +899,13 @@ impl Coordinator {
     /// `docs/adr/0016-when-to-merge-and-split.md`, section 3.
     pub const LOOK: Duration = Duration::from_millis(250);
 
-    /// A coordinator that knows of no worker yet.
+    /// A coordinator that knows of no worker and of no region yet.
+    ///
+    /// Which regions there are it learns from the world store's list, and until it
+    /// has been handed one ([`Coordinator::awaits_the_list`]) from what its workers
+    /// report: its routing table has no route, counts no region as waiting and names
+    /// no home region, and a worker that registers holding nothing is told that it
+    /// runs nothing (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
     ///
     /// Every epoch it issues is above `first_epoch`, and the version of its routing
     /// table starts there. The service passes the wall-clock time, so that a coordinator
@@ -898,15 +917,44 @@ impl Coordinator {
     /// of it is given away. A region whose owner says that it let go of it does not wait
     /// for that ([`Coordinator::released`]).
     pub fn new(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Self {
-        let regions = config
-            .layout
-            .regions()
-            .map(|(id, _)| (id, Region::default()))
-            .collect();
+        Self::made(config, now, first_epoch, &[], true)
+    }
+
+    /// A coordinator that knows `regions` from the start, without owners and without
+    /// a home region, and does not wait for a first list
+    /// ([`Coordinator::awaits_the_list`] is false from the start). In everything else
+    /// it is [`Coordinator::new`].
+    ///
+    /// For tests, and until the layout goes for a coordinator that is started with
+    /// stripes: most tests of the coordinator are about what it does with regions it
+    /// knows, and handing each a list instead would change the version of its routing
+    /// table, its home region and what it may be asked
+    /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
+    #[doc(hidden)]
+    pub fn knowing(
+        config: CoordinatorConfig,
+        now: Instant,
+        first_epoch: u64,
+        regions: &[RegionId],
+    ) -> Self {
+        Self::made(config, now, first_epoch, regions, false)
+    }
+
+    /// What [`Coordinator::new`] and its kin make: a coordinator that knows of no
+    /// worker and of `regions`, and waits for its first list if it is `awaiting`.
+    fn made(
+        config: CoordinatorConfig,
+        now: Instant,
+        first_epoch: u64,
+        regions: &[RegionId],
+        awaiting: bool,
+    ) -> Self {
+        let regions = regions.iter().map(|id| (*id, Region::default())).collect();
         Self {
             fingerprint: config.layout.fingerprint(),
+            grace_until: follow::after(now, config.lease),
+            awaiting,
             config,
-            started: now,
             workers: BTreeMap::new(),
             arrivals: 0,
             regions,
@@ -932,6 +980,29 @@ impl Coordinator {
         &self.config
     }
 
+    /// The home region of the world store's list as it was last handed in; none
+    /// until one has been.
+    pub fn home(&self) -> Option<RegionId> {
+        self.home
+    }
+
+    /// Whether it has been handed no list and was not made knowing its regions.
+    ///
+    /// Until then the list says nothing of which regions there are, and whoever
+    /// serves the coordinator has it read until it has been read once, whichever way
+    /// the coordinator reshapes (`docs/adr/0017-the-end-of-the-stripes.md`, section
+    /// 2.3). A reading that fails ([`Coordinator::unlisted`]) leaves it waiting.
+    pub fn awaits_the_list(&self) -> bool {
+        self.awaiting
+    }
+
+    /// Whether `now` is within the grace period, in which nothing is given away that
+    /// its owner did not let go of, nothing is evened out and nothing is begun by
+    /// the coordinator itself.
+    fn in_grace(&self, now: Instant) -> bool {
+        now < self.grace_until
+    }
+
     /// A worker offers to run regions, or is back after losing its connection.
     ///
     /// It is refused if `layout`, the fingerprint of the layout it works with, is not
@@ -950,7 +1021,8 @@ impl Coordinator {
     ///
     /// A region the coordinator does not know is taken as living on the worker's word:
     /// it is one that was split off another, of which an earlier coordinator heard, or
-    /// nobody. The next reading of the list says whether it is.
+    /// nobody; or any region at all, as long as the coordinator has been handed no
+    /// list. The next reading of the list says whether it is.
     ///
     /// A region the worker reports and goes on running counts as vouched for at `now`.
     /// That does not end a run of [`Vouch::WaitingForStore`]: a worker that lost its
@@ -1538,6 +1610,8 @@ impl Coordinator {
         self.reading = false;
         self.owed = false;
         self.pending.read = false;
+        // From here on the list has said which regions there are.
+        self.awaiting = false;
 
         if self.splits.is_empty() {
             for (id, epoch) in &living {
@@ -2205,8 +2279,7 @@ impl Coordinator {
     fn even_out(&mut self, now: Instant) {
         let lease = self.config.lease;
         let by_itself = self.config.follow.is_some();
-        let grace = now.saturating_duration_since(self.started) < lease;
-        if grace || !self.releases.is_empty() {
+        if self.in_grace(now) || !self.releases.is_empty() {
             return;
         }
         // A part is on the worker that made it, which has one region more for that;
@@ -2798,7 +2871,7 @@ impl Coordinator {
     /// regions that their owners let go of are given. A region that waits to be
     /// absorbed is not given to anyone.
     fn assign(&mut self, now: Instant) {
-        let grace = now.saturating_duration_since(self.started) < self.config.lease;
+        let grace = self.in_grace(now);
         let unowned: Vec<RegionId> = self
             .regions
             .iter()
@@ -3500,13 +3573,25 @@ mod tests {
     }
 
     fn coordinator(layout: &Layout, now: Instant, first_epoch: u64) -> Coordinator {
-        let config = CoordinatorConfig {
+        Coordinator::knowing(config(layout), now, first_epoch, &stripes_of(layout))
+    }
+
+    /// What the coordinators of these tests are created with, for a world that was
+    /// divided by `layout`.
+    fn config(layout: &Layout) -> CoordinatorConfig {
+        CoordinatorConfig {
             layout: layout.clone(),
             spawn: SPAWN,
             lease: Duration::from_millis(LEASE),
             follow: None,
-        };
-        Coordinator::new(config, now, first_epoch)
+        }
+    }
+
+    /// The regions a coordinator of these tests is made knowing: one for every stripe
+    /// of `layout`, as a coordinator knew them before it learnt its regions from the
+    /// world store's list.
+    fn stripes_of(layout: &Layout) -> Vec<RegionId> {
+        layout.regions().map(|(id, _)| id).collect()
     }
 
     fn ids(block: u32) -> EntityIds {
@@ -3562,6 +3647,10 @@ mod tests {
 
     /// The tests of a coordinator that merges and splits regions by itself.
     mod follows;
+
+    /// The tests of how a coordinator begins: knowing no region, or made knowing
+    /// its regions.
+    mod begins;
 
     #[test]
     fn two_workers_are_given_the_two_regions_in_the_order_they_registered() {

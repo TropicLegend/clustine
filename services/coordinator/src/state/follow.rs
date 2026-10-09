@@ -139,7 +139,7 @@ pub(super) struct Noted {
 /// The time `long` after `now`. A time that cannot be told is as late a one as can
 /// be: a rest that somebody set to more than the clock can count must not stop the
 /// coordinator.
-fn after(now: Instant, long: Duration) -> Instant {
+pub(super) fn after(now: Instant, long: Duration) -> Instant {
     let mut long = long;
     loop {
         if let Some(then) = now.checked_add(long) {
@@ -620,7 +620,7 @@ impl Coordinator {
     /// coordinator knows has a sighting.
     fn the_world_is_known(&self, now: Instant) -> bool {
         let lease = self.config.lease;
-        let grace = now.saturating_duration_since(self.started) < lease;
+        let grace = self.in_grace(now);
         let read = self
             .noted
             .listed

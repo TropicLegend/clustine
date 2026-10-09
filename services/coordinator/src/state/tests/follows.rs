@@ -56,7 +56,7 @@ fn following_by(policy: Policy, boundaries: &[i32]) -> Cluster {
         follow: Some(policy),
     };
     Cluster {
-        coordinator: Coordinator::new(config, start, FIRST_EPOCH),
+        coordinator: Coordinator::knowing(config, start, FIRST_EPOCH, &stripes_of(&layout)),
         layout,
         start,
         addresses: BTreeMap::new(),

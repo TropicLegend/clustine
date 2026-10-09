@@ -92,6 +92,15 @@ fn address(name: &str) -> String {
     format!("{name}:25600")
 }
 
+/// A coordinator that knows the stripes of its layout from the start, as every
+/// coordinator did before it learnt its regions from the world store's list
+/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). These tests are about
+/// what a coordinator does with regions it knows.
+fn knowing(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
+    let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
+    Coordinator::knowing(config, now, first_epoch, &stripes)
+}
+
 /// What a run adds to the model of section 11.
 #[derive(Debug, Clone, Copy)]
 struct Variant {
@@ -403,7 +412,7 @@ impl Cluster {
             seed,
             variant,
             dice,
-            coordinator: Coordinator::new(config.clone(), started, FIRST_EPOCH),
+            coordinator: knowing(config.clone(), started, FIRST_EPOCH),
             config,
             started,
             lanes: world
@@ -1060,7 +1069,7 @@ impl Cluster {
             }
             Act::Anew => {
                 self.highest += 1_000;
-                self.coordinator = Coordinator::new(self.config.clone(), self.now(), self.highest);
+                self.coordinator = knowing(self.config.clone(), self.now(), self.highest);
                 for name in WORKERS {
                     let registers = step + self.dice.below(3);
                     self.lose_connection(name, registers);

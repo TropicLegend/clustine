@@ -87,6 +87,15 @@ fn region(id: u32) -> RegionId {
     RegionId(id)
 }
 
+/// A coordinator that knows the stripes of its layout from the start, as every
+/// coordinator did before it learnt its regions from the world store's list
+/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). These tests are about
+/// what a coordinator does with regions it knows.
+fn knowing(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Coordinator {
+    let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
+    Coordinator::knowing(config, now, first_epoch, &stripes)
+}
+
 /// The chunk `x` of the row z = 0, in which most of these tests' players stand.
 fn at(x: i32) -> ChunkPos {
     ChunkPos::new(x, 0)
@@ -312,7 +321,7 @@ impl World {
         };
         let now = Instant::now();
         Self {
-            coordinator: Coordinator::new(config, now, FIRST_EPOCH),
+            coordinator: knowing(config, now, FIRST_EPOCH),
             made: now,
             now,
             fingerprint,

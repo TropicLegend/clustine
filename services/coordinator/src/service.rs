@@ -348,8 +348,11 @@ impl Service {
         let (said_sender, said) = mpsc::channel(SAID_CAPACITY);
         // At most one reading is under way, so at most one waits here.
         let (read_sender, read) = mpsc::unbounded_channel();
+        // Until the service is given its coordinator: one that knows the stripes of
+        // its layout from the start, as every coordinator has so far.
+        let stripes: Vec<RegionId> = config.layout.regions().map(|(id, _)| id).collect();
         Self {
-            coordinator: Coordinator::new(config, now, first_epoch),
+            coordinator: Coordinator::knowing(config, now, first_epoch, &stripes),
             connections: BTreeMap::new(),
             workers: BTreeMap::new(),
             lost: Vec::new(),
