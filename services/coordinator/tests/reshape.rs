@@ -6157,3 +6157,95 @@ async fn the_service_does_not_judge_a_request_by_a_reading_from_before_it() {
     assert_eq!(service.lists.most_at_once(), 1);
     drop((split, late));
 }
+
+/// Found by the end-to-end tests of merges and splits under the bots
+/// (`bin/clustine/tests/merges.rs`, which has the whole sequence), and written there
+/// by their writer: after a split of which the worker says that it lost the store,
+/// and a reading of the list that fails, the coordinator has to ask for the list
+/// again by itself, and then gives the new region to somebody. It did not, and a part
+/// the store had made before it died was run by nobody.
+#[test]
+fn the_coordinator_reads_the_list_again_after_a_split_whose_worker_lost_the_store() {
+    let lease = Duration::from_secs(5);
+    let look = Duration::from_millis(250);
+    let list = |living: &[u32], next: u32| RegionList {
+        home: RegionId(0),
+        regions: living
+            .iter()
+            .map(|id| RegionInfo {
+                region: RegionId(*id),
+                epoch: 0,
+                bounds: None,
+                pinned: Vec::new(),
+            })
+            .collect(),
+        absorbed: Vec::new(),
+        next: RegionId(next),
+    };
+    let config = CoordinatorConfig {
+        layout: Layout::new(Vec::new()).expect("a world of one region"),
+        spawn: Vec3::new(0.5, 64.0, 0.5),
+        lease,
+    };
+    let start = Instant::now();
+    let mut coordinator = Coordinator::new(config, start, 1_000);
+    coordinator
+        .register(start, "a", "a:25600", &[], None)
+        .expect("the worker is let in");
+    coordinator.listed(start, &list(&[0], 1));
+    // A new coordinator gives nothing away for a lease, and the worker goes on saying
+    // that it is there.
+    let mut now = start + lease;
+    coordinator.heartbeat(now, "a", &[]);
+    now += Duration::from_millis(1);
+    coordinator.tick(now);
+    let regions = |coordinator: &Coordinator| -> Vec<u32> {
+        let held = coordinator.assignments("a");
+        held.iter().map(|held| held.region.0).collect()
+    };
+    assert_eq!(regions(&coordinator), [0], "the worker runs the one region");
+
+    // Steps 1 to 3: the split is asked for and ordered, and the worker says that it
+    // lost the store over it.
+    let ordered = coordinator
+        .split(now, RegionId(0), &[ChunkPos::new(3, 0)], Some(41))
+        .expect("the split is taken on");
+    let [
+        ReshapeOrder {
+            order: Order::SplitOff { as_epoch, part, .. },
+            ..
+        },
+    ] = ordered.orders.as_slice()
+    else {
+        panic!("expected the order to split: {ordered:?}");
+    };
+    assert_eq!(*part, RegionId(1));
+    let said = coordinator.split_ended(now, "a", RegionId(0), *as_epoch, Err(Off::StoreLost));
+    assert!(said.read, "the list is to be read: {said:?}");
+    // Step 4: the store is still away.
+    coordinator.unlisted(now);
+
+    // Step 5: the store is back, and has the split. Nobody tells the coordinator, so
+    // it has to ask again; within a lease is soon enough for this test.
+    let mut asked_again = false;
+    for _ in 0..lease.as_millis() / look.as_millis() {
+        now += look;
+        coordinator.heartbeat(now, "a", &[(RegionId(0), Vouch::Committed)]);
+        if coordinator.tick(now).read {
+            asked_again = true;
+            break;
+        }
+    }
+    assert!(
+        asked_again,
+        "the reading that followed `SplitEnded {{ Err(StoreLost) }}` failed, and the \
+         coordinator did not ask for the list again within a lease: a region the split \
+         made stays unknown to it"
+    );
+    coordinator.listed(now, &list(&[0, 1], 2));
+    assert_eq!(
+        regions(&coordinator),
+        [0, 1],
+        "the region the split made is given to the worker that is there"
+    );
+}

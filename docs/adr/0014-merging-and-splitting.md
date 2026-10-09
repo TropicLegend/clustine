@@ -1037,7 +1037,12 @@ lost: a split that is done twice makes two regions.
   new assignment is; the reservation ends; the asker is told `Ok(n)`; the list is
   read.
 - On `Err(why)`: the reservation ends, the asker is told `Err`; the list is read,
-  because `Off::StoreLost` leaves open what happened.
+  because `Off::StoreLost` leaves open what happened, **and is asked for again at
+  every tick until a reading succeeds**. After `StoreLost` the first reading fails as
+  a rule, the store being away; without the second, a part the store made before it
+  died was a region no worker ran and no routing table named, and its players were
+  disconnected when the edge's patience was over (found by the end-to-end tests of
+  step C3.8, once in eleven runs that killed the store during a split).
 - **When a lease has passed** since it was asked, or the region loses its owner or
   changes its epoch: the reservation ends and the list is read. A new region that it
   shows is one nobody is known to run, and is assigned; **the asker is told `Err`

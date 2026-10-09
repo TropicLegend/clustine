@@ -771,10 +771,13 @@ pub struct Coordinator {
     /// Whether the list has been asked for and neither [`Coordinator::listed`] nor
     /// [`Coordinator::unlisted`] has been called since.
     reading: bool,
-    /// Whether the reservation of a split has ended without the worker's word and the
+    /// Whether a split has ended without the worker's word that it was made, and the
     /// list has not been read since, so that the part, if there is one, may be a
-    /// region nobody knows of. The list is asked for at every tick until it has been
-    /// read.
+    /// region nobody knows of. That is a reservation that ended by itself, and also a
+    /// worker that said why there is no part: a worker that lost the world store on
+    /// the way does not know whether the store made the split first, and the reading
+    /// that follows such a word fails as a rule, the store being away. The list is
+    /// asked for at every tick until it has been read.
     owed: bool,
     /// What the call that is being made has to tell the service; empty between calls.
     pending: Pending,
@@ -1284,8 +1287,8 @@ impl Coordinator {
     ///
     /// A merge or a split that was asked for more than a lease ago ends here as well;
     /// see [`Coordinator`]. And the world store's list is asked for again
-    /// ([`Changes::read`]) if a merge waits for it, or the reservation of a split
-    /// ended without the worker's word, and the reading that was to follow failed.
+    /// ([`Changes::read`]) if a merge waits for it, or a split ended without the
+    /// worker's word that it was made, and the reading that was to follow failed.
     ///
     /// Last of all, and only here, a release is begun to even regions out, if a worker
     /// runs two regions more than another, no release is under way, and no merge or
@@ -1419,8 +1422,8 @@ impl Coordinator {
     /// A merge whose reservation has run out at its second stage ends all the same,
     /// with the region to absorb assigned: should it have been absorbed, the worker
     /// that is given it is refused by the world store and says so. After a split
-    /// whose reservation ended without the worker's word, the list is asked for at
-    /// every tick until it has been read, as the part may be a region that nobody
+    /// that ended without the worker's word that it was made, the list is asked for
+    /// at every tick until it has been read, as the part may be a region that nobody
     /// runs. A merge of which a worker has said what came waits on, and the list is
     /// asked for again at the next tick.
     pub fn unlisted(&mut self, now: Instant) -> Changes {
@@ -1658,8 +1661,10 @@ impl Coordinator {
     /// run: it is the worker's unless the coordinator knows another owner of it, or
     /// a higher epoch.
     ///
-    /// Either way the list is asked for ([`Changes::read`]). To say it is to be heard
-    /// from, if the worker is registered.
+    /// Either way the list is asked for ([`Changes::read`]), and without a new region
+    /// until it has been read: a worker that lost the world store on the way cannot
+    /// know whether the store made the split, and a part it made is a region nobody
+    /// runs. To say it is to be heard from, if the worker is registered.
     pub fn split_ended(
         &mut self,
         now: Instant,
@@ -1693,6 +1698,9 @@ impl Coordinator {
                 outcome: outcome.map_err(Undone::Off),
             });
         }
+        // Whatever reason the worker gives: the list costs one reading where the
+        // store is there, and where it is not, that is the reason.
+        self.owed |= outcome.is_err();
         self.ask_for_the_list();
         self.finish(&before, now)
     }

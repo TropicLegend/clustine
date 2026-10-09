@@ -37,9 +37,8 @@
 //! the bots out so far that no two see the same chunks, as the test of moves does,
 //! runs with no other cluster beside it, and moves the region as well, to compare.
 //!
-//! A test that is ignored as a finding is one that fails: something that is not these
-//! tests' to change does otherwise than the records say. What was found is at the end
-//! of the file, with the sequence, what was to happen and what does.
+//! What these tests found in the server is at the end of the file, with the sequence,
+//! what was to happen and what did, and a test that goes after it.
 //!
 //! What is done when follows from a seed, which every test prints. To run a seed again,
 //! set `CLUSTINE_MERGES_SEED`, or `CLUSTINE_CHAOS_SEED` for the tests that kill;
@@ -61,12 +60,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clustine_botswarm::ledger::LineCrossing;
 use clustine_botswarm::{Bot, Ledger, LedgerReport, Progress, Random, Wait, audit_blocks, ledger};
-use clustine_coordinator::{Coordinator, CoordinatorConfig, Order, ReshapeOrder};
 use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
-use clustine_region::{Layout, RegionId};
-use clustine_rpc::{Off, RegionInfo, RegionList, Vouch};
-use clustine_world::{ChunkPos, Vec3};
+use clustine_rpc::RegionList;
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -1917,8 +1913,7 @@ impl Merges {
             };
             let victim = match harm {
                 Harm::Workers => Victim::Worker(owner),
-                // Not the store: see the finding at the end of this file.
-                Harm::StoreOrCoordinator => Victim::Coordinator,
+                Harm::StoreOrCoordinator => other,
             };
             let part = list.next.0;
             let told = "asked to split the region";
@@ -2017,9 +2012,8 @@ async fn players_keep_playing_when_a_worker_is_killed_during_a_merge_or_a_split(
 /// the new coordinator what they run and have split off, and the players notice a
 /// pause and nothing else.
 ///
-/// The world store is killed during the merges only. Killed during a split it finds
-/// a fault of the coordinator once in a few times, which the two tests at the end of
-/// this file are about.
+/// Killed during a split, the world store once in a few times has made the split and
+/// dies before it says so; what that found is at the end of this file.
 #[tokio::test(flavor = "multi_thread")]
 async fn players_keep_playing_when_the_store_or_the_coordinator_is_killed_during_a_merge_or_a_split()
  {
@@ -2504,11 +2498,13 @@ async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_pl
     played(&merges.finish(false).await);
 }
 
-// What these tests found in a part that is not theirs to change. Each test below is
-// ignored because it fails, and says the sequence, what the records ask for, and what
-// happens instead.
+// What these tests found, and what the test below keeps found: the sequence, what the
+// records asked for, and what happened instead. It has been put right since
+// (`Coordinator::split_ended` owes a reading after every split that ended without a
+// part), and the same is tested on the coordinator's state machine alone in
+// `services/coordinator/tests/reshape.rs`. The sequence is told as it was.
 //
-// **The part of a split that the world store made as it was lost is given to nobody**
+// **The part of a split that the world store made as it was lost was given to nobody**
 // (the coordinator, `Coordinator::split_ended` and `unlisted` in
 // `services/coordinator/src/state.rs`).
 //
@@ -2542,108 +2538,16 @@ async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_pl
 // synced]": "as after; handles lost; [...] `A` is opened again; `Off::StoreLost`; the
 // list shows `N`, which is assigned and restored from the record". Section 5.4: "On
 // `Err(why)`: the reservation ends, the asker is told `Err`; the list is read, because
-// `Off::StoreLost` leaves open what happened." Neither says what is to happen when
-// that reading fails, which after `StoreLost` is the rule and not the exception. The
-// coordinator asks again at every tick after a split whose reservation ended
-// *without* the worker's word (`lapse_split` sets `owed`), and for a merge of which
-// a worker has said what came; a split of which the worker said `Err` is the one
-// case left out.
+// `Off::StoreLost` leaves open what happened." Neither said what is to happen when
+// that reading fails, which after `StoreLost` is the rule and not the exception
+// (section 5.4 says it now). The coordinator asked again at every tick after a split
+// whose reservation ended *without* the worker's word (`lapse_split` sets `owed`),
+// and for a merge of which a worker has said what came; a split of which the worker
+// said `Err` was the one case left out.
 //
 // Seen once in eleven runs of the test above that kills the store or the coordinator,
 // when that still killed the store during splits (seed 719256: the store was killed
 // 24 ms after the worker logged `handing the store a merge or a split`).
-
-/// The finding as the coordinator's state machine has it, with the time handed in:
-/// after a split of which the worker says that it lost the store, and a reading of
-/// the list that fails, the coordinator has to ask for the list again by itself, and
-/// then gives the new region to somebody.
-#[test]
-#[ignore = "finding: after SplitEnded { Err(StoreLost) } and a reading that fails, the \
-            coordinator never reads the list again, and the part the store made is nobody's"]
-fn the_coordinator_reads_the_list_again_after_a_split_whose_worker_lost_the_store() {
-    let lease = Duration::from_secs(5);
-    let look = Duration::from_millis(250);
-    let list = |living: &[u32], next: u32| RegionList {
-        home: RegionId(0),
-        regions: living
-            .iter()
-            .map(|id| RegionInfo {
-                region: RegionId(*id),
-                epoch: 0,
-                bounds: None,
-                pinned: Vec::new(),
-            })
-            .collect(),
-        absorbed: Vec::new(),
-        next: RegionId(next),
-    };
-    let config = CoordinatorConfig {
-        layout: Layout::new(Vec::new()).expect("a world of one region"),
-        spawn: Vec3::new(0.5, 64.0, 0.5),
-        lease,
-    };
-    let start = Instant::now();
-    let mut coordinator = Coordinator::new(config, start, 1_000);
-    coordinator
-        .register(start, "a", "a:25600", &[], None)
-        .expect("the worker is let in");
-    coordinator.listed(start, &list(&[0], 1));
-    // A new coordinator gives nothing away for a lease, and the worker goes on saying
-    // that it is there.
-    let mut now = start + lease;
-    coordinator.heartbeat(now, "a", &[]);
-    now += Duration::from_millis(1);
-    coordinator.tick(now);
-    let regions = |coordinator: &Coordinator| -> Vec<u32> {
-        let held = coordinator.assignments("a");
-        held.iter().map(|held| held.region.0).collect()
-    };
-    assert_eq!(regions(&coordinator), [0], "the worker runs the one region");
-
-    // Steps 1 to 3: the split is asked for and ordered, and the worker says that it
-    // lost the store over it.
-    let ordered = coordinator
-        .split(now, RegionId(0), &[ChunkPos::new(3, 0)], Some(41))
-        .expect("the split is taken on");
-    let [
-        ReshapeOrder {
-            order: Order::SplitOff { as_epoch, part, .. },
-            ..
-        },
-    ] = ordered.orders.as_slice()
-    else {
-        panic!("expected the order to split: {ordered:?}");
-    };
-    assert_eq!(*part, RegionId(1));
-    let said = coordinator.split_ended(now, "a", RegionId(0), *as_epoch, Err(Off::StoreLost));
-    assert!(said.read, "the list is to be read: {said:?}");
-    // Step 4: the store is still away.
-    coordinator.unlisted(now);
-
-    // Step 5: the store is back, and has the split. Nobody tells the coordinator, so
-    // it has to ask again; within a lease is soon enough for this test.
-    let mut asked_again = false;
-    for _ in 0..lease.as_millis() / look.as_millis() {
-        now += look;
-        coordinator.heartbeat(now, "a", &[(RegionId(0), Vouch::Committed)]);
-        if coordinator.tick(now).read {
-            asked_again = true;
-            break;
-        }
-    }
-    assert!(
-        asked_again,
-        "the reading that followed `SplitEnded {{ Err(StoreLost) }}` failed, and the \
-         coordinator did not ask for the list again within a lease: a region the split \
-         made stays unknown to it"
-    );
-    coordinator.listed(now, &list(&[0, 1], 2));
-    assert_eq!(
-        regions(&coordinator),
-        [0, 1],
-        "the region the split made is given to the worker that is there"
-    );
-}
 
 impl Merges {
     /// Waits until every region the world store's list has is run by a worker the edge
@@ -2670,18 +2574,18 @@ impl Merges {
     }
 }
 
-/// The finding end to end, under the bots: the world store is killed as a split is
-/// handed to it, again and again, until it has the split on disk and the worker has
-/// lost its answer. The region the split made has to be run by somebody within two
-/// leases and a moment then, as after every other kill; it is run by nobody, and its
-/// players are disconnected when the edge's patience is over.
+/// What was found, end to end, under the bots: the world store is killed as a split
+/// is handed to it, again and again, until it has the split on disk and the worker
+/// has lost its answer. The region the split made has to be run by somebody within
+/// two leases and a moment then, as after every other kill; it was run by nobody, and
+/// its players were disconnected when the edge's patience was over.
 ///
 /// Whether a kill lands between the store's record and its answer is a matter of a
 /// few milliseconds, so the test tries up to forty times, which has always been
-/// enough; if the case does not come about, it fails saying so.
+/// enough (the first or the second did it). If the case does not come about, the
+/// test says so and has still killed the store in forty splits; it does not fail
+/// for what it could not bring about.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "finding: the part of a split that the world store made as it was killed is run \
-            by nobody, and its players are disconnected after the edge's patience"]
 async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_split() {
     if a_repetition() {
         return;
@@ -2758,10 +2662,15 @@ async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_spl
         }
     }
     let Some((part, killed)) = found else {
-        merges.fail(
+        merges.note(
             "in forty splits the store was never killed between its record of the split and \
-             its answer; run the test again",
+             its answer"
+                .to_owned(),
         );
+        merges.served().await;
+        merges.played_on(2).await;
+        played(&merges.finish(true).await);
+        return;
     };
     let limit = 2 * lease + MOMENT;
     match merges.everything_runs_within(limit).await {
