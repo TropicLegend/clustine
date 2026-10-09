@@ -61,8 +61,10 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
     };
     // Which regions there are, and which of them were absorbed, the world store says
     // (`docs/adr/0014-merging-and-splitting.md`, section 5.2). While it cannot be
-    // reached the coordinator goes by the layout and by what its workers report, and
-    // refuses to merge and to split.
+    // reached the coordinator goes by what its workers report, and by its stripes if
+    // it was told any, and refuses to merge and to split. One that was told no
+    // boundary knows no region until the store has answered, and reads until it has
+    // (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3).
     let store = args.store;
     let lists = move || {
         clustine_worldstore::regions(&store).map_err(|error| match error {
