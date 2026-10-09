@@ -1920,7 +1920,10 @@ what it kept, ends with every player where the uninterrupted run has them.
   region.
 - Q4. `AbsorbEnded` with an error and a list that still has the region: it is
   assigned at once with a higher epoch; the asker is told the reason.
-- Q5. The release unanswered for a lease: as an overdue release; the asker is told.
+- Q5. The release unanswered for a lease: as an overdue release, with the owner noted
+  as having failed the region; the asker is told. The survivor losing its owner at
+  that stage instead: the absorbed region is taken from its owner and assigned, and
+  that owner is not passed over when regions are next given out.
 - Q6. `Absorb` unanswered for a lease, the list with the pair: done. Without the
   pair: the absorbed region is assigned. With no list: assigned; then `AbsorbEnded`
   from the worker that was refused removes it.
@@ -1932,7 +1935,8 @@ what it kept, ends with every player where the uninterrupted run has them.
   the new region is that worker's with `as_epoch`, has a route, and its heartbeat
   keeps it.
 - Q10. `SplitEnded` with an error; and none within a lease, with a list that has a
-  new region (assigned) and one that has not.
+  new region (assigned) and one that has not: the asker is told that it is overdue
+  either way, also when the new region has the id that was ordered.
 - Q11. A list with a region the coordinator does not know adds it without an owner;
   one that has a known region among the absorbed removes it and its owner's
   assignment; one that lacks a region at or above its `next` leaves that region.
