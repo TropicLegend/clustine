@@ -9,7 +9,7 @@ use std::io;
 use std::time::Duration;
 
 use clustine_region::{Layout, RegionId, RoutingTable};
-use clustine_rpc::link::End;
+use clustine_rpc::link::{self, End};
 use clustine_rpc::{Assignment, FromCoordinator, Off, PlayersOf, ToCoordinator, Vouch, tcp};
 use clustine_world::{ChunkPos, Vec3};
 use tokio::net::TcpStream;
@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::QUEUE;
+use crate::service::ClientEnd;
 
 /// How often a worker tells the coordinator that it is still there.
 ///
@@ -28,6 +29,74 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A client's end of its connection to the coordinator.
 type CoordinatorEnd = End<ToCoordinator, FromCoordinator>;
+
+/// Where a coordinator is: at an address (host:port), or in this process.
+///
+/// Every client takes anything that says so. An address as a `&str` or a `String` is
+/// a coordinator to connect to over TCP.
+#[derive(Debug, Clone)]
+pub enum Reach {
+    Tcp(String),
+    Local(LocalCoordinator),
+}
+
+impl From<&str> for Reach {
+    fn from(address: &str) -> Self {
+        Self::Tcp(address.to_owned())
+    }
+}
+
+impl From<String> for Reach {
+    fn from(address: String) -> Self {
+        Self::Tcp(address)
+    }
+}
+
+impl From<&String> for Reach {
+    fn from(address: &String) -> Self {
+        Self::Tcp(address.clone())
+    }
+}
+
+impl From<LocalCoordinator> for Reach {
+    fn from(local: LocalCoordinator) -> Self {
+        Self::Local(local)
+    }
+}
+
+impl From<&Reach> for Reach {
+    fn from(reach: &Reach) -> Self {
+        reach.clone()
+    }
+}
+
+/// The way to a coordinator in this process, which [`crate::serve_local`] makes with
+/// it. Clones lead to the same coordinator.
+#[derive(Debug, Clone)]
+pub struct LocalCoordinator {
+    /// The service's ends of new connections, to the service.
+    connections: mpsc::UnboundedSender<ClientEnd>,
+}
+
+impl LocalCoordinator {
+    /// A way to a coordinator, and where the service takes the connections made
+    /// through it.
+    pub(crate) fn new() -> (Self, mpsc::UnboundedReceiver<ClientEnd>) {
+        let (connections, taken) = mpsc::unbounded_channel();
+        (Self { connections }, taken)
+    }
+
+    /// A connection to the coordinator. It is lost from the start if nobody serves
+    /// the coordinator any more, as a connection to an address is that nobody
+    /// listens on.
+    fn connect(&self) -> Result<CoordinatorEnd, ClientError> {
+        let (client, service) = link::in_process(QUEUE);
+        self.connections
+            .send(service)
+            .map_err(|_| ClientError::Lost)?;
+        Ok(client)
+    }
+}
 
 /// Why a client has nothing more to tell.
 #[derive(Debug, thiserror::Error)]
@@ -115,14 +184,14 @@ pub struct WorkerClient {
 }
 
 impl WorkerClient {
-    /// Connects to the coordinator at `coordinator` (host:port) and registers the worker
+    /// Connects to the coordinator at `coordinator` (an address as host:port, or a [`Reach`]) and registers the worker
     /// `name`, which edges reach at `address`, reporting what it runs already: `holding`,
     /// and the fingerprint of the layout those regions belong to.
     ///
     /// Returns with the coordinator's first answer. What is not among those orders, the
     /// worker has to stop running.
     pub async fn register(
-        coordinator: &str,
+        coordinator: impl Into<Reach>,
         name: &str,
         address: &str,
         holding: &[Assignment],
@@ -144,14 +213,14 @@ impl WorkerClient {
     /// [`HEARTBEAT_INTERVAL`].
     #[doc(hidden)]
     pub async fn register_with_heartbeat(
-        coordinator: &str,
+        coordinator: impl Into<Reach>,
         name: &str,
         address: &str,
         holding: &[Assignment],
         layout: Option<u64>,
         heartbeat: Duration,
     ) -> Result<(Self, Orders), ClientError> {
-        let mut link = connect(coordinator).await?;
+        let mut link = connect(&coordinator.into()).await?;
         let registration = ToCoordinator::RegisterWorker {
             name: name.to_owned(),
             address: address.to_owned(),
@@ -416,10 +485,10 @@ pub struct RoutingWatch {
 }
 
 impl RoutingWatch {
-    /// Connects to the coordinator at `coordinator` (host:port) and asks for the routing
+    /// Connects to the coordinator at `coordinator` (an address as host:port, or a [`Reach`]) and asks for the routing
     /// table.
-    pub async fn connect(coordinator: &str) -> Result<Self, ClientError> {
-        let link = connect(coordinator).await?;
+    pub async fn connect(coordinator: impl Into<Reach>) -> Result<Self, ClientError> {
+        let link = connect(&coordinator.into()).await?;
         link.send(ToCoordinator::WatchRouting)
             .await
             .map_err(|_| ClientError::Lost)?;
@@ -482,20 +551,20 @@ pub struct Asker {
 }
 
 impl Asker {
-    /// Connects to the coordinator at `coordinator` (host:port) and asks it to have
+    /// Connects to the coordinator at `coordinator` (an address as host:port, or a [`Reach`]) and asks it to have
     /// the region `survivor` absorb the region `absorbed`.
     pub async fn merge(
-        coordinator: &str,
+        coordinator: impl Into<Reach>,
         survivor: RegionId,
         absorbed: RegionId,
     ) -> Result<Self, ClientError> {
         Self::ask(coordinator, ToCoordinator::Merge { survivor, absorbed }).await
     }
 
-    /// Connects to the coordinator at `coordinator` (host:port) and asks it to have
+    /// Connects to the coordinator at `coordinator` (an address as host:port, or a [`Reach`]) and asks it to have
     /// the players standing in `chunks` split off `region` as a region of its own.
     pub async fn split(
-        coordinator: &str,
+        coordinator: impl Into<Reach>,
         region: RegionId,
         chunks: &[ChunkPos],
     ) -> Result<Self, ClientError> {
@@ -503,8 +572,11 @@ impl Asker {
         Self::ask(coordinator, ToCoordinator::Split { region, chunks }).await
     }
 
-    async fn ask(coordinator: &str, request: ToCoordinator) -> Result<Self, ClientError> {
-        let link = connect(coordinator).await?;
+    async fn ask(
+        coordinator: impl Into<Reach>,
+        request: ToCoordinator,
+    ) -> Result<Self, ClientError> {
+        let link = connect(&coordinator.into()).await?;
         link.send(request).await.map_err(|_| ClientError::Lost)?;
         Ok(Self { link })
     }
@@ -551,14 +623,14 @@ pub struct Mover {
 }
 
 impl Mover {
-    /// Connects to the coordinator at `coordinator` (host:port) and asks it to move
+    /// Connects to the coordinator at `coordinator` (an address as host:port, or a [`Reach`]) and asks it to move
     /// `region` to the worker named `to`, or to the worker that runs the fewest.
     pub async fn ask(
-        coordinator: &str,
+        coordinator: impl Into<Reach>,
         region: RegionId,
         to: Option<&str>,
     ) -> Result<Self, ClientError> {
-        let link = connect(coordinator).await?;
+        let link = connect(&coordinator.into()).await?;
         let to = to.map(str::to_owned);
         link.send(ToCoordinator::Move { region, to })
             .await
@@ -605,9 +677,14 @@ impl Mover {
 }
 
 /// A link to the coordinator at `coordinator`.
-async fn connect(coordinator: &str) -> Result<CoordinatorEnd, ClientError> {
-    let stream = TcpStream::connect(coordinator).await?;
-    Ok(tcp::link(stream, QUEUE))
+async fn connect(coordinator: &Reach) -> Result<CoordinatorEnd, ClientError> {
+    match coordinator {
+        Reach::Tcp(address) => {
+            let stream = TcpStream::connect(address).await?;
+            Ok(tcp::link(stream, QUEUE))
+        }
+        Reach::Local(local) => local.connect(),
+    }
 }
 
 /// What the coordinator answered a registration, as the orders it is, or why there are

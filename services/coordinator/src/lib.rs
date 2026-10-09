@@ -6,7 +6,9 @@
 //! Those decisions are made by [`Coordinator`], which does no I/O. [`serve`] is the
 //! service around it, which workers reach with a [`WorkerClient`], edges with a
 //! [`RoutingWatch`], whoever wants a region moved with a [`Mover`], and whoever wants
-//! regions merged or one split with an [`Asker`].
+//! regions merged or one split with an [`Asker`]. [`serve_local`] is the same service
+//! for clients in its own process, which reach it through a [`Reach`] without a
+//! socket.
 
 mod client;
 mod policy;
@@ -14,11 +16,11 @@ mod service;
 mod state;
 
 pub use client::{
-    Asker, ClientError, HEARTBEAT_INTERVAL, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
-    WorkerEvent,
+    Asker, ClientError, HEARTBEAT_INTERVAL, LocalCoordinator, MoveAnswer, Mover, Orders, Reach,
+    RoutingWatch, WorkerClient, WorkerEvent,
 };
 pub use policy::{Policy, Sighted, Wanted, Why, decide, named};
-pub use service::serve;
+pub use service::{serve, serve_local};
 pub use state::{
     Asked, Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, MoveRefusal, Order,
     Refusal, ReleaseOrder, ReshapeOrder, ReshapeRefusal, Reshaped, Undone,

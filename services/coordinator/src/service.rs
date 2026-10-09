@@ -37,6 +37,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::QUEUE;
+use crate::client::LocalCoordinator;
 use crate::state::{Changes, Coordinator, CoordinatorConfig, MoveBegun, MoveOutcome, Order};
 
 /// What clients have said and the service has not got to yet, for all of them together.
@@ -59,7 +60,7 @@ impl CoordinatorConfig {
 }
 
 /// The service's end of the connection to a client.
-type ClientEnd = End<FromCoordinator, ToCoordinator>;
+pub(crate) type ClientEnd = End<FromCoordinator, ToCoordinator>;
 
 /// What a client said on the connection with this number, or `None` once the connection
 /// has ended.
@@ -97,6 +98,31 @@ where
     serve_from(listener, config, Arc::new(lists), unix_milliseconds()).await
 }
 
+/// A coordinator in this process, and the way to it. The future serves until it is
+/// dropped, which closes every connection.
+///
+/// It is the service of [`serve`] in everything but how clients reach it: a client is
+/// given the [`LocalCoordinator`] as its [`crate::Reach`] and its connection is a pair
+/// of queues. A connection ends when either side lets go of its end, as one over TCP
+/// does when it is closed. When every `LocalCoordinator` is gone, no client can come
+/// any more, and those that are there are served on.
+pub fn serve_local<L>(
+    config: CoordinatorConfig,
+    lists: L,
+) -> (LocalCoordinator, impl Future<Output = ()>)
+where
+    L: Fn() -> io::Result<RegionList> + Send + Sync + 'static,
+{
+    let (local, taken) = LocalCoordinator::new();
+    let serving = run(
+        Door::Local(taken),
+        config,
+        Arc::new(lists),
+        unix_milliseconds(),
+    );
+    (local, serving)
+}
+
 /// [`serve`] for a coordinator that issues no epoch at or below `first_epoch`.
 async fn serve_from(
     listener: TcpListener,
@@ -105,9 +131,51 @@ async fn serve_from(
     first_epoch: u64,
 ) -> io::Result<()> {
     let address = listener.local_addr()?;
+    info!(%address, "the coordinator is listening");
+    run(Door::Tcp(listener), config, lists, first_epoch).await;
+    Ok(())
+}
+
+/// Where clients come in.
+enum Door {
+    /// Connections over TCP, as they are accepted.
+    Tcp(TcpListener),
+    /// The service's ends of the connections made through a [`LocalCoordinator`].
+    Local(mpsc::UnboundedReceiver<ClientEnd>),
+}
+
+/// What came of waiting at a [`Door`].
+enum Came {
+    /// A client, and where it is, for the log.
+    Client(ClientEnd, String),
+    /// Accepting a connection failed.
+    Failed(io::Error),
+    /// Nobody can come any more.
+    Nobody,
+}
+
+impl Door {
+    /// The next client. Must be called within a tokio runtime.
+    async fn next(&mut self) -> Came {
+        match self {
+            Self::Tcp(listener) => match listener.accept().await {
+                Ok((stream, peer)) => Came::Client(tcp::link(stream, QUEUE), peer.to_string()),
+                Err(error) => Came::Failed(error),
+            },
+            Self::Local(taken) => match taken.recv().await {
+                Some(link) => Came::Client(link, "this process".to_owned()),
+                None => Came::Nobody,
+            },
+        }
+    }
+}
+
+/// Serves a coordinator to the clients that come in at `door`, for as long as the
+/// future is not dropped.
+async fn run(mut door: Door, config: CoordinatorConfig, lists: Lists, first_epoch: u64) {
     let lease = config.lease;
     let by_itself = config.follow.is_some();
-    info!(%address, ?lease, first_epoch, "the coordinator is listening");
+    info!(?lease, first_epoch, "the coordinator is serving");
     let mut service = Service::new(config, now(), first_epoch, lists);
     // Which regions there are besides those of the layout, and which of those are no
     // more. Until the store answers, the coordinator goes by the layout.
@@ -118,22 +186,25 @@ async fn serve_from(
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // After a failure only accepting pauses; the clients that are there are served on.
     let mut accepting = true;
+    // Whether anybody can still come in at the door.
+    let mut open = true;
     let pause = tokio::time::sleep(Duration::ZERO);
     tokio::pin!(pause);
     loop {
         tokio::select! {
-            accepted = listener.accept(), if accepting => match accepted {
-                Ok((stream, peer)) => {
-                    let connection = service.attach(tcp::link(stream, QUEUE), now());
+            came = door.next(), if accepting && open => match came {
+                Came::Client(link, peer) => {
+                    let connection = service.attach(link, now());
                     debug!(connection, %peer, "a client connected");
                 }
-                Err(error) => {
+                Came::Failed(error) => {
                     // Typically the process is out of file descriptors, and trying
                     // again at once would do nothing but fill the log.
                     warn!(%error, "accepting a connection failed");
                     accepting = false;
                     pause.as_mut().reset(tokio::time::Instant::now() + ACCEPT_RETRY);
                 }
+                Came::Nobody => open = false,
             },
             () = &mut pause, if !accepting => accepting = true,
             Some((connection, message)) = service.said.recv() => {
@@ -3008,5 +3079,138 @@ mod tests {
             tick_interval(Duration::ZERO, true),
             Duration::from_millis(50)
         );
+    }
+
+    /// A coordinator in the process of its clients, which reach it without a socket
+    /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 5.3, scenario Q9).
+    mod in_this_process {
+        use super::*;
+        use crate::Reach;
+
+        /// A coordinator of a world of one region that is served in this process, the
+        /// way to it, and the task that serves it.
+        fn served() -> (LocalCoordinator, JoinHandle<()>) {
+            let (local, serving) = serve_local(config(&[]), no_store);
+            (local, tokio::spawn(serving))
+        }
+
+        async fn registered(local: &LocalCoordinator, name: &str) -> (WorkerClient, Orders) {
+            let address = address_of(name);
+            let registering = WorkerClient::register_with_heartbeat(
+                local.clone(),
+                name,
+                &address,
+                &[],
+                Some(config(&[]).layout.fingerprint()),
+                HEARTBEAT,
+            );
+            within(registering).await.unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_worker_and_an_edge_in_the_coordinators_process_are_served_as_any_others() {
+            let (local, _serving) = served();
+            let mut watch = within(RoutingWatch::connect(&Reach::Local(local.clone())))
+                .await
+                .unwrap();
+            let (mut worker, orders) = registered(&local, "a").await;
+            assert_eq!(orders.assignments, []);
+
+            // The region is given away once the coordinator has been there for a
+            // lease, and the worker has to have been heard all that time to be given
+            // it. The edge is sent the table that says so.
+            let held = next_region(&mut worker).await;
+            assert_eq!(held.region, RegionId(0));
+            let table = table_where(&mut watch, |table| !table.routes.is_empty()).await;
+            assert_eq!(table.routes, [route(held, "a")]);
+
+            // What a worker says is heard: one that runs nothing and says that it
+            // leaves has its connection closed by the coordinator, and learns that as
+            // the loss of a connection over TCP is learnt.
+            let (mut other, orders) = registered(&local, "b").await;
+            assert_eq!(orders.assignments, []);
+            other.leaving();
+            let lost = within(async {
+                loop {
+                    match other.event().await {
+                        Ok(_) => {}
+                        Err(error) => break error,
+                    }
+                }
+            })
+            .await;
+            assert!(matches!(lost, ClientError::Lost), "{lost:?}");
+        }
+
+        #[tokio::test]
+        async fn those_who_are_connected_are_served_on_when_the_way_to_the_coordinator_is_gone() {
+            let (local, _serving) = served();
+            let mut watch = within(RoutingWatch::connect(local.clone())).await.unwrap();
+            let (mut worker, _) = registered(&local, "a").await;
+            // Nobody can come any more. The two that are there are told what follows.
+            drop(local);
+            let held = next_region(&mut worker).await;
+            let table = table_where(&mut watch, |table| !table.routes.is_empty()).await;
+            assert_eq!(table.routes, [route(held, "a")]);
+        }
+
+        #[tokio::test]
+        async fn a_coordinator_that_is_no_longer_served_is_lost_to_its_clients_and_to_whoever_comes()
+         {
+            let (local, serving) = served();
+            let mut watch = within(RoutingWatch::connect(local.clone())).await.unwrap();
+            let (mut worker, _) = registered(&local, "a").await;
+
+            serving.abort();
+            assert!(serving.await.unwrap_err().is_cancelled());
+
+            let lost = within(async {
+                loop {
+                    match watch.next().await {
+                        Ok(_) => {}
+                        Err(error) => break error,
+                    }
+                }
+            })
+            .await;
+            assert!(matches!(lost, ClientError::Lost), "{lost:?}");
+            let lost = within(async {
+                loop {
+                    match worker.event().await {
+                        Ok(_) => {}
+                        Err(error) => break error,
+                    }
+                }
+            })
+            .await;
+            assert!(matches!(lost, ClientError::Lost), "{lost:?}");
+
+            let unreachable = within(RoutingWatch::connect(local.clone())).await;
+            assert!(matches!(unreachable, Err(ClientError::Lost)));
+            let unreachable = within(Mover::ask(local.clone(), RegionId(0), None)).await;
+            assert!(matches!(unreachable, Err(ClientError::Lost)));
+            let unreachable = within(Asker::merge(local, RegionId(0), RegionId(1))).await;
+            assert!(matches!(unreachable, Err(ClientError::Lost)));
+        }
+
+        #[tokio::test]
+        async fn a_move_and_a_merge_are_asked_of_a_coordinator_in_this_process_and_answered() {
+            let (local, _serving) = served();
+            let (mut worker, _) = registered(&local, "a").await;
+            next_region(&mut worker).await;
+
+            // There is nobody to move the region to, and no second region to merge it
+            // with: both are answered, with a refusal, and the connection is closed.
+            let mut mover = within(Mover::ask(local.clone(), RegionId(0), None))
+                .await
+                .unwrap();
+            let answer = within(mover.next()).await.unwrap();
+            assert!(matches!(answer, MoveAnswer::Refused { .. }), "{answer:?}");
+            let asker = within(Asker::merge(local, RegionId(0), RegionId(1)))
+                .await
+                .unwrap();
+            let answer = within(asker.answer()).await.unwrap();
+            assert!(answer.is_err(), "{answer:?}");
+        }
     }
 }
