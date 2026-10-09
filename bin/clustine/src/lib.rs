@@ -285,7 +285,10 @@ impl Server {
                 tokio::select! {
                     changed = shown.changed() => {
                         if changed.is_err() {
-                            bail!("the worker of this process has ended");
+                            // The loop lets go of the watch a moment before it
+                            // returns. What it ended for is the loop's to say, and
+                            // is taken from its task below; nothing more comes here.
+                            std::future::pending::<()>().await;
                         }
                     }
                     // The latest table is the one to go by, should a route change

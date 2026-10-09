@@ -4088,3 +4088,31 @@ has already taken its next commit, which it makes durable and does not answer.
 Everything that was answered is durable, and a handle that is not lost has been
 answered everything; ADR-0011, section 4.3, already lets what was not answered be
 there or not.
+
+**The single process's scenarios** (P1 to P10, and P7 and P9 on the worker's loop)
+found two things in the code. `Server::start` lost the loop's error about every
+second time: the loop lets go of the watch of what it serves a moment before it
+returns, `start` watched both, and whichever it saw first decided whether a world
+that cannot be restored said `restoring region 0: …` or only that the worker had
+ended. It now takes the end from the loop's task alone. And `--pin -2,0,5` was
+refused as an unknown argument, as a list that begins with a negative coordinate
+is no number to the parser; `--pin` takes values that begin with a hyphen now.
+(`--boundaries` had the same fault since step B and goes in step C5.9.)
+
+What could not be written as P has it: **P5's "a second bot that is split off in
+every life"**, because the part of the life before is empty, keeps its land for
+thirty seconds after the restore, and is absorbed only while the home region is
+empty as well, so that whoever walks out is handed over to it and not split off;
+each life waits for the list to have the home region alone before anybody joins,
+and no stop meets a merge under way. **P9 under a `Server`**, which has no way to
+put a store under it: it is written on the worker's loop, with the store reached
+through a relay of the test that holds its answers back; that the old runner ended
+as having lost the store cannot be seen from outside the loop. Measured by those
+tests, unoptimised and beside other tests: `start` takes 2 to 210 ms (16 in the
+middle), `stop` 2 to 340 ms (54 in the middle).
+
+Seen and as ADR-0008 has it: a player whose region is taken over while a tick with
+their dig is durable and not confirmed is acknowledged by the new runner before the
+chunk's snapshot shows the block gone, so a client can show the block back for a
+moment.
+

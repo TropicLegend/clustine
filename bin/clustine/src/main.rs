@@ -155,7 +155,7 @@ struct Standalone {
     /// order and separated by commas: each is simulated separately, and players are
     /// handed from one to the next as they walk. Without this the world is one home
     /// region, which holds what its players see.
-    #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
     pin: Vec<i32>,
 
     /// Another name for --pin, from when a world was divided into stripes.
@@ -238,7 +238,7 @@ enum Service {
         /// store holding workers to how they say the world is divided. Without this
         /// and without --boundaries the world is one home region that is pinned to
         /// nothing, and every other chunk is whoever's asks for it first.
-        #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         pin: Vec<i32>,
     },
     /// Simulates the region the coordinator gives it.

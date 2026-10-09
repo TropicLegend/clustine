@@ -560,7 +560,6 @@ async fn a_world_whose_home_region_cannot_be_restored_does_not_start_and_nothing
 /// Every start on such a world returns the error of the worker's loop: it names the
 /// region and says why (`restoring region 0`, with the reason).
 #[tokio::test]
-#[ignore = "finding: about half of the starts on a world that cannot be restored say only `the worker of this process has ended`"]
 async fn every_start_on_a_world_whose_home_region_cannot_be_restored_says_which_region_and_why() {
     if a_repetition() {
         return;
@@ -1633,7 +1632,6 @@ async fn the_single_process_takes_negative_pins_that_are_written_with_an_equals_
 // `--boundaries -2,0,5` on all three commands. `--pin=-2,0,5` is taken (the test
 // above). A list whose first coordinate is negative is the only one this meets.
 #[tokio::test]
-#[ignore = "finding: `--pin -2,0,5` is refused as an unexpected argument; only `--pin=-2,0,5` is taken"]
 async fn the_single_process_takes_negative_pins_as_the_record_writes_them() {
     if a_repetition() {
         return;
