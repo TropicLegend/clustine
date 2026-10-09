@@ -8,11 +8,12 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 use clustine::cluster::{
-    self, COORDINATOR_PORT, CoordinatorArgs, EdgeArgs, MoveArgs, WORKER_PORT, WORLDSTORE_PORT,
-    WorkerArgs,
+    self, COORDINATOR_PORT, CoordinatorArgs, EdgeArgs, MergeArgs, MoveArgs, SplitArgs, WORKER_PORT,
+    WORLDSTORE_PORT, WorkerArgs,
 };
 use clustine::{Config, EdgeConfig, Server, stop_signal};
 use clustine_region::RegionId;
+use clustine_world::ChunkPos;
 use tracing::info;
 
 /// A Minecraft: Java Edition server. Without a subcommand, all of it in one process.
@@ -107,6 +108,13 @@ enum Service {
         /// region away, so that workers that are running can say what they run.
         #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(3..))]
         lease_seconds: u64,
+
+        /// Host and port of the world store, whose list tells the coordinator which
+        /// regions there are once regions have been merged and split. While the store
+        /// cannot be reached, the coordinator goes by --boundaries and by what the
+        /// workers report, and refuses to merge and to split.
+        #[arg(long, default_value_t = format!("127.0.0.1:{WORLDSTORE_PORT}"))]
+        store: String,
     },
     /// Keeps the world on disk for the workers.
     Worldstore {
@@ -169,6 +177,48 @@ enum Service {
         #[arg(long)]
         to: Option<String>,
     },
+    /// Asks the coordinator to have one region absorb another, which is no more
+    /// afterwards. The players of both are in the one that is left.
+    Merge {
+        /// Host and port of the coordinator.
+        #[arg(long, default_value_t = format!("127.0.0.1:{COORDINATOR_PORT}"))]
+        coordinator: String,
+
+        /// The region that absorbs the other and goes on.
+        #[arg(long)]
+        survivor: u32,
+
+        /// The region that is absorbed. The region players enter the world in never
+        /// is.
+        #[arg(long)]
+        absorbed: u32,
+    },
+    /// Asks the coordinator to split the players standing in certain chunks off a
+    /// region, as a new region that the same worker runs.
+    Split {
+        /// Host and port of the coordinator. It has to be named before --chunks, which
+        /// takes everything behind it for a chunk.
+        #[arg(long, default_value_t = format!("127.0.0.1:{COORDINATOR_PORT}"))]
+        coordinator: String,
+
+        /// The region to split.
+        #[arg(long)]
+        region: u32,
+
+        /// The chunks whose players are split off, each as its coordinates x,z: a
+        /// block's coordinates divided by 16 and rounded down. Whoever stands in one of
+        /// them goes, and with them every chunk of the region that is nearer to them
+        /// than to anyone who stays.
+        #[arg(
+            long,
+            required = true,
+            num_args = 1..,
+            value_name = "X,Z",
+            value_parser = chunk,
+            allow_hyphen_values = true
+        )]
+        chunks: Vec<ChunkPos>,
+    },
     /// Lets players in and shows them the world the workers simulate.
     Edge {
         /// Name of this edge, by which regions know it again after a restart.
@@ -203,11 +253,13 @@ async fn main() -> Result<()> {
             listen,
             boundaries,
             lease_seconds,
+            store,
         }) => {
             cluster::coordinator(CoordinatorArgs {
                 listen,
                 boundaries,
                 lease: Duration::from_secs(lease_seconds),
+                store,
             })
             .await
         }
@@ -246,6 +298,30 @@ async fn main() -> Result<()> {
             })
             .await
         }
+        Some(Service::Merge {
+            coordinator,
+            survivor,
+            absorbed,
+        }) => {
+            cluster::merge_regions(MergeArgs {
+                coordinator,
+                survivor: RegionId(survivor),
+                absorbed: RegionId(absorbed),
+            })
+            .await
+        }
+        Some(Service::Split {
+            coordinator,
+            region,
+            chunks,
+        }) => {
+            cluster::split_region(SplitArgs {
+                coordinator,
+                region: RegionId(region),
+                chunks,
+            })
+            .await
+        }
         Some(Service::Edge {
             name,
             coordinator,
@@ -261,6 +337,22 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+/// A chunk as `clustine split` is told it: its x and z coordinates with a comma between
+/// them.
+fn chunk(written: &str) -> Result<ChunkPos, String> {
+    // A coordinate may be negative, so whatever follows --chunks is taken for a chunk,
+    // another option too.
+    if written.starts_with("--") {
+        return Err(format!(
+            "`{written}` was taken for a chunk; name every other option before --chunks"
+        ));
+    }
+    let coordinate = |part: &str| part.trim().parse::<i32>().ok();
+    let pair = written.split_once(',');
+    pair.and_then(|(x, z)| Some(ChunkPos::new(coordinate(x)?, coordinate(z)?)))
+        .ok_or_else(|| format!("`{written}` is not a chunk; write its coordinates as x,z"))
 }
 
 /// Runs every service in this process until it is asked to stop.
@@ -293,4 +385,53 @@ async fn standalone(args: Standalone) -> Result<()> {
     info!("shutting down");
     server.stop().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `clustine split --region 1` makes of the arguments behind it: the
+    /// coordinator and the chunks, or what it complains of.
+    fn split(arguments: &[&str]) -> Result<(String, Vec<ChunkPos>), String> {
+        let words = ["clustine", "split", "--region", "1"];
+        let words = words.iter().chain(arguments);
+        let cli = Cli::try_parse_from(words).map_err(|error| error.to_string())?;
+        match cli.service {
+            Some(Service::Split {
+                coordinator,
+                chunks,
+                ..
+            }) => Ok((coordinator, chunks)),
+            _ => Err("not a split".to_owned()),
+        }
+    }
+
+    #[test]
+    fn the_chunks_of_a_split_are_coordinates_which_may_be_negative() {
+        let (coordinator, chunks) =
+            split(&["--chunks", "3,4", "-3,4", "5,-6", "-7,-8"]).expect("these are chunks");
+        assert_eq!(coordinator, format!("127.0.0.1:{COORDINATOR_PORT}"));
+        let expected = [(3, 4), (-3, 4), (5, -6), (-7, -8)];
+        assert_eq!(chunks, expected.map(|(x, z)| ChunkPos::new(x, z)));
+
+        let (coordinator, chunks) =
+            split(&["--coordinator", "there:1", "--chunks", "-1,-1"]).expect("this is a chunk");
+        assert_eq!(coordinator, "there:1");
+        assert_eq!(chunks, [ChunkPos::new(-1, -1)]);
+    }
+
+    #[test]
+    fn a_split_names_at_least_one_chunk_and_nothing_else_as_one() {
+        assert!(split(&[]).is_err());
+        for not_a_chunk in ["3", "3,", ",4", "3,4,5", "a,b", "3.5,4"] {
+            let complaint = split(&["--chunks", not_a_chunk]).expect_err(not_a_chunk);
+            assert!(complaint.contains("is not a chunk"), "{complaint}");
+        }
+        // An option behind the chunks would be a chunk to the parser, and is said to
+        // be in the wrong place rather than to be no chunk.
+        let complaint = split(&["--chunks", "3,4", "--coordinator", "there:1"])
+            .expect_err("the coordinator is named behind the chunks");
+        assert!(complaint.contains("before --chunks"), "{complaint}");
+    }
 }

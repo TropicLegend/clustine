@@ -10,6 +10,10 @@
 //! links to whoever runs the region then and resumes with it. Nothing players were
 //! shown is lost on the way, because a region shows nothing that the world store does
 //! not have. A coordinator that goes away is merely missed until it is back.
+//!
+//! Regions are moved from worker to worker, merged and split when somebody asks the
+//! coordinator for that: `clustine move`, `clustine merge` and `clustine split`. The
+//! coordinator learns which regions there are from the world store's list of them.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -24,14 +28,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clustine_coordinator::{
-    ClientError, CoordinatorConfig, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
+    Asker, ClientError, CoordinatorConfig, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
     WorkerEvent,
 };
 use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{Layout, RegionId, RoutingTable};
-use clustine_rpc::{Assignment, EdgeMessage, RegionHello, Restored, Vouch, WorkerToEdge, tcp};
-use clustine_sim::RegionConfig;
-use clustine_worker::{DEFAULT_RETURN_AFTER, Ended, Links, RegionRunner, RegionStatus, Worker};
+use clustine_rpc::{Assignment, EdgeMessage, Off, RegionHello, Restored, Vouch, WorkerToEdge, tcp};
+use clustine_sim::{Part, RegionConfig, RegionState};
+use clustine_worker::{
+    DEFAULT_RETURN_AFTER, Ended, Links, RegionRunner, RegionStatus, Reshape, Reshaped,
+    RestoreError, Worker, absorbable,
+};
+use clustine_world::{ChunkPos, EntityId, EntityIds};
 use clustine_worldstore::{Store, StoreError, StoreHandle};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
@@ -57,6 +65,8 @@ pub struct CoordinatorArgs {
     pub boundaries: Vec<i32>,
     /// How long a worker may be silent before its region is given to another.
     pub lease: Duration,
+    /// Host and port of the world store, whose list says which regions there are.
+    pub store: String,
 }
 
 /// Runs a coordinator until the process is asked to stop.
@@ -65,16 +75,28 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
     let listener = TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
-    info!(address = %listener.local_addr()?, regions = layout.region_count(), "coordinating");
+    info!(
+        address = %listener.local_addr()?,
+        regions = layout.region_count(),
+        store = %args.store,
+        "coordinating"
+    );
     let config = CoordinatorConfig {
         layout,
         spawn: spawn_point(),
         lease: args.lease,
     };
-    // Where the world store is, the coordinator is told from step C3.6 on
-    // (`docs/adr/0014-merging-and-splitting.md`, section 5.1). Without its list of
-    // regions the coordinator goes by the layout, and refuses to merge and to split.
-    let lists = || Err(std::io::Error::other("no world store was named"));
+    // Which regions there are, and which of them were absorbed, the world store says
+    // (`docs/adr/0014-merging-and-splitting.md`, section 5.2). While it cannot be
+    // reached the coordinator goes by the layout and by what its workers report, and
+    // refuses to merge and to split.
+    let store = args.store;
+    let lists = move || {
+        clustine_worldstore::regions(&store).map_err(|error| match error {
+            StoreError::Io(error) => error,
+            refusal => io::Error::other(refusal),
+        })
+    };
     tokio::select! {
         served = clustine_coordinator::serve(listener, config, lists) => served.context("coordinating"),
         _ = crate::stop_signal() => Ok(()),
@@ -129,7 +151,8 @@ pub struct WorkerArgs {
     pub checkpoint_interval: Duration,
 }
 
-/// A region the coordinator has given this worker, and what it takes to run it.
+/// A region this worker holds, and what it takes to run it: one the coordinator has
+/// given it, or one it has split off another.
 #[derive(Debug, Clone)]
 struct Held {
     assignment: Assignment,
@@ -147,10 +170,27 @@ const RELEASE_LOOK: Duration = Duration::from_millis(5);
 /// other workers before it stops anyway. Kubernetes gives it 30 seconds in all.
 const LEAVE_WITHIN: Duration = Duration::from_secs(20);
 
+/// The entity ids of a region that was split off another: none, as the world store
+/// says of such a region and as the coordinator's orders name it. Players enter the
+/// world in the home region, which is never the part of a split.
+const NO_ENTITY_IDS: EntityIds = EntityIds {
+    first: EntityId(0),
+    end: EntityId(0),
+};
+
 /// What a worker is doing about a region it holds.
 enum Phase {
     /// It waits for the world store to open the region, for the first time or again.
     Opening { held: Held, opening: Opening },
+    /// The region was split off another one here a moment ago, and waits in memory
+    /// for the world store to answer the hello for it. Nothing of it is shown to
+    /// anyone before that, so a part that is lost with this worker has shown nobody
+    /// what the store's record of the split does not have.
+    Starting {
+        held: Held,
+        part: Box<Part>,
+        opening: Opening,
+    },
     /// The region is restored and ticks.
     Running {
         held: Held,
@@ -176,12 +216,16 @@ impl Phase {
     /// vouches for it.
     fn vouch(&self) -> Option<(RegionId, Vouch)> {
         match self {
-            Phase::Opening { held, .. } => Some((held.assignment.region, Vouch::WaitingForStore)),
+            Phase::Opening { held, .. } | Phase::Starting { held, .. } => {
+                Some((held.assignment.region, Vouch::WaitingForStore))
+            }
             Phase::Running { held, ticked, .. } if ticked.elapsed() < TICKED_WITHIN => {
                 Some((held.assignment.region, Vouch::Committed))
             }
             // A region that has stopped ticking is not vouched for: the store does not
-            // confirm what it does, and yet has not let go of it.
+            // confirm what it does, and yet has not let go of it. One that stands still
+            // for a merge or a split is reserved by the coordinator meanwhile, which
+            // counts as vouched for.
             Phase::Running { .. } => None,
             // It stops ticking on purpose, and the coordinator knows.
             Phase::Releasing { .. } => None,
@@ -191,26 +235,123 @@ impl Phase {
     fn held(&self) -> &Held {
         match self {
             Phase::Opening { held, .. }
+            | Phase::Starting { held, .. }
             | Phase::Running { held, .. }
             | Phase::Releasing { held, .. } => held,
         }
     }
 }
 
-/// The regions a worker holds, each with what it is doing about it.
+/// The regions a worker holds, each with what it is doing about it. A region that it
+/// has open only to have another absorb it is not among them: it is not vouched for,
+/// not served to edges and not reported when the worker registers.
 type Regions = BTreeMap<RegionId, Phase>;
+
+/// Why a region that was to be absorbed is not there to be.
+enum Unabsorbable {
+    /// The world store did not let this worker open it.
+    Store(StoreError),
+    /// What the world store has of it cannot be read.
+    Restore(RestoreError),
+}
+
+/// A region that is to be absorbed, opened at the world store and read: its handle and
+/// its whole state.
+type Fetched = Result<(StoreHandle, RegionState), Unabsorbable>;
+
+type Fetching = Pin<Box<dyn Future<Output = Fetched> + Send>>;
+
+/// A merge or a split that a region of this worker is in the middle of; see
+/// `docs/adr/0014-merging-and-splitting.md`, section 4.
+struct Reshaping {
+    /// Tells it from an earlier one of the same region. The outcome of that one can
+    /// still be on its way when this one has begun: a runner that is stopped says
+    /// that nothing came of what it was at.
+    number: u64,
+    /// What the worker held the region as when it was asked.
+    held: Held,
+    doing: Doing,
+}
+
+/// How far a worker is with a merge or a split.
+enum Doing {
+    /// The region to absorb is being opened at the world store and read. The runner
+    /// knows nothing of the merge yet.
+    Fetching {
+        absorbed: RegionId,
+        as_epoch: u64,
+        fetching: Fetching,
+    },
+    /// The runner has been handed the merge.
+    Absorbing {
+        absorbed: RegionId,
+        as_epoch: u64,
+        /// The region to absorb, kept open until the outcome is there: the store
+        /// declines a merge whose absorbed region has no owner with that epoch.
+        #[allow(dead_code)] // Held, never looked at.
+        handle: StoreHandle,
+    },
+    /// The runner has been handed the split.
+    Splitting { as_epoch: u64 },
+}
+
+impl Reshaping {
+    /// Whether this is the merge that an order to absorb `absorbed`, opened with
+    /// `as_epoch`, asks for.
+    fn absorbs(&self, region: RegionId, epoch: u64) -> bool {
+        match &self.doing {
+            Doing::Fetching {
+                absorbed, as_epoch, ..
+            }
+            | Doing::Absorbing {
+                absorbed, as_epoch, ..
+            } => (*absorbed, *as_epoch) == (region, epoch),
+            Doing::Splitting { .. } => false,
+        }
+    }
+}
+
+/// The merges and splits under way, by the region that absorbs or is split, which has
+/// one at a time. It is kept apart from what the worker is doing about the region: a
+/// region can be asked to be released, or lose the store, while its runner is at it,
+/// and the outcome comes all the same.
+type Reshapes = BTreeMap<RegionId, Reshaping>;
+
+/// The outcome of a merge or a split as a region's thread sends it: the region, the
+/// number of its [`Reshaping`], and what the runner says.
+type Reshapings = mpsc::UnboundedSender<(RegionId, u64, Reshaped)>;
+
+/// What came of a merge or a split, for the coordinator.
+#[derive(Debug, Clone, Copy)]
+enum Outcome {
+    /// For [`WorkerClient::absorb_ended`].
+    Merge {
+        region: RegionId,
+        absorbed: RegionId,
+        outcome: Result<(), Off>,
+    },
+    /// For [`WorkerClient::split_ended`].
+    Split {
+        region: RegionId,
+        as_epoch: u64,
+        outcome: Result<RegionId, Off>,
+    },
+}
 
 /// What a worker waited for and got; see [`settled`].
 enum Settled {
     Opened(Result<(StoreHandle, Restored), StoreError>),
     Released(Ended),
+    /// The region that this one is to absorb has been opened and read, or cannot be.
+    Fetched(Fetched),
 }
 
 /// Resolves when what the worker waits for with one of its regions has come about: the
-/// world store has answered the opening of the region, or a release has ended. Never
-/// while it waits for neither. The phase of that region has to be left once this has
-/// resolved.
-async fn settled(regions: &mut Regions) -> (RegionId, Settled) {
+/// world store has answered the opening of the region, or of the region it is to
+/// absorb, or a release has ended. Never while it waits for none of them. The phase of
+/// that region has to be left once this has resolved, or, for a region to absorb, that
+/// stage of the merge.
+async fn settled(regions: &mut Regions, reshapes: &mut Reshapes) -> (RegionId, Settled) {
     loop {
         let mut releasing = false;
         for (region, phase) in regions.iter() {
@@ -221,18 +362,25 @@ async fn settled(regions: &mut Regions) -> (RegionId, Settled) {
                 releasing = true;
             }
         }
-        let opened = std::future::poll_fn(|context| {
+        let answered = std::future::poll_fn(|context| {
             for (region, phase) in regions.iter_mut() {
-                if let Phase::Opening { opening, .. } = phase
+                if let Phase::Opening { opening, .. } | Phase::Starting { opening, .. } = phase
                     && let Poll::Ready(opened) = opening.as_mut().poll(context)
                 {
-                    return Poll::Ready((*region, opened));
+                    return Poll::Ready((*region, Settled::Opened(opened)));
+                }
+            }
+            for (region, reshaping) in reshapes.iter_mut() {
+                if let Doing::Fetching { fetching, .. } = &mut reshaping.doing
+                    && let Poll::Ready(fetched) = fetching.as_mut().poll(context)
+                {
+                    return Poll::Ready((*region, Settled::Fetched(fetched)));
                 }
             }
             Poll::Pending
         });
         tokio::select! {
-            (region, opened) = opened => return (region, Settled::Opened(opened)),
+            answered = answered => return answered,
             () = sleep(RELEASE_LOOK), if releasing => {}
         }
     }
@@ -250,7 +398,9 @@ fn holdings(regions: &Regions) -> Vec<(Assignment, u64)> {
         .collect()
 }
 
-/// The regions edges can link to: those that are restored and tick.
+/// The regions edges can link to: those that are restored and tick. A region that
+/// absorbs another or is split stays among them, under the hello it had: an edge
+/// whose link the merge or the split closed is let in again at once.
 fn served(regions: &Regions) -> Serving {
     let mut serving = BTreeMap::new();
     for (region, phase) in regions {
@@ -265,9 +415,56 @@ fn served(regions: &Regions) -> Serving {
 /// for and where it is attached.
 type Serving = Arc<BTreeMap<RegionId, (RegionHello, Links)>>;
 
+/// Whether `orders` name the region of `assignment` with its epoch. Assignments are
+/// told apart by those two and not by their entity ids, which nothing reads: the
+/// orders that first name a region this worker split off another name it without any.
+fn names(orders: &Orders, assignment: &Assignment) -> bool {
+    let mut ordered = orders.assignments.iter();
+    ordered.any(|ordered| (ordered.region, ordered.epoch) == (assignment.region, assignment.epoch))
+}
+
+/// The region `region` as this worker runs it with `epoch`, with the thread it runs
+/// on, if it does and the region is in the middle of nothing; or why the region can
+/// neither absorb another nor be split now.
+fn free_to_reshape<'a>(
+    regions: &'a Regions,
+    reshapes: &Reshapes,
+    region: RegionId,
+    epoch: u64,
+) -> Result<(&'a Held, &'a Worker), Off> {
+    match regions.get(&region) {
+        Some(Phase::Running { held, running, .. }) if held.assignment.epoch == epoch => {
+            if reshapes.contains_key(&region) {
+                Err(Off::Busy)
+            } else {
+                Ok((held, running))
+            }
+        }
+        Some(Phase::Releasing { held, .. }) if held.assignment.epoch == epoch => Err(Off::Busy),
+        // Not this worker's, not with that epoch, or not open at the store yet.
+        _ => Err(Off::NotRunning),
+    }
+}
+
+/// The call a runner makes with the outcome of the merge or the split numbered
+/// `number` of `region`. It is made on the region's thread and must not wait, so all
+/// it does is pass the outcome on to the worker, which acts on it at once: nothing a
+/// player waits for hangs on [`LOOK`].
+fn passing_on(
+    outcomes: &Reshapings,
+    region: RegionId,
+    number: u64,
+) -> Box<dyn FnOnce(Reshaped) + Send> {
+    let outcomes = outcomes.clone();
+    Box::new(move |outcome| {
+        // Nobody takes it if the worker is stopping.
+        let _ = outcomes.send((region, number, outcome));
+    })
+}
+
 /// What the task that holds the connection to the coordinator passes on.
 enum Word {
-    /// New orders, or a region to release.
+    /// New orders, a region to release, or what is to be done for a merge or a split.
     Event(WorkerEvent),
     /// The coordinator refuses the worker, for the reason given.
     Refused(String),
@@ -287,6 +484,12 @@ enum Word {
 /// a region when the coordinator asks for that, and drops one that the coordinator has
 /// given to another worker; either way it goes on with the others and with whatever it
 /// is given next.
+///
+/// When the coordinator asks for it, the worker has a region it runs absorb another,
+/// which it opens at the world store for that and never runs, or splits the players
+/// in certain chunks off a region as a new one, which it runs from memory as soon as
+/// the store has answered the hello for it. It tells the coordinator what came of
+/// either. See `docs/adr/0014-merging-and-splitting.md`, section 4.
 ///
 /// Asked to stop, it tells the coordinator that it is leaving and goes on until the
 /// coordinator has moved its regions to other workers and closed the connection, for
@@ -308,8 +511,10 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     let (vouching, vouched) = watch::channel(Vec::new());
     let (holding, held) = watch::channel(Vec::new());
     let (leaving, left) = watch::channel(false);
+    let (splitting, split) = watch::channel(Vec::new());
     let (refusals, refused) = mpsc::unbounded_channel();
     let (releases, released) = mpsc::unbounded_channel();
+    let (endings, ended) = mpsc::unbounded_channel();
     let (words_in, mut words) = mpsc::unbounded_channel();
     // The receiver is right here.
     let _ = words_in.send(Word::Event(WorkerEvent::Orders(first)));
@@ -320,8 +525,10 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
             vouched,
             held,
             left,
+            split,
             refused,
             released,
+            ended,
         },
         words_in,
     ));
@@ -342,15 +549,32 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     // Regions that were taken from this worker and are being stopped. That can take as
     // long as the store takes, and the other regions are not to wait for it.
     let mut stopping: JoinSet<Ended> = JoinSet::new();
+    // The merges and splits under way, and where the regions' threads send what came
+    // of them: outcomes arrive by a call, not by being looked for.
+    let mut reshapes = Reshapes::new();
+    let mut reshapes_begun: u64 = 0;
+    let (outcomes_in, mut outcomes) = mpsc::unbounded_channel();
+    // The regions this worker has split off others that no orders have named yet, each
+    // with the region it was split off and the epoch it is run with. Orders that were
+    // on their way when the split happened do not know of such a region, and it is not
+    // dropped for that.
+    let mut unnamed: BTreeMap<RegionId, (RegionId, u64)> = BTreeMap::new();
     let mut look = tokio::time::interval(LOOK);
     // Set when the worker has been told to stop: when it stops waiting, and what
     // listens for its being told again.
     let mut leave_by: Option<Instant> = None;
     let mut again: Option<Pin<Box<dyn Future<Output = ()> + Send>>> = None;
     let outcome = loop {
+        // A part that this worker no longer holds has nothing left to wait for.
+        unnamed.retain(|part, _| regions.contains_key(part));
         // What the others are told follows from the regions as they are now.
         vouching.send_if_modified(|said| replace(said, vouches(&regions)));
         holding.send_if_modified(|said| replace(said, holdings(&regions)));
+        splitting.send_if_modified(|said| {
+            let parts = unnamed.iter();
+            let parts = parts.map(|(part, (region, as_epoch))| (*region, *as_epoch, *part));
+            replace(said, parts.collect())
+        });
         serving.send_if_modified(|said| {
             let now = served(&regions);
             // The links of a region stay the same for as long as it runs.
@@ -401,6 +625,9 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                         // Only a region that was asked for is taken out to look at.
                         let found = if asked { regions.remove(&region) } else { None };
                         match found {
+                            // A runner that is in the middle of a merge or a split
+                            // releases the region when that has ended; what came of
+                            // it is said then, as for any other.
                             Some(Phase::Running { held, running, status, .. }) => {
                                 info!(%region, epoch, "asked to release the region");
                                 running.begin_release();
@@ -408,8 +635,10 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             }
                             // The region is not open yet, so there is nothing to bring
                             // up to date. Should the store still answer, the handle is
-                            // dropped with the future, which closes the region.
-                            Some(Phase::Opening { held, .. }) => {
+                            // dropped with the future, which closes the region. A part
+                            // that waited in memory is dropped with it: the store has
+                            // it by the record of the split.
+                            Some(Phase::Opening { held, .. } | Phase::Starting { held, .. }) => {
                                 info!(%region, epoch, "asked to release the region while opening it");
                                 let _ = releases.send((region, epoch));
                                 let_go.push(held.assignment);
@@ -426,16 +655,101 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             }
                         }
                     }
-                    // The worker's part of merging and splitting is step C3.6 (ADR-0014,
-                    // section 4). Until then it does nothing, and the coordinator
-                    // gives the merge or the split up when it has had a lease.
-                    WorkerEvent::Prepare { region, .. }
-                    | WorkerEvent::Absorb { region, .. }
-                    | WorkerEvent::SplitOff { region, .. } => {
-                        warn!(%region, "asked to merge or to split a region, which this worker cannot do yet");
+                    // A merge is coming: what is saved now is not saved while the
+                    // players of the region to absorb stand still. Not answered.
+                    WorkerEvent::Prepare { region, epoch } => {
+                        if let Some(Phase::Running { held, running, .. }) = regions.get(&region)
+                            && held.assignment.epoch == epoch
+                        {
+                            debug!(%region, epoch, "asked to checkpoint a region that is to absorb");
+                            running.reshape(Reshape::Prepare, Box::new(|_| {}));
+                        }
+                    }
+                    WorkerEvent::Absorb { region, epoch, absorbed, as_epoch } => {
+                        let under_way = reshapes
+                            .get(&region)
+                            .is_some_and(|reshaping| reshaping.absorbs(absorbed, as_epoch));
+                        match free_to_reshape(&regions, &reshapes, region, epoch) {
+                            // The order is given again when this worker registers
+                            // again while the merge lasts.
+                            Err(_) if under_way => {
+                                debug!(%region, %absorbed, as_epoch, "asked again for a merge under way");
+                            }
+                            Err(why) => {
+                                info!(
+                                    %region,
+                                    epoch,
+                                    %absorbed,
+                                    ?why,
+                                    "asked to have a region absorb another, which it cannot now"
+                                );
+                                let outcome = Err(why);
+                                let _ = endings.send(Outcome::Merge { region, absorbed, outcome });
+                            }
+                            Ok((held, running)) => {
+                                info!(
+                                    %region,
+                                    epoch,
+                                    %absorbed,
+                                    as_epoch,
+                                    "asked to have the region absorb another; opening that one"
+                                );
+                                // If the order to prepare was lost, this is where the
+                                // checkpoint is made while the region ticks.
+                                running.reshape(Reshape::Prepare, Box::new(|_| {}));
+                                let hello = RegionHello {
+                                    region: absorbed,
+                                    epoch: as_epoch,
+                                    layout: held.hello.layout,
+                                };
+                                let fetching = Box::pin(fetch(args.store.clone(), hello));
+                                reshapes_begun += 1;
+                                let reshaping = Reshaping {
+                                    number: reshapes_begun,
+                                    held: held.clone(),
+                                    doing: Doing::Fetching { absorbed, as_epoch, fetching },
+                                };
+                                reshapes.insert(region, reshaping);
+                            }
+                        }
+                    }
+                    WorkerEvent::SplitOff { region, epoch, chunks, as_epoch, part } => {
+                        match free_to_reshape(&regions, &reshapes, region, epoch) {
+                            Err(why) => {
+                                info!(
+                                    %region,
+                                    epoch,
+                                    as_epoch,
+                                    ?why,
+                                    "asked to split a region, which it cannot be now"
+                                );
+                                let outcome = Err(why);
+                                let _ = endings.send(Outcome::Split { region, as_epoch, outcome });
+                            }
+                            Ok((held, running)) => {
+                                info!(
+                                    %region,
+                                    epoch,
+                                    chunks = chunks.len(),
+                                    as_epoch,
+                                    %part,
+                                    "asked to split the region"
+                                );
+                                reshapes_begun += 1;
+                                let number = reshapes_begun;
+                                let split = Reshape::SplitOff { chunks, as_epoch, part };
+                                running.reshape(split, passing_on(&outcomes_in, region, number));
+                                let reshaping = Reshaping {
+                                    number,
+                                    held: held.clone(),
+                                    doing: Doing::Splitting { as_epoch },
+                                };
+                                reshapes.insert(region, reshaping);
+                            }
+                        }
                     }
                     WorkerEvent::Orders(next) => {
-                        let ordered = |assignment: &Assignment| next.assignments.contains(assignment);
+                        let ordered = |assignment: &Assignment| names(&next, assignment);
                         // The coordinator still believes this worker to have what it
                         // has released: the word of it was lost.
                         let_go.retain(ordered);
@@ -443,13 +757,25 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             let _ = releases.send((released.region, released.epoch));
                         }
                         declined.retain(ordered);
+                        // A part that orders name, with whichever epoch, is from now
+                        // on a region like any other.
+                        unnamed.retain(|part, _| {
+                            let mut named = next.assignments.iter();
+                            !named.any(|named| named.region == *part)
+                        });
 
                         // What is another worker's now, or nobody's. That is not this
                         // worker's fault, and the store sees to it that it can do no
-                        // harm; it lets go.
+                        // harm; it lets go. A part that orders name with another epoch
+                        // than the one it was split off with is among them: the
+                        // coordinator found it in the store's list and gave it out
+                        // anew, to this very worker, which opens it like any region it
+                        // is given.
                         let taken: Vec<RegionId> = regions
                             .iter()
-                            .filter(|(_, phase)| !ordered(&phase.held().assignment))
+                            .filter(|(region, phase)| {
+                                !ordered(&phase.held().assignment) && !unnamed.contains_key(region)
+                            })
                             .map(|(region, _)| *region)
                             .collect();
                         for region in taken {
@@ -460,10 +786,23 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                                 epoch = assignment.epoch,
                                 "the coordinator has taken the region; letting go of it"
                             );
+                            // A merge or a split it was in the middle of is the next
+                            // owner's to find done or not.
+                            let reshaping = reshapes.remove(&region);
+                            if reshaping.is_some() {
+                                warn!(%region, "it was in the middle of a merge or a split");
+                            }
                             if let Phase::Running { running, .. } | Phase::Releasing { running, .. } = dropped {
                                 // As it is: saved if the store still listens to this
-                                // worker, and left to the next owner if not.
-                                stopping.spawn_blocking(move || running.stop());
+                                // worker, and left to the next owner if not. A region
+                                // that was open to be absorbed is closed behind it, so
+                                // that a merge the runner had handed the store is not
+                                // declined for that.
+                                stopping.spawn_blocking(move || {
+                                    let ended = running.stop();
+                                    drop(reshaping);
+                                    ended
+                                });
                             }
                         }
 
@@ -472,7 +811,10 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             .assignments
                             .iter()
                             .filter(|offered| {
-                                !regions.contains_key(&offered.region) && !declined.contains(offered)
+                                let declined = declined.iter().any(|declined| {
+                                    (declined.region, declined.epoch) == (offered.region, offered.epoch)
+                                });
+                                !regions.contains_key(&offered.region) && !declined
                             })
                             .filter(|_| leave_by.is_none())
                             .copied()
@@ -493,21 +835,31 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                     }
                 }
             }
-            (region, settled) = settled(&mut regions) => match settled {
+            (region, settled) = settled(&mut regions, &mut reshapes) => match settled {
                 Settled::Opened(opened) => {
-                    let Some(Phase::Opening { held, .. }) = regions.remove(&region) else {
-                        unreachable!("only an opening resolves");
+                    let (held, part) = match regions.remove(&region) {
+                        Some(Phase::Opening { held, .. }) => (held, None),
+                        Some(Phase::Starting { held, part, .. }) => (held, Some(part)),
+                        _ => unreachable!("only an opening resolves"),
                     };
                     match opened {
                         Ok((store, restored)) => {
-                            let tick = restored.tick();
-                            let runner = match RegionRunner::restore(held.config.clone(), store, restored) {
-                                Ok(runner) => runner.with_checkpoint_interval(checkpoint_interval),
-                                Err(error) => {
-                                    let context = format!("restoring region {region}");
-                                    break Err(anyhow::Error::new(error).context(context));
-                                }
+                            let runner = match part {
+                                // What the store says of the region is not looked at:
+                                // it is what the record of the split has, which is
+                                // what the part in memory is, and the part has its
+                                // chunks at hand.
+                                Some(part) => RegionRunner::of_part(*part, store),
+                                None => match RegionRunner::restore(held.config.clone(), store, restored) {
+                                    Ok(runner) => runner,
+                                    Err(error) => {
+                                        let context = format!("restoring region {region}");
+                                        break Err(anyhow::Error::new(error).context(context));
+                                    }
+                                },
                             };
+                            let runner = runner.with_checkpoint_interval(checkpoint_interval);
+                            let tick = runner.region().tick_number();
                             let status = runner.status();
                             let links = runner.links();
                             let running = Worker::spawn(runner);
@@ -541,6 +893,19 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                             let _ = refusals.send((region, seen));
                             declined.push(held.assignment);
                         }
+                        // The region is no more, and the coordinator does not know yet:
+                        // this makes it read the store's list, which says so.
+                        Err(StoreError::Absorbed { into, .. }) => {
+                            warn!(
+                                %region,
+                                epoch = held.assignment.epoch,
+                                %into,
+                                "the world store has the region as absorbed by another; dropping it"
+                            );
+                            let (region, absorbed, outcome) = (into, region, Ok(()));
+                            let _ = endings.send(Outcome::Merge { region, absorbed, outcome });
+                            declined.push(held.assignment);
+                        }
                         Err(error) => {
                             let context =
                                 format!("opening region {region} at the world store {}", args.store);
@@ -568,7 +933,175 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                     let_go.push(held.assignment);
                     declined.push(held.assignment);
                 }
+                Settled::Fetched(fetched) => {
+                    let Some(Reshaping {
+                        number,
+                        held,
+                        doing: Doing::Fetching { absorbed, as_epoch, .. },
+                    }) = reshapes.remove(&region)
+                    else {
+                        unreachable!("only a region that is being fetched arrives");
+                    };
+                    let epoch = held.assignment.epoch;
+                    let outcome = match fetched {
+                        // The region may have been asked to be released, or have lost
+                        // the store, while the other was being opened.
+                        Ok((handle, state)) => match free_to_reshape(&regions, &reshapes, region, epoch)
+                        {
+                            Ok((_, running)) => {
+                                debug!(%region, %absorbed, as_epoch, "the region to absorb is open");
+                                let absorb = Reshape::Absorb {
+                                    absorbed,
+                                    absorbed_epoch: as_epoch,
+                                    state,
+                                };
+                                running.reshape(absorb, passing_on(&outcomes_in, region, number));
+                                let doing = Doing::Absorbing { absorbed, as_epoch, handle };
+                                reshapes.insert(region, Reshaping { number, held, doing });
+                                None
+                            }
+                            // Dropping the handle leaves the other region without an
+                            // owner, which the coordinator is told next.
+                            Err(why) => Some(Err(why)),
+                        },
+                        // The order came twice, and the merge has happened already.
+                        Err(Unabsorbable::Store(StoreError::Absorbed { into, .. }))
+                            if into == region =>
+                        {
+                            Some(Ok(()))
+                        }
+                        // Somebody else has been given the region since.
+                        Err(Unabsorbable::Store(StoreError::EpochRefused { seen, .. })) => {
+                            let _ = refusals.send((absorbed, seen));
+                            Some(Err(Off::Refused))
+                        }
+                        // The worker does not end over a region it was only to absorb.
+                        Err(Unabsorbable::Store(error)) => {
+                            warn!(
+                                %region,
+                                %absorbed,
+                                as_epoch,
+                                %error,
+                                "the region to absorb could not be opened"
+                            );
+                            Some(Err(Off::Unreadable))
+                        }
+                        Err(Unabsorbable::Restore(error)) => {
+                            warn!(
+                                %region,
+                                %absorbed,
+                                as_epoch,
+                                %error,
+                                "the region to absorb could not be read"
+                            );
+                            Some(Err(Off::Unreadable))
+                        }
+                    };
+                    if let Some(outcome) = outcome {
+                        info!(
+                            %region,
+                            %absorbed,
+                            ?outcome,
+                            "the merge has ended before the region's runner heard of it"
+                        );
+                        let _ = endings.send(Outcome::Merge { region, absorbed, outcome });
+                    }
+                }
             },
+            Some((region, number, outcome)) = outcomes.recv() => {
+                // Of a merge or a split this worker has let go of since, with its
+                // region: what the store has is for whoever runs the region next to
+                // find, and a part that came of it is restored from the record. The
+                // region may be in the middle of another one by now, which is left
+                // alone.
+                let current = reshapes
+                    .get(&region)
+                    .is_some_and(|reshaping| reshaping.number == number);
+                if !current {
+                    debug!(
+                        %region,
+                        ?outcome,
+                        "passing over what came of a merge or a split that was let go of"
+                    );
+                    continue;
+                }
+                let Some(Reshaping { held, doing, .. }) = reshapes.remove(&region) else {
+                    unreachable!("it was there a moment ago");
+                };
+                // The region stood still for it. If it goes on, it is as good as one
+                // that has just ticked.
+                if let Some(Phase::Running { ticked, .. }) = regions.get_mut(&region) {
+                    *ticked = Instant::now();
+                }
+                match (doing, outcome) {
+                    // The handle of the absorbed region is dropped here. The store
+                    // has lost that region's owner if the merge happened; if not,
+                    // this leaves the region without one, which the coordinator is
+                    // told next.
+                    (Doing::Absorbing { absorbed, .. }, outcome) => {
+                        let outcome = match outcome {
+                            Reshaped::Absorbed { .. } => Ok(()),
+                            Reshaped::Off { why } => Err(why),
+                            // No runner answers a merge with a part. What the store
+                            // has, its list says.
+                            Reshaped::Split { .. } => Err(Off::StoreLost),
+                        };
+                        info!(%region, %absorbed, ?outcome, "the merge has ended");
+                        let _ = endings.send(Outcome::Merge { region, absorbed, outcome });
+                    }
+                    // The runner says the epoch it was told, which is the order's.
+                    (
+                        Doing::Splitting { as_epoch },
+                        Reshaped::Split { region: part, part: memory, .. },
+                    ) => {
+                        info!(
+                            %region,
+                            %part,
+                            epoch = as_epoch,
+                            "the split has ended; opening the new region"
+                        );
+                        // At once: the coordinator answers whoever asked, and tells
+                        // the edges where the new region is, while it is being opened.
+                        let outcome = Ok(part);
+                        let _ = endings.send(Outcome::Split { region, as_epoch, outcome });
+                        let hello = RegionHello {
+                            region: part,
+                            epoch: as_epoch,
+                            layout: held.hello.layout,
+                        };
+                        let assignment = Assignment {
+                            region: part,
+                            epoch: as_epoch,
+                            entity_ids: NO_ENTITY_IDS,
+                        };
+                        let held = Held { assignment, hello, config: held.config };
+                        let opening = Box::pin(open_region(args.store.clone(), hello));
+                        let starting = Phase::Starting { held, part: Box::new(memory), opening };
+                        // The store gives an id to one region, so nothing was there.
+                        let there = regions.insert(part, starting);
+                        if let Some(Phase::Running { running, .. } | Phase::Releasing { running, .. }) = there {
+                            stopping.spawn_blocking(move || running.stop());
+                        }
+                        unnamed.insert(part, (region, as_epoch));
+                    }
+                    (Doing::Splitting { as_epoch }, outcome) => {
+                        let outcome = match outcome {
+                            Reshaped::Off { why } => Err(why),
+                            // No runner answers a split so. What the store has, its
+                            // list says.
+                            Reshaped::Absorbed { .. } | Reshaped::Split { .. } => {
+                                Err(Off::StoreLost)
+                            }
+                        };
+                        info!(%region, as_epoch, ?outcome, "the split has ended");
+                        let _ = endings.send(Outcome::Split { region, as_epoch, outcome });
+                    }
+                    // The runner knew of nothing whose outcome this could be.
+                    (fetching @ Doing::Fetching { .. }, _) => {
+                        reshapes.insert(region, Reshaping { number, held, doing: fetching });
+                    }
+                }
+            }
             _ = look.tick() => {
                 let mut lost = Vec::new();
                 for (region, phase) in regions.iter_mut() {
@@ -591,7 +1124,9 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                     warn!(%region, "lost the world store; opening the region again");
                     serving.send_replace(served(&regions));
                     // The region has stopped by itself and closed its links; this only
-                    // waits for its thread to be gone.
+                    // waits for its thread to be gone. A merge or a split it was in
+                    // the middle of has had its outcome by then, which is taken when
+                    // its turn comes: that the store was lost on the way.
                     let stopped = tokio::task::spawn_blocking(move || running.stop()).await;
                     if let Err(error) = stopped {
                         failed = Some(error);
@@ -610,7 +1145,8 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     accepting.abort();
     registered.abort();
     // Each waits for its current tick and for the world store to have what changed, all
-    // at the same time. A release that is under way is let go of as it is.
+    // at the same time. A release that is under way is let go of as it is, and so is a
+    // merge or a split.
     let mut stops = JoinSet::new();
     for phase in regions.into_values() {
         if let Phase::Running { running, .. } | Phase::Releasing { running, .. } = phase {
@@ -624,6 +1160,9 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     while let Some(stopped) = stopping.join_next().await {
         stopped?;
     }
+    // Only now are the regions that were open to be absorbed closed: a merge that a
+    // runner had handed the store before it stopped is not declined for that.
+    drop(reshapes);
     outcome
 }
 
@@ -686,6 +1225,26 @@ async fn open_region(
     }
 }
 
+/// Opens the region `hello` names at the world store in order to have another absorb
+/// it, trying until the store can be reached, and reads its whole state.
+///
+/// If the region's owner did not finish releasing it, this waits for the store to
+/// have a checkpoint of it, without which the store declines the merge.
+async fn fetch(address: String, hello: RegionHello) -> Fetched {
+    let (handle, restored) = open_region(address, hello)
+        .await
+        .map_err(Unabsorbable::Store)?;
+    let reading = tokio::task::spawn_blocking(move || {
+        let state = absorbable(&handle, restored);
+        (handle, state)
+    });
+    match reading.await {
+        Ok((handle, Ok(state))) => Ok((handle, state)),
+        Ok((_, Err(error))) => Err(Unabsorbable::Restore(error)),
+        Err(error) => Err(Unabsorbable::Store(io::Error::other(error).into())),
+    }
+}
+
 /// Registers with the coordinator, trying until it can be reached.
 async fn register(args: &WorkerArgs) -> Result<(WorkerClient, Orders)> {
     loop {
@@ -711,20 +1270,28 @@ struct Reports {
     held: watch::Receiver<Vec<(Assignment, u64)>>,
     /// Whether the worker has been told to stop.
     left: watch::Receiver<bool>,
+    /// The regions the worker has split off others and that no orders have named yet:
+    /// the region each was split off, the epoch it is run with, and the new region.
+    split: watch::Receiver<Vec<(RegionId, u64, RegionId)>>,
     /// Regions the world store did not let the worker open, with the epoch it has seen.
     refused: mpsc::UnboundedReceiver<(RegionId, u64)>,
     /// Regions the worker has let go of, with the epoch it held them with.
     released: mpsc::UnboundedReceiver<(RegionId, u64)>,
+    /// What came of the merges and splits the worker was asked for.
+    ended: mpsc::UnboundedReceiver<Outcome>,
 }
 
 /// Holds the worker's connection to the coordinator: says what the worker vouches for,
-/// what the store refused, what the worker released and that it is leaving, and passes
-/// on what the coordinator says, or last of all why it refuses the worker.
+/// what the store refused, what the worker released, what came of a merge or a split
+/// and that it is leaving, and passes on what the coordinator says, or last of all why
+/// it refuses the worker.
 ///
 /// A coordinator that goes away knows nothing when it is back, so the worker registers
 /// again and tells it what it holds. The region keeps running meanwhile. A new
 /// connection vouches for nothing by itself and knows of no leaving, so both are said
-/// again on it.
+/// again on it. So is every split whose new region the orders that answer the
+/// registration do not name: an order to split is given once, and nothing else tells
+/// the coordinator which region came of it and whose it is.
 ///
 /// A worker that is leaving does not register again: the coordinator closes the
 /// connection of one that owns nothing any more, which is how the worker knows that it
@@ -781,6 +1348,13 @@ async fn stay_registered(
                             Ok((coordinator, next)) => {
                                 info!("registered again");
                                 coordinator.vouch(reports.vouched.borrow_and_update().clone());
+                                let parts = reports.split.borrow().clone();
+                                for (region, as_epoch, part) in parts {
+                                    let mut named = next.assignments.iter();
+                                    if !named.any(|named| named.region == part) {
+                                        coordinator.split_ended(region, as_epoch, Ok(part));
+                                    }
+                                }
                                 if words.send(Word::Event(WorkerEvent::Orders(next))).is_err() {
                                     return;
                                 }
@@ -815,6 +1389,14 @@ async fn stay_registered(
             Some((region, epoch)) = reports.released.recv() => {
                 coordinator.released(region, epoch);
             }
+            Some(ended) = reports.ended.recv() => match ended {
+                Outcome::Merge { region, absorbed, outcome } => {
+                    coordinator.absorb_ended(region, absorbed, outcome);
+                }
+                Outcome::Split { region, as_epoch, outcome } => {
+                    coordinator.split_ended(region, as_epoch, outcome);
+                }
+            },
         }
     }
 }
@@ -1234,5 +1816,91 @@ pub async fn move_region(args: MoveArgs) -> Result<()> {
                 return Ok(());
             }
         }
+    }
+}
+
+/// Settings of `clustine merge`.
+#[derive(Debug, Clone)]
+pub struct MergeArgs {
+    /// Host and port of the coordinator.
+    pub coordinator: String,
+    /// The region that absorbs the other and goes on.
+    pub survivor: RegionId,
+    /// The region that is absorbed and is no more afterwards.
+    pub absorbed: RegionId,
+}
+
+/// Asks the coordinator to have one region absorb another and says what came of it;
+/// see `docs/adr/0014-merging-and-splitting.md`, section 5.1. Fails if the coordinator
+/// refuses, if nothing came of the merge, or if the coordinator goes away before it
+/// says.
+///
+/// The time it prints is from asking to the coordinator knowing that the world store
+/// has the merge. Like `clustine move`, it cannot know how long players stood still.
+pub async fn merge_regions(args: MergeArgs) -> Result<()> {
+    let asked = Instant::now();
+    let (survivor, absorbed) = (args.survivor, args.absorbed);
+    let asker = Asker::merge(&args.coordinator, survivor, absorbed)
+        .await
+        .with_context(|| format!("reaching the coordinator at {}", args.coordinator))?;
+    let answer = asker
+        .answer()
+        .await
+        .context("the coordinator went away before it said what came of the merge")?;
+    match answer {
+        Ok(survivor) => {
+            println!(
+                "region {survivor} has absorbed region {absorbed}, {} ms after asking",
+                asked.elapsed().as_millis()
+            );
+            Ok(())
+        }
+        Err(reason) => {
+            bail!(
+                "the coordinator reports no merge of region {absorbed} into region {survivor}: {reason}"
+            )
+        }
+    }
+}
+
+/// Settings of `clustine split`.
+#[derive(Debug, Clone)]
+pub struct SplitArgs {
+    /// Host and port of the coordinator.
+    pub coordinator: String,
+    /// The region to split.
+    pub region: RegionId,
+    /// The chunks whose players are to be split off, with what is nearer to them than
+    /// to anyone who stays.
+    pub chunks: Vec<ChunkPos>,
+}
+
+/// Asks the coordinator to split the players standing in certain chunks off a region,
+/// as a region of their own, and says what came of it; see
+/// `docs/adr/0014-merging-and-splitting.md`, section 5.1. Fails if the coordinator
+/// refuses, if nothing came of the split, or if the coordinator goes away before it
+/// says.
+///
+/// The time it prints is from asking to the coordinator hearing of the new region
+/// from the worker that made it and runs it.
+pub async fn split_region(args: SplitArgs) -> Result<()> {
+    let asked = Instant::now();
+    let region = args.region;
+    let asker = Asker::split(&args.coordinator, region, &args.chunks)
+        .await
+        .with_context(|| format!("reaching the coordinator at {}", args.coordinator))?;
+    let answer = asker
+        .answer()
+        .await
+        .context("the coordinator went away before it said what came of the split")?;
+    match answer {
+        Ok(part) => {
+            println!(
+                "region {part} has been split off region {region}, {} ms after asking",
+                asked.elapsed().as_millis()
+            );
+            Ok(())
+        }
+        Err(reason) => bail!("the coordinator reports no split of region {region}: {reason}"),
     }
 }

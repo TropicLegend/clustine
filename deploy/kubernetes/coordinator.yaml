@@ -67,6 +67,11 @@ spec:
             # The world is divided at chunk x = 4, which is block x = 64, into two
             # regions. worker.yaml has a worker for each.
             - --boundaries=4
+            # The world store's list tells the coordinator which regions there are
+            # once regions have been merged and split. While the store cannot be
+            # reached the coordinator goes by the boundaries above, so the two can be
+            # started in either order.
+            - --store=clustine-worldstore:25602
           ports:
             - name: coordinator
               containerPort: 25600

@@ -122,6 +122,9 @@ impl Cluster {
             &self.coordinator.0,
             "--boundaries",
             &self.boundaries,
+            // Whose list of regions tells it which regions there are.
+            "--store",
+            &self.store.0,
         ];
         if let Some(lease) = &lease {
             arguments.extend(["--lease-seconds", lease]);
@@ -182,6 +185,36 @@ impl Cluster {
         if let Some(to) = to {
             command.args(["--to", to]);
         }
+        command
+    }
+
+    /// The command that asks the coordinator to have the region `survivor` absorb the
+    /// region `absorbed`: `clustine merge`, as whoever operates the cluster runs it.
+    pub fn merge_command(&self, survivor: u32, absorbed: u32) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_clustine"));
+        command
+            .args(["merge", "--coordinator", &self.coordinator.0, "--survivor"])
+            .arg(survivor.to_string())
+            .arg("--absorbed")
+            .arg(absorbed.to_string())
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        command
+    }
+
+    /// The command that asks the coordinator to split the players standing in `chunks`
+    /// off `region`: `clustine split`, as whoever operates the cluster runs it.
+    pub fn split_command(&self, region: u32, chunks: &[(i32, i32)]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_clustine"));
+        command
+            .args(["split", "--coordinator", &self.coordinator.0, "--region"])
+            .arg(region.to_string())
+            .arg("--chunks")
+            .args(chunks.iter().map(|(x, z)| format!("{x},{z}")))
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
         command
     }
 
