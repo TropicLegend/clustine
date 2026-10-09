@@ -462,6 +462,15 @@ struct Split {
     asker: Option<u64>,
 }
 
+/// What a worker said it had let go of when the coordinator had no list to judge it
+/// by: that it released `region`, which it held with `epoch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Word {
+    worker: String,
+    region: RegionId,
+    epoch: u64,
+}
+
 /// What a call has to tell the service besides what can be seen of the owners before and
 /// after it. It is gathered while the call is made and handed out at its end.
 #[derive(Debug, Clone, Default)]
@@ -853,6 +862,12 @@ pub struct Coordinator {
     /// not made knowing its regions. Set when it is made and cleared for good by the
     /// first [`Coordinator::listed`].
     awaiting: bool,
+    /// What workers said they had released of regions the coordinator did not know
+    /// while it waited for its first list, in the order they said it and each word
+    /// once (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). The first list
+    /// judges them and leaves none; nothing is kept once it has been handed in, nor
+    /// by a coordinator that never waited for one.
+    words: Vec<Word>,
     /// Whether it gives no worker up: it forgets none for being silent, takes no
     /// region for want of vouching and notes no failure. So for a coordinator that
     /// was made [`Coordinator::alone`], and for no other.
@@ -943,6 +958,7 @@ impl Coordinator {
             fingerprint: config.layout.fingerprint(),
             grace_until: follow::after(now, config.lease),
             awaiting: true,
+            words: Vec::new(),
             keeps_its_workers: false,
             config,
             workers: BTreeMap::new(),
@@ -1449,6 +1465,15 @@ impl Coordinator {
     /// ([`Changes::orders`]), with a new epoch to open it with, which is the region's
     /// from then on.
     ///
+    /// **A coordinator that still waits for its first list keeps the word** of a
+    /// registered worker about a region it does not know, behind the words it has
+    /// kept before and each word once, and changes nothing else by the call
+    /// (`docs/adr/0017-the-end-of-the-stripes.md`, section 2.3). It cannot say yet
+    /// whether the store has such a region, nor with which epoch it was last run, so
+    /// the first list judges the word ([`Coordinator::listed`]). Without that a
+    /// region that was let go while there was no coordinator would wait out the grace
+    /// period of the new one, as its worker says so once.
+    ///
     /// From any other worker, or with any other epoch, this changes nothing. To say it
     /// is to be heard from, if the worker is registered.
     pub fn released(&mut self, now: Instant, name: &str, region: RegionId, epoch: u64) -> Changes {
@@ -1467,27 +1492,29 @@ impl Coordinator {
             info!(worker = name, %region, epoch, "a worker released a region");
             self.hand_over(now, region, true);
         } else if self.without_owner_since(region, name, epoch) {
+            self.free_on_a_word(name, region, epoch);
+            self.assign(now);
+        } else if self.awaiting
+            && !self.regions.contains_key(&region)
+            && self.workers.contains_key(name)
+        {
+            // ADR-0017, section 2.3. Whether the store has such a region, and with
+            // which epoch it was last run, only the list can say.
             info!(
                 worker = name,
                 %region,
                 epoch,
-                "a worker released a region before this coordinator knew of it"
+                "a worker released a region this coordinator does not know yet; \
+                 the first list will say"
             );
-            self.last_epoch = self.last_epoch.max(epoch);
-            let state = self
-                .regions
-                .get_mut(&region)
-                .expect("a region without an owner is one the coordinator knows");
-            state.epoch = epoch;
-            state.let_go = true;
-            let arrivals = self.arrivals;
-            let worker = self
-                .workers
-                .get_mut(name)
-                .expect("the worker was found to be registered");
-            worker.arrival = arrivals;
-            self.arrivals += 1;
-            self.assign(now);
+            let word = Word {
+                worker: name.to_owned(),
+                region,
+                epoch,
+            };
+            if !self.words.contains(&word) {
+                self.words.push(word);
+            }
         } else {
             info!(
                 worker = name,
@@ -1497,6 +1524,34 @@ impl Coordinator {
             );
         }
         self.finish(&before, now)
+    }
+
+    /// Lets go of `region` on the word of the worker `name` that it released it with
+    /// `epoch`, when [`Coordinator::without_owner_since`] holds of the three: the
+    /// region has had that epoch, no epoch issued from now on is at or below it, the
+    /// region is given away whatever the grace period says by the next
+    /// [`Coordinator::assign`], and the worker goes behind all the others.
+    fn free_on_a_word(&mut self, name: &str, region: RegionId, epoch: u64) {
+        info!(
+            worker = name,
+            %region,
+            epoch,
+            "a worker released a region before this coordinator knew of it"
+        );
+        self.last_epoch = self.last_epoch.max(epoch);
+        let state = self
+            .regions
+            .get_mut(&region)
+            .expect("a region without an owner is one the coordinator knows");
+        state.epoch = epoch;
+        state.let_go = true;
+        let arrivals = self.arrivals;
+        let worker = self
+            .workers
+            .get_mut(name)
+            .expect("the worker was found to be registered");
+        worker.arrival = arrivals;
+        self.arrivals += 1;
     }
 
     /// Forgets the workers whose lease has run out and hands out regions; to be called
@@ -1582,6 +1637,20 @@ impl Coordinator {
     /// No epoch issued from now on is at or below one the list has, and a region
     /// without an owner has had the epoch the list has for it: a holding below that
     /// is not honoured, as the store would not let its worker open the region.
+    ///
+    /// **The first list judges the words that were kept** while there was none
+    /// ([`Coordinator::released`]; `docs/adr/0017-the-end-of-the-stripes.md`, section
+    /// 2.3), in the order they were said: when the living regions of the list have
+    /// been added and the epochs raised, and before regions are given away. Each is
+    /// judged as `released` judges such a word of a region the coordinator knows. If
+    /// the region is known by then, has no owner, is no part of a merge and has no
+    /// epoch above the word's, which now says that the list's is not above it, and
+    /// if the worker is still registered, the region is let go with the word's epoch
+    /// and given away by this call, whatever the grace period says, and the worker
+    /// goes behind all the others. Any other word is dropped: the store does not have
+    /// the region living, or somebody has run it since, or a worker registered
+    /// holding it meanwhile, or the worker is no longer registered. None is kept
+    /// after that.
     pub fn listed(&mut self, now: Instant, list: &RegionList) -> Changes {
         let before = self.seen();
         let living: BTreeMap<RegionId, u64> = list
@@ -1651,8 +1720,6 @@ impl Coordinator {
         self.reading = false;
         self.owed = false;
         self.pending.read = false;
-        // From here on the list has said which regions there are.
-        self.awaiting = false;
 
         if self.splits.is_empty() {
             for (id, epoch) in &living {
@@ -1673,6 +1740,30 @@ impl Coordinator {
                 state.epoch = state.epoch.max(*epoch);
             }
         }
+        // From here on the list has said which regions there are, and with which
+        // epochs, so the words that were kept for it are judged, and none is kept any
+        // more (ADR-0017, section 2.3). Here and nowhere else: the regions of the list
+        // are known and have the store's epochs to compare with, everything that was
+        // registered and reported meanwhile is in the state, and nothing has been
+        // given away yet.
+        self.awaiting = false;
+        for word in std::mem::take(&mut self.words) {
+            let Word {
+                worker,
+                region,
+                epoch,
+            } = word;
+            if self.without_owner_since(region, &worker, epoch) {
+                self.free_on_a_word(&worker, region, epoch);
+            } else {
+                info!(
+                    %worker,
+                    %region,
+                    epoch,
+                    "a worker released a region it does not own with that epoch"
+                );
+            }
+        }
 
         let home = Some(list.home);
         self.pending.relisted |= self.home != home || self.absorbed != list.absorbed;
@@ -1687,7 +1778,8 @@ impl Coordinator {
     }
 
     /// The world store's list of regions could not be read. What is said of readings
-    /// in [`Coordinator::listed`] holds of this one too.
+    /// in [`Coordinator::listed`] holds of this one too. A coordinator that waits for
+    /// its first list goes on waiting, with the words it has kept for it.
     ///
     /// A merge whose reservation has run out at its second stage ends all the same,
     /// with the region to absorb assigned: should it have been absorbed, the worker

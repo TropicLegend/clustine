@@ -592,3 +592,419 @@ fn a_coordinator_that_is_alone_notes_no_failure_when_a_release_is_not_answered_i
         assert_eq!(failed.is_none(), alone);
     }
 }
+
+/// The epoch with which the worker of these tests says it released region 5: above
+/// the first epoch of the coordinator, so that an epoch above it is issued only if
+/// the word was believed.
+const SAID: u64 = FIRST_EPOCH + 40;
+
+/// A coordinator made with `new` that has been handed no list, and the workers
+/// `a`, `b` and `c` of `names`, which registered in that order holding nothing. `a`
+/// has said that it released region 5 with [`SAID`]. All of it within the grace
+/// period.
+fn a_word_is_kept(names: &[&str]) -> Cluster {
+    let mut cluster = cluster(Coordinator::new);
+    for (at, name) in (1..).zip(names) {
+        let address = format!("{name}:25601");
+        assert_eq!(
+            cluster.register(at, name, &address, &[]),
+            Changes::default()
+        );
+    }
+    let before = cluster.table();
+    // That call changes nothing.
+    assert_eq!(cluster.released(10, "a", 5, SAID), Changes::default());
+    assert_eq!(cluster.table(), before);
+    assert_eq!(cluster.coordinator.waiting(), []);
+    assert_eq!(cluster.coordinator.words, [word("a", 5, SAID)]);
+    assert!(cluster.coordinator.awaits_the_list());
+    cluster
+}
+
+fn word(worker: &str, region: u32, epoch: u64) -> Word {
+    Word {
+        worker: worker.to_owned(),
+        region: RegionId(region),
+        epoch,
+    }
+}
+
+/// The list of a world whose home region 0 was never opened and whose region 5 was
+/// last opened with `epoch`.
+fn with_region_5(epoch: u64) -> RegionList {
+    listing(&[(0, 0), (5, epoch)], &[], 6)
+}
+
+/// The place of a worker among the workers: one with a higher number is behind.
+fn place(cluster: &Cluster, name: &str) -> u64 {
+    cluster.coordinator.workers[name].arrival
+}
+
+// Q12.1, Q12.2 and N18.
+#[test]
+fn a_region_released_before_the_first_list_is_given_away_by_the_list_that_names_it() {
+    // Whether the list has the epoch the worker released it with or a lower one.
+    for listed in [SAID, 12] {
+        let mut cluster = a_word_is_kept(&["a", "b"]);
+        let list = with_region_5(listed);
+        // By that very call, though the grace period is not over, and to the other
+        // worker: the one that released it is behind all the others.
+        assert_eq!(cluster.listed(20, &list), changes(&["b"], true));
+        assert_eq!(cluster.assignments("b"), [assignment(5, SAID + 1, 0)]);
+        assert!(place(&cluster, "a") > place(&cluster, "b"));
+        // The home region waits out the grace period, like any region of a list.
+        assert_eq!(cluster.coordinator.waiting(), [RegionId(0)]);
+        assert_eq!(cluster.coordinator.words, []);
+        cluster.heartbeat(LEASE - 1, "a");
+        cluster.heartbeat(LEASE - 1, "b");
+        assert_eq!(cluster.tick(LEASE - 1), Changes::default());
+        assert_eq!(cluster.tick(LEASE), changes(&["a"], true));
+    }
+
+    // With nobody else there, to the worker that released it.
+    let mut cluster = a_word_is_kept(&["a"]);
+    assert_eq!(
+        cluster.listed(20, &with_region_5(SAID)),
+        changes(&["a"], true)
+    );
+    assert_eq!(cluster.assignments("a"), [assignment(5, SAID + 1, 0)]);
+}
+
+// Q12.3.
+#[test]
+fn a_release_that_was_kept_is_dropped_if_the_list_has_the_region_with_a_higher_epoch() {
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    // Somebody has run the region since: the word is stale.
+    assert_eq!(
+        cluster.listed(20, &with_region_5(SAID + 1)),
+        changes(&[], true)
+    );
+    assert_eq!(cluster.coordinator.words, []);
+    assert_eq!(cluster.coordinator.waiting(), [RegionId(0), RegionId(5)]);
+    // `a` has let go of nothing as far as this coordinator knows, and is where it was.
+    assert!(place(&cluster, "a") < place(&cluster, "b"));
+
+    // The region waits out the grace period like any region of the list.
+    for name in ["a", "b"] {
+        cluster.heartbeat(LEASE - 1, name);
+    }
+    assert_eq!(cluster.tick(LEASE - 1), Changes::default());
+    assert_eq!(cluster.tick(LEASE), changes(&["a", "b"], true));
+    assert_eq!(cluster.assignments("a"), [assignment(0, SAID + 2, 0)]);
+    assert_eq!(cluster.assignments("b"), [assignment(5, SAID + 3, 1)]);
+}
+
+// Q12.4.
+#[test]
+fn a_release_that_was_kept_is_dropped_if_the_list_does_not_have_the_region_living() {
+    let lists = [
+        // It was absorbed.
+        listing(&[(0, 0), (2, 0)], &[(5, 2)], 6),
+        // The store has had such a region and has it no longer.
+        listing(&[(0, 0)], &[], 9),
+        // The store has never had one: it was rolled back, or is another store.
+        listing(&[(0, 0)], &[], 4),
+    ];
+    for list in lists {
+        let mut cluster = a_word_is_kept(&["a", "b"]);
+        cluster.listed(20, &list);
+        assert_eq!(cluster.coordinator.words, [], "{list:?}");
+        let known = |cluster: &Cluster| cluster.coordinator.regions.contains_key(&RegionId(5));
+        assert!(!known(&cluster), "{list:?}");
+        assert!(place(&cluster, "a") < place(&cluster, "b"));
+
+        // Nor after any later call: the word is gone, and not judged a second time.
+        for name in ["a", "b"] {
+            cluster.heartbeat(LEASE, name);
+        }
+        cluster.tick(LEASE);
+        cluster.listed(LEASE + 1, &list);
+        assert!(!known(&cluster), "{list:?}");
+    }
+}
+
+// Q12.5.
+#[test]
+fn a_release_that_was_kept_is_dropped_if_a_worker_registers_holding_the_region_meanwhile() {
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    let held = assignment(5, SAID + 1, 3);
+    // It owns the region by its report.
+    assert_eq!(
+        cluster.register(11, "b", "b:25601", &[held]),
+        changes(&["b"], true)
+    );
+    assert_eq!(
+        cluster.listed(20, &with_region_5(SAID + 1)),
+        changes(&[], true)
+    );
+    assert_eq!(cluster.assignments("b"), [held]);
+    assert_eq!(cluster.coordinator.words, []);
+    assert!(place(&cluster, "a") < place(&cluster, "b"));
+
+    // Also with an epoch that the word's is not below: the region has an owner.
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    let held = assignment(5, SAID - 1, 3);
+    cluster.register(11, "b", "b:25601", &[held]);
+    cluster.listed(20, &with_region_5(SAID - 1));
+    assert_eq!(cluster.assignments("b"), [held]);
+    assert!(place(&cluster, "a") < place(&cluster, "b"));
+}
+
+// Q12.6.
+#[test]
+fn a_release_that_was_kept_is_dropped_if_its_worker_is_no_longer_registered() {
+    // Its lease ran out. The grace period is over by then, so the region is given
+    // away by the list, like any region of a list.
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    cluster.heartbeat(LEASE + 11, "b");
+    assert_eq!(cluster.tick(LEASE + 11), Changes::default());
+    assert!(!cluster.heartbeat(LEASE + 11, "a"));
+    assert_eq!(cluster.coordinator.words, [word("a", 5, SAID)]);
+    assert_eq!(
+        cluster.listed(LEASE + 12, &with_region_5(SAID)),
+        changes(&["b"], true)
+    );
+    assert_eq!(cluster.coordinator.words, []);
+    assert_eq!(
+        cluster.assignments("b"),
+        [assignment(0, SAID + 1, 0), assignment(5, SAID + 2, 1)]
+    );
+
+    // It said that it leaves, and was forgotten by that call, as it owned nothing.
+    // The grace period is not over: the region is not let go, and waits for it.
+    //
+    // Scenario Q12.7 of the record has such a region let go. As the rule is written
+    // (section 2.3: "`name` is no longer registered"), and with a worker that owns
+    // nothing forgotten as soon as it says that it leaves, it is not.
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    let left = cluster.leaving(11, "a");
+    assert_eq!(left.gone, ["a"]);
+    assert_eq!(cluster.listed(20, &with_region_5(SAID)), changes(&[], true));
+    assert_eq!(cluster.coordinator.words, []);
+    assert_eq!(cluster.coordinator.waiting(), [RegionId(0), RegionId(5)]);
+    cluster.heartbeat(LEASE - 1, "b");
+    assert_eq!(cluster.tick(LEASE - 1), Changes::default());
+    assert_eq!(cluster.tick(LEASE), changes(&["b"], true));
+}
+
+// Q12.7, with a worker that has lost its connection where the record has one that
+// leaves: see the test before this one.
+#[test]
+fn a_region_that_is_let_go_by_the_first_list_waits_for_a_worker_and_not_for_the_grace_period() {
+    let mut cluster = a_word_is_kept(&["a"]);
+    assert_eq!(cluster.disconnected(11, "a"), Changes::default());
+    assert_eq!(cluster.listed(20, &with_region_5(SAID)), changes(&[], true));
+    // Known, without an owner and let go: nobody is there who could be given it.
+    assert_eq!(cluster.table().waiting, 2);
+    assert!(cluster.coordinator.regions[&RegionId(5)].let_go);
+    assert!(!cluster.coordinator.regions[&RegionId(0)].let_go);
+    assert_eq!(cluster.coordinator.regions[&RegionId(5)].epoch, SAID);
+
+    // Whoever comes is given it by the next tick, within the grace period, and not
+    // the home region with it.
+    assert_eq!(
+        cluster.register(30, "b", "b:25601", &[]),
+        Changes::default()
+    );
+    assert_eq!(cluster.tick(31), changes(&["b"], true));
+    assert_eq!(cluster.assignments("b"), [assignment(5, SAID + 1, 0)]);
+    assert_eq!(cluster.coordinator.waiting(), [RegionId(0)]);
+}
+
+// Q12.8.
+#[test]
+fn releases_that_were_kept_are_judged_in_the_order_they_were_said() {
+    let mut cluster = a_word_is_kept(&["a", "b", "c"]);
+    assert_eq!(cluster.released(11, "c", 5, SAID + 2), Changes::default());
+    // The same word said again is one word, wherever it is said.
+    assert_eq!(cluster.released(12, "a", 5, SAID), Changes::default());
+    assert_eq!(cluster.released(13, "c", 5, SAID + 2), Changes::default());
+    let kept = [word("a", 5, SAID), word("c", 5, SAID + 2)];
+    assert_eq!(cluster.coordinator.words, kept);
+
+    // Both hold: the list's epoch is not above the first, and the first is not above
+    // the second. So both workers are behind `b`, and no epoch at or below the
+    // higher of the two is issued.
+    assert_eq!(
+        cluster.listed(20, &with_region_5(SAID)),
+        changes(&["b"], true)
+    );
+    assert_eq!(cluster.assignments("b"), [assignment(5, SAID + 3, 0)]);
+    assert!(place(&cluster, "b") < place(&cluster, "a"));
+    assert!(place(&cluster, "a") < place(&cluster, "c"));
+
+    // Said the other way round, the second is stale by the time it is judged: the
+    // region has had the epoch of the first. `a` keeps its place before `b`, and is
+    // given the region.
+    let mut cluster = self::cluster(Coordinator::new);
+    for (at, name) in (1..).zip(["a", "b", "c"]) {
+        cluster.register(at, name, &format!("{name}:25601"), &[]);
+    }
+    cluster.released(10, "c", 5, SAID + 2);
+    cluster.released(11, "a", 5, SAID);
+    assert_eq!(
+        cluster.listed(20, &with_region_5(SAID)),
+        changes(&["a"], true)
+    );
+    assert_eq!(cluster.assignments("a"), [assignment(5, SAID + 3, 0)]);
+    assert!(place(&cluster, "a") < place(&cluster, "b"));
+    assert!(place(&cluster, "b") < place(&cluster, "c"));
+}
+
+/// The list's epochs are raised before the words are judged and regions are given
+/// away after it, by the one `assign` that ends the call.
+#[test]
+fn releases_that_were_kept_are_judged_between_the_lists_epochs_and_giving_regions_away() {
+    // The grace period is over, so every region of the list is given away by the
+    // call. A word that is believed still decides who is given which: its worker is
+    // behind the others before the first region is given.
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    for name in ["a", "b"] {
+        cluster.heartbeat(LEASE, name);
+    }
+    assert_eq!(cluster.tick(LEASE), Changes::default());
+    assert_eq!(
+        cluster.listed(LEASE, &with_region_5(SAID)),
+        changes(&["a", "b"], true)
+    );
+    assert_eq!(cluster.assignments("b"), [assignment(0, SAID + 1, 0)]);
+    assert_eq!(cluster.assignments("a"), [assignment(5, SAID + 2, 1)]);
+
+    // And one that is not believed changes nothing of that: `a` is first.
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    for name in ["a", "b"] {
+        cluster.heartbeat(LEASE, name);
+    }
+    cluster.tick(LEASE);
+    cluster.listed(LEASE, &with_region_5(SAID + 1));
+    assert_eq!(cluster.assignments("a"), [assignment(0, SAID + 2, 0)]);
+    assert_eq!(cluster.assignments("b"), [assignment(5, SAID + 3, 1)]);
+
+    // A word is judged by the list's epoch, not by the one the coordinator had of
+    // the region before. `b` reports the region with an epoch below the word's,
+    // says that it leaves and is gone: the region is known without an owner. The
+    // list has it with an epoch above the word's, so somebody has run it since.
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    let held = assignment(5, SAID - 5, 3);
+    cluster.register(11, "b", "b:25601", &[held]);
+    assert_eq!(cluster.leaving(12, "b"), asks(&[order("b", 5, SAID - 5)]));
+    assert_eq!(cluster.disconnected(13, "b"), changes(&["b"], true));
+    assert_eq!(cluster.coordinator.words, [word("a", 5, SAID)]);
+    cluster.listed(20, &with_region_5(SAID + 1));
+    let region = &cluster.coordinator.regions[&RegionId(5)];
+    assert_eq!((region.epoch, region.let_go), (SAID + 1, false));
+    assert_eq!(cluster.assignments("a"), []);
+}
+
+// Q12.9.
+#[test]
+fn a_reading_that_fails_keeps_the_releases_that_were_kept() {
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    for at in [11, 12, 13] {
+        assert_eq!(cluster.unlisted(at), Changes::default());
+        assert_eq!(cluster.tick(at), Changes::default());
+        assert_eq!(cluster.coordinator.words, [word("a", 5, SAID)]);
+    }
+    assert_eq!(
+        cluster.listed(20, &with_region_5(SAID)),
+        changes(&["b"], true)
+    );
+    assert_eq!(cluster.assignments("b"), [assignment(5, SAID + 1, 0)]);
+    assert_eq!(cluster.coordinator.words, []);
+}
+
+// Q12.10.
+#[test]
+fn no_release_is_kept_once_the_first_list_has_been_handed_in() {
+    let mut cluster = cluster(Coordinator::new);
+    cluster.register(1, "a", "a:25601", &[]);
+    cluster.register(2, "b", "b:25601", &[]);
+    cluster.listed(3, &listing(&[(0, 0)], &[], 5));
+    // A region the coordinator does not know now is one the store does not have.
+    assert_eq!(cluster.released(10, "a", 5, SAID), Changes::default());
+    assert_eq!(cluster.coordinator.words, []);
+    // Nor while a later reading fails.
+    cluster.unlisted(11);
+    assert_eq!(cluster.released(12, "a", 6, SAID), Changes::default());
+    assert_eq!(cluster.coordinator.words, []);
+
+    // The store makes region 5, and it waits out the grace period like any other.
+    assert_eq!(cluster.listed(20, &with_region_5(SAID)), changes(&[], true));
+    assert_eq!(cluster.coordinator.waiting(), [RegionId(0), RegionId(5)]);
+    assert!(place(&cluster, "a") < place(&cluster, "b"));
+}
+
+// Q12.11.
+#[test]
+fn a_coordinator_made_knowing_its_regions_keeps_no_release() {
+    let mut cluster = Cluster::new(&[0]);
+    cluster.register(1, "a", "a:25601", &[]);
+    cluster.register(2, "b", "b:25601", &[]);
+    assert_eq!(cluster.released(10, "a", 5, SAID), Changes::default());
+    assert_eq!(cluster.coordinator.words, []);
+
+    // The first list it is handed adds the region without an owner, and does not
+    // let go of it.
+    let list = listing(&[(0, 0), (1, 0), (5, SAID)], &[], 6);
+    assert_eq!(cluster.listed(20, &list), changes(&[], true));
+    assert_eq!(
+        cluster.coordinator.waiting(),
+        [RegionId(0), RegionId(1), RegionId(5)]
+    );
+    assert!(!cluster.coordinator.regions[&RegionId(5)].let_go);
+}
+
+// Q12.12.
+#[test]
+fn only_a_registered_workers_release_of_a_region_that_is_not_known_is_kept() {
+    let mut cluster = cluster(Coordinator::new);
+    cluster.register(1, "a", "a:25601", &[]);
+    cluster.register(2, "b", "b:25601", &[assignment(3, 7, 0)]);
+    // From a name that is not registered.
+    assert_eq!(cluster.released(10, "nobody", 5, SAID), Changes::default());
+    // Of a region the coordinator knows, which has an owner: as ever, nothing.
+    assert_eq!(cluster.released(10, "a", 3, 7), Changes::default());
+    assert_eq!(cluster.coordinator.words, []);
+
+    // Of a region the coordinator knows without an owner, as a list named it: by
+    // the case there has always been, at once.
+    cluster.listed(11, &listing(&[(0, 0), (3, 7), (5, SAID)], &[], 6));
+    assert_eq!(cluster.coordinator.waiting(), [RegionId(0), RegionId(5)]);
+    // The home region, to nobody yet; region 5 to the worker with fewer regions
+    // that is not the one that let go of it.
+    cluster.register(12, "c", "c:25601", &[]);
+    assert_eq!(cluster.released(13, "a", 5, SAID), changes(&["c"], true));
+    assert_eq!(cluster.assignments("c"), [assignment(5, SAID + 1, 1)]);
+    assert_eq!(cluster.coordinator.words, []);
+}
+
+/// Nothing that is kept grows without what is said growing, and the first list
+/// leaves none of it, whatever became of each word.
+#[test]
+fn the_releases_that_are_kept_are_each_kept_once_and_are_gone_with_the_first_list() {
+    let mut cluster = a_word_is_kept(&["a", "b"]);
+    for round in 0..100 {
+        for region in [5, 6, 7] {
+            cluster.released(11 + round, "a", region, SAID);
+            cluster.released(11 + round, "b", region, SAID);
+        }
+    }
+    assert_eq!(cluster.coordinator.words.len(), 6);
+    // Believed, stale, and of a region the store does not have.
+    let list = listing(&[(0, 0), (5, SAID), (6, SAID + 1)], &[], 7);
+    cluster.listed(200, &list);
+    assert_eq!(cluster.coordinator.words, []);
+    // And none is kept from then on.
+    cluster.released(201, "a", 9, SAID);
+    assert_eq!(cluster.coordinator.words, []);
+}
+
+/// A word is heard like anything else a worker says: a worker that says nothing
+/// else is not forgotten for it.
+#[test]
+fn a_worker_whose_release_is_kept_has_been_heard_from() {
+    let mut cluster = a_word_is_kept(&["a"]);
+    assert_eq!(cluster.released(LEASE, "a", 5, SAID), Changes::default());
+    assert_eq!(cluster.tick(2 * LEASE), Changes::default());
+    assert!(cluster.heartbeat(2 * LEASE, "a"));
+}
