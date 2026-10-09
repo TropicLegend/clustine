@@ -1516,7 +1516,6 @@ fn a_world_with_a_layout_file_is_made_over_for_pins_whenever_the_start_is_killed
 // what such a start leaves, and no log has either line. A start that fails one step
 // later, at removing a region file or the `layout` file, has said both.
 #[test]
-#[ignore = "finding: a start that fails at the sync that makes the new table durable leaves the world made over, and neither it nor the next start says so"]
 fn a_world_that_is_made_over_by_a_start_that_fails_is_said_to_be_by_that_start_or_the_next() {
     let (stripes, _) = world_of_stripes();
     let (from_before, _) = world_from_before(&layouts()[0]);

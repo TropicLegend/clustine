@@ -465,6 +465,20 @@ impl Lanes {
             // Where there was no table, nobody was granted anything, and every change
             // the regions committed goes into the chunks.
             lanes.make_over(tabled)?;
+            // Said when what the regions had is in the chunks, before the table of
+            // the new division is put in the old one's place, and whether or not a
+            // region had anything left: whoever runs a region of the world as it was
+            // finds it gone, or begun anew under its id (ADR-0017, section 2.2). Not
+            // later: a start that fails between putting the table in place and
+            // making sure of the directory leaves the world made over, and the start
+            // after it finds nothing to say. A start that fails here says it, and so
+            // does the next if it has to do it again.
+            info!(
+                "the world was divided otherwise before; what its regions had is in the stored chunks now"
+            );
+            warn!(
+                "the regions of this world begin anew: whoever is in it has to join again. Stop the workers and the edges of a cluster before its world store is started with other pins"
+            );
         }
         if !keep {
             // What changes the table from now on goes to a segment the file names.
@@ -473,18 +487,6 @@ impl Lanes {
             lanes.table = Table::made_from(told, used, from);
             lanes.write_table(from)?;
             lanes.table_last = None;
-        }
-        if remake {
-            // Said once the table is durable, by which the world is made over for
-            // good, and whether or not a region had anything left to put into the
-            // chunks: whoever runs a region of the world as it was finds it gone, or
-            // begun anew under its id (ADR-0017, section 2.2).
-            info!(
-                "the world was divided otherwise before; what its regions had is in the stored chunks now"
-            );
-            warn!(
-                "the regions of this world begin anew: whoever is in it has to join again. Stop the workers and the edges of a cluster before its world store is started with other pins"
-            );
         }
         // Only once the table is durable, by which a start after a crash knows that
         // there is nothing left to be made over; and also if a store died right here.

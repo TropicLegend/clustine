@@ -4007,7 +4007,8 @@ said.
 **Step C5.1, the store.** Two things the store did not do as section 2.2 says, both
 mended in `Lanes::load`: the line of a world made over was written only if a region
 had something left to put into the chunks, and is now written with the second line
-whenever a start makes a world over, once the new table is durable; and a `layout`
+whenever a start makes a world over (when what the regions had is in the chunks,
+before the new table takes the old one's place; see below for why not later); and a `layout`
 file that is no fingerprint ended the start, where a store that is told no
 fingerprint now does not read the file at all. After a world is made over, the
 region file of a region that is gone stays if it has entity ids, so that they are
@@ -4071,3 +4072,19 @@ Not written as described: R3's kills of the store inside a write (the store's di
 its own crate's; the runner is dropped at each stage and the store started anew
 instead), and Q5's "at every tick", which is shown as a lower bound through a served
 coordinator, whose clock a test outside the crate cannot hold.
+
+**The store's scenarios** (T1 to T5, T7, T9, T10; T6 and T8 are later steps') found
+one thing in the code: the two lines of a world made over were written when the new
+table was durable, and a start that failed at the one step between putting the table
+in the old one's place and making sure of the directory left the world made over
+with nothing said, by that start or by the next, which found a table of its own
+division. They are written now when what the regions had is in the chunks and before
+the table is replaced: a start that fails after that has said so, and the next says
+so again only if it has to make the world over again. And one thing the record did
+not say: **a handle that is lost is owed no answer**, so what it had asked can be
+durable and never answered when the store is at rest (`Store::flush` answers `Ok`):
+the thread for chunks fails a save and marks the handle lost while the commit thread
+has already taken its next commit, which it makes durable and does not answer.
+Everything that was answered is durable, and a handle that is not lost has been
+answered everything; ADR-0011, section 4.3, already lets what was not answered be
+there or not.
