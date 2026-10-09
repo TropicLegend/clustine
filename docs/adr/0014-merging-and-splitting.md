@@ -511,7 +511,11 @@ runner that is not `Phase::Running`, or has a command under way, calls `done` wi
 `Off { why: Off::Busy }` at once. **The outcome comes by a call, not by something to
 look at**: the worker process waits for it in a `select!` that otherwise looks at its
 regions every quarter of a second, and passes a closure that sends into a channel of
-its own (section 4).
+its own (section 4). `done` is called exactly once whatever becomes of the runner: one
+that is stopped or dropped in the middle calls it with `Off::StoreLost`, as what the
+store has is then for the store to say; a command the region's thread never took,
+because the thread had ended, is answered `Off::Busy`. It runs on the region's
+thread and must not block.
 
 The phases are those of a release, with one more:
 
@@ -525,7 +529,10 @@ The phases are those of a release, with one more:
 `Prepare` asks for a checkpoint (`RegionRunner::checkpoint`) and nothing else, in
 `Phase::Running` only. `stage` is public because the kill scenarios of section 10 are
 written by someone who has the crate's interface and nothing else: a test that steps
-a runner by hand can stop at the first step of each stage.
+a runner by hand can stop at the first step of each stage. **A step advances at most
+one stage**, for a release as well, which until now could pass from `Preparing`
+through `Settling` to `Closing` in one step when nothing was pending; `stage` is
+`None` again as soon as the outcome is there.
 
 #### 3.2 What is true when the commit is sent
 
@@ -593,7 +600,10 @@ disk the runner does this, and only this:
 4. `committed` is `M`. What the store could not read stays noted. Nothing is pending,
    unsaved or being loaded (section 3.2).
 5. The chunks that were loaded, and those the store had delivered for the coming
-   tick, are kept warm (section 3.5).
+   tick **if the region held them already by what its ticks had been told**, are kept
+   warm (section 3.5). A chunk that was given back and granted again by an answer no
+   tick has taken can have been another region's in between, and is read from the
+   store like any other.
 6. `RegionStatus` is brought up to date; the phase is `Running`; `done` is called.
 
 Nothing is published for tick `M`: there is no link. The next step takes up the links
@@ -1675,7 +1685,13 @@ where a third region is needed, and **the gap** of ADR-0011. A "crash" of a regi
 the region opened again with a higher epoch. The test plays the absorbed region's
 worker itself: it runs that region with a runner of its own, releases it, opens it
 with a new epoch, reads its state with `clustine_worker::absorbable`, and keeps the
-handle.
+handle. Two things about the fixtures that building the runner showed: **entity-id
+blocks are issued in the order regions are first opened**, so a test that opens
+region 1 before region 0 gets another first entity than it may expect, and inputs
+that name the wrong entity are passed over without a word, though counted as applied;
+and "with no step in between" (R23 to R26) can only be had on a direct link, as over
+one that serialises the chunk can be there before the dig. Waits are counted in what
+the store has answered, not in ticks: a link that is held makes ticks idle.
 
 What cannot be seen or held from outside (what the runner asks of the store and when
 the store answers) is not in those lists. It is in **the builder's own tests, B1 to
