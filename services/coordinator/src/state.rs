@@ -776,6 +776,23 @@ impl Holder {
 ///   region with the id that was ordered can be another split's, and only the
 ///   worker's word says which region a split made.
 ///
+/// # Alone with its workers
+///
+/// See `docs/adr/0017-the-end-of-the-stripes.md`, sections 2.3 and 6.6. A coordinator
+/// whose workers are in its own process ([`Coordinator::alone`]) waits for nobody and
+/// gives nobody up. It has **no grace period**: nobody else can have been running its
+/// world, so it gives regions away, evens out and decides from the start. It **takes
+/// no region from a worker for having been slow**: no worker is forgotten for being
+/// silent and no region is taken for want of vouching, as there is nobody else to
+/// give it to, and taking it could only give it back to the same worker with another
+/// epoch, which stands its players still for a restore. And it **notes no failure of
+/// a worker**: nobody is there to be given regions before one that failed, so the
+/// only thing the mark would do is keep the coordinator from beginning anything with
+/// that worker's regions. What is overdue still ends as it does anywhere: a release
+/// that is not answered within the lease, and a merge whose region to absorb is not
+/// released within it, take the region from its owner, and a tick gives it away
+/// again.
+///
 /// # Deciding by itself
 ///
 /// See `docs/adr/0016-when-to-merge-and-split.md`, whose sections are named here. A
@@ -829,12 +846,17 @@ pub struct Coordinator {
     fingerprint: u64,
     /// When the grace period ends: before this the coordinator gives nothing away
     /// that its owner did not let go of, evens nothing out and begins nothing by
-    /// itself. One lease from when it was made.
+    /// itself. One lease from when it was made; for a coordinator that is alone with
+    /// its workers, when it was made, so that it has none.
     grace_until: Instant,
     /// Whether it still waits for its first list: it has been handed none, and was
     /// not made knowing its regions. Set when it is made and cleared for good by the
     /// first [`Coordinator::listed`].
     awaiting: bool,
+    /// Whether it gives no worker up: it forgets none for being silent, takes no
+    /// region for want of vouching and notes no failure. So for a coordinator that
+    /// was made [`Coordinator::alone`], and for no other.
+    keeps_its_workers: bool,
     /// The registered workers by name.
     workers: BTreeMap<String, Worker>,
     /// How many workers have registered, not counting those that were registered
@@ -917,7 +939,30 @@ impl Coordinator {
     /// of it is given away. A region whose owner says that it let go of it does not wait
     /// for that ([`Coordinator::released`]).
     pub fn new(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Self {
-        Self::made(config, now, first_epoch, &[], true)
+        Self {
+            fingerprint: config.layout.fingerprint(),
+            grace_until: follow::after(now, config.lease),
+            awaiting: true,
+            keeps_its_workers: false,
+            config,
+            workers: BTreeMap::new(),
+            arrivals: 0,
+            regions: BTreeMap::new(),
+            last_epoch: first_epoch,
+            used_blocks: BTreeSet::new(),
+            version: first_epoch,
+            releases: BTreeMap::new(),
+            home: None,
+            absorbed: Vec::new(),
+            next: None,
+            merges: BTreeMap::new(),
+            splits: BTreeMap::new(),
+            reshaped: None,
+            reading: false,
+            owed: false,
+            noted: Noted::default(),
+            pending: Pending::default(),
+        }
     }
 
     /// A coordinator that knows `regions` from the start, without owners and without
@@ -937,44 +982,33 @@ impl Coordinator {
         first_epoch: u64,
         regions: &[RegionId],
     ) -> Self {
-        Self::made(config, now, first_epoch, regions, false)
-    }
-
-    /// What [`Coordinator::new`] and its kin make: a coordinator that knows of no
-    /// worker and of `regions`, and waits for its first list if it is `awaiting`.
-    fn made(
-        config: CoordinatorConfig,
-        now: Instant,
-        first_epoch: u64,
-        regions: &[RegionId],
-        awaiting: bool,
-    ) -> Self {
-        let regions = regions.iter().map(|id| (*id, Region::default())).collect();
         Self {
-            fingerprint: config.layout.fingerprint(),
-            grace_until: follow::after(now, config.lease),
-            awaiting,
-            config,
-            workers: BTreeMap::new(),
-            arrivals: 0,
-            regions,
-            last_epoch: first_epoch,
-            used_blocks: BTreeSet::new(),
-            version: first_epoch,
-            releases: BTreeMap::new(),
-            home: None,
-            absorbed: Vec::new(),
-            next: None,
-            merges: BTreeMap::new(),
-            splits: BTreeMap::new(),
-            reshaped: None,
-            reading: false,
-            owed: false,
-            noted: Noted::default(),
-            pending: Pending::default(),
+            regions: regions.iter().map(|id| (*id, Region::default())).collect(),
+            awaiting: false,
+            ..Self::new(config, now, first_epoch)
         }
     }
 
+    /// A coordinator whose workers are in its own process: [`Coordinator::new`] with
+    /// two differences (`docs/adr/0017-the-end-of-the-stripes.md`, sections 2.3 and
+    /// 6.6; "Alone with its workers" at [`Coordinator`]).
+    ///
+    /// It has no grace period, so it assigns, evens out and decides from `now` on:
+    /// nobody else can have been running its world. And it gives no worker up
+    /// ([`Coordinator::keeps_its_workers`]): it forgets none for being silent, takes
+    /// no region for want of vouching and notes no failure of a worker. A process
+    /// that is held up for longer than the lease, as a laptop that sleeps is, wakes
+    /// with its worker registered and its regions running.
+    ///
+    /// Only the single process makes one. Like one made with `new` it knows no region
+    /// until it has been handed a list.
+    pub fn alone(config: CoordinatorConfig, now: Instant, first_epoch: u64) -> Self {
+        Self {
+            grace_until: now,
+            keeps_its_workers: true,
+            ..Self::new(config, now, first_epoch)
+        }
+    }
     /// What the coordinator was created with.
     pub fn config(&self) -> &CoordinatorConfig {
         &self.config
@@ -994,6 +1028,13 @@ impl Coordinator {
     /// 2.3). A reading that fails ([`Coordinator::unlisted`]) leaves it waiting.
     pub fn awaits_the_list(&self) -> bool {
         self.awaiting
+    }
+
+    /// Whether it gives no worker up for silence (it was made
+    /// [`Coordinator::alone`]). Whoever serves it closes no worker's connection for
+    /// silence either.
+    pub fn keeps_its_workers(&self) -> bool {
+        self.keeps_its_workers
     }
 
     /// Whether `now` is within the grace period, in which nothing is given away that
@@ -2418,8 +2459,14 @@ impl Coordinator {
             .is_some_and(|failed| now.saturating_duration_since(failed) < memory)
     }
 
-    /// Notes that the worker `name` failed a region at `now`.
+    /// Notes that the worker `name` failed a region at `now`. Not for a coordinator
+    /// that is alone with its workers: it has nobody to give regions to before a
+    /// worker that failed, and the mark would only keep it from beginning anything
+    /// with the regions of the one it has (ADR-0017, section 2.3).
     fn note_failure(&mut self, now: Instant, name: &str) {
+        if self.keeps_its_workers {
+            return;
+        }
         let worker = self
             .workers
             .get_mut(name)
@@ -2801,14 +2848,20 @@ impl Coordinator {
     /// Forgets the workers that have been silent for longer than a lease as of `now`.
     /// What they owned, and what is owned by a worker that was forgotten otherwise, is
     /// without an owner again.
+    ///
+    /// A coordinator that is alone with its workers forgets none for being silent
+    /// (ADR-0017, section 2.3). What a worker owned that was forgotten otherwise, one
+    /// that said it leaves and lost its connection, is without an owner all the same.
     fn forget_silent(&mut self, now: Instant) {
         let lease = self.config.lease;
+        let keeps = self.keeps_its_workers;
         self.workers.retain(|name, worker| {
             let silent = now.saturating_duration_since(worker.heard);
-            if silent > lease {
-                warn!(worker = %name, ?silent, "the lease of a worker ran out");
+            if keeps || silent <= lease {
+                return true;
             }
-            silent <= lease
+            warn!(worker = %name, ?silent, "the lease of a worker ran out");
+            false
         });
         for (id, region) in &mut self.regions {
             let forgotten = |owner: &mut Owner| !self.workers.contains_key(&owner.worker);
@@ -2827,7 +2880,13 @@ impl Coordinator {
     /// regions are without an owner again. A region that is being released is left
     /// alone, and so is one that is part of a merge or a split: its owner has stopped
     /// ticking on purpose.
+    ///
+    /// A coordinator that is alone with its workers takes none: it could only give
+    /// the region back to the worker it took it from (ADR-0017, section 2.3).
     fn take_unvouched(&mut self, now: Instant) {
+        if self.keeps_its_workers {
+            return;
+        }
         let lease = self.config.lease;
         let survivors = self.merges.values().map(|merge| merge.survivor);
         let reserved: BTreeSet<RegionId> = survivors
