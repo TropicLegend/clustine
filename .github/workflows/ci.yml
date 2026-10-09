@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: cargo test -p clustine --locked 2>&1 | tee -a test.log
         env:
-          CLUSTINE_TEST_BOUNDARIES: "0,4"
+          CLUSTINE_TEST_PINS: "0,4"
       # Says on the run's summary page which tests failed and with what, where it can be
       # read without opening the log, which takes being signed in.
       - name: Name the tests that failed

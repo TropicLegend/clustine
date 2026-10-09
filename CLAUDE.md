@@ -40,7 +40,7 @@ commit through once.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-CLUSTINE_TEST_BOUNDARIES=0,4 cargo test -p clustine --locked
+CLUSTINE_TEST_PINS=0,4 cargo test -p clustine --locked
 ```
 
 The last line runs the end-to-end tests on a world divided into three regions. The tests

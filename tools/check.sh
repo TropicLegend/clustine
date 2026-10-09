@@ -4,7 +4,7 @@
 #
 # Usage: tools/check.sh
 #
-# The two runs of the tests go at the same time: the second one, on a world divided
+# The two runs of the tests go at the same time: the second one, on a world pinned
 # into three regions, skips the tests that take minutes with clusters of processes, so
 # it does not take much from the first. Run one after the other they take much longer
 # for the same result. The logs are kept in a directory that is named at the end.
@@ -36,12 +36,12 @@ report build $?
 
 cargo test --workspace --locked >"${logs}/tests.log" 2>&1 &
 tests=$!
-CLUSTINE_TEST_BOUNDARIES=0,4 cargo test -p clustine --locked >"${logs}/boundaries.log" 2>&1 &
-boundaries=$!
+CLUSTINE_TEST_PINS=0,4 cargo test -p clustine --locked >"${logs}/pinned.log" 2>&1 &
+pinned=$!
 wait "$tests"
 report tests $?
-wait "$boundaries"
-report boundaries $?
+wait "$pinned"
+report pinned $?
 
 printf 'logs: %s\n' "$logs"
 exit "$failed"

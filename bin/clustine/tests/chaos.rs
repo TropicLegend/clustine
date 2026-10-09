@@ -79,11 +79,11 @@ struct Chaos {
 }
 
 /// Whether this run of the tests is the one that repeats the end-to-end tests on a
-/// world divided into regions, which `CLUSTINE_TEST_BOUNDARIES` asks for. These tests
+/// world divided into regions, which `CLUSTINE_TEST_PINS` asks for. These tests
 /// divide their worlds themselves and take minutes, so they run once, in the run
 /// without it.
 fn a_repetition() -> bool {
-    std::env::var_os("CLUSTINE_TEST_BOUNDARIES").is_some()
+    std::env::var_os("CLUSTINE_TEST_PINS").is_some()
 }
 
 /// The seed of this run: `CLUSTINE_CHAOS_SEED` if set, else the clock.

@@ -23,17 +23,17 @@ pub fn config() -> Config {
         world: None,
         checkpoint_interval: Duration::from_secs(300),
         serialise_link: false,
-        pins: boundaries(),
+        pins: pins(),
         // Regions stay as they are unless a test says otherwise.
         follow: None,
     }
 }
 
-/// Where the tests' worlds are divided into regions: nowhere, unless the environment
-/// variable `CLUSTINE_TEST_BOUNDARIES` lists chunk x coordinates, separated by commas.
-/// Setting it runs every test against a world of several regions.
-fn boundaries() -> Vec<i32> {
-    std::env::var("CLUSTINE_TEST_BOUNDARIES")
+/// Where the tests' worlds have regions pinned side by side: nowhere, unless the
+/// environment variable `CLUSTINE_TEST_PINS` lists chunk x coordinates, separated by
+/// commas. Setting it runs every test against a world of several regions.
+fn pins() -> Vec<i32> {
+    std::env::var("CLUSTINE_TEST_PINS")
         .map(|list| {
             list.split(',')
                 .map(|x| x.trim().parse().expect("a chunk x coordinate"))
