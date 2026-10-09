@@ -434,8 +434,10 @@ differences, and only the single process uses it (section 6):
   at once, evens out at once and decides at once. The three tests of the grace
   period become one time, `grace_until`, which `new` sets a lease from `now` and
   `alone` sets to `now`;
-- **it takes no region from a worker for having been slow**: `forget_silent` and
-  `take_unvouched` do nothing, and the service that serves it closes no worker's
+- **it takes no region from a worker for having been slow**: `forget_silent`
+  forgets no worker for silence (it still takes the regions of one that said it
+  leaves and whose connection then ended, which is no silence), `take_unvouched`
+  does nothing, and the service that serves it closes no worker's
   connection for silence. There is nobody else to give a region to, so taking it
   could only give it back to the same worker with another epoch, which stands its
   players still for a restore and, when the coordinator decides by itself, leaves
@@ -1973,7 +1975,8 @@ no store; but no worker could open it without the store.
 
 **N14. A world of pinned regions under a coordinator that decides by itself.** As in
 step C4: pinned regions merge by the distances, a part cannot grow, K15. The
-coordinator logs once for every reading that first shows a pinned region: `the world
+coordinator logs once, as a warning, at the first reading that shows a pinned region:
+`the world
 has regions that are pinned to an area: a region that is split off here cannot grow.
 Start the coordinator with --reshape by-hand to keep pinned regions as they are`.
 `follows.rs` goes on testing exactly this.
@@ -2302,7 +2305,8 @@ machine's; "the service" is `Service` driven by hand, as its tests drive it.
   its word. A list that shows region 3 living leaves it so; one that shows it
   absorbed, or has `next` above 3 and no region 3, takes it away.
 - **Q5.** The service, deciding by hand, whose `lists` fails: it reads once when it
-  is made and once more at every tick at which no reading is under way; after the
+  begins to serve (a test that drives it by hand begins that reading itself, as
+  `run` does) and once more at every tick at which no reading is under way; after the
   first reading that succeeds it reads at no tick. Deciding by itself: the same until
   the first list, and then as ADR-0016, section 7.
 - **Q6.** N13: a coordinator made anew, one worker registers holding region 0, no
@@ -2349,8 +2353,9 @@ machine's; "the service" is `Service` driven by hand, as its tests drive it.
   6. **`a` is no longer registered when the list is handed in** (its lease ran
      out): the word is dropped and nothing fails; region 5 is known without an
      owner, is not let go, and is given out like any region of a list.
-  7. With no worker that can be given it (`a` has said that it leaves and `b` is
-     not there), after 1's list: region 5 is known without an owner, let go, and
+  7. With no worker that can be given it (`a` has lost its connection and `b` is
+     not there; a worker that says it leaves while it owns nothing is forgotten by
+     that call, and its word is then case 6's), after 1's list: region 5 is known without an owner, let go, and
      the table has `waiting: 2`; `b` registers, and is given region 5 by that call
      or the next tick, within the grace period.
   8. **Two words, in the order said**, with a third worker `c` registered: `a` says
@@ -2387,8 +2392,9 @@ machine's; "the service" is `Service` driven by hand, as its tests drive it.
   distances`; the worker never says that it released region 1; more than a lease
   after the merge was asked, a tick: the merge has ended with `NotReleased`, and
   by that same tick region 1 is the worker's again with a higher epoch. The worker
-  reports it with that epoch. **When region 1 has rested, the merge is begun
-  again**, well before six leases have passed since the first ended. The same if
+  reports it with that epoch. **The merge is begun again when the two regions have
+  been left alone as after any merge that came to nothing** (ADR-0016, section 5.5:
+  three rests), which is well before six leases have passed since the first ended. The same if
   nothing at all is heard of the worker for ten leases and then one tick comes,
   followed by its reports. Made with `new` (and heartbeats, so that the worker is
   not forgotten): the same up to the higher epoch, and then nothing is begun with
@@ -3983,3 +3989,62 @@ harm, and an edge that starts in the middle of a merge waits a moment longer.
 
 **What neither reviewer could check stays unchecked**, as "Not checked" has it:
 nothing has been run, and every rate and every duration is reckoned.
+
+## Found while building
+
+What the builders decided where the record could be read in two ways, and what the
+tests written from it found. Where a sentence above was sharpened for it, that is
+said.
+
+**Step C5.1, the store.** Two things the store did not do as section 2.2 says, both
+mended in `Lanes::load`: the line of a world made over was written only if a region
+had something left to put into the chunks, and is now written with the second line
+whenever a start makes a world over, once the new table is durable; and a `layout`
+file that is no fingerprint ended the start, where a store that is told no
+fingerprint now does not read the file at all. After a world is made over, the
+region file of a region that is gone stays if it has entity ids, so that they are
+not issued again, and a region made later under that id begins with the epoch the
+file has: T3's list differs from T1's in region 0's epoch as well as in `next`, and
+T4's region 1 has the epoch of the part that was region 1. `side_by_side(home,
+&[])` is one region pinned to the whole world, and not `open`.
+
+**Step C5.1b, `Store::flush`.** One round is enough, as section 5.5 reckoned. A
+handle in another process counts only once what it asked has arrived. Besides the
+unsettled log, `flush` answers `StoreError::Io` if a thread of the store has gone,
+where `regions` panics. A hello that is handled after `flush` does write (the
+region file and its `Opened` record), so "nothing is written afterwards" holds
+because `stop` lets no hello be under way, which is its step 4.
+
+**Step C5.2, the coordinator.** Sharpened above: what `forget_silent` still does
+for a coordinator that is alone; N14's line once for each coordinator; Q12.7, Q13
+and Q5. Besides: the words of release that are kept have no cap, as the regions
+`report` takes on a worker's word have none; the first reading is begun by `run`
+and not by `Service::new`; `serve` makes its coordinator `knowing` the stripes of a
+layout with a boundary until step C5.9, which is the one call of `knowing` that is
+no test's; a tick exactly a lease after a coordinator was made is outside its grace
+period; and `note_failure` doing nothing for a coordinator that is alone covers a
+release that was not answered as well as a merge.
+
+**Step C5.3, the worker's loop.** Nothing inside the loop moved but what became a
+parameter, and one line at its end: the loop lets go of the watch of what it serves
+where it used to end the task that accepts edges, and the process stops accepting
+when that watch is closed, so the listener closes before the regions are stopped,
+as it did. A closed watch is a worker that serves nothing any more, which is what
+`start` and `take_over` watch for beside the loop's end. An opening that was on a
+blocking thread when its future was dropped runs to its end and closes its handle
+only then, so the loop's return does not say that no handle is open: `stop`'s
+`Store::flush` covers it only if that hello had reached the store, which the lock
+of section 6.4 is for.
+
+**Step C5.3a, the split.** `waited` counts the chunks of the part that were named
+in the grants and that the region did not hold by its ticks. `take_split` does not
+check that it is handed the grants `split` was. Section 3.6.4's "both regions are,
+in memory, what `Region::restore` makes of the store's record" holds of the part
+always and of the split region on land that is not pinned; a pinned region that is
+restored holds none of its area and claims anew, as before this step, and the
+store's `bounds` of a pinned region are `None`. In section 3.6.2 the number an edge
+has said on its link is kept for each link (`heard`): set by a hello that is
+answered as a resume, raised by a `Confirm`. A stop that is noted for a standstill
+stays if the region stops again before it has ticked, and the runner reads no clock
+when nobody is to be told.
+
