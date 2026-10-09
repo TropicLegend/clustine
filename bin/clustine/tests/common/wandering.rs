@@ -1183,7 +1183,10 @@ impl Wanders {
         let mut places: Vec<String> = groups
             .map(|group| {
                 let bots = group.progress.bots();
-                let xs: Vec<String> = bots.iter().map(|bot| format!("{:.1}", bot.x)).collect();
+                // Of a few, where each is; of a crowd, where its first bot is.
+                let few = if bots.len() > 3 { 1 } else { 3 };
+                let xs = bots.iter().take(few).map(|bot| format!("{:.1}", bot.x));
+                let xs: Vec<String> = xs.collect();
                 format!("{} at x = {}", group.name, xs.join(" and "))
             })
             .collect();
@@ -1795,15 +1798,38 @@ impl Wanders {
     /// Fails if a bot of a group has waited longer for an acknowledgement since
     /// `from` than a player may at a merge or a split.
     pub fn nobody_waited_too_long(&mut self, from: Instant) {
-        let longest = self.longest_pause_since(from);
+        let now = Instant::now();
+        // The longest wait of all, with whose it was and when it began.
+        let mut longest: Option<(Duration, String, Duration)> = None;
+        for group in &self.groups {
+            let waits = group.progress.longest_waits(from, now);
+            for (bot, wait) in waits.iter().enumerate() {
+                let Some(wait) = wait else {
+                    continue;
+                };
+                let lasted = wait.lasted(now);
+                if longest.as_ref().is_none_or(|(most, ..)| lasted > *most) {
+                    let whose = format!("bot {bot} of group {}", group.name);
+                    let since = wait.sent.saturating_duration_since(self.started);
+                    longest = Some((lasted, whose, since));
+                }
+            }
+        }
+        let Some((lasted, whose, since)) = longest else {
+            return;
+        };
         self.note(format!(
-            "the longest any bot waited for an acknowledgement was {}",
-            seconds(longest)
+            "the longest any bot waited for an acknowledgement was {}: {whose}, for what it \
+             sent at {}",
+            seconds(lasted),
+            seconds(since)
         ));
-        if longest > LONGEST_PAUSE {
+        if lasted > LONGEST_PAUSE {
             self.fail(&format!(
-                "a bot waited {} for an acknowledgement; it may wait {LONGEST_PAUSE:?}",
-                seconds(longest)
+                "{whose} waited {} for an acknowledgement of what it sent at {}; it may wait \
+                 {LONGEST_PAUSE:?}",
+                seconds(lasted),
+                seconds(since)
             ));
         }
     }

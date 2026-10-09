@@ -2275,3 +2275,111 @@ async fn eight_who_sprint_straight_on_are_split_off_together_and_never_handed_ov
     let wanders = Wanders::process("at a sprint, in one process", world(None)).await;
     straight_on_at_a_sprint(wanders).await;
 }
+
+// What the runs of these tests found beside what they assert, and what the test below
+// keeps.
+//
+// **An edge uses a whole processor from the first time a region leaves the routing
+// table while the edge waits to try its link again**, which is after about every
+// merge and every absorption.
+//
+// 1. A region is absorbed. Its owner releases it first, the edge's link to it ends,
+//    and the edge's link-keeper (`keep_linked` in `bin/clustine/src/cluster/edge.rs`)
+//    tries the route again, which the routing table still names: the worker turns
+//    the connection away (`region 1 is not running here`), and the keeper notes when
+//    to try again, 20 ms later (`LinkState::again`).
+// 2. The merge is made and the coordinator's next routing table has the region no
+//    more. The keeper goes through the routes of the table at every pass of its
+//    loop and takes `again` away only where it begins an attempt, so the time noted
+//    for a region that is in no table stays; and the loop sleeps until the earliest
+//    such time of all the regions it has ever known.
+// 3. That time is past from then on. The sleep returns at once, the pass changes
+//    nothing, and the loop goes round for as long as the process lives.
+//
+// Seen as two edges of clusters whose test had ended, each at 95 to 100 % of a
+// processor on its main thread for three quarters of an hour with no player and
+// nothing in its log; both had last logged `a region has been absorbed`. The single
+// process runs the same keeper. Every cluster of the tests whose coordinator merges
+// has had such an edge beside it, which is a processor in six for each: the pauses
+// these tests and those of `follows.rs` and `merges.rs` measured were measured so.
+//
+// The record does not say otherwise anywhere; it is ADR-0013's keeper as built, and
+// only a world whose regions come and go meets it at every turn. What a player
+// notices: nothing of the game; whoever runs the server, a processor that is busy
+// from the first time two players have met again.
+
+/// How much of a processor the process `pid` has used so far, in seconds, by what
+/// the system says of it. A hundredth of a second is what it counts in.
+fn processor_seconds(pid: u32) -> Option<f64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Behind the name, which is in brackets and may have spaces: the state and the
+    // numbers, of which the twelfth and thirteenth are the time in user mode and in
+    // the kernel.
+    let numbers: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    let in_user_mode: f64 = numbers.get(11)?.parse().ok()?;
+    let in_the_kernel: f64 = numbers.get(12)?.parse().ok()?;
+    Some((in_user_mode + in_the_kernel) / 100.0)
+}
+
+/// After a region was absorbed the edge is as idle as before: with two players who
+/// stand in one chunk it uses a small part of a processor. A wanderer is split off
+/// at chunk 19 and walks back to chunk 8, where its region is merged into region 0,
+/// and leaves; then the edge's use of the processor is measured over twenty seconds
+/// of the steps of `A`.
+#[ignore = "finding: the edge's link-keeper spins a processor once a region has left the routing table"]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edge_is_idle_again_after_a_region_was_absorbed() {
+    if a_repetition() {
+        return;
+    }
+    let mut wanders = Wanders::cluster("an idle edge", world(None)).await;
+    wanders.a_settles().await;
+    let edge = wanders.processes().edge.1.as_ref();
+    let Some(edge) = edge.and_then(|edge| edge.id()) else {
+        wanders.fail("the edge does not run");
+    };
+    let used_in = async |wanders: &mut Wanders| {
+        let (before, since) = (processor_seconds(edge), Instant::now());
+        wanders.walks_for("A", Duration::from_secs(20)).await;
+        let used = processor_seconds(edge).zip(before);
+        let used = used.map(|(now, before)| now - before);
+        used.map(|used| used / since.elapsed().as_secs_f64())
+    };
+    let Some(before) = used_in(&mut wanders).await else {
+        // Nowhere to read it from, on a system that is not Linux.
+        return;
+    };
+    wanders.note(format!(
+        "before any merge the edge uses {before:.2} of a processor"
+    ));
+
+    let wanderer = wanders.wanders("Rover").await;
+    let (x, z) = middle_of(OUT, 0);
+    wanders.wanderers[wanderer].walks_to(x, z, ON_FOOT);
+    wanders.wanderer_arrives(wanderer, x, ON_FOOT).await;
+    wanders
+        .until_the_list("the wanderer is split off", |list| living(list) == [0, 1])
+        .await;
+    wanders.walks_for("A", GIVEN_BACK).await;
+    let (x, z) = middle_of(BACK, 0);
+    wanders.wanderers[wanderer].walks_to(x, z, ON_FOOT);
+    let merged = "the wanderer's region is merged into region 0";
+    wanders
+        .until_the_list(merged, |list| absorbed_by(list, 1) == Some(0))
+        .await;
+    wanders.wanderer_arrives(wanderer, x, ON_FOOT).await;
+    wanders.wanderer_leaves(wanderer).await;
+    wanders.whole().await;
+
+    let after = used_in(&mut wanders).await.expect("it was read before");
+    wanders.note(format!(
+        "after the merge the edge uses {after:.2} of a processor"
+    ));
+    if after > 0.5 {
+        wanders.fail(&format!(
+            "the edge was to be as idle after a merge as before it, when it used {before:.2} \
+             of a processor: it uses {after:.2}"
+        ));
+    }
+    wanders.finish().await;
+}
