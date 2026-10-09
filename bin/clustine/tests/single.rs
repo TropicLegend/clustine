@@ -1447,41 +1447,40 @@ const PINNED: &str = "the world has regions that are pinned to an area: a region
                       off here cannot grow. Start the coordinator with --reshape by-hand to keep \
                       pinned regions as they are";
 
-// P8, as far as it holds before `by-itself` is what a server does unless told: the
-// refusal of `--boundaries`, the default and section 3.5's line are the later steps'.
+// P8, but for the refusal of `--boundaries`, which is a later step's.
 //
-/// `clustine --reshape by-itself` logs that it reshapes by itself, with the distances
-/// that follow from the view distance it has when it is told none, 22 and 30.
-/// `clustine --reshape by-hand` logs that it reshapes by hand, and so does a server
-/// that is told nothing, at this step.
+/// `clustine` started with nothing logs that it reshapes by itself, with the distances
+/// that follow from the view distance it has when it is told none, 22 and 30, and so
+/// does `clustine --reshape by-itself`. `clustine --reshape by-hand` logs that it
+/// reshapes by hand.
 #[tokio::test]
 async fn the_single_process_says_in_its_log_how_it_reshapes() {
     if a_repetition() {
         return;
     }
-    let by_itself = Process::start(&["--reshape", "by-itself"]).await;
-    let line = by_itself.says(BY_ITSELF).await;
-    for field in ["merge_distance=22", "split_distance=30"] {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        assert!(fields.contains(&field), "{field} is not in: {line}");
-    }
-    assert!(
-        by_itself.lines_with(BY_HAND).is_empty(),
-        "{}",
-        by_itself.log()
-    );
-    assert_eq!(by_itself.lines_with(BY_ITSELF).len(), 1);
-
-    for flags in [&["--reshape", "by-hand"][..], &[]] {
-        let by_hand = Process::start(flags).await;
-        by_hand.says(BY_HAND).await;
+    for flags in [&[][..], &["--reshape", "by-itself"]] {
+        let by_itself = Process::start(flags).await;
+        let line = by_itself.says(BY_ITSELF).await;
+        for field in ["merge_distance=22", "split_distance=30"] {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            assert!(fields.contains(&field), "{field} is not in: {line}");
+        }
         assert!(
-            by_hand.lines_with(BY_ITSELF).is_empty(),
+            by_itself.lines_with(BY_HAND).is_empty(),
             "{}",
-            by_hand.log()
+            by_itself.log()
         );
-        assert_eq!(by_hand.lines_with(BY_HAND).len(), 1);
+        assert_eq!(by_itself.lines_with(BY_ITSELF).len(), 1);
     }
+
+    let by_hand = Process::start(&["--reshape", "by-hand"]).await;
+    by_hand.says(BY_HAND).await;
+    assert!(
+        by_hand.lines_with(BY_ITSELF).is_empty(),
+        "{}",
+        by_hand.log()
+    );
+    assert_eq!(by_hand.lines_with(BY_HAND).len(), 1);
 }
 
 // P8.

@@ -79,10 +79,12 @@ enum Reshape {
 struct Reshaping {
     /// Who decides when regions merge and split. A coordinator that does it by itself
     /// merges regions whose players come near each other and splits a region whose
-    /// players go apart, and does what it is asked besides. The distances and the
-    /// rest below are for that one; one that reshapes by hand checks them and does
-    /// nothing with them.
-    #[arg(long, value_enum, default_value_t = Reshape::ByHand)]
+    /// players go apart, and does what it is asked besides: regions follow their
+    /// players, which is what a server does unless told otherwise. The distances and
+    /// the rest below are for that one; one that reshapes by hand leaves the regions
+    /// as they are unless somebody asks, checks the numbers and does nothing with
+    /// them.
+    #[arg(long, value_enum, default_value_t = Reshape::ByItself)]
     reshape: Reshape,
 
     /// Regions with players this many chunks apart or nearer are merged by a
@@ -616,11 +618,14 @@ mod tests {
     }
 
     #[test]
-    fn a_coordinator_reshapes_by_hand_unless_told_otherwise() {
-        assert_eq!(follow(&[]), Ok(None));
+    fn a_coordinator_reshapes_by_itself_unless_told_otherwise() {
+        assert_eq!(follow(&[]), Ok(Some(Policy::for_view_distance(8))));
         assert_eq!(follow(&["--reshape", "by-hand"]), Ok(None));
-        // The other flags are taken and nothing is done with them.
+        // The other flags are taken and nothing is done with them by one that
+        // reshapes by hand.
         let numbers = [
+            "--reshape",
+            "by-hand",
             "--view-distance",
             "12",
             "--merge-distance",

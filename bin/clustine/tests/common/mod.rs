@@ -7,8 +7,15 @@ pub mod processes;
 use std::time::Duration;
 
 use clustine::{Config, EdgeConfig, Server};
+use clustine_coordinator::Policy;
 
 pub fn config() -> Config {
+    let pins = pins();
+    // Regions follow their players, as in a server that is told nothing, by the
+    // distances of the tests' view distance. Pinned regions stay as they are.
+    let follow = pins
+        .is_empty()
+        .then(|| Policy::for_view_distance(VIEW_DISTANCE as u32));
     Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         description: "integration test".to_owned(),
@@ -23,9 +30,8 @@ pub fn config() -> Config {
         world: None,
         checkpoint_interval: Duration::from_secs(300),
         serialise_link: false,
-        pins: pins(),
-        // Regions stay as they are unless a test says otherwise.
-        follow: None,
+        pins,
+        follow,
     }
 }
 

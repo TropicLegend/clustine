@@ -93,21 +93,27 @@ async fn a_coordinator_says_when_it_starts_how_it_reshapes() {
     let directory = tempfile::tempdir().unwrap();
     // Nothing but the coordinator is started: it waits for workers and for the store.
     // A cluster without pins tells its coordinator nothing of how it reshapes, which
-    // is what the first start here is about.
+    // is what the first start here is about: regions follow their players unless a
+    // coordinator is told otherwise, by the distances of the usual view distance.
     let mut cluster = Cluster::new(directory.path(), 0, "").await;
     let by_itself = "reshaping by itself: regions merge and split by where their players are";
-
-    cluster.start_coordinator();
     let by_hand = "reshaping by hand: regions merge and split when somebody asks";
-    cluster.wait_for_log("coordinator", by_hand, 1).await;
-    assert!(!cluster.log("coordinator").contains("reshaping by itself"));
-    cluster.kill().await;
+    // What a coordinator says when its merge distance is too short for what players
+    // see (ADR-0017, section 3.5).
+    let too_short = "the merge distance is less than players see across";
 
-    cluster.coordinator_arguments = vec!["--reshape".to_owned(), "by-itself".to_owned()];
     cluster.start_coordinator();
     let said = numbers(&cluster, by_itself, 1).await;
     let usual = "merge_distance=22 split_distance=30 margin=3 rest_seconds=10";
     assert!(said.ends_with(usual), "{said}");
+    assert!(!cluster.log("coordinator").contains(by_hand));
+    assert!(!cluster.log("coordinator").contains(too_short));
+    cluster.kill().await;
+
+    cluster.coordinator_arguments = vec!["--reshape".to_owned(), "by-hand".to_owned()];
+    cluster.start_coordinator();
+    cluster.wait_for_log("coordinator", by_hand, 1).await;
+    assert_eq!(cluster.log("coordinator").matches(by_itself).count(), 1);
     cluster.kill().await;
 
     // As the tests of a cluster that reshapes by itself start theirs.
@@ -117,8 +123,19 @@ async fn a_coordinator_says_when_it_starts_how_it_reshapes() {
     let said = numbers(&cluster, by_itself, 2).await;
     let told = "merge_distance=3 split_distance=5 margin=2 rest_seconds=5";
     assert!(said.ends_with(told), "{said}");
+    // Three chunks are fewer than players see across at the usual view distance of
+    // eight, which needs nineteen, and the coordinator says so, once.
+    cluster.wait_for_log("coordinator", too_short, 1).await;
+    let log = cluster.log("coordinator");
+    let warned = log.lines().find(|line| line.contains(too_short)).unwrap();
+    assert!(
+        warned.ends_with("merge_distance=3 view_distance=8 needs=19"),
+        "{warned}"
+    );
+    assert!(warned.contains("WARN"), "{warned}");
     // It was started once for each, and each time as it was told.
-    assert_eq!(cluster.log("coordinator").matches(by_hand).count(), 1);
+    assert_eq!(log.matches(by_hand).count(), 1);
+    assert_eq!(log.matches(too_short).count(), 1);
     cluster.kill().await;
 }
 
