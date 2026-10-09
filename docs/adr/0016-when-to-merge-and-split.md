@@ -1,10 +1,9 @@
 # ADR-0016: When to merge and when to split
 
-- Status: **Proposed**, revised after an independent review against the code; not
-  built. The design of step C4 of milestone M3, phase C: the coordinator decides by
-  itself. It changes no code of the simulation, the region runner, the world store or
-  the edge. What the review found and what was changed for it is in "Review", at the
-  end.
+- Status: **Accepted**; reviewed twice against the code and revised after each (see
+  "Review"); being built in the steps of section 11 (C4.1 is built). The design of
+  step C4 of milestone M3, phase C: the coordinator decides by itself. It changes no
+  code of the simulation, the region runner, the world store or the edge.
 - Date: 2026-10-09
 
 ## Context
@@ -17,7 +16,11 @@ it and to write tests from.
 
 What the code is today, as far as this record builds on it or changes it. Each of these
 was read in the code at commit `11764c3`, and again for the revision at `ec08d1c`, which
-has the same code but for one test; "Not checked" at the end says what was not.
+has the same code but for one test; "Not checked" at the end says what was not. Step
+C4.1 has been built since (`28d0d3e`), and three things below are no longer so: the
+message of the first point has the shape of section 2.1, the coordinator takes it from
+a worker and keeps nothing of it, and the comments of `Prepare` say that a merge or a
+split is coming.
 
 - **A message for where players are exists and nobody uses it.**
   `ToCoordinator::Players { regions: Vec<(RegionId, Crowds)> }` is step C0's. No worker
@@ -228,9 +231,12 @@ a second, and nothing is begun with them until it is over.
 
 `Coordinator::players(now, name, regions) -> bool` returns whether the worker is
 registered; the service closes the connection of one that is not, as for a heartbeat.
-To say it is to be heard from. Like `heartbeat` it changes no owner and calls neither
-`seen` nor `finish`. **A coordinator that decides nothing by itself keeps nothing of
-it.** Otherwise each entry is taken or passed over:
+To say it is to be heard from: a worker that says nothing else is not forgotten for
+being silent. **It vouches for nothing**: a region still needs its heartbeats, and one
+whose owner says only this loses that owner a lease after it was last vouched for.
+Like `heartbeat` it changes no owner, calls neither `seen` nor `finish` and returns no
+`Changes`. **A coordinator that decides nothing by itself keeps nothing of it.**
+Otherwise each entry is taken or passed over:
 
 - passed over unless `name` owns the region with that epoch (`holds`);
 - passed over while the region is part of a merge or a split under way;
@@ -260,19 +266,22 @@ Beside the sighting, per region:
 - two counters of attempts that failed (section 5.5);
 - whether it was split last (section 5.3);
 - `prepared`, when its owner was last told to prepare it for a split (section 5.6);
-- `absorbed_at`, when the last absorption it was the survivor of ended, well or not
-  (section 5.5);
+- `after_absorption`, whether an absorption it was the survivor of has ended, well or
+  not, and no report of it has been taken since (section 5.5). Until the second review
+  this was a time, `absorbed_at`, with a window of `FRESH` after it; no time comes
+  into it now;
 - whether the last reading of the list that succeeded has it pinned to an area
   (section 7); a region no reading has shown, which is a part, is not.
 
-And per thing that is wanted, since when (section 5.3).
+And per thing that is wanted, since when; per merge two times more, which are for the
+order alone (`waiting` and `missed`, section 5.3).
 
 #### 2.4 What is forgotten, and when
 
 | When | The sighting | The rest |
 |---|---|---|
 | A merge or a split of the region begins, whoever asked | stays, `taken` is nothing: not fresh until a report is taken after the end | `empty_since` and `prepared` forgotten |
-| A reading of the list shows the region absorbed, by a merge that was noted or not | its crowds are added to the sighting of the living region it went into, by the pairs of that reading, if the coordinator knows that one; a sighting is made for that one if it has none, of nobody and not fresh | all of it goes; what waited for a merge with it waits for a merge with that region, since the earlier of the two times (section 5.3) |
+| A reading of the list shows the region absorbed, by a merge that was noted or not | its crowds are added to the sighting of the living region it went into, by the pairs of that reading, **if the coordinator has a sighting of that one**. If it has none, or does not know that region, **none is made**, and the crowds go with the absorbed region | all of it goes; what waited for a merge with it waits for a merge with that region, since the earlier of the two times, unless that region is the merge's other region: a merge of a region with itself is forgotten (section 5.3) |
 | A split ends with the worker's word `Ok(N)` for the split that was noted | the crowds in the chunks that split named go from the region's sighting to a sighting of `N`, of `N`'s owner and epoch, tick 0, not fresh | `N` begins like any region that is given an owner |
 | A merge or a split ends otherwise | stays as it is | section 5.5 |
 | The region is given an owner or an epoch that the coordinator did not have for it, or loses its owner | stays; it is no longer of the region's owner and epoch, so not fresh | `empty_since` and `prepared` forgotten; `alone_until` at least a rest from now if it was given an owner or an epoch |
@@ -283,6 +292,21 @@ The rule behind the table: **the players a region last named are still somewhere
 near there**, in that region or in the one that took them, until somebody says
 otherwise. A sighting is only ever replaced by a newer word of the same region or
 moved with its players; it is never dropped for being old.
+
+**The one case in which the crowds of an absorbed region are dropped**: it is shown
+absorbed by a region of which the coordinator has no sighting. Until the second review
+a sighting "of nobody and not fresh" was made for that region, and it then counted as
+sighted for section 5.1 although no worker had said a word of it. On stripes that was
+the home region after every new coordinator: the coordinator knows the regions of the
+layout from the start, the list has region 1 absorbed by region 0 for good once a
+player has crossed, and region 0, restored for some seconds by a worker that took it
+over, had a sighting from the first reading on. What is lost by dropping them: the
+absorbed region's players are in no sighting until the worker of the region that took
+them in reports it, which it does within a `LOOK` of running it, and that first report
+has the players of both. **Section 5.1's third condition covers the gap**: a region
+without a sighting holds every merge and split back, so nothing is begun anywhere while
+those players are unknown. (A region the coordinator does not know at all is added by a
+reading, as a rule by the same one, and is without a sighting from then.)
 
 #### 2.5 What it costs, and how old it is
 
@@ -309,7 +333,7 @@ rests on that being short.
 | reach | `V + 1` = 9 | how far along an axis a player is sent chunks |
 | `D_m` | `2 * (V + 1) + 4` = 22 | regions with players this near or nearer are merged |
 | `D_s` | `D_m + 8` = 30 | players of one region further apart than this are split |
-| margin | `min(3, (D_s - 1) / 2)` = 3 | how far around a group's chunks a split names chunks, and how far a group may move in a tick and still be the same group |
+| margin | `min(3, (D_s - 1) / 2)` = 3 | `Policy::margin`: how far around a group's chunks a split names chunks, and how far a group may move in a tick and still be the same group |
 | `LOOK` | 250 ms | how often a worker reports, and how often `tick` is to be called |
 | `FRESH` | 1 s | how old a sighting may be; and what is wanted must stand for longer |
 | rest | 10 s | `--rest-seconds`: how long a region is left alone |
@@ -343,10 +367,10 @@ distances: a player who joins is shown the chunks around the spawn point by the 
 region.
 
 `--merge-distance` and `--split-distance` set the two outright, for tests, whose bots
-walk a chunk in under three seconds (section 11). They are refused unless `1 <= D_m`,
-`D_m + 2 <= D_s` and `3 <= D_s`, so the margin is 1 at least and twice the margin is
-less than `D_s`; with small distances nothing above about views holds, and nothing
-breaks.
+walk a chunk in under three seconds (section 11). They are refused unless `1 <= D_m`
+and `D_m + 2 <= D_s` (`Policy::checked`, which makes these two refusals and no other);
+`D_s` is then 3 at least, so the margin is 1 at least and twice the margin is less
+than `D_s`. With small distances nothing above about views holds, and nothing breaks.
 
 ### 4. What is wanted
 
@@ -499,9 +523,26 @@ This part needs the time, the owners and the list, so it is the state machine's
 
 **Its survivor** is the first of these that has a fresh sighting without players, has
 had none for more than `FRESH` (`empty_since`), is free **but for its `alone_until`,
-which is not looked at**, and is in nothing begun at this tick: the home region; then
-the regions that are not the home region and have a lower id than the empty one, the
-lowest first, pinned or not. If there is none, the region stays.
+which is not looked at**, is in nothing begun at this tick, **and is in no merge that
+`decide` wants at this tick, whether that merge has stood or not**: the home region;
+then the regions that are not the home region and have a lower id than the empty one,
+the lowest first, pinned or not. If there is none, the region stays.
+
+**Why a region that a merge is wanted of is no survivor.** Only the home region can be
+both without players and wanted for a merge: somebody of another region stands within
+`D_m` of the chunk players enter in (section 4.2), and the home region is about to have
+players. Without this clause an absorption took it away one tick before that merge had
+stood, every time. `empty_since` is the time of a report and a merge's `since` the time
+of a tick: the home region's first report after an absorption is taken at `r`, between
+two ticks, the merge is wanted from the first tick after that, `t1`, and at the tick
+`t1 + 1 s` the home region has been without players for more than `FRESH` while the
+merge has been wanted for exactly `FRESH`, which is not long enough to have stood. The
+absorption began, the home region was reserved, the merge's `since` was forgotten, and
+so on for as long as an empty region was due: whoever came back to a spawn point that
+nobody was at stayed in a region of their own beside it, about two seconds for every
+empty region of the world. With the clause the next candidate takes the empty region
+meanwhile, or it waits. Evening out keeps away from a region that something is wanted
+of for the same reason (section 6).
 
 **Why the survivor's `alone_until` is not looked at, and why it does not rest
 afterwards** (section 5.5): the rest bounds how often players stand still, and here
@@ -584,12 +625,15 @@ No merge and no split is begun by itself, and no absorption, unless all of these
 - the coordinator's grace period is over (one lease from when it was made);
 - **the list has been read, and the last reading that succeeded is no more than two
   `LIST_EVERY` old**: without the list the coordinator does not know which region is
-  home, which regions are pinned, or what became of a merge. A reading that fails
-  holds nothing back by itself; only the age of the last one that succeeded does;
+  home, which regions are pinned, or what became of a merge. What holds back is the
+  age of the last reading that succeeded, not a failure as such; but one reading that
+  fails does put the next good one more than two `LIST_EVERY` after the last, by as
+  long as the two readings take (section 7 has the sequence);
 - **every region the coordinator knows has a sighting**, fresh or not. A sighting
-  that was made for a part, or for a region that took in another (section 2.4),
-  counts. A region that was sighted once and has been silent since does not stop
-  anything here; it holds back what section 4 says it holds back;
+  that was made for a part (section 2.4) counts. **None is made for a region that
+  took in another**: such a region has to be reported like any other. A region that
+  was sighted once and has been silent since does not stop anything here; it holds
+  back what section 4 says it holds back;
 - fewer than `AT_ONCE` merges and splits are under way, whoever asked for them;
 - an epoch is left to issue.
 
@@ -598,7 +642,9 @@ coordinator knows nothing of, and nothing in section 4 can hold back for them, a
 they are in no sighting. That is so after a coordinator is made anew, until the worker
 of every region has registered and reported, and for a region that the list shows
 and no worker runs yet. With it the rest need not be longer than the lease for K6 to
-be safe. **In a cluster in which a region has no worker to run it, nothing is merged
+be safe; that is why a sighting is never made for a region of which no worker has
+said a word, also not when a reading shows that it took in another (section 2.4).
+**In a cluster in which a region has no worker to run it, nothing is merged
 or split by itself until it has one**: that region's players stand still meanwhile
 anyway, and the first report of whoever restores it ends the wait. Evening out is not
 held back by any of this (section 6).
@@ -631,9 +677,9 @@ which it has been wanted, and **has stood** when `since` is more than `FRESH` be
   merge that is no longer wanted has none.
 - **A group that is to go** is kept by its region and its chunks. A group of this
   tick **continues** a group that was to go at the tick before, of the same region,
-  if **every chunk of it is at most the margin from a chunk of that one**; it then has
-  that one's `since`. Otherwise it is new and its `since` is `now`. A tick at which no
-  split is wanted of a region forgets all its groups.
+  if **every chunk of it is at most the margin (`Policy::margin`) from a chunk of that
+  one**; it then has that one's `since`. Otherwise it is new and its `since` is `now`.
+  A tick at which no split is wanted of a region forgets all its groups.
 
 A group can continue only one group: two groups of a region are more than `D_s`
 apart, and twice the margin is less than `D_s`. Two groups of this tick can continue
@@ -675,11 +721,42 @@ wanted while one of its regions is in something else, as the sighting of a reser
 region is not fresh. By `since` alone, all the merges that wait for one region would
 begin anew together each time that region has been in something, and the nearest
 would be served first for ever. So: a merge that is wanted and has no `waiting` gets
-`now`. At a tick at which it is not wanted, it **keeps its `waiting` if the sighting
-of one of its two regions is not fresh**, and loses it if both are fresh. When one of
-its regions is absorbed, its `waiting` goes to the merge of the other region with the
-survivor, which takes the earlier of the two times if it has one (section 2.4); when
-a region goes otherwise, it is forgotten.
+`now`, and **it loses its `waiting` as slowly as a thing is believed**. For that it
+has a third time, `missed`: the time of the first tick of the unbroken run of ticks
+at which the merge was not wanted **and the sightings of both its regions were
+fresh**. At every tick:
+
+- the merge is wanted: it has no `missed`;
+- it is not wanted and the sighting of one of its two regions is not fresh: it has no
+  `missed`, and keeps its `waiting`;
+- it is not wanted and both sightings are fresh: its `missed` is `now` if it has
+  none; and if its `missed` is more than `FRESH` before `now`, the merge loses its
+  `waiting` and its `missed`, and nothing is kept of it.
+
+So a merge keeps its place while one of its regions is in something else, and
+through a look that misleads, which is over within `FRESH` like every other (K10);
+it loses it when the players have parted for longer than that. Until the second
+review a merge lost its `waiting` at the first tick at which it was not wanted with
+both sightings fresh. One look at which a player who holds a group to the others was
+in neither sighting was enough: the group was one to go at that look, the merge with
+whoever stood near it was not wanted, and a region that had waited longest was
+behind one that came later. Standing protected what is begun against one look, and
+the time that decides the order was not protected against the same look.
+
+When one of its regions is absorbed, a merge's `waiting` goes to the merge of the
+other region with the survivor, which takes the earlier of the two times if it has
+one (section 2.4), and its `missed` is forgotten. **If the other region is that
+survivor**, which is so when the merge itself was made and when both its regions
+have gone into one region, it would be a merge of a region with itself: it is
+forgotten. When a region goes otherwise, what waited for a merge with it is
+forgotten. A region that has no sighting counts here as one whose sighting is not
+fresh.
+
+What is left of the fault: a merge that is not wanted for more than `FRESH` while
+both its regions are fresh has lost its place although nobody moved, and that is so
+where a region that joins two groups of one of them is reserved for longer than a
+second (K12): the merges that wait for that region begin anew together, and the
+nearest is first, once.
 
 **The order.** At every tick, in this order, the first three only while fewer than
 `AT_ONCE` are under way:
@@ -705,15 +782,29 @@ Splits come first because they are the scarcer. Two regions that each want to me
 with a third are served in the order in which they came to want it, and the second
 when the survivor has rested (K1).
 
-**Turns.** A region is passed over in step 1 if the last merge or split of it that
-ended well was a split of it, and a merge of it has stood whose two regions are free.
-Per region that is one bit: whether it was split last. An absorption does not change
-it. **This is still needed although a split takes every group**, for those who
-arrive, not for those who leave. Without it: a region that a group leaves every ten
+**Turns.** A region is passed over in step 1 if it **was split last** and a merge of
+it has stood whose two regions are free. Per region that is one bit:
+
+- it is set when a split of the region ends, **however it ends** (made, "not yet", or
+  come to nothing; section 5.5) and whoever asked for it;
+- it is cleared when a merge that the region survived ends well, an absorption
+  excepted, whoever asked for it;
+- nothing else changes it: not a merge that comes to nothing, not an absorption, and
+  not a change of owner. A region that has been in neither was not split last, and
+  neither was a part, which is a new region: the split was of the region it left.
+
+A split that was begun and found nobody has stopped the region for a few ticks and
+was its turn at splitting. Until the second review only a split that ended well set
+the bit, and a region that was merged last and whose split kept answering "not yet"
+was split at 0, at 10 and at 20, left alone until 50 and split again, and no merge of
+it had a turn in all that time.
+
+**The turns are still needed although a split takes every group**, for those who
+arrive, not for those who leave. Without them: a region that a group leaves every ten
 seconds, which is the home region of a busy world, is free at `t` = 0 with a split
 and a merge both wanted; step 1 comes first and splits it; it rests until 10, by
 which time another group has left and stood; it is split again, and so at 20 and 30.
-The region that has waited beside it since `t` = 0 is never taken in. With it: split
+The region that has waited beside it since `t` = 0 is never taken in. With them: split
 at 0 (every group that has stood by then), merge at 10 (the region that has waited
 longest), split at 20 (every group that has left in twenty seconds), merge at 30.
 With the merges first instead, the groups would never go. Nothing queues on the side
@@ -757,6 +848,9 @@ has,
   region rests from when its worker reports it (K6);
 - when a merge it survived or a split of it ends well, an absorption excepted
   (section 5.5).
+
+Section 5.5 has two rests more: after a split that was "not yet", and from the first
+report taken of a survivor after an absorption, if that report has a player.
 
 Nothing the coordinator begins by itself touches a region before that: no merge by
 the distances, no split, no release to even out. What somebody asks for by hand is not
@@ -810,33 +904,39 @@ would have every empty region of the world wait up to four minutes. As it is, ea
 empty region waits for its own failures only, and a survivor that cannot absorb costs
 one attempt for each of them in `LONG`, then in twice that.
 
-**If somebody came at that very moment.** When an absorption ends, well or not, the
-time is noted in the survivor's `absorbed_at`. If a report that is taken of the
-survivor within `FRESH` of that time has a player in it, the survivor rests from that
-report: somebody came into one of the two regions as the absorption began (K13) and
-has stood still for it, or for the few ticks of an attempt that failed, and the rest
-is theirs.
+**If somebody came at that very moment.** When an absorption ends, well or not, that
+is noted of its survivor (`after_absorption`, section 2.3). **The first report that
+is taken of the survivor after that decides**, and the note is forgotten with it: if
+that report has a player in it, the survivor rests from that report. Somebody came
+into one of the two regions as the absorption began (K13) and has stood still for
+it, or for the few ticks of an attempt that failed, and the rest is theirs. No time
+comes into it. Until the second review the report had to be taken within `FRESH` of
+the end, and a worker that restores a region inline reports nothing for longer than
+that (section 2.2): the report that showed who had come was then too late for the
+rest. Nothing by the distances can be begun with the survivor before that report,
+as its sighting is not fresh until then.
 
 **A split that ends well**: the region rests, its counters are 0, and it was split
-last; the part rests as a region that is given an owner.
+last; the part rests as a region that is given an owner, and was not split last.
 
 **A split that was "not yet"**: `Off(Nobody)`, `Off(NothingStays)`, `Off(Busy)`,
 `Off(NotRunning)` and `Off(Declined(NotNext))`. The players had moved on, stood in a
-chunk not granted yet, or had left; those who were to stay had left; the region was
-in the middle of something; or another split took the id, also at the second try.
-**The region rests**, as after a split that was made: such a split has stopped the
-region for a few ticks, and nobody waits for a group to be split off. The next
-attempt names chunks from the report of that moment, for the groups that have stood
-then. **The third such answer in a row is a failure** like those below, and the
-count of such answers begins anew. This is what ADR-0014's tests under bots asked of
-this step (a split within a tick or two of a merge finds nobody). It cannot come of a
-merge the coordinator made by the distances, as the survivor rests ten seconds; it can
-of a player who stands at the rim of what the region was granted, and of a checkpoint
-that was longer than the margin allows (section 4.3).
+chunk not granted yet, or had left; those who were to stay had left; the region was in
+the middle of something; or another split took the id, also at the second try. **The
+region rests**, as after a split that was made, **and it was split last** (section 5.3,
+"Turns"): such a split has stopped the region for a few ticks and was its turn, and
+nobody waits for a group to be split off. The next attempt names chunks from the report
+of that moment, for the groups that have stood then. **The third such answer in a row
+is a failure** like those below, and the count of such answers begins anew. This is
+what ADR-0014's tests under bots asked of this step (a split within a tick or two of a
+merge finds nobody). It cannot come of a merge the coordinator made by the distances,
+as the survivor rests ten seconds; it can of a player who stands at the rim of what the
+region was granted, and of a checkpoint that was longer than the margin allows (section
+4.3).
 
 **A split that comes to nothing otherwise** (`TooLarge`, any other `Declined`,
 `StoreLost`, `Overdue`, `Disowned`, `Gone`): as a merge that comes to nothing, for its
-one region.
+one region, which was split last as after every split that has ended.
 
 The counters go back to 0 only when a split of the region, or a merge it survived
 that was not an absorption, ends well; a region that is given an owner keeps them, as
@@ -930,6 +1030,21 @@ whenever no reading is asked for (`reading`) and the last answer, `listed` or
 again; a timer that asked at every tick would have every reading thrown away for the
 next (see the context).
 
+**What one reading that fails costs.** The timer counts from the last answer, not from
+the last answer that was a list. A reading succeeds at `t`. The next is asked for at
+the first tick at or after `t + LIST_EVERY`, and fails after `d1`. The one after it is
+asked for at the first tick at or after `LIST_EVERY` from that failure, which is
+`t + 2 * LIST_EVERY + d1` or up to two ticks later, and succeeds after `d2`. Section
+5.1 begins nothing while the last reading that succeeded is more than two `LIST_EVERY`
+old: **from `t + 2 * LIST_EVERY` until that answer, which is `d1 + d2` and up to two
+ticks, nothing is begun.** With a store that answers or refuses in milliseconds that
+is half a second once; with one that fails slowly (a connection that has to time out)
+it is as long as the failure took. Two readings that fail in a row hold back for a
+`LIST_EVERY` and more, as before. Nothing is built against it: asking again at once
+after a failure would spare that time, and would ask at every tick of a store that is
+away. A test whose readings are answered at the tick that asks for them does not see
+any of this (section 11, F11).
+
 **What a reading changes** is what `listed` does today and two things more: a living
 region the coordinator does not know is added without an owner and assigned, unless a
 split is reserved; a region that was absorbed or is no more is removed; the home
@@ -973,21 +1088,28 @@ clustine coordinator ... [--reshape by-hand|by-itself] [--view-distance V]
 - `--merge-distance` and `--split-distance` take the place of what follows from the
   view distance; `--rest-seconds` (1 or more, 10 if not said) is the rest, and
   `EMPTY_FOR` and `LONG` go with it.
+- **Who refuses what.** `Policy::checked` refuses distances that do not fit each
+  other, with two refusals: unless `1 <= D_m`, and unless `D_m + 2 <= D_s` (`3 <=
+  D_s` follows). It asks nothing of the rest and knows no view distance. **The
+  command line refuses** a rest under one second and a view distance outside 2 to
+  32 (step C4.5).
 
 They become `CoordinatorConfig::follow: Option<Policy>`, with `None` for `by-hand`:
 
 ```rust
-pub struct Policy {
+pub struct Policy {                                         // `Copy`
     pub merge_distance: u32,
     pub split_distance: u32,
     pub rest: Duration,
 }
 impl Policy {
     pub fn for_view_distance(view_distance: u32) -> Self;   // 2V + 6, 2V + 14, 10 s
-    pub fn checked(self) -> Result<Self, String>;           // section 3
+    pub fn checked(self) -> Result<Self, String>;           // the two distances only
     pub fn margin(&self) -> u32;                            // min(3, (D_s - 1) / 2)
 }
 ```
+
+`Policy::margin` is what sections 4.3 and 5.3 mean by the margin.
 
 `deploy/kubernetes/coordinator.yaml` is not changed in this step.
 
@@ -1014,7 +1136,13 @@ another, so `A` is surely apart: it is split, no merge with `C` is wanted meanwh
 part has rested. Three sets of players stand still
 once, once and twice. Merging first would have made it twice each. (b) `C`'s players
 are within `D_m` of both of `A`'s groups: everything is one cluster, `A` is whole, and
-`A` and `C` merge. One merge; splitting first would have been three.
+`A` and `C` merge. One merge; splitting first would have been three. **One player of
+`C` can be within `D_m` of both groups only where `D_s` is less than twice `D_m`**,
+as 30 is of 22 and 5 is of 3: two groups are more than `D_s` apart, and what is within
+`D_m` of each of two places has them at most twice `D_m` apart. With the tests'
+distances 2 and 5, and 6 and 12, it takes two or more players of `C`, within `D_s` of
+each other, one near each group. The same holds of every place of another region that
+is said to join two groups, here and in K12.
 
 **K3. A merge is wanted while one of its regions is being moved.** Evening out picked
 the region before the merge was wanted; a region in something wanted is passed over
@@ -1050,7 +1178,10 @@ then, as its owner is new to this coordinator; their players are reported within
 quarter of a second. **Until every region it knows has been reported once, it begins
 nothing** (section 5.1): a region that no worker reported is assigned when the grace
 period ends and is restored for some seconds, and its players are in no sighting
-until then. So the rest need not outlast the lease and a restore for this to be
+until then. **That holds of a region that took in another as well**: the new
+coordinator knows the regions of the layout, the first reading of the list shows
+some of them absorbed, and no sighting is made for the regions they went into
+(section 2.4). So the rest need not outlast the lease and a restore for this to be
 safe, and the end-to-end tests run with a rest shorter than that. What the workers
 were in the middle of ends as ADR-0014, section 5.5, has it: a released region waits
 out the grace period and is assigned, which fences an absorb not yet made; a part is
@@ -1067,12 +1198,12 @@ reported. The same for the absorbed region's worker dying while it releases, and
 the worker of a region that is being split.
 
 **K8. The store away.** Regions wait for the store and stand still: their ticks do not
-go up, their sightings stop being fresh within a second, and nothing is wanted of
-them. A merge or a split under way ends `Off(StoreLost)` or with the reservation, and
-is not tried for `LONG`. Readings of the list fail; one that fails holds nothing back
-by itself, and when the last one that succeeded is more than two `LIST_EVERY` old,
-nothing is begun at all until one succeeds. If only the coordinator is cut off from
-the store, workers go on as they are and it begins nothing.
+go up, their sightings stop being fresh within a second, and nothing is wanted of them.
+A merge or a split under way ends `Off(StoreLost)` or with the reservation, and is not
+tried for `LONG`. Readings of the list fail; one that fails holds back for as long as
+it and the next take and no longer (section 7), and when the last one that succeeded is
+more than two `LIST_EVERY` old, nothing is begun at all until one succeeds. If only the
+coordinator is cut off from the store, workers go on as they are and it begins nothing.
 
 **K9. A hundred regions, and a hundred groups.** One look compares the occupied chunks
 of all of them once (section 2.5). At most four merges and splits are under way at a
@@ -1090,19 +1221,22 @@ Each merge and split is a new routing table for every edge, with the absorbed pa
 the store keeps, 4096 at most. Regions are evened out one release at a time, as
 today.
 
-**K10. A report from before a hand-over beside one from after it.** A player walks
-from `A` into a chunk `B` holds. For up to one report they are in both sightings
-(`A`'s older, `B`'s newer) or in neither. In both: a place of `A` and a place of `B`
-side by side, a merge wanted. It has not stood: `A`'s next report comes within the
-second, or `A`'s sighting stops being fresh, and either ends the run. In neither: a
-player who joined two groups of `A` is missing, and the far one is a group to go. It
-is a new group at that look and has not stood (section 5.3), whatever else has: `B`
-reports within the second, the player joins the groups again from there, within
-`D_m` of both, and the group is no more. What remains: if `B` is silent, the group
-stands and is split off, and a merge puts it right when `B` is heard again; "Risks"
-has it. And a player who stands on a boundary and is handed back and forth every few
-ticks can be in both reports again and again, and the two regions are then merged;
-that is a merge of two regions whose boundary somebody stands on, and no harm.
+**K10. A report from before a hand-over beside one from after it.** A player walks from
+`A` into a chunk `B` holds. For up to one report they are in both sightings (`A`'s
+older, `B`'s newer) or in neither. In both: a place of `A` and a place of `B` side by
+side, a merge wanted. It has not stood: `A`'s next report comes within the second, or
+`A`'s sighting stops being fresh, and either ends the run. In neither: a player who
+joined two groups of `A` is missing, and the far one is a group to go. It is a new
+group at that look and has not stood (section 5.3), whatever else has: `B` reports
+within the second, the player joins the groups again from there if they are within
+`D_m` of both, and the group is no more. (If they are not, which is always so where
+`D_s` is at least twice `D_m`, K2, the far group is rightly one to go: what held it to
+the others is another region's player now. It goes when it has stood, not on this
+look.) What remains: if `B` is silent, the group stands and is split off, and a merge
+puts it right when `B` is heard again; "Risks" has it. And a player who stands on a
+boundary and is handed back and forth every few ticks can be in both reports again and
+again, and the two regions are then merged; that is a merge of two regions whose
+boundary somebody stands on, and no harm.
 
 **K11. A report from before a merge or a split that arrives after it.** By section
 2.2 it cannot follow the worker's word of the outcome on one connection, a report
@@ -1116,27 +1250,32 @@ begun on it, because the region rests ten seconds and a report of after comes a
 quarter of a second later. What this rests on is that a report is not ten seconds on
 its way; if one is, a split region and its part can be merged back and split again,
 once. An absorption leaves its survivor without a rest, and there the same report
-costs less still: the survivor's sighting is without players either way.
+costs less still: the survivor's sighting is without players either way. But it is
+then the first report taken after the absorption (section 5.5), and a player who came
+at that very moment (K13) is not in it and has no rest of their own; "Risks" has it.
 
 **K12. A region between two groups is reserved, silent or without an owner.** Its
 sighting stays and its places go on joining the groups, so the region around it is not
 "surely apart" and is not split. It is not "surely whole" either if the join was all
 that held it together, so it is not merged. When the region in between reports again,
-or is absorbed (its crowds go to the survivor's sighting), or is split (the part's
-crowds go to the part's), the same places are there under their new region.
+or is absorbed (its crowds go to the survivor's sighting, if the survivor has one;
+section 2.4), or is split (the part's crowds go to the part's), the same places are
+there under their new region. While the region in between is reserved, no merge of
+the region around it is wanted either, and one that waited keeps its place for a
+second of that and no longer (section 5.3, "Waiting").
 
-**K13. Players come back to an empty region as it is absorbed.** A player walks into
-a chunk it holds and is handed over to it, in the tick the coordinator begins the
-absorption or after. The region is released with the player in it, or with the
-player's arrival kept by the edge; either way the survivor has them after the merge
-(ADR-0014, sections 2.3 and 8.5). They stand still as the players of an absorbed
-region do, once. The survivor's first report afterwards shows them, and it rests from
-that report (section 5.5), so that nothing by the distances stands them still again
-within ten seconds; they are then alone in a region that had nobody, of which the
-rules make whatever the distances say. The same for a player who joins while the home
-region absorbs an empty region: they wait for that merge, a fifth of a second, and
-the home region rests from the report that has them. The survivor is no survivor of
-anything while a player is in its reports.
+**K13. Players come back to an empty region as it is absorbed.** A player walks into a
+chunk it holds and is handed over to it, in the tick the coordinator begins the
+absorption or after. The region is released with the player in it, or with the player's
+arrival kept by the edge; either way the survivor has them after the merge (ADR-0014,
+sections 2.3 and 8.5). They stand still as the players of an absorbed region do, once.
+The first report that is taken of the survivor afterwards shows them, however late it
+comes, and it rests from that report (section 5.5), so that nothing by the distances
+stands them still again within ten seconds; they are then alone in a region that had
+nobody, of which the rules make whatever the distances say. The same for a player who
+joins while the home region absorbs an empty region: they wait for that merge, a fifth
+of a second, and the home region rests from the report that has them. The survivor is
+no survivor of anything while a player is in its reports.
 
 **K14. A stranger in another region's chunks.** A region keeps the chunks behind its
 players for thirty seconds and those a guest watches for as long as they watch. A
@@ -1227,7 +1366,11 @@ one. Each is due half a minute after its last player. The highest goes into the 
 survivor there is; while that one is in the merge the next goes into the next
 survivor; no more than `AT_ONCE` at a time. A survivor is free for the next about a
 second and a half after the last (section 4.4). On stripes the survivors are the
-stripes without players and, when there is none, the lowest empty part.
+stripes without players and, when there is none, the lowest empty part. **A home
+region without players is no survivor while somebody of another region stands within
+`D_m` of the chunk players enter in**: the merge that takes them in is wanted, and
+has stood a second later, whatever is due meanwhile; the empty regions go into the
+next survivor or wait for that merge.
 
 **K25. A worker loses its connection with a report in its queue.** A split is
 ordered; the loop queues a report read before the region stopped; the connection
@@ -1249,15 +1392,19 @@ and `Prepare` is not said again as section 5.6 has it.
 
 **`clustine-rpc`**: `ToCoordinator::Players` and `PlayersOf` as in section 2.1, in
 place of the pairs of step C0. It breaks the one literal in `wire.rs`. The comment of
-`FromCoordinator::Prepare` says that the region is about to absorb another and that
-the coordinator says it once, when it asks the other region's owner to release; it is
-to say that a merge or a split is coming (section 5.6). The message is as it is.
+`FromCoordinator::Prepare` said that the region is about to absorb another and that
+the coordinator says it once, when it asks the other region's owner to release; it
+says that a merge or a split is coming (section 5.6). The message is as it is.
+**Step C4.1 changed every comment that said "about to absorb"**: on
+`FromCoordinator::Prepare`, on `Order::Prepare`, on `WorkerEvent::Prepare`
+(`services/coordinator/src/client.rs`), on `Reshape::Prepare`, and above the arm
+that takes it in `bin/clustine/src/cluster.rs`, with that arm's log line.
 
 **`services/coordinator`**
 
 ```rust
 pub struct CoordinatorConfig { .., pub follow: Option<Policy> }   // None: by hand
-pub struct Policy { .. }                                          // section 8
+pub struct Policy { .. }                                          // section 8; `Copy`
 
 impl Coordinator {
     /// How often `tick` is to be called when the coordinator decides by itself.
@@ -1299,31 +1446,60 @@ pub fn named(policy: &Policy, groups: &[&[ChunkPos]]) -> Vec<ChunkPos>;
   between its own `seen` and `finish`; and the public call around it, which does what
   it did. `Split` (the note of one under way) keeps the chunks that were named, and
   `Merge` whether it is an absorption. Nothing else of the two paths changes.
-- `Order::Prepare` is said before a split as well (section 5.6). Its comment, which
-  says that the region is about to absorb, is to say so. Nothing about it changes.
+- `Order::Prepare` is said before a split as well (section 5.6). Its comment says so
+  since step C4.1. Nothing about it changes.
+- `Policy::checked` refuses for the two distances and for nothing else, and
+  `Policy::margin` is the margin of sections 4.3 and 5.3 (section 8). `players`
+  counts as being heard from and vouches for nothing (section 2.3).
 - `Service::heard` gains an arm for a worker's `Players`. `tick_interval` takes
   whether the coordinator decides by itself; the four calls of it in the service's
   test of it get that argument.
 - `Changes`, `Reshaped`, `Undone`, `Order`, `FromCoordinator`, `Off`, `RegionList` and
   `RoutingTable` are as they are. What the coordinator begins by itself is in
   `Changes::releases` and `Changes::orders` like what is asked for, and how it ends in
-  `Changes::reshaped` with nobody as asker, which the service logs. The coordinator's
-  log also has a line for each merge, split and release to even out that is begun by
-  itself, with its regions and, of a merge, whether it is an absorption: the
-  end-to-end tests count from that (section 11, E8).
+  `Changes::reshaped` with nobody as asker, which the service logs.
+
+**The lines of the coordinator's log that the end-to-end tests count from** (section
+11, E2 and E8). One line for each thing the coordinator begins by itself, written
+with `info!` in `state.rs` at the tick that begins it, when `merge` or `split` has
+not refused. Each is the message and then its fields in this order, `name=value`
+with a space between, a region as its number, a worker as its name; the time is
+the line's own, as `time_of` in `bin/clustine/tests/moves.rs` reads it. No message
+is part of another, so a test can count by the message alone.
+
+| Begun by itself | The line, after the time, the level and the module |
+|---|---|
+| a merge by the distances | `a merge is begun by the distances survivor=0 absorbed=2 gap=3` |
+| an absorption | `an absorption is begun by itself survivor=1 absorbed=2` |
+| a split | `a split is begun by itself region=0 part=2 groups=1 chunks=25` |
+| a release to even out | `a region is moved to even regions out region=2 from=worker-0 to=worker-1` |
+
+`gap` is the merge's gap at that tick (section 4.2). `part` is the id the split
+names, which the store need not give (section 5.3); `groups` is how many groups it
+names and `chunks` how many chunks. The fourth line is the one `even_out` has today
+and is left as it is, with `follow` and without: evening out is never asked for by
+hand, so every such line is of a release the coordinator began by itself, and a
+release for a move by hand, for a leaver or for a merge does not write it. The lines
+that `merge` and `split` write for whoever asked (`a region is to absorb another`, `a
+region is to be split`) stay, and are written for these as well. **How a thing ended**
+is in lines there are: `a merge has ended` with `survivor`, `absorbed` and `outcome`,
+and `a worker says what came of a split` with `worker`, `region`, `as_epoch` and
+`outcome`, which is written in the call that ends a split the worker answers; a
+test that needs the moment of an end takes it from these or from the routing table.
 
 **`bin/clustine`**: `CoordinatorArgs` gains `follow: Option<Policy>`; the flags of
 section 8; `Outcome` in `cluster.rs` gains the report, with the number of the
 registration it was made under; `Reports` gains the watch in which `stay_registered`
 shows the loop that number (section 2.2). The worker's log line for `Prepare`, which
-says that the region is to absorb, is to say what the comments say.
+said that the region is to absorb, says what the comments say since step C4.1.
 
 Nothing changes in `clustine-sim`, `services/worldstore`, `services/edge` or
 `clustine-region`, and nothing in `services/worker` but one sentence: the comment of
-`Reshape::Prepare` says that a merge is coming. The three things ADR-0015, section 8,
-asks steps C4 and C5 not to undo are untouched: a part holds the chunk each of its
-players stands in, a stay does not leave a region without an input of its edge, and a
-merge announces itself before anything the survivor says of a stay that came with it.
+`Reshape::Prepare`, which said that a merge is coming, says a merge or a split since
+step C4.1. The three things ADR-0015, section 8, asks steps C4 and C5 not to undo are
+untouched: a part holds the chunk each of its players stands in, a stay does not leave
+a region without an input of its edge, and a merge announces itself before anything the
+survivor says of a stay that came with it.
 
 ### 11. Building it
 
@@ -1333,12 +1509,12 @@ line's (`bin/clustine`), and the two pairs share no file once step 1 is pushed.
 
 | # | Scope | Verified by |
 |---|---|---|
-| C4.1 | The contract: `PlayersOf` and `Players`; `Policy` and `follow`, `None` in all five places; `Coordinator::players`, which only counts as being heard from; the service's arm; `WorkerClient::players`; the comments of `Prepare` | Round trip; a worker that says it is not cut off, an unknown one is; every existing test |
+| C4.1 (built, `28d0d3e`) | The contract: `PlayersOf` and `Players`; `Policy` and `follow`, `None` in all five places; `Coordinator::players`, which only counts as being heard from; the service's arm; `WorkerClient::players`; the comments of `Prepare` | Round trip; a worker that says it is not cut off, an unknown one is; every existing test |
 | C4.2 | `policy.rs`: `decide` and `named` | Its own tests, and D1 to D15 below |
-| C4.3 | The state machine: sightings, standing and waiting, free, rest, what comes of it, absorptions, `Prepare`, evening out, the timer, `under_way`, `alone_until`; `tick_interval` | F1 to F50 below, by somebody else; every existing test of the coordinator as it is with `follow: None`, but for the four calls of `tick_interval` in the service's test of it, which get the new argument |
+| C4.3 | The state machine: sightings, standing and waiting, free, rest, what comes of it, absorptions, `Prepare`, evening out, the timer, `under_way`, `alone_until`; `tick_interval`; the lines of the log (section 10) | F1 to F50 below, by somebody else; every existing test of the coordinator as it is with `follow: None`, but for the four calls of `tick_interval` in the service's test of it, which get the new argument |
 | C4.4 | The worker process reports, each report under the number of its registration | Its build; C4.7 |
-| C4.5 | The flags; the test cluster (`tests/common/processes.rs`) can pass a coordinator more arguments | `clustine coordinator --help`; a refusal for distances that do not fit |
-| C4.6 | The generated runs R1 to R7, by somebody else | They catch faults put into C4.3 on purpose: no rest, no standing, the list never read, a survivor that is not home, a group that goes on its first look, a pinned region absorbed for being empty |
+| C4.5 | The flags, which refuse a rest under one second and a view distance outside 2 to 32 themselves (section 8); the test cluster (`tests/common/processes.rs`) can pass a coordinator more arguments | `clustine coordinator --help`; a refusal for distances that do not fit |
+| C4.6 | The generated runs R1 to R7, by somebody else | They catch faults put into C4.3 on purpose: no rest, no standing, the list never read, a survivor that is not home, a group that goes on its first look, a pinned region absorbed for being empty. Which property catches which is said below the properties |
 | C4.7 | End to end, E1 to E8, by somebody else, with bots that can be sent to a chunk | No bot disconnected, the ledgers, the bound counted |
 | C4.8 | Roadmap, README, what to try with real clients: that `--reshape by-itself` exists and that trying it is for C5 (section 8); and that under it **what is asked by hand is undone when the distances say otherwise** (K17), so that nobody watches a split they asked for being merged back and takes it for a fault | CI |
 
@@ -1366,8 +1542,12 @@ the margin is 2; `H` is the home region, the chunk players enter in is the origi
   has.
 - D8. K2 (a) and K2 (b), each with what comes out; and a region that is apart with
   another region near its group that stays: the split and the merge are both wanted.
-- D9. Two groups of `A` joined by a player of `C` whose sighting is not fresh:
-  nothing, neither a split of `A` nor a merge of `A` with a fresh region near it.
+  With these distances K2 (b) takes two players of `C`, placed as in D15: one cannot
+  be within 2 of each of two groups that are more than 5 apart.
+- D9. Two groups of `A`, 9 apart, joined by two players of `C`, each within 2 of one
+  group and 5 from each other, and `C`'s sighting is not fresh (`A` at x = 0 and
+  x = 9, `C` at x = 2 and x = 7): nothing, neither a split of `A` nor a merge of `A`
+  with a fresh region near it.
 - D10. A region that is not fresh is in no merge and no split, whatever it holds.
 - D11. Any permutation of the regions given, and of the crowds within each, gives the
   same answer (generated).
@@ -1377,8 +1557,9 @@ the margin is 2; `H` is the home region, the chunk players enter in is the origi
   for a group at the last chunk there is along an axis leaves out the chunks beyond
   it and has every other chunk once.
 - D14. A region without players is in nothing.
-- D15. Two sets of players of `A`, 6 apart, with a player of a fresh region `C`
-  within 2 of each: one group, and a merge of `A` and `C`. Without `C`: two groups.
+- D15. Two sets of players of `A`, 9 apart, and two players of a fresh region `C`,
+  each within 2 of one set and 5 from each other (as in D9): `A` is one group, and a
+  merge of `A` and `C` is wanted. Without `C`: two groups.
 
 **The state machine, from this record alone** (a cluster as
 `services/coordinator/tests/reshape.rs` builds one, with `follow`: the distances 2
@@ -1395,26 +1576,38 @@ first that wanted it; "the list shows" is a reading handed in with `listed`):
   fresh and begins no rest, and one that reports an epoch the coordinator did not have
   begins one.
 - F7 to F10, merging: nothing at the first look, `Release` and `Prepare` after it has
-  stood; a tick at which it is not wanted begins the wait anew; three regions in a
-  row (K1), the one in the middle at rest until both merges have stood: the merge
-  that was wanted first is begun first although the other has the smaller gap, of two
-  wanted since the same tick the nearer, and the other after the rest, with whichever
-  region survived, before the merge of a further region that came near while the
-  first merge lasted, however near; with ten pairs wanted four are begun and the
-  others as those end.
+  stood; a tick at which it is not wanted begins the second of standing anew; three
+  regions in a row (K1), the one in the middle at rest until both merges have stood:
+  the merge that was wanted first is begun first although the other has the smaller
+  gap, of two wanted since the same tick the nearer, and the other after the rest,
+  with whichever region survived, before the merge of a further region that came
+  near while the first merge lasted, however near; **the merge that was wanted first
+  keeps its place through a tick at which it is not wanted while both its regions
+  are fresh** (one report has its player far off and the next has them back), and
+  loses it to a merge that came later when it has not been wanted, with both fresh,
+  for more than `FRESH`; when one of two regions whose merge waited is shown absorbed
+  by the other, nothing more is begun for the pair; with ten pairs wanted four are
+  begun and the others as those end.
 - F11, each thing that holds a merge back, one test each: reserved; being released;
   no owner; an owner without a connection; either owner leaving; either owner at
   fault; at rest; a sighting more than `FRESH` old; the grace period; the list never
   read; the last good reading more than two `LIST_EVERY` old, which takes two readings
   that failed, and not when it is exactly two; a region the coordinator knows that
-  has no sighting, wherever it is. One reading that failed holds nothing back.
+  has no sighting, wherever it is. One reading that failed holds nothing back **if
+  every reading is answered at the tick that asks for it**, which is how these tests
+  hand readings in. One test more answers them late (section 7): a reading fails a
+  second after it was asked for, and the next succeeds a second after it was asked
+  for; a merge that comes to have stood later than two `LIST_EVERY` after the last
+  good reading and before that answer is not begun until the answer, and is begun at
+  the first tick after it.
 - F12 to F15, splitting: `Prepare` at the first look that wants a split of a free
   region, and `SplitOff` after it has stood, with the chunks of D5 and the next id of
   the list; one split in the world at a time, also beside one asked for by hand; none
   while a reading is asked for or owed, and after an `Ok(N)` whose reading failed the
-  next split is begun and names the id last read; a region joined by a sighting that
-  is not fresh is not split (K12), and is when that region reports its players
-  elsewhere.
+  next split is begun and names the id last read; a region whose two groups, 9 apart,
+  are joined by a sighting that is not fresh, of two players 5 apart who are each
+  within 2 of one group (D9; one player cannot join them at these distances), is not
+  split (K12), and is when that region reports its players elsewhere.
 - F16 to F20, groups: with three groups that have all stood, one `SplitOff` names the
   chunks of both that go, and after `Ok(N)` the crowds of both are `N`'s; `N`, when it
   has reported and rested, is split and the first region is not; a group that appears
@@ -1425,18 +1618,22 @@ first that wanted it; "the list shows" is a reading handed in with `listed`):
   where it was begins anew and nothing of it is named at that tick; of two regions
   to split, the one whose group has gone longer is first, then the lower.
 - F21 to F23, turns and `Prepare`: a region that was split last and has a merge that
-  stood is merged before it is split again, and one that was merged last is split
-  first (K21); no `Prepare` for a region whose rest ends in more than `FRESH`, one
-  when it ends within `FRESH`, and no second one however long the split then waits;
-  one again after a merge or a split of the region has begun; for a group that parts
-  and comes back at every tick, one in a rest at most.
+  stood is merged before it is split again, and one that was merged last is split first
+  (K21); **a split that was answered `Off(Nobody)` was the region's turn as well**: the
+  region was merged last, its split finds nobody, and after the rest the merge that has
+  stood is begun, not a second split; a merge that came to nothing and an absorption
+  leave the turn where it was; no `Prepare` for a region whose rest ends in more than
+  `FRESH`, one when it ends within `FRESH`, and no second one however long the split
+  then waits; one again after a merge or a split of the region has begun; for a group
+  that parts and comes back at every tick, one in a rest at most.
 - F24 to F29, what comes of it: after a merge the survivor is in nothing for ten
   seconds and then is; after a split both are; after `Off(Nobody)` the region rests
   and is then split with the chunks of the newest report, and the third in a row
   leaves it alone for `LONG`; each `Undone` of a merge leaves both alone for `LONG`,
   the next for twice that, eight times at most, and a merge that ends well makes it
   `LONG` again; a region given an owner rests; after `Ok(N)` the crowds in the chunks
-  named count as `N`'s, after a merge the absorbed region's as the survivor's.
+  named count as `N`'s, after a merge the absorbed region's as the survivor's, which
+  had a sighting.
 - F30 to F38, empty regions: absorbed by the home region if that has had no players
   for more than `FRESH`, otherwise by the lowest region without players that has a
   lower id than it; not before
@@ -1450,10 +1647,27 @@ first that wanted it; "the list shows" is a reading handed in with `listed`):
   absorption into one survivor is begun when that survivor has been reported without
   players for more than `FRESH` after the first ended, not a rest after, and also
   while it rests for another reason; after one that ended well a merge by the
-  distances with the survivor is begun without a rest, unless a report within `FRESH`
-  of the end had a player, and then a rest after that report; after one that came to
-  nothing the absorbed region is left alone for `LONG`, and the survivor is neither
-  left alone nor has a failure counted.
+  distances with the survivor is begun without a rest, unless **the first report
+  taken of the survivor after the end** had a player, however long after the end it
+  was taken, and then a rest after that report; a player in the second report after
+  the end begins no rest; after one that came to nothing the absorbed region is left
+  alone for `LONG`, and the survivor is neither left alone nor has a failure counted.
+  - F36, **a region that a merge is wanted of is no survivor** (section 4.4). The home
+    region is without players and has just been the survivor of an absorption;
+    another empty region is due and has no other survivor; a region with a player
+    within the merge distance of the origin reports. The merge with the home region
+    is begun when it has stood, and the empty region is not absorbed at any tick
+    before that; with a second candidate (an empty region with a lower id) the empty
+    region goes into that one meanwhile. **How the clock has to be set**: the home
+    region's first report after the absorption is handed in between two ticks, 100
+    ms after one, and the other region's with it, as a worker's reports do not fall
+    on the coordinator's ticks. Then `empty_since`, the time of a report, is earlier
+    than the merge's `since`, the time of the first tick after it, and a build
+    without the rule begins the absorption at the tick one second after the merge
+    was first wanted, when the merge has been wanted for exactly `FRESH` and has not
+    stood. A test that hands reports in at the instants of ticks has both due at the
+    same tick, where step 2 comes before step 3, and passes with the rule or
+    without: it tests what no running server does.
 - F39 to F43, evening out: with `follow`, a region at rest is not moved and another
   of that worker is, at once; the one with the fewest players goes first, one without
   a sighting last; a region of a merge or a split that is wanted at that tick is
@@ -1466,40 +1680,76 @@ first that wanted it; "the list shows" is a reading handed in with `listed`):
   follows the last reading that succeeded.
 - F48 to F50: a new coordinator begins nothing for a lease, nothing before every
   region has been reported, and nothing with a region for ten seconds after its
-  worker reported it (K6); a player in two sightings for one report merges nothing
+  worker reported it (K6); **nor before a region has been reported that the first
+  reading of the list shows as having taken in a region of the layout**: no sighting
+  is made for it, and a split of another region, which has stood and whose region has
+  rested, is begun only at the tick after the first report of the region that took
+  the other in (section 2.4); a player in two sightings for one report merges nothing
   (K10); what is asked by hand is done at rest, and rests afterwards (K17), and a
   leaving worker's regions are released at rest (K16).
 
 **Generated runs, from this record alone.** A model in the test: players are points
 that walk, each by a script or at random towards changing goals, a step of the run
-being 250 ms and a player moving at most one chunk in two seconds, some joining at
-the origin and some leaving; the distances are 6 and 12, so the margin is 3; regions
-are sets of players, and the model keeps of each whether it is pinned (in one
-variant those it begins with other than the home region are; a part never is; a
-survivor is if either of the two was); workers do what they are ordered after a
-delay of zero to four steps (a merge puts the absorbed region's players into the
-survivor; a split takes who stands, by the true positions of that moment, in the
-chunks named, makes a region of them under the model's next id whatever id the order
-named, or answers `Off(Nobody)`; `Prepare` does nothing), say what came of it, and
-report every region's true crowds at every step, with a tick that goes up, behind
-the word of an outcome; the store's list is what the model made; the lease is longer
-than the longest delay; nothing is asked by hand. Variants add: reports that are a
-step old when they are given; a player handed from one region to another with one
-stale report (K10); workers that die and are replaced; a worker that leaves; readings
-that fail; a coordinator made anew. Those are the **faults** below, the first
-excepted. A merge that the coordinator begins is an **absorption** if the last
-reports it took of both regions were without players, and **by the distances**
-otherwise. Checked after every call of the coordinator:
+being 250 ms and a player moving at most one chunk in two seconds, some joining at the
+origin and some leaving; the distances are 6 and 12, so the margin is 3; regions are
+sets of players, and the model keeps of each whether it is pinned (in one variant those
+it begins with other than the home region are; a part never is; a survivor is if either
+of the two was); workers do what they are ordered after a delay of zero to four steps
+(a merge puts the absorbed region's players into the survivor; a split takes who
+stands, by the true positions of that moment, in the chunks named, makes a region of
+them under the model's next id whatever id the order named, or answers `Off(Nobody)`;
+`Prepare` does nothing), say what came of it, and report every region's true crowds at
+every step, with a tick that goes up from 1 (a part's sighting is made with tick 0,
+section 2.4, and a report with that tick would be passed over), behind the word of an
+outcome; the store's list is what the model made; the lease is longer than the longest
+delay; nothing is asked by hand. In every step the model first says what came of what
+and hands in a reading of the list if one is due, then gives its reports, and then
+calls `tick` once, all at one time of the test's clock: that call is **the look** of
+the step. Variants add: reports that are a step old when they are given (but never one
+from before a merge or a split behind the word of its outcome, which section 2.2 rules
+out: the first report of a region after that word is of after it); a player handed from
+one region to another with one stale report (K10); workers that die and are replaced; a
+worker that leaves; readings that fail; a coordinator made anew. Those are the
+**faults** below, the first excepted. A merge that the coordinator begins is an
+**absorption** if the last reports it took of both regions were without players, and
+**by the distances** otherwise.
+
+**What the distances 6 and 12 do not bring up by themselves.** 12 is twice 6, so no
+one player of another region joins two groups (K2). K2 (b), K12 and the second half
+of K10 (a player who joins two groups from another region) come up in these runs
+only through two or more players of the region in between, within 12 of each other
+and one within 6 of each group; a run that walks its players at random seldom has
+that. The scripted runs have to place it, and whoever judges what the runs cover
+has to know that the random ones mostly do not.
+
+**What the test knows of the sightings.** The properties R1 to R3 and R4 (a) to (d) go
+by what the model did and where its players truly were. R4 (e) goes by what the
+coordinator was told, and for that the test keeps the reports it gave. A look is
+**plain** if, in its step, the model gave a report of every region the coordinator
+knows (the regions of its routing table), and every one of them was taken (section
+2.3): given by the worker and with the epoch the routing table has for the region,
+while the region was in nothing under way (`Coordinator::under_way`), with a higher
+tick than the last report taken of it. **At a plain look the coordinator's sightings
+are those reports, crowd for crowd, and all of them are fresh**, so `decide`, called by
+the test with them (each as a `Sighted` that is fresh), the origin and the home region
+of the model's list, gives what the coordinator's own call gave at that look. At a look
+that is not plain the test does not know the sightings: a region that is reserved,
+being moved or silent has an older one, and section 2.4 has moved crowds between some.
+Nothing is checked there by the reports.
+
+Checked after every call of the coordinator:
 
 - R1, rest: between the end of anything that involved a region (a merge, a split, an
   owner or an epoch new to the coordinator) and the next thing the coordinator begins
   with it by itself (a merge by the distances, a split, a release to even out, or its
   being absorbed), at least a rest has passed. Not held to this: a region can be made
-  the survivor of an absorption at any time; after an absorption, however it ended,
-  its survivor is in something again as soon as the rules have it, unless a report
-  taken of it within `FRESH` of that end had a player, and then a rest after that
-  report; and a leaving worker's regions are released whether they rest or not, like
-  regions taken over after a death.
+  the survivor of an absorption at any time; and **the end of an absorption is not,
+  for its survivor, an end that a rest counts from**, unless the first report taken
+  of the survivor after that end had a player, and then a rest counts from that
+  report. An absorption does not end a rest either: what the survivor owes after
+  whatever ended before the absorption, it still owes after it. And a leaving
+  worker's regions are released whether they rest or not, like regions taken over
+  after a death.
 - R2, no player more often than the bound: take the merges, the splits and the
   releases to even out that the coordinator began by itself, each at the time it was
   begun and each for the players who were of one of its regions at that time. No
@@ -1511,10 +1761,13 @@ otherwise. Checked after every call of the coordinator:
   split had a report taken within `FRESH` before it was begun, and so had both of an
   absorption; the home region is never the one absorbed, and no pinned region is
   absorbed in an absorption; never more than `AT_ONCE` under way; never a split begun
-  while another is under way; and nothing is begun while there is a region that was
-  living in a list handed in at a moment when no split was under way, is living
-  still, has never had a report taken by this coordinator, was not made by a split
-  whose `Ok` it was told, and has not taken in another by a list it was handed.
+  while another is under way; nothing is begun at a look that is more than two
+  `LIST_EVERY` after the last reading the test handed in with `listed`, or before the
+  first; and nothing is begun while there is a region that was living in a list
+  handed in at a moment when no split was under way, is living still, has never had
+  a report taken by this coordinator, and was not made by a split whose `Ok` it was
+  told. (A region that took in another by a list the coordinator was handed is no
+  exception any more: section 2.4.)
 - R4, what is merged and what is split:
   - (a) when a merge by the distances is begun, there are two steps of the last two
     seconds, the same one it may be, a player who was truly of the one region at the
@@ -1525,13 +1778,22 @@ otherwise. Checked after every call of the coordinator:
   - (b) when an absorption is begun, the absorbed region is neither the home region
     nor pinned, the survivor is the home region or has a lower id, and there was no
     player in any report the model gave of the absorbed region in the last
-    `EMPTY_FOR` or of the survivor in the last `FRESH`.
+    `EMPTY_FOR` or of the survivor in the last `FRESH`. If the look is plain,
+    `decide` on its reports wants no merge of the survivor (section 4.4).
   - (c) when a split is begun, take the last report the model gave of the region, and
     of the players in it those who are still of that region. Those of them who now
-    truly stand in a chunk named were, when the report was true, more than `D_s` from
-    all those who do not; and in the home region more than `D_s` from the origin.
-    (Those who have left since, or were handed on, are not looked at: a group whose
-    players have all gone is still rightly asked for, and answered `Off(Nobody)`.)
+    truly stand in a chunk named were, by where that report has them, **in another
+    cluster than** all those who do not, and in the home region in another cluster
+    than the origin: clusters as in section 4.1, of the places of all regions. So
+    that it sees other regions, and not only that the two are more than `D_s` apart:
+    a build that splits a region whose groups players of another region join (K2
+    (b), D15) fails it. At a plain look the places of the other regions are those of
+    that look's reports. At a look that is not plain the test does not know what the
+    coordinator had heard of the others, and checks what follows from the region's
+    own report alone: more than `D_s` from all those who do not, and in the home
+    region from the origin. (Those who have left since, or were handed on, are not
+    looked at: a group whose players have all gone is still rightly asked for, and
+    answered `Off(Nobody)`.)
   - (d) no flapping: in every run in which, from some step on, the players stand
     still, nobody joins or leaves and no fault happens, no split begun after that step
     parts two players whom a merge begun after that step had put into one region, **if
@@ -1543,6 +1805,28 @@ otherwise. Checked after every call of the coordinator:
     by the split that follows. The other way round does not hold either, and is not
     checked: a split can part two players whom two merges with a region between them
     bring together again. What bounds both is R5's count.
+  - (e) **nothing on one look, by the reports.** (a) to (d) go by one moment or by
+    the true positions and do not see whether anything has stood: a build that
+    merges on the one stale report of K10 has, in the two steps of (a), the player
+    on either side, and a build in which a group goes on its first look (K22) names
+    players who were, by the region's own report, far from all the others. So, for
+    every merge by the distances and every split that the coordinator begins by
+    itself at a look `T`, **if `T` and every look in the `FRESH` before it are
+    plain**: at every one of those looks, `decide` on the reports of that look
+    wanted it. For a merge, a merge of the same two regions, whichever of them it
+    names as the survivor. For a split, with `G` the groups that `decide` gives of
+    the region at `T`: the chunks named are `named` of those groups of `G` whose
+    chunks are among them, of which there is one at least; and for each of those
+    groups there is, at every earlier look of that time, a group to go of the same
+    region that the group of the look after it continues in the sense of section
+    5.3 (every chunk of the later one at most the margin from a chunk of the
+    earlier one), back from the group at `T`. A correct build holds this: what
+    has stood was wanted at every tick for more than `FRESH`, and a group that has
+    stood has a `since` that it took over along exactly that chain. The test counts
+    the merges and the splits it could check this of and prints the count; the
+    scripted runs of K10 and K22 fail if theirs was not among them. It is held to in
+    every variant, the faults included: where something is under way, moved or
+    silent the look is not plain, and it says nothing.
 - R5, it ends. Of a run whose last fault and last hand-over are at least eight leases
   before a step `s` from which every player stands still and nobody joins or leaves.
   `D` is the longest delay of the model's workers, `X` is `rest + D + 2 s`.
@@ -1561,7 +1845,19 @@ otherwise. Checked after every call of the coordinator:
   - From `s'` on the coordinator begins no more than `n` merges by the distances and
     splits and no more than `e` absorptions, and none of them comes to nothing.
   - Let `m` be the releases to even out that it begins from `s'` on, and `m_e` those
-    of them that are of a region without players. By
+    of them that are of a region without players. **`m` is at most `k + n + e`**,
+    where `k` is how many regions have to change workers at `s'` for no worker to
+    have two more than another: with `N` regions on `w` workers, the larger of the
+    sum over the workers of what each has above `N / w` rounded up and the sum of
+    what each has below `N / w` rounded down, by the regions the model's workers
+    run at `s'`. The argument: a release to even out takes a region from the worker
+    with the most and gives it to the worker with the fewest, which has two fewer at
+    least, and that lowers this number by exactly one; a merge by the distances, a
+    split or an absorption changes one worker's count by one and so raises it by one
+    at most; nothing else changes who runs what once the faults are eight leases
+    past. So a region can be moved more than once, back after a merge has taken a
+    region from the worker it was moved from, and **a build that evens out for ever
+    fails R5 at its release number `k + n + e + 1`.** By
     `Q + (n + m + 1) * X + (e + m_e) * (EMPTY_FOR + X)` the end is reached: any two
     players within `D_m` of each other are in one region, and so is every player
     within `D_m` of the origin with the home region; the players of each region are
@@ -1577,14 +1873,29 @@ otherwise. Checked after every call of the coordinator:
 - R6, the same calls give the same answers; and crowds given in another order do.
 - R7, with `follow: None` the same runs begin nothing.
 
+**Which property catches which of the six faults of step C4.6**, each put into the
+state machine by itself:
+
+| The fault | Caught by | In which runs |
+|---|---|---|
+| no rest (`alone_until` is not looked at, or not set) | R1, and R2 by its count | any in which a region is in two things, K4's walk across the band above all |
+| no standing (what is wanted is begun at the look that first wants it) | R4 (e) | the stale hand-over of K10 at plain looks: the merge was not wanted a look before. R4 (a) does not see it |
+| the list never read on the timer | R5, if nothing is begun once the last reading is two `LIST_EVERY` old: the end is not reached; R3's clause on the age of the last reading, if that condition went with the timer | a run that is quiet for more than two `LIST_EVERY` before something is wanted |
+| a survivor that is not home (a merge that names the home region as the one to absorb) | R3, if the merge is begun; R5, if `merge` refuses it as it does today (`ReshapeRefusal::Home`): the two are never merged and the end is not reached | any merge by the distances with the home region whose other region has more players |
+| a group that goes on its first look (the chunks of a group that has not stood are named with one that has) | R4 (e) | K22 at plain looks: a region at rest with a group that has stood, and a second group at the look its rest ends. R4 (c) does not see it |
+| a pinned region absorbed for being empty | R3, and R4 (b) | the variant with pinned regions, one of them without players for `EMPTY_FOR` |
+
 **End to end, from this record alone** (`bin/clustine/tests/follows.rs`, on a cluster
 as `merges.rs` starts one from `tests/common/processes.rs`: two workers, ledger bots,
 view distance 8; the world divided at chunk x = 4, so two stripes that meet at block
 x = 64; the coordinator started with `--reshape by-itself --merge-distance 3
 --split-distance 5 --rest-seconds 5`, so the margin is 2, `EMPTY_FOR` and `LONG` are
-15 s; the lease it has when it is not told any, 5 s, but 3 s in E6 and E7, as in the
-tests of `merges.rs` that kill; every test audits the world against the ledgers and
-fails if a bot is disconnected).
+15 s; the lease it has when it is not told any, 5 s, but 3 s in E2, E6 and E7, as in
+the tests of `merges.rs` that kill; every test audits the world against the ledgers
+and fails if a bot is disconnected). `Cluster::new` in `processes.rs` sets a lease of
+3 s by itself, and `merges.rs` puts its setup's in its place, which is none, and so 5
+s, for its tests that do not kill: the lease of each test here has to be set on
+purpose.
 
 **What these numbers are chosen for.** With the merge distance 1 and the split
 distance 3 that the first version had, a part and the region it was split off could
@@ -1649,12 +1960,27 @@ nobody is handed over after the start.
 - E1. The start and step 1. Before step 1 the routing table has two regions; after it
   the list has region 1 absorbed by region 0. From the start to the end of step 1 the
   coordinator began one merge, of these two, and no split.
-- E2. Step 2, and then `A` stands. One split, of region 0; the list has a new region,
+- E2. **With a lease of 3 s**, on the cluster of E1 if E1 has that lease too (nothing
+  E1 or E3 checks depends on it), or on one of its own after the start and step 1.
+  Step 2, and then `A` stands. One split, of region 0; the list has a new region,
   granted chunks from x = 4 on and none below. Then **the part is moved to the other
   worker** and region 0 is not: the worker that made the part has two regions and the
   other none, and of the two the part has fewer players (one against two; section 6).
-  That release is begun no sooner than a rest after the split ended, by the times in
-  the coordinator's log.
+  **That release is begun no sooner than a rest, 5 s, after the split ended**: by the
+  time of the line `a region is moved to even regions out` with `region=2` against
+  the time of the line `a worker says what came of a split` with `region=0` (section
+  10), allowing a tenth of a second for when a line is written. This is what the
+  lease of 3 s is for. `even_out` as it is today moves a region a lease after any
+  merge or split has ended, and the new one when the region's own `alone_until` has
+  passed; with a lease of 5 s and a rest of 5 s those are one instant, and a build
+  whose evening out was never changed passed. With 3 s it moves the part two seconds
+  too soon and fails. **Which region is moved does not tell the two apart**, and
+  cannot with these groups: today's `even_out` moves the region with the highest id
+  of that worker, which is the part, and the new one the region with the fewest
+  players, which is the part as well. For the two to differ the part would need more
+  players than region 0, so `B` more bots than `A`, and `B` is one bot for the reason
+  given above; with one bot each, the tie goes to the higher id, the part again.
+  That the region with the fewest players is the one moved is F40's to show.
 - E3. After E1 and E2, step 3 and then ten rounds, with the same bots. A step is done
   when the list shows what it was to bring: the part absorbed by region 0, or a new
   region. In all of E3 eleven merges and ten splits end well, and no more; what came
@@ -1685,12 +2011,13 @@ nobody is handed over after the start.
 - E7. The same with the coordinator killed and started again with the same
   arguments, and with the world store killed and started again.
 - E8. The bound, over the ten rounds of E3 or the same again: from the coordinator's
-  log, every merge, split and release to even out that it began by itself, with the
-  time and the regions; from the list and where the bots were, the region each bot
-  was in then. **No bot's region is in more than `1 + W / rest` of them in any time
-  `W`.** Nobody is handed over and no worker leaves in these rounds, so nothing is
-  excepted. And no bot waits for an acknowledgement longer than `merges.rs` allows
-  for a merge or a split. No test compares a wait with "undisturbed".
+  log, every merge by the distances, absorption, split and release to even out that it
+  began by itself, by the four lines of section 10, each with its time and its regions;
+  from the list and where the bots were, the region each bot was in then. **No bot's
+  region is in more than `1 + W / rest` of them in any time `W`.** Nobody is handed
+  over and no worker leaves in these rounds, so nothing is excepted. And no bot waits
+  for an acknowledgement longer than `merges.rs` allows for a merge or a split. No test
+  compares a wait with "undisturbed".
 
 On stripes a group that walks on falls back (K15); the bots of these tests stay
 within the chunks of the table, where they do not.
@@ -1735,6 +2062,9 @@ With the numbers of section 3, an optimised build, and the pauses that were meas
 - **One joins.** Nobody else notices: the spawn point is home's whether anybody is
   there or not, and whoever was within reach of it was home's already. The player who
   joins and walks off is split off 30 chunks out, as above.
+- **One comes back to a spawn point that nobody is at.** Within 22 chunks of it they
+  stand still once, a second or two later, and are home's. That is not held up by
+  regions without players being cleared away at the same time, however many.
 
 **The bound.** Between the end of anything that stood a region's players still and
 the next merge, split or move that the coordinator begins with that region by itself,
@@ -1759,8 +2089,9 @@ after the last time; and so can the players of a region whose worker died.
   other merge in pairs, four at a time, each resting ten seconds in between. If all
   twenty are near each other, nobody is stood still more than about five times, over
   a minute; if they arrive one by one at a crowd, the crowd is stood still once in
-  ten seconds for as long as they keep arriving, in the order in which they came,
-  and those who wait their turn merge among themselves. Meanwhile they see each other
+  ten seconds for as long as they keep arriving, in the order in which they came
+  (a report that misleads for a moment costs nobody their place in it), and those
+  who wait their turn merge among themselves. Meanwhile they see each other
   across region boundaries, which works as between stripes.
 - **Many groups that leave one place together** are one region at first and are
   parted one in ten seconds (K9). Each stands still for every split until it is by
@@ -1848,7 +2179,15 @@ after the last time; and so can the players of a region whose worker died.
   had long wanted a split became free (K22). And **a group kept by its lowest chunk**:
   a group in flight would never stand.
 - **Merges served nearest first, always.** A region that waits at a larger gap would
-  wait for as long as others keep arriving nearer.
+  wait for as long as others keep arriving nearer. And **a place in that order that
+  is lost at the first look which does not want the merge**: it came to the same
+  wherever looks mislead between turns. See section 5.3, "Waiting".
+- **A sighting made, of nobody, for a region that a reading shows to have taken in
+  another.** It counted as sighted without a worker's word. See section 2.4.
+- **A region as the survivor of an empty one while a merge is wanted of it.** See
+  section 4.4.
+- **A window of time after an absorption in which a report gives the survivor its
+  rest.** The first report does, whenever it comes. See section 5.5.
 - **A survivor of empty regions that rests**, or that is left alone when an absorption
   fails. See sections 4.4 and 5.5.
 - **Absorbing a stripe for being empty.** See section 4.4.
@@ -1895,7 +2234,7 @@ after the last time; and so can the players of a region whose worker died.
    off first; and the chunk players enter in counts as a player of the home region.
 3. **Section 7, "split a region when its players fall into groups any two of which
    are further apart than the split distance"**: unless players of another region
-   within the merge distance of both join them (K2).
+   join them (K2).
 4. **Section 7, the merge distance**: `2 * (V + 1) + 4`, the split distance 8 more;
    "a region that was merged or split is left alone for some seconds" is ten, and
    holds of a region that changed hands and of evening out as well.
@@ -1996,10 +2335,41 @@ with the owner's trial of `by-itself` in C5.
   5.6): a split of a region in which a great deal was built finds fewer players than
   it named, or nobody, the first time. What would show it: `Off(Nobody)` in the
   coordinator's log for splits of regions with players in flight. Bots change few
-  chunks and will not show it.
-- **A region that no worker can run holds every merge and split back** once the
-  coordinator has started anew, as it has no sighting (section 5.1). That is a world
-  in need of its operator in any case; the routing table says which region waits.
+  chunks and will not show it. The same of **a split that waited minutes** for the
+  one split there is in the world (K9): its `Prepare` was said when the wait began
+  and is not said again (section 5.6), so its first attempt has the long checkpoint.
+- **A region that no worker can run holds every merge and split back**, as it has no
+  sighting (section 5.1): after the coordinator has started anew, and under a
+  coordinator that has run all along if the region is new to it, which is a part
+  that the list adds. That is a world in need of its operator in any case; the
+  routing table says which region waits.
+- **A survivor that fails every time is still everybody's first choice.** Each empty
+  region tries it for itself, once in `LONG` and then ever more rarely, up to once
+  in four minutes, and nothing tries the next candidate. What would show it: in the
+  coordinator's log `an absorption is begun by itself` with one and the same
+  `survivor` again and again, each followed by `a merge has ended` with an `Err`,
+  while regions without players stay in the routing table. Nothing is built for it.
+- **A split that never stands.** Two groups of a region that come within `D_s` of
+  each other more often than once a second, or a player of a group who is handed
+  back and forth across a boundary that often, begin the second of standing anew
+  each time (section 5.3). Nothing is begun then, and nobody stands still for it.
+- **The order of those who wait is still lost** where a region that joins two groups
+  is reserved for more than a second (section 5.3, "Waiting"): the merges that wait
+  for the region around it begin anew together, and the nearest is first, once.
+- **A guest at a survivor without players** has its links closed at every
+  absorption, every second and a half under K24. What they see then was not looked
+  at ("Not checked").
+- **A worker process that is back under its name within the lease** registers
+  holding nothing and keeps its regions with the epochs they had (`register` leaves
+  what it owns). Nothing is new to the coordinator, so section 5.4 gives no rest,
+  although the players of those regions stood still for a restore. That is within
+  "a region whose worker died" of the bound, though nothing was taken over.
+- **A player who comes as a region is absorbed can miss their rest** (K13) in two
+  ways. Where a reading ends the absorption before the worker's word, the first
+  report taken of the survivor afterwards can be one from before it (K11), which
+  does not show them. And evening out, which goes by the sighting, can pick the
+  survivor between the end and that first report, when it still counts as without
+  players. Either way one player is stood still twice within ten seconds, once.
 - **A stale sighting that is wrong** holds a split back for as long as its region is
   silent, and a region without an owner is silent until somebody runs it. Nothing is
   begun for it; a region stays larger than it need be.
@@ -2058,9 +2428,21 @@ with the owner's trial of `by-itself` in C5.
 - **The properties R1 to R5** were gone through against the rules on paper, each
   with a correct build in mind that would fail it, and nothing was run. R4 (d) and
   the count and the bound of R5 are arguments, not measurements; whoever writes the
-  runs is the first to try them.
+  runs is the first to try them. The same of what the second review added: R4 (e),
+  which rests on a plain look's reports being the coordinator's sightings exactly,
+  and the bound on the releases to even out in R5. How many of the merges and
+  splits of a random run begin at looks that R4 (e) can check is not known; the
+  test prints it.
+- **The second review** ran nothing either. Its sequences were gone through against
+  the rules as they are now, and the code it cites was read again (`Coordinator::new`
+  and `listed` for what a new coordinator knows, `even_out`, `register`, the lease
+  the command line and the test cluster have, the lines of the log).
 
 ## Review
+
+The record was reviewed twice against the code, and revised after each.
+
+### The first review
 
 An independent review against the code found eleven defects in the first version of
 this record and nothing that endangers the world's data: the record changes nothing
@@ -2146,3 +2528,86 @@ who leave a busy place, left the turns with one task, which is to let those who
 arrive in, and made a part a region that can itself be far apart; and it is why the
 properties of section 11 count groups and clusters and not what is wanted at one
 step.
+
+### The second review
+
+A second review went over what the revision had added, against the code as of
+`08a1f6a`, by reading and by going through sequences on paper. It found six defects,
+none of which endangers the world's data: three rules that did not do what the
+record said of them, and three tests that could not do what the record said they
+do. The code it cites for them and for its doubts was read again and is as it says
+(its line numbers are of that commit). What it found, and what was decided:
+
+1. **Nothing in R1 to R7 saw whether anything had stood**, so two of the six faults
+   that step C4.6 is to catch passed every property: a build without standing, on
+   the one stale report of K10, and a build in which a group goes on its first look.
+   R4 (e) is new, by the reports the model gave and not by the true positions: what
+   is begun was wanted by `decide` at every look of the second before. R4 (c) says
+   "in another cluster than", so that it sees other regions. Working it in found
+   that neither can be exact at every look, as the test does not know the sighting
+   of a region that is reserved, moved or silent: both go by the reports only at a
+   look at which every region was reported and taken, which section 11 calls plain.
+   A table says which property catches which fault, and R3 gained the age of the
+   last reading for it.
+2. **`waiting` was lost on one look**, so the order in which merges came was again an
+   order by gap wherever a look misled between two turns. A merge loses its place
+   only when it has not been wanted for more than `FRESH` with both sightings fresh
+   all the while, for which it has a third time, `missed`; and a merge whose two
+   regions have become one is forgotten (section 5.3).
+3. **An absorption took an empty home region one tick before a merge with it had
+   stood**, every time, because the one counts from a report and the other from a
+   tick. A region is no survivor at a tick at which a merge is wanted of it (section
+   4.4), and F36 says how the test's clock has to be set to see it.
+4. **A region that took in another by the list counted as sighted** without a
+   worker's word, which on stripes is the home region after every new coordinator.
+   No sighting is made for a region that has none; the absorbed region's crowds are
+   dropped with it, and section 5.1's third condition covers the time until the
+   first report (sections 2.4 and 5.1, K6, R3, F48).
+5. **D9 and D15 asked for what cannot be placed**: one player within 2 of each of
+   two groups that are more than 5 apart. Both have two players of the region in
+   between, and so has F15; K2 says when one place can join two groups (`D_s` less
+   than twice `D_m`), K10 no longer says that it always can, and the generated
+   runs, with 6 and 12, are told that K2 (b) and K12 come up only by two players.
+6. **E2 could not tell the new evening out from the one there is**: with a lease and
+   a rest of 5 s both move the same region at the same instant. E2 runs with a lease
+   of 3 s and checks the time. Which region is moved cannot tell them apart with
+   these groups, and E2 says why.
+
+**What it found sound**: standing and continuity (a group continues one group at
+most, a group of one look cannot go by being counted to one that has stood, a group
+in flight stands with every margin there is); the order and the turns, the second
+defect aside; absorptions and their bound; `Prepare` against what the worker and the
+runner do with it; the order on the connection of section 2.2 and the number of the
+registration; that R1 to R7 hold of the rules; the third condition of section 5.1
+for parts and for regions the list adds; E1 to E8 against `Region::split` and the
+bots; and the numbers.
+
+**Its doubts**, none of which a sequence in ordinary play shows wrong. Taken up as
+rules: every split of a region that has ended, however, was its turn at splitting
+(section 5.3, "Turns"); and the first report taken of a survivor after an
+absorption decides whether it rests, with no window of time (section 5.5). Taken up
+in the tests: section 10 gives the lines of the log that E2 and E8 read; R5 bounds
+the releases to even out, so that a build that evens out for ever fails it; R1 no
+longer lets an absorption end a rest the survivor had; the model is told that a
+report that is a step old never follows the word of an outcome it is from before.
+Said as it is: what one reading that fails holds back (section 7, and section 5.1
+no longer says "nothing"). In "Risks": a survivor that fails every time, a split
+that waited long for its turn and has an old `Prepare`, a split that never stands,
+a guest at a survivor without players, a worker process back under its name within
+the lease, and that a region new to a coordinator that has run all along holds
+everything back as well.
+
+**What the builder of step C4.1 corrected**, all of it accepted: `Policy::checked`
+refuses for the two distances only, and the command line for the rest and the view
+distance (sections 3 and 8); `Policy::margin` and that `Policy` is `Copy` (section
+8); the comments of `Prepare` are in five places and all were changed (section 10);
+and `Coordinator::players` counts as being heard from, vouches for nothing and
+returns no `Changes` (section 2.3).
+
+**Found while working these in, and not by either review.** A player who comes as an
+absorption ends can miss their rest where the first report taken afterwards is one
+from before it, or where evening out picks the survivor before that report; and a
+merge's place in the order is still lost where a region between two groups is
+reserved for more than a second. Both are in "Risks", and nothing was built for
+either: this is the last revision before the state machine is built, and a rule
+that is added now is one more that nobody has reviewed.
