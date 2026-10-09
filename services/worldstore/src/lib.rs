@@ -42,6 +42,8 @@ mod rest;
 #[cfg(test)]
 mod scenarios;
 #[cfg(test)]
+mod stripes_end;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod unpinned;
