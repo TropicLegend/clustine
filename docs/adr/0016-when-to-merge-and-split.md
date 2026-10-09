@@ -1,7 +1,8 @@
 # ADR-0016: When to merge and when to split
 
-- Status: **Accepted**; reviewed twice against the code and revised after each (see
-  "Review"); being built in the steps of section 11 (C4.1 is built). The design of
+- Status: **Built** in steps C4.1 to C4.8 of section 11; reviewed twice against the
+  code before that and revised after each (see "Review"); what building and testing
+  it settled is in "Found while building". The design of
   step C4 of milestone M3, phase C: the coordinator decides by itself. It changes no
   code of the simulation, the region runner, the world store or the edge.
 - Date: 2026-10-09
@@ -2691,3 +2692,68 @@ Thirty faults were put into the state machine on purpose, one at a time (no rest
 standing, no turns, the order by gap, every group named, a pinned region absorbed, a
 region without a sighting not holding back, and others); each failed at least one of
 its builder's tests.
+
+**Step C4.6, the generated runs** (`services/coordinator/tests/follows.rs`). R1 to R7
+hold of the state machine over more than six thousand runs, and each of four deciders
+with a fault put in (no rest, no standing, every group taken, the list not read) is
+caught by the property the table of section 11 names for it. What writing them
+settled:
+
+- R4 (e), "wanted at every look of the second before": what has stood has been wanted
+  for longer than `FRESH`, which with looks a quarter of a second apart is the look at
+  which it is begun and the five before it. The runs hold what is begun to the sixth
+  look as well, wherever that one is plain.
+- R4 (b), the survivor "in the last `FRESH`": without players for longer than
+  `FRESH`, so the report one look further back is without players too, and the runs
+  check that one as well.
+- R2 has the exception that "Risks" names: a player who came into a region as it was
+  absorbed for being empty (K13) can be in two things within a rest, and is left out.
+- R5, "from `s'` on": counted from the look after `s'`.
+- About a quarter of the merges and splits of a run begin at looks that are not plain,
+  where R4 (e) checks nothing; the scripted scenarios F cover standing there.
+
+**The scenarios F1 to F50** (`services/coordinator/tests/decides.rs`, 195 tests) found
+no fault. How the scenarios that the record gives as ranges are numbered is in that
+file's header. One thing they showed that the record did not say: **an absorption that
+the coordinator did not note**, made by hand through another coordinator or found by
+the list, leaves the survivor's sighting fresh with the absorbed region's crowds added
+for up to a second. `Prepare` can be said on such a sighting; nothing can stand on it,
+as the next report of the survivor replaces it.
+
+**Step C4.7, end to end under the bots** (`bin/clustine/tests/follows.rs`). E1 to E8
+pass, ten runs of the file in a row. What they found is the sentence of K7 on a split
+whose worker dies, which said "the same" as of a merge and now says what section 5.5
+says; E6 was changed with it. What could not be written as E has it:
+
+- E5: when `B` leaves, its auditor joins at the spawn point and walks to where `B`
+  stood, through region 0, and is a player of region 0 within the merge distance of
+  the part for about a second. So `B` walks on to chunk -8, well inside its part,
+  before it leaves. A group that can leave without its auditor walking in at once
+  would let E5 be written as it stands.
+- "Nothing is merged or split" (E1, E4) is bounded by rounds of the slowest bot, as
+  counted from where it is, and not by time.
+- E3 and E8 are one test. The first release to even out, right after the start, is
+  not counted in E1.
+- Region 0 is pinned, so the list does not give its chunks; the part's are checked
+  by the box the list gives.
+
+Measured in those ten runs, unoptimised, with distances of 3 and 5 and a rest of 5 s
+(least / middle / worst, in seconds; 110 merges, 100 splits, 110 moves):
+
+| | Begun after `A` was sent | Done after | Those who stayed waited | Those who went waited |
+|---|---|---|---|---|
+| Merge (`A` sent to chunk 3) | 9.28 / 10.00 / 10.35 | 9.75 / 10.48 / 11.89 | 0.34 / 0.51 / 1.11 | 0.49 / 0.73 / 2.11 |
+| Split (`A` sent to chunk 0) | 7.40 / 8.04 / 8.98 | 7.69 / 8.32 / 9.14 | 0.33 / 0.51 / 1.10 | 0.24 / 0.41 / 0.71 |
+| Move of the part (after the split ended) | 5.00 / 5.16 / 5.24 | 5.12 / 5.28 / 5.60 | 0.03 / 0.07 / 0.19 | 0.24 / 0.38 / 0.66 |
+
+The merge on the way back waits for the rest after that move: `A` was within three
+chunks of `B` after 5.5 to 7 s. So for a group that walks away and comes back at once
+the rest of a part that was moved is what delays the merge, by two to four seconds
+here, in which the two groups see each other across the boundary. Nothing came to
+nothing in any round. After a kill, a region ran again within 3.9 s at worst with a
+lease of 3 s; of the merges and splits that a kill struck, 61 were made whole and 19
+not at all.
+
+Not covered by any of it: two edges, real clients, optimised builds, the distances of
+a real view distance, more than two workers, a worker told to stop, hand-overs while
+something is wanted (K10) with real processes, and many empty regions at once.

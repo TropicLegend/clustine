@@ -192,7 +192,7 @@ differently, so that each leaves everything working.
 | C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | done |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos. Designed in [ADR-0012](adr/0012-the-tick-on-chunks.md), in steps C2b.1 to C2b.5 | Hand-over, block, takeover, chaos and move tests on two pinned regions | done |
 | C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | done ([ADR-0014](adr/0014-merging-and-splitting.md), [ADR-0015](adr/0015-the-edge-through-merges-and-splits.md)) |
-| C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | to do |
+| C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | done ([ADR-0016](adr/0016-when-to-merge-and-split.md)); off unless asked for until C5 |
 | C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | to do |
 | C6 | Docs; what to try with real clients | CI | to do |
 
@@ -586,6 +586,90 @@ Seen and left as it is, or not tried:
   yet".
 - Not tried: a worker told to stop during a merge or a split; two edges; merges and
   splits on Kubernetes beyond the one of `deploy/kind/test.sh`.
+
+**C4 is done: the coordinator can decide by itself when regions merge and when one is
+split.** It is off unless asked for (`clustine coordinator --reshape by-itself`), and
+the owner's trial of it comes with C5, for the reason given below.
+[ADR-0016](adr/0016-when-to-merge-and-split.md) is its design, reviewed twice before
+anything was built (eleven defects, then six, all worked in).
+
+How it decides, in short. Every worker says four times a second in which chunks its
+regions have players. The coordinator joins players into groups by distance: two
+regions whose players come within the **merge distance** of each other are merged, and
+a group that has gone further than the **split distance** from everybody else of its
+region is split off with the chunks around it. Both distances follow from the view
+distance (22 and 30 chunks at a view distance of 8; `--merge-distance`,
+`--split-distance`), and the gap between them is what keeps a player who stands at the
+edge from being merged and split over and over. What else keeps it calm: nothing is
+begun on one look (it has to have held for a second), a region that was just merged,
+split or moved **rests** for ten seconds (`--rest-seconds`), something that failed is
+left alone for half a minute and for longer each time, one split at a time in the
+world, and nothing at all while the coordinator does not know where the players of some
+region are. A region nobody has been in for half a minute is absorbed by a neighbour
+without players, the home region first. After a split the part starts on the worker
+that made it and is moved to another when it has rested, if that evens the workers out.
+
+What checks it. The rule itself (`policy::decide`) is a pure function with scripted
+cases and generated ones. The state machine has its builder's tests, which thirty
+faults put in on purpose each failed, and two sets written from the record by others
+who had not seen the code: fifty scripted scenarios (195 tests, every timed rule tried
+just before, at and just after its moment) and generated runs of players walking at
+random while workers die and readings of the list fail, held to seven properties
+(nobody's region is disturbed more often than the rest allows, nothing is begun on
+ignorance, whoever should be together is in the end, and so on) over more than six
+thousand runs. Neither found a fault in the code. `bin/clustine/tests/follows.rs` then
+runs a cluster of processes under the ledger bots: a group walks up to another and
+away again ten times in a row, with the regions, the store's list and the
+coordinator's log checked after every step; an empty part is absorbed by the right
+neighbour; a worker, the coordinator or the store is killed at logged moments of
+merges and splits the coordinator began by itself. Ten runs of the whole file passed.
+
+What those tests found: the record said two things of a split that the store made and
+whose worker died before it could say so. The coordinator leaves such a region alone
+for half a minute, as after a split that failed, because nothing but the worker's word
+says that a split was made; the record now says so too. For that half minute nothing is
+merged into the region, and players on both sides see each other across the boundary
+as they did before C4.
+
+**What a group that walks to another and back goes through**, measured in those ten
+runs (110 merges, 100 splits, 110 moves; unoptimised processes, distances of 3 and 5
+chunks and a rest of 5 s so that a test can walk them; least / middle / worst):
+
+| | Begun after the group set out | Those who stayed stood still | Those who went stood still |
+|---|---|---|---|
+| Merge, walking up | 9.3 / 10.0 / 10.4 s | 0.34 / 0.51 / 1.11 s | 0.49 / 0.73 / 2.11 s |
+| Split, walking away | 7.4 / 8.0 / 9.0 s | 0.33 / 0.51 / 1.10 s | 0.24 / 0.41 / 0.71 s |
+| The part moved to the other worker, a rest after the split | 5.0 / 5.2 / 5.2 s | 0.03 / 0.07 / 0.19 s | 0.24 / 0.38 / 0.66 s |
+
+So a group that leaves another stands still twice within five seconds, once for the
+split and once when its new region is moved, each time for about half a second
+unoptimised (0.15 to 0.3 s optimised, by C3's table above); those it left notice the
+first only. On the way back the merge waited for the rest after that move, during
+which the two groups saw each other across the boundary for two to four seconds. After
+a worker was killed and not started again, every region ran again within 3.9 s with a
+lease of 3 s.
+
+**Why it is not the default yet.** On stripes a part can only be cut out of what its
+region holds, so a group that walks on leaves its part, falls back into the region it
+was split from, and is split off again where it stands: a stop every ten seconds for a
+group that travels (K15 in the record). C5 takes the stripes away and lets a part grow
+with its players, and makes `by-itself` the default; the trial with two clients
+walking towards and away from each other is written down then. Whoever wants to look
+before that: start the coordinator of the cluster above with `--reshape by-itself`
+and watch its log for `a merge is begun by the distances`, `a split is begun by
+itself` and `a region is moved to even regions out`. Under it, a merge or a split
+asked for by hand is undone again after a rest where the distances say otherwise.
+
+Seen and left as it is, or not tried, in C4:
+
+- A split whose worker died counts as failed whether or not the store made it (above).
+- A lone player six chunks from where players enter is split off the home region when
+  the last player near the spawn point leaves it. That is the rule as written.
+- A player who comes into a region at the moment it is absorbed for being empty stands
+  still for that absorption and can be disturbed again sooner than a rest after it.
+- Not tried: the distances of a real view distance (22 and 30) under bots; more than
+  two workers; two edges; a worker told to stop while the coordinator decides by
+  itself; many empty regions at once; real clients.
 
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
