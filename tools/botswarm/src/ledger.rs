@@ -33,6 +33,15 @@
 //! [`Progress::longest_waits`]. A bot that only walks sends nothing that is answered, so
 //! a scenario can have every bot send a **pulse** every few ticks: something a region
 //! acknowledges and that changes nothing.
+//!
+//! Whoever runs a scenario can **send its bots elsewhere** while they play, with
+//! [`Progress::walk_between`], and wait until they are there, with
+//! [`Progress::arrived`]. The bots walk there along their lanes at their own speed,
+//! playing as they go, so a plot is the two rows beside a lane for as far as its bot
+//! has ever come. What a bot built stays where it is and stays in its ledger, and the
+//! auditor walks on to whatever is out of view from where the scenario began. Several
+//! scenarios can play on one server at once, as groups that are sent to different
+//! places, if their lanes are apart and their names begin differently.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -102,18 +111,21 @@ pub struct Ledger {
     /// How many players play.
     pub bots: usize,
     /// How many times each of them walks to `east` and back to `west` before it stops,
-    /// if that is to end the scenario.
+    /// if that is to end the scenario. Of bots that are sent elsewhere it is how many
+    /// times each comes to the west end of where it walks from the east.
     pub rounds: Option<u32>,
     /// How long the bots play before they stop, if that is to end the scenario. With
     /// neither this nor `rounds` they play until [`Progress::finish`] is called.
     pub duration: Option<Duration>,
-    /// The x coordinates the bots walk between.
+    /// The x coordinates the bots walk between, until they are sent elsewhere with
+    /// [`Progress::walk_between`].
     pub west: f64,
     pub east: f64,
     /// The x coordinate of the first block east of each boundary between regions that
-    /// lies between `west` and `east`. The scenario only uses them to say when a bot
-    /// steps across one and which actions reached across one; the bots build wherever
-    /// they are, which near a boundary is on both sides of it.
+    /// lies between `west` and `east`, or anywhere else the bots are sent. The scenario
+    /// only uses them to say when a bot steps across one and which actions reached
+    /// across one; the bots build wherever they are, which near a boundary is on both
+    /// sides of it.
     pub lines: Vec<i32>,
     /// Blocks per tick of the slowest bot; each further one is a little faster.
     pub speed: f64,
@@ -123,11 +135,14 @@ pub struct Ledger {
     /// acknowledged, before the scenario fails. An edge gives up on a player after 20
     /// seconds without their region, so anything above that only ever catches a hang.
     pub patience: Duration,
-    /// What the names of the bots begin with.
+    /// What the names of the bots, and of the auditor, begin with. Scenarios that play
+    /// on one server at once need different ones.
     pub name_prefix: String,
     /// The z coordinate of the first bot's lane, and how far the lane of each further
     /// bot is from the one before, in blocks: at least 4. Far enough apart, the bots do
-    /// not have each other, or the same chunks, in view.
+    /// not have each other, or the same chunks, in view. A scenario uses the block rows
+    /// from its first lane to two beyond its last, and scenarios that play on one
+    /// server at once need rows of their own, with one left free in between.
     pub first_lane: i32,
     pub lane_spacing: i32,
     /// Blocks per tick on the way to the lane, for the bots and for the auditor. Lanes
@@ -258,6 +273,12 @@ pub struct BotProgress {
     /// Whether the bot is on its lane and playing.
     pub playing: bool,
     pub x: f64,
+    /// Whether the bot is within the x coordinates its scenario is to walk between as
+    /// of now: those it began with or those it was last sent to. A bot that is does
+    /// not step out of them until it is sent elsewhere, so this is a state to wait
+    /// for. It is false of a bot that has not heard of the latest coordinates yet,
+    /// wherever it is, and of one that has not reached its lane.
+    pub arrived: bool,
     /// The sequence number of the latest thing it sent that is acknowledged, an action
     /// on a block or a pulse, and up to which the server has acknowledged them.
     pub sent: i32,
@@ -268,6 +289,9 @@ pub struct BotProgress {
 struct BotCounters {
     playing: AtomicBool,
     x: AtomicU64,
+    /// The number of the [`Course`] the bot was within the coordinates of after its
+    /// latest step, or 0 if it was outside those it walked by.
+    within: AtomicU64,
     sent: AtomicI32,
     acknowledged: AtomicI32,
     /// Everything the bot sent that is acknowledged, in the order it was sent.
@@ -317,12 +341,24 @@ pub fn longest_wait(
         .copied()
 }
 
+/// Where the bots of a scenario are to walk up and down, and the how manieth word
+/// about that it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Course {
+    /// Counted from 1, which leaves 0 for a bot that is within no coordinates.
+    number: u64,
+    /// The two x coordinates. Nothing before the scenario has begun, which puts its
+    /// own here unless its bots have been sent somewhere by then.
+    between: Option<(f64, f64)>,
+}
+
 /// Where a running ledger scenario is, for whoever disturbs the server meanwhile, and
-/// the means to end it.
+/// the means to send its bots elsewhere and to end it.
 pub struct Progress {
     finish: AtomicBool,
     bots: Vec<BotCounters>,
     crossings: watch::Sender<Option<LineCrossing>>,
+    course: Mutex<Course>,
 }
 
 impl Progress {
@@ -332,7 +368,51 @@ impl Progress {
             finish: AtomicBool::new(false),
             bots: (0..bots).map(|_| BotCounters::default()).collect(),
             crossings: watch::channel(None).0,
+            course: Mutex::new(Course {
+                number: 1,
+                between: None,
+            }),
         })
+    }
+
+    /// Sends the bots elsewhere: from now on they walk up and down between the x
+    /// coordinates `west` and `east`, each on the lane it has. A bot that is outside
+    /// them walks into them at its own speed, playing as it goes, and one that is
+    /// within them stays within them. [`Progress::arrived`] says when all are there.
+    ///
+    /// This may be said before the scenario has begun, or before a bot has reached its
+    /// lane: the bots then walk to the lane at these coordinates.
+    pub fn walk_between(&self, west: f64, east: f64) -> Result<()> {
+        ensure!(
+            west.is_finite() && east.is_finite() && west < east,
+            "the bots need somewhere to walk"
+        );
+        let mut course = self.course.lock().expect("nobody panics with it");
+        course.number += 1;
+        course.between = Some((west, east));
+        Ok(())
+    }
+
+    /// The x coordinates the bots are to walk between as of now. Nothing before the
+    /// scenario has begun, unless the bots were sent somewhere before that.
+    pub fn between(&self) -> Option<(f64, f64)> {
+        self.course().between
+    }
+
+    /// Whether every bot is within the coordinates the scenario is to walk between as
+    /// of now; see [`BotProgress::arrived`].
+    pub fn arrived(&self) -> bool {
+        self.bots().iter().all(|bot| bot.arrived)
+    }
+
+    fn course(&self) -> Course {
+        *self.course.lock().expect("nobody panics with it")
+    }
+
+    /// Notes where a scenario begins, unless its bots have been sent somewhere already.
+    fn begin(&self, west: f64, east: f64) {
+        let mut course = self.course.lock().expect("nobody panics with it");
+        course.between.get_or_insert((west, east));
     }
 
     /// Tells the bots to stop playing where they are; the scenario then draws its
@@ -347,13 +427,21 @@ impl Progress {
 
     /// Every bot as last heard of.
     pub fn bots(&self) -> Vec<BotProgress> {
+        let course = self.course().number;
         self.bots
             .iter()
-            .map(|bot| BotProgress {
-                playing: bot.playing.load(Ordering::Relaxed),
-                x: f64::from_bits(bot.x.load(Ordering::Relaxed)),
-                sent: bot.sent.load(Ordering::Relaxed),
-                acknowledged: bot.acknowledged.load(Ordering::Relaxed),
+            .map(|bot| {
+                // Before where the bot is: a bot notes where it is and then whether
+                // that is within its coordinates, so one that is said to have arrived
+                // is not then seen where it was a step earlier, outside them.
+                let arrived = bot.within.load(Ordering::SeqCst) == course;
+                BotProgress {
+                    playing: bot.playing.load(Ordering::Relaxed),
+                    x: f64::from_bits(bot.x.load(Ordering::SeqCst)),
+                    arrived,
+                    sent: bot.sent.load(Ordering::Relaxed),
+                    acknowledged: bot.acknowledged.load(Ordering::Relaxed),
+                }
             })
             .collect()
     }
@@ -533,6 +621,7 @@ pub async fn ledger(
         ledger.pulse != Some(0),
         "a pulse needs a tick to be sent in"
     );
+    progress.begin(ledger.west, ledger.east);
 
     let (finished_in, mut finished_out) = mpsc::channel(ledger.bots);
     let (checked_in, mut checked_out) = mpsc::channel(ledger.bots);
@@ -664,6 +753,81 @@ fn across(lines: &[i32], from: f64, x: i32) -> bool {
         .any(|line| (from < f64::from(*line)) != (x < *line))
 }
 
+/// Whether `x` is within the coordinates `between`, their ends included.
+fn within(x: f64, between: (f64, f64)) -> bool {
+    between.0 <= x && x <= between.1
+}
+
+/// Whether a bot at `x` that walks up and down between the coordinates `between`, and
+/// was walking eastwards or not, walks eastwards next. It turns round at an end, and
+/// from outside the coordinates it walks into them, on to their far end.
+fn heading(x: f64, eastwards: bool, between: (f64, f64)) -> bool {
+    if x - between.0 <= ARRIVED {
+        true
+    } else if between.1 - x <= ARRIVED {
+        false
+    } else {
+        eastwards
+    }
+}
+
+/// Where a step from `from` towards `end` leads at `speed` blocks a tick. Steps do not
+/// add up to the length of the way exactly; the last one ends on the spot.
+fn stride(from: f64, end: f64, speed: f64) -> f64 {
+    if (end - from).abs() <= speed + ARRIVED {
+        end
+    } else {
+        from + speed.copysign(end - from)
+    }
+}
+
+/// The block a bot that stands at `from` on its lane works on next, of the two `rows`
+/// of its plot: always one within a few blocks of where the bot stands, wherever that
+/// is and wherever it is going.
+fn spot(random: &mut Random, from: f64, lines: &[i32], rows: [i32; 2]) -> Cell {
+    let mut x = from.floor() as i32 + random.below(2 * REACH as u64 + 1) as i32 - REACH;
+    // Next to a boundary, half of what a bot does is beyond it: that is what takes
+    // two regions, and there is little room for it.
+    let near = lines
+        .iter()
+        .find(|line| (from - f64::from(**line)).abs() <= f64::from(REACH) + 0.5);
+    if let Some(line) = near
+        && random.one_in(2)
+    {
+        let beyond = random.below(REACH as u64) as i32;
+        x = if from < f64::from(*line) {
+            line + beyond
+        } else {
+            line - 1 - beyond
+        };
+    }
+    (x, rows[random.below(2) as usize])
+}
+
+/// Whether someone who steps from the chunk `from` to the chunk `to` surely has the
+/// block column `cell` in view before the step and not surely after it.
+fn loses_sight_of(cell: Cell, from: (i32, i32), to: (i32, i32), view_distance: i32) -> bool {
+    let chunk = (cell.0 >> 4, cell.1 >> 4);
+    surely_in_view(from, chunk, view_distance) && !surely_in_view(to, chunk, view_distance)
+}
+
+/// The block nearest to `x` among those of `words` that the auditor has not `seen` and
+/// that are beside the lane `lane` rather than beside another of the lanes `walked`.
+fn unseen_beside<Word>(
+    words: &BTreeMap<Cell, Word>,
+    seen: &BTreeMap<Cell, i32>,
+    walked: &[i32],
+    lane: i32,
+    x: f64,
+) -> Option<Cell> {
+    let beside = |cell: &Cell| walked.iter().min_by_key(|lane| (cell.1 - **lane).abs());
+    words
+        .keys()
+        .filter(|cell| !seen.contains_key(cell) && beside(cell) == Some(&lane))
+        .min_by_key(|cell| (cell.0 - x.floor() as i32).abs())
+        .copied()
+}
+
 /// The chunk that has the block column at `x` and `z`.
 fn chunk_of(x: f64, z: f64) -> (i32, i32) {
     ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4)
@@ -686,6 +850,8 @@ struct Player {
     /// The z coordinate of the lane, and of the two rows of the plot beside it.
     lane: f64,
     rows: [i32; 2],
+    /// The x coordinate of the block column the bot entered the world in.
+    entered: i32,
     /// The slot and the items the bot believes to hold, and what the server last said
     /// about each, which it says rarely.
     slot: i16,
@@ -731,6 +897,7 @@ impl Player {
             ),
             lane: f64::from(lane_block) + 0.5,
             rows: [lane_block + 1, lane_block + 2],
+            entered: bot.location.0.floor() as i32,
             slot: bot.selected_slot as i16,
             hotbar: bot.hotbar,
             told_slot: bot.selected_slot,
@@ -809,55 +976,75 @@ impl Player {
         let x = self.bot.location.0;
         let to_the_lane = self.ledger.to_the_lane;
         self.bot.walk_to(x, self.lane, to_the_lane).await?;
-        self.bot
-            .walk_to(self.ledger.west, self.lane, to_the_lane)
-            .await?;
+        // To where the bots are to walk by now, should they have been sent elsewhere
+        // already.
+        let (mut surveyed, between) = self.course();
+        self.bot.walk_to(between.0, self.lane, to_the_lane).await?;
         self.look_around()?;
-        // How the bot finds its plot is the first word about every block of it that is
-        // in view, so that a block nobody touched is noticed if it changes.
-        let (west, east) = (
-            self.ledger.west.floor() as i32,
-            self.ledger.east.floor() as i32,
-        );
-        for x in west - REACH..=east + REACH {
-            for z in self.rows {
-                if let Some(found) = self.bot.block_at(x, GROUND, z)? {
-                    self.words.insert((x, z), found);
-                }
-            }
-        }
+        self.survey(between)?;
         self.progress.bots[self.number]
             .playing
             .store(true, Ordering::Relaxed);
 
         let mut round = 0;
-        'playing: loop {
-            for end in [self.ledger.east, self.ledger.west] {
-                // Steps do not add up to the length of the lane exactly; the last one
-                // ends on the spot.
-                while (self.bot.location.0 - end).abs() > ARRIVED {
-                    let over = self.progress.finishing()
-                        || self.ledger.rounds.is_some_and(|rounds| round >= rounds)
-                        || self
-                            .ledger
-                            .duration
-                            .is_some_and(|duration| started.elapsed() >= duration);
-                    if over {
-                        break 'playing;
-                    }
-                    self.act().await?;
-                    if let Some(every) = self.ledger.pulse
-                        && self.ticks % u64::from(every) == 0
-                    {
-                        self.pulse().await?;
-                    }
-                    self.ticks += 1;
-                    self.step_towards(end, speed).await?;
-                    self.settle()?;
-                }
-                self.still_as_told()?;
+        let mut eastwards = true;
+        loop {
+            // Where to is asked before every step, so that a bot that is sent elsewhere
+            // turns there at once and one that is where it is to be never leaves.
+            let (course, between) = self.course();
+            let from = self.bot.location.0;
+            eastwards = heading(from, eastwards, between);
+            let end = if eastwards { between.1 } else { between.0 };
+            let over = self.progress.finishing()
+                || self.ledger.rounds.is_some_and(|rounds| round >= rounds)
+                || self
+                    .ledger
+                    .duration
+                    .is_some_and(|duration| started.elapsed() >= duration);
+            if over {
+                break;
             }
-            round += 1;
+            self.act().await?;
+            if let Some(every) = self.ledger.pulse
+                && self.ticks % u64::from(every) == 0
+            {
+                self.pulse().await?;
+            }
+            self.ticks += 1;
+            let to = stride(from, end, speed);
+            // On its way to where it was sent a bot may walk further in one direction
+            // than it sees, and an action is only settled once its block is shown as
+            // the action leaves it. So it stands still rather than lose sight of a
+            // block it waits for, as a player would who wants to see what became of
+            // it. Between its coordinates a bot is never held up.
+            let waits_to_see = !within(from, between) && self.loses_sight(to);
+            // Nor does it take a step that leads nowhere, which would take no tick.
+            if waits_to_see || (to - from).abs() <= ARRIVED {
+                self.bot
+                    .idle(TICK)
+                    .await
+                    .with_context(|| format!("disconnected while standing at x = {from:.2}"))?;
+            } else {
+                self.step_to(to, speed).await?;
+            }
+            self.settle()?;
+
+            let here = self.bot.location.0;
+            let there = within(here, between);
+            if there && surveyed != course {
+                self.survey(between)?;
+                surveyed = course;
+            }
+            // After where the bot is, which `settle` has noted; see `Progress::bots`.
+            self.progress.bots[self.number]
+                .within
+                .store(if there { course } else { 0 }, Ordering::SeqCst);
+            if (here - end).abs() <= ARRIVED {
+                self.still_as_told()?;
+                if !eastwards {
+                    round += 1;
+                }
+            }
         }
         self.progress.bots[self.number]
             .playing
@@ -882,14 +1069,47 @@ impl Player {
         self.settle()
     }
 
-    /// One step along the lane towards `end`, which takes a client tick.
-    async fn step_towards(&mut self, end: f64, speed: f64) -> Result<()> {
+    /// Where the bot is to walk up and down as of now, and the number of that word.
+    fn course(&self) -> (u64, (f64, f64)) {
+        let course = self.progress.course();
+        let between = course.between;
+        (
+            course.number,
+            between.unwrap_or((self.ledger.west, self.ledger.east)),
+        )
+    }
+
+    /// Takes how the bot finds its plot between the coordinates `between` as the first
+    /// word about every block of it that is in view and that there is no word about
+    /// yet, so that a block nobody touched is noticed if it changes.
+    fn survey(&mut self, between: (f64, f64)) -> Result<()> {
+        let (west, east) = (between.0.floor() as i32, between.1.floor() as i32);
+        for x in west - REACH..=east + REACH {
+            for z in self.rows {
+                if !self.words.contains_key(&(x, z))
+                    && let Some(found) = self.bot.block_at(x, GROUND, z)?
+                {
+                    self.words.insert((x, z), found);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a step along the lane to `to` would take a block the bot waits for out
+    /// of what it surely has in view.
+    fn loses_sight(&self, to: f64) -> bool {
+        let view_distance = self.bot.info.login.view_distance;
+        let from = chunk_of(self.bot.location.0, self.lane);
+        let to = chunk_of(to, self.lane);
+        self.open
+            .iter()
+            .any(|open| loses_sight_of(self.entries[*open].cell, from, to, view_distance))
+    }
+
+    /// One step along the lane to `to`, which takes a client tick.
+    async fn step_to(&mut self, to: f64, speed: f64) -> Result<()> {
         let from = self.bot.location.0;
-        let to = if (end - from).abs() <= speed + ARRIVED {
-            end
-        } else {
-            from + speed.copysign(end - from)
-        };
         for line in &self.ledger.lines {
             let line_x = f64::from(*line);
             if (from < line_x) != (to < line_x) {
@@ -938,26 +1158,17 @@ impl Player {
             return Ok(());
         }
         let from = self.bot.location.0;
-        let mut x = from.floor() as i32 + self.random.below(2 * REACH as u64 + 1) as i32 - REACH;
-        // Next to a boundary, half of what a bot does is beyond it: that is what takes
-        // two regions, and there is little room for it.
-        let near = self
-            .ledger
-            .lines
-            .iter()
-            .find(|line| (from - f64::from(**line)).abs() <= f64::from(REACH) + 0.5);
-        if let Some(line) = near
-            && self.random.one_in(2)
-        {
-            let beyond = self.random.below(REACH as u64) as i32;
-            x = if from < f64::from(*line) {
-                line + beyond
-            } else {
-                line - 1 - beyond
-            };
+        let cell = spot(&mut self.random, from, &self.ledger.lines, self.rows);
+        let (x, z) = cell;
+        // Players enter the world in one place, and a bot or an auditor walks from
+        // there to its lane without changing x, across every plot on the way. The
+        // server places no block where somebody stands, so bots that play where
+        // players enter while others join, as bots that were sent there do and bots of
+        // another scenario, would have blocks refused that their ledgers expect.
+        // Nobody builds in that column, then.
+        if x == self.entered {
+            return Ok(());
         }
-        let z = self.rows[self.random.below(2) as usize];
-        let cell = (x, z);
         // One thing at a time with a block, so that what it should be is never in doubt.
         if self
             .open
@@ -1118,7 +1329,7 @@ impl Player {
         let counters = &self.progress.bots[self.number];
         counters
             .x
-            .store(self.bot.location.0.to_bits(), Ordering::Relaxed);
+            .store(self.bot.location.0.to_bits(), Ordering::SeqCst);
         // Of anything that is acknowledged, a pulse as well as an action on a block.
         let latest = counters
             .waits
@@ -1335,8 +1546,8 @@ pub async fn audit_blocks(
 }
 
 /// Joins as the auditor, walks along the lanes and fails unless every block is what
-/// the last word about it says. Returns the auditor, standing in the middle of the
-/// lane it walked last.
+/// the last word about it says. Returns the auditor, standing where it looked last: in
+/// the middle of the lane it walked last, unless it had to walk on from there.
 async fn walk_and_compare(
     address: &str,
     ledger: &Ledger,
@@ -1363,31 +1574,22 @@ async fn walk_and_compare(
     }
     let mut seen: BTreeMap<Cell, i32> = BTreeMap::new();
     let middle = (ledger.west + ledger.east) / 2.0;
-    let stops = walked.iter().flat_map(|lane| {
+    for lane in &walked {
         let z = f64::from(*lane) + 0.5;
-        // To the lane first, without changing x, as the bots went. Nobody builds any
-        // more, so it does not matter whose plot that leads across.
-        [None, Some(ledger.west), Some(ledger.east), Some(middle)].map(|x| (x, z))
-    });
-    for (stop, z) in stops {
-        let stop = stop.unwrap_or(auditor.location.0);
-        auditor
-            .walk_to(stop, z, ledger.to_the_lane)
-            .await
-            .context("the auditor was disconnected")?;
-        let own_chunk = chunk_of(auditor.location.0, auditor.location.2);
-        auditor
-            .wait_until(ledger.patience, |bot| {
-                bot.center == Some(own_chunk) && bot.chunks.contains_key(&own_chunk)
-            })
-            .await
-            .context("the chunks around the auditor did not follow")?;
-        // What is in view now and was not before is as the server has it now; what was
-        // in view all along would have been updated had it changed, and nobody builds
-        // any more.
-        for cell in words.keys() {
-            if let Some(state) = auditor.block_at(cell.0, GROUND, cell.1)? {
-                seen.insert(*cell, state);
+        // To the lane first, without changing x, as the bots went. Nobody of this
+        // scenario builds any more, and nobody of any builds where players enter.
+        for stop in [None, Some(ledger.west), Some(ledger.east), Some(middle)] {
+            let stop = stop.unwrap_or(auditor.location.0);
+            look_from(&mut auditor, (stop, z), ledger, words, &mut seen).await?;
+        }
+        // Bots that were sent elsewhere built there and on the way, which can be out
+        // of view from where the scenario began. On to the nearest such block, then,
+        // until none is left or one stays out of view from beside it.
+        while let Some(cell) = unseen_beside(words, &seen, &walked, *lane, auditor.location.0) {
+            let stop = f64::from(cell.0) + 0.5;
+            look_from(&mut auditor, (stop, z), ledger, words, &mut seen).await?;
+            if !seen.contains_key(&cell) {
+                break;
             }
         }
     }
@@ -1414,6 +1616,37 @@ async fn walk_and_compare(
         faults.join("; ")
     );
     Ok(auditor)
+}
+
+/// Walks the auditor to the x and z coordinates `stop`, waits for the chunks to follow
+/// and notes in `seen` every block of `words` that is in view from there.
+async fn look_from(
+    auditor: &mut Bot,
+    stop: (f64, f64),
+    ledger: &Ledger,
+    words: &BTreeMap<Cell, (i32, String)>,
+    seen: &mut BTreeMap<Cell, i32>,
+) -> Result<()> {
+    auditor
+        .walk_to(stop.0, stop.1, ledger.to_the_lane)
+        .await
+        .context("the auditor was disconnected")?;
+    let own_chunk = chunk_of(auditor.location.0, auditor.location.2);
+    auditor
+        .wait_until(ledger.patience, |bot| {
+            bot.center == Some(own_chunk) && bot.chunks.contains_key(&own_chunk)
+        })
+        .await
+        .context("the chunks around the auditor did not follow")?;
+    // What is in view now and was not before is as the server has it now; what was
+    // in view all along would have been updated had it changed, and nobody of this
+    // scenario builds any more.
+    for cell in words.keys() {
+        if let Some(state) = auditor.block_at(cell.0, GROUND, cell.1)? {
+            seen.insert(*cell, state);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1472,6 +1705,238 @@ mod tests {
         assert!(!across(&[48], 47.5, 47));
         assert!(!across(&[48], 48.0, 49));
         assert!(!across(&[], 47.5, 48));
+    }
+
+    /// A bot's walk along its lane as `Player::play` takes it, without a server.
+    struct Walker {
+        x: f64,
+        eastwards: bool,
+        speed: f64,
+    }
+
+    impl Walker {
+        /// Takes `steps` steps by the coordinates `between` and returns where each led.
+        fn walk(&mut self, between: (f64, f64), steps: usize) -> Vec<f64> {
+            (0..steps)
+                .map(|_| {
+                    self.eastwards = heading(self.x, self.eastwards, between);
+                    let end = if self.eastwards { between.1 } else { between.0 };
+                    self.x = stride(self.x, end, self.speed);
+                    self.x
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn a_bot_that_is_never_sent_elsewhere_walks_as_it_did_before_bots_could_be_sent() {
+        let (west, east, speed) = (40.5, 52.5, 0.351);
+        // To the east end and back to the west end, over and over, each leg until the
+        // bot is on the spot: how the bots walked when they could not be sent.
+        let mut before = Vec::new();
+        let mut x: f64 = west;
+        while before.len() < 500 {
+            for end in [east, west] {
+                while (x - end).abs() > ARRIVED {
+                    x = if (end - x).abs() <= speed + ARRIVED {
+                        end
+                    } else {
+                        x + speed.copysign(end - x)
+                    };
+                    before.push(x);
+                }
+            }
+        }
+        let mut walker = Walker {
+            x: west,
+            eastwards: true,
+            speed,
+        };
+        let now = walker.walk((west, east), before.len());
+        assert_eq!(now, before);
+        // Both ends are stood on exactly, which is what a round is counted by.
+        assert!(now.contains(&east) && now.contains(&west));
+    }
+
+    #[test]
+    fn a_bot_outside_new_coordinates_walks_into_them_and_then_up_and_down_within_them() {
+        let (home, away) = ((18.5, 29.5), (66.5, 77.5));
+        let mut walker = Walker {
+            x: 20.0,
+            eastwards: false,
+            speed: 0.3,
+        };
+        for (from, to) in [(home, away), (away, home)] {
+            walker.walk(from, 100);
+            assert!(within(walker.x, from));
+            let mut before = walker.x;
+            let steps = walker.walk(to, 2000);
+            let arrived = steps
+                .iter()
+                .position(|x| within(*x, to))
+                .expect("the bot gets there");
+            // Straight there, a full step every tick.
+            for x in &steps[..arrived] {
+                assert!(((x - before).abs() - 0.3).abs() < 1e-9, "{before} to {x}");
+                assert_eq!(x > &before, to.0 > from.0, "{before} to {x}");
+                before = *x;
+            }
+            // Once there it stays there, and comes to both ends.
+            let there = &steps[arrived..];
+            assert!(there.iter().all(|x| within(*x, to)), "{there:?}");
+            assert!(there.contains(&to.0) && there.contains(&to.1));
+            // The far end first: it walks on in the direction it came in.
+            let far = if to.0 > from.0 { to.1 } else { to.0 };
+            let first_end = there.iter().find(|x| **x == to.0 || **x == to.1);
+            assert_eq!(first_end, Some(&far));
+        }
+    }
+
+    #[test]
+    fn a_bot_within_new_coordinates_never_steps_out_of_them() {
+        // Walking east between two chunks, and told to stay in the west one a step
+        // before it would have left it.
+        let mut walker = Walker {
+            x: 2.5,
+            eastwards: true,
+            speed: 0.3,
+        };
+        walker.walk((2.5, 29.5), 36);
+        assert!(walker.x > 13.2 && walker.x < 13.5 && walker.eastwards);
+        let steps = walker.walk((2.5, 13.5), 200);
+        assert!(steps.iter().all(|x| within(*x, (2.5, 13.5))), "{steps:?}");
+        assert_eq!(steps[0], 13.5);
+
+        // Coordinates that end before where it is turn it round at once.
+        let mut walker = Walker {
+            x: 20.0,
+            eastwards: true,
+            speed: 0.3,
+        };
+        let steps = walker.walk((2.5, 13.5), 3);
+        assert!(steps[0] < 20.0 && steps[2] < steps[1], "{steps:?}");
+    }
+
+    #[test]
+    fn a_bot_builds_beside_where_it_stands_wherever_it_is_walking() {
+        let rows = [5, 6];
+        let lines = [48, 64];
+        let mut random = Random::new(3);
+        // All the way from one chunk to another, across two boundaries, as a bot goes
+        // that was sent there.
+        let mut walker = Walker {
+            x: 18.5,
+            eastwards: true,
+            speed: 0.3,
+        };
+        let mut beyond_a_line = 0;
+        for from in walker.walk((98.5, 109.5), 400) {
+            for _ in 0..8 {
+                let (x, z) = spot(&mut random, from, &lines, rows);
+                assert!(rows.contains(&z));
+                // No further along the lane than a bot builds beside a boundary,
+                // where it reaches for the far side from up to two and a half blocks
+                // before it.
+                let along = (x - from.floor() as i32).abs();
+                assert!(along <= 2 * REACH, "x = {x} from {from}");
+                if across(&lines, from, x) {
+                    beyond_a_line += 1;
+                } else {
+                    assert!(along <= REACH, "x = {x} from {from}");
+                }
+            }
+        }
+        assert!(beyond_a_line > 0);
+    }
+
+    #[test]
+    fn a_block_is_lost_sight_of_by_the_step_that_takes_it_to_the_rim_of_the_view() {
+        // With a view distance of 3 the chunks up to two away are surely in view.
+        let cell = (5, 1);
+        assert!(loses_sight_of(cell, (2, 0), (3, 0), 3));
+        assert!(loses_sight_of(cell, (-2, 0), (-3, 0), 3));
+        // Not by a step within a chunk, or towards the block.
+        assert!(!loses_sight_of(cell, (2, 0), (2, 0), 3));
+        assert!(!loses_sight_of(cell, (2, 0), (1, 0), 3));
+        // What is out of sight already is not kept in sight by standing still.
+        assert!(!loses_sight_of(cell, (3, 0), (4, 0), 3));
+        // West of the origin chunks are counted as east of it.
+        assert!(loses_sight_of((-1, 1), (1, 0), (2, 0), 3));
+    }
+
+    #[test]
+    fn the_auditor_walks_on_to_the_nearest_block_it_has_not_seen_beside_its_lane() {
+        let lanes = [0, 400];
+        let words: BTreeMap<Cell, ()> = [(10, 1), (100, 2), (200, 5), (50, 401)]
+            .into_iter()
+            .map(|cell| (cell, ()))
+            .collect();
+        let mut seen: BTreeMap<Cell, i32> = BTreeMap::new();
+        seen.insert((10, 1), AIR);
+        assert_eq!(unseen_beside(&words, &seen, &lanes, 0, 8.5), Some((100, 2)));
+        assert_eq!(
+            unseen_beside(&words, &seen, &lanes, 0, 180.5),
+            Some((200, 5))
+        );
+        seen.insert((100, 2), AIR);
+        seen.insert((200, 5), AIR);
+        assert_eq!(unseen_beside(&words, &seen, &lanes, 0, 8.5), None);
+        // What is beside a lane that is walked later is left for then.
+        assert_eq!(
+            unseen_beside(&words, &seen, &lanes, 400, 8.5),
+            Some((50, 401))
+        );
+    }
+
+    #[test]
+    fn bots_have_arrived_once_each_is_within_the_coordinates_they_were_last_sent_to() {
+        let progress = Progress::new(2);
+        assert_eq!(progress.between(), None);
+        assert!(!progress.arrived());
+        progress.begin(18.5, 29.5);
+        assert_eq!(progress.between(), Some((18.5, 29.5)));
+        // What a bot notes after a step that ended within the coordinates it walks by.
+        let notes = |bot: usize, course: u64| {
+            progress.bots[bot].within.store(course, Ordering::SeqCst);
+        };
+        notes(0, 1);
+        assert!(!progress.arrived());
+        notes(1, 1);
+        assert!(progress.arrived());
+
+        // Sent elsewhere, none has arrived, wherever it is: not the one that has not
+        // heard of it, and not the one that has and is on its way.
+        progress.walk_between(66.5, 77.5).unwrap();
+        assert_eq!(progress.between(), Some((66.5, 77.5)));
+        assert!(!progress.arrived());
+        notes(1, 0);
+        assert_eq!(
+            progress
+                .bots()
+                .iter()
+                .map(|bot| bot.arrived)
+                .collect::<Vec<_>>(),
+            [false, false]
+        );
+        notes(0, 2);
+        notes(1, 2);
+        assert!(progress.arrived());
+    }
+
+    #[test]
+    fn bots_are_only_sent_where_there_is_somewhere_to_walk() {
+        let progress = Progress::new(1);
+        assert!(progress.walk_between(5.0, 5.0).is_err());
+        assert!(progress.walk_between(9.0, 5.0).is_err());
+        assert!(progress.walk_between(f64::NAN, 5.0).is_err());
+        assert!(progress.walk_between(0.0, f64::INFINITY).is_err());
+        assert_eq!(progress.between(), None);
+
+        // Bots that are sent somewhere before their scenario begins go there, not to
+        // where the scenario would have begun.
+        progress.walk_between(-93.5, -82.5).unwrap();
+        progress.begin(18.5, 29.5);
+        assert_eq!(progress.between(), Some((-93.5, -82.5)));
     }
 
     #[test]
