@@ -23,9 +23,11 @@ pub(crate) const ABSORBED_KEPT: usize = 4096;
 /// How the world is divided when the store is started: the regions that are pinned to
 /// an area, and where players enter the world.
 ///
-/// Until regions follow players everywhere, the division is that of a [`Layout`]: its
-/// stripes are the pinned regions. A division with other areas, or with none, is for
-/// tests that need chunks nobody holds.
+/// A world whose regions follow their players is [`Division::open`]: one home region
+/// that is pinned to nothing. Regions with a boundary at a known place are
+/// [`Division::side_by_side`]. Until nothing reads a [`Layout`] any more, a division
+/// can also be that of one, with its stripes as the pinned regions. Areas that leave
+/// a gap are for tests that need both pinned regions and chunks nobody holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Division {
     /// The chunk players enter the world in.
@@ -37,7 +39,52 @@ pub struct Division {
     pub layout: Option<u64>,
 }
 
+/// Why chunk x coordinates are no cuts between regions pinned side by side.
+///
+/// It reads as what was asked for, so that whoever was handed the coordinates can
+/// refuse them in words of their own: "`--pin` takes" and then this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("chunk x coordinates in ascending order without repetitions")]
+pub struct NotAscending;
+
 impl Division {
+    /// A world that is one home region, pinned to nothing. It holds the home chunk,
+    /// and every other chunk is nobody's until a region claims it.
+    pub fn open(home: ChunkPos) -> Self {
+        Self {
+            home,
+            pinned: Vec::new(),
+            layout: None,
+        }
+    }
+
+    /// Regions pinned side by side, cut at these chunk x coordinates. `Err` unless
+    /// they ascend without repetition.
+    ///
+    /// Region 0 is pinned to every chunk west of the first cut, each region after it
+    /// to the chunks from its cut up to the next, and the last to those from the last
+    /// cut on; with no cut, one region is pinned to the whole world. These are the
+    /// areas [`Division::stripes`] makes of a layout with the cuts as its boundaries,
+    /// so a world of that layout is found as it was. A hello is held to no fingerprint.
+    pub fn side_by_side(home: ChunkPos, cuts: &[i32]) -> Result<Self, NotAscending> {
+        if cuts.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(NotAscending);
+        }
+        // Each area begins in the west where the one before it ends in the east.
+        let ends = || cuts.iter().copied().map(Some);
+        let west = [None].into_iter().chain(ends());
+        let east = ends().chain([None]);
+        let pinned = west
+            .zip(east)
+            .map(|(min_x, max_x)| ChunkArea { min_x, max_x })
+            .collect();
+        Ok(Self {
+            home,
+            pinned,
+            layout: None,
+        })
+    }
+
     /// The division of `layout`: its stripes as the pinned areas, in their order, and
     /// its fingerprint.
     pub fn stripes(home: ChunkPos, layout: &Layout) -> Self {
@@ -543,6 +590,106 @@ mod tests {
         assert_eq!(table.holder(ChunkPos::new(3, 3)), Some(RegionId(0)));
         // An id that the world has used before is not given to a region made later.
         assert_eq!(Table::made_from(&alone, 7, 1).next_region, 7);
+    }
+
+    #[test]
+    fn an_open_world_is_one_home_region_that_is_pinned_to_nothing() {
+        let home = ChunkPos::new(3, -7);
+        let open = Division::open(home);
+        assert_eq!(
+            (open.home, &open.pinned, open.layout),
+            (home, &vec![], None)
+        );
+        open.check().unwrap();
+        let table = Table::made_from(&open, 0, 1);
+        assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
+        assert_eq!(table.regions().collect::<Vec<_>>(), [RegionId(0)]);
+        assert_eq!(table.pinned(RegionId(0)), []);
+        assert_eq!(table.grants(RegionId(0)), [(home, 0)]);
+        // Every other chunk is nobody's.
+        for chunk in [ChunkPos::new(3, -6), ChunkPos::new(0, 0)] {
+            assert_eq!(table.holder(chunk), None);
+        }
+        let around = ChunkBox {
+            min: home,
+            max: home,
+        };
+        let expected = RegionList {
+            home: RegionId(0),
+            regions: vec![RegionInfo {
+                region: RegionId(0),
+                epoch: 0,
+                bounds: Some(around),
+                pinned: Vec::new(),
+            }],
+            absorbed: Vec::new(),
+            next: RegionId(1),
+        };
+        assert_eq!(table.list(|_| 0), expected);
+
+        // The file has no area, and is read as the table it was written from.
+        let file = table.file(table.from);
+        assert_eq!(
+            (&file.division, &file.regions[0].pinned),
+            (&vec![], &vec![])
+        );
+        let read = Table::read(TableFile::decode(&file.encode()).unwrap()).unwrap();
+        assert_eq!(read, table);
+        assert!(read.is_of(&open));
+        // Another home chunk is another world, and so is one region pinned to all of it.
+        assert!(!read.is_of(&Division::open(ChunkPos::new(3, -6))));
+        assert!(!read.is_of(&Division::side_by_side(home, &[]).unwrap()));
+    }
+
+    #[test]
+    fn regions_side_by_side_are_the_stripes_of_a_layout_but_for_its_fingerprint() {
+        let area = |min_x, max_x| ChunkArea { min_x, max_x };
+        let home = ChunkPos::new(2, -7);
+        let three = Division::side_by_side(home, &[-2, 4]).unwrap();
+        let areas = [
+            area(None, Some(-2)),
+            area(Some(-2), Some(4)),
+            area(Some(4), None),
+        ];
+        assert_eq!((three.home, &three.pinned[..]), (home, &areas[..]));
+        let one = Division::side_by_side(home, &[]).unwrap();
+        assert_eq!(one.pinned, [ChunkArea::EVERYWHERE]);
+
+        for cuts in [vec![], vec![4], vec![0, 4], vec![-2, 0, 5]] {
+            let layout = Layout::new(cuts.clone()).unwrap();
+            for home in [ChunkPos::new(0, 0), ChunkPos::new(4, 1), home] {
+                let stripes = Division::stripes(home, &layout);
+                let pins = Division::side_by_side(home, &cuts).unwrap();
+                pins.check().unwrap();
+                assert_eq!((pins.home, &pins.pinned), (stripes.home, &stripes.pinned));
+                // A hello is held to no fingerprint.
+                assert_eq!(pins.layout, None);
+                // The tables are the same, so a world made with the one is found as it
+                // was by a store that is started with the other.
+                let of_stripes = Table::made_from(&stripes, 0, 1);
+                let of_pins = Table::made_from(&pins, 0, 1);
+                assert_eq!(of_pins, of_stripes);
+                assert!(of_stripes.is_of(&pins), "{cuts:?}");
+                assert!(of_pins.is_of(&stripes), "{cuts:?}");
+                assert_eq!(of_pins.home_region, layout.region_of(home));
+            }
+        }
+    }
+
+    #[test]
+    fn cuts_that_do_not_ascend_are_no_division() {
+        let home = ChunkPos::new(0, 0);
+        for cuts in [&[4, 4][..], &[5, 4], &[0, 4, 4], &[-2, 0, -1], &[1, 0, 5]] {
+            assert_eq!(Division::side_by_side(home, cuts), Err(NotAscending));
+        }
+        for cuts in [&[][..], &[4], &[-4, 4], &[i32::MIN, 0, i32::MAX]] {
+            assert!(Division::side_by_side(home, cuts).is_ok(), "{cuts:?}");
+        }
+        // The command line refuses such coordinates in these words.
+        assert_eq!(
+            format!("--pin takes {NotAscending}"),
+            "--pin takes chunk x coordinates in ascending order without repetitions"
+        );
     }
 
     #[test]

@@ -55,7 +55,7 @@ use clustine_world::{ChunkGenerator, ChunkPos};
 use crate::chunks::{ChunkService, Chunks, FileChunks, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk};
 use crate::lanes::Lanes;
-pub use crate::table::Division;
+pub use crate::table::{Division, NotAscending};
 pub use crate::tcp::{Server, regions, serve};
 
 /// Why a world could not be opened, read or written, or a region not be opened.
