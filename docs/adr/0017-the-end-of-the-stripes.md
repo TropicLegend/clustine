@@ -2091,7 +2091,7 @@ cluster deployed from them is a world of one home region whose regions follow th
 players, on three workers. `worker.yaml`'s comment ("one for each region and one to
 spare") says instead that the workers share whatever regions there are. For the
 tests that want a boundary at block x = 64 there is an overlay,
-`deploy/kubernetes/test/pinned/kustomization.yaml`, which is the base with `--pin=4`
+`deploy/kind/pinned/kustomization.yaml`, which is the base with `--pin=4`
 added to the store's arguments and `--reshape=by-hand` to the coordinator's.
 
 **The base loses `--boundaries=4` in step C5.6, in the commit that adds the
@@ -3039,7 +3039,7 @@ one thread.
 #### 9.8 The cluster test on Kubernetes
 
 `deploy/kind/test.sh` runs what it runs today on the overlay of section 8 (`kubectl
-apply --kustomize deploy/kubernetes/test/pinned`): two pinned regions, by hand, with
+apply --kustomize deploy/kind/pinned`): two pinned regions, by hand, with
 every step and every check as it is, **the rollout of new workers among them: that
 part stays on pinned regions**, whose numbers and boundary its checks name. What a
 rolling restart does to regions that follow their players is Y5, between processes
@@ -4115,4 +4115,13 @@ Seen and as ADR-0008 has it: a player whose region is taken over while a tick wi
 their dig is durable and not confirmed is acknowledged by the new runner before the
 chunk's snapshot shows the block gone, so a client can show the block back for a
 moment.
+
+**Step C5.6, the tests leave `--boundaries`.** The overlay with the pins is
+`deploy/kind/pinned` and not under `deploy/kubernetes`, as the record had it until
+now: kustomize refuses an overlay that lies inside its own base. One test changed in
+what it asserts, the one section 9.2 names; every other keeps its assertions and its
+waits, and a cluster of the tests comes up as fast as it did, as the coordinator's
+grace period decides that either way. The checks run every test binary also behind
+one that failed (`--no-fail-fast`), after a red binary had twice hidden the ones
+behind it while this step was built.
 
