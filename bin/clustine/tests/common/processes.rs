@@ -29,11 +29,12 @@ pub struct Cluster {
     /// The workers; the one numbered `n` is called `worker-n`.
     pub workers: Vec<(String, Option<Child>)>,
     pub edge: (String, Option<Child>),
-    /// The chunk x coordinates at which the coordinator divides the world, separated
-    /// by commas.
-    boundaries: String,
-    /// What the coordinator is started with besides where it listens, how it divides
-    /// the world, where the store is and its lease: how it reshapes, for one.
+    /// The chunk x coordinates at which the world store pins regions side by side,
+    /// separated by commas; or nothing, for a world that begins as one home region.
+    pins: String,
+    /// What the coordinator is started with besides where it listens, where the store
+    /// is and its lease: how it reshapes, for one. A cluster with pins tells its
+    /// coordinator to reshape by hand unless this says how it reshapes.
     pub coordinator_arguments: Vec<String>,
     /// What every worker is started with besides what it needs to find the others.
     pub worker_arguments: Vec<String>,
@@ -50,9 +51,13 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    /// Picks addresses for a cluster of `workers` workers whose world, divided at
-    /// `boundaries`, and logs are kept in `directory`.
-    pub async fn new(directory: &Path, workers: usize, boundaries: &str) -> Self {
+    /// Picks addresses for a cluster of `workers` workers whose world and logs are
+    /// kept in `directory`. With `pins`, chunk x coordinates separated by commas, the
+    /// world is regions pinned side by side there, numbered from west to east, which
+    /// stay as they are unless somebody asks or the test says how its coordinator
+    /// reshapes. Without, the store and the coordinator are told nothing of it, and
+    /// do what they do then.
+    pub async fn new(directory: &Path, workers: usize, pins: &str) -> Self {
         let logs = directory.join("logs");
         std::fs::create_dir_all(&logs).unwrap();
         let mut addresses = Vec::new();
@@ -66,7 +71,7 @@ impl Cluster {
             store: (free_address().await, None),
             workers: addresses,
             edge: (free_address().await, None),
-            boundaries: boundaries.to_owned(),
+            pins: pins.to_owned(),
             coordinator_arguments: Vec::new(),
             worker_arguments: Vec::new(),
             view_distance: VIEW_DISTANCE,
@@ -127,21 +132,27 @@ impl Cluster {
         panic!("the cluster did not come up:\n{}", self.all_logs());
     }
 
-    /// Starts the coordinator.
+    /// Starts the coordinator. It is told nothing of how the world is divided: it
+    /// knows no region until it has read the store's list.
     pub fn start_coordinator(&mut self) {
         let lease = self.lease_seconds.map(|seconds| seconds.to_string());
         let mut arguments = vec![
             "coordinator",
             "--listen",
             &self.coordinator.0,
-            "--boundaries",
-            &self.boundaries,
             // Whose list of regions tells it which regions there are.
             "--store",
             &self.store.0,
         ];
         if let Some(lease) = &lease {
             arguments.extend(["--lease-seconds", lease]);
+        }
+        // Pinned regions are there for a boundary at a known place and for regions
+        // with known numbers, so they stay unless the test has its coordinator decide.
+        let told =
+            |argument: &String| argument == "--reshape" || argument.starts_with("--reshape=");
+        if !self.pins.is_empty() && !self.coordinator_arguments.iter().any(told) {
+            arguments.extend(["--reshape", "by-hand"]);
         }
         arguments.extend(self.coordinator_arguments.iter().map(String::as_str));
         let coordinator = self.spawn("coordinator", &arguments);
@@ -169,20 +180,21 @@ impl Cluster {
 
     /// Starts the world store on the cluster's world.
     pub fn start_store(&mut self) {
-        let store = self.spawn(
+        // With the sign for equality, so that a coordinate west of the origin is not
+        // taken for another option.
+        let pins = format!("--pin={}", self.pins);
+        let mut arguments = vec![
             "worldstore",
-            &[
-                "worldstore",
-                "--listen",
-                &self.store.0,
-                "--world",
-                self.world.to_str().unwrap(),
-                // As the coordinator divides the world, or the store would refuse the
-                // workers' hellos.
-                "--boundaries",
-                &self.boundaries,
-            ],
-        );
+            "--listen",
+            &self.store.0,
+            "--world",
+            self.world.to_str().unwrap(),
+        ];
+        // An empty list is no list of coordinates: the store is told nothing then.
+        if !self.pins.is_empty() {
+            arguments.push(&pins);
+        }
+        let store = self.spawn("worldstore", &arguments);
         self.store.1 = Some(store);
     }
 

@@ -26,10 +26,11 @@ const BOUNDARY: i32 = 1;
 /// The height players stand at.
 const GROUND: f64 = -60.0;
 
-/// A server whose world is two regions.
+/// A server whose world is two regions, pinned side by side, which stay as they are.
 fn divided() -> Config {
     Config {
         pins: vec![BOUNDARY],
+        follow: None,
         ..config()
     }
 }
@@ -468,6 +469,9 @@ async fn a_divided_world_survives_a_restart() {
     let on_disk = |boundaries: Vec<i32>| Config {
         world: Some(directory.path().to_owned()),
         pins: boundaries,
+        // Whatever regions there are stay as they are, the one home region of a
+        // world without boundaries too.
+        follow: None,
         ..config()
     };
 
@@ -492,7 +496,8 @@ async fn a_divided_world_survives_the_server_being_killed() {
     let directory = tempfile::tempdir().unwrap();
     let world = directory.path().join("world");
     let address = free_address().await;
-    let divided = ["--boundaries", "1"];
+    // Two regions pinned side by side, which stay as they are.
+    let divided = ["--pin", "1", "--reshape", "by-hand"];
     // The regions share a log, kept in segments.
     let logged = || -> u64 {
         std::fs::read_dir(world.join("log"))
@@ -528,8 +533,9 @@ async fn a_divided_world_survives_the_server_being_killed() {
 async fn the_crossing_scenario_passes_on_a_divided_world() {
     let (server, address) = start_with(Config {
         max_players: 20,
-        // Between the two places the walkers walk between.
+        // Between the two places the walkers walk between, and there to stay.
         pins: vec![3],
+        follow: None,
         ..config()
     })
     .await;

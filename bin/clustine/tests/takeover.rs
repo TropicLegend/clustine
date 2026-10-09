@@ -28,10 +28,11 @@ const EAST: RegionId = RegionId(1);
 /// The height players stand at.
 const GROUND: f64 = -60.0;
 
-/// A server whose world is two regions.
+/// A server whose world is two regions, pinned side by side, which stay as they are.
 fn divided(serialise_link: bool) -> Config {
     Config {
         pins: vec![BOUNDARY],
+        follow: None,
         serialise_link,
         ..config()
     }

@@ -172,10 +172,21 @@ fn sees(regions: &[PlayersOf], region: u32, crowds: &[(ChunkPos, u32)]) -> bool 
 async fn a_worker_says_where_the_players_of_the_regions_it_runs_are() {
     let _turn = turn().await;
     let directory = tempfile::tempdir().unwrap();
-    let mut cluster = Cluster::new(directory.path(), 1, &BOUNDARY.to_string()).await;
+    // The address is one that nothing listened on a moment ago. Another test's
+    // process can have taken it since, and then another address is tried.
+    let (mut cluster, listener) = loop {
+        let cluster = Cluster::new(directory.path(), 1, &BOUNDARY.to_string()).await;
+        match TcpListener::bind(&cluster.coordinator.0).await {
+            Ok(listener) => break (cluster, listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => panic!("listening as the coordinator: {error}"),
+        }
+    };
     let played = Played {
-        listener: TcpListener::bind(&cluster.coordinator.0).await.unwrap(),
-        layout: Layout::new(vec![BOUNDARY]).unwrap(),
+        listener,
+        // What is left of the layout until it goes: a world without a boundary, which
+        // is what a coordinator says that is told none. The regions are the store's.
+        layout: Layout::single(),
     };
     let both = [assignment(0, 3), assignment(1, 5)];
 

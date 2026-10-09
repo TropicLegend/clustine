@@ -6,10 +6,15 @@
 //! and that nothing of theirs is lost, is for the tests under bots to show.
 //!
 //! A split does nothing unless a player stands in a chunk it names, so P1 to P4 never
-//! see a worker run the part of one. The last test here puts one bot into a region
+//! see a worker run the part of one. One test beyond them puts a bot into a region
 //! for that, and looks at the processes only: at what the command says, at the world
 //! store's list, and at who runs the new region, also under a coordinator that knows
 //! nothing of the split. It asks nothing of what the bot is shown.
+//!
+//! The last test has no coordinator's process. It is about what a worker does that is
+//! given a region which was absorbed; a coordinator knows no region but those of the
+//! world store's list, so none gives such a region out, and the test plays the
+//! coordinator to do it.
 //!
 //! What is true of the world is read where it is decided: in the world store's list
 //! of regions. Who runs what is read from the routing table the coordinator logs and
@@ -30,10 +35,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clustine_botswarm::Bot;
-use clustine_rpc::RegionList;
+use clustine_region::{Layout, RegionId};
+use clustine_rpc::link::End;
+use clustine_rpc::{Assignment, FromCoordinator, RegionList, ToCoordinator, tcp};
+use clustine_world::{EntityId, EntityIds, Vec3};
 use tempfile::TempDir;
+use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use common::processes::{Asked, Cluster, Turn, ask, turn, worker_name};
 
@@ -1107,51 +1117,228 @@ async fn every_region_is_run_again_when_the_world_store_is_killed_in_the_middle_
     reshapes.finish().await;
 }
 
-/// Beyond P1 to P4: a coordinator that cannot read the world store's list goes by its
-/// layout, and gives out a region that was absorbed. The worker that is given it is
-/// refused by the store, drops the region and goes on, and its word makes the
-/// coordinator read the list, which has the region no longer.
+/// The coordinator's end of a worker's connection, in the test that plays the
+/// coordinator.
+type Heard = End<FromCoordinator, ToCoordinator>;
+
+/// Where every player enters the world.
+const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
+
+/// What a coordinator tells a worker that is to run `regions`, each with its epoch.
+fn orders(regions: &[(Region, u64)]) -> FromCoordinator {
+    let assignments = regions.iter().map(|(region, epoch)| Assignment {
+        region: RegionId(*region),
+        epoch: *epoch,
+        // A worker goes by what the world store says of them.
+        entity_ids: EntityIds {
+            first: EntityId(0),
+            end: EntityId(0),
+        },
+    });
+    FromCoordinator::Assigned {
+        // What is left of the layout until it goes: a world without a boundary.
+        layout: Layout::single(),
+        spawn: SPAWN,
+        assignments: assignments.collect(),
+    }
+}
+
+/// Fails the test that plays the coordinator, with what the processes have logged.
+fn failed(cluster: &Cluster, message: &str) -> ! {
+    panic!("{message}\n{}", cluster.all_logs());
+}
+
+/// What the worker says next besides that it is there. Fails if it says nothing in
+/// time or has gone; `what` says what was waited for.
+async fn said(cluster: &Cluster, worker: &mut Heard, what: &str) -> ToCoordinator {
+    let hearing = async {
+        loop {
+            match worker.recv().await {
+                Some(ToCoordinator::Heartbeat { .. }) => {}
+                word => return word,
+            }
+        }
+    };
+    match timeout(PATIENCE, hearing).await {
+        Ok(Some(word)) => word,
+        Ok(None) => failed(cluster, &format!("the worker has gone before {what}")),
+        Err(_) => failed(cluster, &format!("waited {PATIENCE:?} in vain for {what}")),
+    }
+}
+
+/// Reads what the worker says until it is something else than where its players are,
+/// and returns that.
+async fn word(cluster: &Cluster, worker: &mut Heard, what: &str) -> ToCoordinator {
+    loop {
+        match said(cluster, worker, what).await {
+            ToCoordinator::Players { .. } => {}
+            word => return word,
+        }
+    }
+}
+
+/// Reads what the worker says of where its players are until it names exactly
+/// `regions`, each with its epoch and at a tick after `after`, and returns the latest
+/// of those ticks. Fails if the worker says anything else meanwhile.
+async fn runs(cluster: &Cluster, worker: &mut Heard, regions: &[(Region, u64)], after: u64) -> u64 {
+    let what = format!("the worker to run exactly {regions:?}");
+    loop {
+        match said(cluster, worker, &what).await {
+            ToCoordinator::Players { regions: named } => {
+                let run: Vec<(Region, u64)> =
+                    named.iter().map(|of| (of.region.0, of.epoch)).collect();
+                if run == regions && named.iter().all(|of| of.tick > after) {
+                    return named.iter().map(|of| of.tick).max().unwrap_or(after);
+                }
+            }
+            other => failed(cluster, &format!("waiting for {what}, heard {other:?}")),
+        }
+    }
+}
+
+/// Beyond P1 to P4: a worker that is given a region which the world store has as
+/// absorbed is refused by the store, drops the region and goes on, and says that the
+/// region it went into has absorbed it, which is the word that makes a coordinator
+/// read the list.
+///
+/// No coordinator gives such a region out any more: it knows no region but those of
+/// the store's list. So the test plays the coordinator, as `reports.rs` does, which
+/// is also how it hears every word the worker says. A worker that runs both regions
+/// of a world pinned at chunk 3 is told to release region 1 and to have region 0
+/// absorb it, and is then given region 1 again with a higher epoch.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_that_is_given_a_region_that_was_absorbed_drops_it_and_says_so() {
     if a_repetition() {
         return;
     }
-    let mut reshapes = Reshapes::start("absorbed", "3", 2).await;
-    let merged = reshapes.merge(0, 1).await;
-    if !merged.says("region 0 has absorbed region 1") {
-        let outcome = merged.outcome();
-        reshapes.fail(&format!("the merge did not print the survivor: {outcome}"));
-    }
-    reshapes.everything_runs().await;
-
-    // A coordinator that knows nothing of the merge, and a store it cannot ask.
-    reshapes.kill_coordinator().await;
-    reshapes.kill_store().await;
-    reshapes.start_coordinator();
-    reshapes
-        .until(
-            "the new coordinator has given out the region that is no more",
-            |reshapes| reshapes.routes().contains_key(&1),
-        )
-        .await;
-    let Some(given) = reshapes.owner(1) else {
-        reshapes.fail("the region that is no more was given to no worker of this cluster");
+    let _turn = turn().await;
+    let directory = tempfile::Builder::new()
+        .prefix("clustine-reshapes-")
+        .tempdir()
+        .unwrap();
+    // The address is one that nothing listened on a moment ago. Another test's
+    // process can have taken it since, and then another address is tried.
+    let (mut cluster, coordinator) = loop {
+        let cluster = Cluster::new(directory.path(), 1, "3").await;
+        match TcpListener::bind(&cluster.coordinator.0).await {
+            Ok(coordinator) => break (cluster, coordinator),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => panic!("listening as the coordinator: {error}"),
+        }
     };
-    reshapes.note(format!(
-        "{} was given region 1, which was absorbed",
-        worker_name(given)
-    ));
-    reshapes.start_store();
+    cluster.start_store();
+    cluster.start_worker(0);
 
-    let list = reshapes.everything_runs().await;
-    if Reshapes::living(&list) != [0] {
-        reshapes.fail(&format!(
-            "the list has other regions than the survivor: {list:?}"
-        ));
+    // The worker registers, holding nothing, and is given both regions.
+    let Ok(accepted) = timeout(PATIENCE, coordinator.accept()).await else {
+        failed(&cluster, "the worker did not connect to the coordinator");
+    };
+    let (stream, _) = accepted.expect("accepting a connection");
+    let mut worker: Heard = tcp::link(stream, 256);
+    match said(&cluster, &mut worker, "the worker to register").await {
+        ToCoordinator::RegisterWorker { holding, .. } if holding.is_empty() => {}
+        other => failed(
+            &cluster,
+            &format!("expected a worker to register with nothing, and heard {other:?}"),
+        ),
     }
-    let log = reshapes.cluster.log(&worker_name(given));
-    if !log.contains("the world store has the region as absorbed by another; dropping it") {
-        reshapes.fail("the worker that was given the absorbed region did not say that it drops it");
+    worker.send(orders(&[(0, 3), (1, 5)])).await.unwrap();
+    runs(&cluster, &mut worker, &[(0, 3), (1, 5)], 0).await;
+
+    // The merge, as a coordinator has it made: the one region released, and the
+    // other told to absorb it under a new epoch.
+    let release = FromCoordinator::Release {
+        region: RegionId(1),
+        epoch: 5,
+    };
+    worker.send(release).await.unwrap();
+    let released = word(&cluster, &mut worker, "region 1 to be released").await;
+    let as_asked = ToCoordinator::Released {
+        region: RegionId(1),
+        epoch: 5,
+    };
+    if released != as_asked {
+        failed(
+            &cluster,
+            &format!("the worker was to release region 1, and said {released:?}"),
+        );
     }
-    reshapes.finish().await;
+    worker.send(orders(&[(0, 3)])).await.unwrap();
+    let absorb = FromCoordinator::Absorb {
+        region: RegionId(0),
+        epoch: 3,
+        absorbed: RegionId(1),
+        as_epoch: 6,
+    };
+    worker.send(absorb).await.unwrap();
+    let absorbed = ToCoordinator::AbsorbEnded {
+        region: RegionId(0),
+        absorbed: RegionId(1),
+        outcome: Ok(()),
+    };
+    let merged = word(&cluster, &mut worker, "what came of the merge").await;
+    if merged != absorbed {
+        failed(
+            &cluster,
+            &format!("region 0 was to absorb region 1, and the worker said {merged:?}"),
+        );
+    }
+    let gone = |list: &RegionList| {
+        let absorbed = list.absorbed.iter().map(|(gone, into)| (gone.0, into.0));
+        Reshapes::living(list) == [0] && absorbed.collect::<Vec<_>>() == [(1, 0)]
+    };
+    let list = cluster.regions().await;
+    if !list.as_ref().is_ok_and(gone) {
+        failed(
+            &cluster,
+            &format!("after the merge the list does not have region 1 as absorbed: {list:?}"),
+        );
+    }
+    let before = runs(&cluster, &mut worker, &[(0, 3)], 0).await;
+
+    // The region that is no more is given out: with an epoch above every one it was
+    // ever opened with, so that the store refuses it for being absorbed and for
+    // nothing else.
+    let dropping = "the world store has the region as absorbed by another; dropping it";
+    if cluster.log(&worker_name(0)).contains(dropping) {
+        failed(
+            &cluster,
+            "the worker dropped a region before it was given one that is no more",
+        );
+    }
+    worker.send(orders(&[(0, 3), (1, 8)])).await.unwrap();
+    let dropped = word(&cluster, &mut worker, "the worker's word of the region").await;
+    if dropped != absorbed {
+        failed(
+            &cluster,
+            &format!(
+                "the worker was to say that region 0 has absorbed the region it was given, \
+                 and said {dropped:?}"
+            ),
+        );
+    }
+    cluster.wait_for_log(&worker_name(0), dropping, 1).await;
+
+    // It goes on with the region it has, which ticks, and runs nothing else, though
+    // its orders still name the other. The list is as it was.
+    runs(&cluster, &mut worker, &[(0, 3)], before).await;
+    let list = cluster.regions().await;
+    if !list.as_ref().is_ok_and(gone) {
+        failed(
+            &cluster,
+            &format!("the list changed when the absorbed region was given out: {list:?}"),
+        );
+    }
+    let ended = cluster.workers[0]
+        .1
+        .as_mut()
+        .and_then(|worker| worker.try_wait().unwrap());
+    if let Some(status) = ended {
+        failed(&cluster, &format!("the worker ended by itself ({status})"));
+    }
+
+    // Without a coordinator a worker that is told to stop does not wait for anybody
+    // to take its region.
+    drop((worker, coordinator));
+    cluster.terminate().await;
 }

@@ -92,7 +92,9 @@ async fn a_coordinator_refuses_distances_that_do_not_fit_and_numbers_out_of_rang
 async fn a_coordinator_says_when_it_starts_how_it_reshapes() {
     let directory = tempfile::tempdir().unwrap();
     // Nothing but the coordinator is started: it waits for workers and for the store.
-    let mut cluster = Cluster::new(directory.path(), 0, "4").await;
+    // A cluster without pins tells its coordinator nothing of how it reshapes, which
+    // is what the first start here is about.
+    let mut cluster = Cluster::new(directory.path(), 0, "").await;
     let by_itself = "reshaping by itself: regions merge and split by where their players are";
 
     cluster.start_coordinator();

@@ -1098,7 +1098,9 @@ async fn players_keep_playing_while_their_regions_change_hands_over_and_over() {
     println!("changing hands: seed {seed} (set CLUSTINE_CHAOS_SEED={seed} to run it again)");
     let directory = tempfile::tempdir().unwrap();
     let (mut server, address) = start_with(Config {
+        // Two regions with known numbers, which stay as they are.
         pins: vec![3],
+        follow: None,
         // Everything between the edge and the regions goes through the codec, as it
         // does between processes.
         serialise_link: true,
@@ -1207,6 +1209,7 @@ async fn a_world_whose_region_changed_hands_is_served_by_the_next_server() {
     let directory = tempfile::tempdir().unwrap();
     let on_disk = || Config {
         pins: vec![3],
+        follow: None,
         world: Some(directory.path().join("world")),
         ..config()
     };
