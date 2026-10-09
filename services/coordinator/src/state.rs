@@ -1511,6 +1511,23 @@ impl Coordinator {
         absorbed: RegionId,
         asker: Option<u64>,
     ) -> Result<Changes, ReshapeRefusal> {
+        // Taken before the merge is checked and noted, neither of which changes what
+        // can be seen of the regions.
+        let before = self.seen();
+        self.begin_merge(now, survivor, absorbed, asker)?;
+        Ok(self.finish(&before, now))
+    }
+
+    /// What [`Coordinator::merge`] checks and notes, without what a call ends with:
+    /// a tick that begins a merge by itself does this between what it found and
+    /// what it ends with, like everything else it does.
+    fn begin_merge(
+        &mut self,
+        now: Instant,
+        survivor: RegionId,
+        absorbed: RegionId,
+        asker: Option<u64>,
+    ) -> Result<(), ReshapeRefusal> {
         let both = [survivor, absorbed];
         if let Some(unknown) = both.iter().find(|id| !self.regions.contains_key(id)) {
             return Err(ReshapeRefusal::NoSuchRegion(*unknown));
@@ -1548,7 +1565,6 @@ impl Coordinator {
             return Err(ReshapeRefusal::NoEpoch);
         }
 
-        let before = self.seen();
         info!(%survivor, %absorbed, %owner, epoch, %from, "a region is to absorb another");
         self.pending.orders.push(ReleaseOrder {
             worker: from.clone(),
@@ -1574,7 +1590,7 @@ impl Coordinator {
             asker,
         };
         self.merges.insert(absorbed, merge);
-        Ok(self.finish(&before, now))
+        Ok(())
     }
 
     /// Somebody wants the players standing in `chunks` split off `region` as a region
@@ -1597,6 +1613,21 @@ impl Coordinator {
         chunks: &[ChunkPos],
         asker: Option<u64>,
     ) -> Result<Changes, ReshapeRefusal> {
+        // As for a merge: taken before the split is checked and noted.
+        let before = self.seen();
+        self.begin_split(now, region, chunks, asker)?;
+        Ok(self.finish(&before, now))
+    }
+
+    /// What [`Coordinator::split`] checks and notes, without what a call ends with;
+    /// see [`Coordinator::begin_merge`].
+    fn begin_split(
+        &mut self,
+        now: Instant,
+        region: RegionId,
+        chunks: &[ChunkPos],
+        asker: Option<u64>,
+    ) -> Result<(), ReshapeRefusal> {
         if !self.regions.contains_key(&region) {
             return Err(ReshapeRefusal::NoSuchRegion(region));
         }
@@ -1628,7 +1659,6 @@ impl Coordinator {
             .checked_add(1)
             .ok_or(ReshapeRefusal::NoEpoch)?;
 
-        let before = self.seen();
         self.last_epoch = as_epoch;
         info!(%region, %owner, epoch, %part, as_epoch, "a region is to be split");
         self.pending.reshapes.push(ReshapeOrder {
@@ -1649,7 +1679,7 @@ impl Coordinator {
             asker,
         };
         self.splits.insert(region, split);
-        Ok(self.finish(&before, now))
+        Ok(())
     }
 
     /// The worker `name` says what came of having `region` absorb `absorbed`: that it
@@ -2449,6 +2479,19 @@ impl Coordinator {
             spawn: self.config.spawn,
             routes,
         }
+    }
+
+    /// The merges and splits under way, whoever asked for them: the merges in the
+    /// order of the regions that are to be absorbed, then the splits in the order of
+    /// their regions.
+    pub fn under_way(&self) -> Vec<Asked> {
+        let merges = self.merges.iter().map(|(absorbed, merge)| Asked::Merge {
+            survivor: merge.survivor,
+            absorbed: *absorbed,
+        });
+        let splits = self.splits.keys();
+        let splits = splits.map(|region| Asked::Split { region: *region });
+        merges.chain(splits).collect()
     }
 
     /// The regions the coordinator knows that have no owner, in ascending order. A
@@ -6932,6 +6975,35 @@ mod tests {
             Err(ReshapeRefusal::NoSuchRegion(RegionId(1)))
         );
         assert!(cluster.move_region(2 * LEASE, 0, None, 9).is_ok());
+    }
+
+    #[test]
+    fn the_merges_and_splits_under_way_are_told_from_when_they_begin_until_they_end() {
+        let (mut cluster, list) = three_stripes();
+        assert!(cluster.coordinator.under_way().is_empty());
+        let merge = Asked::Merge {
+            survivor: RegionId(0),
+            absorbed: RegionId(1),
+        };
+        let split = Asked::Split {
+            region: RegionId(2),
+        };
+
+        // Whoever asked, and at every stage of a merge. A refusal begins nothing.
+        cluster.split(LEASE + 1, 2, &CHUNKS, Some(8)).unwrap();
+        assert_eq!(cluster.coordinator.under_way(), [split]);
+        cluster.merge(LEASE + 1, 0, 1, None).unwrap();
+        assert!(cluster.merge(LEASE + 1, 0, 2, None).is_err());
+        assert_eq!(cluster.coordinator.under_way(), [merge, split]);
+        cluster.released(LEASE + 2, "b", 1, E + 2);
+        cluster.absorb_ended(LEASE + 3, "a", 0, 1, Ok(()));
+        assert_eq!(cluster.coordinator.under_way(), [merge, split]);
+
+        // The merge ends with the list, and the split with its worker's word.
+        cluster.listed(LEASE + 4, &after_the_merge(&list));
+        assert_eq!(cluster.coordinator.under_way(), [split]);
+        cluster.split_ended(LEASE + 5, "c", 2, E + 4, Err(Off::Nobody));
+        assert!(cluster.coordinator.under_way().is_empty());
     }
 
     #[test]
