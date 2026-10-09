@@ -33,7 +33,9 @@ use clustine_coordinator::{
 };
 use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{Layout, RegionId, RoutingTable};
-use clustine_rpc::{Assignment, EdgeMessage, Off, RegionHello, Restored, Vouch, WorkerToEdge, tcp};
+use clustine_rpc::{
+    Assignment, EdgeMessage, Off, PlayersOf, RegionHello, Restored, Vouch, WorkerToEdge, tcp,
+};
 use clustine_sim::{Part, RegionConfig, RegionState};
 use clustine_worker::{
     DEFAULT_RETURN_AFTER, Ended, Links, RegionRunner, RegionStatus, Reshape, Reshaped,
@@ -128,8 +130,10 @@ pub async fn worldstore(listen: SocketAddr, world: PathBuf, boundaries: Vec<i32>
     Ok(())
 }
 
-/// How often a worker looks at its region: whether it still ticks and whether it has
-/// lost the world store. What it vouches for to the coordinator follows from that.
+/// How often a worker looks at its regions: whether each still ticks, whether it has
+/// lost the world store, and where its players are. What the worker vouches for to the
+/// coordinator follows from the first two, and the last it tells the coordinator each
+/// time.
 const LOOK: Duration = Duration::from_millis(250);
 
 /// A worker vouches for a region as committed if it has ticked within this long. A region
@@ -324,8 +328,14 @@ type Reshapes = BTreeMap<RegionId, Reshaping>;
 /// number of its [`Reshaping`], and what the runner says.
 type Reshapings = mpsc::UnboundedSender<(RegionId, u64, Reshaped)>;
 
-/// What came of a merge or a split, for the coordinator.
-#[derive(Debug, Clone, Copy)]
+/// What the worker's loop has for the coordinator that is said in the order it was
+/// made: what came of a merge or a split, and where the players are.
+///
+/// The two go down one queue because the coordinator takes what it is told of the
+/// players behind the word of a merge or a split to be of the regions as they are after
+/// it (`docs/adr/0016-when-to-merge-and-split.md`, section 2.2). Down two queues a
+/// report read before a split could follow the word of it.
+#[derive(Debug, Clone, PartialEq)]
 enum Outcome {
     /// For [`WorkerClient::absorb_ended`].
     Merge {
@@ -338,6 +348,14 @@ enum Outcome {
         region: RegionId,
         as_epoch: u64,
         outcome: Result<RegionId, Off>,
+    },
+    /// For [`WorkerClient::players`]: where the players of the regions were that the
+    /// worker ran at a look. Unlike the other two it is only good on the connection it
+    /// was read under, and is dropped on any other.
+    Players {
+        /// The number of the registration under which it was read.
+        registration: u64,
+        regions: Vec<PlayersOf>,
     },
 }
 
@@ -399,6 +417,47 @@ fn holdings(regions: &Regions) -> Vec<(Assignment, u64)> {
     let held = regions.values().map(Phase::held);
     held.map(|held| (held.assignment, held.hello.layout))
         .collect()
+}
+
+/// Where the players of the regions this worker runs are, for the coordinator: of every
+/// region that is restored, also of one without players, and of none that is being
+/// opened, started from a split or released. See
+/// `docs/adr/0016-when-to-merge-and-split.md`, sections 2.1 and 2.2.
+///
+/// A region that stands still is among them, with the tick it stopped at. The tick is
+/// read before the crowds, as the runner stores them: what is said with a tick is of
+/// that tick, of the one before it if the look fell between the runner's two stores, or
+/// of a later one. Nothing rests on which.
+fn players(regions: &Regions) -> Vec<PlayersOf> {
+    let mut sighted = Vec::new();
+    for (region, phase) in regions {
+        if let Phase::Running { held, status, .. } = phase {
+            let tick = status.tick.load(Ordering::Relaxed);
+            sighted.push(PlayersOf {
+                region: *region,
+                epoch: held.assignment.epoch,
+                tick,
+                crowds: status.crowds(),
+            });
+        }
+    }
+    sighted
+}
+
+/// Queues where the players of `regions` are for the coordinator, behind what came of
+/// every merge and split the loop has heard of, and under `registration`, the number
+/// of the registration whose connection there is. Without a connection it queues
+/// nothing: the queue has no bound, and four reports a second for as long as a
+/// coordinator is away would fill it.
+fn report(endings: &mpsc::UnboundedSender<Outcome>, registration: Option<u64>, regions: &Regions) {
+    if let Some(registration) = registration {
+        let regions = players(regions);
+        // Nobody takes it if the task that holds the connection has ended.
+        let _ = endings.send(Outcome::Players {
+            registration,
+            regions,
+        });
+    }
 }
 
 /// The regions edges can link to: those that are restored and tick. A region that
@@ -518,6 +577,9 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
     let (refusals, refused) = mpsc::unbounded_channel();
     let (releases, released) = mpsc::unbounded_channel();
     let (endings, ended) = mpsc::unbounded_channel();
+    // And what that task shows the loop: under which registration it holds a
+    // connection, if it holds one. None until the task has begun.
+    let (registering, registration) = watch::channel(None);
     let (words_in, mut words) = mpsc::unbounded_channel();
     // The receiver is right here.
     let _ = words_in.send(Word::Event(WorkerEvent::Orders(first)));
@@ -532,6 +594,7 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
             refused,
             released,
             ended,
+            registration: registering,
         },
         words_in,
     ));
@@ -1123,6 +1186,12 @@ pub async fn worker(args: WorkerArgs) -> Result<()> {
                         }
                     }
                 }
+                // Where the players are, of every region that was running when this
+                // look began: one that has just been found to have lost the store is
+                // said with the tick it stopped at. The number is copied out, so that
+                // the task is not kept from changing it meanwhile.
+                let registered = *registration.borrow();
+                report(&endings, registered, &regions);
                 let mut failed = None;
                 for region in lost {
                     let Some(Phase::Running { held, running, .. }) = regions.remove(&region) else {
@@ -1284,14 +1353,19 @@ struct Reports {
     refused: mpsc::UnboundedReceiver<(RegionId, u64)>,
     /// Regions the worker has let go of, with the epoch it held them with.
     released: mpsc::UnboundedReceiver<(RegionId, u64)>,
-    /// What came of the merges and splits the worker was asked for.
+    /// What came of the merges and splits the worker was asked for, and where its
+    /// players are, in the order the worker's loop made them.
     ended: mpsc::UnboundedReceiver<Outcome>,
+    /// Where the task shows the loop the number of the registration whose connection
+    /// it holds, or that it holds none. The loop reads where the players are under
+    /// that number, and reads nothing for the coordinator without one.
+    registration: watch::Sender<Option<u64>>,
 }
 
 /// Holds the worker's connection to the coordinator: says what the worker vouches for,
-/// what the store refused, what the worker released, what came of a merge or a split
-/// and that it is leaving, and passes on what the coordinator says, or last of all why
-/// it refuses the worker.
+/// what the store refused, what the worker released, what came of a merge or a split,
+/// where its players are and that it is leaving, and passes on what the coordinator
+/// says, or last of all why it refuses the worker.
 ///
 /// A coordinator that goes away knows nothing when it is back, so the worker registers
 /// again and tells it what it holds. The region keeps running meanwhile. A new
@@ -1299,6 +1373,15 @@ struct Reports {
 /// again on it. So is every split whose new region the orders that answer the
 /// registration do not name: an order to split is given once, and nothing else tells
 /// the coordinator which region came of it and whose it is.
+///
+/// Where the players are is said under the registration it was read under, or not at
+/// all (`docs/adr/0016-when-to-merge-and-split.md`, section 2.2). The registrations are
+/// counted for that, and the loop is shown the number of the one whose connection there
+/// is. A report with another number waited in the queue while a connection was lost.
+/// It may be from before a split that is said again, from the watch, on the next
+/// connection, and behind that word it would be taken for one of after the split. So it
+/// is dropped. Only reports ever are: what came of a merge or a split is said on
+/// whichever connection there is.
 ///
 /// A worker that is leaving does not register again: the coordinator closes the
 /// connection of one that owns nothing any more, which is how the worker knows that it
@@ -1314,6 +1397,9 @@ async fn stay_registered(
     if *reports.left.borrow_and_update() {
         coordinator.leaving();
     }
+    // The worker registered for the first time before this task began.
+    let mut registration: u64 = 1;
+    reports.registration.send_replace(Some(registration));
     loop {
         tokio::select! {
             next = coordinator.event() => match next {
@@ -1329,6 +1415,10 @@ async fn stay_registered(
                 }
                 Err(error) => {
                     warn!(%error, "lost the coordinator; carrying on and registering again");
+                    // From now on the loop reads nothing for the coordinator, and what
+                    // it has read under this registration is dropped when its turn
+                    // comes.
+                    reports.registration.send_replace(None);
                     coordinator = loop {
                         // Told to stop meanwhile: nobody is there to take anything over.
                         tokio::select! {
@@ -1362,6 +1452,16 @@ async fn stay_registered(
                                         coordinator.split_ended(region, as_epoch, Ok(part));
                                     }
                                 }
+                                // Only now, when the splits have been said. A split
+                                // among them had left its region's status as it is
+                                // after it before the loop put it into the watch, so
+                                // whatever the loop reads under the new number is of
+                                // after every split said above. Shown the number
+                                // earlier, the loop could read a region and then hear
+                                // of its split, and that report would follow the
+                                // word of the split said here.
+                                registration += 1;
+                                reports.registration.send_replace(Some(registration));
                                 if words.send(Word::Event(WorkerEvent::Orders(next))).is_err() {
                                     return;
                                 }
@@ -1402,6 +1502,17 @@ async fn stay_registered(
                 }
                 Outcome::Split { region, as_epoch, outcome } => {
                     coordinator.split_ended(region, as_epoch, outcome);
+                }
+                Outcome::Players { registration: under, regions } => {
+                    if under == registration {
+                        coordinator.players(regions);
+                    } else {
+                        debug!(
+                            under,
+                            registration,
+                            "dropping where the players were under an earlier registration"
+                        );
+                    }
                 }
             },
         }
@@ -1909,5 +2020,523 @@ pub async fn split_region(args: SplitArgs) -> Result<()> {
             Ok(())
         }
         Err(reason) => bail!("the coordinator reports no split of region {region}: {reason}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! What a worker tells the coordinator of where its players are
+    //! (`docs/adr/0016-when-to-merge-and-split.md`, section 2.2): what it reads of its
+    //! regions, and what the task that holds its connection makes of the queue. The
+    //! coordinator is played by the tests, which is how they see what it is told and
+    //! in which order.
+
+    use clustine_botswarm::Bot;
+    use clustine_rpc::link::{self, End};
+    use clustine_rpc::{FromCoordinator, ToCoordinator};
+
+    use super::*;
+
+    const PATIENCE: Duration = Duration::from_secs(30);
+
+    /// What `waited` comes to, which it has to within [`PATIENCE`].
+    async fn within<T>(waited: impl Future<Output = T>) -> T {
+        timeout(PATIENCE, waited)
+            .await
+            .expect("what the test waits for comes about")
+    }
+
+    /// How the world of these tests is divided: at chunk x 4, so that players enter it
+    /// in region 0 and nobody is in region 1.
+    fn layout() -> Layout {
+        Layout::new(vec![4]).expect("one boundary divides a world")
+    }
+
+    /// Such a world, kept in memory.
+    fn world() -> Store {
+        Store::memory_divided(generator(), division(&layout())).expect("a world in memory")
+    }
+
+    fn assignment(region: u32, epoch: u64) -> Assignment {
+        Assignment {
+            region: RegionId(region),
+            epoch,
+            // Nothing reads them: a region's entity ids are the store's to say.
+            entity_ids: NO_ENTITY_IDS,
+        }
+    }
+
+    /// What a worker that is given `region` with `epoch` holds it as.
+    fn held(region: u32, epoch: u64) -> Held {
+        let assignment = assignment(region, epoch);
+        let orders = Orders {
+            layout: layout(),
+            spawn: spawn_point(),
+            assignments: vec![assignment],
+        };
+        hold(&orders, assignment)
+    }
+
+    /// Opens `region` at `world` with `epoch` and restores it, as a worker does with a
+    /// region it is given.
+    fn restored(world: &Store, region: u32, epoch: u64) -> (Held, RegionRunner) {
+        let held = held(region, epoch);
+        let (store, restored) = world.open_region(held.hello).expect("the store opens it");
+        let runner = RegionRunner::restore(held.config.clone(), store, restored)
+            .expect("what the store has can be read");
+        (held, runner)
+    }
+
+    /// Runs `region` of `world` with `epoch`: what a worker's loop keeps of a region it
+    /// runs, and an edge's end of a link to it.
+    fn running(world: &Store, region: u32, epoch: u64) -> (Phase, RegionLink) {
+        let (held, runner) = restored(world, region, epoch);
+        let (end, worker_end) = link::in_process(LINK_CAPACITY);
+        let (status, links) = (runner.status(), runner.links());
+        links.attach(worker_end);
+        let tick = runner.region().tick_number();
+        let phase = Phase::Running {
+            held,
+            running: Worker::spawn(runner),
+            links,
+            status,
+            tick,
+            ticked: Instant::now(),
+        };
+        let link = RegionLink {
+            region: RegionId(region),
+            epoch,
+            end,
+        };
+        (phase, link)
+    }
+
+    /// The status of a region that runs.
+    fn status_of(phase: &Phase) -> Arc<RegionStatus> {
+        match phase {
+            Phase::Running { status, .. } => Arc::clone(status),
+            _ => panic!("the region does not run"),
+        }
+    }
+
+    /// Stops the threads of `regions`, which nothing else does once a test is over.
+    async fn stop(regions: Regions) {
+        for phase in regions.into_values() {
+            if let Phase::Running { running, .. } | Phase::Releasing { running, .. } = phase {
+                let stopped = tokio::task::spawn_blocking(move || running.stop());
+                stopped.await.expect("a region stops");
+            }
+        }
+    }
+
+    /// Something a region is opened by that never answers.
+    fn never() -> Opening {
+        Box::pin(std::future::pending())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_region_that_runs_is_reported_with_its_epoch_its_tick_and_its_crowds_also_one_without_players()
+     {
+        let world = world();
+        let (home, home_link) = running(&world, 0, 3);
+        let (empty, empty_link) = running(&world, 1, 5);
+        let statuses = [status_of(&home), status_of(&empty)];
+        let regions = Regions::from([(RegionId(0), home), (RegionId(1), empty)]);
+
+        // A player, let in by an edge that is linked to both regions. Players enter
+        // the world in the chunk at the origin, which is region 0's.
+        let identity = EdgeIdentity::starting_now("edge");
+        let links = vec![home_link, empty_link];
+        let (routing, _relinks) = Routing::new(RegionId(0), spawn_point(), identity, links);
+        let config = EdgeConfig {
+            description: "a test".to_owned(),
+            max_players: 7,
+            keep_alive_interval: EdgeConfig::DEFAULT_KEEP_ALIVE_INTERVAL,
+            view_distance: 2,
+            client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
+            compression_threshold: None,
+            region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
+        };
+        let anywhere = SocketAddr::from(([127, 0, 0, 1], 0));
+        let edge = Edge::bind(anywhere, config, routing)
+            .await
+            .expect("an edge listens");
+        let address = edge.local_addr().expect("it has an address").to_string();
+        let edge = tokio::spawn(edge.run());
+        let _bot = Bot::join(&address, "Alice").await.expect("a player joins");
+        let origin = ChunkPos::new(0, 0);
+        within(async {
+            while statuses[0].crowds() != [(origin, 1)] {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        let ticks = || {
+            statuses
+                .each_ref()
+                .map(|status| status.tick.load(Ordering::Relaxed))
+        };
+        let before = ticks();
+        let said = players(&regions);
+        let after = ticks();
+
+        // Both regions, in the order of their ids, each with the epoch it is run with.
+        let named: Vec<_> = said.iter().map(|of| (of.region, of.epoch)).collect();
+        assert_eq!(named, [(RegionId(0), 3), (RegionId(1), 5)]);
+        assert_eq!(said[0].crowds, [(origin, 1)]);
+        assert!(said[1].crowds.is_empty(), "{:?}", said[1].crowds);
+        // The regions tick while they are read, so a tick is known only to be one
+        // they were at meanwhile.
+        for (of, (before, after)) in said.iter().zip(before.into_iter().zip(after)) {
+            assert!((before..=after).contains(&of.tick), "{of:?}");
+        }
+
+        // And at a later look, a later tick of each.
+        within(async {
+            while ticks().iter().zip(&after).any(|(now, then)| now <= then) {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let later = players(&regions);
+        for (later, earlier) in later.iter().zip(&said) {
+            assert!(later.tick > earlier.tick, "{later:?} after {earlier:?}");
+        }
+
+        edge.abort();
+        stop(regions).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_region_that_is_being_opened_released_or_started_from_a_split_is_not_reported() {
+        let world = world();
+        // What a split would have made of a region: any region will do, since nothing
+        // looks at a part before the store has answered for it.
+        let (_, apart) = restored(&world, 1, 5);
+        let part = Part {
+            region: apart.region().clone(),
+            chunks: Vec::new(),
+        };
+        drop(apart);
+
+        let (runs, _link) = running(&world, 0, 3);
+        let (released, _link) = running(&world, 1, 6);
+        let Phase::Running {
+            held: released,
+            running,
+            status,
+            ..
+        } = released
+        else {
+            unreachable!("it runs");
+        };
+        running.begin_release();
+        let releasing = Phase::Releasing {
+            held: released,
+            running,
+            status,
+        };
+        let opening = Phase::Opening {
+            held: held(2, 7),
+            opening: never(),
+        };
+        let starting = Phase::Starting {
+            held: held(3, 9),
+            part: Box::new(part),
+            opening: never(),
+        };
+        let regions = Regions::from([
+            (RegionId(0), runs),
+            (RegionId(1), releasing),
+            (RegionId(2), opening),
+            (RegionId(3), starting),
+        ]);
+
+        let said = players(&regions);
+        let named: Vec<_> = said.iter().map(|of| (of.region, of.epoch)).collect();
+        assert_eq!(named, [(RegionId(0), 3)]);
+
+        stop(regions).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn where_the_players_are_is_queued_under_the_registration_there_is_and_not_without_one() {
+        let world = world();
+        let (runs, _link) = running(&world, 0, 3);
+        let regions = Regions::from([(RegionId(0), runs)]);
+        let (endings, mut ended) = mpsc::unbounded_channel();
+
+        // No connection to the coordinator: nothing, however often it is looked.
+        report(&endings, None, &regions);
+        report(&endings, None, &regions);
+        assert!(ended.try_recv().is_err());
+
+        // One for each look while there is one, under its number.
+        report(&endings, Some(4), &regions);
+        let Ok(Outcome::Players {
+            registration,
+            regions: said,
+        }) = ended.try_recv()
+        else {
+            panic!("a report is queued");
+        };
+        assert_eq!(registration, 4);
+        let named: Vec<_> = said.iter().map(|of| (of.region, of.epoch)).collect();
+        assert_eq!(named, [(RegionId(0), 3)]);
+        assert!(ended.try_recv().is_err());
+
+        // A worker that runs nothing says so: the whole of what it knows each time.
+        report(&endings, Some(5), &Regions::new());
+        let nothing = Outcome::Players {
+            registration: 5,
+            regions: Vec::new(),
+        };
+        assert_eq!(ended.try_recv().ok(), Some(nothing));
+
+        stop(regions).await;
+    }
+
+    /// The coordinator's end of a worker's connection.
+    type Heard = End<FromCoordinator, ToCoordinator>;
+
+    /// A coordinator as a test plays it: it listens where a worker looks for one, and
+    /// the test decides what it answers.
+    struct Played {
+        listener: TcpListener,
+        address: String,
+    }
+
+    impl Played {
+        async fn listening() -> Self {
+            let anywhere = SocketAddr::from(([127, 0, 0, 1], 0));
+            let listener = TcpListener::bind(anywhere).await.expect("a free port");
+            let address = listener
+                .local_addr()
+                .expect("it has an address")
+                .to_string();
+            Self { listener, address }
+        }
+
+        /// Lets the next worker register and tells it to run `assignments`. Returns
+        /// its connection and what it said it holds.
+        async fn registers(&self, assignments: Vec<Assignment>) -> (Heard, Vec<Assignment>) {
+            let (stream, _) = within(self.listener.accept()).await.expect("a connection");
+            let mut heard: Heard = tcp::link(stream, 256);
+            let Some(ToCoordinator::RegisterWorker { holding, .. }) = within(heard.recv()).await
+            else {
+                panic!("a worker registers before it says anything else");
+            };
+            let orders = FromCoordinator::Assigned {
+                layout: layout(),
+                spawn: spawn_point(),
+                assignments,
+            };
+            heard.send(orders).await.expect("the worker listens");
+            (heard, holding)
+        }
+    }
+
+    /// What the worker says next besides that it is there.
+    async fn said(heard: &mut Heard) -> ToCoordinator {
+        loop {
+            match within(heard.recv()).await {
+                Some(ToCoordinator::Heartbeat { .. }) => {}
+                Some(said) => return said,
+                None => panic!("the worker has gone"),
+            }
+        }
+    }
+
+    /// The loop's side of the task that holds a worker's connection: where the loop
+    /// puts what the task is to say, and where the task shows it what it needs.
+    struct Looping {
+        holding: watch::Sender<Vec<(Assignment, u64)>>,
+        splitting: watch::Sender<Vec<(RegionId, u64, RegionId)>>,
+        endings: mpsc::UnboundedSender<Outcome>,
+        registration: watch::Receiver<Option<u64>>,
+        words: mpsc::UnboundedReceiver<Word>,
+        /// What the worker vouches for and whether it is leaving, which no test here
+        /// changes. The task ends when either is gone.
+        #[allow(dead_code)] // Held, never looked at.
+        vouching: watch::Sender<Vec<(RegionId, Vouch)>>,
+        #[allow(dead_code)] // Held, never looked at.
+        leaving: watch::Sender<bool>,
+    }
+
+    impl Looping {
+        /// Waits until the task shows `registration` as the one it holds a connection
+        /// of, or none.
+        async fn shown(&mut self, registration: Option<u64>) {
+            let shown = self.registration.wait_for(|shown| *shown == registration);
+            within(shown).await.expect("the task is there");
+        }
+
+        /// Queues where the players are as a look under `registration` found them:
+        /// `crowds` in region 0, which is run with epoch 4 and was at `tick`.
+        fn sees(&self, registration: u64, tick: u64, crowds: &[(ChunkPos, u32)]) -> ToCoordinator {
+            let regions = vec![PlayersOf {
+                region: RegionId(0),
+                epoch: 4,
+                tick,
+                crowds: crowds.to_vec(),
+            }];
+            let report = Outcome::Players {
+                registration,
+                regions: regions.clone(),
+            };
+            self.endings.send(report).expect("the task is there");
+            ToCoordinator::Players { regions }
+        }
+    }
+
+    /// Registers a worker with `played`, which gives it nothing to run, and starts the
+    /// task that holds its connection. Returns both ends of what a worker has then.
+    async fn registered(played: &Played) -> (Looping, Heard) {
+        let args = WorkerArgs {
+            coordinator: played.address.clone(),
+            // Nothing of a worker but its word to the coordinator is there.
+            store: "127.0.0.1:1".to_owned(),
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            advertise: "worker:1".to_owned(),
+            name: "worker".to_owned(),
+            checkpoint_interval: Duration::from_secs(300),
+        };
+        let (client, (heard, _)) = tokio::join!(register(&args), played.registers(Vec::new()));
+        let (client, _) = client.expect("the worker is registered");
+
+        let (vouching, vouched) = watch::channel(Vec::new());
+        let (holding, held) = watch::channel(Vec::new());
+        let (leaving, left) = watch::channel(false);
+        let (splitting, split) = watch::channel(Vec::new());
+        // The store refuses this worker nothing and it releases nothing: nobody ever
+        // puts anything into these two, and the task listens to the others without
+        // them.
+        let (_, refused) = mpsc::unbounded_channel();
+        let (_, released) = mpsc::unbounded_channel();
+        let (endings, ended) = mpsc::unbounded_channel();
+        let (registering, registration) = watch::channel(None);
+        let (words_in, words) = mpsc::unbounded_channel();
+        let reports = Reports {
+            vouched,
+            held,
+            left,
+            split,
+            refused,
+            released,
+            ended,
+            registration: registering,
+        };
+        tokio::spawn(stay_registered(client, args, reports, words_in));
+        let looping = Looping {
+            holding,
+            splitting,
+            endings,
+            registration,
+            words,
+            vouching,
+            leaving,
+        };
+        (looping, heard)
+    }
+
+    const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
+    const FAR: ChunkPos = ChunkPos::new(-40, 0);
+
+    #[tokio::test]
+    async fn where_the_players_are_is_said_behind_what_came_of_the_merges_and_splits_before_it() {
+        let played = Played::listening().await;
+        let (mut looping, mut heard) = registered(&played).await;
+        looping.shown(Some(1)).await;
+
+        // As the loop makes them: a look, a split, a look, a merge, a look.
+        let split = Outcome::Split {
+            region: RegionId(0),
+            as_epoch: 7,
+            outcome: Ok(RegionId(2)),
+        };
+        let merge = Outcome::Merge {
+            region: RegionId(0),
+            absorbed: RegionId(1),
+            outcome: Err(Off::Busy),
+        };
+        let before = looping.sees(1, 20, &[(ORIGIN, 1), (FAR, 2)]);
+        looping.endings.send(split).expect("the task is there");
+        let between = looping.sees(1, 21, &[(ORIGIN, 1)]);
+        looping.endings.send(merge).expect("the task is there");
+        let after = looping.sees(1, 26, &[(ORIGIN, 1)]);
+
+        // And as the coordinator hears them.
+        let split = ToCoordinator::SplitEnded {
+            region: RegionId(0),
+            as_epoch: 7,
+            outcome: Ok(RegionId(2)),
+        };
+        let merge = ToCoordinator::AbsorbEnded {
+            region: RegionId(0),
+            absorbed: RegionId(1),
+            outcome: Err(Off::Busy),
+        };
+        for expected in [before, split, between, merge, after] {
+            assert_eq!(said(&mut heard).await, expected);
+        }
+    }
+
+    /// K25 of the record: a report from before a split is in the queue when the
+    /// connection ends. Said on the next connection, it would follow the word of the
+    /// split that the task says from its watch, and be taken for one of after it.
+    #[tokio::test]
+    async fn what_was_read_before_the_connection_was_lost_is_dropped_and_what_came_of_a_split_is_said()
+     {
+        let played = Played::listening().await;
+        let (mut looping, heard) = registered(&played).await;
+        looping.shown(Some(1)).await;
+
+        // The coordinator goes away, and the loop is shown that there is none.
+        drop(heard);
+        looping.shown(None).await;
+
+        // What the loop had made by then, in its order: a look that found the players
+        // who are about to go, and what came of the split, with which it holds the new
+        // region and says so in its watches.
+        looping.sees(1, 20, &[(ORIGIN, 1), (FAR, 2)]);
+        let split = Outcome::Split {
+            region: RegionId(0),
+            as_epoch: 7,
+            outcome: Ok(RegionId(2)),
+        };
+        looping.endings.send(split).expect("the task is there");
+        let fingerprint = layout().fingerprint();
+        let holds = [assignment(0, 4), assignment(2, 7)];
+        looping
+            .holding
+            .send_replace(holds.map(|held| (held, fingerprint)).to_vec());
+        looping
+            .splitting
+            .send_replace(vec![(RegionId(0), 7, RegionId(2))]);
+
+        // The coordinator is back and knows the region it had given out, not the new
+        // one.
+        let (mut heard, holding) = played.registers(vec![assignment(0, 4)]).await;
+        assert_eq!(holding, holds);
+        let split = ToCoordinator::SplitEnded {
+            region: RegionId(0),
+            as_epoch: 7,
+            outcome: Ok(RegionId(2)),
+        };
+        // From the watch, and then from the queue, where the report was before it.
+        assert_eq!(said(&mut heard).await, split);
+        assert_eq!(said(&mut heard).await, split);
+
+        // What the loop reads under the new registration is said.
+        looping.shown(Some(2)).await;
+        let after = looping.sees(2, 26, &[(ORIGIN, 1)]);
+        assert_eq!(said(&mut heard).await, after);
+        // And the loop was passed the orders that answered the registration.
+        let Some(Word::Event(WorkerEvent::Orders(orders))) = within(looping.words.recv()).await
+        else {
+            panic!("the new orders are passed on");
+        };
+        assert_eq!(orders.assignments, [assignment(0, 4)]);
     }
 }
