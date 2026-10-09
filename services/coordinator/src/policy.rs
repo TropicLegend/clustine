@@ -146,7 +146,7 @@ struct Place {
 /// How far two chunks are apart: in chunks along the longer of the two axes. In 64
 /// bits, as the difference of two coordinates does not fit into 32. `Region::split`
 /// counts the same, and a split is worked out by that.
-fn distance(from: ChunkPos, to: ChunkPos) -> u64 {
+pub(crate) fn distance(from: ChunkPos, to: ChunkPos) -> u64 {
     let along = |from: i32, to: i32| (i64::from(from) - i64::from(to)).unsigned_abs();
     along(from.x, to.x).max(along(from.z, to.z))
 }

@@ -17,7 +17,13 @@ use crate::policy::Policy;
 
 mod follow;
 
-use follow::Noted;
+use follow::{Kept, Noted};
+
+/// The module that the lines of the log are written under which say what the
+/// coordinator begins by itself, wherever below this module they are written:
+/// whoever reads the log finds them where
+/// `docs/adr/0016-when-to-merge-and-split.md`, section 10, says they are.
+const LOG: &str = module_path!();
 
 /// What a coordinator is created with.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,8 +39,8 @@ pub struct CoordinatorConfig {
     pub lease: Duration,
     /// What the coordinator goes by when it merges and splits regions by itself, or
     /// `None` for one that does so only when somebody asks. See
-    /// `docs/adr/0016-when-to-merge-and-split.md`, section 8. Nothing reads it yet:
-    /// with either, regions are merged and split by hand.
+    /// `docs/adr/0016-when-to-merge-and-split.md`, section 8, and "Deciding by
+    /// itself" at [`Coordinator`].
     pub follow: Option<Policy>,
 }
 
@@ -393,6 +399,11 @@ struct Merge {
     asked: Instant,
     /// Who asked, if somebody did.
     asker: Option<u64>,
+    /// Whether it is an absorption: the coordinator began it by itself for a region
+    /// without players, which goes into another without players. Such a merge stands
+    /// nobody still, and ends otherwise for its survivor than a merge by the
+    /// distances or one that somebody asked for (ADR-0016, sections 4.4 and 5.5).
+    absorption: bool,
 }
 
 /// How far a merge has come.
@@ -438,6 +449,9 @@ struct Split {
     /// can have made the region under another, so only the worker's answer says
     /// which region the split made.
     as_epoch: u64,
+    /// The chunks that were named. Whoever stood in one of them is the new
+    /// region's, as far as the coordinator has heard (ADR-0016, section 2.4).
+    chunks: Vec<ChunkPos>,
     /// When it was asked for.
     asked: Instant,
     /// Who asked, if somebody did.
@@ -477,6 +491,9 @@ struct Region {
     /// run it since. Such a region does not wait for the grace period of a new
     /// coordinator to end: nobody is left who could report that it holds it.
     let_go: bool,
+    /// What a coordinator that merges and splits by itself keeps of it; nothing for
+    /// one that does not.
+    kept: Kept,
 }
 
 /// The worker that runs a region.
@@ -682,6 +699,12 @@ impl Holder {
 ///   alone, so that nothing goes back and forth;
 /// - of the region with the highest number that the former runs, for the latter.
 ///
+/// A coordinator that merges and splits by itself (see "Deciding by itself" below)
+/// goes about the last two points otherwise: it moves no region that is left alone,
+/// nor one that a merge or a split is wanted of at that tick, and of the others the
+/// one with the fewest players by what it last heard, and of several such the one
+/// with the highest number.
+///
 /// From then on it is a release like any other, and the next one is begun by a tick
 /// after it has ended. Who brought the difference about makes no difference: a move
 /// that somebody asked for and that leaves a worker two regions ahead of another is
@@ -745,6 +768,53 @@ impl Holder {
 ///   region nobody runs. Whoever asked is not told by it that the split was done: a
 ///   region with the id that was ordered can be another split's, and only the
 ///   worker's word says which region a split made.
+///
+/// # Deciding by itself
+///
+/// See `docs/adr/0016-when-to-merge-and-split.md`, whose sections are named here. A
+/// coordinator that was created with [`CoordinatorConfig::follow`] merges and splits
+/// regions without being asked, by where the players are. One that was not does none
+/// of what follows, and keeps nothing for it.
+///
+/// Workers say where the players of their regions are ([`Coordinator::players`]),
+/// and of each region the coordinator keeps what it took last, its **sighting**. A
+/// sighting is **fresh** while it is of the region's owner and epoch, was taken no
+/// more than a second ago, and the region is not part of a merge or a split under
+/// way. It is never dropped for being old: the players a region last named are still
+/// somewhere near there, and count where they can only hold something back. When a
+/// reading of the list shows a region absorbed, its crowds go to the sighting of the
+/// region that took it, if that has one; when a split is made, the crowds in the
+/// chunks it named go to a sighting of the part (section 2.4).
+///
+/// [`Coordinator::tick`], between what it settles and evening out, works out what is
+/// wanted of the sightings ([`crate::decide`]) and notes since when: a merge by its
+/// two regions, and every group of a region's players that is to go by itself.
+/// **Nothing is begun on one look**: only what has been wanted without a break for
+/// more than a second. Then, in this order, and the first three only while fewer
+/// than four merges and splits are under way (section 5.3):
+///
+/// 1. one split at most, of the region whose group has stood longest, naming the
+///    chunks around every group of it that has stood; and none while another split
+///    is under way anywhere or the list is being read;
+/// 2. the merges that have stood, the one that has waited longest first;
+/// 3. the regions that have had no player for three rests and are not pinned to an
+///    area, each into a region that has none either (an **absorption**, section 4.4);
+/// 4. `Prepare` for the regions that a split is wanted of and that are free, or will
+///    be within a second (section 5.6).
+///
+/// All of it only when the grace period is over, the list was read no more than two
+/// leases ago, and every region the coordinator knows has a sighting (section 5.1);
+/// and only with regions that are **free**: owned by a worker that has a connection,
+/// is not leaving and is not at fault, not reserved, not being released, and not
+/// left alone (section 5.2).
+///
+/// A region is **left alone** until a time that is kept for it
+/// ([`Coordinator::alone_until`]): for a rest from when it is given an owner or an
+/// epoch that the coordinator did not have for it, from when a merge it survived or
+/// a split of it ends well, and from a split that found nobody; and for three rests,
+/// doubling up to eight times that, from an attempt that failed. That is noted where
+/// a merge or a split ends, for those somebody asked for as for the coordinator's
+/// own (section 5.5). What somebody asks for is not held back by it.
 #[derive(Debug, Clone)]
 pub struct Coordinator {
     config: CoordinatorConfig,
@@ -1067,15 +1137,18 @@ impl Coordinator {
     /// only this loses that owner a lease after it was last vouched for. Like a
     /// heartbeat it changes no owner here; that is left to the next tick.
     ///
-    /// A coordinator that decides nothing by itself keeps nothing of it, and none
-    /// decides by itself yet.
+    /// A coordinator that decides nothing by itself keeps nothing of it. One that
+    /// does takes or passes over each entry: it is passed over unless the worker owns
+    /// the region with the epoch it names, while the region is part of a merge or a
+    /// split under way, and if what was last taken of the region is of this owner
+    /// and epoch and has that tick or a later one. What is taken is the region's
+    /// **sighting** from then on; see "Deciding by itself" at [`Coordinator`].
     pub fn players(&mut self, now: Instant, name: &str, regions: &[PlayersOf]) -> bool {
         let Some(worker) = self.workers.get_mut(name) else {
             return false;
         };
         worker.heard = worker.heard.max(now);
-        // Nothing is kept of where the players are.
-        let _ = regions;
+        self.take_players(now, name, regions);
         true
     }
 
@@ -1340,6 +1413,11 @@ impl Coordinator {
     /// (`docs/adr/0016-when-to-merge-and-split.md`, section 7). One that does not
     /// reads the list on events only.
     ///
+    /// A coordinator that merges and splits by itself decides here, and nowhere
+    /// else, what it begins: after what is said above and before evening out. See
+    /// "Deciding by itself" at [`Coordinator`]. What it begins is in
+    /// [`Changes::releases`] and [`Changes::orders`] like what somebody asked for.
+    ///
     /// Last of all, and only here, a release is begun to even regions out, if a worker
     /// runs two regions more than another, no release is under way, and no merge or
     /// split is or was within the last lease; see [`Coordinator`]. The worker that is
@@ -1347,8 +1425,14 @@ impl Coordinator {
     pub fn tick(&mut self, now: Instant) -> Changes {
         let before = self.seen();
         self.settle(now);
+        // What a coordinator that decides by itself begins goes by which regions
+        // rest, so those that were given an owner a moment ago are noted first.
+        self.note_owners(now);
+        self.decide_and_begin(now);
         // Not part of what other calls end like a tick with: those give away what
-        // has no owner, and this takes a region from one that runs it.
+        // has no owner, and this takes a region from one that runs it. After what
+        // was begun above, so that a region which is wanted for a merge and free is
+        // reserved before it could be picked.
         self.even_out(now);
         let said = |merge: &Merge| matches!(merge.stage, MergeStage::Ended { .. });
         let waited_for = self.owed || self.merges.values().any(said);
@@ -1404,16 +1488,31 @@ impl Coordinator {
             .filter(|id| absorbed.contains_key(id) || **id < list.next)
             .copied()
             .collect();
+        // The living region that one which was absorbed went into in the end: a
+        // region that absorbed another may have been absorbed since. No more steps
+        // than there are pairs, should a list ever lead round in a circle.
+        let went_into = |region: RegionId| {
+            let mut into = region;
+            for _ in 0..absorbed.len() {
+                into = *absorbed.get(&into)?;
+                if living.contains_key(&into) {
+                    return Some(into);
+                }
+            }
+            None
+        };
         for id in gone {
-            let state = self.regions.remove(&id);
-            let owner = state.and_then(|state| state.owner);
-            let owner = owner.map(|owner| owner.worker);
+            let Some(state) = self.regions.remove(&id) else {
+                continue;
+            };
+            let owner = state.owner.map(|owner| owner.worker);
             info!(
                 region = %id,
                 into = ?absorbed.get(&id),
                 ?owner,
                 "the world store has a region no longer"
             );
+            self.note_gone(id, state.kept, went_into(id));
         }
 
         // What the list has of a region, for the merge that is to absorb it.
@@ -1466,6 +1565,7 @@ impl Coordinator {
         self.absorbed.clone_from(&list.absorbed);
         self.next = Some(list.next);
         self.note_answered(now);
+        self.note_listed(now, list);
 
         self.assign(now);
         self.finish(&before, now)
@@ -1534,19 +1634,21 @@ impl Coordinator {
         // Taken before the merge is checked and noted, neither of which changes what
         // can be seen of the regions.
         let before = self.seen();
-        self.begin_merge(now, survivor, absorbed, asker)?;
+        self.begin_merge(now, survivor, absorbed, asker, false)?;
         Ok(self.finish(&before, now))
     }
 
     /// What [`Coordinator::merge`] checks and notes, without what a call ends with:
     /// a tick that begins a merge by itself does this between what it found and
-    /// what it ends with, like everything else it does.
+    /// what it ends with, like everything else it does. `absorption` says whether
+    /// it is one; see [`Merge::absorption`].
     fn begin_merge(
         &mut self,
         now: Instant,
         survivor: RegionId,
         absorbed: RegionId,
         asker: Option<u64>,
+        absorption: bool,
     ) -> Result<(), ReshapeRefusal> {
         let both = [survivor, absorbed];
         if let Some(unknown) = both.iter().find(|id| !self.regions.contains_key(id)) {
@@ -1608,8 +1710,10 @@ impl Coordinator {
             },
             asked: now,
             asker,
+            absorption,
         };
         self.merges.insert(absorbed, merge);
+        self.note_begun(&both);
         Ok(())
     }
 
@@ -1695,10 +1799,12 @@ impl Coordinator {
             owner,
             epoch,
             as_epoch,
+            chunks: chunks.to_vec(),
             asked: now,
             asker,
         };
         self.splits.insert(region, split);
+        self.note_begun(&[region]);
         Ok(())
     }
 
@@ -1778,10 +1884,12 @@ impl Coordinator {
         if noted.is_some_and(|split| split.as_epoch == as_epoch && split.owner == name) {
             let split = self.splits.remove(&region).expect("the split was found");
             self.reshape_ended(now, &[region]);
+            let outcome = outcome.map_err(Undone::Off);
+            self.note_split_ended(now, region, &split, &outcome);
             self.pending.reshaped.push(Reshaped {
                 asker: split.asker,
                 asked: Asked::Split { region },
-                outcome: outcome.map_err(Undone::Off),
+                outcome,
             });
         }
         // Whatever reason the worker gives: the list costs one reading where the
@@ -1952,10 +2060,12 @@ impl Coordinator {
             .remove(&region)
             .expect("only a split that is noted lapses");
         self.reshape_ended(now, &[region]);
+        let outcome = Err(why);
+        self.note_split_ended(now, region, &split, &outcome);
         self.pending.reshaped.push(Reshaped {
             asker: split.asker,
             asked: Asked::Split { region },
-            outcome: Err(why),
+            outcome,
         });
         self.owed = true;
         self.ask_for_the_list();
@@ -2005,6 +2115,7 @@ impl Coordinator {
         let survivor = merge.survivor;
         info!(%survivor, %absorbed, ?outcome, "a merge has ended");
         self.reshape_ended(now, &[survivor, absorbed]);
+        self.note_merge_ended(now, survivor, absorbed, merge.absorption, outcome.is_ok());
         self.pending.reshaped.push(Reshaped {
             asker: merge.asker,
             asked: Asked::Merge { survivor, absorbed },
@@ -2083,8 +2194,17 @@ impl Coordinator {
     /// for the one with the fewest, if the difference is two or more, no release is
     /// under way, no merge or split is or was within the last lease, and the
     /// coordinator is not new; see [`Coordinator`].
+    ///
+    /// A coordinator that merges and splits by itself does not wait for a lease
+    /// after a merge or a split in the world, which where regions merge and split
+    /// all the time would let nothing be evened out. It leaves each region alone
+    /// while that one rests, and those that a merge or a split is wanted of at this
+    /// tick; and of what is left it moves the region with the fewest players, as a
+    /// move stands its players still (`docs/adr/0016-when-to-merge-and-split.md`,
+    /// section 6).
     fn even_out(&mut self, now: Instant) {
         let lease = self.config.lease;
+        let by_itself = self.config.follow.is_some();
         let grace = now.saturating_duration_since(self.started) < lease;
         if grace || !self.releases.is_empty() {
             return;
@@ -2094,7 +2214,7 @@ impl Coordinator {
         let reshaping = !self.merges.is_empty() || !self.splits.is_empty();
         let ended = self.reshaped;
         let lately = ended.is_some_and(|ended| now.saturating_duration_since(ended) < lease);
-        if reshaping || lately {
+        if reshaping || (lately && !by_itself) {
             return;
         }
         // The lightest is one that is not at fault, if there is such a worker at all.
@@ -2120,16 +2240,24 @@ impl Coordinator {
         if load(&heavy) < load(&light) + 2 {
             return;
         }
-        let (region, epoch) = self
-            .regions
-            .iter()
-            .rev()
-            .find(|(_, state)| {
-                let owner = state.owner.as_ref();
-                owner.is_some_and(|owner| owner.worker == heavy)
-            })
-            .map(|(region, state)| (*region, state.epoch))
-            .expect("a worker that has two regions more than another owns one");
+        let (region, epoch) = if by_itself {
+            // Every region of that worker may rest or be wanted for something, and
+            // then nothing is evened out at this tick.
+            let Some(moved) = self.region_to_even_out(&heavy, now) else {
+                return;
+            };
+            moved
+        } else {
+            self.regions
+                .iter()
+                .rev()
+                .find(|(_, state)| {
+                    let owner = state.owner.as_ref();
+                    owner.is_some_and(|owner| owner.worker == heavy)
+                })
+                .map(|(region, state)| (*region, state.epoch))
+                .expect("a worker that has two regions more than another owns one")
+        };
         info!(%region, from = %heavy, to = %light, "a region is moved to even regions out");
         self.note_release(now, region, epoch, &heavy, &light, None);
     }
@@ -2430,6 +2558,8 @@ impl Coordinator {
         self.end_broken_reshapes(now);
         self.forget_leavers();
         self.release_for_leavers(now);
+        // Last of what can change an owner: a region that was given one rests.
+        self.note_owners(now);
 
         let mut changes = self.changes_since(before);
         let pending = std::mem::take(&mut self.pending);
@@ -2512,6 +2642,14 @@ impl Coordinator {
         let splits = self.splits.keys();
         let splits = splits.map(|region| Asked::Split { region: *region });
         merges.chain(splits).collect()
+    }
+
+    /// Before when the coordinator begins nothing with `region` by itself, if it has
+    /// noted such a time: the end of the region's rest, or of the time it is left
+    /// alone for after an attempt that failed. A coordinator that decides nothing by
+    /// itself notes none. For the logs and for the tests.
+    pub fn alone_until(&self, region: RegionId) -> Option<Instant> {
+        self.regions.get(&region)?.kept.alone_until
     }
 
     /// The regions the coordinator knows that have no owner, in ascending order. A
