@@ -7660,12 +7660,12 @@ fn a_region_that_checkpoints_with_every_tick_merges_and_splits_all_the_same() {
     }
 }
 
-/// Section 3.2: a chunk that the store grants in answer to a claim no tick has been
-/// told of is not held by the sim when the split is worked out, so it is no chunk of
-/// the part, and is the split region's by the store as by the sim. One that a tick was
-/// told of before the stop goes with the part if it is nearer to who goes. Either way
-/// exactly one of the two regions holds each chunk afterwards, the store says the
-/// same, and nothing waits for an answer that was dropped.
+/// Section 3.2, and section 3.6.1 of ADR-0017 for what it says of a split: a chunk
+/// that the store grants in answer to a claim no tick has been told of counts as held
+/// when the split is worked out, and goes with the part if it is nearer to who goes,
+/// as one does that a tick was told of before the stop. Either way exactly one of the
+/// two regions holds each chunk afterwards, the store says the same, and nothing waits
+/// for an answer that was dropped.
 #[test]
 fn a_chunk_asked_for_right_before_a_split_is_one_regions_by_the_sim_as_by_the_store() {
     for (on_disk, ticks_before) in [(false, 0), (false, 1), (false, 2), (true, 1), (true, 2)] {

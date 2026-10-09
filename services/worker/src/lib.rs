@@ -1272,6 +1272,13 @@ impl RegionRunner {
     /// tick's inputs; every return is through; no load is under way and no chunk is
     /// unsaved, so every loaded chunk is, block for block, what the store has. See
     /// `docs/adr/0014-merging-and-splitting.md`, section 3.2.
+    ///
+    /// A split is worked out with the grants among those answers, which the store's
+    /// table has as the region's like any chunk a tick was told of: those nearer to
+    /// who goes are the part's (`docs/adr/0017-the-end-of-the-stripes.md`, section
+    /// 3.6.1). The inputs stay where they are. If nothing comes of the split the next
+    /// tick takes them, and if the store has another id for the part the split is
+    /// worked out again from the same.
     fn commit(&mut self) {
         let Some(mut reshaping) = self.reshaping.take() else {
             return;
@@ -1299,15 +1306,13 @@ impl RegionRunner {
                     })
                 }
             }
-            // Worked out without the grants that wait for the coming tick, which stay
-            // with the region as they did.
             Plan::Split {
                 named,
                 as_epoch,
                 part,
                 splitting,
                 ..
-            } => match self.region.split(named, *part, &[]) {
+            } => match self.region.split(named, *part, &self.inputs.granted) {
                 Err(NoSplit::Nobody) => Err(Off::Nobody),
                 Err(NoSplit::NothingStays) => Err(Off::NothingStays),
                 Ok(planned) => {
@@ -1395,8 +1400,20 @@ impl RegionRunner {
                     ..
                 },
             ) => {
+                // Before the region takes the split, while it still says what its
+                // ticks were told: of what the store had delivered, only a chunk held
+                // so is kept, whichever of the two regions gets it. No claim was
+                // outstanding while the store was waited for, so the grants are those
+                // the split was worked out with.
                 let (granted, delivered) = self.waiting_for_the_tick();
                 let gone: BTreeSet<ChunkPos> = splitting.chunks.iter().copied().collect();
+                let waited: BTreeSet<ChunkPos> = granted
+                    .iter()
+                    .filter(|position| gone.contains(*position))
+                    .filter(|position| self.region.knowledge(**position) != Knowledge::Held)
+                    .copied()
+                    .collect();
+                let players = splitting.part.players.len();
                 let (loaded, mut part) = self.region.take_split(splitting, &granted);
                 // What the runner has of the part's chunks beyond those that were
                 // loaded goes with them: what the store had delivered for the coming
@@ -1420,6 +1437,9 @@ impl RegionRunner {
                 info!(
                     tick = self.region.tick_number(),
                     part = region.0,
+                    players,
+                    chunks = gone.len(),
+                    waited = waited.len(),
                     "a part of the region has been split off"
                 );
                 done.call(Reshaped::Split {
@@ -9647,5 +9667,390 @@ mod tests {
             presences(&there.aside),
             [(third_player(), Some(EntityId(3)))]
         );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The grants that wait at a split go by nearness: section 3.6.1 of
+    // `docs/adr/0017-the-end-of-the-stripes.md`.
+    // -----------------------------------------------------------------------------------
+
+    /// Listens to the log and keeps each line: the message, and behind it the fields
+    /// the line was given, as `name=value` with a space before each, in their order.
+    #[derive(Clone, Default)]
+    struct Lines(Arc<Mutex<Vec<String>>>);
+
+    #[derive(Default)]
+    struct Line {
+        message: String,
+        fields: String,
+    }
+
+    impl tracing::field::Visit for Line {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            } else {
+                self.fields
+                    .push_str(&format!(" {}={value:?}", field.name()));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for Lines {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut line = Line::default();
+            event.record(&mut line);
+            self.0.lock().unwrap().push(line.message + &line.fields);
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// Runs `what`, and returns what it returns with the lines that the thread it ran
+    /// on wrote to the log meanwhile. A runner that is stepped by hand writes its
+    /// lines on the thread that steps it.
+    fn logged<T>(what: impl FnOnce() -> T) -> (T, Vec<String>) {
+        // Whether anybody listens to a line is remembered where the line is written,
+        // when the first thread gets there. While the process has a single listener,
+        // only that thread's own is asked, and the tests run side by side, most of
+        // them with nobody listening. Once there are two, every listener there is is
+        // asked; so one is kept for good here, which no thread ever writes to.
+        static KEPT: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+        KEPT.get_or_init(|| tracing::Dispatch::new(Lines::default()));
+        let lines = Lines::default();
+        let returned = tracing::subscriber::with_default(lines.clone(), what);
+        let lines = lines.0.lock().unwrap();
+        (returned, lines.clone())
+    }
+
+    /// The line a runner writes when it has taken a split, if it is among `lines`.
+    fn line_of_the_split(lines: &[String]) -> Option<&str> {
+        let of_the_split = |line: &&String| line.starts_with("a part of the region has been split");
+        lines.iter().find(of_the_split).map(String::as_str)
+    }
+
+    /// Has `edge` ask for `chunks` as a viewer, steps `runner` until a tick has claimed
+    /// them, and waits for the store's answer, which `gate` holds back: the grants wait
+    /// for a tick from here on, and are not among its inputs before the gate lets the
+    /// answer go.
+    async fn asked_and_not_told(
+        runner: &mut RegionRunner,
+        gate: &GateControl,
+        edge: &TestEdge,
+        chunks: &[ChunkPos],
+    ) {
+        let claims = gate.kept_claims();
+        gate.hold_claims();
+        edge.send(asking_for(chunks.to_vec())).await.unwrap();
+        let asked = |runner: &RegionRunner| {
+            let known = |chunk: &ChunkPos| runner.region().knowledge(*chunk);
+            chunks.iter().all(|chunk| known(chunk) == Knowledge::Asked)
+        };
+        step_until(runner, asked);
+        wait_for_kept_answers(runner, gate, GateControl::kept_claims, claims + 1);
+    }
+
+    /// The chunks the store's list has `region` granted within, both corners; `None`
+    /// if it is granted none. What a region holds of an area it is pinned to is not
+    /// among them.
+    fn bounds_of(store: &Store, region: RegionId) -> Option<(ChunkPos, ChunkPos)> {
+        let list = store.regions().unwrap();
+        let info = list.regions.iter().find(|info| info.region == region);
+        let bounds = info.expect("the region is listed").bounds?;
+        Some((bounds.min, bounds.max))
+    }
+
+    /// Two chunks west of [`FAR_WEST`], and so nearer to who stands there than to
+    /// where players enter the world; and the chunk south of that place.
+    const AHEAD: ChunkPos = ChunkPos::new(-4, 0);
+    const AT_HOME: ChunkPos = ChunkPos::new(0, 1);
+
+    /// A chunk the store has granted the region in answer to a claim of its last
+    /// ticks, of which no tick was told before the region stopped, counts as held when
+    /// the split is worked out. One that is nearer to who goes is the part's, by both
+    /// regions and by the store's list, and one that is not is the region's. Each of
+    /// the two is in memory what a runner that is started anew restores from the
+    /// store's record, and the line that tells of the split counts the grant.
+    #[tokio::test]
+    async fn a_grant_that_no_tick_was_told_of_goes_with_the_part_if_it_is_nearer_to_who_goes() {
+        for on_disk_too in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let world = match on_disk_too {
+                true => Divided::stripes_in(directory.path()),
+                false => Divided::stripes(),
+            };
+            let (mut edge, worker_end) = in_process(256);
+            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            west.links().attach(worker_end);
+            two_players_apart(&mut west, &mut edge).await;
+            asked_and_not_told(&mut west, &gate, &edge, &[AHEAD, AT_HOME]).await;
+
+            // The answer reaches the runner when its region has stopped ticking.
+            let (done, outcome) = outcome();
+            west.reshape(split_off(&[FAR_WEST]), done);
+            step_to(&mut west, Stage::Settling);
+            assert_eq!(west.inputs.granted, []);
+            gate.release_claims();
+            let before = west.region().tick_number();
+            let (reshaped, lines) = logged(|| reshaped(&mut west, &outcome));
+            let Reshaped::Split {
+                region: new, part, ..
+            } = reshaped
+            else {
+                panic!("no split: {reshaped:?}");
+            };
+            let tick = west.region().tick_number();
+            assert_eq!(tick, before + 1, "no tick ran in between");
+            let line = format!(
+                "a part of the region has been split off tick={tick} part={} players=1 \
+                 chunks=2 waited=1",
+                new.0
+            );
+            assert_eq!(line_of_the_split(&lines), Some(line.as_str()));
+
+            // By both regions: each chunk is one's, and the other knows nothing of it.
+            assert_eq!(part.region.knowledge(AHEAD), Knowledge::Held);
+            assert_eq!(west.region().knowledge(AHEAD), Knowledge::Unknown);
+            assert_eq!(west.region().knowledge(AT_HOME), Knowledge::Held);
+            assert_eq!(part.region.knowledge(AT_HOME), Knowledge::Unknown);
+            assert_eq!(part.region.held_chunk_count(), 2);
+            assert_eq!(west.region().held_chunk_count(), 3);
+            // The answer went into the split, and waits for no tick.
+            assert_eq!(west.inputs.granted, []);
+            // By the store's list: the part is granted both of its chunks. The region
+            // is granted none, as all it holds is of the area it is pinned to.
+            assert_eq!(bounds_of(&world.store, new), Some((AHEAD, FAR_WEST)));
+            assert_eq!(bounds_of(&world.store, RegionId(0)), None);
+
+            // And after a restart: of the runners, and on disk of the store as well,
+            // from what it wrote. The part is restored as it is in memory.
+            drop(west);
+            let world = match on_disk_too {
+                true => {
+                    drop(world);
+                    Divided::stripes_in(directory.path())
+                }
+                false => world,
+            };
+            let (handle, restored) = world.open(new, 5);
+            let mut held = holdings(&restored).held;
+            held.sort();
+            assert_eq!(held, [AHEAD, FAR_WEST]);
+            let next = RegionRunner::restore(config(0), handle, restored).unwrap();
+            assert_eq!(*next.region(), part.region);
+            // The next owner of the region that was split is told nothing of the chunk
+            // ahead, and when it asks, that it is the part's. A pinned region is
+            // restored without the chunks of its own area and claims them anew.
+            let (handle, restored) = world.open(RegionId(0), 2);
+            assert!(!holdings(&restored).held.contains(&AHEAD));
+            assert_eq!(
+                claim(&handle, &[AHEAD, AT_HOME]),
+                (vec![AT_HOME], vec![(AHEAD, new)])
+            );
+        }
+    }
+
+    /// If nothing comes of the split, the grants it was worked out with are where they
+    /// were: the next tick takes them, and the link is served.
+    #[tokio::test]
+    async fn a_grant_that_waited_while_a_split_came_to_nothing_is_taken_by_the_next_tick() {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        two_players_apart(&mut west, &mut edge).await;
+        asked_and_not_told(&mut west, &gate, &edge, &[AHEAD]).await;
+
+        // Nobody stands in the chunk named.
+        let (done, outcome) = outcome();
+        west.reshape(split_off(&[WEST_OF_HOME]), done);
+        step_to(&mut west, Stage::Settling);
+        gate.release_claims();
+        let off = Reshaped::Off { why: Off::Nobody };
+        assert_eq!(reshaped(&mut west, &outcome), off);
+        assert_eq!(west.inputs.granted, [AHEAD]);
+        assert_eq!(west.region().knowledge(AHEAD), Knowledge::Asked);
+
+        let asked = edge.asked();
+        assert_eq!(
+            answers(&mut west, &mut edge, 1),
+            [(AHEAD, asked, Told::Snapshot)]
+        );
+        assert_eq!(west.region().knowledge(AHEAD), Knowledge::Held);
+        assert_eq!(west.inputs.granted, []);
+    }
+
+    /// Where [`other_player`] stands in [`two_players_apart_in_the_gap`], and the
+    /// chunk two further east, which is nearer to that than to where players enter the
+    /// world. Both are nobody's until they are claimed.
+    const OUT_EAST: ChunkPos = ChunkPos::new(6, 0);
+    const BEYOND: ChunkPos = ChunkPos::new(8, 0);
+
+    /// Two players of one edge in the home region of [`Divided::gap`], which is pinned
+    /// to nothing: [`player`] where players enter the world and [`other_player`] in
+    /// [`OUT_EAST`]. The edge is subscribed to the chunks they stand in, and both are
+    /// loaded.
+    async fn two_players_apart_in_the_gap(runner: &mut RegionRunner, edge: &mut TestEdge) {
+        edge.send(join(player(), "Notch")).await.unwrap();
+        edge.send(join(other_player(), "Jeb")).await.unwrap();
+        edge.send(asking_for(vec![ORIGIN, OUT_EAST])).await.unwrap();
+        step_until(runner, |runner| runner.region().player_count() == 2);
+        // The home region of this world gives out the ids of another block than the
+        // one the stripes begin with.
+        let (entity, _) = runner.region().player(other_player()).unwrap();
+        let walked = of_entity(entity, walk(other_player(), 100.5));
+        edge.send(walked).await.unwrap();
+        step_until(runner, |runner| {
+            runner.region().loaded_chunk_count() == 2 && x_of(runner, other_player()) == Some(100.5)
+        });
+        step(runner);
+        edge.everything();
+    }
+
+    /// A split of `chunks` off the home region of [`Divided::gap`], with the id the
+    /// store of that world gives out next.
+    fn split_off_in_the_gap(chunks: &[ChunkPos]) -> Reshape {
+        Reshape::SplitOff {
+            chunks: chunks.to_vec(),
+            as_epoch: 5,
+            part: RegionId(3),
+        }
+    }
+
+    /// The twin of
+    /// [`a_chunk_read_before_the_region_gave_it_back_is_not_kept_when_it_is_granted_again`]
+    /// for a split, and for a chunk that goes to the part. What the store delivered
+    /// for a request from before the region gave the chunk back is kept by neither
+    /// region when the chunk is granted again by an answer that no tick has taken:
+    /// another region can have held and changed it in between. The part holds the
+    /// chunk and reads it from the store when it is wanted.
+    #[tokio::test]
+    async fn a_chunk_read_before_it_was_given_back_is_not_kept_when_its_new_grant_goes_to_a_part() {
+        let world = Divided::gap();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = world.gated(HOME, config(0));
+        runner.links().attach(worker_end);
+        two_players_apart_in_the_gap(&mut runner, &mut edge).await;
+
+        // The chunk is granted and asked of the store, whose answer does not come.
+        gate.hold_loads();
+        edge.send(asking_for(vec![BEYOND])).await.unwrap();
+        step_until(&mut runner, |runner| runner.loads.contains_key(&BEYOND));
+        wait_for_kept_answers(&mut runner, &gate, GateControl::kept_loads, 1);
+        // The link lets go, and the region gives the chunk back; then the link asks
+        // again, and the store's word that the chunk is the region's does not come.
+        edge.send(done_with(vec![BEYOND])).await.unwrap();
+        step_until(&mut runner, |runner| {
+            runner.region().knowledge(BEYOND) == Knowledge::Unknown
+        });
+        asked_and_not_told(&mut runner, &gate, &edge, &[BEYOND]).await;
+
+        let (done, outcome) = outcome();
+        runner.reshape(split_off_in_the_gap(&[OUT_EAST]), done);
+        step_to(&mut runner, Stage::Closing);
+        gate.release_loads();
+        gate.release_claims();
+        let Reshaped::Split { region, part, .. } = reshaped(&mut runner, &outcome) else {
+            panic!("no split");
+        };
+        // Granted by the answer that waited, to the part; and not kept from the answer
+        // before it, neither with the part nor by the runner of the region.
+        assert_eq!(part.region.knowledge(BEYOND), Knowledge::Held);
+        assert_eq!(runner.region().knowledge(BEYOND), Knowledge::Unknown);
+        let with_the_part: Vec<_> = part.chunks.iter().map(|(position, _)| *position).collect();
+        assert_eq!(with_the_part, [OUT_EAST]);
+        let warm: Vec<_> = runner.warm.keys().copied().collect();
+        assert_eq!(warm, [ORIGIN]);
+
+        // The part serves the chunk its player stands in from memory, and asks the
+        // store for the other.
+        let (handle, _) = world.store.open_region(world.hello(region, 5)).unwrap();
+        let (store, gate) = gate_before(handle);
+        let mut second = RegionRunner::of_part_with(part, store);
+        let (end, worker_end) = link::in_process(256);
+        let mut there = TestEdge::silent(end, edge.edge, edge.start);
+        second.links().attach(worker_end);
+        there
+            .send(there.hello(0, &[other_player()], &[OUT_EAST, BEYOND]))
+            .await
+            .unwrap();
+        assert_eq!(
+            answers(&mut second, &mut there, 2),
+            [(OUT_EAST, 0, Told::Snapshot), (BEYOND, 0, Told::Snapshot)]
+        );
+        let asked = gate.asked();
+        let loads: Vec<_> = asked
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Load(_)))
+            .collect();
+        assert_eq!(loads, [&Asked::Load(BEYOND)]);
+    }
+
+    /// A split that the store has another id for is worked out again from the same
+    /// answers, which are still where they were: on land that is nobody's until it is
+    /// claimed, the grant ahead of the player who goes is the part's under the id the
+    /// store gave, and the one beside those who stay is the region's.
+    #[tokio::test]
+    async fn a_split_that_is_made_again_with_another_id_takes_the_grants_that_wait_with_it() {
+        let world = Divided::gap();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = world.gated(HOME, config(0));
+        runner.links().attach(worker_end);
+        two_players_apart_in_the_gap(&mut runner, &mut edge).await;
+        asked_and_not_told(&mut runner, &gate, &edge, &[BEYOND, BESIDE]).await;
+
+        // The id named is the home region's own.
+        let (done, outcome) = outcome();
+        runner.reshape(split_off(&[OUT_EAST]), done);
+        step_to(&mut runner, Stage::Settling);
+        gate.release_claims();
+        gate.asked();
+        let Reshaped::Split { region, part, .. } = reshaped(&mut runner, &outcome) else {
+            panic!("no split");
+        };
+        assert_eq!(region, RegionId(3));
+        let tick = runner.region().tick_number();
+        let asked = gate.asked();
+        let splits: Vec<_> = asked
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Split(..)))
+            .collect();
+        assert_eq!(
+            splits,
+            [&Asked::Split(tick, HOME), &Asked::Split(tick, region)]
+        );
+
+        assert_eq!(part.region.knowledge(BEYOND), Knowledge::Held);
+        assert_eq!(runner.region().knowledge(BEYOND), Knowledge::Unknown);
+        assert_eq!(runner.region().knowledge(BESIDE), Knowledge::Held);
+        assert_eq!(part.region.knowledge(BESIDE), Knowledge::Unknown);
+        assert_eq!(bounds_of(&world.store, region), Some((OUT_EAST, BEYOND)));
+        assert_eq!(bounds_of(&world.store, HOME), Some((ORIGIN, BESIDE)));
+        // Each of the two is in memory what a runner that is started anew restores
+        // from the store's record: the region holds what it was told it holds and the
+        // grant that waited beside it, and the part its two chunks.
+        let split = runner.region().clone();
+        drop(runner);
+        for (id, epoch, in_memory) in [(HOME, 2, &split), (region, 5, &part.region)] {
+            let (handle, restored) = world.open(id, epoch);
+            let next = RegionRunner::restore(config(0), handle, restored).unwrap();
+            assert_eq!(next.region(), in_memory, "{id:?}");
+        }
+        assert_eq!(split.held_chunk_count(), 2);
+        assert_eq!(part.region.held_chunk_count(), 2);
     }
 }
