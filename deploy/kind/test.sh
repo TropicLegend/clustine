@@ -9,7 +9,10 @@
 # disconnected, and nothing they were told was handled may be missing afterwards. Last
 # it has Kubernetes replace every worker in turn under such bots, as a new version of
 # the server would be rolled out: each worker has to hand its region to the one that
-# waits before it goes, so that the coordinator never waits for a lease.
+# waits before it goes, so that the coordinator never waits for a lease. And at the very
+# end, since it leaves the world with one region, it has the two regions merged, the
+# one that is left split where the bots walk, and the part merged back, again under such
+# bots.
 #
 # Usage: deploy/kind/test.sh [--reuse]
 #
@@ -460,4 +463,73 @@ released="$(grep -c -F 'a worker released a region' "${scratch}/coordinator-roll
 printf 'regions released by their workers during the rollout: %s\n' "$released"
 if ! [ "$released" -ge 2 ]; then
   die "fewer than two regions were released by their workers during the rollout, so a worker went without handing its region over"
+fi
+
+step "Merging and splitting regions under bots that keep a ledger"
+k delete job clustine-merges --ignore-not-found --cascade=foreground --wait --timeout=60s
+k apply --filename "${root}/deploy/kubernetes/test/merges.yaml"
+# The bots are to be playing when the regions are merged.
+k wait --for=jsonpath='{.status.ready}'=1 job/clustine-merges --timeout=120s
+
+# Asks the coordinator for a merge or a split, from its own pod, where the image's
+# `clustine` reaches it at the address it listens on, until it is made, and prints
+# what the command said. A refusal can be of the moment: a region is being released
+# to even regions out a lease after a split, no bot stands east of the line just then,
+# or the survivor of a merge has yet to claim the chunks its new players stand in. So
+# it is asked again for a minute, and what was refused is shown.
+asked() {
+  local deadline=$((SECONDS + 60))
+  while true; do
+    if k exec deployment/clustine-coordinator -- clustine "$@" >"${scratch}/asked.log" 2>&1; then
+      cat "${scratch}/asked.log"
+      return
+    fi
+    cat "${scratch}/asked.log"
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      die "the coordinator did not make this within a minute: clustine $*"
+    fi
+    sleep 1
+  done
+}
+
+asked merge --survivor 0 --absorbed 1
+grep -q -F 'region 0 has absorbed region 1' "${scratch}/asked.log" \
+  || die "the command did not say that region 0 absorbed region 1"
+
+# The bots walk between x = 40.5 and x = 90.5 on lanes from z = 0 to z = 12, so those
+# east of x = 64 stand in the chunks 4,0 and 5,0, and the others stay with region 0, as
+# does the chunk players enter in.
+asked split --region 0 --chunks 4,0 5,0
+part="$(sed -n 's/^.*region \([0-9][0-9]*\) has been split off region 0.*$/\1/p' "${scratch}/asked.log")"
+if [ -z "$part" ]; then
+  die "the command did not say which region was split off region 0"
+fi
+
+asked merge --survivor 0 --absorbed "$part"
+grep -q -F "region 0 has absorbed region ${part}" "${scratch}/asked.log" \
+  || die "the command did not say that region 0 absorbed region ${part}"
+
+# Bots that were done before the last merge were not tried by all of it.
+conditions="$(k get job clustine-merges \
+  --output 'jsonpath={range .status.conditions[*]}{.type}={.status}{"\n"}{end}')"
+if grep -Fqx 'Complete=True' <<<"$conditions"; then
+  step "Log of clustine-merges"
+  k logs job/clustine-merges || true
+  die "the bots were done before the regions were merged and split; they have to play for longer (--seconds in deploy/kubernetes/test/merges.yaml)"
+fi
+
+wait_for_job clustine-merges
+
+step "Checking that no merge and no split waited for a lease"
+# The commands have said that each was made. The bots would be content, if later, with
+# one that the coordinator gave up on and that was made all the same.
+k logs deployment/clustine-coordinator >"${scratch}/coordinator-merges.log"
+for line in 'a merge has ended' 'a worker says what came of a split'; do
+  count="$(grep -c -F -- "$line" "${scratch}/coordinator-merges.log" || true)"
+  printf 'the coordinator logged "%s" %s times\n' "$line" "$count"
+done
+if grep -q -F -e 'a merge was not done within the lease' \
+  -e 'a worker did not say within the lease what came of a split' \
+  "${scratch}/coordinator-merges.log"; then
+  die "the coordinator waited out a lease for a merge or a split"
 fi

@@ -3,7 +3,9 @@
 - Status: **Accepted**; the design of step C3 of milestone M3, phase C, for the
   simulation, the region runner, the worker process and the coordinator, and the
   contract the edge's part of the step is designed against. Revised after an
-  independent review against the code (see "Review"). Not built. The edge's part is
+  independent review against the code (see "Review"). Built in steps C3.1 to C3.8, each
+  part tested from this record by someone who did not read its code; what the tests
+  under bots found and measured is at the end. The edge's part is
   ADR-0015, designed against section 8 of this one; its review changed rules 37 to
   40, 44, 45, 47, 48 and 50 and the welcomes, as ADR-0015 lists.
 - Date: 2026-10-08
@@ -2132,6 +2134,15 @@ regions.
 A part is left where it was made for a lease before regions are evened out, so that
 its players are not stood still twice running.
 
+**Measured when it was built** (step C3.8, optimised, one run; the longest a bot
+waited for an acknowledgement, in the middle and at worst): the survivor's players
+0.17 to 0.19 s (0.22 at worst), so the quarter of a second holds; the absorbed
+region's players 0.31 to 0.37 s (0.41), against 0.27 s (0.31) for a move in the same
+run, so **a little more than a move's pause, not a little less**; at a split those who
+stay 0.14 to 0.19 s (0.22) and those who go 0.16 to 0.21 s (0.25). A split and at once
+the merge back: 0.43 s (0.46). Undisturbed a bot waits 0.05 s. Unoptimised everything
+is about three times as long; the roadmap has the table.
+
 ## Ruled out
 
 - **Keeping the links open** through a merge and a split, with the entries published
@@ -2452,3 +2463,29 @@ restore. Its doubts were taken up as well: the ring that rule 39 could close is 
 out by the survivor forgetting what it believed (rule 49); a leave that follows from
 what a region said names the region's entity (rule 36); and a merge or a split too
 large for a message is off before it is sent (section 3.2).
+
+## Found by the tests under bots (step C3.8)
+
+`bin/clustine/tests/merges.rs`, written from section 10's E1 to E6 by someone who
+wrote none of the code: a cluster of processes under the ledger bots, with regions
+merged and split as bots cross, twenty times in a row, with a worker, the world store
+or the coordinator killed at logged moments, with the edge stood still across several
+merges and splits, and with a player who leaves and joins again in the middle.
+
+1. **The part of a split was left to nobody when the store died between its record
+   and its answer.** The worker said `SplitEnded { Err(StoreLost) }`, the coordinator
+   read the list once, and that reading failed because the store was still away;
+   nothing read it again. The part's players were disconnected when the edge's
+   patience was over. Section 5.4 said the list is read and not what follows a
+   reading that fails; it says now that the list is asked for at every tick until it
+   has been read, and the coordinator does.
+2. **A split asked within a tick or two of a merge can find nobody** in a world of
+   pinned regions: the absorbed players stand in chunks the survivor holds only once
+   it has claimed them (section 2.2), and a seed is a chunk the region holds. Asked
+   again a tenth of a second later it is made. Nobody asks that fast by hand; step C4
+   has to take `Off::Nobody` right after a merge as "not yet".
+3. **A lease after a split the coordinator evens regions out**, and a merge, a split
+   or a move asked during that release is refused with `BeingReleased`. As designed;
+   whoever asks, asks again.
+
+Not tried: a worker told to stop during a merge or a split, and two edges.

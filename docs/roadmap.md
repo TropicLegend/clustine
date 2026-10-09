@@ -191,7 +191,7 @@ differently, so that each leaves everything working.
 | C1 | Store: the list of regions with those absorbed, grants with their ticks, chunks leaving only saved, replay only into what is held, pinned regions, the merge and the split as one log record each. Designed in [ADR-0011](adr/0011-the-world-store-and-regions.md), in steps C1.1 to C1.7 | Store tests incl. kills at every point of a merge and a split; tests from the record by someone else | done |
 | C2a | Several regions per worker; the coordinator without "a worker runs one region" | The move and chaos tests, on stripes, with fewer workers than regions | done |
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos. Designed in [ADR-0012](adr/0012-the-tick-on-chunks.md), in steps C2b.1 to C2b.5 | Hand-over, block, takeover, chaos and move tests on two pinned regions | done |
-| C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | designed in [ADR-0014](adr/0014-merging-and-splitting.md) and reviewed; to build |
+| C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | done ([ADR-0014](adr/0014-merging-and-splitting.md), [ADR-0015](adr/0015-the-edge-through-merges-and-splits.md)) |
 | C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | to do |
 | C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | to do |
 | C6 | Docs; what to try with real clients | CI | to do |
@@ -482,6 +482,110 @@ it and reviewed in turn: eleven defects, three of which would have disconnected 
 player who had done nothing wrong, each a sequence in which what one region said was
 read late against what another had said since. Their fixes changed nine rules of
 ADR-0014's contract with the edge and added one number to a welcome.
+
+C3 is built, in the eight steps of ADR-0014: regions merge and split, asked for by
+hand with `clustine merge` and `clustine split`. A merge and a split are one tick of a
+region and one record of the store's log; the region's links are closed at that tick
+and every edge learns what happened from its next welcome. The absorbed region is
+released first, like a region that is moved; the new region of a split is run at once,
+from memory, by the worker that split it, and is evened out a lease later. The
+coordinator reads the store's list of regions (`clustine coordinator --store`, which a
+local cluster needs no flag for), reserves the regions of a merge or a split until the
+list shows what came of it, and tells whoever asked.
+
+What checks it: each part has tests written from the record by someone who did not
+read its code (the simulation 103, the region runner 88, the coordinator 164, the edge
+66 besides the 59 of C2b.4, among them generated runs against a second implementation
+of the record in which regions merge and split while links are lost); the store has
+the kills at every write of a merge and a split from C1;
+`bin/clustine/tests/reshapes.rs` has the commands between processes; and
+`bin/clustine/tests/merges.rs` has a cluster of processes under the ledger bots:
+regions merged and split as bots cross the line, twenty times in a row, a part moved,
+split again and merged back; a worker, the world store or the coordinator killed at
+logged moments of a merge and a split (`CLUSTINE_CHAOS_SEED`, `CLUSTINE_CHAOS_KILLS`);
+the edge stood still across several merges and splits; a player who leaves and joins
+again in the middle, who has to be one player with one entity afterwards. Every test
+audits the world against the bots' ledger, most of them again after every process was
+killed and started from disk.
+
+What the tests written by others found, all put right: the coordinator named the wrong
+reason when a reading of the list took a region away during a merge; the edge let two
+regions name each other for a chunk for ever, ignored the first steps of a player whose
+stay had moved, and sent a moved player's old inputs on; and, under the bots, the part
+of a split was run by nobody when the world store died between making the split and
+saying so, because the coordinator read the list once, while the store was away, and
+never again. That one disconnected the part's players after twenty seconds and came up
+once in eleven runs that killed the store during splits.
+
+**The pause at a merge and at a split**, as the longest a bot waited for an
+acknowledgement, in the middle / at worst, bots far apart, one run each:
+
+| | Players who stay (the survivor's; those not split off) | Players who go (the absorbed region's; the part's) | The command, by its own account |
+|---|---|---|---|
+| Merge, optimised | 0.19 / 0.22 s | 0.37 / 0.41 s | 0.20 / 0.22 s |
+| Split, optimised | 0.14 / 0.20 s | 0.16 / 0.17 s | 0.09 / 0.13 s |
+| Move, optimised, to compare | – | 0.27 / 0.31 s | 0.10 / 0.12 s |
+| Merge, unoptimised (50) | 1.10 / 1.45 s | 1.28 / 1.65 s | 0.22 / 0.54 s |
+| Split, unoptimised (50) | 0.57 / 1.19 s | 1.04 / 1.23 s | 0.16 / 0.50 s |
+| Move, unoptimised (50) | – | 1.48 / 1.70 s | 0.13 / 0.47 s |
+
+A split and at once the merge back is 0.43 s optimised (0.75 unoptimised). Undisturbed
+a bot waits 0.05 s (0.06 to 0.12). After a worker was killed in the middle every region
+ran again within 3.7 s with a lease of 3 s, and the merge or the split was either made
+whole or not at all.
+
+**For the owner to try with real clients**, with the cluster of processes above (two
+workers are enough) and two clients:
+
+1. One client stays where it entered; the other walks east past x = 64, into region 1.
+   Then:
+   ```bash
+   target/debug/clustine merge --survivor 0 --absorbed 1
+   ```
+   Expected: `region 0 has absorbed region 1, N ms after asking`. Both stand still for
+   about a second, the one who was in region 1 a little longer, and everything goes
+   on; nobody is disconnected, each still sees the other, and what was built just
+   before is there. Walking across x = 64 afterwards shows nothing. `--survivor 1
+   --absorbed 0` is refused: the region players enter in is never absorbed.
+2. The far client stands a few chunks from the origin, say at x = 100, z = 8, which is
+   chunk 6,0 (block coordinates divided by 16, rounded down; F3 shows it). Then:
+   ```bash
+   target/debug/clustine split --region 0 --chunks 6,0
+   ```
+   Expected: `region 2 has been split off region 0, N ms after asking`; both stand
+   still for about half a second. The far client is now in region 2, which begins
+   about halfway between the two players, and the same worker runs it. About five
+   seconds later the coordinator moves one of the two regions to the other worker
+   ("a region is moved to even regions out" in its log), another short pause for that
+   region's players. A command asked just then is refused with "region N is being
+   released"; ask again. Walk towards each other and past, and build across the line.
+   A chunk nobody stands in gives `Error: the coordinator reports no split of region
+   0: no player stands in a chunk named that the region holds`, and nothing changes;
+   the chunk at the origin never goes. (`--chunks` takes several chunks and comes
+   last; `--coordinator`, if needed, before it.)
+3. `target/debug/clustine move --region 2`, then `target/debug/clustine merge
+   --survivor 0 --absorbed 2`. Expected: as in phase B and as in step 1.
+4. Over and over while walking, building and crossing; leave and join again right
+   after asking (you are back where players enter, once). `kill -9` the worker that
+   runs region 0 right after asking for a merge or a split: everyone there stands
+   still for five to seven seconds, then the command says it was done or that region
+   0 "changed hands before the worker said what came of it", and the coordinator's
+   routing table shows which.
+
+What to say if it is not so: which step, what was seen, and the logs of the terminals.
+In the single process (`cargo run -p clustine -- --boundaries 4`) nothing merges or
+splits yet; that comes with C5.
+
+Seen and left as it is, or not tried:
+
+- After a merge, the first block action of a player who came from the absorbed region
+  waits for its chunk to be loaded, and everyone of the same edge in the survivor
+  waits behind it for those ticks (ADR-0014, "What a player notices").
+- A split asked within a tick or two of a merge finds nobody to split off; asked again
+  a tenth of a second later it is made. C4, which asks by itself, takes that as "not
+  yet".
+- Not tried: a worker told to stop during a merge or a split; two edges; merges and
+  splits on Kubernetes beyond the one of `deploy/kind/test.sh`.
 
 What C0 left to the steps that use it, because it changes what exists instead of adding
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
