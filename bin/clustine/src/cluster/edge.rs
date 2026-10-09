@@ -205,6 +205,21 @@ struct LinkState {
     again: Option<Instant>,
 }
 
+/// When the keeper has to look again without anything having happened: the earliest
+/// time at which a link is to be tried again, among the regions `table` routes.
+///
+/// A region the table no longer routes is not tried, so the time noted for it is
+/// nothing to wake up for. A region is released before it is absorbed, and the edge
+/// tries its route again in between and is turned away: a keeper that waited for that
+/// time as well would find it past at every pass from then on, and go round without
+/// rest for as long as the edge lives.
+fn next_retry(regions: &BTreeMap<RegionId, LinkState>, table: &RoutingTable) -> Option<Instant> {
+    let routed = table.routes.iter().map(|route| route.region);
+    routed
+        .filter_map(|region| regions.get(&region)?.again)
+        .min()
+}
+
 /// Keeps the edge linked to whoever runs each region, for as long as the edge is
 /// there: links to every region of `table`, and links again when the coordinator names
 /// another owner or the edge says that a link has ended. Each region is tried by itself
@@ -267,7 +282,7 @@ pub(crate) async fn keep_linked(
                 (region, epoch, address, link)
             });
         }
-        let again = regions.values().filter_map(|state| state.again).min();
+        let again = next_retry(&regions, &table);
 
         tokio::select! {
             Some(ended) = attempts.join_next() => {
@@ -346,6 +361,15 @@ pub(crate) async fn keep_linked(
                             state.since = None;
                         }
                     }
+                    // A region that has no route any more is not tried: what was
+                    // noted of the attempts at it is forgotten, so that it is tried
+                    // at once, and often, should it have an owner again.
+                    for (region, state) in &mut regions {
+                        if next.route(*region).is_none() {
+                            state.again = None;
+                            state.since = None;
+                        }
+                    }
                     table = next;
                 }
                 None => {
@@ -413,6 +437,48 @@ mod tests {
             absorbed: Vec::new(),
             waiting,
         }
+    }
+
+    /// A keeper's regions, each with when its link is to be tried again.
+    fn noted(again: &[(u32, Option<Instant>)]) -> BTreeMap<RegionId, LinkState> {
+        let state = |(region, again): &(u32, Option<Instant>)| {
+            let state = LinkState {
+                again: *again,
+                ..LinkState::default()
+            };
+            (RegionId(*region), state)
+        };
+        again.iter().map(state).collect()
+    }
+
+    #[test]
+    fn the_keeper_wakes_for_the_earliest_retry_of_a_region_that_has_a_route() {
+        let now = Instant::now();
+        let (soon, later) = (now + RETRY, now + 2 * RETRY);
+        let regions = noted(&[(0, Some(later)), (1, Some(soon)), (2, None)]);
+        assert_eq!(
+            next_retry(&regions, &table(Some(0), &[0, 1, 2], 0)),
+            Some(soon)
+        );
+        assert_eq!(
+            next_retry(&regions, &table(Some(0), &[0, 2], 0)),
+            Some(later)
+        );
+        assert_eq!(next_retry(&regions, &table(Some(0), &[2], 0)), None);
+        // A region the keeper has not met yet is tried at once, not waited for.
+        assert_eq!(next_retry(&regions, &table(Some(0), &[2, 3], 0)), None);
+    }
+
+    /// A region is released before it is absorbed, and the edge is turned away by its
+    /// worker in between. The time it noted then is past for ever after: waiting for
+    /// it would be no wait at all.
+    #[test]
+    fn the_keeper_does_not_wake_for_a_region_that_has_left_the_routing_table() {
+        let now = Instant::now();
+        let regions = noted(&[(0, None), (1, Some(now))]);
+        assert_eq!(next_retry(&regions, &table(Some(0), &[0, 1], 0)), Some(now));
+        assert_eq!(next_retry(&regions, &table(Some(0), &[0], 0)), None);
+        assert_eq!(next_retry(&regions, &table(None, &[], 0)), None);
     }
 
     #[test]
