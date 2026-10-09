@@ -38,10 +38,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clustine_botswarm::ledger::LineCrossing;
 use clustine_botswarm::{Bot, Ledger, LedgerReport, Progress, Random, Wait, audit_blocks, ledger};
+use clustine_rpc::RegionList;
 use tempfile::TempDir;
 use tokio::process::Child;
 use tokio::task::JoinHandle;
 
+use common::following;
 use common::processes::{Cluster, Turn, turn, turn_alone, worker_name};
 use common::{VIEW_DISTANCE, free_address, view_area};
 
@@ -78,19 +80,49 @@ const PULSE: u32 = 2;
 /// player usually has.
 const WIDE_VIEW: i32 = 8;
 
-/// What a region is called in the logs, by its number from west to east.
+/// What a region is called in the logs: in a pinned world its number from west to
+/// east, in any world the number the routing table has for it.
 type Region = usize;
+
+/// How a test's world is divided.
+#[derive(Debug, Clone, Copy)]
+enum World {
+    /// Regions pinned side by side at these chunk x coordinates, which stay as they
+    /// are: a boundary at a known place, and regions with known numbers.
+    Pinned(&'static [i32]),
+    /// One home region and nothing said of how it reshapes, so that regions follow
+    /// their players: each of the four bots stands in a region of its own, 19 chunks
+    /// from the next. See `docs/adr/0017-the-end-of-the-stripes.md`, section 9.6.
+    Following,
+}
+
+/// What the harness keeps of a world that is not pinned.
+struct Following {
+    /// The store's list as last read, if the last reading succeeded, and when it was
+    /// last asked for.
+    list: Option<RegionList>,
+    read: Instant,
+    /// The store's list when `start` returned, and how long the coordinator's log
+    /// was then: nothing is to move by itself from there until the bots are told to
+    /// end.
+    began: Option<(RegionList, usize)>,
+    /// How long the coordinator's log was when the test first took a worker away, by
+    /// killing it, freezing it or telling it to stop, if it has.
+    took_away: Option<usize>,
+}
 
 /// What a test's cluster and bots are like.
 #[derive(Debug, Clone, Copy)]
 struct Setup {
-    /// The chunk x coordinates at which the world is divided.
-    boundaries: &'static [i32],
+    /// How the world is divided.
+    world: World,
     workers: usize,
     /// Whether the edge grants a view distance of [`WIDE_VIEW`] and the bots' lanes are
     /// so far apart that no two bots have the same chunks in view. Otherwise the view
     /// distance is the small one of the other tests and the lanes are side by side,
-    /// which is quick to start.
+    /// which is quick to start. A world that follows its players has a view distance
+    /// and lanes of its own, and of it this says only that its cluster runs with no
+    /// other beside it, as one does whose pauses are measured.
     wide: bool,
     /// The block x coordinates the bots walk between.
     west: f64,
@@ -100,11 +132,22 @@ struct Setup {
 /// Two regions that meet at block x = 48, three workers, the bots side by side and
 /// walking a good way to either side of the boundary.
 const SMALL: Setup = Setup {
-    boundaries: &[3],
+    world: World::Pinned(&[3]),
     workers: 3,
     wide: false,
     west: 33.5,
     east: 62.5,
+};
+
+/// A world that follows its players: four bots that walk within the chunk column
+/// players enter in, each on its lane, 19 chunks from the next, each in a region of
+/// its own, and one worker for each region and one to spare.
+const FOLLOWING: Setup = Setup {
+    world: World::Following,
+    workers: following::WORKERS,
+    wide: false,
+    west: 2.5,
+    east: 13.5,
 };
 
 /// Whether this run of the tests is the one that repeats the end-to-end tests on a
@@ -254,10 +297,11 @@ struct Moved {
     to: usize,
     /// What `clustine move` gave as its own time.
     own_time: Duration,
-    /// The longest pause of any bot, and of any bot that stood in the region when the
-    /// move was asked for.
+    /// The longest pause of any bot, of any bot that stood in the region when the
+    /// move was asked for, and of any bot that stood in another.
     pause: Duration,
     pause_in_region: Duration,
+    pause_elsewhere: Duration,
     /// Each bot's pause, for a message.
     bots: String,
     /// Where the time went, as far as the logs say.
@@ -291,6 +335,8 @@ struct Moves {
     /// The workers that were told to stop and have not been waited for yet. That one of
     /// them ends is as it should be.
     told_to_stop: Vec<String>,
+    /// What is kept of a world that is not pinned; nothing of one that is.
+    following: Option<Following>,
 }
 
 impl Moves {
@@ -310,7 +356,12 @@ impl Moves {
             .prefix("clustine-moves-")
             .tempdir()
             .unwrap();
-        let list: Vec<String> = setup.boundaries.iter().map(i32::to_string).collect();
+        let boundaries: &[i32] = match setup.world {
+            World::Pinned(boundaries) => boundaries,
+            World::Following => &[],
+        };
+        let follows = matches!(setup.world, World::Following);
+        let list: Vec<String> = boundaries.iter().map(i32::to_string).collect();
         let checkpoints = checkpoint_seconds(seed);
         println!("{test}: the workers checkpoint every {checkpoints} s");
         let mut attempt = 0;
@@ -321,7 +372,10 @@ impl Moves {
             // The lease a cluster has unless someone says otherwise: what the record's
             // "nobody waits for the lease" is about.
             cluster.lease_seconds = None;
-            if setup.wide {
+            if follows {
+                cluster.coordinator_arguments = following::coordinator_arguments();
+                cluster.view_distance = following::VIEW;
+            } else if setup.wide {
                 cluster.view_distance = WIDE_VIEW;
             }
             cluster.start().await;
@@ -343,7 +397,7 @@ impl Moves {
             }
         };
 
-        let lines: Vec<i32> = setup.boundaries.iter().map(|chunk| chunk * 16).collect();
+        let lines: Vec<i32> = boundaries.iter().map(|chunk| chunk * 16).collect();
         let mut scenario = Ledger {
             bots: 4,
             rounds: None,
@@ -358,7 +412,10 @@ impl Moves {
         // Lanes side by side are still a walk from where the bots join, and the auditor
         // walks all of it again.
         scenario.to_the_lane = 3.0;
-        if setup.wide {
+        if follows {
+            scenario.lane_spacing = following::LANE_TO_LANE;
+            scenario.to_the_lane = following::TO_THE_LANE;
+        } else if setup.wide {
             // Twenty chunks from lane to lane, which is as far as two players with this
             // view distance see between them: the new owner of a region has every
             // bot's chunks to load, and none of them twice. That far the bots run.
@@ -387,6 +444,12 @@ impl Moves {
             since: (0..setup.workers).map(|worker| (worker, 0)).collect(),
             coordinator_since: 0,
             told_to_stop: Vec::new(),
+            following: follows.then(|| Following {
+                list: None,
+                read: Instant::now(),
+                began: None,
+                took_away: None,
+            }),
         };
         moves
             .until("every bot is on its lane and acknowledged", |moves| {
@@ -394,8 +457,88 @@ impl Moves {
                 bots.iter().all(|bot| bot.playing && bot.acknowledged > 0)
             })
             .await;
+        if follows {
+            moves.every_bot_has_a_region_of_its_own().await;
+        }
         moves.whole().await;
+        moves.begins();
         moves
+    }
+
+    /// In a world that follows its players: waits until the store's list has four
+    /// regions, each bot's chunk within the `bounds` of a region of its own, every
+    /// one of them runs and has rested, the workers share them evenly, and no move,
+    /// merge or split is under way. From then on the bots stay where they are, so
+    /// the coordinator has nothing to merge or split until their auditor walks.
+    async fn every_bot_has_a_region_of_its_own(&mut self) {
+        let what = "every bot has a region of its own, which runs and has rested";
+        self.until_within(following::SETTLES_WITHIN, what, |moves| {
+            let bots: Vec<f64> = moves.progress.bots().iter().map(|bot| bot.x).collect();
+            let world = moves.following.as_ref();
+            let list = world.and_then(|world| world.list.as_ref());
+            list.is_some_and(|list| following::regions_of_their_own(list, &bots).is_some())
+                && moves.every_region_runs()
+                && moves.cluster.even()
+                && following::has_rested(&moves.coordinator_log())
+        })
+        .await;
+        self.note("every bot has a region of its own".to_owned());
+    }
+
+    /// Waits, in a world that follows its players, until every region has rested and
+    /// nothing is under way.
+    async fn rested(&mut self) {
+        let what = "every region has rested and nothing is under way";
+        self.until(what, |moves| {
+            following::has_rested(&moves.coordinator_log())
+        })
+        .await;
+    }
+
+    /// Notes, in a world that follows its players, how the world is when the test
+    /// begins: the store's list, and how long the coordinator's log is.
+    fn begins(&mut self) {
+        let length = self.cluster.log("coordinator").len();
+        if let Some(world) = &mut self.following {
+            let list = world.list.clone().expect("the list was read");
+            world.began = Some((list, length));
+        }
+    }
+
+    /// Notes that the test takes a worker away, by killing it, freezing it or telling
+    /// it to stop: from the first time it does, the coordinator may move regions to
+    /// even them out.
+    fn takes_a_worker_away(&mut self) {
+        let length = self.cluster.log("coordinator").len();
+        if let Some(world) = &mut self.following {
+            world.took_away.get_or_insert(length);
+        }
+    }
+
+    /// In a world that follows its players, the mark that is taken just before the
+    /// bots are told to end: fails if the world moved under the test between the
+    /// end of `start` and now, as the bots stood still all the while. The list has
+    /// to have the regions it had, the same next id and the same absorbed pairs; the
+    /// coordinator has to have begun no split, no merge and no absorption; and it
+    /// has to have moved no region to even regions out before the test first took a
+    /// worker away. Of what comes after the mark, when the auditor walks from lane to
+    /// lane and is merged and split off like anybody, nothing is asserted.
+    async fn nothing_moved_under_the_test(&mut self) {
+        let Some(world) = &self.following else {
+            return;
+        };
+        let (began, since) = world.began.clone().expect("the test began");
+        let took_away = world.took_away.map(|length| length.saturating_sub(since));
+        let mark = match self.cluster.regions().await {
+            Ok(list) => list,
+            Err(error) => self.fail(&format!("the store's list cannot be read: {error}")),
+        };
+        let log = self.cluster.log("coordinator");
+        let log = log.get(since..).unwrap_or_default();
+        if let Some(moved) = following::moved_under_the_test(&began, &mark, log, took_away) {
+            self.fail(&format!("the world moved under the test: {moved}"));
+        }
+        self.note("nothing moved by itself while the bots stood".to_owned());
     }
 
     /// Waits until every worker of a cluster that has just been started has registered,
@@ -496,20 +639,39 @@ impl Moves {
                 Err(error) => self.fail(&format!("the bots found fault: {error:#}")),
             }
         }
+        // In a world that follows its players the regions are those of the store's
+        // list, which is read here, a few times a second.
+        let due = |world: &Following| world.read.elapsed() >= 5 * LOOK;
+        if self.following.as_ref().is_some_and(due) {
+            let list = self.cluster.regions().await.ok();
+            if let Some(world) = &mut self.following {
+                (world.list, world.read) = (list, Instant::now());
+            }
+        }
     }
 
     /// Waits until `state` holds, looking after the processes meanwhile, and returns
     /// how long that took. Fails, naming `what` was waited for, if it takes longer than
     /// anything should.
-    async fn until(&mut self, what: &str, mut state: impl FnMut(&Self) -> bool) -> Duration {
+    async fn until(&mut self, what: &str, state: impl FnMut(&Self) -> bool) -> Duration {
+        self.until_within(PATIENCE, what, state).await
+    }
+
+    /// Waits until `state` holds as [`Moves::until`] does, for `limit` at most.
+    async fn until_within(
+        &mut self,
+        limit: Duration,
+        what: &str,
+        mut state: impl FnMut(&Self) -> bool,
+    ) -> Duration {
         let waiting = Instant::now();
         loop {
             self.tend().await;
             if state(self) {
                 return waiting.elapsed();
             }
-            if waiting.elapsed() > PATIENCE {
-                self.fail(&format!("waited {PATIENCE:?} in vain until {what}"));
+            if waiting.elapsed() > limit {
+                self.fail(&format!("waited {limit:?} in vain until {what}"));
             }
             tokio::time::sleep(LOOK).await;
         }
@@ -604,11 +766,40 @@ impl Moves {
         self.cluster.workers[worker].1.is_some() && self.log_since(worker).contains(&running)
     }
 
+    /// The regions of the world: in a pinned world those between its boundaries,
+    /// numbered from west to east; in a world that follows its players those of the
+    /// store's list as last read, or the routing table's while the store is down.
+    fn regions(&self) -> Vec<Region> {
+        match &self.following {
+            None => (0..=self.lines.len()).collect(),
+            Some(world) => match &world.list {
+                Some(list) => {
+                    let regions = list.regions.iter();
+                    regions.map(|info| info.region.0 as Region).collect()
+                }
+                None => self.routes().into_keys().collect(),
+            },
+        }
+    }
+
+    /// The region the bot numbered `bot` is in: in a pinned world by where it stands
+    /// between the boundaries, in a world that follows its players the region of the
+    /// store's list whose `bounds` have the bot's chunk, if one has.
+    fn region_of(&self, bot: usize) -> Option<Region> {
+        let x = self.progress.bots()[bot].x;
+        let Some(world) = &self.following else {
+            return Some(self.region_at(x));
+        };
+        let list = world.list.as_ref()?;
+        let region = following::region_of(list, following::chunk_of(bot, x))?;
+        Some(region as Region)
+    }
+
     /// Whether every region runs, and its owner is the one the edge last linked to.
     fn every_region_runs(&self) -> bool {
         let routes = self.routes();
         let edge = self.cluster.log("edge");
-        (0..=self.lines.len()).all(|region| {
+        self.regions().into_iter().all(|region| {
             let linked = format!("linked to a region region={region} epoch=");
             let last_link = edge.lines().rev().find(|line| line.contains(&linked));
             let epoch = routes.get(&region).map(|(_, epoch)| *epoch);
@@ -871,11 +1062,9 @@ impl Moves {
             self.fail(&format!("region {region} has no owner to move it from"));
         };
         let old_epoch = self.epoch(region).expect("the region has an owner");
-        let in_region: Vec<bool> = self
-            .progress
-            .bots()
-            .iter()
-            .map(|bot| self.region_at(bot.x) == region)
+        let bots = self.progress.bots().len();
+        let in_region: Vec<bool> = (0..bots)
+            .map(|bot| self.region_of(bot) == Some(region))
             .collect();
         let before = Instant::now();
         let asked = self.ask(region, to).await;
@@ -906,13 +1095,13 @@ impl Moves {
         let pauses = self.pauses(before, after);
         let lasted = |wait: &Option<Wait>| wait.map(|wait| wait.lasted(after));
         let pause = pauses.iter().filter_map(lasted).max().unwrap_or_default();
-        let pause_in_region = pauses
-            .iter()
-            .zip(&in_region)
-            .filter(|(_, inside)| **inside)
-            .filter_map(|(wait, _)| lasted(wait))
-            .max()
-            .unwrap_or_default();
+        let pause_of = |within: bool| {
+            let theirs = pauses.iter().zip(&in_region);
+            let theirs = theirs.filter(|(_, inside)| **inside == within);
+            let longest = theirs.filter_map(|(wait, _)| lasted(wait)).max();
+            longest.unwrap_or_default()
+        };
+        let (pause_in_region, pause_elsewhere) = (pause_of(true), pause_of(false));
         let bots: Vec<String> = pauses
             .iter()
             .zip(&in_region)
@@ -931,6 +1120,7 @@ impl Moves {
             own_time,
             pause,
             pause_in_region,
+            pause_elsewhere,
             bots: bots.join(", "),
             stages: self.stages(region, (from, old_epoch), (now, new_epoch)),
         };
@@ -960,6 +1150,9 @@ impl Moves {
         assert!(sent.unwrap().success());
         if signal == "TERM" {
             self.told_to_stop.push(worker_name(worker));
+        }
+        if signal != "CONT" {
+            self.takes_a_worker_away();
         }
         self.note(format!(
             "{what} {}; {}",
@@ -1014,6 +1207,7 @@ impl Moves {
             .take()
             .unwrap_or_else(|| panic!("{name} is not running"));
         process.kill().await.unwrap();
+        self.takes_a_worker_away();
         self.note(format!("killed {name}, {why}; {}", self.whereabouts()));
     }
 
@@ -1093,12 +1287,15 @@ impl Moves {
     /// asked to stop, which each has to do cleanly.
     async fn finish(mut self, from_disk: bool) -> LedgerReport {
         // A test may be over before the bots have walked as far as the boundary, and
-        // stepping across it is part of what they are to have done.
+        // stepping across it is part of what they are to have done. A world that
+        // follows its players has no boundary anybody knows of beforehand.
         let crossings = self.progress.crossings();
+        let pinned = self.following.is_none();
         self.until("a bot has stepped across a boundary", |_| {
-            crossings.borrow().is_some()
+            !pinned || crossings.borrow().is_some()
         })
         .await;
+        self.nothing_moved_under_the_test().await;
         self.progress.finish();
         let mut scenario = self.scenario.take().expect("the bots are still playing");
         let waiting = Instant::now();
@@ -2065,4 +2262,202 @@ async fn players_keep_playing_while_every_worker_is_replaced_in_turn() {
         }
     }
     played(&moves.finish(false).await);
+}
+
+/// What the pause of a bot is held to "when nothing happens" to its region: three
+/// times the longest any bot waited while nothing was done to the cluster, and this
+/// at least.
+const NOTHING_HAPPENS: Duration = Duration::from_millis(300);
+
+/// Y4, the twin of `a_worker_that_is_told_to_stop_hands_its_region_over_first` on a
+/// world that follows its players: the owner of a part is told to stop. It is gone
+/// within a few seconds, the spare runs the part, and nobody waited for the lease.
+/// Besides what its twin asserts, nothing moved by itself while the bots stood.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_is_told_to_stop_hands_the_regions_that_follow_players_over_first() {
+    if a_repetition() {
+        return;
+    }
+    let mut moves = Moves::start("told to stop, following", FOLLOWING).await;
+    for round in 0..rounds(3) {
+        // A part: the region of one of the three bots that were split off.
+        let bot = 1 + round as usize % (following::BOTS - 1);
+        let Some(region) = moves.region_of(bot) else {
+            moves.fail(&format!("bot {bot} is in no region of its own"));
+        };
+        let owner = moves.owner(region).expect("the cluster was whole");
+        let spare = moves.spares()[0];
+        let epoch = moves.epoch(region);
+        let coordinator_said = moves.cluster.log("coordinator").len();
+        let told = Instant::now();
+        let stopping = format!("which runs region {region}, a part: told to stop");
+        moves.signal(owner, "TERM", &stopping).await;
+        moves.gone(owner, told, A_FEW_SECONDS).await;
+        moves
+            .until("the routing table names another owner", |moves| {
+                moves.epoch(region) != epoch
+            })
+            .await;
+        moves.whole().await;
+        if moves.owner(region) != Some(spare) {
+            let now = moves.owner(region).map(worker_name);
+            let spare = worker_name(spare);
+            moves.fail(&format!(
+                "the part of a worker that was told to stop is run by {now:?} and not by \
+                 {spare}, which waited"
+            ));
+        }
+        moves.nobody_waited_for_the_lease(told, "a worker being told to stop");
+        moves.no_lease_ran_out(coordinator_said, "a worker being told to stop");
+        // It comes back under its name, as a pod that is replaced does.
+        moves.start_worker(owner);
+        moves.registered(owner).await;
+    }
+    let report = moves.finish(false).await;
+    assert!(report.actions > 0, "{report}");
+}
+
+/// Y5, the twin of `players_keep_playing_while_every_worker_is_replaced_in_turn` on a
+/// world that follows its players: all five workers are replaced in turn, as a
+/// rolling restart on Kubernetes does it. Nobody is disconnected, the ledger holds,
+/// nobody waits as long as the lease, and every region is run at the end by a
+/// process that was started meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn players_of_regions_that_follow_them_keep_playing_while_every_worker_is_replaced_in_turn() {
+    if a_repetition() {
+        return;
+    }
+    let mut moves = Moves::start("rolling restart, following", FOLLOWING).await;
+    for _ in 0..rounds(1) {
+        let coordinator_said = moves.cluster.log("coordinator").len();
+        let began = Instant::now();
+        let mut stops: Vec<Duration> = Vec::new();
+        for worker in 0..moves.cluster.workers.len() {
+            let regions = moves.regions().into_iter();
+            let runs: Vec<Region> = regions
+                .filter(|region| moves.owner(*region) == Some(worker))
+                .collect();
+            let told = Instant::now();
+            let stopping = format!("which runs {runs:?}: told to stop");
+            moves.signal(worker, "TERM", &stopping).await;
+            // A worker that is itself still restoring a region it was handed a moment
+            // ago has that to give up first; none has the 20 seconds to wait out.
+            stops.push(moves.gone(worker, told, LEAVE_WITHIN - MOMENT).await);
+            moves.start_worker(worker);
+            moves.registered(worker).await;
+        }
+        moves.whole().await;
+        moves.nobody_waited_for_the_lease(began, "the replacement of every worker");
+        moves.no_lease_ran_out(coordinator_said, "the replacement of every worker");
+        let (median, worst) = median_and_worst(&stops);
+        moves.note(format!(
+            "every worker was replaced in {}; a worker took {} in the middle and {} at \
+             worst to stop",
+            seconds(began.elapsed()),
+            seconds(median),
+            seconds(worst)
+        ));
+        // `runs`, which `whole` waited for, goes by what a worker has logged since it
+        // was last started, and every worker was started in this round.
+        for region in moves.regions() {
+            let owner = moves.owner(region).expect("the cluster is whole");
+            moves.note(format!(
+                "region {region} is run by {}, which was started during the replacement",
+                worker_name(owner)
+            ));
+        }
+    }
+    let report = moves.finish(false).await;
+    assert!(report.actions > 0, "{report}");
+}
+
+/// Y6, the twin of `players_stand_still_only_briefly_while_their_regions_are_moved_
+/// back_and_forth` on a world that follows its players, at its small view: a part is
+/// moved with `clustine move` to the spare and back, each move a rest after the
+/// last. The pause of the part's bot is within the bound of a move, and the others,
+/// whose regions nothing is done to, wait as when nothing happens. No worker is
+/// taken away here, so a region that the coordinator moves by itself fails it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_part_is_moved_by_hand_and_its_players_stand_still_only_briefly() {
+    if a_repetition() {
+        return;
+    }
+    // Alone on the machine, as its pauses are measured and held to a bound.
+    let alone = Setup {
+        wide: true,
+        ..FOLLOWING
+    };
+    let mut moves = Moves::start("a part moved by hand", alone).await;
+    moves.served().await;
+    let quiet = Instant::now();
+    for _ in 0..10 {
+        moves.served().await;
+    }
+    let undisturbed = moves.longest_pause_since(quiet);
+    let as_ever = (3 * undisturbed).max(NOTHING_HAPPENS);
+    moves.note(format!(
+        "undisturbed, a bot waits {} at most for an acknowledgement",
+        seconds(undisturbed)
+    ));
+
+    let mut moved: Vec<Moved> = Vec::new();
+    for _ in 0..rounds(2) {
+        // A part: the region of one of the three bots that were split off.
+        let bot = 1 + moves.random.below(following::BOTS as u64 - 1) as usize;
+        let Some(part) = moves.region_of(bot) else {
+            moves.fail(&format!("bot {bot} is in no region of its own"));
+        };
+        let owner = moves.owner(part).expect("the cluster was whole");
+        let spare = moves.spares()[0];
+        for to in [spare, owner] {
+            moves.rested().await;
+            moved.push(moves.move_region(part, Some(to)).await);
+        }
+    }
+
+    println!("the moves of this run (seed {}):", moves.seed);
+    for (number, moved) in moved.iter().enumerate() {
+        println!(
+            "  {number}: region {} from {} to {}: pause of its bot {}, of the others {}; \
+             `clustine move` gives {} ms; bots: {}; {}",
+            moved.region,
+            worker_name(moved.from),
+            worker_name(moved.to),
+            seconds(moved.pause_in_region),
+            seconds(moved.pause_elsewhere),
+            moved.own_time.as_millis(),
+            moved.bots,
+            moved.stages
+        );
+    }
+    let theirs: Vec<Duration> = moved.iter().map(|moved| moved.pause_in_region).collect();
+    let others: Vec<Duration> = moved.iter().map(|moved| moved.pause_elsewhere).collect();
+    let (median, worst) = median_and_worst(&theirs);
+    let (_, worst_elsewhere) = median_and_worst(&others);
+    moves.note(format!(
+        "{} moves of a part: the pause of its bot was {} in the middle and {} at worst; the \
+         others waited {} at worst, and {} undisturbed",
+        moved.len(),
+        seconds(median),
+        seconds(worst),
+        seconds(worst_elsewhere),
+        seconds(undisturbed)
+    ));
+    if worst > LONGEST_PAUSE {
+        moves.fail(&format!(
+            "the bot of a part stood still for {} when the part was moved; it may for \
+             {LONGEST_PAUSE:?}",
+            seconds(worst)
+        ));
+    }
+    if worst_elsewhere > as_ever {
+        moves.fail(&format!(
+            "a bot whose region was not moved waited {} while a part was moved; when nothing \
+             happens a bot waits {} at most",
+            seconds(worst_elsewhere),
+            seconds(as_ever)
+        ));
+    }
+    let report = moves.finish(true).await;
+    assert!(report.actions > 0, "{report}");
 }
