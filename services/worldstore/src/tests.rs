@@ -1164,6 +1164,12 @@ pub(crate) struct Switched {
     pub(crate) disk: MemoryDisk,
     pub(crate) failing_appends: AtomicBool,
     pub(crate) failing_syncs: AtomicBool,
+    /// Holds the next sync of the log, whatever it is of. A hello is answered before
+    /// the group it is in ends, and its record in the log is synced only then: a test
+    /// that sets this right after a hello may hold that sync instead of the one it
+    /// means, with what it meant to be two groups in one. So a handle is flushed first:
+    /// a flush is answered behind the sync of its group, and the store writes nothing
+    /// after it that it is not asked for.
     pub(crate) holding_syncs: AtomicBool,
     /// Waited on twice by a sync that is held: once to say it is there, once to go on.
     pub(crate) held: Barrier,
@@ -1315,6 +1321,8 @@ fn a_commit_whose_sync_fails_is_not_answered_and_loses_the_handle() {
 fn a_new_owner_is_restored_only_with_what_is_durable() {
     let (store, disk) = switched();
     let old = open(&store, hello(1, 1));
+    // The opening is durable by itself, so that the sync held is the first commit's.
+    old.flush();
     // The sync of the first commit is held, so that what follows waits for one group.
     disk.holding_syncs.store(true, Ordering::SeqCst);
     log(&old, 1, &[(3, -61, 4, blocks::AIR)]);
@@ -1388,6 +1396,9 @@ fn a_failed_sync_loses_every_handle_and_answers_nothing_of_its_group() {
     let (store, disk) = switched();
     let owner = open(&store, hello(1, 1));
     let bystander = open(&store, hello(0, 1));
+    // Both openings are durable by themselves, in the one log, so that the sync held is
+    // the first commit's. The owner's flush does that; the bystander asks for nothing.
+    owner.flush();
     // The sync of the first commit is held, so that what follows is one group.
     disk.holding_syncs.store(true, Ordering::SeqCst);
     log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
@@ -1412,6 +1423,8 @@ fn a_failed_sync_loses_every_handle_and_answers_nothing_of_its_group() {
     // The same for a group that a commit and a flush of two regions are in.
     let owner = open(&store, hello(1, 1));
     let other = open(&store, hello(0, 2));
+    // The openings are durable by themselves here too.
+    owner.flush();
     disk.holding_syncs.store(true, Ordering::SeqCst);
     log(&owner, 2, &[(3, 100, 4, blocks::GLASS)]);
     disk.held.wait();
@@ -1454,6 +1467,9 @@ fn a_failed_append_loses_every_handle_and_answers_nothing_of_its_group() {
     let (store, disk) = switched();
     let owner = open(&store, hello(1, 1));
     let other = open(&store, hello(0, 1));
+    // Both openings are durable by themselves, so that the sync held is the first
+    // commit's.
+    owner.flush();
     disk.holding_syncs.store(true, Ordering::SeqCst);
     log(&owner, 1, &[(3, -61, 4, blocks::AIR)]);
     disk.held.wait();
