@@ -638,6 +638,14 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
     // Regions that were taken from this worker and are being stopped. That can take as
     // long as the store takes, and the other regions are not to wait for it.
     let mut stopping: JoinSet<Ended> = JoinSet::new();
+    // The runners of regions that orders named with another epoch than this worker ran
+    // them with, each with the merge or the split it was in the middle of. Such a
+    // region is opened with the new epoch first, which fences its runner at the store,
+    // and the runner is stopped only when that opening has ended, however it ended: it
+    // goes on until then, what it had confirmed is what the next runner is restored
+    // with, and what it had only applied was shown to nobody. That is the order in
+    // which a region goes to another worker while its owner lives.
+    let mut aside: BTreeMap<RegionId, (Worker, Option<Reshaping>)> = BTreeMap::new();
     // The merges and splits under way, and where the regions' threads send what came
     // of them: outcomes arrive by a call, not by being looked for.
     let mut reshapes = Reshapes::new();
@@ -654,6 +662,22 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
     let outcome = loop {
         // A part that this worker no longer holds has nothing left to wait for.
         unnamed.retain(|part, _| regions.contains_key(part));
+        // A runner that was kept aside is stopped when its region is no longer being
+        // opened: the store has answered the hello that fenced it, or the opening was
+        // given up, because the region is no longer named or was asked to be released.
+        let opened: Vec<RegionId> = aside
+            .keys()
+            .filter(|region| !matches!(regions.get(region), Some(Phase::Opening { .. })))
+            .copied()
+            .collect();
+        for region in opened {
+            let (running, reshaping) = aside.remove(&region).expect("it was just found");
+            stopping.spawn_blocking(move || {
+                let ended = running.stop();
+                drop(reshaping);
+                ended
+            });
+        }
         // What the others are told follows from the regions as they are now.
         vouching.send_if_modified(|said| replace(said, vouches(&regions)));
         holding.send_if_modified(|said| replace(said, holdings(&regions)));
@@ -875,6 +899,15 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                         for region in taken {
                             let dropped = regions.remove(&region).expect("it was there a moment ago");
                             let assignment = dropped.held().assignment;
+                            // An opening that is given up for yet another epoch ends
+                            // here, and the runner that was kept aside for it with it.
+                            if let Some((running, reshaping)) = aside.remove(&region) {
+                                stopping.spawn_blocking(move || {
+                                    let ended = running.stop();
+                                    drop(reshaping);
+                                    ended
+                                });
+                            }
                             warn!(
                                 %region,
                                 epoch = assignment.epoch,
@@ -887,6 +920,17 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                                 warn!(%region, "it was in the middle of a merge or a split");
                             }
                             if let Phase::Running { running, .. } | Phase::Releasing { running, .. } = dropped {
+                                let named_again = next
+                                    .assignments
+                                    .iter()
+                                    .any(|named| named.region == region);
+                                if named_again {
+                                    // It is this worker's still, with another epoch:
+                                    // opened first, below, and stopped when the store
+                                    // has answered that.
+                                    aside.insert(region, (running, reshaping));
+                                    continue;
+                                }
                                 // As it is: saved if the store still listens to this
                                 // worker, and left to the next owner if not. A region
                                 // that was open to be absorbed is closed behind it, so
@@ -1252,6 +1296,15 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
         if let Phase::Running { running, .. } | Phase::Releasing { running, .. } = phase {
             stops.spawn_blocking(move || running.stop());
         }
+    }
+    // A runner that was kept aside for an opening that has not ended is stopped with
+    // the others.
+    for (running, reshaping) in aside.into_values() {
+        stops.spawn_blocking(move || {
+            let ended = running.stop();
+            drop(reshaping);
+            ended
+        });
     }
     while let Some(stopped) = stops.join_next().await {
         stopped?;
