@@ -545,3 +545,7 @@ what to try with real clients is written down here, and the next phase begins.
 - One edge; an edge that dies takes its players with it.
 - A takeover takes the lease plus a moment; players of that region stand still meanwhile.
 - No load-based balancing; no authentication between services.
+- A player who places a block across a region boundary and digs that same block within
+  about a tenth of a second, having walked into its chunk meanwhile, can find the block
+  there afterwards: the dig is applied at once and the placement, which travels between
+  regions, arrives after it. Found by the simulation's tests for step C3.

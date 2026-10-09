@@ -451,6 +451,16 @@ after the last hand-over between them (what crosses a boundary takes its two tic
 today). What is not the same and is not compared: tick numbers, outbox entries and
 their numbers, `since`, `applied`, and what each region knows of chunks.
 
+**One condition, found by the tests written from this section** (103, with runs
+generated against one region; nothing else was found): the blocks are the same only
+if no player acts twice on one block while the first action is still under way
+between regions. A placement against a block across a boundary travels region to
+region, two ticks or more; a dig of that same block by the same player, who has
+walked into its chunk meanwhile, is applied at once and overtakes it. One region
+places and then digs; two regions dig and then place. It needs no merge or split and
+is ADR-0012's two ticks; for a player it is about a tenth of a second around a
+crossing. The generated runs keep off it, and it is listed with the known limits.
+
 ### 3. The runner
 
 #### 3.1 Commands, phases, and what can be seen of them
