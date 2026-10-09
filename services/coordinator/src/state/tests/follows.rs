@@ -2806,3 +2806,271 @@ fn the_log_has_a_line_for_each_thing_the_coordinator_begins_by_itself() {
         E + 4
     )));
 }
+
+#[test]
+fn nothing_is_wanted_of_a_region_that_stands_still() {
+    // K8. The regions wait for the store: their ticks do not go up, and their
+    // worker says the same of them at every look.
+    let mut world = two_regions_near_each_other(&["a"]);
+    world.look();
+    while world.now < READY + 6000 {
+        world.now += LOOK;
+        world.report(0);
+        assert!(world.decide().is_empty(), "at {}", world.now);
+    }
+    assert!(!world.fresh(1, world.now) && !world.fresh(2, world.now));
+    let merges = &world.cluster.coordinator.noted.merges;
+    assert!(merges.values().all(|waited| waited.since.is_none()));
+    // They tick on, and the merge has to stand anew.
+    world.quiet_until(READY + 6000 + 1250);
+    assert_eq!(world.look(), [merge_of(1, 2)]);
+}
+
+#[test]
+fn a_split_whose_region_changes_hands_leaves_the_region_alone_and_was_its_turn() {
+    // K18. The owner dies between the look and the order.
+    let mut world = World::new(&[4], &["a", "b"]);
+    world.put(1, &[((100, 0), 2), ((110, 0), 1)]);
+    world.quiet_until(READY + 1250);
+    assert_eq!(world.look(), [split_of(1)]);
+    assert_eq!(world.held(1).0, "b");
+    world.dead.insert("b".to_owned());
+    world.cluster.disconnected(world.now, "b");
+    while world.said.reshaped.is_empty() {
+        world.look();
+    }
+    let why = Err(Undone::Disowned(RegionId(1)));
+    assert_eq!(world.said.reshaped, [was_split(None, 1, why)]);
+    let ended = world.now;
+    assert_eq!(world.alone_until(1), Some(ended + LONG));
+    assert!(world.kept(1).split_last);
+    // A region that is given an owner keeps its count of failures: what failed
+    // need not have been the owner's doing.
+    assert_eq!(world.held(1).0, "a");
+    assert_eq!(world.kept(1).failures, 1);
+    world.quiet_until(ended + LONG - LOOK);
+    assert_eq!(world.look(), [split_of(1)]);
+}
+
+/// How far two chunks are apart, as the record counts it.
+fn apart(one: (i32, i32), other: (i32, i32)) -> i32 {
+    (one.0 - other.0).abs().max((one.1 - other.1).abs())
+}
+
+/// Whether `chunks` hold together by steps of at most `step`.
+fn joined(chunks: &[(i32, i32)], step: i32) -> bool {
+    let mut reached = vec![false; chunks.len()];
+    let mut next: Vec<usize> = chunks.first().map(|_| 0).into_iter().collect();
+    while let Some(one) = next.pop() {
+        if std::mem::replace(&mut reached[one], true) {
+            continue;
+        }
+        let near = |other: &usize| apart(chunks[one], chunks[*other]) <= step;
+        next.extend((0..chunks.len()).filter(near));
+    }
+    reached.into_iter().all(|reached| reached)
+}
+
+/// A player of the walk below: the region they are of, the chunk they are in, and
+/// the place they walk to.
+type Walker = (u32, (i32, i32), (i32, i32));
+
+/// Players walk between a handful of places, join and leave, all at random; workers
+/// do what they are told a few looks later. This is no substitute for the runs that
+/// are written from the record. It shows that the state machine and [`Cluster`]'s
+/// checks hold over long runs of ordinary play, that nothing is begun with a region
+/// that is left alone, and that when everybody stands still it ends where the
+/// record says: who is near each other is in one region, who is far apart is not,
+/// and of the regions without players one is left at most.
+#[test]
+fn players_who_walk_at_random_are_followed_and_it_ends_when_they_stand_still() {
+    const PLACES: [(i32, i32); 7] = [
+        (0, 0),
+        (2, 1),
+        (9, 0),
+        (0, 12),
+        (-14, -14),
+        (11, 2),
+        (30, 0),
+    ];
+    let (mut merges, mut absorptions, mut splits, mut moves) = (0, 0, 0, 0);
+    for seed in 1..=10_u64 {
+        let mut random = Generator(0x9e37_79b9_7f4a_7c15 ^ seed);
+        let mut world = World::unpinned(&[40], &["a", "b"]);
+        let mut players: Vec<Walker> = Vec::new();
+        // What workers are at, and at which look each is done.
+        let mut doing: Vec<(u64, Asked)> = Vec::new();
+        for look in 0..2400_u64 {
+            let walking = look < 1400;
+            if walking {
+                if players.len() < 9 && random.once_in(12) {
+                    players.push((0, (0, 0), (0, 0)));
+                }
+                if players.len() > 2 && random.once_in(160) {
+                    let left = random.below(players.len() as u64);
+                    players.remove(usize::try_from(left).unwrap());
+                }
+                for (_, at, to) in &mut players {
+                    if random.once_in(40) {
+                        *to = PLACES[usize::try_from(random.below(7)).unwrap()];
+                    }
+                    // A chunk in three looks along each axis, as somebody who flies.
+                    if random.once_in(3) {
+                        at.0 += (to.0 - at.0).signum();
+                        at.1 += (to.1 - at.1).signum();
+                    }
+                }
+            }
+
+            // The workers end what is due: a merge puts the players of the one
+            // region into the other, and a split takes who stands in a chunk named.
+            let (due, later): (Vec<_>, Vec<_>) = doing.iter().partition(|(at, _)| *at <= look);
+            doing = later;
+            for (_, asked) in due {
+                match asked {
+                    Asked::Merge { survivor, absorbed } => {
+                        world.merge_ends(survivor.0, absorbed.0);
+                        for player in &mut players {
+                            if player.0 == absorbed.0 {
+                                player.0 = survivor.0;
+                            }
+                        }
+                    }
+                    Asked::Split { region } => {
+                        let named = world.cluster.coordinator.splits[&region].chunks.clone();
+                        let part = world.list.next.0;
+                        let mut went = false;
+                        for player in &mut players {
+                            let chunk = ChunkPos::new(player.1.0, player.1.1);
+                            if player.0 == region.0 && named.contains(&chunk) {
+                                player.0 = part;
+                                went = true;
+                            }
+                        }
+                        let outcome = if went { Ok(part) } else { Err(Off::Nobody) };
+                        world.split_ends(region.0, outcome);
+                    }
+                }
+            }
+            let regions: Vec<u32> = world
+                .list
+                .regions
+                .iter()
+                .map(|info| info.region.0)
+                .collect();
+            for region in &regions {
+                let of_region = players.iter().filter(|player| player.0 == *region);
+                let crowds: Where = of_region.map(|player| (player.1, 1)).collect();
+                world.put(*region, &crowds);
+            }
+
+            let alone = |world: &World, region: RegionId| {
+                let until = world.alone_until(region.0);
+                assert!(until.is_none_or(|until| until <= world.now), "{region}");
+            };
+            let before = world.now + LOOK;
+            let rested: Vec<(u32, bool)> = regions
+                .iter()
+                .map(|region| {
+                    let until = world.alone_until(*region);
+                    (*region, until.is_none_or(|until| until <= before))
+                })
+                .collect();
+            let rested = |region: RegionId| rested.contains(&(region.0, true));
+            let begun = world.look();
+            for asked in &begun {
+                match asked {
+                    Asked::Merge { survivor, absorbed } => {
+                        assert!(rested(*absorbed), "seed {seed} at {}: {asked:?}", world.now);
+                        if world.cluster.coordinator.merges[absorbed].absorption {
+                            absorptions += 1;
+                        } else {
+                            assert!(rested(*survivor), "seed {seed}: {asked:?}");
+                            merges += 1;
+                        }
+                    }
+                    Asked::Split { region } => {
+                        assert!(rested(*region), "seed {seed} at {}: {asked:?}", world.now);
+                        splits += 1;
+                    }
+                }
+                doing.push((look + 1 + random.below(4), *asked));
+            }
+            // A release that is no merge's is one to even out, and is answered.
+            for release in world.said.releases.clone() {
+                if world
+                    .cluster
+                    .coordinator
+                    .releases
+                    .contains_key(&release.region)
+                {
+                    assert!(rested(release.region), "seed {seed}: {release:?}");
+                    alone(&world, release.region);
+                    let (now, region) = (world.now, release.region.0);
+                    world
+                        .cluster
+                        .released(now, &release.worker, region, release.epoch);
+                    moves += 1;
+                }
+            }
+
+            let coordinator = &world.cluster.coordinator;
+            let under_way = coordinator.under_way();
+            assert!(under_way.len() <= 4 && coordinator.splits.len() <= 1);
+            let known = |region: &RegionId| coordinator.regions.contains_key(region);
+            let noted = &coordinator.noted;
+            assert!(
+                noted
+                    .merges
+                    .keys()
+                    .all(|(lower, higher)| known(lower) && known(higher))
+            );
+            assert!(noted.going.keys().all(known));
+            assert!(noted.merges.len() <= coordinator.regions.len().pow(2));
+            if !walking && look >= 2300 {
+                assert!(begun.is_empty(), "seed {seed} at look {look}: {begun:?}");
+            }
+        }
+
+        // Everybody has stood still for four minutes. Nothing is under way.
+        assert!(doing.is_empty() && world.cluster.coordinator.under_way().is_empty());
+        let regions: Vec<u32> = world
+            .list
+            .regions
+            .iter()
+            .map(|info| info.region.0)
+            .collect();
+        for (index, one) in players.iter().enumerate() {
+            // Who is within the merge distance of each other is in one region, and
+            // so is who is that near to where players enter with the home region.
+            for other in &players[index + 1..] {
+                let near = apart(one.1, other.1) <= 2;
+                assert!(!near || one.0 == other.0, "seed {seed}: {one:?} {other:?}");
+            }
+            assert!(
+                apart(one.1, (0, 0)) > 2 || one.0 == 0,
+                "seed {seed}: {one:?}"
+            );
+        }
+        let mut without = 0;
+        for region in &regions {
+            let of_region = players.iter().filter(|player| player.0 == *region);
+            let mut chunks: Vec<(i32, i32)> = of_region.map(|player| player.1).collect();
+            without += u32::from(chunks.is_empty() && *region != 0);
+            // The players of each region hold together within the split distance,
+            // in the home region also with where players enter.
+            if *region == 0 {
+                chunks.push((0, 0));
+            }
+            assert!(
+                joined(&chunks, 5),
+                "seed {seed}: region {region} {chunks:?}"
+            );
+        }
+        let at_home = players.iter().any(|player| player.0 == 0);
+        assert!(without <= u32::from(at_home), "seed {seed}: {regions:?}");
+    }
+    // The runs are worth something only if all of it happened in them.
+    let counts = [merges, absorptions, splits, moves];
+    assert!(counts.iter().all(|count| *count >= 10), "{counts:?}");
+}
