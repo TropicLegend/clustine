@@ -9,7 +9,7 @@ use clustine_coordinator::{CoordinatorConfig, Policy};
 use clustine_region::Layout;
 use clustine_worldstore::StoreError;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::spawn_point;
 
@@ -26,22 +26,44 @@ pub struct CoordinatorArgs {
     /// What the coordinator goes by to merge and split regions by itself, or `None`
     /// for one that leaves that to whoever asks.
     pub follow: Option<Policy>,
+    /// The largest view distance the edges grant, in chunks, as the coordinator was
+    /// told it.
+    pub view_distance: u32,
 }
 
 /// Says in the log how regions are reshaped and with which numbers, for whoever reads
 /// it to know which of the two this server is
 /// (`docs/adr/0016-when-to-merge-and-split.md`, section 8). The coordinator's process
 /// says it, and the single process, which has its coordinator within.
-pub(crate) fn say_how_it_reshapes(follow: Option<&Policy>) {
-    match follow {
-        None => info!("reshaping by hand: regions merge and split when somebody asks"),
-        Some(policy) => info!(
+///
+/// And it says when the merge distance is too short for `view_distance`, the largest
+/// the edges grant: a region's land reaches as far as its players see, one chunk
+/// further than the view distance, so two regions whose players are nearer than
+/// twice that and a chunk have lands that touch before they are merged. Players are
+/// then handed over at the line where the lands met, and split off again if the
+/// split distance is short as well: nothing breaks and play is worse
+/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 3.5). A warning and no
+/// refusal: tests set such distances on purpose.
+pub(crate) fn say_how_it_reshapes(follow: Option<&Policy>, view_distance: u32) {
+    let Some(policy) = follow else {
+        info!("reshaping by hand: regions merge and split when somebody asks");
+        return;
+    };
+    info!(
+        merge_distance = policy.merge_distance,
+        split_distance = policy.split_distance,
+        margin = policy.margin(),
+        rest_seconds = policy.rest.as_secs(),
+        "reshaping by itself: regions merge and split by where their players are"
+    );
+    let needs = 2 * view_distance + 3;
+    if policy.merge_distance < needs {
+        warn!(
             merge_distance = policy.merge_distance,
-            split_distance = policy.split_distance,
-            margin = policy.margin(),
-            rest_seconds = policy.rest.as_secs(),
-            "reshaping by itself: regions merge and split by where their players are"
-        ),
+            view_distance,
+            needs,
+            "the merge distance is less than players see across: regions will hand players over where they would merge"
+        );
     }
 }
 
@@ -57,7 +79,7 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
         store = %args.store,
         "coordinating"
     );
-    say_how_it_reshapes(args.follow.as_ref());
+    say_how_it_reshapes(args.follow.as_ref(), args.view_distance);
     let config = CoordinatorConfig {
         layout,
         spawn: spawn_point(),

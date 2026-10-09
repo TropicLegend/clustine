@@ -394,6 +394,7 @@ async fn main() -> Result<()> {
                 lease: Duration::from_secs(lease_seconds),
                 store,
                 follow,
+                view_distance,
             })
             .await
         }

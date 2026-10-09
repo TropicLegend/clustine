@@ -212,7 +212,9 @@ impl Server {
 
         // The coordinator, which learns which regions there are from the store's list
         // and has nobody to wait for: its one worker is in this process.
-        cluster::coordinator::say_how_it_reshapes(config.follow.as_ref());
+        // The one view distance of this process is what its edge grants.
+        let view_distance = u32::try_from(config.view_distance).unwrap_or(0);
+        cluster::coordinator::say_how_it_reshapes(config.follow.as_ref(), view_distance);
         let listed = Arc::clone(&store);
         let lists = move || {
             let store = listed.lock().unwrap_or_else(PoisonError::into_inner);
