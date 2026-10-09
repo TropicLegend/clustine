@@ -106,13 +106,14 @@ async fn serve_from(
 ) -> io::Result<()> {
     let address = listener.local_addr()?;
     let lease = config.lease;
+    let by_itself = config.follow.is_some();
     info!(%address, ?lease, first_epoch, "the coordinator is listening");
     let mut service = Service::new(config, now(), first_epoch, lists);
     // Which regions there are besides those of the layout, and which of those are no
     // more. Until the store answers, the coordinator goes by the layout.
     service.read_the_list();
 
-    let mut ticks = tokio::time::interval(tick_interval(lease));
+    let mut ticks = tokio::time::interval(tick_interval(lease, by_itself));
     // A tick that comes late does the work of those it would have to catch up with.
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // After a failure only accepting pauses; the clients that are there are served on.
@@ -162,9 +163,16 @@ fn unix_milliseconds() -> u64 {
 }
 
 /// How often the service lets the coordinator look at its leases. A lease is overrun by
-/// at most this much before the worker is forgotten.
-fn tick_interval(lease: Duration) -> Duration {
-    (lease / 4).max(SHORTEST_TICK)
+/// at most this much before the worker is forgotten. A coordinator that merges and
+/// splits regions `by_itself` decides at its ticks, and looks as often as workers say
+/// where their players are ([`Coordinator::LOOK`]) unless its leases ask for more.
+fn tick_interval(lease: Duration, by_itself: bool) -> Duration {
+    let for_leases = (lease / 4).max(SHORTEST_TICK);
+    if by_itself {
+        for_leases.min(Coordinator::LOOK)
+    } else {
+        for_leases
+    }
 }
 
 /// What a connection is, which the first thing its client says decides.
@@ -2968,14 +2976,37 @@ mod tests {
     fn the_coordinator_looks_at_its_leases_four_times_per_lease_but_not_all_the_time() {
         assert_eq!(CoordinatorConfig::DEFAULT_LEASE, Duration::from_secs(5));
         assert_eq!(
-            tick_interval(CoordinatorConfig::DEFAULT_LEASE),
+            tick_interval(CoordinatorConfig::DEFAULT_LEASE, false),
             Duration::from_millis(1250)
         );
-        assert_eq!(tick_interval(LEASE), Duration::from_millis(150));
+        assert_eq!(tick_interval(LEASE, false), Duration::from_millis(150));
         assert_eq!(
-            tick_interval(Duration::from_millis(100)),
+            tick_interval(Duration::from_millis(100), false),
             Duration::from_millis(50)
         );
-        assert_eq!(tick_interval(Duration::ZERO), Duration::from_millis(50));
+        assert_eq!(
+            tick_interval(Duration::ZERO, false),
+            Duration::from_millis(50)
+        );
+    }
+
+    #[test]
+    fn a_coordinator_that_decides_by_itself_looks_four_times_a_second_or_as_often_as_its_leases_ask()
+     {
+        // As often as a worker says where its players are, however long the lease.
+        assert_eq!(
+            tick_interval(CoordinatorConfig::DEFAULT_LEASE, true),
+            Coordinator::LOOK
+        );
+        assert_eq!(
+            tick_interval(Duration::from_secs(1), true),
+            Coordinator::LOOK
+        );
+        // A quarter of the lease where that is shorter, and never all the time.
+        assert_eq!(tick_interval(LEASE, true), Duration::from_millis(150));
+        assert_eq!(
+            tick_interval(Duration::ZERO, true),
+            Duration::from_millis(50)
+        );
     }
 }

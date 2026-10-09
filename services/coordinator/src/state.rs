@@ -15,6 +15,10 @@ use tracing::{info, warn};
 
 use crate::policy::Policy;
 
+mod follow;
+
+use follow::Noted;
+
 /// What a coordinator is created with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoordinatorConfig {
@@ -788,6 +792,9 @@ pub struct Coordinator {
     /// that follows such a word fails as a rule, the store being away. The list is
     /// asked for at every tick until it has been read.
     owed: bool,
+    /// What a coordinator that merges and splits by itself keeps besides what it
+    /// keeps of each region; nothing for one that does not.
+    noted: Noted,
     /// What the call that is being made has to tell the service; empty between calls.
     pending: Pending,
 }
@@ -845,6 +852,7 @@ impl Coordinator {
             reshaped: None,
             reading: false,
             owed: false,
+            noted: Noted::default(),
             pending: Pending::default(),
         }
     }
@@ -1325,6 +1333,12 @@ impl Coordinator {
     /// see [`Coordinator`]. And the world store's list is asked for again
     /// ([`Changes::read`]) if a merge waits for it, or a split ended without the
     /// worker's word that it was made, and the reading that was to follow failed.
+    /// A coordinator that merges and splits by itself also asks for it when no
+    /// reading has been answered for a lease, or none ever: it goes by the list for
+    /// which region is home, which are pinned and what became of a merge, and nobody
+    /// else tells it of a change that no worker reported
+    /// (`docs/adr/0016-when-to-merge-and-split.md`, section 7). One that does not
+    /// reads the list on events only.
     ///
     /// Last of all, and only here, a release is begun to even regions out, if a worker
     /// runs two regions more than another, no release is under way, and no merge or
@@ -1337,7 +1351,11 @@ impl Coordinator {
         // has no owner, and this takes a region from one that runs it.
         self.even_out(now);
         let said = |merge: &Merge| matches!(merge.stage, MergeStage::Ended { .. });
-        if !self.reading && (self.owed || self.merges.values().any(said)) {
+        let waited_for = self.owed || self.merges.values().any(said);
+        // Never while a reading is asked for: the service throws a reading away for
+        // the next one that is asked for, so whatever asks at every tick has to wait
+        // for its answer first.
+        if !self.reading && (waited_for || self.list_is_due(now)) {
             self.ask_for_the_list();
         }
         self.finish(&before, now)
@@ -1447,6 +1465,7 @@ impl Coordinator {
         self.home = home;
         self.absorbed.clone_from(&list.absorbed);
         self.next = Some(list.next);
+        self.note_answered(now);
 
         self.assign(now);
         self.finish(&before, now)
@@ -1465,6 +1484,7 @@ impl Coordinator {
     pub fn unlisted(&mut self, now: Instant) -> Changes {
         let before = self.seen();
         self.reading = false;
+        self.note_answered(now);
         let lapsed: Vec<RegionId> = self
             .merges
             .iter()
@@ -3401,6 +3421,9 @@ mod tests {
             pinned: Vec::new(),
         }
     }
+
+    /// The tests of a coordinator that merges and splits regions by itself.
+    mod follows;
 
     #[test]
     fn two_workers_are_given_the_two_regions_in_the_order_they_registered() {
