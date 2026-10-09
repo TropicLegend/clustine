@@ -2736,14 +2736,20 @@ fn a_tick_begins_a_split_then_the_merges_then_the_absorptions_and_evens_out_noth
 }
 
 /// What the log has of `scenario`: every event of it as the line it is written as,
-/// without the time and the level. Called by one test, and no other test of this
-/// crate listens to the log.
+/// without the time and the level. The tests that call it listen one at a time, as
+/// [`CAUGHT`] keeps the lines of one thread, and no other test of this crate listens
+/// to the log.
 fn logged(scenario: impl FnOnce()) -> Vec<String> {
     static LISTENING: std::sync::Once = std::sync::Once::new();
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LISTENING.call_once(|| {
         tracing::subscriber::set_global_default(Lines)
             .expect("no other test of this crate listens to the log");
     });
+    // A test that failed while it listened has had its turn.
+    let _turn = TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let this = std::thread::current().id();
     *CAUGHT.lock().unwrap() = Some((this, Vec::new()));
     scenario();
@@ -2805,6 +2811,58 @@ fn the_log_has_a_line_for_each_thing_the_coordinator_begins_by_itself() {
          worker=\"a\" region=1 as_epoch={} outcome=Err(Nobody)",
         E + 4
     )));
+}
+
+// N14 of `docs/adr/0017-the-end-of-the-stripes.md`, and its scenario Q7.
+#[test]
+fn the_log_says_once_that_a_world_that_is_reshaped_by_itself_has_pinned_regions() {
+    const LINE: &str = "clustine_coordinator::state: the world has regions that are pinned \
+                        to an area: a region that is split off here cannot grow. Start the \
+                        coordinator with --reshape by-hand to keep pinned regions as they are";
+    let said = |lines: &[String]| lines.iter().filter(|line| *line == LINE).count();
+
+    // A world of stripes: the first reading shows them pinned, and the list is read
+    // every lease from then on, and once more here.
+    let lines = logged(|| {
+        let mut world = World::new(&[4], &["a"]);
+        world.quiet_until(READY + 3 * LEASE);
+        world.read();
+    });
+    assert_eq!(said(&lines), 1, "{lines:#?}");
+
+    // A world without pinned regions: never. If a later reading shows one, then;
+    // and not again for the readings after it, whichever regions they show pinned.
+    let lines = logged(|| {
+        let mut cluster = following(&[4]);
+        cluster.listed(0, &stripes(2));
+        cluster.listed(1, &stripes(2));
+    });
+    assert_eq!(said(&lines), 0, "{lines:#?}");
+    let lines = logged(|| {
+        let mut cluster = following(&[4]);
+        cluster.listed(0, &stripes(2));
+        let mut list = stripes(2);
+        list.regions[1] = stripe(1);
+        cluster.listed(1, &list);
+        cluster.listed(2, &list);
+        list.regions[0] = stripe(0);
+        cluster.listed(3, &list);
+        cluster.listed(4, &stripes(2));
+        cluster.listed(5, &list);
+    });
+    assert_eq!(said(&lines), 1, "{lines:#?}");
+
+    // A coordinator that reshapes by hand keeps pinned regions as they are, and has
+    // nothing to say of them.
+    let lines = logged(|| {
+        let mut cluster = Cluster::new(&[4]);
+        let list = RegionList {
+            regions: vec![stripe(0), stripe(1)],
+            ..stripes(2)
+        };
+        cluster.listed(0, &list);
+    });
+    assert_eq!(said(&lines), 0, "{lines:#?}");
 }
 
 #[test]

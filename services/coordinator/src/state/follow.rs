@@ -14,7 +14,8 @@
 //! regions the coordinator knows: a merge that is wanted is forgotten when it has not
 //! been wanted for a second with both its regions heard from, or when a reading of the
 //! list takes one of its regions away, and the groups that are to go are those of the
-//! last tick and no others.
+//! last tick and no others. What is left of it is two times and a mark that is set
+//! once.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -134,6 +135,10 @@ pub(super) struct Noted {
     pub(super) listed: Option<Instant>,
     /// When a reading of the list was last answered, with a list or without.
     pub(super) answered: Option<Instant>,
+    /// Whether the log has been told that the world has regions that are pinned to
+    /// an area, which it is told once (`docs/adr/0017-the-end-of-the-stripes.md`,
+    /// section 7, N14).
+    pub(super) said_pinned: bool,
 }
 
 /// The time `long` after `now`. A time that cannot be told is as late a one as can
@@ -540,6 +545,21 @@ impl Coordinator {
         for (region, state) in &mut self.regions {
             // A region the reading does not show, which is a part, is not.
             state.kept.pinned = pinned.contains(region);
+        }
+        // ADR-0017, section 7, N14: pinned regions are reshaped by the distances like
+        // any others, and whoever pinned them may not have meant that. The record has
+        // the line "once for every reading that first shows a pinned region" and, in
+        // scenario Q7, once and "not again for a later list that shows the same
+        // regions pinned". It is written once by a coordinator, at the first reading
+        // that shows any region pinned: which regions are pinned does not change
+        // while a store runs.
+        if !pinned.is_empty() && !std::mem::replace(&mut self.noted.said_pinned, true) {
+            warn!(
+                target: LOG,
+                "the world has regions that are pinned to an area: a region that is \
+                 split off here cannot grow. Start the coordinator with --reshape \
+                 by-hand to keep pinned regions as they are"
+            );
         }
         let regions = &self.regions;
         self.noted.merges.retain(|(lower, higher), _| {

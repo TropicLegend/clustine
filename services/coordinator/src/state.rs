@@ -848,6 +848,11 @@ impl Holder {
 /// doubling up to eight times that, from an attempt that failed. That is noted where
 /// a merge or a split ends, for those somebody asked for as for the coordinator's
 /// own (section 5.5). What somebody asks for is not held back by it.
+///
+/// Regions that the list has pinned to an area merge and split by the distances like
+/// any others, and a part that is split off among them cannot grow. Whoever pinned
+/// them may not have meant that, so the log says it once, at the first reading that
+/// shows a pinned region (`docs/adr/0017-the-end-of-the-stripes.md`, section 7, N14).
 #[derive(Debug, Clone)]
 pub struct Coordinator {
     config: CoordinatorConfig,

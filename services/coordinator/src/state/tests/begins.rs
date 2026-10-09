@@ -240,6 +240,9 @@ fn a_coordinator_made_knowing_its_regions_waits_out_the_grace_period_as_a_new_on
 struct Lone {
     cluster: Cluster,
     list: RegionList,
+    /// Whether the store answers when the list is asked for; if not, the reading
+    /// fails.
+    answers: bool,
     /// The time of the last look, in milliseconds, and the tick the regions are at.
     now: u64,
     tick: u64,
@@ -250,6 +253,19 @@ impl Lone {
     const LOOK: u64 = 250;
 
     fn begin(make: fn(CoordinatorConfig, Instant, u64) -> Coordinator, rest: u64) -> Self {
+        let mut lone = Self::begin_without_a_list(make, rest);
+        lone.answers = true;
+        let list = lone.list.clone();
+        lone.cluster.listed(0, &list);
+        lone
+    }
+
+    /// The same, but the store is away: no list has been handed in, and every
+    /// reading fails until `answers` is set.
+    fn begin_without_a_list(
+        make: fn(CoordinatorConfig, Instant, u64) -> Coordinator,
+        rest: u64,
+    ) -> Self {
         let layout = Layout::single();
         let start = Instant::now();
         let config = CoordinatorConfig {
@@ -270,10 +286,10 @@ impl Lone {
         let held = [assignment(0, 5, 0), assignment(1, 6, 1)];
         cluster.register(0, "a", "a:25601", &held);
         let list = listing(&[(0, 5), (1, 6)], &[], 2);
-        cluster.listed(0, &list);
         Self {
             cluster,
             list,
+            answers: false,
             now: 0,
             tick: 0,
         }
@@ -299,9 +315,11 @@ impl Lone {
             assert!(self.cluster.players(self.now, "a", &reports));
         }
         let said = self.cluster.tick(self.now);
-        if said.read {
+        if said.read && self.answers {
             let list = self.list.clone();
             self.cluster.listed(self.now, &list);
+        } else if said.read {
+            self.cluster.unlisted(self.now);
         }
         said
     }
@@ -1007,4 +1025,29 @@ fn a_worker_whose_release_is_kept_has_been_heard_from() {
     assert_eq!(cluster.released(LEASE, "a", 5, SAID), Changes::default());
     assert_eq!(cluster.tick(2 * LEASE), Changes::default());
     assert!(cluster.heartbeat(2 * LEASE, "a"));
+}
+
+// Q7.
+#[test]
+fn a_coordinator_that_decides_by_itself_begins_nothing_before_its_first_list() {
+    for make in [Coordinator::new, Coordinator::alone] {
+        // The worker reports two regions whose players stand side by side, at every
+        // look, and the store is away: far beyond the grace period and the rest,
+        // nothing is begun, as nothing says which region is home.
+        let mut lone = Lone::begin_without_a_list(make, 1_000);
+        while lone.now < 3 * LEASE {
+            let said = lone.look(false);
+            assert_eq!(lone.cluster.coordinator.under_way(), []);
+            assert!(said.orders.is_empty() && said.releases.is_empty());
+            assert!(lone.cluster.coordinator.awaits_the_list());
+        }
+
+        // The store answers, and the merge is begun when it has stood.
+        lone.answers = true;
+        let list = lone.list.clone();
+        lone.cluster.listed(lone.now, &list);
+        let listed = lone.now;
+        let begun = lone.until_merging(listed + LEASE);
+        assert!(begun <= listed + 1_000 + 2 * Lone::LOOK, "{begun}");
+    }
 }
