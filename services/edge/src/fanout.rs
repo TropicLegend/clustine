@@ -4814,6 +4814,15 @@ mod scenarios {
     const EAST: RegionId = RegionId(1);
     const NORTH: RegionId = RegionId(2);
     const REGIONS: [RegionId; 3] = [WEST, EAST, NORTH];
+    /// Regions that come and go in the tests of merges and splits: one more that is
+    /// there from the start of the world, and the parts that are split off.
+    const SOUTH: RegionId = RegionId(3);
+    const PART: RegionId = RegionId(4);
+    const SECOND_PART: RegionId = RegionId(5);
+    /// Where the witness of `Harness::witnessed` is kept. No test gives it a link.
+    const ASIDE: RegionId = RegionId(11);
+    /// How many regions a test can play: the ids below this.
+    const PORTS: usize = 12;
 
     const IDENTITY: EdgeIdentity = EdgeIdentity {
         edge: clustine_world::EdgeId(7),
@@ -4846,6 +4855,8 @@ mod scenarios {
         /// How many players the hello of the link named: as many presence answers as
         /// a welcome on it announces.
         named: u32,
+        /// The highest number of a numbered message the edge has sent on the link.
+        numbered: u64,
     }
 
     impl Heard {
@@ -4862,6 +4873,9 @@ mod scenarios {
         /// ends a link whose subscription messages do not ascend, so that is checked
         /// for everything any test reads.
         fn note(&mut self, region: RegionId, message: &EdgeMessage) {
+            if let Some(number) = message.number {
+                self.numbered = self.numbered.max(number);
+            }
             let (ask, chunks, role) = match &message.body {
                 EdgeToWorker::Subscribe { ask, chunks } => (*ask, chunks, Some(Role::Viewer)),
                 EdgeToWorker::SubscribeAsGuest { ask, chunks } => (*ask, chunks, Some(Role::Guest)),
@@ -4905,12 +4919,22 @@ mod scenarios {
         task: JoinHandle<Stopped>,
         sessions: u64,
         /// The number of the last outbox entry each region has made.
-        outbox: [u64; 3],
+        outbox: [u64; PORTS],
         /// The epoch of the owner each region's last link went to.
-        epochs: [u64; 3],
+        epochs: [u64; PORTS],
         /// The last sequence number used to find out that the edge has got to a
         /// player's commands.
         sequences: i32,
+        /// The witness of `Harness::witnessed`, if the test has one.
+        witness: Option<Client>,
+        /// The hello the edge said last to each region on a link that a step of a
+        /// script made.
+        hellos: Vec<Option<Hello>>,
+        /// The links the edge has said have ended, of which no test has asked.
+        ended: Vec<(RegionId, u64)>,
+        /// The regions whose link the edge closed while a test waited for the edge
+        /// to read what the region had said on it.
+        gone: BTreeSet<RegionId>,
     }
 
     /// A link to `region` whose owner has `epoch`, and the worker's end of it.
@@ -4930,7 +4954,7 @@ mod scenarios {
         /// An edge that starts with links to `linked` only.
         async fn start_with(linked: &[RegionId], region_patience: Duration) -> Self {
             let mut links = Vec::new();
-            let mut ends = vec![None, None, None];
+            let mut ends: Vec<Option<WorkerEnd>> = (0..PORTS).map(|_| None).collect();
             for region in linked {
                 let (link, end) = link_to(*region, 1);
                 links.push(link);
@@ -4949,12 +4973,16 @@ mod scenarios {
                 commands,
                 relinks,
                 links: ends,
-                heard: vec![Heard::default(), Heard::default(), Heard::default()],
+                heard: (0..PORTS).map(|_| Heard::default()).collect(),
                 task,
                 sessions: 0,
-                outbox: [0; 3],
-                epochs: [1; 3],
+                outbox: [0; PORTS],
+                epochs: [1; PORTS],
                 sequences: 0,
+                witness: None,
+                hellos: (0..PORTS).map(|_| None).collect(),
+                ended: Vec::new(),
+                gone: BTreeSet::new(),
             };
             for region in linked {
                 let hello = harness.read(*region).await;
@@ -5277,6 +5305,7 @@ mod scenarios {
                 if ended == (region, self.epochs[index]) {
                     return;
                 }
+                self.ended.push(ended);
             }
         }
 
@@ -5317,10 +5346,8 @@ mod scenarios {
             // Twice, as what one region said can make the edge say something to a
             // region that was settled before.
             for _ in 0..2 {
-                for region in REGIONS {
-                    if self.links[region.0 as usize].is_some() {
-                        self.settle(region).await;
-                    }
+                for region in self.linked() {
+                    self.settle(region).await;
                 }
             }
             for heard in &mut self.heard {
@@ -5363,12 +5390,17 @@ mod scenarios {
         /// Makes sure that the edge has said nothing numbered to any region that no
         /// test has looked at.
         async fn nothing_numbered(&mut self) {
-            for region in REGIONS {
-                if self.links[region.0 as usize].is_some() {
-                    let said = numbered(&self.said(region).await);
-                    assert!(said.is_empty(), "{region:?} was sent {said:?}");
-                }
+            for region in self.linked() {
+                let said = numbered(&self.said(region).await);
+                assert!(said.is_empty(), "{region:?} was sent {said:?}");
             }
+        }
+
+        /// The regions the test plays a link of, in ascending order.
+        fn linked(&self) -> Vec<RegionId> {
+            let linked = |index: &usize| self.links[*index].is_some();
+            let regions = (0..PORTS).filter(linked);
+            regions.map(|index| RegionId(index as u32)).collect()
         }
 
         /// A sequence number for an action of a player, above every one used before.
@@ -5389,6 +5421,12 @@ mod scenarios {
         /// finding its own account of subscriptions wrong.
         async fn end(mut self) {
             self.drained().await;
+            // A link the edge has closed by itself is not one to settle.
+            if self.witness.is_some() {
+                for region in self.linked() {
+                    self.handled(region).await;
+                }
+            }
             self.quiet().await;
             assert!(!self.task.is_finished(), "the edge's task ended");
         }
@@ -7810,6 +7848,18 @@ mod scenarios {
     // in the region the edge has them in, at the place their last step took them to,
     // and is shown every chunk they see as its holder has it, and the others who
     // stand there.
+    //
+    // Scenario 32 of ADR-0015 is the same with regions that merge and split
+    // (`Run::reshaping`). A region absorbs another, or the players standing in one of
+    // its chunks are split off with what is around them; both close the region's
+    // links. The edge's process hands the edge what the routing table says of
+    // absorbed regions at moments of the run's choosing. A region answers a hello as
+    // ADR-0014, section 3.7, has it, and beside the edge runs what ADR-0015 says it
+    // holds: which region stands for which, which entries came with a merge, whom a
+    // welcome brought. What the edge keeps for a region a run cannot see. Where a
+    // rule turns on it (a join or an arrival that is kept, a region of which the edge
+    // has nothing), the run goes by the numbered messages the edge was seen to send
+    // and by what the regions said they had applied.
 
     /// A generator of numbers that gives the same sequence for the same seed.
     struct Dice(u64);
@@ -7877,14 +7927,14 @@ mod scenarios {
     #[derive(Debug)]
     enum Made {
         Said(WorkerToEdge),
-        /// An entry of its outbox, which gets its number when it is sent.
-        Entry(Durable),
+        /// An entry of its outbox, with its number.
+        Entry(u64, Durable),
         /// The answer to a hello, which goes out in one piece: the welcome, the
         /// entries it announces and the presence answers.
         Welcome {
             resumed: bool,
             since: u64,
-            entries: Vec<Durable>,
+            entries: Vec<(u64, Durable)>,
             presences: Vec<WorkerToEdge>,
             /// The number of the edge's last numbered message the region had taken
             /// when it answered the hello.
@@ -7911,9 +7961,16 @@ mod scenarios {
         /// learn by itself that this has changed.
         believes: BTreeMap<ChunkPos, RegionId>,
         residents: BTreeMap<PlayerId, Resident>,
-        /// Entries of its outbox that were made while it had no link, or were not
-        /// sent before its link ended.
-        owed: Vec<Durable>,
+        /// The entries of its outbox that the edge has not confirmed, each with its
+        /// number, and the number of the last entry it made.
+        outbox: VecDeque<(u64, Durable)>,
+        sent: u64,
+        /// Whether the region is there: one of the three the world began with, or a
+        /// part that was split off, and not absorbed since.
+        alive: bool,
+        /// Whether it knows the edge. One that has forgotten it makes a state for it
+        /// when the edge says hello again.
+        knows: bool,
         /// The number of the edge's last numbered message it took.
         received: u64,
         /// Its word for the numbering it shares with the edge.
@@ -7982,6 +8039,28 @@ mod scenarios {
         goal: ChunkPos,
         /// How many of the chunks their client was sent have been looked at.
         looked_at: usize,
+        /// Whether their join is among what the edge keeps for the home region, and
+        /// its number once the edge has been seen to send it.
+        join: Option<Option<u64>>,
+    }
+
+    /// What the edge has to hold about its link to a region while it resumes on it
+    /// (ADR-0015, section 1).
+    #[derive(Debug, Default)]
+    struct Resume {
+        /// How many of the entries and of the presence answers that the welcome
+        /// announced are still to come; nothing before the welcome.
+        entries: Option<u32>,
+        presences: Option<u32>,
+        /// The players this welcome made the region's, of whom no `Present` has come.
+        brought: BTreeSet<PlayerId>,
+        /// The regions whose `Absorbed` the region owed when the hello was said.
+        owed: BTreeSet<RegionId>,
+    }
+
+    /// Every region a test can play, in ascending order.
+    fn ports() -> impl Iterator<Item = RegionId> {
+        (0..PORTS).map(|index| RegionId(index as u32))
     }
 
     struct Run {
@@ -8018,7 +8097,39 @@ mod scenarios {
         /// hold their region to serve them.
         unsure: BTreeSet<ChunkPos>,
         /// The `since` of the last welcome the edge read from each region.
-        since: [u64; 3],
+        since: [u64; PORTS],
+        /// Whether regions merge and split in this run.
+        reshaping: bool,
+        /// The regions that were absorbed, each with the region it went into, as the
+        /// routing table has them, and how many parts were split off.
+        absorbed: Vec<(RegionId, RegionId)>,
+        parts: usize,
+        /// The last `since` a region has given out.
+        sinces: u64,
+        // What the edge has to hold through merges and splits (ADR-0015).
+        /// The regions that are no more, as far as the edge has acted on it.
+        stands_for: BTreeMap<RegionId, RegionId>,
+        /// The entries of each region's outbox that came to it with a merge.
+        came_with: Vec<BTreeMap<u64, (RegionId, u64)>>,
+        /// The regions the table says went into each region, of which the edge has
+        /// something and has handled no `Absorbed`.
+        owes: Vec<BTreeSet<RegionId>>,
+        /// The number of the last outbox entry the edge has seen of each region.
+        seen: [u64; PORTS],
+        /// How far each region has told the edge that it applied its messages, and
+        /// the highest number the edge was seen to send each region.
+        applied: [u64; PORTS],
+        numbered: [u64; PORTS],
+        /// The regions for which the edge has made a numbered message that it could
+        /// not send yet. With `numbered` and `applied` this says whether anything is
+        /// kept for a region, which the run cannot see for one without a link.
+        unsent: [bool; PORTS],
+        /// The arrivals among what the edge keeps: the region each is for, the player,
+        /// and its number once the edge has been seen to send it.
+        arrivals: Vec<(RegionId, PlayerId, Option<u64>)>,
+        resumes: Vec<Option<Resume>>,
+        /// The links the edge has to end by itself, over what the table says.
+        to_end: BTreeSet<RegionId>,
         /// Clients of players the edge had to disconnect.
         dropped: Vec<Client>,
         joined: u128,
@@ -8068,17 +8179,37 @@ mod scenarios {
     }
 
     impl Run {
-        async fn new(seed: u64) -> Self {
-            let mut edge = Harness::start().await;
-            // The edge has read the regions' first welcomes when the run begins.
-            edge.quiet().await;
+        async fn new(seed: u64, reshaping: bool) -> Self {
+            // The witness lets a run wait for the edge between the entries of a
+            // welcome, where `settle` cannot be used. The edge has read the regions'
+            // first welcomes when the run begins.
+            let edge = Harness::witnessed().await;
             let mut played = Vec::new();
-            for region in REGIONS {
+            let mut since = [0; PORTS];
+            let mut resumes = Vec::new();
+            for (index, since) in since.iter_mut().enumerate() {
+                let there = index < REGIONS.len();
+                *since = u64::from(there);
                 played.push(Played {
-                    since: 1,
-                    entities: 1000 * (region.0 as i32 + 1),
+                    since: *since,
+                    entities: 1000 * (index as i32 + 1),
+                    // What the witness's arrangement had the region say and take.
+                    sent: edge.outbox[index],
+                    received: edge.heard[index].numbered,
+                    alive: there,
+                    knows: there,
                     ..Played::default()
                 });
+                resumes.push(there.then(|| Resume {
+                    entries: Some(0),
+                    presences: Some(0),
+                    ..Resume::default()
+                }));
+            }
+            let seen = edge.outbox;
+            let mut applied = [0; PORTS];
+            for (index, applied) in applied.iter_mut().enumerate() {
+                *applied = edge.heard[index].numbered;
             }
             Self {
                 seed,
@@ -8091,13 +8222,27 @@ mod scenarios {
                 played,
                 on_the_way: BTreeMap::new(),
                 people: BTreeMap::new(),
-                kept: vec![BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
-                heard: vec![BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
+                kept: (0..PORTS).map(|_| BTreeMap::new()).collect(),
+                heard: (0..PORTS).map(|_| BTreeMap::new()).collect(),
                 again: BTreeSet::new(),
                 replica: BTreeMap::new(),
                 served_by: BTreeMap::new(),
                 unsure: BTreeSet::new(),
-                since: [1; 3],
+                since,
+                reshaping,
+                absorbed: Vec::new(),
+                parts: 0,
+                sinces: 1,
+                stands_for: BTreeMap::new(),
+                came_with: (0..PORTS).map(|_| BTreeMap::new()).collect(),
+                owes: (0..PORTS).map(|_| BTreeSet::new()).collect(),
+                seen,
+                applied,
+                numbered: applied,
+                unsent: [false; PORTS],
+                arrivals: Vec::new(),
+                resumes,
+                to_end: BTreeSet::new(),
                 dropped: Vec::new(),
                 joined: 0,
                 tally: BTreeMap::new(),
@@ -8118,8 +8263,26 @@ mod scenarios {
 
         // The world.
 
+        /// The regions that are there, in ascending order.
+        fn living(&self) -> Vec<RegionId> {
+            let alive = |region: &RegionId| self.played[region.0 as usize].alive;
+            ports().filter(alive).collect()
+        }
+
+        /// The region that `region` is by now, if it was absorbed.
+        fn now(&self, region: RegionId) -> RegionId {
+            let mut region = region;
+            while let Some((_, into)) = self.absorbed.iter().find(|(gone, _)| *gone == region) {
+                region = *into;
+            }
+            region
+        }
+
+        /// What was granted comes first: a part holds chunks of the areas that the
+        /// region it was split off is pinned to, until it gives them back.
         fn holder(&self, chunk: ChunkPos) -> Option<RegionId> {
-            pinned(chunk).or_else(|| self.granted.get(&chunk).copied())
+            let granted = self.granted.get(&chunk).copied();
+            granted.or_else(|| pinned(chunk).map(|region| self.now(region)))
         }
 
         fn state(&self, chunk: ChunkPos) -> BlockState {
@@ -8179,6 +8342,19 @@ mod scenarios {
             let mut ticked = Ticked::default();
             let mut taken = 0;
             while taken < take {
+                // In a run with merges and splits a region answers what it was asked
+                // for before it takes what the edge sent behind the asking, which a
+                // region may: it is slow. One that does not reports a player's step
+                // before it has shown the edge the player, where their stay came to
+                // it without an arrival, and the edge passes that over; see
+                // `a_move_that_a_stays_new_region_reports_before_its_snapshot_is_taken`.
+                let played = &self.played[index];
+                let waits = |ticket: &Ticket| ticket.answer == Answer::Waiting;
+                let asking = |message: &EdgeMessage| is_about_subscriptions(&message.body);
+                let behind = !played.inbox.front().is_some_and(asking);
+                if self.reshaping && behind && played.tickets.values().any(waits) {
+                    break;
+                }
                 let Some(message) = self.played[index].inbox.pop_front() else {
                     break;
                 };
@@ -8225,8 +8401,14 @@ mod scenarios {
                 made.push(Made::Said(WorkerToEdge::TickDelta { tick, events }));
             }
             made.extend(ticked.spawned.into_iter().map(Made::Said));
-            made.extend(ticked.entries.into_iter().map(Made::Entry));
-            made.extend(ticked.departures.into_iter().map(Made::Entry));
+            // An entry has its number from when it is made, and stays in the outbox
+            // until the edge has confirmed it.
+            let played = &mut self.played[index];
+            for entry in ticked.entries.into_iter().chain(ticked.departures) {
+                played.sent += 1;
+                played.outbox.push_back((played.sent, entry.clone()));
+                made.push(Made::Entry(played.sent, entry));
+            }
 
             let waiting: Vec<_> = self.played[index]
                 .tickets
@@ -8385,8 +8567,13 @@ mod scenarios {
                 }
                 EdgeToWorker::PlayerJoin(join) => {
                     let played = &mut self.played[index];
-                    if played.residents.contains_key(&join.player) {
-                        return;
+                    // A join begins a new stay whatever the region has (ADR-0014,
+                    // section 2.1).
+                    if let Some(before) = played.residents.remove(&join.player) {
+                        ticked.events.push(RegionEvent::EntityRemoved {
+                            entity: before.entity,
+                            chunk: before.chunk,
+                        });
                     }
                     played.entities += 1;
                     let entity = EntityId(played.entities);
@@ -8406,8 +8593,13 @@ mod scenarios {
                         pose: Pose::at(SPAWN),
                     }));
                 }
-                EdgeToWorker::PlayerLeave { player, .. } => {
-                    if let Some(resident) = self.played[index].residents.remove(&player) {
+                EdgeToWorker::PlayerLeave { player, entity } => {
+                    // A leave ends the stay it names, and no other.
+                    let residents = &mut self.played[index].residents;
+                    let named = residents.get(&player).is_some_and(|resident| {
+                        entity.is_none_or(|entity| resident.entity == entity)
+                    });
+                    if named && let Some(resident) = residents.remove(&player) {
                         ticked.events.push(RegionEvent::EntityRemoved {
                             entity: resident.entity,
                             chunk: resident.chunk,
@@ -8432,6 +8624,26 @@ mod scenarios {
                             "{player:?} arrives in {region:?} in {chunk:?}, which it was not \
                              asked for as a viewer before"
                         ));
+                    }
+                    // Of two stays of a player the later one stays, which is the one
+                    // with the higher entity.
+                    let residents = &mut self.played[index].residents;
+                    let there = residents.get(&player);
+                    if let Some((entity, stood)) = there.map(|there| (there.entity, there.chunk)) {
+                        if entity >= transfer.entity_id {
+                            if entity != transfer.entity_id {
+                                ticked.events.push(RegionEvent::EntityRemoved {
+                                    entity: transfer.entity_id,
+                                    chunk,
+                                });
+                            }
+                            return;
+                        }
+                        ticked.events.push(RegionEvent::EntityRemoved {
+                            entity,
+                            chunk: stood,
+                        });
+                        residents.remove(&player);
                     }
                     match self.needs(region, chunk, false) {
                         None => {
@@ -8468,15 +8680,20 @@ mod scenarios {
                 }
                 EdgeToWorker::Input {
                     player,
+                    entity,
                     number,
                     input,
-                    ..
                 } => {
                     let Some(resident) = self.played[index].residents.get_mut(&player) else {
                         // Not this region's: the edge sends it to the region that is
                         // theirs, or sends it again when they have arrived.
                         return;
                     };
+                    // An input is of the stay it names, and passed over by a region
+                    // that has another.
+                    if resident.entity != entity {
+                        return;
+                    }
                     if number <= resident.last_input {
                         return;
                     }
@@ -8677,23 +8894,63 @@ mod scenarios {
             self.recentre(player, at);
         }
 
-        /// ADR-0013, section 4.
+        /// The region a name of a region means to the edge: ADR-0015, section 1.
+        fn stands(&self, region: RegionId) -> RegionId {
+            self.stands_for.get(&region).copied().unwrap_or(region)
+        }
+
+        /// Whether the edge's link to `region` has had its welcome and the entries
+        /// the welcome announced: what the edge makes for the region is sent then.
+        fn through(&self, region: RegionId) -> bool {
+            let resume = self.resumes[region.0 as usize].as_ref();
+            self.linked(region) && resume.is_some_and(|resume| resume.entries == Some(0))
+        }
+
+        /// The edge makes a numbered message for `region`.
+        fn made_for(&mut self, region: RegionId) {
+            if !self.through(region) {
+                self.unsent[region.0 as usize] = true;
+            }
+        }
+
+        /// ADR-0013, section 4, and ADR-0015, section 4. `to` is the region the entry
+        /// names as the edge reads it, and `back` whether the entry may send the
+        /// player to the region it comes from: it came with a merge, or names a
+        /// region that stands for the one it comes from.
         fn hand_over(
             &mut self,
             from: RegionId,
             player: PlayerId,
             transfer: &PlayerTransfer,
             to: RegionId,
+            back: bool,
         ) {
-            let Some(person) = self.people.get(&player) else {
-                self.count("a hand-over of a player who left");
-                return;
-            };
-            if person.entity != Some(transfer.entity_id) || person.region != from {
-                self.count("a hand-over of who a player was before");
+            let entity = self.people.get(&player).map(|person| person.entity);
+            if entity != Some(Some(transfer.entity_id)) {
+                self.count(match entity {
+                    None => "a hand-over of a player who left",
+                    Some(_) => "a hand-over of who a player was before",
+                });
+                // The entity that is on its way is discarded where it was sent.
+                self.made_for(to);
                 return;
             }
-            let wanted = person.wanted.clone();
+            let person = &self.people[&player];
+            let (theirs, wanted) = (person.region, person.wanted.clone());
+            if theirs != from {
+                self.count("a hand-over of an earlier stay in a region");
+                return;
+            }
+            if to == from {
+                if !back {
+                    self.fail(format!("{from:?} lets {player:?} go to itself"));
+                }
+                self.count("an arrival at the region the entry came from");
+                self.arrivals.push((from, player, None));
+                self.made_for(from);
+                self.recentre(player, chunk_of(transfer.pose.position));
+                return;
+            }
             let linked = (self.linked(from), self.linked(to));
             self.count(match linked {
                 (true, true) => "a hand-over",
@@ -8706,11 +8963,453 @@ mod scenarios {
             }
             let person = self.people.get_mut(&player).expect("the player is there");
             person.region = to;
+            self.arrivals.push((to, player, None));
+            self.made_for(to);
             self.recentre(player, chunk_of(transfer.pose.position));
         }
 
+        /// A player's view moves from one region to another as at a hand-over, with
+        /// no arrival: by a presence answer, an `Absorbed` or a `SplitOff`.
+        fn moved(&mut self, player: PlayerId, to: RegionId) {
+            let person = self.people.get_mut(&player).expect("the player is there");
+            let from = std::mem::replace(&mut person.region, to);
+            let wanted = person.wanted.clone();
+            for chunk in &wanted {
+                self.unwant(from, *chunk);
+            }
+            for chunk in &wanted {
+                self.want(to, *chunk);
+            }
+        }
+
+        /// A region says how far it has applied the edge's messages, in a `Progress`
+        /// or in a welcome: what is kept for it up to there is dropped.
+        fn progress(&mut self, region: RegionId, applied: u64) {
+            let index = region.0 as usize;
+            self.applied[index] = self.applied[index].max(applied);
+            let applied = self.applied[index];
+            self.arrivals
+                .retain(|(to, _, number)| *to != region || number.is_none_or(|n| n > applied));
+            if region == WEST {
+                for person in self.people.values_mut() {
+                    if let Some(Some(number)) = person.join
+                        && number <= applied
+                    {
+                        person.join = None;
+                    }
+                }
+            }
+        }
+
+        /// What is kept for a region is given up, and its numbering begins anew.
+        fn given_up(&mut self, region: RegionId) {
+            let index = region.0 as usize;
+            self.arrivals.retain(|(to, ..)| *to != region);
+            self.seen[index] = 0;
+            self.applied[index] = 0;
+            self.numbered[index] = 0;
+            self.unsent[index] = false;
+            self.came_with[index].clear();
+        }
+
+        /// Whether a join or an arrival of the player is among what is kept for the
+        /// region.
+        fn on_their_way(&self, region: RegionId, player: PlayerId) -> bool {
+            let joining = region == WEST && self.people[&player].join.is_some();
+            let arriving =
+                |(to, who, _): &(RegionId, PlayerId, Option<u64>)| *to == region && *who == player;
+            joining || self.arrivals.iter().any(arriving)
+        }
+
+        /// A player the edge has under `region` is not there by the region's word:
+        /// ADR-0015, section 2.1, `Absent`. In a run nobody is disconnected for that
+        /// whose stay a region has.
+        fn judge(&mut self, region: RegionId, player: PlayerId) {
+            if self.on_their_way(region, player) {
+                self.count("a player who is absent is on their way");
+                return;
+            }
+            let entity = self.people[&player].entity;
+            let has = |played: &Played| {
+                let resident = played.residents.get(&player);
+                played.alive && resident.is_some_and(|resident| Some(resident.entity) == entity)
+            };
+            let on_the_way = entity.is_some_and(|entity| self.on_the_way.contains_key(&entity));
+            if self.played.iter().any(has) || on_the_way {
+                self.fail(format!(
+                    "the records have the edge disconnect {player:?} as absent from {region:?}, \
+                     and their stay is not lost"
+                ));
+            }
+            self.count("a player is judged absent");
+            let person = self.gone(player).expect("the player is there");
+            self.made_for(region);
+            self.dropped.push(person.client);
+        }
+
+        /// ADR-0015, section 1: the one place a region comes to stand for another.
+        fn retire(&mut self, gone: RegionId, into: RegionId) {
+            self.stands_for.insert(gone, into);
+            for stands in self.stands_for.values_mut() {
+                if *stands == gone {
+                    *stands = into;
+                }
+            }
+            self.owes[into.0 as usize].remove(&gone);
+        }
+
+        /// ADR-0015, section 3: `Absorbed`, the entry numbered `number` of `into`.
+        fn absorbed_into(
+            &mut self,
+            into: RegionId,
+            number: u64,
+            gone: RegionId,
+            since: u64,
+            applied: u64,
+            numbers: &[u64],
+        ) {
+            let (a, b) = (into.0 as usize, gone.0 as usize);
+            self.count("an absorbed is handled");
+            // 1. Whether the absorbed region shared a numbering with the edge.
+            let shared = since != 0 && since == self.since[b];
+            let mut applied = applied;
+            if !shared {
+                if self.seen[b] != 0 || self.applied[b] != 0 {
+                    self.count("an absorbed region had forgotten the edge");
+                    self.given_up(gone);
+                }
+                applied = 0;
+            }
+            // 2.
+            self.retire(gone, into);
+            // 3. Its players and their views.
+            let theirs: Vec<_> = self
+                .people
+                .iter()
+                .filter(|(_, person)| person.region == gone)
+                .map(|(player, _)| *player)
+                .collect();
+            for player in theirs {
+                self.count("a merge brings a player");
+                self.moved(player, into);
+                let resume = self.resumes[a].as_mut().expect("an entry comes on a link");
+                resume.brought.insert(player);
+            }
+            // 4. What is left there are guest's subscriptions.
+            let left = std::mem::take(&mut self.kept[b]);
+            if !left.is_empty() {
+                self.count("a merge brings guest's subscriptions");
+            }
+            for (chunk, _) in left {
+                self.kept[a]
+                    .entry(chunk)
+                    .or_insert_with(|| Kept::new(Role::Guest, 0));
+            }
+            // 5. Whatever named it.
+            for kept in self.kept.iter_mut().flat_map(|kept| kept.values_mut()) {
+                if kept.answer == Answer::Told(gone) {
+                    kept.answer = Answer::Told(into);
+                }
+            }
+            for by in self.served_by.values_mut() {
+                if *by == gone {
+                    *by = into;
+                }
+            }
+            // 6. What was kept for it above what it had applied.
+            let kept = self.unsent[b] || self.numbered[b] > applied;
+            self.arrivals
+                .retain(|(to, _, n)| *to != gone || n.is_none_or(|n| n > applied));
+            for arrival in &mut self.arrivals {
+                if arrival.0 == gone {
+                    *arrival = (into, arrival.1, None);
+                }
+            }
+            if kept {
+                self.unsent[a] = true;
+            }
+            self.unsent[b] = false;
+            self.numbered[b] = 0;
+            // 7. The entries behind it.
+            for (place, was) in numbers.iter().enumerate() {
+                let origin = self.came_with[b].get(was).copied().unwrap_or((gone, *was));
+                self.came_with[a].insert(number + 1 + place as u64, origin);
+            }
+            self.came_with[b].clear();
+        }
+
+        /// ADR-0015, section 6: `SplitOff` from `from`, which names `part` as the
+        /// edge reads it.
+        fn split_off(&mut self, from: RegionId, part: RegionId, stays: &[(PlayerId, EntityId)]) {
+            for (player, entity) in stays {
+                let theirs = self
+                    .people
+                    .get(player)
+                    .is_some_and(|person| person.region == from && person.entity == Some(*entity));
+                let came_back =
+                    |(to, who, _): &(RegionId, PlayerId, Option<u64>)| *to == from && who == player;
+                if !theirs {
+                    self.count("a split off for a stay the edge does not have there");
+                } else if self.arrivals.iter().any(came_back) {
+                    self.count("a split off for a stay that came back");
+                } else {
+                    self.count("a split off moves a stay");
+                    self.moved(*player, part);
+                    // Whatever the player did and the edge still keeps goes there.
+                    self.made_for(part);
+                }
+            }
+        }
+
+        /// An entry of a region's outbox that the edge has not seen and acts on.
+        /// `came_with` says whether it came to the region with a merge.
+        fn entry(&mut self, region: RegionId, number: u64, entry: &Durable, came_with: bool) {
+            match entry {
+                Durable::Departed {
+                    player,
+                    transfer,
+                    to,
+                }
+                | Durable::NotMine {
+                    what: Misdirected::Arrival { player, transfer },
+                    holder: to,
+                } => {
+                    let back = came_with || *to != region;
+                    self.hand_over(region, *player, transfer, self.stands(*to), back);
+                }
+                Durable::Absorbed {
+                    region: gone,
+                    since,
+                    applied,
+                    numbers,
+                } => self.absorbed_into(region, number, *gone, *since, *applied, numbers),
+                Durable::SplitOff {
+                    region: part,
+                    players,
+                } => self.split_off(region, self.stands(*part), players),
+                _ => {}
+            }
+        }
+
+        /// The entries a welcome announced have been handled: ADR-0015, section 5.
+        fn entries_through(&mut self, region: RegionId) {
+            let index = region.0 as usize;
+            let resume = self.resumes[index].as_ref().expect("the region has a link");
+            let silent = resume.owed.intersection(&self.owes[index]).next().copied();
+            let no_answers = resume.presences == Some(0);
+            // A run's survivor never forgets the edge, so it always says `Absorbed`.
+            if let Some(gone) = silent {
+                self.fail(format!(
+                    "{region:?} has said no Absorbed for {gone:?}, which it owed the edge"
+                ));
+            }
+            if !self.owes[index].is_empty() {
+                self.count("a link is ended when its entries are through");
+                self.to_end.insert(region);
+                return;
+            }
+            // What was kept is sent.
+            self.unsent[index] = false;
+            if no_answers {
+                self.presence_through(region);
+            }
+        }
+
+        /// A player has had a `Present` of their own on the link to `region`.
+        fn answered(&mut self, region: RegionId, player: PlayerId) {
+            if let Some(resume) = &mut self.resumes[region.0 as usize] {
+                resume.brought.remove(&player);
+            }
+        }
+
+        /// The presence answers a welcome announced have come: ADR-0015, section 2.2.
+        fn presence_through(&mut self, region: RegionId) {
+            let resume = self.resumes[region.0 as usize].as_mut();
+            let brought = std::mem::take(&mut resume.expect("the region has a link").brought);
+            for player in brought {
+                let theirs = |person: &Person| person.region == region;
+                if self.people.get(&player).is_some_and(theirs) {
+                    self.judge(region, player);
+                }
+            }
+        }
+
+        /// ADR-0015, section 2.
+        fn welcomed(&mut self, region: RegionId, welcome: Welcome) {
+            let index = region.0 as usize;
+            let (unknown, entries, presences, applied) = match welcome {
+                Welcome::Resumed {
+                    entries,
+                    presences,
+                    applied,
+                } => (None, entries, presences, applied),
+                Welcome::Unknown {
+                    since,
+                    entries,
+                    presences,
+                    applied,
+                } => (Some(since), entries, presences, applied),
+                Welcome::Superseded => panic!("no region of a run says that"),
+            };
+            if let Some(since) = unknown {
+                // The region has forgotten the edge, if the two had shared anything:
+                // the players the edge believed to be there are removed.
+                if self.seen[index] != 0 || self.applied[index] != 0 {
+                    let theirs: Vec<_> = self
+                        .people
+                        .iter()
+                        .filter(|(_, person)| person.region == region)
+                        .map(|(player, _)| *player)
+                        .collect();
+                    self.count("a region has forgotten the edge");
+                    // What the edge kept for the region it gives up, also the arrival
+                    // of someone who has left since: nobody will hear of that entity.
+                    self.on_the_way.retain(|_, (_, to)| *to != region);
+                    for player in theirs {
+                        self.count("a player of a region that has forgotten the edge");
+                        let person = self.gone(player).expect("the player is there");
+                        if let Some(entity) = person.entity {
+                            self.on_the_way.remove(&entity);
+                        }
+                        self.dropped.push(person.client);
+                    }
+                    self.given_up(region);
+                } else {
+                    self.count("a welcome of a region the edge had nothing from");
+                }
+                self.since[index] = since;
+            }
+            self.progress(region, applied);
+            let resume = self.resumes[index].as_mut().expect("the region has a link");
+            resume.entries = Some(entries);
+            resume.presences = Some(presences);
+            if entries == 0 {
+                self.entries_through(region);
+            }
+        }
+
+        /// An entry of a region's outbox, with its number: ADR-0015, section 3.
+        fn outbox(&mut self, region: RegionId, number: u64, entry: &Durable) {
+            let index = region.0 as usize;
+            if number > self.seen[index] {
+                self.seen[index] = number;
+                match self.came_with[index].remove(&number) {
+                    Some((origin, was)) if was <= self.seen[origin.0 as usize] => {
+                        self.count("an entry that came with a merge is passed over");
+                    }
+                    Some(_) => {
+                        self.count("an entry that came with a merge is handled");
+                        self.entry(region, number, entry, true);
+                    }
+                    None => self.entry(region, number, entry, false),
+                }
+            } else {
+                self.count("an entry the edge had seen is passed over");
+            }
+            let resume = self.resumes[index].as_mut().expect("the region has a link");
+            if let Some(left) = &mut resume.entries
+                && *left > 0
+            {
+                *left -= 1;
+                if *left == 0 {
+                    self.entries_through(region);
+                }
+            }
+        }
+
+        /// A presence answer: ADR-0015, section 2.1.
+        fn presence(&mut self, region: RegionId, player: PlayerId, answer: &Presence) {
+            let index = region.0 as usize;
+            let resume = self.resumes[index].as_mut().expect("the region has a link");
+            let mut last = false;
+            if let Some(left) = &mut resume.presences
+                && *left > 0
+            {
+                *left -= 1;
+                last = *left == 0;
+            }
+            let has = self
+                .people
+                .get(&player)
+                .map(|person| (person.region, person.entity));
+            match (answer, has) {
+                (Presence::Present { entity, .. }, Some((theirs, Some(known))))
+                    if theirs == region && known == *entity =>
+                {
+                    self.count("a present for a stay the edge has there");
+                    self.answered(region, player);
+                }
+                (Presence::Present { entity, pose, .. }, Some((theirs, None)))
+                    if theirs == region =>
+                {
+                    self.answered(region, player);
+                    if self.people[&player].join.is_some() {
+                        self.count("a present from before a player's join");
+                    } else {
+                        self.count("a present places a player");
+                        self.placed(region, player, *entity, chunk_of(pose.position));
+                    }
+                }
+                (Presence::Present { entity, .. }, Some((_, Some(known)))) if known == *entity => {
+                    self.count("a present moves a stay");
+                    self.answered(region, player);
+                    self.moved(player, region);
+                }
+                (Presence::Present { .. }, _) => {
+                    self.count("a present for a stay the edge does not have");
+                }
+                (Presence::Absent, Some((theirs, _))) if theirs == region => {
+                    self.judge(region, player);
+                }
+                (Presence::Absent, _) => self.count("an absent passed over"),
+            }
+            if last {
+                self.presence_through(region);
+            }
+        }
+
+        /// Whether the edge has nothing of a region: ADR-0015, section 5.
+        fn nothing_of(&self, region: RegionId) -> bool {
+            let index = region.0 as usize;
+            let mut subscriptions = self.kept.iter().flat_map(|kept| kept.values());
+            !self.people.values().any(|person| person.region == region)
+                && self.kept[index].is_empty()
+                && !self.unsent[index]
+                && self.numbered[index] <= self.applied[index]
+                && !subscriptions.any(|kept| kept.answer == Answer::Told(region))
+                && !self.served_by.values().any(|by| *by == region)
+        }
+
+        /// What the routing table says of regions that were absorbed: ADR-0015,
+        /// section 5.
+        fn table(&mut self, pairs: &[(RegionId, RegionId)]) {
+            for (gone, into) in pairs {
+                let mut survivor = *into;
+                while let Some((_, further)) = pairs.iter().find(|(gone, _)| *gone == survivor) {
+                    survivor = *further;
+                }
+                let survivor = self.stands(survivor);
+                if self.stands_for.contains_key(gone) {
+                    continue;
+                }
+                if self.nothing_of(*gone) {
+                    self.count("the table retires a region the edge has nothing of");
+                    self.retire(*gone, survivor);
+                    continue;
+                }
+                let index = survivor.0 as usize;
+                self.owes[index].insert(*gone);
+                let resume = self.resumes[index].as_ref();
+                let lacks = resume.is_some_and(|resume| !resume.owed.contains(gone));
+                if self.through(survivor) && lacks {
+                    self.count("the table ends a link to a survivor");
+                    self.to_end.insert(survivor);
+                }
+            }
+        }
+
         /// What the edge has to make of one message of a region: ADR-0013, sections 3,
-        /// 4 and 6.
+        /// 4 and 6, and ADR-0015.
         fn told(&mut self, region: RegionId, message: &WorkerToEdge) {
             let index = region.0 as usize;
             match message {
@@ -8745,21 +9444,23 @@ mod scenarios {
                     ask,
                     region: holder,
                 } => {
+                    // A name of a region that is no more means the region it went into.
+                    let holder = self.stands(*holder);
                     let Some(kept) = self.kept[index].get_mut(chunk) else {
                         self.count("an elsewhere without a subscription");
                         return;
                     };
-                    if kept.role != Role::Viewer || kept.ask != *ask || *holder == region {
+                    if kept.role != Role::Viewer || kept.ask != *ask || holder == region {
                         self.count("an elsewhere passed over");
                         return;
                     }
-                    kept.answer = Answer::Told(*holder);
+                    kept.answer = Answer::Told(holder);
                     kept.at_once = false;
                     kept.due = false;
                     if self.served_by.get(chunk) == Some(&region) {
                         self.served_by.remove(chunk);
                     }
-                    let linked = self.linked(*holder);
+                    let linked = self.linked(holder);
                     let there = &mut self.kept[holder.0 as usize];
                     if there.contains_key(chunk) {
                         self.count("an elsewhere that names a region the edge is subscribed at");
@@ -8834,44 +9535,10 @@ mod scenarios {
                             ..
                         },
                 } => self.placed(region, *player, *entity_id, chunk_of(*position)),
-                WorkerToEdge::Presence {
-                    player,
-                    answer: Presence::Present { entity, pose, .. },
-                } => self.placed(region, *player, *entity, chunk_of(pose.position)),
-                WorkerToEdge::Outbox { entry, .. } => match entry {
-                    Durable::Departed {
-                        player,
-                        transfer,
-                        to,
-                    } => self.hand_over(region, *player, transfer, *to),
-                    Durable::NotMine {
-                        what: Misdirected::Arrival { player, transfer },
-                        holder,
-                    } => self.hand_over(region, *player, transfer, *holder),
-                    _ => {}
-                },
-                WorkerToEdge::Welcome(Welcome::Unknown { .. }) => {
-                    // The region has forgotten the edge: the players the edge
-                    // believed to be there are removed.
-                    let theirs: Vec<_> = self
-                        .people
-                        .iter()
-                        .filter(|(_, person)| person.region == region)
-                        .map(|(player, _)| *player)
-                        .collect();
-                    self.count("a region has forgotten the edge");
-                    // What the edge kept for the region it gives up, also the arrival
-                    // of someone who has left since: nobody will hear of that entity.
-                    self.on_the_way.retain(|_, (_, to)| *to != region);
-                    for player in theirs {
-                        self.count("a player of a region that has forgotten the edge");
-                        let person = self.gone(player).expect("the player is there");
-                        if let Some(entity) = person.entity {
-                            self.on_the_way.remove(&entity);
-                        }
-                        self.dropped.push(person.client);
-                    }
-                }
+                WorkerToEdge::Progress { applied, .. } => self.progress(region, *applied),
+                WorkerToEdge::Presence { player, answer } => self.presence(region, *player, answer),
+                WorkerToEdge::Outbox { number, entry } => self.outbox(region, *number, entry),
+                WorkerToEdge::Welcome(welcome) => self.welcomed(region, *welcome),
                 _ => {}
             }
         }
@@ -8888,19 +9555,16 @@ mod scenarios {
                 kept.due = false;
             }
             self.heard[index].clear();
+            self.resumes[index] = None;
+            self.to_end.remove(&region);
             let played = &mut self.played[index];
             played.inbox.clear();
             played.tickets.clear();
             played.held.clear();
             played.asked = 0;
-            // Only the entries of its outbox outlive the link.
-            for made in std::mem::take(&mut played.out) {
-                match made {
-                    Made::Entry(entry) => played.owed.push(entry),
-                    Made::Welcome { entries, .. } => played.owed.extend(entries),
-                    Made::Said(_) => {}
-                }
-            }
+            // Only the entries of its outbox outlive the link, and those are in the
+            // outbox until the edge has confirmed them.
+            played.out.clear();
         }
 
         // The steps.
@@ -8923,8 +9587,10 @@ mod scenarios {
                 inputs: 0,
                 goal: HOME,
                 looked_at: 0,
+                join: Some(None),
             };
             self.people.insert(player, person);
+            self.made_for(WEST);
             self.sync().await;
         }
 
@@ -8944,6 +9610,7 @@ mod scenarios {
             };
             self.log.push(format!("{player:?} leaves"));
             let person = self.gone(player).expect("the player is there");
+            self.made_for(person.region);
             self.edge.leave(&person.client).await;
             self.sync().await;
         }
@@ -8985,41 +9652,36 @@ mod scenarios {
                 "{player:?} steps into {target:?}, input {}",
                 person.inputs
             ));
+            let region = person.region;
             self.edge.input(&person.client, step_into(target)).await;
+            self.made_for(region);
             self.sync().await;
         }
 
         fn some_region(&mut self, linked: Option<bool>) -> Option<RegionId> {
-            let those: Vec<_> = REGIONS
+            let those: Vec<_> = self
+                .living()
                 .into_iter()
                 .filter(|region| linked.is_none_or(|linked| self.linked(*region) == linked))
                 .collect();
             (!those.is_empty()).then(|| those[self.dice.below(those.len())])
         }
 
-        /// The edge reads the next thing a region has made for it.
+        /// The edge reads the next thing a region has made for it. A welcome is read
+        /// by itself: the entries and the presence answers it announces follow as
+        /// things of their own, so that what other regions say, what players do and
+        /// what the table says can fall between any two of them.
         async fn deliver(&mut self, region: RegionId) {
             let index = region.0 as usize;
+            if !self.linked(region) {
+                return;
+            }
             let Some(made) = self.played[index].out.pop_front() else {
                 return;
             };
-            match made {
-                Made::Said(message) => {
-                    self.log
-                        .push(format!("{region:?} says {}", brief(&message)));
-                    self.told(region, &message);
-                    self.edge.tell(region, message);
-                }
-                Made::Entry(entry) => {
-                    self.log.push(format!("{region:?} says {entry:?}"));
-                    let number = self.edge.outbox[index] + 1;
-                    let message = WorkerToEdge::Outbox {
-                        number,
-                        entry: entry.clone(),
-                    };
-                    self.told(region, &message);
-                    self.edge.say(region, entry);
-                }
+            let message = match made {
+                Made::Said(message) => message,
+                Made::Entry(number, entry) => WorkerToEdge::Outbox { number, entry },
                 Made::Welcome {
                     resumed,
                     since,
@@ -9027,55 +9689,44 @@ mod scenarios {
                     presences,
                     applied,
                 } => {
-                    self.log.push(format!(
-                        "{region:?} welcomes: resumed {resumed}, since {since}, {entries:?}, \
-                         {presences:?}"
-                    ));
-                    let count = entries.len() as u32;
-                    for entry in &entries {
+                    for (_, entry) in &entries {
                         self.count(match entry {
                             Durable::Departed { .. } | Durable::NotMine { .. } => {
                                 "a hand-over among a welcome's entries"
                             }
+                            Durable::Absorbed { .. } => "an absorbed among a welcome's entries",
+                            Durable::SplitOff { .. } => "a split off among a welcome's entries",
                             _ => "another entry among a welcome's entries",
                         });
                     }
-                    let answers = presences.len() as u32;
-                    let welcome = if resumed {
+                    let (count, answers) = (entries.len() as u32, presences.len() as u32);
+                    let out = &mut self.played[index].out;
+                    for presence in presences.into_iter().rev() {
+                        out.push_front(Made::Said(presence));
+                    }
+                    for (number, entry) in entries.into_iter().rev() {
+                        out.push_front(Made::Entry(number, entry));
+                    }
+                    WorkerToEdge::Welcome(if resumed {
                         Welcome::Resumed {
                             entries: count,
                             presences: answers,
                             applied,
                         }
                     } else {
-                        // Its outbox begins anew with the edge it did not know.
-                        self.edge.outbox[index] = 0;
                         Welcome::Unknown {
                             since,
                             entries: count,
                             presences: answers,
                             applied,
                         }
-                    };
-                    self.since[index] = since;
-                    let welcome = WorkerToEdge::Welcome(welcome);
-                    self.told(region, &welcome);
-                    self.edge.tell(region, welcome);
-                    for entry in entries {
-                        let number = self.edge.outbox[index] + 1;
-                        let message = WorkerToEdge::Outbox {
-                            number,
-                            entry: entry.clone(),
-                        };
-                        self.told(region, &message);
-                        self.edge.say(region, entry);
-                    }
-                    for presence in presences {
-                        self.told(region, &presence);
-                        self.edge.tell(region, presence);
-                    }
+                    })
                 }
-            }
+            };
+            self.log
+                .push(format!("{region:?} says {}", brief(&message)));
+            self.told(region, &message);
+            self.edge.tell(region, message);
             self.sync().await;
         }
 
@@ -9159,10 +9810,10 @@ mod scenarios {
                     ));
                 }
             }
-            if (hello.since, hello.seen) != (self.since[index], self.edge.outbox[index]) {
+            if (hello.since, hello.seen) != (self.since[index], self.seen[index]) {
                 self.fail(format!(
                     "the hello to {region:?} says since {} and seen {}, not {} and {}",
-                    hello.since, hello.seen, self.since[index], self.edge.outbox[index]
+                    hello.since, hello.seen, self.since[index], self.seen[index]
                 ));
             }
             for chunk in &hello.guests {
@@ -9171,7 +9822,12 @@ mod scenarios {
             for chunk in &hello.chunks {
                 self.heard[index].insert(*chunk, (Role::Viewer, 0, 0));
             }
+            self.resumes[index] = Some(Resume {
+                owed: self.owes[index].clone(),
+                ..Resume::default()
+            });
 
+            let fresh = self.sinces + 1;
             let played = &mut self.played[index];
             for (chunk, (role, ..)) in &self.heard[index] {
                 let ticket = Ticket {
@@ -9182,35 +9838,52 @@ mod scenarios {
                 played.tickets.insert(*chunk, ticket);
                 played.held.insert(*chunk);
             }
-            let resumed = hello.since == played.since;
-            if !resumed {
-                // An edge that says a `since` the region does not have is reset.
+            // ADR-0012, section 4.5. A region that knows the edge with the `since` of
+            // the hello resumes. One that does not know it, or knows it with another
+            // `since` and has taken messages from it, makes a state for it anew, with
+            // nobody in it. One whose state for the edge came with a merge or a split
+            // has taken nothing: it says its `since`, and answers from that state.
+            let resumed = played.knows && hello.since == played.since;
+            if resumed {
+                played.outbox.retain(|(number, _)| *number > hello.seen);
+            } else if !played.knows || played.received > 0 {
+                played.knows = true;
+                played.since = fresh;
                 played.residents.clear();
-                played.owed.clear();
+                played.outbox.clear();
+                played.sent = 0;
                 played.received = 0;
+                self.sinces = fresh;
             }
-            let entries = std::mem::take(&mut played.owed);
-            let presences = hello
-                .players
-                .iter()
-                .map(|player| match played.residents.get(player) {
-                    Some(resident) => WorkerToEdge::Presence {
-                        player: *player,
-                        answer: Presence::Present {
-                            entity: resident.entity,
-                            pose: Pose::at(within(resident.chunk)),
-                            hotbar: [None; HOTBAR_SLOTS],
-                            selected_slot: 0,
-                            last_input: resident.last_input,
-                            handled: None,
-                        },
-                    },
+            let entries: Vec<_> = played.outbox.iter().cloned().collect();
+            let present = |player: &PlayerId, resident: &Resident| WorkerToEdge::Presence {
+                player: *player,
+                answer: Presence::Present {
+                    entity: resident.entity,
+                    pose: Pose::at(within(resident.chunk)),
+                    hotbar: [None; HOTBAR_SLOTS],
+                    selected_slot: 0,
+                    last_input: resident.last_input,
+                    handled: None,
+                },
+            };
+            // ADR-0014, section 3.7: an answer for each player the hello named, and
+            // then `Present` for every other stay the region has for the edge.
+            let mut presences = Vec::new();
+            for player in &hello.players {
+                presences.push(match played.residents.get(player) {
+                    Some(resident) => present(player, resident),
                     None => WorkerToEdge::Presence {
                         player: *player,
                         answer: Presence::Absent,
                     },
-                })
-                .collect();
+                });
+            }
+            for (player, resident) in &played.residents {
+                if !hello.players.contains(player) {
+                    presences.push(present(player, resident));
+                }
+            }
             let welcome = Made::Welcome {
                 resumed,
                 since: played.since,
@@ -9238,7 +9911,12 @@ mod scenarios {
                 .iter()
                 .filter(|(chunk, region)| {
                     let played = &self.played[region.0 as usize];
+                    // A part keeps what it holds of the areas another region is
+                    // pinned to. Given back, such a chunk is the pinned region's again
+                    // and nobody tells it, so it goes on naming the part, which names
+                    // it: see `two_regions_that_name_each_other_for_a_chunk_are_asked_again`.
                     !self.returning.contains(chunk)
+                        && pinned(**chunk).is_none()
                         && !played.tickets.contains_key(chunk)
                         && !played
                             .inbox
@@ -9282,7 +9960,8 @@ mod scenarios {
         /// areas which it does not hold itself, as it would have heard for another
         /// need at a time when that was so.
         fn mislead(&mut self) {
-            let region = REGIONS[self.dice.below(3)];
+            let living = self.living();
+            let region = living[self.dice.below(living.len())];
             let residents: Vec<_> = self.played[region.0 as usize]
                 .residents
                 .values()
@@ -9304,10 +9983,13 @@ mod scenarios {
             if pinned(chunk).is_some() || holder == Some(region) {
                 return;
             }
-            let others: Vec<_> = REGIONS
+            let others: Vec<_> = living
                 .into_iter()
                 .filter(|other| *other != region && Some(*other) != holder)
                 .collect();
+            if others.is_empty() {
+                return;
+            }
             let other = others[self.dice.below(others.len())];
             self.log.push(format!(
                 "{region:?} believes that {other:?} holds {chunk:?}"
@@ -9322,10 +10004,11 @@ mod scenarios {
             let lets_go = |made: &Made| {
                 matches!(
                     made,
-                    Made::Entry(Durable::Departed { .. } | Durable::NotMine { .. })
+                    Made::Entry(_, Durable::Departed { .. } | Durable::NotMine { .. })
                 )
             };
-            let those: Vec<_> = REGIONS
+            let those: Vec<_> = self
+                .living()
                 .into_iter()
                 .filter(|region| {
                     self.linked(*region) && self.played[region.0 as usize].out.iter().any(lets_go)
@@ -9335,14 +10018,15 @@ mod scenarios {
                 return;
             }
             let region = those[self.dice.below(those.len())];
-            while !self.played[region.0 as usize]
-                .out
-                .front()
-                .is_some_and(lets_go)
+            while self.linked(region)
+                && !self.played[region.0 as usize]
+                    .out
+                    .front()
+                    .is_some_and(lets_go)
             {
                 self.deliver(region).await;
             }
-            if !self.may_end(region) {
+            if !self.linked(region) || !self.may_end(region) {
                 return;
             }
             self.log.push(format!(
@@ -9385,17 +10069,22 @@ mod scenarios {
 
         /// A region that has no link forgets the edge, as after thirty seconds
         /// without one: its players of that edge are gone with what it had for the
-        /// edge.
+        /// edge. Not in a run with merges and splits, in which nobody is to be
+        /// disconnected.
         fn forget(&mut self) {
+            if self.reshaping {
+                return;
+            }
             let Some(region) = self.some_region(Some(false)) else {
                 return;
             };
             self.log.push(format!("{region:?} forgets the edge"));
             let played = &mut self.played[region.0 as usize];
-            played.since += 1;
+            played.knows = false;
             played.residents.clear();
             played.received = 0;
-            for entry in std::mem::take(&mut played.owed) {
+            played.sent = 0;
+            for (_, entry) in std::mem::take(&mut played.outbox) {
                 let (Durable::Departed { transfer, .. }
                 | Durable::NotMine {
                     what: Misdirected::Arrival { transfer, .. },
@@ -9408,6 +10097,206 @@ mod scenarios {
             }
         }
 
+        /// A region stops, with its link if it has one: for a merge or a split,
+        /// which close every link of a region (ADR-0014, section 3.3).
+        async fn stop(&mut self, region: RegionId) {
+            let linked = self.linked(region);
+            self.unlinked(region);
+            if linked {
+                self.edge.lose(region).await;
+            }
+        }
+
+        /// A region absorbs another: ADR-0014, section 2.3. The players of the
+        /// absorbed region are the survivor's, of two stays of one player the later;
+        /// the survivor's outbox gets `Absorbed` and behind it what the absorbed
+        /// region had in its own; its chunks and its areas are the survivor's; and
+        /// the survivor forgets what it believed of other regions.
+        async fn merge(&mut self) {
+            let living = self.living();
+            let absorbable: Vec<_> = living
+                .iter()
+                .copied()
+                .filter(|gone| *gone != WEST)
+                .collect();
+            if absorbable.is_empty() {
+                return;
+            }
+            let gone = absorbable[self.dice.below(absorbable.len())];
+            let others: Vec<_> = living.into_iter().filter(|into| *into != gone).collect();
+            let into = others[self.dice.below(others.len())];
+            if !self.may_end(gone) || !self.may_end(into) {
+                return;
+            }
+            self.log.push(format!("{into:?} absorbs {gone:?}"));
+            self.count("a merge");
+            self.stop(gone).await;
+            self.stop(into).await;
+
+            let absorbed = std::mem::take(&mut self.played[gone.0 as usize]);
+            let fresh = self.sinces + 1;
+            let survivor = &mut self.played[into.0 as usize];
+            survivor.believes.clear();
+            if absorbed.knows && !survivor.knows {
+                // The survivor comes by a state for the edge through the merge.
+                survivor.knows = true;
+                survivor.since = fresh;
+                survivor.received = 0;
+                survivor.sent = 0;
+                survivor.outbox.clear();
+                self.sinces = fresh;
+            }
+            if survivor.knows {
+                let numbers = absorbed.outbox.iter().map(|(number, _)| *number);
+                let entry = Durable::Absorbed {
+                    region: gone,
+                    since: if absorbed.knows { absorbed.since } else { 0 },
+                    applied: if absorbed.knows { absorbed.received } else { 0 },
+                    numbers: numbers.collect(),
+                };
+                let behind = absorbed.outbox.into_iter().map(|(_, entry)| entry);
+                for entry in std::iter::once(entry).chain(behind) {
+                    survivor.sent += 1;
+                    survivor.outbox.push_back((survivor.sent, entry));
+                }
+            }
+            for (player, resident) in absorbed.residents {
+                let later = |there: &Resident| there.entity >= resident.entity;
+                if !survivor.residents.get(&player).is_some_and(later) {
+                    survivor.residents.insert(player, resident);
+                }
+            }
+            for holder in self.granted.values_mut() {
+                if *holder == gone {
+                    *holder = into;
+                }
+            }
+            for (_, to) in self.on_the_way.values_mut() {
+                if *to == gone {
+                    *to = into;
+                }
+            }
+            self.absorbed.push((gone, into));
+            self.sync().await;
+        }
+
+        /// A region is split: ADR-0014, section 2.4. The players standing in one chunk
+        /// that the region holds go, with the chunks around it that are nearer to it
+        /// than to anyone who stays, and are a new region's; the region's outbox gets
+        /// `SplitOff`; and both begin as a restored region does, knowing nothing of
+        /// who holds what.
+        async fn split(&mut self) {
+            // A region's id is never used again, and the last is the witness's.
+            let part = RegionId((REGIONS.len() + self.parts) as u32);
+            if part.0 as usize >= PORTS - 1 {
+                return;
+            }
+            let mut seeds = Vec::new();
+            for region in self.living() {
+                if !self.may_end(region) {
+                    continue;
+                }
+                for resident in self.played[region.0 as usize].residents.values() {
+                    let chunk = resident.chunk;
+                    let held =
+                        self.holder(chunk) == Some(region) && !self.returning.contains(&chunk);
+                    if chunk != HOME && held {
+                        seeds.push((region, chunk));
+                    }
+                }
+            }
+            if seeds.is_empty() {
+                return;
+            }
+            let (region, seed) = seeds[self.dice.below(seeds.len())];
+            let index = region.0 as usize;
+            let residents = &self.played[index].residents;
+            let go: Vec<_> = residents
+                .iter()
+                .filter(|(_, resident)| resident.chunk == seed)
+                .map(|(player, _)| *player)
+                .collect();
+            let mut stay: Vec<_> = residents
+                .values()
+                .filter(|resident| resident.chunk != seed)
+                .map(|resident| resident.chunk)
+                .collect();
+            if self.holder(HOME) == Some(region) {
+                stay.push(HOME);
+            }
+            // A region that would be left with nothing is not split. The three the
+            // world began with are pinned to their areas, and always keep those.
+            if stay.is_empty() && index >= REGIONS.len() {
+                return;
+            }
+            let apart = |one: ChunkPos, other: ChunkPos| {
+                (one.x - other.x).abs().max((one.z - other.z).abs())
+            };
+            let mut chunks = Vec::new();
+            for x in seed.x - 2..=seed.x + 2 {
+                for z in seed.z - 2..=seed.z + 2 {
+                    let chunk = ChunkPos::new(x, z);
+                    let held =
+                        self.holder(chunk) == Some(region) && !self.returning.contains(&chunk);
+                    let nearer = |other: &ChunkPos| apart(chunk, seed) < apart(chunk, *other);
+                    if held && stay.iter().all(nearer) {
+                        chunks.push(chunk);
+                    }
+                }
+            }
+            self.log.push(format!(
+                "{region:?} is split: {part:?} has {go:?} and {} chunks around {seed:?}",
+                chunks.len()
+            ));
+            self.count("a split");
+            self.stop(region).await;
+
+            self.parts += 1;
+            self.sinces += 1;
+            let played = &mut self.played[index];
+            played.believes.clear();
+            let mut residents = BTreeMap::new();
+            let mut stays = Vec::new();
+            for player in go {
+                let resident = played.residents.remove(&player).expect("they stand there");
+                stays.push((player, resident.entity));
+                residents.insert(player, resident);
+            }
+            played.sent += 1;
+            let entry = Durable::SplitOff {
+                region: part,
+                players: stays,
+            };
+            played.outbox.push_back((played.sent, entry));
+            let tick = played.tick;
+            self.played[part.0 as usize] = Played {
+                since: self.sinces,
+                residents,
+                tick,
+                alive: true,
+                knows: true,
+                ..Played::default()
+            };
+            for chunk in chunks {
+                self.granted.insert(chunk, part);
+            }
+            self.sync().await;
+        }
+
+        /// The edge's process hands the edge what the routing table says of regions
+        /// that were absorbed: all of it, every time.
+        async fn tell_the_table(&mut self) {
+            if self.absorbed.is_empty() {
+                return;
+            }
+            let pairs = self.absorbed.clone();
+            self.log.push(format!("the table says {pairs:?}"));
+            self.count("the table is told");
+            self.table(&pairs);
+            self.edge.pairs(pairs).await;
+            self.sync().await;
+        }
+
         /// For a moment everything goes fast: the regions that have a link look at
         /// everything and answer everything, and the edge reads it all, a few times
         /// over and with no time passing. A region that is asked again and names the
@@ -9415,12 +10304,12 @@ mod scenarios {
         async fn hurry(&mut self) {
             self.log.push("everything hurries".to_owned());
             for _ in 0..3 {
-                for region in REGIONS {
+                for region in self.living() {
                     if !self.linked(region) {
                         continue;
                     }
                     self.tick(region, true);
-                    while !self.played[region.0 as usize].out.is_empty() {
+                    while self.linked(region) && !self.played[region.0 as usize].out.is_empty() {
                         self.deliver(region).await;
                     }
                 }
@@ -9434,13 +10323,25 @@ mod scenarios {
         }
 
         async fn step(&mut self) {
+            // Now and then a region absorbs another or is split, or the edge is told
+            // what the routing table says of that.
+            if self.reshaping && self.dice.chance(4) {
+                match self.dice.below(10) {
+                    0..=3 => self.merge().await,
+                    4..=7 => self.split().await,
+                    _ => self.tell_the_table().await,
+                }
+                self.check().await;
+                return;
+            }
             match self.dice.below(100) {
                 0..=3 => self.join().await,
                 4..=5 => self.leave().await,
                 6..=33 => self.walk().await,
                 34..=55 => {
                     // A region that has something to look at or to answer, if any.
-                    let busy: Vec<_> = REGIONS
+                    let busy: Vec<_> = self
+                        .living()
                         .into_iter()
                         .filter(|region| {
                             let played = &self.played[region.0 as usize];
@@ -9455,7 +10356,8 @@ mod scenarios {
                     }
                 }
                 56..=85 => {
-                    let busy: Vec<_> = REGIONS
+                    let busy: Vec<_> = self
+                        .living()
                         .into_iter()
                         .filter(|region| {
                             self.linked(*region) && !self.played[region.0 as usize].out.is_empty()
@@ -9502,21 +10404,38 @@ mod scenarios {
 
         /// Waits until the edge has handled everything said to it, reads everything
         /// it has sent the regions, and holds what that makes of the regions'
-        /// subscriptions against what the edge has to hold.
+        /// subscriptions against what the edge has to hold. A link the edge has ended
+        /// by itself has to be one that the table's word gave it reason to end.
         async fn sync(&mut self) {
             self.edge.drained().await;
-            let linked: Vec<_> = REGIONS
-                .into_iter()
-                .filter(|region| self.linked(*region))
-                .collect();
-            for region in &linked {
-                self.edge.settle(*region).await;
+            for region in self.edge.linked() {
+                self.edge.handled(region).await;
             }
-            // What the edge said to a region that was settled before the one whose
-            // word made it say so is on the link by now.
-            for region in &linked {
-                for message in self.edge.waiting(*region) {
-                    self.read(*region, message);
+            let ended: Vec<_> = self.edge.gone.iter().copied().collect();
+            for region in ended {
+                if !self.to_end.contains(&region) {
+                    self.fail(format!(
+                        "the edge ended its link to {region:?}, which the records give it no \
+                         reason for"
+                    ));
+                }
+                self.log
+                    .push(format!("the edge ends its link to {region:?}"));
+                self.count("the edge ends a link over the table's word");
+                self.edge.ended_by_the_edge(region).await;
+                self.edge.heard[region.0 as usize] = Heard::default();
+                self.unlinked(region);
+            }
+            if let Some(region) = self.to_end.iter().find(|region| self.linked(**region)) {
+                self.fail(format!(
+                    "the edge has not ended its link to {region:?}, which owes it an Absorbed"
+                ));
+            }
+            // What the edge said to a region before the one whose word made it say so
+            // was waited for is on the link by now.
+            for region in self.edge.linked() {
+                for message in self.edge.waiting(region) {
+                    self.read(region, message);
                 }
             }
             self.compare();
@@ -9526,11 +10445,49 @@ mod scenarios {
         /// Reads a message the edge sent a region.
         fn read(&mut self, region: RegionId, message: EdgeMessage) {
             let index = region.0 as usize;
+            if let Some(number) = message.number {
+                // What the edge is seen to send says what it keeps: the run cannot
+                // see that otherwise.
+                self.numbered[index] = self.numbered[index].max(number);
+                match &message.body {
+                    EdgeToWorker::PlayerJoin(join) => {
+                        if let Some(person) = self.people.get_mut(&join.player)
+                            && let Some(known) = &mut person.join
+                        {
+                            *known = Some(known.unwrap_or(0).max(number));
+                        }
+                    }
+                    EdgeToWorker::PlayerArrive { player, .. } => {
+                        let arrivals = self.arrivals.iter_mut();
+                        let mut theirs: Vec<_> = arrivals
+                            .filter(|(to, who, _)| *to == region && who == player)
+                            .collect();
+                        // One that is sent again has its number already.
+                        if !theirs.iter().any(|arrival| arrival.2 == Some(number))
+                            && let Some(arrival) =
+                                theirs.iter_mut().find(|arrival| arrival.2.is_none())
+                        {
+                            arrival.2 = Some(number);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let (ask, chunks, role) = match &message.body {
                 EdgeToWorker::Subscribe { ask, chunks } => (*ask, chunks, Some(Role::Viewer)),
                 EdgeToWorker::SubscribeAsGuest { ask, chunks } => (*ask, chunks, Some(Role::Guest)),
                 EdgeToWorker::Unsubscribe { ask, chunks } => (*ask, chunks, None),
-                EdgeToWorker::Confirm { .. } => return,
+                EdgeToWorker::Confirm { number } => {
+                    // The region drops what the edge has handled, if it comes to read
+                    // that: in a run with merges a confirmation is lost now and then,
+                    // as with a link that ends. The entry is then in the outbox the
+                    // region's survivor takes over, and the edge has seen it.
+                    if !self.reshaping || self.dice.chance(70) {
+                        let outbox = &mut self.played[index].outbox;
+                        outbox.retain(|(entry, _)| entry > number);
+                    }
+                    return;
+                }
                 _ => {
                     self.log.push(format!("  to {region:?}: {message:?}"));
                     self.played[index].inbox.push_back(message);
@@ -9574,7 +10531,7 @@ mod scenarios {
         /// link to against the ones it has to hold, and takes their numbers.
         fn compare(&mut self) {
             let now = Instant::now();
-            for region in REGIONS {
+            for region in ports() {
                 if !self.linked(region) {
                     continue;
                 }
@@ -9608,7 +10565,7 @@ mod scenarios {
                 }
             }
             for (index, chunk) in std::mem::take(&mut self.again) {
-                let region = REGIONS[index];
+                let region = RegionId(index as u32);
                 let Some(kept) = self.kept[index].get_mut(&chunk) else {
                     continue;
                 };
@@ -9626,7 +10583,7 @@ mod scenarios {
                     self.count("an asking that was due is made");
                 }
             }
-            for region in REGIONS {
+            for region in ports() {
                 let late = self.kept[region.0 as usize]
                     .iter()
                     .find(|(_, kept)| kept.at_once);
@@ -9643,7 +10600,7 @@ mod scenarios {
         async fn check(&mut self) {
             // Statement V: a viewer's subscription exactly where a player of the
             // region sees the chunk.
-            for region in REGIONS {
+            for region in ports() {
                 let mut seen = BTreeSet::new();
                 for person in self.people.values() {
                     if person.region == region {
@@ -9666,7 +10623,23 @@ mod scenarios {
             }
             // Statement G, and that everything is ended by the time nobody sees a
             // chunk. Statement E.
-            for region in REGIONS {
+            // Statement S: a region that stands for another has no player, no
+            // subscription and is nobody's word for who holds a chunk.
+            for gone in self.stands_for.keys() {
+                let named = |kept: &Kept| kept.answer == Answer::Told(*gone);
+                let mut subscriptions = self.kept.iter().flat_map(|kept| kept.values());
+                if self.people.values().any(|person| person.region == *gone)
+                    || !self.kept[gone.0 as usize].is_empty()
+                    || subscriptions.any(named)
+                    || self.served_by.values().any(|by| by == gone)
+                    || self.stands_for.contains_key(&self.stands_for[gone])
+                {
+                    self.fail(format!(
+                        "the records leave the edge with something of {gone:?}, which is no more"
+                    ));
+                }
+            }
+            for region in ports() {
                 for (chunk, kept) in &self.kept[region.0 as usize] {
                     if !self.seen(*chunk) {
                         self.fail(format!(
@@ -9735,22 +10708,27 @@ mod scenarios {
             self.dropped.clear();
         }
 
-        /// Lets everything come to rest: every region gets a link, looks at
-        /// everything and answers everything, and the edge reads everything, until
-        /// nothing is left to do. Then everybody has to be where the edge believes
-        /// them to be, and has to be shown everything they see as it is.
+        /// Lets everything come to rest: the edge is told what the table says, every
+        /// region gets a link, looks at everything and answers everything, and the
+        /// edge reads everything, until nothing is left to do. Then everybody has to
+        /// be where the edge believes them to be, and has to be shown everything they
+        /// see as it is.
         async fn rest(&mut self) {
             self.log.push("everything comes to rest".to_owned());
-            for _ in 0..60 {
-                for region in REGIONS {
+            for _ in 0..80 {
+                let behind = |(gone, _): &(RegionId, RegionId)| !self.stands_for.contains_key(gone);
+                if self.absorbed.iter().any(behind) {
+                    self.tell_the_table().await;
+                }
+                for region in self.living() {
                     if !self.linked(region) {
                         self.relink(region).await;
                     }
                 }
                 self.free(true);
-                for region in REGIONS {
+                for region in self.living() {
                     self.tick(region, true);
-                    while !self.played[region.0 as usize].out.is_empty() {
+                    while self.linked(region) && !self.played[region.0 as usize].out.is_empty() {
                         self.deliver(region).await;
                     }
                 }
@@ -9769,7 +10747,9 @@ mod scenarios {
                     .iter()
                     .flat_map(|subscriptions| subscriptions.values())
                     .any(|kept| kept.due || kept.at_once || kept.answer == Answer::Waiting);
-                if !busy && !due {
+                let unlinked = self.living().into_iter().any(|region| !self.linked(region));
+                let behind = |(gone, _): &(RegionId, RegionId)| !self.stands_for.contains_key(gone);
+                if !busy && !due && !unlinked && !self.absorbed.iter().any(behind) {
                     self.rested();
                     return;
                 }
@@ -9784,15 +10764,26 @@ mod scenarios {
                     self.on_the_way
                 ));
             }
-            for (index, played) in self.played.iter().enumerate() {
-                for (player, resident) in &played.residents {
+            // The edge has caught up with every merge.
+            for (gone, _) in &self.absorbed {
+                if self.stands_for.get(gone) != Some(&self.now(*gone)) {
+                    self.fail(format!(
+                        "{gone:?} is {:?} by now, and the records have it stand for {:?}",
+                        self.now(*gone),
+                        self.stands_for.get(gone)
+                    ));
+                }
+            }
+            // No stay is left in a region that the edge does not have there: every
+            // region has answered a hello of the edge since.
+            for region in self.living() {
+                for (player, resident) in &self.played[region.0 as usize].residents {
                     let believed = self.people.get(player).is_some_and(|person| {
-                        person.region == REGIONS[index] && person.entity == Some(resident.entity)
+                        person.region == region && person.entity == Some(resident.entity)
                     });
                     if !believed {
                         self.fail(format!(
-                            "{:?} has {player:?} as {resident:?}, and the edge does not",
-                            REGIONS[index]
+                            "{region:?} has {player:?} as {resident:?}, and the edge does not"
                         ));
                     }
                 }
@@ -9852,10 +10843,24 @@ mod scenarios {
                 }
             }
             self.rest().await;
-            self.edge.drained().await;
-            self.edge.quiet().await;
+            // Statement S: the edge takes no link to a region that is no more.
+            for (gone, _) in self.absorbed.clone() {
+                self.edge.offers_in_vain(gone).await;
+            }
+            self.sync().await;
             std::mem::take(&mut self.tally)
         }
+    }
+
+    /// The seeds of the generated runs a test makes: five, or those asked for with the
+    /// environment variable named, as `<first seed>,<how many>`.
+    fn runs_asked_for(variable: &str) -> (Option<(u64, u64)>, std::ops::Range<u64>) {
+        let asked = std::env::var(variable).ok().and_then(|asked| {
+            let (first, runs) = asked.split_once(',')?;
+            Some((first.parse::<u64>().ok()?, runs.parse::<u64>().ok()?))
+        });
+        let (first, runs) = asked.unwrap_or((0, 5));
+        (asked, first..first + runs)
     }
 
     /// Scenario 20. The clock of this test stands still until a run moves it.
@@ -9866,14 +10871,10 @@ mod scenarios {
     /// `CLUSTINE_WHOLE_RUN` set.
     #[tokio::test(start_paused = true)]
     async fn the_edge_holds_what_the_records_say_after_every_step_of_generated_runs() {
-        let asked = std::env::var("CLUSTINE_EDGE_RUNS").ok().and_then(|asked| {
-            let (first, runs) = asked.split_once(',')?;
-            Some((first.parse::<u64>().ok()?, runs.parse::<u64>().ok()?))
-        });
-        let (first, runs) = asked.unwrap_or((0, 5));
+        let (asked, seeds) = runs_asked_for("CLUSTINE_EDGE_RUNS");
         let mut tally: BTreeMap<&'static str, u64> = BTreeMap::new();
-        for seed in first..first + runs {
-            for (what, times) in Run::new(seed).await.play(500).await {
+        for seed in seeds {
+            for (what, times) in Run::new(seed, false).await.play(500).await {
                 *tally.entry(what).or_default() += times;
             }
         }
@@ -9899,5 +10900,3324 @@ mod scenarios {
         ] {
             assert!(tally.contains_key(what), "no run came to {what}");
         }
+    }
+
+    /// Scenario 32 of ADR-0015: the generated runs of scenario 20 with regions that
+    /// merge and split while links are lost, played by a model of ADR-0014, sections
+    /// 2.1, 2.3, 2.4, 3.3 and 3.7. A merge and a split close the region's links; a
+    /// welcome has the entries of the outbox, `Absorbed` with the absorbed region's
+    /// entries behind it and `SplitOff` among them, says how far the region had
+    /// applied, and is followed by an answer for every stay the region has; an input
+    /// and a leave are for the stay they name. The edge is told what the routing
+    /// table says of absorbed regions at moments of the run's choosing.
+    ///
+    /// Beside the edge runs what ADR-0015 says it holds, which is checked as in
+    /// scenario 20, with statement S. At rest everyone is in the region whose state
+    /// has their stay, no region has a stay the edge does not have there, and the
+    /// edge takes no link to a region that is no more. Nobody is disconnected: no
+    /// region of these runs forgets the edge, so nobody has done anything for it.
+    ///
+    /// Other runs than the five it makes can be asked for with
+    /// `CLUSTINE_EDGE_RESHAPES=<first seed>,<how many>`.
+    #[tokio::test(start_paused = true)]
+    async fn the_edge_holds_what_the_records_say_while_regions_merge_and_split() {
+        let (asked, seeds) = runs_asked_for("CLUSTINE_EDGE_RESHAPES");
+        let mut tally: BTreeMap<&'static str, u64> = BTreeMap::new();
+        for seed in seeds {
+            for (what, times) in Run::new(seed, true).await.play(600).await {
+                *tally.entry(what).or_default() += times;
+            }
+        }
+        println!("{tally:#?}");
+        if asked.is_some() {
+            return;
+        }
+        for what in [
+            "a merge",
+            "a split",
+            "a merge brings a player",
+            "a present moves a stay",
+            "a split off moves a stay",
+            "an absorbed is handled",
+            "the table is told",
+        ] {
+            assert!(tally.contains_key(what), "no run came to {what}");
+        }
+    }
+
+    // The edge through merges and splits: ADR-0015, section 9, and ADR-0014, section 10.
+    //
+    // These tests were written from those two records, ADR-0013 and section 5 of
+    // ADR-0012, without the edge's code. A merge and a split reach the edge only among
+    // the entries of a welcome, so the regions of these tests answer hellos: a `Reply`
+    // says what a region has for the edge, and the welcome, its entries and the
+    // presence answers follow from it and from the hello as ADR-0014, section 3.7, has
+    // it. Where two regions answer at the same time, a scenario is a script per link,
+    // and it is run with the scripts' messages in every order that keeps each script's
+    // own (`Orders`): the edge reads its links in no order between them.
+    //
+    // `settle` cannot be used between a welcome's entries, as it makes an entry of its
+    // own, which the welcome did not announce and which would stand where an entry
+    // that came with a merge is expected. So these tests have a witness: a player who
+    // is kept aside in a region without a link and takes no part. A region says to the
+    // witness that an action was handled, which the edge passes on whatever region
+    // says it, and the test waits for that: the edge has then read everything the
+    // region said before.
+
+    /// The player who is the witness of `Harness::witnessed`.
+    const WITNESS: u128 = 999;
+    /// Where a player stands whom these tests hand to the southern region.
+    const SOUTHERN: ChunkPos = ChunkPos::new(0, 4);
+    /// Two chunks that are seen from `HOME` and neither from `NORTHERN` nor from
+    /// `SOUTHERN`.
+    const LENT: ChunkPos = ChunkPos::new(-1, 0);
+    const SOUGHT: ChunkPos = ChunkPos::new(1, 0);
+
+    /// A region's word that the player is in it as `entity`, with their inputs up to
+    /// `last_input` applied.
+    fn present_with(player: PlayerId, entity: EntityId, last_input: u64) -> WorkerToEdge {
+        WorkerToEdge::Presence {
+            player,
+            answer: Presence::Present {
+                entity,
+                pose: Pose::at(SPAWN),
+                hotbar: [None; HOTBAR_SLOTS],
+                selected_slot: 0,
+                last_input,
+                handled: None,
+            },
+        }
+    }
+
+    fn absent(player: PlayerId) -> WorkerToEdge {
+        WorkerToEdge::Presence {
+            player,
+            answer: Presence::Absent,
+        }
+    }
+
+    fn progress(applied: u64, inputs: Vec<(PlayerId, u64)>) -> WorkerToEdge {
+        WorkerToEdge::Progress { applied, inputs }
+    }
+
+    /// The outbox entry of a region that has absorbed `region`.
+    fn absorbed(region: RegionId, since: u64, applied: u64, numbers: &[u64]) -> Durable {
+        Durable::Absorbed {
+            region,
+            since,
+            applied,
+            numbers: numbers.to_vec(),
+        }
+    }
+
+    /// The outbox entry of a region of which `region` was split off with `stays`.
+    fn split_off(region: RegionId, stays: &[(u128, i32)]) -> Durable {
+        let stay = |(who, entity): &(u128, i32)| (player(*who), EntityId(*entity));
+        Durable::SplitOff {
+            region,
+            players: stays.iter().map(stay).collect(),
+        }
+    }
+
+    /// The outbox entry that says an action of `player` was dealt with.
+    fn done(player: PlayerId, sequence: i32) -> Durable {
+        Durable::RemoteDone { player, sequence }
+    }
+
+    /// An input as the edge passes it on.
+    fn passed_on(who: u128, entity: i32, number: u64, input: PlayerInput) -> EdgeToWorker {
+        EdgeToWorker::Input {
+            player: player(who),
+            entity: EntityId(entity),
+            number,
+            input,
+        }
+    }
+
+    /// The word that a player's stay has ended.
+    fn left(who: u128, entity: Option<i32>) -> EdgeToWorker {
+        EdgeToWorker::PlayerLeave {
+            player: player(who),
+            entity: entity.map(EntityId),
+        }
+    }
+
+    /// The chunks that subscription messages among `said` ask for as `role` before the
+    /// first numbered message.
+    fn asked_before_numbered(said: &[EdgeMessage], role: Role) -> BTreeSet<ChunkPos> {
+        let mut asked = BTreeSet::new();
+        for message in said {
+            if message.number.is_some() {
+                break;
+            }
+            if is_about_subscriptions(&message.body) {
+                let (kind, chunks) = meaning(&message.body);
+                if kind == Some(role) {
+                    asked.extend(chunks);
+                }
+            }
+        }
+        asked
+    }
+
+    /// The inputs of `who` among `said`: each with the number of its message, the
+    /// entity it names and its own number.
+    fn inputs_of(said: &[EdgeMessage], who: u128) -> Vec<(u64, EntityId, u64)> {
+        let mut inputs = Vec::new();
+        for message in said {
+            if let EdgeToWorker::Input {
+                player: actor,
+                entity,
+                number,
+                ..
+            } = &message.body
+                && *actor == player(who)
+            {
+                let numbered = message.number.expect("an input is numbered");
+                inputs.push((numbered, *entity, *number));
+            }
+        }
+        inputs
+    }
+
+    /// The arrival of `who` among `said`, if there is one: its number and the player
+    /// as they arrive.
+    fn arrival_of(said: &[EdgeMessage], who: u128) -> Option<(u64, PlayerTransfer)> {
+        said.iter().find_map(|message| match &message.body {
+            EdgeToWorker::PlayerArrive {
+                player: arriving,
+                transfer,
+            } if *arriving == player(who) => Some((message.number?, transfer.clone())),
+            _ => None,
+        })
+    }
+
+    /// What a region has for the edge when it answers a hello, from which the
+    /// welcome, its entries and the presence answers follow.
+    #[derive(Debug, Clone, Default)]
+    struct Reply {
+        /// The region's word for its numbering, if it does not share the one the
+        /// hello named: it then says `Unknown`, and its outbox is numbered from 1.
+        unknown: Option<u64>,
+        /// The number of the edge's last message the region had applied.
+        applied: u64,
+        /// The entries of its outbox the edge has not confirmed, in order.
+        entries: Vec<Durable>,
+        /// The stays it has for the edge, each with the number of the last input
+        /// applied.
+        stays: Vec<(PlayerId, EntityId, u64)>,
+    }
+
+    impl Reply {
+        fn resumed() -> Self {
+            Self::default()
+        }
+
+        fn unknown(since: u64) -> Self {
+            Self {
+                unknown: Some(since),
+                ..Self::default()
+            }
+        }
+
+        fn applied(mut self, applied: u64) -> Self {
+            self.applied = applied;
+            self
+        }
+
+        fn entry(mut self, entry: Durable) -> Self {
+            self.entries.push(entry);
+            self
+        }
+
+        fn stay(mut self, who: u128, entity: i32, last_input: u64) -> Self {
+            self.stays.push((player(who), EntityId(entity), last_input));
+            self
+        }
+
+        /// The presence answers, by ADR-0014, section 3.7: one for each player the
+        /// hello named, in its order, and then `Present` for every other stay, in
+        /// ascending order of the players.
+        fn presences(&self, named: &[PlayerId]) -> Vec<WorkerToEdge> {
+            let stay = |who: &PlayerId| self.stays.iter().find(|(player, ..)| player == who);
+            let mut answers = Vec::new();
+            for who in named {
+                answers.push(match stay(who) {
+                    Some((_, entity, last_input)) => present_with(*who, *entity, *last_input),
+                    None => absent(*who),
+                });
+            }
+            let mut others: Vec<_> = self.stays.iter().collect();
+            others.retain(|(who, ..)| !named.contains(who));
+            others.sort();
+            for (who, entity, last_input) in others {
+                answers.push(present_with(*who, *entity, *last_input));
+            }
+            answers
+        }
+    }
+
+    /// Something that happens to the edge in a scenario. A script is a sequence of
+    /// these for one link, or for the routing table.
+    #[derive(Debug, Clone)]
+    enum Step {
+        /// The edge is handed a new link to the region and says hello on it.
+        Link(RegionId),
+        /// The region answers the hello with its welcome. The entries and the
+        /// presence answers follow as steps of their own, so that what another script
+        /// says can fall between any two of them.
+        Welcome(RegionId, Reply),
+        /// The region says the next entry of its outbox.
+        Entry(RegionId, Durable),
+        /// The region says something else, which the edge has read when the step is
+        /// over.
+        Says(RegionId, WorkerToEdge),
+        /// The edge's process tells it which regions the routing table says were
+        /// absorbed.
+        Pairs(Vec<(RegionId, RegionId)>),
+    }
+
+    /// How many orders of a scenario's steps are run one after the other before the
+    /// rest is left to chance, and how many are then drawn.
+    const EVERY_ORDER_UP_TO: usize = 600;
+    const ORDERS_DRAWN: usize = 400;
+
+    /// The orders in which the steps of a scenario's scripts are taken: every order
+    /// that keeps each script's own, one per run, or, where there are too many, the
+    /// first few hundred and as many again drawn by a generator of numbers. A scenario
+    /// is run anew for each, as an edge cannot be put back to where it was. Scripts
+    /// can grow while they run (a welcome is followed by as many presence answers as
+    /// its hello named players), so the orders are found by walking: each run goes as
+    /// the one before up to the last choice that has another way left, and takes that.
+    struct Orders {
+        /// The choices of the run that is under way, or was made last: which of how
+        /// many scripts went next.
+        path: Vec<(usize, usize)>,
+        at: usize,
+        runs: usize,
+        begun: bool,
+        /// Set once the orders are drawn.
+        dice: Option<Dice>,
+        /// The steps of the run that is under way, for whoever reads a failure.
+        account: Vec<String>,
+    }
+
+    impl Orders {
+        fn new() -> Self {
+            Self {
+                path: Vec::new(),
+                at: 0,
+                runs: 0,
+                begun: false,
+                dice: None,
+                account: Vec::new(),
+            }
+        }
+
+        /// Whether there is another order to run, which is then the one `choose`
+        /// gives.
+        fn another(&mut self) -> bool {
+            self.account.clear();
+            self.at = 0;
+            if !self.begun {
+                self.begun = true;
+                return true;
+            }
+            self.runs += 1;
+            if self.dice.is_some() {
+                let more = self.runs < EVERY_ORDER_UP_TO + ORDERS_DRAWN;
+                if !more {
+                    println!("{} orders were run, the later ones drawn", self.runs);
+                }
+                return more;
+            }
+            while let Some((chosen, of)) = self.path.pop() {
+                if chosen + 1 < of {
+                    self.path.push((chosen + 1, of));
+                    if self.runs >= EVERY_ORDER_UP_TO {
+                        self.path.clear();
+                        self.dice = Some(Dice(self.runs as u64));
+                    }
+                    return true;
+                }
+            }
+            // Shown to whoever asks for the test's output.
+            println!("every order was run: {}", self.runs);
+            false
+        }
+
+        /// Which of `of` scripts goes next.
+        fn choose(&mut self, of: usize) -> usize {
+            if of == 1 {
+                return 0;
+            }
+            if let Some(dice) = &mut self.dice {
+                return dice.below(of);
+            }
+            if self.at == self.path.len() {
+                self.path.push((0, of));
+            }
+            let (chosen, was) = self.path[self.at];
+            assert_eq!(was, of, "a scenario went another way under the same order");
+            self.at += 1;
+            chosen
+        }
+    }
+
+    impl Drop for Orders {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                eprintln!(
+                    "run {} of the scenario, with its steps in this order:\n{}",
+                    self.runs + 1,
+                    self.account.join("\n")
+                );
+            }
+        }
+    }
+
+    impl Harness {
+        /// An edge as `start` gives it, and a witness: a player whom the west has
+        /// placed and let go to a region the edge is never given a link to, far from
+        /// everything, where they see nothing that anyone else sees. The west has
+        /// applied their join, so nothing is kept for it.
+        async fn witnessed() -> Self {
+            let mut edge = Self::start().await;
+            let who = player(WITNESS);
+            let mut witness = edge.joined(who, EntityId(900)).await;
+            let far = ChunkPos::new(100, 100);
+            edge.say(WEST, departed(who, EntityId(900), ASIDE, far));
+            edge.caught_up(WEST);
+            edge.quiet().await;
+            edge.sync(&mut witness).await;
+            for region in REGIONS {
+                let left = &edge.at(region).subscriptions;
+                assert!(left.is_empty(), "{region:?} is still asked for {left:?}");
+            }
+            edge.witness = Some(witness);
+            edge
+        }
+
+        /// The region says that it has applied every numbered message it was sent on
+        /// its link.
+        fn caught_up(&mut self, region: RegionId) {
+            let applied = self.at(region).numbered;
+            self.tell(region, progress(applied, Vec::new()));
+        }
+
+        /// Waits until the edge has read everything `region` has said so far, or has
+        /// closed its link to the region, which is then noted in `gone`. It makes no
+        /// entry, so it can be used between the entries of a welcome. What the edge
+        /// said to the region meanwhile is kept for the test to look at.
+        async fn handled(&mut self, region: RegionId) {
+            let index = region.0 as usize;
+            let sequence = self.sequence();
+            let Some(link) = self.links[index].as_ref() else {
+                return;
+            };
+            let asked = WorkerToEdge::ToPlayer {
+                player: player(WITNESS),
+                event: PlayerEvent::Acknowledged { sequence },
+            };
+            if link.try_send(asked).is_err() {
+                self.links[index] = None;
+                self.gone.insert(region);
+                return;
+            }
+            loop {
+                let witness = self.witness.as_mut().expect("the test has a witness");
+                if witness.acknowledged.contains(&sequence) {
+                    return;
+                }
+                let link = self.links[index].as_mut().expect("the region has a link");
+                tokio::select! {
+                    biased;
+                    ended = &mut self.task => panic!("the edge's task ended: {ended:?}"),
+                    packet = timeout(SOON, witness.packets.recv()) => {
+                        let packet = packet
+                            .unwrap_or_else(|_| panic!("the edge does not read what {region:?} says"))
+                            .expect("the edge ended the witness's connection");
+                        witness.take(packet);
+                    }
+                    message = link.recv() => match message {
+                        Some(message) => {
+                            self.heard[index].note(region, &message);
+                            self.heard[index].said.push_back(message);
+                        }
+                        None => {
+                            self.links[index] = None;
+                            self.gone.insert(region);
+                            return;
+                        }
+                    },
+                }
+            }
+        }
+
+        /// Says something as `region`, if its link is there and the edge has not
+        /// closed it, and waits until the edge has read it. A region whose link the
+        /// edge has closed says it into nothing, as a real one would.
+        async fn says(&mut self, region: RegionId, message: WorkerToEdge) {
+            let index = region.0 as usize;
+            // A region that says `NotMine` to a guest has ended that subscription.
+            if let WorkerToEdge::NotMine { chunk, ask } = &message {
+                let subscriptions = &mut self.heard[index].subscriptions;
+                if subscriptions.get(chunk) == Some(&(Role::Guest, *ask)) {
+                    subscriptions.remove(chunk);
+                }
+            }
+            let Some(link) = self.links[index].as_ref() else {
+                return;
+            };
+            if link.try_send(message).is_ok() {
+                self.handled(region).await;
+            }
+        }
+
+        /// Everything the edge has said to `region` that no test has looked at, once
+        /// it has read what the region has said so far. Unlike `said` it makes no
+        /// entry.
+        async fn sent(&mut self, region: RegionId) -> Vec<EdgeMessage> {
+            self.handled(region).await;
+            self.waiting(region)
+        }
+
+        /// Tells the edge which regions the routing table says were absorbed, and
+        /// waits until it has taken that.
+        async fn pairs(&mut self, pairs: Vec<(RegionId, RegionId)>) {
+            assert!(self.relinks.absorbed(pairs).await, "the edge is gone");
+            let sender = &self.relinks.sender;
+            let taken = async {
+                while sender.capacity() < sender.max_capacity() {
+                    tokio::task::yield_now().await;
+                }
+            };
+            timeout(SOON, taken)
+                .await
+                .expect("the edge takes what the routing table says");
+        }
+
+        /// Waits until the edge has closed its link to `region` by itself and has
+        /// said so to whoever gives it links. What it said on the link before is
+        /// kept for the test to look at.
+        async fn ended_by_the_edge(&mut self, region: RegionId) {
+            let index = region.0 as usize;
+            if !self.gone.remove(&region) {
+                loop {
+                    let link = self.links[index].as_mut().expect("the region has a link");
+                    let message = tokio::select! {
+                        biased;
+                        ended = &mut self.task => panic!("the edge's task ended: {ended:?}"),
+                        message = timeout(SOON, link.recv()) => message,
+                    };
+                    let message = message
+                        .unwrap_or_else(|_| panic!("the edge did not end its link to {region:?}"));
+                    let Some(message) = message else {
+                        break;
+                    };
+                    self.heard[index].note(region, &message);
+                    self.heard[index].said.push_back(message);
+                }
+                self.links[index] = None;
+            }
+            let word = (region, self.epochs[index]);
+            if let Some(at) = self.ended.iter().position(|ended| *ended == word) {
+                self.ended.remove(at);
+                return;
+            }
+            loop {
+                let ended = timeout(SOON, self.relinks.ended())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("the edge did not say that its link to {region:?} ended")
+                    })
+                    .expect("the edge is there");
+                if ended == word {
+                    return;
+                }
+                self.ended.push(ended);
+            }
+        }
+
+        /// Hands the edge a link to a region that is no more, and makes sure that the
+        /// edge drops it without a hello.
+        async fn offers_in_vain(&mut self, region: RegionId) {
+            let index = region.0 as usize;
+            self.epochs[index] += 1;
+            let (link, mut worker) = link_to(region, self.epochs[index]);
+            assert!(self.relinks.replace(link).await);
+            let said = tokio::select! {
+                biased;
+                ended = &mut self.task => panic!("the edge's task ended: {ended:?}"),
+                said = timeout(SOON, worker.recv()) => said,
+            };
+            let said = said.unwrap_or_else(|_| {
+                panic!("the edge keeps a link to {region:?}, which is no more")
+            });
+            assert!(
+                said.is_none(),
+                "the edge said {said:?} to {region:?}, which is no more"
+            );
+        }
+
+        /// The edge is handed a new link to `region`; its hello is kept for `hello`.
+        async fn link(&mut self, region: RegionId) {
+            let hello = self.relink(region).await;
+            self.hellos[region.0 as usize] = Some(hello);
+        }
+
+        /// The hello the edge said to `region` on the last link `link` made.
+        fn hello(&self, region: RegionId) -> &Hello {
+            let hello = self.hellos[region.0 as usize].as_ref();
+            hello.expect("the edge was given a link to the region")
+        }
+
+        /// Takes one step of a script, and returns the steps that follow from it and
+        /// come before the rest of its script.
+        async fn take(&mut self, step: Step) -> Vec<Step> {
+            match step {
+                Step::Link(region) => {
+                    self.link(region).await;
+                    Vec::new()
+                }
+                Step::Welcome(region, reply) => {
+                    let index = region.0 as usize;
+                    let named = match &self.hellos[index] {
+                        Some(hello) => hello.players.clone(),
+                        None => Vec::new(),
+                    };
+                    let presences = reply.presences(&named);
+                    let (entries, answers) = (reply.entries.len() as u32, presences.len() as u32);
+                    let welcome = match reply.unknown {
+                        Some(since) => {
+                            // Its outbox begins anew for an edge it does not share a
+                            // numbering with.
+                            self.outbox[index] = 0;
+                            Welcome::Unknown {
+                                since,
+                                entries,
+                                presences: answers,
+                                applied: reply.applied,
+                            }
+                        }
+                        None => Welcome::Resumed {
+                            entries,
+                            presences: answers,
+                            applied: reply.applied,
+                        },
+                    };
+                    self.says(region, WorkerToEdge::Welcome(welcome)).await;
+                    let entries = reply.entries.into_iter();
+                    let mut follow: Vec<_> =
+                        entries.map(|entry| Step::Entry(region, entry)).collect();
+                    let answers = presences.into_iter();
+                    follow.extend(answers.map(|answer| Step::Says(region, answer)));
+                    follow
+                }
+                Step::Entry(region, entry) => {
+                    let number = &mut self.outbox[region.0 as usize];
+                    *number += 1;
+                    let number = *number;
+                    self.says(region, WorkerToEdge::Outbox { number, entry })
+                        .await;
+                    Vec::new()
+                }
+                Step::Says(region, message) => {
+                    self.says(region, message).await;
+                    Vec::new()
+                }
+                Step::Pairs(pairs) => {
+                    self.pairs(pairs).await;
+                    Vec::new()
+                }
+            }
+        }
+
+        /// Runs the scripts with their steps in the order `orders` gives.
+        async fn play(&mut self, scripts: Vec<Vec<Step>>, orders: &mut Orders) {
+            let mut scripts: Vec<VecDeque<Step>> =
+                scripts.into_iter().map(VecDeque::from).collect();
+            loop {
+                let ready: Vec<_> = (0..scripts.len())
+                    .filter(|script| !scripts[*script].is_empty())
+                    .collect();
+                if ready.is_empty() {
+                    return;
+                }
+                let script = ready[orders.choose(ready.len())];
+                let step = scripts[script].pop_front().expect("the script has a step");
+                let mut told = format!("{step:?}");
+                if told.len() > 400 {
+                    told.truncate(400);
+                }
+                orders.account.push(told);
+                for follows in self.take(step).await.into_iter().rev() {
+                    scripts[script].push_front(follows);
+                }
+            }
+        }
+
+        /// The region answers the hello of its link: the welcome, its entries and
+        /// the presence answers, one after the other.
+        async fn answer(&mut self, region: RegionId, reply: Reply) {
+            let script = vec![Step::Welcome(region, reply)];
+            self.play(vec![script], &mut Orders::new()).await;
+        }
+
+        /// A player who has entered the world as `entity` and whom the west, unless
+        /// it is to be their region, has let go to `region`, into `chunk`. The west
+        /// has applied their join, and everything else is as the hand-over left it.
+        async fn settler(
+            &mut self,
+            who: u128,
+            entity: i32,
+            region: RegionId,
+            chunk: ChunkPos,
+        ) -> Client {
+            let client = self.joined(player(who), EntityId(entity)).await;
+            self.caught_up(WEST);
+            if region != WEST {
+                self.say(WEST, departed(player(who), EntityId(entity), region, chunk));
+            }
+            self.quiet().await;
+            client
+        }
+
+        /// The player makes a step. Returns the region the edge passes it on to, the
+        /// entity it names and its number among the player's inputs. That region has
+        /// to have a link.
+        async fn acts(&mut self, client: &Client) -> (RegionId, EntityId, u64) {
+            self.input(client, step_into(HOME)).await;
+            self.drained().await;
+            for region in self.linked() {
+                self.handled(region).await;
+            }
+            // Without the links the edge has closed, which the waiting showed.
+            let mut found = Vec::new();
+            for region in self.linked() {
+                for message in self.waiting(region) {
+                    if let EdgeToWorker::Input {
+                        player,
+                        entity,
+                        number,
+                        ..
+                    } = message.body
+                        && player == client.player
+                    {
+                        found.push((number, region, entity));
+                    }
+                }
+            }
+            // What they did before can have been sent again; this is their last.
+            found.sort();
+            let (number, region, entity) = found
+                .pop()
+                .unwrap_or_else(|| panic!("no region was sent what {:?} did", client.player));
+            (region, entity, number)
+        }
+
+        /// An action of `who` about `COMMON` that the west passes on to `to`, where it
+        /// is under way when this returns.
+        async fn under_way(&mut self, who: u128, to: RegionId) -> RemoteAction {
+            let action = breaking(player(who), self.sequence(), COMMON);
+            self.say(WEST, remote(&action, Some(to)));
+            self.settle(WEST).await;
+            action
+        }
+
+        /// The player makes `steps` steps, which the edge has taken when this
+        /// returns.
+        async fn walks(&mut self, client: &Client, chunk: ChunkPos, steps: usize) {
+            for _ in 0..steps {
+                self.input(client, step_into(chunk)).await;
+            }
+            self.drained().await;
+        }
+    }
+
+    /// The subscription messages among `said`.
+    fn subscriptions(said: Vec<EdgeMessage>) -> Vec<EdgeToWorker> {
+        let bodies = said.into_iter().map(|message| message.body);
+        bodies.filter(is_about_subscriptions).collect()
+    }
+
+    /// The highest number among the entries the edge has confirmed in `said`.
+    fn confirmed(said: &[EdgeMessage]) -> Option<u64> {
+        let confirmations = said.iter().filter_map(|message| match message.body {
+            EdgeToWorker::Confirm { number } => Some(number),
+            _ => None,
+        });
+        confirmations.max()
+    }
+
+    /// Scenario 1. A region says whom it has, also those the hello did not name. A stay
+    /// the edge does not have is the region's to end, with the entity the region said.
+    #[tokio::test]
+    async fn a_stay_the_edge_does_not_have_is_ended_at_the_region_that_says_it_has_it() {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, WEST, HOME).await;
+        let applied = edge.at(WEST).numbered;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let reply = Reply::resumed().applied(applied);
+        edge.answer(WEST, reply.stay(1, 5, 0).stay(2, 9, 0)).await;
+        let said = edge.sent(WEST).await;
+        assert_eq!(numbered(&said), [(applied + 1, left(2, Some(9)))]);
+        let asked = subscriptions(said);
+        assert!(asked.is_empty(), "{asked:?}");
+        for region in [EAST, NORTH] {
+            let said = edge.sent(region).await;
+            assert!(said.is_empty(), "{region:?} was sent {said:?}");
+        }
+        assert!(first.connected());
+        assert_eq!(edge.acts(&first).await, (WEST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 1, and the rest of case 4 of section 2.1: the edge has the player, as
+    /// another entity under another region, or under another region without an entity
+    /// yet. The region's stay is ended, and the edge's own is untouched.
+    #[tokio::test]
+    async fn a_stay_of_a_player_the_edge_has_otherwise_is_ended_and_the_edges_own_is_untouched() {
+        let mut edge = Harness::witnessed().await;
+        let mut second = edge.settler(2, 6, EAST, EASTERN).await;
+        // The third has joined, and the west has not placed them yet.
+        let mut third = edge.join(player(3)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        edge.quiet().await;
+
+        edge.link(NORTH).await;
+        assert!(edge.hello(NORTH).players.is_empty());
+        let reply = Reply::resumed().stay(2, 9, 0).stay(3, 4, 0);
+        edge.answer(NORTH, reply).await;
+        let said = edge.sent(NORTH).await;
+        let expected = [(1, left(2, Some(9))), (2, left(3, Some(4)))];
+        assert_eq!(numbered(&said), expected);
+        let asked = subscriptions(said);
+        assert!(asked.is_empty(), "{asked:?}");
+
+        assert!(second.connected());
+        assert_eq!(edge.acts(&second).await, (EAST, EntityId(6), 1));
+        edge.says(WEST, spawned(player(3), EntityId(7))).await;
+        assert!(third.connected());
+        assert_eq!(edge.acts(&third).await, (WEST, EntityId(7), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 2. A region that has a player as another entity than the edge has
+    /// them under that very region has a stay the edge does not have: that stay is
+    /// ended, and the player is not disconnected for it.
+    #[tokio::test]
+    async fn a_player_a_region_has_as_another_entity_is_not_disconnected() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        let applied = edge.at(WEST).numbered;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let reply = Reply::resumed().applied(applied).stay(1, 77, 0);
+        edge.answer(WEST, reply).await;
+        let said = edge.sent(WEST).await;
+        assert_eq!(numbered(&said), [(applied + 1, left(1, Some(77)))]);
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 2. A player the hello named and the region does not have is
+    /// disconnected, with a leave that names their entity.
+    #[tokio::test]
+    async fn a_player_a_region_says_it_does_not_have_is_disconnected() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        let applied = edge.at(WEST).numbered;
+        edge.link(WEST).await;
+        edge.answer(WEST, Reply::resumed().applied(applied)).await;
+        client.disconnected().await;
+        let said = edge.sent(WEST).await;
+        assert_eq!(numbered(&said), [(applied + 1, left(1, Some(5)))]);
+        edge.end().await;
+    }
+
+    /// Scenarios 2 and 6. A player who is entering the world is not disconnected by
+    /// `Absent` while their join is kept: the region has yet to apply it. Whether it
+    /// is kept, the welcome says before anything else is done: a join at or below its
+    /// `applied` is dropped, and `Absent` then finds none.
+    #[tokio::test]
+    async fn a_player_who_is_absent_stays_only_while_their_join_is_kept() {
+        for applied_the_join in [false, true] {
+            let mut edge = Harness::witnessed().await;
+            let mut client = edge.join(player(1)).await;
+            let (number, join) = edge.next_numbered(WEST).await;
+            assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+            edge.lose(WEST).await;
+            edge.link(WEST).await;
+            assert_eq!(edge.hello(WEST).players, [player(1)]);
+            let applied = if applied_the_join { number } else { number - 1 };
+            edge.answer(WEST, Reply::resumed().applied(applied)).await;
+            if applied_the_join {
+                // They quit, as far as any region can tell: no entity was told.
+                client.disconnected().await;
+                let said = edge.sent(WEST).await;
+                assert_eq!(numbered(&said), [(number + 1, left(1, None))]);
+            } else {
+                let sent = numbered(&edge.sent(WEST).await);
+                assert!(
+                    matches!(&sent[..], [(again, EdgeToWorker::PlayerJoin(_))] if *again == number),
+                    "{sent:?}"
+                );
+                assert!(client.connected());
+                edge.says(WEST, spawned(player(1), EntityId(5))).await;
+                assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+            }
+            edge.end().await;
+        }
+    }
+
+    /// Scenario 2. A player who is on their way to a region is not disconnected by its
+    /// `Absent`: their arrival is among what is kept for it.
+    #[tokio::test]
+    async fn a_player_who_is_absent_stays_while_their_arrival_is_kept() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, EAST, EASTERN).await;
+        edge.link(EAST).await;
+        assert_eq!(edge.hello(EAST).players, [player(1)]);
+        edge.answer(EAST, Reply::resumed()).await;
+        let arrival = EdgeToWorker::PlayerArrive {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0, EASTERN),
+        };
+        assert_eq!(numbered(&edge.sent(EAST).await), [(1, arrival)]);
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// What scenario 3 begins with: the west's player has made three steps, of which
+    /// the west has said nothing, and the west has named the east for `COMMON`. Then
+    /// the east answers a hello that named nobody with a `Present` for that stay,
+    /// with the first of the three steps applied. Returns what the east was sent.
+    async fn a_stay_another_region_has() -> (Harness, Client, Vec<EdgeMessage>) {
+        let mut edge = Harness::witnessed().await;
+        let client = edge.settler(1, 5, WEST, HOME).await;
+        edge.tell(WEST, elsewhere(COMMON, edge.ask(WEST, COMMON), EAST));
+        edge.walks(&client, HOME, 3).await;
+        edge.quiet().await;
+        assert_eq!(edge.at(EAST).chunks(Role::Guest), set(&[COMMON]));
+
+        edge.link(EAST).await;
+        let hello = edge.hello(EAST);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty());
+        assert_eq!(hello.guests, [COMMON]);
+        edge.answer(EAST, Reply::resumed().stay(1, 5, 1)).await;
+        let said = edge.sent(EAST).await;
+        (edge, client, said)
+    }
+
+    /// Scenario 3, as far as it is about what the stay's new region is sent that is
+    /// numbered: the inputs above the answer's `last_input`, and no others.
+    #[tokio::test]
+    #[ignore = "finding: a Present that moves a stay has every kept input sent, also those up to its last_input"]
+    async fn a_stay_another_region_says_it_has_is_sent_only_the_inputs_above_the_answers_last() {
+        // The sequence: a player of the west makes three steps, kept as inputs 1 to
+        // 3; the east says `Present { last_input: 1 }` for that stay in answer to a
+        // hello that named nobody.
+        //
+        // The records: ADR-0015, section 2.1, case 3 ("the kept inputs up to
+        // `last_input` are dropped; ... then every input still kept is sent to
+        // `R`"), its scenario 3 ("the inputs above `last_input` go to `R`"), and
+        // ADR-0014, rule 38 ("every input of it the edge keeps above the answer's
+        // `last_input` is sent here").
+        //
+        // What happened: the east is sent the inputs 1, 2 and 3; with `last_input`
+        // 3 it is sent all three as well. The region passes over what is not above
+        // the stay's last (ADR-0014, section 2.1), so nothing is applied twice.
+        let (edge, _client, said) = a_stay_another_region_has().await;
+        let step = step_into(HOME);
+        let expected = [
+            (1, passed_on(1, 5, 2, step.clone())),
+            (2, passed_on(1, 5, 3, step)),
+        ];
+        assert_eq!(numbered(&said), expected);
+        edge.end().await;
+    }
+
+    /// Scenario 3. A region says `Present` for a stay the edge has under another: the
+    /// stay is that region's, by a merge or a split the edge has not caught up with.
+    /// Nobody arrives; the view is asked of the region before anything the player did
+    /// is sent there; and the region they were under keeps, as a guest's, what it was
+    /// asked for and had not said another holds.
+    #[tokio::test]
+    async fn a_stay_another_region_says_it_has_is_that_regions_without_an_arrival() {
+        let (mut edge, mut client, said) = a_stay_another_region_has().await;
+        assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(HOME));
+        // Everything numbered is of that stay, in order, and has what the east had
+        // not applied.
+        let sent = numbered(&said);
+        let steps = inputs_of(&said, 1);
+        assert_eq!(steps.len(), sent.len(), "{sent:?}");
+        assert!(steps.iter().all(|(_, entity, _)| *entity == EntityId(5)));
+        let last: Vec<_> = steps
+            .iter()
+            .rev()
+            .take(2)
+            .map(|(_, _, step)| *step)
+            .collect();
+        assert_eq!(last, [3, 2], "{sent:?}");
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(HOME));
+        assert!(edge.at(EAST).chunks(Role::Guest).is_empty());
+
+        // ADR-0013, section 2: what was told elsewhere carried nothing and is ended;
+        // the rest the player still sees, so it is a guest's.
+        let asked = subscriptions(edge.sent(WEST).await);
+        let rest = minus(&view(HOME), &set(&[COMMON]));
+        let expected = BTreeSet::from([(None, set(&[COMMON])), (Some(Role::Guest), rest.clone())]);
+        assert_eq!(meanings(&asked), expected);
+        assert!(edge.at(WEST).chunks(Role::Viewer).is_empty());
+        assert_eq!(edge.at(WEST).chunks(Role::Guest), rest);
+
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 4));
+        let said = edge.sent(EAST).await;
+        assert!(said.is_empty(), "{said:?}");
+        edge.end().await;
+    }
+
+    /// Scenario 4. The region's word that it placed a player was lost with a link.
+    /// The welcome of the next says that the region had applied their join, so the
+    /// `Present` is the stay of that join.
+    #[tokio::test]
+    async fn a_player_whose_join_the_region_had_applied_is_placed_by_its_presence_answer() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.join(player(1)).await;
+        let (number, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let reply = Reply::resumed().applied(number).stay(1, 5, 0);
+        edge.answer(WEST, reply).await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 4. The welcome says that the region had not applied the join when it
+    /// made its answers: the `Present` is of a stay from before the join, which the
+    /// join will end. Nothing is done with it; the join is sent again, and the region
+    /// then places the player anew. What the client sends before that is dropped
+    /// (section 7).
+    #[tokio::test]
+    async fn a_presence_answer_from_before_a_players_join_does_not_place_them() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.join(player(1)).await;
+        let (number, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        let reply = Reply::resumed().applied(number - 1).stay(1, 4, 0);
+        edge.answer(WEST, reply).await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(
+            matches!(&sent[..], [(again, EdgeToWorker::PlayerJoin(_))] if *again == number),
+            "{sent:?}"
+        );
+        let asked = subscriptions(said);
+        assert!(asked.is_empty(), "{asked:?}");
+
+        edge.walks(&client, HOME, 1).await;
+        let said = edge.sent(WEST).await;
+        assert!(said.is_empty(), "{said:?}");
+
+        edge.says(WEST, spawned(player(1), EntityId(6))).await;
+        edge.sent(WEST).await;
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+        let (region, entity, _) = edge.acts(&client).await;
+        assert_eq!((region, entity), (WEST, EntityId(6)));
+        assert!(client.connected());
+        edge.end().await;
+    }
+
+    /// Scenario 5, the sequence of the review's defect 2. The west is split with the
+    /// player in the part. The player leaves before the edge has read that, so the
+    /// leave goes to the west, which no longer has the stay and counts it as applied.
+    /// The west then absorbs the part, which brings the stay back, and the player
+    /// joins again. The west's next welcome has a `Present` for the old stay and no
+    /// leave is kept: only the welcome's `applied`, which is below the join, tells the
+    /// edge that this is not the stay of the join.
+    #[tokio::test]
+    async fn a_player_who_joins_again_is_not_placed_as_the_stay_a_merge_brought_back() {
+        let mut edge = Harness::witnessed().await;
+        let before = edge.settler(1, 5, WEST, HOME).await;
+        let applied = edge.at(WEST).numbered;
+        edge.link(WEST).await;
+        edge.leave(&before).await;
+        let split = Reply::resumed().applied(applied);
+        edge.answer(WEST, split.entry(split_off(PART, &[(1, 5)])))
+            .await;
+        let said = edge.sent(WEST).await;
+        assert_eq!(numbered(&said), [(applied + 1, left(1, Some(5)))]);
+
+        // The merge closes the west's links. The player comes back meanwhile.
+        edge.lose(WEST).await;
+        let mut again = edge.join(player(1)).await;
+        edge.drained().await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let merged = Reply::resumed().applied(applied + 1);
+        let merged = merged.entry(absorbed(PART, 40, 0, &[])).stay(1, 5, 0);
+        edge.answer(WEST, merged).await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(
+            matches!(&sent[..], [(join, EdgeToWorker::PlayerJoin(_))] if *join == applied + 2),
+            "{sent:?}"
+        );
+        let asked = subscriptions(said);
+        assert!(asked.is_empty(), "placed as their old self: {asked:?}");
+
+        edge.says(WEST, spawned(player(1), EntityId(8))).await;
+        assert_eq!(edge.acts(&again).await, (WEST, EntityId(8), 1));
+        assert!(again.connected());
+        edge.end().await;
+    }
+
+    /// Scenario 6. What a welcome says was applied is dropped before what was kept is
+    /// sent: without it, the join would be sent again.
+    #[tokio::test]
+    async fn what_a_welcome_says_was_applied_is_not_sent_again() {
+        for applied_the_join in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let mut client = edge.joined(player(1), EntityId(5)).await;
+            let join = edge.at(WEST).numbered;
+            edge.walks(&client, HOME, 1).await;
+            edge.quiet().await;
+            edge.link(WEST).await;
+            let applied = if applied_the_join { join } else { join - 1 };
+            edge.answer(WEST, Reply::resumed().applied(applied).stay(1, 5, 0))
+                .await;
+            let sent = numbered(&edge.sent(WEST).await);
+            let step = (join + 1, passed_on(1, 5, 1, step_into(HOME)));
+            if applied_the_join {
+                assert_eq!(sent, [step]);
+            } else {
+                assert_eq!(sent.len(), 2, "{sent:?}");
+                assert!(matches!(&sent[0], (again, EdgeToWorker::PlayerJoin(_)) if *again == join));
+                assert_eq!(sent[1], step);
+            }
+            assert!(client.connected());
+            edge.end().await;
+        }
+    }
+
+    /// What the tests of a merge begin with.
+    struct Merging {
+        edge: Harness,
+        /// The first player, who is the north's.
+        north: Client,
+        /// The second player, who is the west's.
+        west: Client,
+        /// An action of the first player that is kept for the east.
+        action: RemoteAction,
+    }
+
+    /// The east is about to absorb the north. The first player is the north's, at
+    /// `NORTHERN`; the north has applied their arrival, and they have made four steps
+    /// since, which are the north's messages 2 to 5. The second player is the west's,
+    /// at `HOME`, and the west has named the north for `LENT`, so the edge is a guest
+    /// there. The east has one message kept, an action of the first player about
+    /// `SOUGHT`, which the second sees, so that it made the edge a guest there.
+    async fn before_a_merge() -> Merging {
+        let mut edge = Harness::witnessed().await;
+        let north = edge.settler(1, 5, NORTH, NORTHERN).await;
+        edge.caught_up(NORTH);
+        let west = edge.settler(2, 6, WEST, HOME).await;
+        edge.walks(&north, NORTHERN, 4).await;
+        edge.tell(WEST, elsewhere(LENT, edge.ask(WEST, LENT), NORTH));
+        let action = breaking(player(1), edge.sequence(), SOUGHT);
+        edge.say(NORTH, remote(&action, Some(EAST)));
+        edge.quiet().await;
+        assert_eq!(edge.at(NORTH).chunks(Role::Viewer), view(NORTHERN));
+        assert_eq!(edge.at(NORTH).chunks(Role::Guest), set(&[LENT]));
+        assert_eq!(edge.at(NORTH).numbered, 5);
+        assert_eq!(edge.at(EAST).chunks(Role::Guest), set(&[SOUGHT]));
+        assert_eq!(edge.at(EAST).numbered, 1);
+        Merging {
+            edge,
+            north,
+            west,
+            action,
+        }
+    }
+
+    /// The east's welcome after it absorbed the north of `before_a_merge`, which had
+    /// applied the edge's messages up to 3: the arrival and two steps.
+    fn merged() -> Reply {
+        Reply::resumed().entry(absorbed(NORTH, 1, 3, &[]))
+    }
+
+    /// What the east of `before_a_merge` is sent that is numbered when the entries of
+    /// `merged` are through: what was kept for it, and behind that the north's
+    /// messages 4 and 5 under the east's next numbers.
+    fn kept_after_the_merge(action: &RemoteAction) -> Vec<(u64, EdgeToWorker)> {
+        let step = step_into(NORTHERN);
+        vec![
+            (1, EdgeToWorker::Remote(action.clone())),
+            (2, passed_on(1, 5, 3, step.clone())),
+            (3, passed_on(1, 5, 4, step)),
+        ]
+    }
+
+    /// Looks at what the east of `before_a_merge` was sent after `merged`, with a
+    /// `Present` for the first player: scenario 7.
+    async fn as_after_the_merge(edge: &mut Harness, north: &mut Client, action: &RemoteAction) {
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(NORTHERN));
+        assert_eq!(asked_before_numbered(&said, Role::Guest), set(&[LENT]));
+        assert_eq!(numbered(&said), kept_after_the_merge(action));
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(NORTHERN));
+        assert_eq!(edge.at(EAST).chunks(Role::Guest), set(&[LENT, SOUGHT]));
+        assert!(north.connected());
+        assert_eq!(edge.acts(north).await, (EAST, EntityId(5), 5));
+    }
+
+    /// Scenario 7.
+    #[tokio::test]
+    async fn what_the_edge_had_at_an_absorbed_region_it_has_at_the_survivor_from_the_absorbed_on() {
+        let Merging {
+            mut edge,
+            mut north,
+            mut west,
+            action,
+        } = before_a_merge().await;
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        // Rule 43: the hello names nothing of the absorbed region.
+        let hello = edge.hello(EAST);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty());
+        assert_eq!(hello.guests, [SOUGHT]);
+        edge.answer(EAST, merged().stay(1, 5, 2)).await;
+        as_after_the_merge(&mut edge, &mut north, &action).await;
+
+        // Statement S: the north has no link, and is given none.
+        edge.offers_in_vain(NORTH).await;
+        // What the north was to show the second player, the east shows them.
+        edge.tell(EAST, snapshot(LENT, edge.ask(EAST, LENT)));
+        assert!(edge.shows(&mut west, EAST, LENT).await);
+        // And the subscription that was told elsewhere with the north is told
+        // elsewhere with the east: its `NotMine` has the west asked again.
+        edge.tell(EAST, not_mine(LENT, edge.ask(EAST, LENT)));
+        edge.settle(EAST).await;
+        let asked = edge.asked(WEST).await;
+        assert!(
+            matches!(&asked[..], [EdgeToWorker::Subscribe { chunks, .. }] if chunks == &[LENT]),
+            "{asked:?}"
+        );
+        edge.end().await;
+    }
+
+    /// Scenario 8. A player the absorbed region's `Absorbed` made the survivor's, and
+    /// of whom the welcome's presence has no `Present`, is absent: here the welcome
+    /// announces no answers at all.
+    #[tokio::test]
+    async fn a_player_a_merge_brought_and_the_survivor_does_not_have_is_disconnected() {
+        let Merging {
+            mut edge,
+            mut north,
+            west: _west,
+            action,
+        } = before_a_merge().await;
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        edge.answer(EAST, merged()).await;
+        north.disconnected().await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(NORTHERN));
+        let mut expected = kept_after_the_merge(&action);
+        expected.push((4, left(1, Some(5))));
+        assert_eq!(numbered(&said), expected);
+        // What the second player sees of it stays, as a guest's.
+        assert!(edge.at(EAST).chunks(Role::Viewer).is_empty());
+        let mut still_seen = both(&view(HOME), &view(NORTHERN));
+        still_seen.extend([LENT, SOUGHT]);
+        assert_eq!(edge.at(EAST).chunks(Role::Guest), still_seen);
+        edge.end().await;
+    }
+
+    /// Scenario 8, where the welcome announces an answer, and it is for someone else.
+    #[tokio::test]
+    async fn a_player_a_merge_brought_is_judged_when_the_answers_announced_have_come() {
+        let Merging {
+            mut edge,
+            mut north,
+            west: _west,
+            action,
+        } = before_a_merge().await;
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        edge.answer(EAST, merged().stay(8, 80, 0)).await;
+        north.disconnected().await;
+        let mut expected = kept_after_the_merge(&action);
+        expected.push((4, left(8, Some(80))));
+        expected.push((5, left(1, Some(5))));
+        assert_eq!(numbered(&edge.sent(EAST).await), expected);
+        edge.end().await;
+    }
+
+    /// Scenario 8. A player a merge brought whose arrival is among what was kept for
+    /// the absorbed region and goes to the survivor is on their way there, and is not
+    /// disconnected for want of a `Present`.
+    #[tokio::test]
+    async fn a_player_a_merge_brought_stays_while_their_arrival_is_kept_for_the_survivor() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, NORTH, NORTHERN).await;
+        assert_eq!(edge.at(NORTH).numbered, 1);
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        // The north had applied nothing.
+        let reply = Reply::resumed().entry(absorbed(NORTH, 1, 0, &[]));
+        edge.answer(EAST, reply).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(NORTHERN));
+        let arrival = EdgeToWorker::PlayerArrive {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0, NORTHERN),
+        };
+        assert_eq!(numbered(&said), [(1, arrival)]);
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 9. The `Absorbed` says another `since` than the edge holds for the
+    /// absorbed region, of which the edge has seen entries: that region had forgotten
+    /// the edge. Nothing kept for it goes to the survivor, and an action among it is
+    /// told to its player as handled. Its players become the survivor's all the same
+    /// and are judged by the presence, which has none of them.
+    #[tokio::test]
+    async fn nothing_kept_for_an_absorbed_region_that_had_forgotten_the_edge_goes_to_the_survivor()
+    {
+        let Merging {
+            mut edge,
+            mut north,
+            west: _west,
+            action,
+        } = before_a_merge().await;
+        // An action of a third player is under way to the north.
+        let mut third = edge.settler(3, 7, WEST, HOME).await;
+        let given_up = breaking(player(3), edge.sequence(), NORTHERN);
+        edge.say(WEST, remote(&given_up, Some(NORTH)));
+        edge.quiet().await;
+        assert_eq!(edge.at(NORTH).numbered, 6);
+        assert!(edge.outbox[NORTH.0 as usize] > 0);
+
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let reply = Reply::resumed().entry(absorbed(NORTH, 9, 3, &[]));
+        edge.answer(EAST, reply).await;
+        north.disconnected().await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Guest), set(&[LENT]));
+        let expected = [
+            (1, EdgeToWorker::Remote(action.clone())),
+            (2, left(1, Some(5))),
+        ];
+        assert_eq!(numbered(&said), expected);
+        edge.acknowledged(&mut third, given_up.sequence).await;
+        edge.end().await;
+    }
+
+    /// Scenario 10. The edge never had anything from the absorbed region: no entry
+    /// seen, nothing reported applied. Then nothing it kept for it was applied,
+    /// whatever the entry says, and all of it goes to the survivor.
+    #[tokio::test]
+    async fn all_that_was_kept_for_an_absorbed_region_the_edge_never_heard_from_goes_to_the_survivor()
+     {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, SOUTH, SOUTHERN).await;
+        edge.walks(&client, SOUTHERN, 2).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let hello = edge.hello(EAST);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty() && hello.guests.is_empty());
+        let reply = Reply::resumed().entry(absorbed(SOUTH, 4, 2, &[]));
+        edge.answer(EAST, reply).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(SOUTHERN));
+        let arrival = EdgeToWorker::PlayerArrive {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0, SOUTHERN),
+        };
+        let step = step_into(SOUTHERN);
+        let expected = [
+            (1, arrival),
+            (2, passed_on(1, 5, 1, step.clone())),
+            (3, passed_on(1, 5, 2, step)),
+        ];
+        assert_eq!(numbered(&said), expected);
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 3));
+        edge.end().await;
+    }
+
+    /// What scenarios 11 and 14 begin with: three actions of the west's player are
+    /// under way to the north, which has dealt with the first two and said so in its
+    /// last two entries, and has dealt with the third without the edge reading of
+    /// it. Then the north is gone. Returns how many entries of the north the edge has
+    /// seen, and the actions' sequence numbers.
+    async fn seen_of_the_north() -> (Harness, Client, u64, [i32; 3]) {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(2, 6, WEST, HOME).await;
+        let mut sequences = [0; 3];
+        for sequence in &mut sequences {
+            *sequence = edge.under_way(2, NORTH).await.sequence;
+        }
+        edge.quiet().await;
+        assert_eq!(edge.at(NORTH).numbered, 3);
+        edge.say(NORTH, done(player(2), sequences[0]));
+        edge.say(NORTH, done(player(2), sequences[1]));
+        edge.acknowledged(&mut client, sequences[1]).await;
+        let seen = edge.outbox[NORTH.0 as usize];
+        edge.lose(NORTH).await;
+        (edge, client, seen, sequences)
+    }
+
+    /// The north's last three entries, as they stand behind an `Absorbed`.
+    fn three_entries(sequences: [i32; 3]) -> Vec<Durable> {
+        sequences.map(|sequence| done(player(2), sequence)).to_vec()
+    }
+
+    /// Each of the three actions was acknowledged to the player once: the first two
+    /// when the north said so itself, and the third when its entry came with the
+    /// merge.
+    async fn each_acknowledged_once(edge: &mut Harness, client: &mut Client, sequences: [i32; 3]) {
+        edge.acknowledged(client, sequences[2]).await;
+        client.drain();
+        assert_eq!(client.acknowledged, sequences);
+    }
+
+    /// Scenario 11. Of the entries behind an `Absorbed`, those whose number at the
+    /// absorbed region the edge had seen there are confirmed and not acted on.
+    #[tokio::test]
+    async fn entries_that_came_with_a_merge_are_passed_over_where_the_edge_had_seen_them() {
+        let (mut edge, mut client, seen, sequences) = seen_of_the_north().await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let first = edge.outbox[EAST.0 as usize] + 1;
+        assert_eq!(edge.hello(EAST).seen, first - 1);
+        let numbers = [seen - 1, seen, seen + 1];
+        let mut reply = Reply::resumed().entry(absorbed(NORTH, 1, 3, &numbers));
+        reply.entries.extend(three_entries(sequences));
+        edge.answer(EAST, reply).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(confirmed(&said), Some(first + 3));
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        each_acknowledged_once(&mut edge, &mut client, sequences).await;
+        edge.end().await;
+    }
+
+    /// Scenario 12. An entry that was the absorbed region's and lets a player go to
+    /// the survivor names the region it now comes from. That is no fault: the player
+    /// arrives there, with an arrival and what they did since.
+    #[tokio::test]
+    async fn a_departure_to_the_survivor_that_came_with_the_merge_is_an_arrival_there() {
+        let (mut edge, mut north, seen) = let_go_to_the_survivor().await;
+        let reply = Reply::resumed().entry(absorbed(NORTH, 1, 3, &[seen + 1]));
+        edge.answer(EAST, reply.entry(gone_to_the_survivor())).await;
+        arrived_at_the_survivor(&mut edge, &mut north).await;
+        edge.end().await;
+    }
+
+    /// The north has the first player, has applied their arrival and the first two of
+    /// their three steps, and has said so. It then let them go to the east, which
+    /// absorbed it before the edge read that. Returns how many entries of the north
+    /// the edge has seen.
+    async fn let_go_to_the_survivor() -> (Harness, Client, u64) {
+        let mut edge = Harness::witnessed().await;
+        let north = edge.settler(1, 5, NORTH, NORTHERN).await;
+        edge.walks(&north, NORTHERN, 3).await;
+        edge.tell(NORTH, progress(3, vec![(player(1), 2)]));
+        edge.quiet().await;
+        let seen = edge.outbox[NORTH.0 as usize];
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        (edge, north, seen)
+    }
+
+    fn gone_to_the_survivor() -> Durable {
+        Durable::Departed {
+            player: player(1),
+            transfer: transfer(EntityId(5), 2, NORTHERN),
+            to: EAST,
+        }
+    }
+
+    async fn arrived_at_the_survivor(edge: &mut Harness, north: &mut Client) {
+        let said = edge.sent(EAST).await;
+        let (number, arrived) = arrival_of(&said, 1).expect("the player arrives at the survivor");
+        assert_eq!(arrived, transfer(EntityId(5), 2, NORTHERN));
+        let asked = asked_before_numbered(&said, Role::Viewer);
+        assert!(asked.is_superset(&view(NORTHERN)), "{asked:?}");
+        // What they did and the north had not applied follows the arrival.
+        let mut after = inputs_of(&said, 1);
+        after.retain(|(numbered, ..)| *numbered > number);
+        let after: Vec<_> = after
+            .iter()
+            .map(|(_, entity, step)| (*entity, *step))
+            .collect();
+        assert_eq!(after, [(EntityId(5), 3)]);
+        let arrivals = said
+            .iter()
+            .filter(|message| matches!(message.body, EdgeToWorker::PlayerArrive { .. }));
+        assert_eq!(arrivals.count(), 1);
+        assert!(north.connected());
+        assert_eq!(edge.acts(north).await, (EAST, EntityId(5), 4));
+    }
+
+    /// Scenario 12. An entry of the survivor's own that names the survivor is the
+    /// fault it was, also behind entries that came with a merge.
+    #[tokio::test]
+    async fn a_departure_of_the_survivors_own_that_names_the_survivor_disconnects_the_player() {
+        let mut edge = Harness::witnessed().await;
+        let mut east = edge.settler(3, 7, EAST, EASTERN).await;
+        let mut north = edge.settler(1, 5, NORTH, NORTHERN).await;
+        let seen = edge.outbox[NORTH.0 as usize];
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        assert_eq!(edge.hello(EAST).players, [player(3)]);
+        let came_with = Durable::Departed {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0, NORTHERN),
+            to: EAST,
+        };
+        let reply = Reply::resumed()
+            .entry(absorbed(NORTH, 1, 1, &[seen + 1]))
+            .entry(came_with)
+            .entry(departed(player(3), EntityId(7), EAST, EASTERN));
+        edge.answer(EAST, reply).await;
+        east.disconnected().await;
+        assert!(north.connected());
+        assert_eq!(edge.acts(&north).await, (EAST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 13. The survivor let a player go to the region it then absorbed. Read
+    /// in order, the first entry puts the player under the absorbed region, where
+    /// their arrival is kept as for any region without a link, and the `Absorbed`
+    /// brings all of it back: the arrival reaches the survivor under its numbers.
+    #[tokio::test]
+    async fn a_player_let_go_to_a_region_the_survivor_then_absorbed_arrives_at_the_survivor() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, EAST, EASTERN).await;
+        edge.caught_up(EAST);
+        edge.quiet().await;
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        assert_eq!(edge.hello(EAST).players, [player(1)]);
+        let reply = Reply::resumed()
+            .applied(1)
+            .entry(departed(player(1), EntityId(5), NORTH, EASTERN))
+            .entry(absorbed(NORTH, 1, 0, &[]));
+        // The hello named the player, whom the east does not have: `Absent`.
+        edge.answer(EAST, reply).await;
+        let said = edge.sent(EAST).await;
+        let arrival = EdgeToWorker::PlayerArrive {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0, EASTERN),
+        };
+        assert_eq!(numbered(&said), [(2, arrival)]);
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(EASTERN));
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 13, with a link that ends between the two entries: after the first
+    /// the player is under the absorbed region, so the next hello to the survivor
+    /// names neither them nor their view as a viewer's.
+    #[tokio::test]
+    async fn a_player_let_go_to_a_region_that_is_absorbed_is_under_it_until_the_absorbed_is_read() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, EAST, EASTERN).await;
+        edge.caught_up(EAST);
+        edge.quiet().await;
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let let_go = Reply::resumed().applied(1);
+        let let_go = let_go.entry(departed(player(1), EntityId(5), NORTH, EASTERN));
+        edge.answer(EAST, let_go).await;
+        let sent = numbered(&edge.sent(EAST).await);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert!(client.connected());
+
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let hello = edge.hello(EAST);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty());
+        assert_eq!(set(&hello.guests), view(EASTERN));
+        let merged = Reply::resumed().applied(1);
+        edge.answer(EAST, merged.entry(absorbed(NORTH, 1, 0, &[])))
+            .await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(EASTERN));
+        let arrival = EdgeToWorker::PlayerArrive {
+            player: player(1),
+            transfer: transfer(EntityId(5), 0, EASTERN),
+        };
+        assert_eq!(numbered(&said), [(2, arrival)]);
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Scenario 14, and A7 of ADR-0014. The link ends when the edge has read the
+    /// `Absorbed` and none of the entries behind it. The next welcome brings those
+    /// without the `Absorbed` in front, and they are still told by their numbers.
+    #[tokio::test]
+    async fn entries_that_came_with_a_merge_are_told_by_their_numbers_on_a_later_link() {
+        let (mut edge, mut client, seen, sequences) = seen_of_the_north().await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let welcome = Welcome::Resumed {
+            entries: 4,
+            presences: 0,
+            applied: 0,
+        };
+        edge.says(EAST, WorkerToEdge::Welcome(welcome)).await;
+        let numbers = [seen - 1, seen, seen + 1];
+        let entry = absorbed(NORTH, 1, 3, &numbers);
+        edge.take(Step::Entry(EAST, entry)).await;
+        let first = edge.outbox[EAST.0 as usize];
+        edge.lose(EAST).await;
+
+        edge.link(EAST).await;
+        assert_eq!(edge.hello(EAST).seen, first);
+        let mut reply = Reply::resumed();
+        reply.entries.extend(three_entries(sequences));
+        edge.answer(EAST, reply).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(confirmed(&said), Some(first + 3));
+        each_acknowledged_once(&mut edge, &mut client, sequences).await;
+        edge.end().await;
+    }
+
+    /// Scenario 15. The survivor forgets the edge while entries that came with a merge
+    /// are still to come. Its outbox is numbered anew, and an entry under a number
+    /// that one of those had is the survivor's own: it is acted on, though the edge
+    /// had seen, at the absorbed region, the entry that number stood for.
+    #[tokio::test]
+    async fn an_entry_of_a_survivor_that_forgot_the_edge_is_not_taken_for_one_that_came_with_a_merge()
+     {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(2, 6, WEST, HOME).await;
+        let seen = edge.outbox[NORTH.0 as usize];
+        assert!(seen >= 3, "{seen}");
+        edge.lose(NORTH).await;
+        // The south is new to the edge, so its outbox begins at 1.
+        edge.link(SOUTH).await;
+        let welcome = Welcome::Unknown {
+            since: 1,
+            entries: 4,
+            presences: 0,
+            applied: 0,
+        };
+        edge.says(SOUTH, WorkerToEdge::Welcome(welcome)).await;
+        // The entries behind it would be the south's 2, 3 and 4, all of which the
+        // edge had seen at the north.
+        let numbers = [seen - 2, seen - 1, seen];
+        let entry = absorbed(NORTH, 1, 0, &numbers);
+        edge.take(Step::Entry(SOUTH, entry)).await;
+        edge.lose(SOUTH).await;
+
+        // The south forgets the edge and is told of it anew. Three actions of the
+        // player are then passed on to it, and it deals with them: its entries 1, 2
+        // and 3.
+        edge.link(SOUTH).await;
+        let hello = edge.hello(SOUTH);
+        assert_eq!((hello.since, hello.seen), (1, 1));
+        edge.answer(SOUTH, Reply::unknown(2)).await;
+        let mut sequences = [0; 3];
+        for sequence in &mut sequences {
+            *sequence = edge.under_way(2, SOUTH).await.sequence;
+        }
+        assert_eq!(edge.outbox[SOUTH.0 as usize], 0);
+        for sequence in sequences {
+            edge.take(Step::Entry(SOUTH, done(player(2), sequence)))
+                .await;
+        }
+        edge.acknowledged(&mut client, sequences[2]).await;
+        assert_eq!(client.acknowledged, sequences);
+        // The north is no more all the same.
+        edge.offers_in_vain(NORTH).await;
+        edge.end().await;
+    }
+
+    /// Scenario 16, and A2 of ADR-0014. The north absorbed the south and the east then
+    /// absorbed the north, with no link meanwhile. The east's welcome has `Absorbed`
+    /// for the north and, among the entries behind it, `Absorbed` for the south with
+    /// the south's entries behind that. Everything the edge had at either is at the
+    /// east afterwards, and an entry of the south's that the edge had seen at the
+    /// south is passed over.
+    #[tokio::test]
+    async fn two_merges_in_a_row_bring_what_the_edge_had_at_both_regions_to_the_survivor() {
+        let mut edge = Harness::witnessed().await;
+        edge.link(SOUTH).await;
+        edge.answer(SOUTH, Reply::unknown(1)).await;
+        // Two actions of a player of the west are under way to the south.
+        let mut third = edge.settler(3, 7, WEST, HOME).await;
+        let seen_before = edge.under_way(3, SOUTH).await.sequence;
+        let new = edge.under_way(3, SOUTH).await.sequence;
+        let mut first = edge.settler(1, 5, NORTH, NORTHERN).await;
+        let mut second = edge.settler(2, 6, SOUTH, SOUTHERN).await;
+        edge.walks(&first, NORTHERN, 1).await;
+        edge.walks(&second, SOUTHERN, 1).await;
+        edge.quiet().await;
+        // The two actions, the arrival and the step.
+        assert_eq!(edge.at(SOUTH).numbered, 4);
+        assert_eq!(edge.at(NORTH).numbered, 2);
+        edge.say(SOUTH, done(player(3), seen_before));
+        edge.acknowledged(&mut third, seen_before).await;
+        let north = edge.outbox[NORTH.0 as usize];
+        let south = edge.outbox[SOUTH.0 as usize];
+        for region in [SOUTH, NORTH, EAST] {
+            edge.lose(region).await;
+        }
+        edge.link(EAST).await;
+        let hello = edge.hello(EAST);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty());
+
+        // Each had applied everything but the step of its player.
+        let reply = Reply::resumed()
+            .entry(absorbed(NORTH, 1, 1, &[north + 1, north + 2, north + 3]))
+            .entry(absorbed(SOUTH, 1, 3, &[south, south + 1]))
+            .entry(done(player(3), seen_before))
+            .entry(done(player(3), new))
+            .stay(1, 5, 0)
+            .stay(2, 6, 0);
+        edge.answer(EAST, reply).await;
+        let said = edge.sent(EAST).await;
+        let mut views = view(NORTHERN);
+        views.extend(view(SOUTHERN));
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), views);
+        let expected = [
+            (1, passed_on(1, 5, 1, step_into(NORTHERN))),
+            (2, passed_on(2, 6, 1, step_into(SOUTHERN))),
+        ];
+        assert_eq!(numbered(&said), expected);
+        edge.acknowledged(&mut third, new).await;
+        third.drain();
+        assert_eq!(third.acknowledged, [seen_before, new]);
+        assert!(first.connected() && second.connected());
+        assert_eq!(edge.acts(&first).await, (EAST, EntityId(5), 2));
+        assert_eq!(edge.acts(&second).await, (EAST, EntityId(6), 2));
+        edge.offers_in_vain(NORTH).await;
+        edge.offers_in_vain(SOUTH).await;
+        edge.end().await;
+    }
+
+    /// Section 3, step 7. The edge has read the north's `Absorbed` for the south and
+    /// not the south's entries behind it when the east absorbs the north. Behind the
+    /// east's `Absorbed` for the north those entries keep the origin they had: they
+    /// are the south's, and are told by what the edge had seen of the south. A name
+    /// of the south then means the east.
+    #[tokio::test]
+    async fn an_entry_that_came_with_two_merges_is_told_by_the_number_it_had_first() {
+        let mut edge = Harness::witnessed().await;
+        edge.link(SOUTH).await;
+        edge.answer(SOUTH, Reply::unknown(1)).await;
+        let mut third = edge.settler(3, 7, WEST, HOME).await;
+        let seen_before = edge.under_way(3, SOUTH).await.sequence;
+        let new = edge.under_way(3, SOUTH).await.sequence;
+        edge.say(SOUTH, done(player(3), seen_before));
+        edge.acknowledged(&mut third, seen_before).await;
+        let south = edge.outbox[SOUTH.0 as usize];
+        edge.lose(SOUTH).await;
+        edge.lose(NORTH).await;
+        edge.link(NORTH).await;
+        let welcome = Welcome::Resumed {
+            entries: 3,
+            presences: 0,
+            applied: 0,
+        };
+        edge.says(NORTH, WorkerToEdge::Welcome(welcome)).await;
+        // The south had applied both actions.
+        let entry = absorbed(SOUTH, 1, 2, &[south, south + 1]);
+        edge.take(Step::Entry(NORTH, entry)).await;
+        let north = edge.outbox[NORTH.0 as usize];
+        edge.lose(NORTH).await;
+
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let reply = Reply::resumed()
+            .entry(absorbed(NORTH, 1, 0, &[north + 1, north + 2]))
+            .entry(done(player(3), seen_before))
+            .entry(done(player(3), new));
+        edge.answer(EAST, reply).await;
+        edge.acknowledged(&mut third, new).await;
+        third.drain();
+        assert_eq!(third.acknowledged, [seen_before, new]);
+
+        edge.say(WEST, departed(player(3), EntityId(7), SOUTH, SOUTHERN));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        let arrival = arrival_of(&said, 3);
+        assert!(arrival.is_some(), "{said:?}");
+        let (region, entity, _) = edge.acts(&third).await;
+        assert_eq!((region, entity), (EAST, EntityId(7)));
+        edge.end().await;
+    }
+
+    /// Scenario 17. The edge reads the `Absorbed` while its link to the absorbed
+    /// region still stands, with entries unread on it that are also behind the
+    /// `Absorbed`. Whichever link it reads from first, each entry is acted on once:
+    /// one read from the absorbed region's link is passed over behind the `Absorbed`
+    /// by its number, and once the `Absorbed` is read that link is no longer the
+    /// region's.
+    #[tokio::test]
+    async fn an_entry_on_the_absorbed_regions_link_and_behind_the_absorbed_is_acted_on_once() {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let mut edge = Harness::witnessed().await;
+            let mut first = edge.settler(1, 5, NORTH, NORTHERN).await;
+            let mut second = edge.settler(2, 6, WEST, HOME).await;
+            let sequence = edge.under_way(2, NORTH).await.sequence;
+            edge.quiet().await;
+            // The north has applied the arrival and the action.
+            assert_eq!(edge.at(NORTH).numbered, 2);
+            edge.caught_up(NORTH);
+            edge.quiet().await;
+            let next = edge.outbox[NORTH.0 as usize] + 1;
+            // The north's last two entries: an action of the second player was dealt
+            // with, and the first player was let go to the west.
+            let gone = departed(player(1), EntityId(5), WEST, HOME);
+            edge.lose(EAST).await;
+            let merged = Reply::resumed()
+                .entry(absorbed(NORTH, 1, 2, &[next, next + 1]))
+                .entry(done(player(2), sequence))
+                .entry(gone.clone());
+            let scripts = vec![
+                vec![Step::Link(EAST), Step::Welcome(EAST, merged)],
+                vec![
+                    Step::Entry(NORTH, done(player(2), sequence)),
+                    Step::Entry(NORTH, gone),
+                ],
+            ];
+            edge.play(scripts, &mut orders).await;
+
+            edge.acknowledged(&mut second, sequence).await;
+            let said = edge.sent(WEST).await;
+            let arrivals = said.iter().filter(|message| {
+                matches!(&message.body, EdgeToWorker::PlayerArrive { player: who, .. } if *who == player(1))
+            });
+            assert_eq!(arrivals.count(), 1, "{said:?}");
+            let said = edge.sent(EAST).await;
+            assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+            assert!(first.connected());
+            assert_eq!(edge.acts(&first).await, (WEST, EntityId(5), 1));
+            second.drain();
+            assert_eq!(second.acknowledged, [sequence]);
+            edge.end().await;
+        }
+    }
+
+    /// What scenario 18 begins with: the west's player sees `COMMON`, for which the
+    /// west has named the north twice; the north said `NotMine` in between, so the
+    /// west was asked again just now. Then the east absorbs the north.
+    async fn told_elsewhere_with_the_absorbed() -> (Harness, Client) {
+        let mut edge = Harness::witnessed().await;
+        let client = edge.settler(1, 5, WEST, HOME).await;
+        edge.says(WEST, elsewhere(COMMON, edge.ask(WEST, COMMON), NORTH))
+            .await;
+        let asked = subscriptions(edge.sent(NORTH).await);
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Guest), set(&[COMMON]))])
+        );
+        edge.says(NORTH, not_mine(COMMON, edge.ask(NORTH, COMMON)))
+            .await;
+        let asked = subscriptions(edge.sent(WEST).await);
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Viewer), set(&[COMMON]))])
+        );
+        edge.says(WEST, elsewhere(COMMON, edge.ask(WEST, COMMON), NORTH))
+            .await;
+        let asked = subscriptions(edge.sent(NORTH).await);
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Guest), set(&[COMMON]))])
+        );
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        assert!(edge.hello(EAST).guests.is_empty());
+        (edge, client)
+    }
+
+    /// Scenario 18. From the `Absorbed` on, a subscription that was told elsewhere
+    /// with the absorbed region is told elsewhere with the survivor, where the edge
+    /// is a guest for the chunk from then on. Nothing is asked again for it, also
+    /// when it was asked again within the last second. `NotMine` from the survivor
+    /// has the viewer's region asked again, here when the second is over; and a later
+    /// `Elsewhere` that names the absorbed region names the survivor.
+    #[tokio::test(start_paused = true)]
+    async fn a_subscription_told_elsewhere_with_an_absorbed_region_is_told_so_with_the_survivor() {
+        let (mut edge, mut client) = told_elsewhere_with_the_absorbed().await;
+        edge.answer(EAST, Reply::resumed().entry(absorbed(NORTH, 1, 0, &[])))
+            .await;
+        let asked = subscriptions(edge.sent(EAST).await);
+        assert_eq!(asked, [as_guest(1, [COMMON])]);
+        let asked = subscriptions(edge.sent(WEST).await);
+        assert!(asked.is_empty(), "{asked:?}");
+
+        edge.says(EAST, not_mine(COMMON, 1)).await;
+        let asked = subscriptions(edge.sent(WEST).await);
+        assert!(asked.is_empty(), "asked again within a second: {asked:?}");
+        tokio::time::advance(Duration::from_millis(1100)).await;
+        let again = edge.next_asked(WEST).await;
+        assert_eq!(meaning(&again), (Some(Role::Viewer), set(&[COMMON])));
+
+        edge.says(WEST, elsewhere(COMMON, edge.ask(WEST, COMMON), NORTH))
+            .await;
+        let asked = subscriptions(edge.sent(EAST).await);
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Guest), set(&[COMMON]))])
+        );
+        edge.says(EAST, snapshot(COMMON, edge.ask(EAST, COMMON)))
+            .await;
+        edge.sync(&mut client).await;
+        assert!(client.chunks.contains_key(&COMMON));
+        edge.end().await;
+    }
+
+    /// Scenario 18, when more than a second has passed since the west was asked
+    /// again: the survivor's `NotMine` has it asked again at once.
+    #[tokio::test(start_paused = true)]
+    async fn not_mine_from_the_survivor_has_the_region_asked_again_that_named_the_absorbed() {
+        let (mut edge, _client) = told_elsewhere_with_the_absorbed().await;
+        tokio::time::advance(Duration::from_millis(2500)).await;
+        edge.answer(EAST, Reply::resumed().entry(absorbed(NORTH, 1, 0, &[])))
+            .await;
+        let asked = subscriptions(edge.sent(EAST).await);
+        assert_eq!(asked, [as_guest(1, [COMMON])]);
+        let asked = subscriptions(edge.sent(WEST).await);
+        assert!(asked.is_empty(), "{asked:?}");
+        edge.says(EAST, not_mine(COMMON, 1)).await;
+        let asked = subscriptions(edge.sent(WEST).await);
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Viewer), set(&[COMMON]))])
+        );
+        edge.end().await;
+    }
+
+    /// Scenario 19: the routing table says that the east absorbed the north while the
+    /// edge has a player and messages under the north and a link to the east whose
+    /// entries are through. The edge ends that link, so that a hello is said which
+    /// the east answers from after the merge. That welcome has no `Absorbed` for the
+    /// north: the north had forgotten the edge, or the east has since.
+    async fn a_survivor_that_says_no_absorbed(present: bool) {
+        let Merging {
+            mut edge,
+            mut north,
+            west: _west,
+            action,
+        } = before_a_merge().await;
+        let mut third = edge.settler(3, 7, WEST, HOME).await;
+        let given_up = breaking(player(3), edge.sequence(), NORTHERN);
+        edge.say(WEST, remote(&given_up, Some(NORTH)));
+        edge.quiet().await;
+        edge.lose(NORTH).await;
+
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.ended_by_the_edge(EAST).await;
+        edge.link(EAST).await;
+        // Rule 43: the hello names nothing of the absorbed region.
+        let hello = edge.hello(EAST);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty());
+        assert_eq!(hello.guests, [SOUGHT]);
+        let mut reply = Reply::resumed();
+        if present {
+            reply = reply.stay(1, 5, 4);
+        }
+        edge.answer(EAST, reply).await;
+        if !present {
+            north.disconnected().await;
+        }
+        // What was kept for the north is given up, and none of it is sent on.
+        edge.acknowledged(&mut third, given_up.sequence).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(NORTHERN));
+        assert_eq!(asked_before_numbered(&said, Role::Guest), set(&[LENT]));
+        let mut expected = vec![(1, EdgeToWorker::Remote(action))];
+        if present {
+            assert_eq!(numbered(&said), expected);
+            assert!(north.connected());
+            assert_eq!(edge.acts(&north).await, (EAST, EntityId(5), 5));
+        } else {
+            expected.push((2, left(1, Some(5))));
+            assert_eq!(numbered(&said), expected);
+        }
+
+        // The table says all of its pairs every time. Nothing is owed any more.
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.offers_in_vain(NORTH).await;
+        edge.end().await;
+    }
+
+    /// Scenario 19, with a welcome that announces no presence answers.
+    #[tokio::test]
+    async fn a_player_of_a_region_the_table_says_was_absorbed_is_judged_by_a_welcome_without_answers()
+     {
+        a_survivor_that_says_no_absorbed(false).await;
+    }
+
+    /// Scenario 19, with a `Present` for the player.
+    #[tokio::test]
+    async fn a_player_of_a_region_the_table_says_was_absorbed_stays_if_the_survivor_has_them() {
+        a_survivor_that_says_no_absorbed(true).await;
+    }
+
+    /// Scenario 20. The table's word comes before the survivor's welcome, or while it
+    /// is being read, or after: the `Absorbed` is handled as without the table, and
+    /// no link is ended, as the edge had none to the survivor whose entries were
+    /// through and that could be from before the merge.
+    #[tokio::test]
+    async fn the_tables_word_around_a_welcome_that_has_the_absorbed_ends_no_link() {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let Merging {
+                mut edge,
+                mut north,
+                west: _west,
+                action,
+            } = before_a_merge().await;
+            edge.lose(NORTH).await;
+            edge.lose(EAST).await;
+            let scripts = vec![
+                vec![Step::Pairs(vec![(NORTH, EAST)])],
+                vec![
+                    Step::Link(EAST),
+                    Step::Welcome(EAST, merged().stay(1, 5, 2)),
+                ],
+            ];
+            edge.play(scripts, &mut orders).await;
+            assert!(edge.gone.is_empty(), "the edge ended {:?}", edge.gone);
+            as_after_the_merge(&mut edge, &mut north, &action).await;
+            edge.end().await;
+        }
+    }
+
+    /// Scenario 20, with a link to the survivor from before the merge that the edge
+    /// has not found ended: the table's word ends it, and the next welcome brings the
+    /// `Absorbed`.
+    #[tokio::test]
+    async fn the_tables_word_ends_a_link_from_before_the_merge_and_the_next_brings_the_absorbed() {
+        let Merging {
+            mut edge,
+            mut north,
+            west: _west,
+            action,
+        } = before_a_merge().await;
+        edge.lose(NORTH).await;
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.ended_by_the_edge(EAST).await;
+        edge.link(EAST).await;
+        edge.answer(EAST, merged().stay(1, 5, 2)).await;
+        as_after_the_merge(&mut edge, &mut north, &action).await;
+        edge.end().await;
+    }
+
+    /// Scenario 21. The table's word comes while a welcome of the survivor is being
+    /// read that has no `Absorbed` for the north. The hello of that link was said
+    /// before the edge knew that such a word was owed, so nothing is concluded from
+    /// its silence: the link is ended when its entries are through, and nothing that
+    /// was kept is sent on it.
+    #[tokio::test]
+    async fn the_tables_word_during_a_welcome_without_the_absorbed_ends_the_link_after_its_entries()
+    {
+        let Merging {
+            mut edge,
+            mut north,
+            west: _west,
+            action,
+        } = before_a_merge().await;
+        edge.lose(NORTH).await;
+        edge.link(EAST).await;
+        let welcome = Welcome::Resumed {
+            entries: 2,
+            presences: 0,
+            applied: 0,
+        };
+        edge.says(EAST, WorkerToEdge::Welcome(welcome)).await;
+        let nobody = done(player(u128::MAX), 0);
+        edge.take(Step::Entry(EAST, nobody.clone())).await;
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.handled(EAST).await;
+        assert!(
+            edge.gone.is_empty(),
+            "ended before its entries were through"
+        );
+        edge.take(Step::Entry(EAST, nobody)).await;
+        edge.ended_by_the_edge(EAST).await;
+        let said: Vec<_> = edge.heard[EAST.0 as usize].said.drain(..).collect();
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "sent on a link that was to end: {sent:?}");
+        assert!(north.connected());
+
+        edge.link(EAST).await;
+        edge.answer(EAST, merged().stay(1, 5, 2)).await;
+        as_after_the_merge(&mut edge, &mut north, &action).await;
+        edge.end().await;
+    }
+
+    /// Scenario 22. Of the north the edge has nothing but a link. On the table's word
+    /// it stands for the east at once: its link is taken, nothing is sent to anyone,
+    /// and a player a third region lets go to the north arrives at the east.
+    #[tokio::test]
+    async fn a_region_the_edge_has_nothing_of_stands_for_its_survivor_on_the_tables_word() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.ended_by_the_edge(NORTH).await;
+        for region in [WEST, EAST] {
+            let said = edge.sent(region).await;
+            assert!(said.is_empty(), "{region:?} was sent {said:?}");
+        }
+
+        edge.say(WEST, departed(player(1), EntityId(5), NORTH, NORTHERN));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        let arrival = arrival_of(&said, 1);
+        assert_eq!(arrival, Some((1, transfer(EntityId(5), 0, NORTHERN))));
+        // What the player saw is asked for before they arrive, as at any hand-over.
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(HOME));
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(NORTHERN));
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.offers_in_vain(NORTH).await;
+        edge.end().await;
+    }
+
+    /// Section 1: every region id a region says is read through the stand-ins. The
+    /// north stands for the east. An action that is sent on to the north, by `Remote`
+    /// or by `NotMine`, goes to the east; a chunk for which the north is named is
+    /// asked of the east; and what the east itself sends to the north comes back to
+    /// the east (section 4): an action, and a player, who is not disconnected for it.
+    #[tokio::test]
+    async fn every_name_of_an_absorbed_region_means_its_survivor() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.ended_by_the_edge(NORTH).await;
+
+        let first = breaking(player(1), edge.sequence(), COMMON);
+        edge.say(WEST, remote(&first, Some(NORTH)));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(numbered(&said), [(1, EdgeToWorker::Remote(first))]);
+        assert_eq!(asked_before_numbered(&said, Role::Guest), set(&[COMMON]));
+
+        let second = breaking(player(1), edge.sequence(), COMMON);
+        let sent_on = Durable::NotMine {
+            what: Misdirected::Remote(second.clone()),
+            holder: NORTH,
+        };
+        edge.say(WEST, sent_on);
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(numbered(&said), [(2, EdgeToWorker::Remote(second))]);
+
+        edge.tell(WEST, elsewhere(FAR, edge.ask(WEST, FAR), NORTH));
+        edge.settle(WEST).await;
+        let asked = subscriptions(edge.sent(EAST).await);
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Guest), set(&[FAR]))])
+        );
+
+        // The east names the region it absorbed, as it believed before the merge.
+        let third = breaking(player(1), edge.sequence(), COMMON);
+        edge.say(EAST, remote(&third, Some(NORTH)));
+        edge.settle(EAST).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(numbered(&said), [(3, EdgeToWorker::Remote(third.clone()))]);
+        client.drain();
+        assert!(!client.acknowledged.contains(&third.sequence));
+
+        edge.say(WEST, departed(player(1), EntityId(5), NORTH, EASTERN));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        assert!(arrival_of(&said, 1).is_some(), "{said:?}");
+        edge.say(EAST, departed(player(1), EntityId(5), NORTH, EASTERN));
+        edge.settle(EAST).await;
+        let said = edge.sent(EAST).await;
+        assert!(arrival_of(&said, 1).is_some(), "{said:?}");
+        assert!(client.connected());
+        let (region, entity, _) = edge.acts(&client).await;
+        assert_eq!((region, entity), (EAST, EntityId(5)));
+        edge.end().await;
+    }
+
+    /// Scenario 23. The north absorbed the south, which the edge has handled; then
+    /// the table says that the east absorbed the north, of which the edge has
+    /// nothing. The stand-ins never make a chain: a name of the south means the east.
+    #[tokio::test]
+    async fn a_region_that_stood_for_one_that_is_absorbed_stands_for_the_last_survivor() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        edge.lose(NORTH).await;
+        edge.link(NORTH).await;
+        let merged = Reply::resumed().entry(absorbed(SOUTH, 0, 0, &[]));
+        edge.answer(NORTH, merged).await;
+        edge.pairs(vec![(SOUTH, NORTH), (NORTH, EAST)]).await;
+        edge.ended_by_the_edge(NORTH).await;
+
+        edge.say(WEST, departed(player(1), EntityId(5), SOUTH, SOUTHERN));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        let arrival = arrival_of(&said, 1);
+        assert_eq!(arrival, Some((1, transfer(EntityId(5), 0, SOUTHERN))));
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.offers_in_vain(SOUTH).await;
+        edge.offers_in_vain(NORTH).await;
+        edge.end().await;
+    }
+
+    /// Scenario 24. The east absorbed the north and answered a hello of the edge, and
+    /// was then absorbed by the south. The edge has a player under the north and the
+    /// east's welcome unread on a link. The table's word, that welcome and the south's
+    /// come in every order; afterwards the player is the south's, and was never
+    /// disconnected.
+    #[tokio::test]
+    async fn two_merges_told_by_the_table_and_two_welcomes_in_any_order_end_at_the_last_survivor() {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let mut edge = Harness::witnessed().await;
+            let mut client = edge.settler(1, 5, NORTH, NORTHERN).await;
+            edge.caught_up(NORTH);
+            edge.walks(&client, NORTHERN, 1).await;
+            edge.quiet().await;
+            edge.lose(NORTH).await;
+            edge.link(EAST).await;
+            assert!(edge.hello(EAST).players.is_empty());
+            let at_east = edge.outbox[EAST.0 as usize] + 1;
+            let east = Reply::resumed()
+                .entry(absorbed(NORTH, 1, 1, &[]))
+                .stay(1, 5, 0);
+            // The south came by its state for the edge through the merge.
+            let south = Reply::unknown(7)
+                .entry(absorbed(EAST, 1, 0, &[at_east]))
+                .entry(absorbed(NORTH, 1, 1, &[]))
+                .stay(1, 5, 0);
+            let scripts = vec![
+                vec![Step::Pairs(vec![(NORTH, EAST), (EAST, SOUTH)])],
+                vec![Step::Welcome(EAST, east)],
+                vec![Step::Link(SOUTH), Step::Welcome(SOUTH, south)],
+            ];
+            edge.play(scripts, &mut orders).await;
+            assert!(
+                !edge.gone.contains(&SOUTH),
+                "the edge ended its link to the south"
+            );
+            assert!(client.connected());
+            assert_eq!(edge.acts(&client).await, (SOUTH, EntityId(5), 2));
+            edge.end().await;
+        }
+    }
+
+    /// Scenario 25. The edge has handled the south's `Absorbed` for the east when a
+    /// table arrives that is behind it: it says that the east absorbed the north and
+    /// nothing of the south. The pair's target is read through the stand-ins: the
+    /// word is owed by the south, whose link is ended for it.
+    #[tokio::test]
+    async fn a_pair_whose_target_the_edge_has_retired_names_the_living_region() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, NORTH, NORTHERN).await;
+        edge.lose(NORTH).await;
+        edge.link(SOUTH).await;
+        let merged = Reply::unknown(7).entry(absorbed(EAST, 1, 0, &[]));
+        edge.answer(SOUTH, merged).await;
+        // The east's link stood: it is taken with the `Absorbed`.
+        edge.ended_by_the_edge(EAST).await;
+
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.ended_by_the_edge(SOUTH).await;
+        edge.link(SOUTH).await;
+        assert!(edge.hello(SOUTH).players.is_empty());
+        let merged = Reply::resumed()
+            .entry(absorbed(NORTH, 1, 0, &[]))
+            .stay(1, 5, 0);
+        edge.answer(SOUTH, merged).await;
+        let said = edge.sent(SOUTH).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(NORTHERN));
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (SOUTH, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// What the scenarios of a split begin with: a player of the west, at `HOME`, who
+    /// has made two steps that the west has not said it applied. Returns the number
+    /// of the edge's last message that the west has applied.
+    async fn before_a_split() -> (Harness, Client, u64) {
+        let mut edge = Harness::witnessed().await;
+        let client = edge.settler(1, 5, WEST, HOME).await;
+        let applied = edge.at(WEST).numbered;
+        edge.walks(&client, HOME, 2).await;
+        edge.quiet().await;
+        edge.lose(WEST).await;
+        (edge, client, applied)
+    }
+
+    /// Scenario 26. A stay that a `SplitOff` names and the edge has under the region
+    /// that says it is the new region's: its view is asked of the new region in the
+    /// hello of its first link, and what the player did is sent there after its
+    /// welcome, numbered from 1, without an arrival. Of a stay the edge does not have
+    /// nothing is said until the new region's presence shows it.
+    #[tokio::test]
+    async fn a_stay_that_was_split_off_is_the_new_regions_without_an_arrival() {
+        let (mut edge, mut client, applied) = before_a_split().await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let split = Reply::resumed().applied(applied);
+        // The hello named the player, who is no longer the west's: `Absent`.
+        edge.answer(WEST, split.entry(split_off(PART, &[(1, 5), (2, 6)])))
+            .await;
+        let said = edge.sent(WEST).await;
+        let step = step_into(HOME);
+        // What the west had not applied it is sent again, and answers itself.
+        let expected = [
+            (applied + 1, passed_on(1, 5, 1, step.clone())),
+            (applied + 2, passed_on(1, 5, 2, step.clone())),
+        ];
+        assert_eq!(numbered(&said), expected);
+        let asked = subscriptions(said);
+        let guests = BTreeSet::from([(Some(Role::Guest), view(HOME))]);
+        assert_eq!(meanings(&asked), guests);
+        assert!(client.connected());
+        for region in [EAST, NORTH] {
+            let said = edge.sent(region).await;
+            assert!(said.is_empty(), "{region:?} was sent {said:?}");
+        }
+
+        edge.link(PART).await;
+        let hello = edge.hello(PART);
+        assert_eq!((hello.since, hello.seen), (0, 0));
+        assert_eq!(hello.players, [player(1)]);
+        assert_eq!(set(&hello.chunks), view(HOME));
+        assert!(hello.guests.is_empty(), "{hello:?}");
+        let part = Reply::unknown(40).stay(1, 5, 1).stay(2, 6, 0);
+        edge.answer(PART, part).await;
+        let said = edge.sent(PART).await;
+        let expected = [
+            (1, passed_on(1, 5, 1, step.clone())),
+            (2, passed_on(1, 5, 2, step)),
+            (3, left(2, Some(6))),
+        ];
+        assert_eq!(numbered(&said), expected);
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (PART, EntityId(5), 3));
+        edge.end().await;
+    }
+
+    /// Scenario 27. The link to the new region comes before the `SplitOff` is read:
+    /// its hello names nobody, its `Present` moves the stay as in scenario 3, and the
+    /// `SplitOff` then names a stay the edge has under the new region already.
+    #[tokio::test]
+    async fn a_new_region_linked_before_the_split_off_is_read_says_whom_it_has() {
+        let (mut edge, mut client, applied) = before_a_split().await;
+        edge.link(PART).await;
+        let hello = edge.hello(PART);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty() && hello.guests.is_empty());
+        edge.answer(PART, Reply::unknown(40).stay(1, 5, 1)).await;
+        let said = edge.sent(PART).await;
+        assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(HOME));
+        // What the part had not applied is sent to it, with the stay's entity. (That
+        // nothing else is sent is scenario 3's to say.)
+        let sent = numbered(&said);
+        let steps = inputs_of(&said, 1);
+        assert_eq!(steps.len(), sent.len(), "{sent:?}");
+        let last = steps.last().map(|(_, entity, step)| (*entity, *step));
+        assert_eq!(last, Some((EntityId(5), 2)), "{sent:?}");
+
+        edge.link(WEST).await;
+        let hello = edge.hello(WEST);
+        assert!(hello.players.is_empty() && hello.chunks.is_empty());
+        assert_eq!(set(&hello.guests), view(HOME));
+        let split = Reply::resumed().applied(applied);
+        edge.answer(WEST, split.entry(split_off(PART, &[(1, 5)])))
+            .await;
+        let said = edge.sent(PART).await;
+        assert!(said.is_empty(), "the SplitOff changed something: {said:?}");
+        let said = edge.sent(WEST).await;
+        assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+        assert!(subscriptions(said).is_empty());
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (PART, EntityId(5), 3));
+        edge.end().await;
+    }
+
+    /// Scenarios 26 and 27 with the two links' messages in every order: the stay ends
+    /// at the new region, nobody arrives anywhere, and what the new region had not
+    /// applied reaches it with the stay's entity.
+    #[tokio::test]
+    async fn a_split_off_and_the_new_regions_presence_in_any_order_leave_the_stay_at_the_new_region()
+     {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let (mut edge, mut client, applied) = before_a_split().await;
+            let split = Reply::resumed().applied(applied);
+            let split = split.entry(split_off(PART, &[(1, 5)]));
+            let part = Reply::unknown(40).stay(1, 5, 1);
+            let scripts = vec![
+                vec![Step::Link(WEST), Step::Welcome(WEST, split)],
+                vec![Step::Link(PART), Step::Welcome(PART, part)],
+            ];
+            edge.play(scripts, &mut orders).await;
+            assert!(client.connected());
+            let said = edge.sent(PART).await;
+            assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+            let steps = inputs_of(&said, 1);
+            let second =
+                |(_, entity, step): &(u64, EntityId, u64)| (*entity, *step) == (EntityId(5), 2);
+            assert!(steps.iter().any(second), "{steps:?}");
+            assert_eq!(edge.at(PART).chunks(Role::Viewer), view(HOME));
+            let said = edge.sent(WEST).await;
+            assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+            assert!(edge.at(WEST).chunks(Role::Viewer).is_empty());
+            assert_eq!(edge.acts(&client).await, (PART, EntityId(5), 3));
+            edge.end().await;
+        }
+    }
+
+    /// Scenario 28, the sequence of the review's defect 1, in every order of the two
+    /// links' messages. The new region has the player and lets them go back to the
+    /// region that was split. Read after that, the `SplitOff` finds the stay under
+    /// the region that says it, with its arrival kept for that region, and leaves it.
+    #[tokio::test]
+    async fn a_stay_that_walked_back_from_the_new_region_is_not_taken_there_again_by_the_split_off()
+    {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let (mut edge, mut client, applied) = before_a_split().await;
+            let split = Reply::resumed().applied(applied);
+            let split = split.entry(split_off(PART, &[(1, 5)]));
+            let part = Reply::unknown(40).stay(1, 5, 1);
+            let back = Durable::Departed {
+                player: player(1),
+                transfer: transfer(EntityId(5), 2, HOME),
+                to: WEST,
+            };
+            let scripts = vec![
+                vec![Step::Link(WEST), Step::Welcome(WEST, split)],
+                vec![
+                    Step::Link(PART),
+                    Step::Welcome(PART, part),
+                    Step::Entry(PART, back),
+                ],
+            ];
+            edge.play(scripts, &mut orders).await;
+            assert!(client.connected());
+            let said = edge.sent(WEST).await;
+            let arrivals: Vec<_> = said
+                .iter()
+                .filter(|message| matches!(message.body, EdgeToWorker::PlayerArrive { .. }))
+                .collect();
+            assert_eq!(arrivals.len(), 1, "{said:?}");
+            let arrived = arrival_of(&said, 1).map(|(_, transfer)| transfer);
+            assert_eq!(arrived, Some(transfer(EntityId(5), 2, HOME)));
+            assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+            assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 3));
+            edge.end().await;
+        }
+    }
+
+    /// Scenario 29, the review's defect 3. The west split both players into the part,
+    /// and the part split the first into a second part; the edge has read neither.
+    /// With the links to the west and to the part read in every order nobody is
+    /// disconnected: nobody is judged absent on another region's entry. After the
+    /// second part's presence the first player is there.
+    #[tokio::test]
+    async fn two_splits_read_in_any_order_disconnect_nobody() {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let mut edge = Harness::witnessed().await;
+            let mut first = edge.settler(1, 5, WEST, HOME).await;
+            let mut second = edge.settler(2, 6, WEST, HOME).await;
+            let applied = edge.at(WEST).numbered;
+            edge.lose(WEST).await;
+            let west = Reply::resumed().applied(applied);
+            let west = west.entry(split_off(PART, &[(1, 5), (2, 6)]));
+            let part = Reply::unknown(40)
+                .entry(split_off(SECOND_PART, &[(1, 5)]))
+                .stay(2, 6, 0);
+            let scripts = vec![
+                vec![Step::Link(WEST), Step::Welcome(WEST, west)],
+                vec![Step::Link(PART), Step::Welcome(PART, part)],
+            ];
+            edge.play(scripts, &mut orders).await;
+            assert!(first.connected() && second.connected());
+
+            edge.link(SECOND_PART).await;
+            edge.answer(SECOND_PART, Reply::unknown(41).stay(1, 5, 0))
+                .await;
+            assert!(first.connected() && second.connected());
+            assert_eq!(edge.acts(&first).await, (SECOND_PART, EntityId(5), 1));
+            assert_eq!(edge.acts(&second).await, (PART, EntityId(6), 1));
+            edge.end().await;
+        }
+    }
+
+    /// Scenario 30, and A3 of ADR-0014, the review's defect 6. The west split the
+    /// player into the part, which the east then absorbed; the edge had no link
+    /// meanwhile. Whichever of the two welcomes is read first, and however their
+    /// messages fall between each other, the stay ends at the east: a `SplitOff`
+    /// that names the part, read when the part stands for the east, puts it there.
+    /// What the player did since the west last applied something reaches the east.
+    #[tokio::test]
+    async fn a_stay_split_off_into_a_part_that_was_absorbed_ends_at_the_parts_survivor() {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let (mut edge, mut client, applied) = before_a_split().await;
+            edge.lose(EAST).await;
+            let split = Reply::resumed().applied(applied);
+            let split = split.entry(split_off(PART, &[(1, 5)]));
+            let merged = Reply::resumed()
+                .entry(absorbed(PART, 40, 0, &[]))
+                .stay(1, 5, 1);
+            let scripts = vec![
+                vec![Step::Link(WEST), Step::Welcome(WEST, split)],
+                vec![Step::Link(EAST), Step::Welcome(EAST, merged)],
+            ];
+            edge.play(scripts, &mut orders).await;
+            assert!(client.connected());
+            let said = edge.sent(EAST).await;
+            assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+            let steps = inputs_of(&said, 1);
+            let second =
+                |(_, entity, step): &(u64, EntityId, u64)| (*entity, *step) == (EntityId(5), 2);
+            assert!(steps.iter().any(second), "{steps:?}");
+            assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(HOME));
+            assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 3));
+            edge.offers_in_vain(PART).await;
+            edge.end().await;
+        }
+    }
+
+    /// Scenario 31. An action is never sent to a region the edge is not asking for
+    /// its chunk: where it has no subscription there and someone sees the chunk, it
+    /// becomes a guest first, on that link, so that the region holds the action until
+    /// it has the chunk loaded (rule 34).
+    #[tokio::test]
+    async fn an_action_sent_on_to_a_region_is_asked_for_there_first() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        let first = breaking(player(1), edge.sequence(), COMMON);
+        edge.say(WEST, remote(&first, Some(EAST)));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        let expected = [
+            EdgeMessage::unnumbered(as_guest(1, [COMMON])),
+            EdgeMessage {
+                number: Some(1),
+                body: EdgeToWorker::Remote(first),
+            },
+        ];
+        assert_eq!(said, expected);
+
+        // The edge is asking for the chunk there by now.
+        let second = breaking(player(1), edge.sequence(), COMMON);
+        let sent_on = Durable::NotMine {
+            what: Misdirected::Remote(second.clone()),
+            holder: EAST,
+        };
+        edge.say(NORTH, sent_on);
+        edge.settle(NORTH).await;
+        let said = edge.sent(EAST).await;
+        let expected = [EdgeMessage {
+            number: Some(2),
+            body: EdgeToWorker::Remote(second),
+        }];
+        assert_eq!(said, expected);
+
+        // Nobody sees this chunk, so there is nothing to ask for.
+        let unseen = ChunkPos::new(40, 40);
+        let third = breaking(player(1), edge.sequence(), unseen);
+        edge.say(WEST, remote(&third, Some(EAST)));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        let expected = [EdgeMessage {
+            number: Some(3),
+            body: EdgeToWorker::Remote(third),
+        }];
+        assert_eq!(said, expected);
+
+        // A region without a link is asked in its hello, which holds what follows.
+        let fourth = breaking(player(1), edge.sequence(), FAR);
+        edge.say(WEST, remote(&fourth, Some(SOUTH)));
+        edge.settle(WEST).await;
+        edge.link(SOUTH).await;
+        assert_eq!(edge.hello(SOUTH).guests, [FAR]);
+        edge.answer(SOUTH, Reply::unknown(1)).await;
+        let said = edge.sent(SOUTH).await;
+        assert_eq!(numbered(&said), [(1, EdgeToWorker::Remote(fourth))]);
+        assert!(client.connected());
+        edge.end().await;
+    }
+
+    /// A1 of ADR-0014. The hello to the survivor names only what the edge had there.
+    /// The `Absorbed` and the absorbed region's unconfirmed entry are among the
+    /// welcome's entries, and the presence answers have the absorbed region's stay,
+    /// unnamed, behind the one the hello named.
+    #[tokio::test]
+    async fn a_hello_to_a_survivor_names_what_the_edge_had_there_and_the_answers_bring_the_rest() {
+        let mut edge = Harness::witnessed().await;
+        let mut north = edge.settler(1, 5, NORTH, NORTHERN).await;
+        let mut east = edge.settler(3, 7, EAST, EASTERN).await;
+        // The north deals with an action of the east's player, and the edge does not
+        // read of that before the north is absorbed.
+        let sequence = edge.under_way(3, NORTH).await.sequence;
+        edge.walks(&north, NORTHERN, 1).await;
+        edge.quiet().await;
+        assert_eq!(edge.at(NORTH).numbered, 3);
+        assert_eq!(edge.at(EAST).numbered, 1);
+        let next = edge.outbox[NORTH.0 as usize] + 1;
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        let hello = edge.hello(EAST);
+        assert_eq!(hello.players, [player(3)]);
+        assert_eq!(set(&hello.chunks), view(EASTERN));
+        // Of what its player saw on the way in, the first player still sees some.
+        let on_the_way = minus(&view(HOME), &view(EASTERN));
+        assert_eq!(set(&hello.guests), both(&on_the_way, &view(NORTHERN)));
+
+        // The north had applied the arrival and the action, and not the step.
+        let reply = Reply::resumed()
+            .applied(1)
+            .entry(absorbed(NORTH, 1, 2, &[next]))
+            .entry(done(player(3), sequence))
+            .stay(3, 7, 0)
+            .stay(1, 5, 0);
+        edge.answer(EAST, reply).await;
+        edge.acknowledged(&mut east, sequence).await;
+        let said = edge.sent(EAST).await;
+        // A `Subscribe` for each chunk the east was not asked for as a viewer already.
+        let new = minus(&view(NORTHERN), &view(EASTERN));
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), new);
+        assert_eq!(
+            numbered(&said),
+            [(2, passed_on(1, 5, 1, step_into(NORTHERN)))]
+        );
+        let mut views = view(EASTERN);
+        views.extend(view(NORTHERN));
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), views);
+        assert!(north.connected() && east.connected());
+        assert_eq!(edge.acts(&north).await, (EAST, EntityId(5), 2));
+        assert_eq!(edge.acts(&east).await, (EAST, EntityId(7), 1));
+        edge.end().await;
+    }
+
+    /// A4 of ADR-0014. A player leaves while their region has no link, and the region
+    /// is absorbed. The survivor has the stay and says so, unnamed. The edge does not
+    /// have it: every leave the survivor is sent names the stay's entity, be it the
+    /// one that was kept for the absorbed region or the one the answer calls for.
+    #[tokio::test]
+    async fn a_stay_of_a_player_who_left_is_ended_at_the_survivor_of_their_region() {
+        let mut edge = Harness::witnessed().await;
+        let client = edge.settler(1, 5, NORTH, NORTHERN).await;
+        edge.caught_up(NORTH);
+        edge.quiet().await;
+        edge.lose(NORTH).await;
+        edge.leave(&client).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        assert!(edge.hello(EAST).players.is_empty());
+        let reply = Reply::resumed()
+            .entry(absorbed(NORTH, 1, 1, &[]))
+            .stay(1, 5, 0);
+        edge.answer(EAST, reply).await;
+        let said = edge.sent(EAST).await;
+        let sent = numbered(&said);
+        assert!(!sent.is_empty(), "the stay is left at the survivor");
+        let names_the_stay = |(_, body): &(u64, EdgeToWorker)| *body == left(1, Some(5));
+        assert!(sent.iter().all(names_the_stay), "{sent:?}");
+        let asked = subscriptions(said);
+        assert!(asked.is_empty(), "{asked:?}");
+        edge.end().await;
+    }
+
+    /// A5 of ADR-0014. A player of the north walks and leaves while the north has no
+    /// link, and joins again; the west, where they join, absorbs the north meanwhile.
+    /// The join is sent first and begins a new stay; what was kept for the north
+    /// follows under the west's numbers and names the old entity, so it moves nobody
+    /// and ends nothing; and the new stay's first input is numbered 1.
+    #[tokio::test]
+    async fn what_an_earlier_stay_did_is_sent_to_the_survivor_under_the_entity_it_had() {
+        let mut edge = Harness::witnessed().await;
+        let before = edge.settler(1, 5, NORTH, NORTHERN).await;
+        edge.caught_up(NORTH);
+        edge.quiet().await;
+        let applied = edge.at(WEST).numbered;
+        edge.lose(NORTH).await;
+        edge.walks(&before, NORTHERN, 2).await;
+        edge.leave(&before).await;
+        edge.lose(WEST).await;
+        let mut again = edge.join(player(1)).await;
+        edge.drained().await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let reply = Reply::resumed()
+            .applied(applied)
+            .entry(absorbed(NORTH, 1, 1, &[]))
+            .stay(1, 5, 0);
+        edge.answer(WEST, reply).await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert_eq!(sent.len(), 4, "{sent:?}");
+        assert!(
+            matches!(&sent[0], (join, EdgeToWorker::PlayerJoin(_)) if *join == applied + 1),
+            "{sent:?}"
+        );
+        let step = step_into(NORTHERN);
+        let expected = [
+            (applied + 2, passed_on(1, 5, 1, step.clone())),
+            (applied + 3, passed_on(1, 5, 2, step)),
+            (applied + 4, left(1, Some(5))),
+        ];
+        assert_eq!(sent[1..], expected);
+        let asked = subscriptions(said);
+        assert!(asked.is_empty(), "placed as their old self: {asked:?}");
+
+        edge.says(WEST, spawned(player(1), EntityId(8))).await;
+        assert_eq!(edge.acts(&again).await, (WEST, EntityId(8), 1));
+        assert!(again.connected());
+        edge.end().await;
+    }
+
+    /// A6 of ADR-0014. The east is split with the player in the part. The player
+    /// leaves, joins again and walks into the part before the edge has said hello to
+    /// it. The part's presence shows the old stay; the edge has the player there with
+    /// another entity, so that stay is the part's to end, behind the arrival that
+    /// takes its place, and the edge's own is untouched.
+    #[tokio::test]
+    async fn an_earlier_stay_in_a_part_is_ended_behind_the_arrival_of_the_later_one() {
+        let mut edge = Harness::witnessed().await;
+        let before = edge.settler(1, 5, EAST, EASTERN).await;
+        edge.caught_up(EAST);
+        edge.quiet().await;
+        edge.lose(EAST).await;
+        edge.leave(&before).await;
+        let mut again = edge.settler(1, 8, PART, EASTERN).await;
+
+        edge.link(PART).await;
+        let hello = edge.hello(PART);
+        assert_eq!(hello.players, [player(1)]);
+        assert_eq!(set(&hello.chunks), view(EASTERN));
+        edge.answer(PART, Reply::unknown(40).stay(1, 5, 0)).await;
+        let said = edge.sent(PART).await;
+        let arrival = EdgeToWorker::PlayerArrive {
+            player: player(1),
+            transfer: transfer(EntityId(8), 0, EASTERN),
+        };
+        assert_eq!(numbered(&said), [(1, arrival), (2, left(1, Some(5)))]);
+        assert!(again.connected());
+
+        // The east's entry names the old stay, which the edge does not have.
+        edge.link(EAST).await;
+        assert!(edge.hello(EAST).players.is_empty());
+        let split = Reply::resumed().applied(1);
+        edge.answer(EAST, split.entry(split_off(PART, &[(1, 5)])))
+            .await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(numbered(&said), [(2, left(1, Some(5)))]);
+        let said = edge.sent(PART).await;
+        assert!(said.is_empty(), "{said:?}");
+        assert!(again.connected());
+        assert_eq!(edge.acts(&again).await, (PART, EntityId(8), 1));
+        edge.end().await;
+    }
+
+    /// The history of A8, which the edge has seen nothing of: the east absorbed the
+    /// north, the west was split (the part has the first player), the east was split
+    /// (the second part has the second player, who had been the north's), the south
+    /// absorbed the part, and the west absorbed the second part. Three regions live;
+    /// the scripts are their answers to a hello. `whole` gives the order in which
+    /// the three are answered one after the other, in place of `orders`.
+    async fn after_three_merges_and_two_splits(orders: &mut Orders, whole: Option<[usize; 3]>) {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, WEST, HOME).await;
+        let mut second = edge.settler(2, 6, NORTH, NORTHERN).await;
+        let mut third = edge.settler(3, 7, EAST, EASTERN).await;
+        let mut fourth = edge.settler(4, 8, WEST, HOME).await;
+        let applied = edge.at(WEST).numbered;
+        for region in [WEST, EAST, NORTH] {
+            edge.lose(region).await;
+        }
+        let west = Reply::resumed()
+            .applied(applied)
+            .entry(split_off(PART, &[(1, 5)]))
+            .entry(absorbed(SECOND_PART, 50, 0, &[]))
+            .stay(2, 6, 0)
+            .stay(4, 8, 0);
+        let east = Reply::resumed()
+            .applied(1)
+            .entry(absorbed(NORTH, 1, 1, &[]))
+            .entry(split_off(SECOND_PART, &[(2, 6)]))
+            .stay(3, 7, 0);
+        // The south came by its state for the edge through its merge.
+        let south = Reply::unknown(60)
+            .entry(absorbed(PART, 40, 0, &[]))
+            .stay(1, 5, 0);
+        let scripts = vec![
+            vec![Step::Link(WEST), Step::Welcome(WEST, west)],
+            vec![Step::Link(EAST), Step::Welcome(EAST, east)],
+            vec![Step::Link(SOUTH), Step::Welcome(SOUTH, south)],
+        ];
+        match whole {
+            Some(order) => {
+                for script in order {
+                    edge.play(vec![scripts[script].clone()], orders).await;
+                }
+            }
+            None => edge.play(scripts, orders).await,
+        }
+        for client in [&mut first, &mut second, &mut third, &mut fourth] {
+            assert!(client.connected(), "{:?} was disconnected", client.player);
+        }
+        // Every stay is where the one region that says `Present` for it has it.
+        let (region, entity, _) = edge.acts(&first).await;
+        assert_eq!((region, entity), (SOUTH, EntityId(5)));
+        let (region, entity, _) = edge.acts(&second).await;
+        assert_eq!((region, entity), (WEST, EntityId(6)));
+        let (region, entity, _) = edge.acts(&third).await;
+        assert_eq!((region, entity), (EAST, EntityId(7)));
+        let (region, entity, _) = edge.acts(&fourth).await;
+        assert_eq!((region, entity), (WEST, EntityId(8)));
+        for region in [NORTH, PART, SECOND_PART] {
+            edge.offers_in_vain(region).await;
+        }
+        edge.end().await;
+    }
+
+    /// A8 of ADR-0014, with a hello to each living region in each order.
+    #[tokio::test]
+    async fn after_three_merges_and_two_splits_every_stay_is_where_its_region_says() {
+        let orders = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        for order in orders {
+            let mut told = Orders::new();
+            told.account
+                .push(format!("the three welcomes in the order {order:?}"));
+            after_three_merges_and_two_splits(&mut told, Some(order)).await;
+        }
+    }
+
+    /// A8 of ADR-0014, with the messages of the three links falling between each
+    /// other (rule 50).
+    #[tokio::test]
+    async fn after_three_merges_and_two_splits_the_order_of_the_links_messages_does_not_matter() {
+        let mut orders = Orders::new();
+        while orders.another() {
+            after_three_merges_and_two_splits(&mut orders, None).await;
+        }
+    }
+
+    /// A9 of ADR-0014. The east is split with the player in the part, and then
+    /// forgets the edge. The part has had a link of the edge that named nobody, of
+    /// which the edge read nothing. The east's welcome is `Unknown` with no entries:
+    /// the player is gone as far as the edge can tell. The part still has the stay,
+    /// and the leave that names its entity ends it there.
+    #[tokio::test]
+    async fn a_stay_in_a_part_is_ended_there_when_the_region_it_was_split_off_forgot_the_edge() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, EAST, EASTERN).await;
+        edge.caught_up(EAST);
+        edge.quiet().await;
+        edge.lose(EAST).await;
+        edge.link(PART).await;
+        assert!(edge.hello(PART).players.is_empty());
+        edge.lose(PART).await;
+
+        edge.link(EAST).await;
+        assert_eq!(edge.hello(EAST).players, [player(1)]);
+        edge.answer(EAST, Reply::unknown(2)).await;
+        client.disconnected().await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(numbered(&said), [(1, left(1, Some(5)))]);
+
+        edge.link(PART).await;
+        assert!(edge.hello(PART).players.is_empty());
+        edge.answer(PART, Reply::unknown(40).stay(1, 5, 0)).await;
+        let said = edge.sent(PART).await;
+        assert_eq!(numbered(&said), [(1, left(1, Some(5)))]);
+        edge.end().await;
+    }
+
+    /// A split and the merge that undoes it, both unread: the west's welcome has the
+    /// `SplitOff` and then the `Absorbed` of the part. The stay goes to the part and
+    /// comes back with what the player did, and the `Present` finds it where it is.
+    #[tokio::test]
+    async fn a_split_and_the_merge_that_undoes_it_leave_the_stay_where_it_was() {
+        let (mut edge, mut client, applied) = before_a_split().await;
+        edge.link(WEST).await;
+        let reply = Reply::resumed()
+            .applied(applied)
+            .entry(split_off(PART, &[(1, 5)]))
+            .entry(absorbed(PART, 40, 0, &[]))
+            .stay(1, 5, 1);
+        edge.answer(WEST, reply).await;
+        let said = edge.sent(WEST).await;
+        assert!(arrival_of(&said, 1).is_none(), "{said:?}");
+        let steps = inputs_of(&said, 1);
+        let second =
+            |(_, entity, step): &(u64, EntityId, u64)| (*entity, *step) == (EntityId(5), 2);
+        assert!(steps.iter().any(second), "{steps:?}");
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+        assert!(edge.at(WEST).chunks(Role::Guest).is_empty());
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 3));
+        edge.offers_in_vain(PART).await;
+        edge.end().await;
+    }
+
+    /// Section 8, third item. A `Present` of the west from before the split is read
+    /// after the part's presence has moved the stay to the part, and moves it back.
+    /// The `SplitOff` on the west's next link puts that right.
+    #[tokio::test]
+    async fn a_split_off_puts_right_a_stay_that_an_answer_from_before_the_split_moved_back() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        let applied = edge.at(WEST).numbered;
+        // The west answers a hello, and is split before the edge has read all of it.
+        edge.link(WEST).await;
+        let welcome = Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied,
+        };
+        edge.says(WEST, WorkerToEdge::Welcome(welcome)).await;
+        edge.link(PART).await;
+        assert!(edge.hello(PART).players.is_empty());
+        edge.answer(PART, Reply::unknown(40).stay(1, 5, 0)).await;
+        edge.sent(PART).await;
+        assert_eq!(edge.at(PART).chunks(Role::Viewer), view(HOME));
+        edge.says(WEST, present(player(1), EntityId(5))).await;
+        edge.sent(WEST).await;
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+        assert!(client.connected());
+
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let split = Reply::resumed().applied(applied);
+        edge.answer(WEST, split.entry(split_off(PART, &[(1, 5)])))
+            .await;
+        assert!(client.connected());
+        assert_eq!(edge.acts(&client).await, (PART, EntityId(5), 1));
+        edge.sent(PART).await;
+        assert_eq!(edge.at(PART).chunks(Role::Viewer), view(HOME));
+        edge.end().await;
+    }
+
+    /// A link to the survivor that ends at each point of its welcome after a merge.
+    /// The next welcome has the entries the edge has not seen and, as every welcome,
+    /// the presence answers; what was kept is sent when a welcome's entries are
+    /// through, under the same numbers on whichever link that is.
+    #[tokio::test]
+    async fn a_link_that_ends_at_any_point_of_a_survivors_welcome_loses_nothing() {
+        for read in 1..=3 {
+            let Merging {
+                mut edge,
+                mut north,
+                west: _west,
+                action,
+            } = before_a_merge().await;
+            edge.lose(NORTH).await;
+            edge.lose(EAST).await;
+            edge.link(EAST).await;
+            let seen = edge.hello(EAST).seen;
+            // The welcome, the `Absorbed` and the `Present`, of which the edge reads
+            // the first `read` before the link ends.
+            let welcome = Welcome::Resumed {
+                entries: 1,
+                presences: 1,
+                applied: 0,
+            };
+            edge.says(EAST, WorkerToEdge::Welcome(welcome)).await;
+            if read >= 2 {
+                edge.take(Step::Entry(EAST, absorbed(NORTH, 1, 3, &[])))
+                    .await;
+            }
+            if read >= 3 {
+                edge.says(EAST, present_with(player(1), EntityId(5), 2))
+                    .await;
+            }
+            edge.lose(EAST).await;
+
+            edge.link(EAST).await;
+            let hello = edge.hello(EAST);
+            let mut again = Reply::resumed().stay(1, 5, 2);
+            if read >= 2 {
+                // The merge is behind the edge: the hello names what was the north's.
+                assert_eq!(hello.seen, seen + 1);
+                assert_eq!(hello.players, [player(1)]);
+                assert_eq!(set(&hello.chunks), view(NORTHERN));
+                assert_eq!(set(&hello.guests), set(&[LENT, SOUGHT]));
+            } else {
+                assert_eq!(hello.seen, seen);
+                assert!(hello.players.is_empty() && hello.chunks.is_empty());
+                edge.outbox[EAST.0 as usize] = seen;
+                again = again.entry(absorbed(NORTH, 1, 3, &[]));
+            }
+            edge.answer(EAST, again).await;
+            let said = edge.sent(EAST).await;
+            assert_eq!(
+                numbered(&said),
+                kept_after_the_merge(&action),
+                "read {read}"
+            );
+            assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(NORTHERN));
+            assert_eq!(edge.at(EAST).chunks(Role::Guest), set(&[LENT, SOUGHT]));
+            assert!(north.connected());
+            assert_eq!(edge.acts(&north).await, (EAST, EntityId(5), 5));
+            edge.end().await;
+        }
+    }
+
+    /// Section 3, step 5. What the absorbed region showed counts as shown by the
+    /// survivor, whose snapshot puts it right, and what it served the survivor
+    /// serves: an action for which no region is named goes there, behind the
+    /// subscription the `Absorbed` made.
+    #[tokio::test]
+    async fn what_an_absorbed_region_showed_and_served_is_the_survivors_to_put_right() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        let _second = edge.settler(2, 6, WEST, HOME).await;
+        edge.says(WEST, elsewhere(LENT, edge.ask(WEST, LENT), NORTH))
+            .await;
+        edge.sent(NORTH).await;
+        let there = vec![stranger(EntityId(70), LENT)];
+        let chunk = chunk_with(LENT, STONE);
+        edge.says(
+            NORTH,
+            snapshot_of(LENT, edge.ask(NORTH, LENT), chunk, there),
+        )
+        .await;
+        edge.sync(&mut client).await;
+        assert!(client.entities.contains(&70), "{:?}", client.entities);
+        assert_eq!(client.state(LENT), Some(STONE));
+
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        edge.answer(EAST, Reply::resumed().entry(absorbed(NORTH, 1, 0, &[])))
+            .await;
+        let asked = subscriptions(edge.sent(EAST).await);
+        assert_eq!(asked, [as_guest(1, [LENT])]);
+        // Nothing leaves a screen because a region was absorbed.
+        edge.sync(&mut client).await;
+        assert!(client.entities.contains(&70), "{:?}", client.entities);
+        assert_eq!(client.state(LENT), Some(STONE));
+
+        let action = breaking(player(2), edge.sequence(), LENT);
+        edge.say(WEST, remote(&action, None));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(numbered(&said), [(1, EdgeToWorker::Remote(action))]);
+
+        let chunk = chunk_with(LENT, GRANITE);
+        edge.says(EAST, snapshot_of(LENT, 1, chunk, Vec::new()))
+            .await;
+        edge.sync(&mut client).await;
+        assert!(!client.entities.contains(&70), "{:?}", client.entities);
+        assert_eq!(client.state(LENT), Some(GRANITE));
+        edge.end().await;
+    }
+
+    /// Rule 48, first item, and rule 34. An action that was kept for the absorbed
+    /// region goes to the survivor behind the subscription for its chunk, on the
+    /// same link, so that the survivor holds it until it has the chunk loaded.
+    #[tokio::test]
+    async fn an_action_kept_for_an_absorbed_region_follows_the_subscription_for_its_chunk() {
+        let mut edge = Harness::witnessed().await;
+        let _client = edge.settler(2, 6, WEST, HOME).await;
+        let action = edge.under_way(2, NORTH).await;
+        edge.quiet().await;
+        assert_eq!(edge.at(NORTH).chunks(Role::Guest), set(&[COMMON]));
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        assert!(edge.hello(EAST).guests.is_empty());
+        edge.answer(EAST, Reply::resumed().entry(absorbed(NORTH, 1, 0, &[])))
+            .await;
+        let mut said = edge.sent(EAST).await;
+        said.retain(|message| !matches!(message.body, EdgeToWorker::Confirm { .. }));
+        let expected = [
+            EdgeMessage::unnumbered(as_guest(1, [COMMON])),
+            EdgeMessage {
+                number: Some(1),
+                body: EdgeToWorker::Remote(action),
+            },
+        ];
+        assert_eq!(said, expected);
+        edge.end().await;
+    }
+
+    /// Rule 41, and section 8.9 of ADR-0014. The survivor had forgotten the edge and
+    /// came by a state for it through the merge: its welcome is `Unknown`, with the
+    /// `Absorbed` among its entries and a `Present` for the stay that came. The edge
+    /// gives up what it had at the survivor, its player there among it, and then has
+    /// at the survivor what it had at the absorbed region, numbered from 1.
+    #[tokio::test]
+    async fn a_survivor_that_had_forgotten_the_edge_says_unknown_with_the_absorbed_behind_it() {
+        let mut edge = Harness::witnessed().await;
+        let mut north = edge.settler(1, 5, NORTH, NORTHERN).await;
+        edge.caught_up(NORTH);
+        let mut east = edge.settler(3, 7, EAST, EASTERN).await;
+        edge.walks(&north, NORTHERN, 1).await;
+        edge.quiet().await;
+        edge.lose(NORTH).await;
+        edge.lose(EAST).await;
+        edge.link(EAST).await;
+        assert_eq!(edge.hello(EAST).players, [player(3)]);
+        let reply = Reply::unknown(9)
+            .entry(absorbed(NORTH, 1, 1, &[]))
+            .stay(1, 5, 0);
+        edge.answer(EAST, reply).await;
+        east.disconnected().await;
+        let said = edge.sent(EAST).await;
+        let expected = [
+            (1, left(3, Some(7))),
+            (2, passed_on(1, 5, 1, step_into(NORTHERN))),
+        ];
+        assert_eq!(numbered(&said), expected);
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(NORTHERN));
+        assert!(north.connected());
+        assert_eq!(edge.acts(&north).await, (EAST, EntityId(5), 2));
+
+        edge.link(EAST).await;
+        let hello = edge.hello(EAST);
+        assert_eq!((hello.since, hello.seen), (9, 1));
+        assert_eq!(hello.players, [player(1)]);
+        edge.answer(EAST, Reply::resumed().applied(3).stay(1, 5, 2))
+            .await;
+        assert!(north.connected());
+        edge.end().await;
+    }
+
+    /// Section 5. A region is owed its `Absorbed` also when all the edge has of it is
+    /// a guest's subscription there and a subscription elsewhere that names it. The
+    /// survivor's next welcome has none, so the edge concludes that none comes: what
+    /// it was asking the absorbed region for it asks the survivor for, and the
+    /// subscription that named the one names the other.
+    #[tokio::test(start_paused = true)]
+    async fn a_region_the_edge_only_asks_for_a_chunk_is_owed_a_word_by_its_survivor() {
+        let (mut edge, mut client) = told_elsewhere_with_the_absorbed().await;
+        edge.answer(EAST, Reply::resumed()).await;
+        tokio::time::advance(Duration::from_millis(2500)).await;
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.ended_by_the_edge(EAST).await;
+        edge.link(EAST).await;
+        assert!(edge.hello(EAST).guests.is_empty());
+        edge.answer(EAST, Reply::resumed()).await;
+        let asked = subscriptions(edge.sent(EAST).await);
+        assert_eq!(asked, [as_guest(1, [COMMON])]);
+        let asked = subscriptions(edge.sent(WEST).await);
+        assert!(asked.is_empty(), "{asked:?}");
+
+        edge.says(EAST, not_mine(COMMON, 1)).await;
+        let asked = subscriptions(edge.sent(WEST).await);
+        let again = BTreeSet::from([(Some(Role::Viewer), set(&[COMMON]))]);
+        assert_eq!(meanings(&asked), again);
+        edge.says(WEST, snapshot(COMMON, edge.ask(WEST, COMMON)))
+            .await;
+        edge.sync(&mut client).await;
+        assert!(client.chunks.contains_key(&COMMON));
+        edge.offers_in_vain(NORTH).await;
+        edge.end().await;
+    }
+
+    /// Section 4, last paragraph: the entity of a player who left, on its way to a
+    /// region that stands for another, is discarded at the living one.
+    #[tokio::test]
+    async fn an_entity_on_its_way_to_an_absorbed_region_is_discarded_at_the_survivor() {
+        let mut edge = Harness::witnessed().await;
+        let client = edge.settler(1, 5, WEST, HOME).await;
+        edge.pairs(vec![(NORTH, EAST)]).await;
+        edge.ended_by_the_edge(NORTH).await;
+        edge.leave(&client).await;
+        edge.say(WEST, departed(player(1), EntityId(5), NORTH, NORTHERN));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        let discard = EdgeToWorker::Discard {
+            entity: EntityId(5),
+            chunk: NORTHERN,
+        };
+        assert_eq!(numbered(&said), [(1, discard)]);
+        edge.end().await;
+    }
+
+    /// A player's own entity as a region has it in a snapshot.
+    fn own(who: u128, entity: i32, chunk: ChunkPos) -> EntityState {
+        EntityState {
+            entity: EntityId(entity),
+            kind: EntityKind::Player {
+                player: player(who),
+                name: "Player".to_owned(),
+            },
+            pose: Pose::at(within(chunk)),
+        }
+    }
+
+    /// What the two tests below begin with: the west has shown the first player's
+    /// entity, in its snapshot of the chunk they stand in, which a second player
+    /// sees. The stay is then the east's, by a split and a merge the edge has not
+    /// caught up with: the east says `Present` for it in answer to a hello that named
+    /// nobody, and the edge asks the east for the view and sends it the player's
+    /// step, as case 3 of ADR-0015, section 2.1, has it.
+    async fn a_shown_stay_another_region_has() -> (Harness, Client, Client) {
+        let mut edge = Harness::witnessed().await;
+        let client = edge.settler(1, 5, WEST, HOME).await;
+        let mut second = edge.settler(2, 6, WEST, HOME).await;
+        let there = vec![own(1, 5, HOME)];
+        edge.says(
+            WEST,
+            snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), there),
+        )
+        .await;
+        edge.sync(&mut second).await;
+        assert!(second.entities.contains(&5), "{:?}", second.entities);
+        edge.walks(&client, HOME, 1).await;
+        edge.quiet().await;
+
+        edge.link(EAST).await;
+        edge.answer(EAST, Reply::resumed().stay(1, 5, 0)).await;
+        edge.sent(EAST).await;
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(HOME));
+        (edge, client, second)
+    }
+
+    /// Found by the generated runs of scenario 32. A stay comes to a region without
+    /// an arrival, and the region reports the player's next step before it has shown
+    /// the edge the player.
+    #[tokio::test]
+    #[ignore = "finding: a step that a stay's new region reports before its snapshot is passed over, and the view stays behind"]
+    async fn a_move_that_a_stays_new_region_reports_before_its_snapshot_is_taken() {
+        // The sequence: as `a_shown_stay_another_region_has`. The east then applies
+        // the step in the tick that takes it, as a move is held by nothing (ADR-0014,
+        // section 3.6), and reports it among that tick's events, which come before
+        // the tick's snapshots (ADR-0012, section 5.2, and rule 31).
+        //
+        // The records: the stay is the east's (ADR-0015, section 2.1, case 3;
+        // ADR-0014, rule 38), "its view's subscriptions move here as at a
+        // hand-over". They are silent on whose word on the player's entity counts
+        // from then on. ADR-0013, section 7, takes it only from the region that last
+        // introduced the entity; section 3 of ADR-0015 makes the survivor that region
+        // at a merge, and its section 8 names the split only for several edges.
+        // After a hand-over the new region introduces the entity when it takes the
+        // arrival in; here nobody arrives. Read as: the region a stay is in is the
+        // one whose word on the player's own entity counts.
+        //
+        // What happened: the east's `EntityMoved` is passed over. The view stays
+        // centred where the west last had the player until the east's snapshot has
+        // shown the entity and the player steps again. Where no region had shown the
+        // entity before, the step is taken.
+        let (mut edge, _first, _second) = a_shown_stay_another_region_has().await;
+        edge.says(EAST, walked(EntityId(5), HOME, STEP_EAST)).await;
+        edge.sent(EAST).await;
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(STEP_EAST));
+        edge.end().await;
+    }
+
+    /// The same step, reported when the region has shown the entity: it is taken.
+    /// This is what the regions of the generated runs do.
+    #[tokio::test]
+    async fn a_move_that_a_stays_new_region_reports_after_its_snapshot_is_taken() {
+        let (mut edge, _first, _second) = a_shown_stay_another_region_has().await;
+        let there = vec![own(1, 5, HOME)];
+        edge.says(
+            EAST,
+            snapshot_of(HOME, edge.ask(EAST, HOME), empty_chunk(), there),
+        )
+        .await;
+        edge.says(EAST, walked(EntityId(5), HOME, STEP_EAST)).await;
+        edge.sent(EAST).await;
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(STEP_EAST));
+        edge.end().await;
+    }
+
+    /// Found by the generated runs of scenario 32 (seed 33, before the regions of
+    /// those runs were kept from it). Two regions each have a viewer of a chunk and
+    /// each name the other for it.
+    #[tokio::test(start_paused = true)]
+    #[ignore = "finding: two viewer's subscriptions told elsewhere with each other are never asked again, and nobody serves the chunk"]
+    async fn two_regions_that_name_each_other_for_a_chunk_are_asked_again() {
+        // The sequence, as the run came to it: the west is pinned to where the chunk
+        // lies and is split, and the chunk goes to the part. A player of the west
+        // sees it: the west asks the store and says `Elsewhere` with the part. The
+        // part gives the chunk back, which makes it the west's again by the store's
+        // table, "and nobody tells the pinned region" (ADR-0014, section 2.2). A
+        // player of the part sees the chunk: the part asks the store and says
+        // `Elsewhere` with the west. Here the two regions are the west and the east.
+        //
+        // The records: ADR-0013, section 3, has the edge become a guest at the
+        // region an `Elsewhere` names only if it has no subscription there, and ask
+        // a viewer's region again only on a `NotMine` from a guest's region or when
+        // the subscription it pointed at ends. Statement E holds: each subscription
+        // names a region where the edge has one. ADR-0014, rule 49, ends such a ring
+        // of beliefs for players and actions (a pinned region takes in whoever is
+        // sent to it and asks again) and says nothing of subscriptions; by rule 13 of
+        // ADR-0012 the west does not learn by itself. Read as: a chunk somebody sees
+        // is served in the end, so one of the two is asked again.
+        //
+        // What happened: nothing is asked of either region again. The chunk is
+        // served to nobody for as long as both players see it.
+        let mut edge = Harness::witnessed().await;
+        let _first = edge.settler(1, 5, WEST, HOME).await;
+        let _second = edge.settler(2, 6, EAST, EASTERN).await;
+        edge.says(WEST, elsewhere(COMMON, edge.ask(WEST, COMMON), EAST))
+            .await;
+        edge.sent(EAST).await;
+        edge.says(EAST, elsewhere(COMMON, edge.ask(EAST, COMMON), WEST))
+            .await;
+        let mut asked = Vec::new();
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_millis(1100)).await;
+            for region in [WEST, EAST] {
+                asked.extend(subscriptions(edge.sent(region).await));
+            }
+        }
+        let again = asked.iter().any(|body| names(body, COMMON));
+        assert!(
+            again,
+            "neither region is asked again for the chunk: {asked:?}"
+        );
+        edge.end().await;
     }
 }
