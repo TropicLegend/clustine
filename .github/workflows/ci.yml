@@ -21,15 +21,17 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The output of the tests is kept as well as shown, for the step at the end.
       # `shell: bash` makes the step fail when cargo does and not only when tee does.
+      # Every test binary is run, also those behind one that failed, which cargo would
+      # leave out: what fails there is named by the step at the end as well.
       - name: cargo test --workspace --locked
         shell: bash
-        run: cargo test --workspace --locked 2>&1 | tee test.log
+        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee test.log
       # The end-to-end tests once more, with the world divided into three regions: one
       # boundary runs through the spawn point, where the tests build, and one where
       # their longer walks cross it.
       - name: cargo test -p clustine --locked, on a divided world
         shell: bash
-        run: cargo test -p clustine --locked 2>&1 | tee -a test.log
+        run: cargo test -p clustine --locked --no-fail-fast 2>&1 | tee -a test.log
         env:
           CLUSTINE_TEST_PINS: "0,4"
       # Says on the run's summary page which tests failed and with what, where it can be

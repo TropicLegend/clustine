@@ -20,6 +20,9 @@ report() {
     printf 'ok      %s\n' "$name"
   else
     printf 'FAILED  %s (exit %s, %s/%s.log)\n' "$name" "$code" "$logs" "$name"
+    # The test binaries that failed, as cargo says how to run each again, and the tests.
+    grep -a -E '^error: test failed, to rerun pass ' "${logs}/${name}.log" |
+      sed 's/^error: test failed, to rerun pass /          in /'
     grep -a -E '^test .* FAILED$' "${logs}/${name}.log" | sort -u | sed 's/^/          /'
     failed=1
   fi
@@ -34,9 +37,12 @@ report clippy $?
 cargo test --workspace --locked --no-run >"${logs}/build.log" 2>&1
 report build $?
 
-cargo test --workspace --locked >"${logs}/tests.log" 2>&1 &
+# Every test binary is run, also those behind one that failed: cargo stops at the first
+# that fails unless told otherwise, and what fails behind it would be found one run at
+# a time. The exit code is cargo's either way, and the tests that failed are named.
+cargo test --workspace --locked --no-fail-fast >"${logs}/tests.log" 2>&1 &
 tests=$!
-CLUSTINE_TEST_PINS=0,4 cargo test -p clustine --locked >"${logs}/pinned.log" 2>&1 &
+CLUSTINE_TEST_PINS=0,4 cargo test -p clustine --locked --no-fail-fast >"${logs}/pinned.log" 2>&1 &
 pinned=$!
 wait "$tests"
 report tests $?
