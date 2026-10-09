@@ -38,6 +38,8 @@ mod kill_unpinned;
 #[cfg(test)]
 mod regions;
 #[cfg(test)]
+mod rest;
+#[cfg(test)]
 mod scenarios;
 #[cfg(test)]
 mod tests;
@@ -230,10 +232,23 @@ enum Message {
     Regions {
         answer: Sender<Result<RegionList, StoreError>>,
     },
+    /// Someone waits for the store to be at rest with what was asked of it before.
+    /// The commit thread passes it on to the thread for chunks, behind what it has
+    /// for that thread; `reply_to` is how that thread gets back to this one.
+    Barrier {
+        reply_to: Sender<Message>,
+        answer: Sender<Result<(), StoreError>>,
+    },
+    /// The thread for chunks has done everything it was given before a barrier, and
+    /// has said what it had to say of it.
+    Passed {
+        answer: Sender<Result<(), StoreError>>,
+    },
 }
 
 /// A running store. It stops when it and every [`StoreHandle`] it has handed out have
-/// been dropped; clones count as the store itself.
+/// been dropped; clones count as the store itself. Nobody waits for its threads to
+/// end: whoever needs it to have done with what it was asked calls [`Store::flush`].
 #[derive(Clone)]
 pub struct Store {
     messages: Sender<Message>,
@@ -305,6 +320,52 @@ impl Store {
         answered
             .recv()
             .expect("the store answers every request for the list")
+    }
+
+    /// Waits until the store is at rest with everything that was asked of it before
+    /// this call, through this store, a clone of it or any handle: each such request
+    /// has been done, or will never be (what a handle asks after it is lost is not
+    /// done); what it wrote is as durable as the store makes it; every answer the
+    /// store owes for it has been sent to its handle; and neither of the store's
+    /// threads is in the middle of any of it.
+    ///
+    /// It closes nothing. Handles and clones that live are served on, and what they
+    /// ask after this call is not waited for. Neither is what a handle in another
+    /// process has asked that has not reached this one yet.
+    ///
+    /// Saved chunks are not made durable by it: that is what a checkpoint and a
+    /// return do. A region's commits stay in the log until its checkpoint, so nothing
+    /// is lost by that.
+    ///
+    /// It takes as long as what the two threads have before them, and may wait for
+    /// the disk: it is not for a thread that must not block.
+    ///
+    /// The error is [`StoreError::Io`] for as long as what a failed write left in
+    /// the log is not durably gone, as for [`Store::regions`]. Nothing is under way
+    /// then either. It is also [`StoreError::Io`] if one of the store's threads has
+    /// died, of which nothing more can be said.
+    pub fn flush(&self) -> Result<(), StoreError> {
+        Self::rested(&self.barrier())
+    }
+
+    /// The first half of [`Store::flush`]: sends the barrier, and returns where its
+    /// answer arrives.
+    pub(crate) fn barrier(&self) -> Receiver<Result<(), StoreError>> {
+        let (answer, answered) = mpsc::channel();
+        // The store runs for as long as there is a `Store`, so it is still there.
+        let _ = self.messages.send(Message::Barrier {
+            reply_to: self.messages.clone(),
+            answer,
+        });
+        answered
+    }
+
+    /// The second half: waits for the answer to a barrier.
+    pub(crate) fn rested(barrier: &Receiver<Result<(), StoreError>>) -> Result<(), StoreError> {
+        // Only a thread that has died lets go of a barrier without answering it.
+        barrier
+            .recv()
+            .map_err(|_| io::Error::other("a thread of the world store has gone"))?
     }
 
     /// Opens a region for its owner, and returns the handle with what the region is to

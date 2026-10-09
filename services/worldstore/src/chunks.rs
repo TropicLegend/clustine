@@ -217,6 +217,13 @@ pub(crate) enum Job {
         changes: Vec<(BlockPos, BlockState)>,
         done: Sender<Result<(), StoreError>>,
     },
+    /// Everything before it is done, of whatever handle, and what there was to say of
+    /// it to the commit thread is said: tells that thread so, through `reply_to`,
+    /// which answers whoever waits for the store to be at rest.
+    Barrier {
+        reply_to: Sender<Message>,
+        answer: Sender<Result<(), StoreError>>,
+    },
 }
 
 /// The thread for chunks.
@@ -376,6 +383,11 @@ impl ChunkService {
                 let folded = apply(self.chunks.as_mut(), self.generator.as_ref(), &changes, 0)
                     .and_then(|()| self.chunks.sync());
                 let _ = done.send(folded);
+            }
+            Job::Barrier { reply_to, answer } => {
+                // Nothing is made durable for it: saved chunks become that with a
+                // checkpoint or a return, whose owner is told if they do not.
+                let _ = reply_to.send(Message::Passed { answer });
             }
         }
     }

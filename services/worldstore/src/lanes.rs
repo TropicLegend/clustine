@@ -549,6 +549,31 @@ impl Lanes {
                 // Whoever asked may have gone.
                 let _ = answer.send(list);
             }
+            Message::Barrier { reply_to, answer } => {
+                // Everything that was sent before it has been handled. What of it
+                // waited for the group to end is answered and passed on now, so that
+                // the barrier reaches the thread for chunks behind all of it. A merge
+                // and a split were done whole when their requests were handled.
+                self.end_group();
+                // If that thread has gone, the answer goes with the job, and whoever
+                // waits is told so.
+                let _ = self.jobs.send(Job::Barrier { reply_to, answer });
+            }
+            Message::Passed { answer } => {
+                // The thread for chunks has done what it was given before the barrier,
+                // and what it had to say of it has been handled here: state files are
+                // in place and returns are in the log. Ending the group makes that
+                // durable, sees to the log and the table file, and answers the handles'
+                // own flushes. None of it gives the thread for chunks more to do, which
+                // is why one round there and back is enough.
+                self.end_group();
+                let rested = match self.log.settle() {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(StoreError::Io(error)),
+                };
+                // Whoever asked may have gone.
+                let _ = answer.send(rested);
+            }
         }
     }
 
