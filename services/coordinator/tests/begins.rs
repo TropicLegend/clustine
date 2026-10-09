@@ -2209,31 +2209,6 @@ fn a_coordinator_that_is_alone_begins_a_merge_again_three_rests_after_its_releas
     assert_eq!(begun_again_at(&mut world, again), [MERGE]);
 }
 
-// Section 6.6, as it is written: "No failure is noted, so nothing holds the next
-// attempt back but the rest of the region that was just given out: the merge is begun
-// again a rest later", and at its end "the merge is made a rest later".
-//
-// The sequence is that of the test above: alone, deciding by itself with a rest of
-// one lease, one worker with regions 0 and 1 whose players are within the merge
-// distance, a merge by the distances whose release is never answered and that ends
-// with `NotReleased` at the first look more than a lease after it was asked. The
-// record says in section 6.6 that the merge is begun again one rest after that. What
-// happens: both regions are left alone for three rests (`alone_until` is the end
-// and three leases) and the merge is begun again then, which is what Q13 says, with
-// ADR-0016, section 5.5, and what the test above holds. The record contradicts
-// itself here: Q13 was sharpened ("Found while building", step C5.2) and section 6.6
-// was not, nor was section 2.3's "is begun again when its regions have rested".
-#[test]
-#[ignore = "finding: section 6.6 has the merge begun again one rest after it lapsed, Q13 three; the code does three"]
-fn a_coordinator_that_is_alone_begins_a_merge_again_one_rest_after_its_release_was_not_answered() {
-    let (mut world, home, other) = a_merge_by_the_distances_on_one_worker(Made::Alone);
-    let ended = the_release_is_never_answered(&mut world, home, other);
-    let again = ended + LEASE;
-    assert_eq!(world.coordinator.alone_until(region(0)), Some(again));
-    assert_eq!(world.coordinator.alone_until(region(1)), Some(again));
-    assert_eq!(begun_again_at(&mut world, again), [MERGE]);
-}
-
 // Q13: "the same if nothing at all is heard of the worker for ten leases and then
 // one tick comes, followed by its reports".
 #[test]

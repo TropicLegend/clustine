@@ -453,7 +453,8 @@ differences, and only the single process uses it (section 6):
   only thing the fault would do is keep the coordinator from beginning anything
   with that worker's regions (`free_but_for_its_rest`), which are all the regions
   there are, for thirty seconds. So such a merge costs the one restore it has to
-  cost, and is begun again when its regions have rested. (`take_unvouched` sets the
+  cost, and is begun again when its regions have been left alone as after any merge
+  that came to nothing (three rests; ADR-0016, section 5.5). (`take_unvouched` sets the
   same mark by itself and is off anyway.)
 
 Section 6.6 goes through everything that hangs on the lease, and through what
@@ -924,8 +925,13 @@ runner's part above is new).
    serves what it holds and claims what it knows nothing of: **the row is `N`'s by
    the first claim there is for it.**
 
-**What ends a belief** is the end of the viewer's ticket it was put in for, and
-nothing else: the edge's `SubscribeAsGuest` or `Unsubscribe`, which it sends for
+**What ends a belief** is the end of the viewer's subscription it was put in for,
+and nothing else (the runner notes for each subscription the part it took the chunk
+for, and takes the belief back with the coming tick when that subscription ends or
+becomes a guest's, unless another link's subscription to the chunk has it too; an
+edge that links again before it has heard, within the same tick, has the belief kept
+for its new subscription; "Found while building" has why the ticket alone was not
+enough): the edge's `SubscribeAsGuest` or `Unsubscribe`, which it sends for
 every chunk of `p`'s view when it reads the entry (`Fanout::move_stay`, `unwant`);
 the end of the link, which gives its tickets back; the edge's being gone. **Not the
 `Parted`**: the `Parted` decides only whether a belief is put in for a new viewer's
@@ -1392,7 +1398,8 @@ pub struct Standstill {
     /// The players the region had after its last tick before it stopped: those who
     /// stood still in it.
     pub players: u64,
-    /// The chunks it held then by the world store's word, as `RegionStatus::held`.
+    /// The chunks it held then by what its ticks had been told, as
+    /// `RegionStatus::held`; a grant that no tick had been told of is not among them.
     pub held: u64,
     /// From when it stopped ticking until its next tick had run.
     pub milliseconds: u64,
@@ -1828,8 +1835,9 @@ that long for a checkpoint, or a process that was held up in the middle.
   that was releasing it, and it is restored from what the store had confirmed: one
   restore, for players who were standing still for the release already. The region
   that was to survive was only told to prepare and has ticked all along. **No
-  failure is noted**, so nothing holds the next attempt back but the rest of the
-  region that was just given out: the merge is begun again a rest later. This is
+  failure of the worker is noted**, so nothing holds the next attempt back but what
+  holds it back after any merge that came to nothing: both regions are left alone
+  for three rests (ADR-0016, section 5.5), and the merge is begun again then. This is
   the one way in which a single process still takes a region from its worker, and
   it has to be there: it is what ends a release that the store never answers.
 - **A merge at its second stage**: the region to absorb is released and has no
@@ -1852,7 +1860,7 @@ that long for a checkpoint, or a process that was held up in the middle.
 So **the single process never takes a region from its worker for silence**: a
 process that sleeps for a minute wakes with its worker registered and its regions
 running. If it fell asleep in the tens of milliseconds of a merge's first stage,
-one region is restored once when it wakes, and the merge is made a rest later; if
+one region is restored once when it wakes, and the merge is made three rests later; if
 in the second stage, or in a split, the list says what became of it.
 
 ### 7. Every order of events that is new without stripes
@@ -3712,7 +3720,7 @@ The first two are the owner's to answer, and were left open on purpose.
 - **A process that sleeps for longer than the lease** keeps its worker and its
   regions (section 6.6, P10), with one exception: if it fell asleep in the first
   stage of a merge, the region that was to be absorbed is taken and given back
-  when it wakes, which is one restore, and the merge is made a rest later (Q13).
+  when it wakes, which is one restore, and the merge is made three rests later (Q13).
   A merge at its second stage and a split end by what the list says.
 - **`stop` waits for the worker's loop to return**, and the loop waits for every
   runner's last checkpoint; **and then for the store to be at rest**. A store that
@@ -4048,3 +4056,18 @@ answered as a resume, raised by a `Confirm`. A stop that is noted for a standsti
 stays if the region stops again before it has ticked, and the runner reads no clock
 when nobody is to be told.
 
+**What the tests written from the record found** (steps C5.2 and C5.3a; the store's
+and the single process's are below when they are in). In the code, one thing: a
+belief that the runner had put in for an edge that had not heard of a split outlived
+its link when the same edge linked again within the same tick, as the tick counts the
+new link's ticket before it takes the old one back (R11 as it reads, with no tick
+between the two links). An edge that had heard by then was told that the part holds a
+chunk the region should have claimed. A belief is now its subscription's, as section
+3.6.2 says above. In the record, two: sections 2.3 and 6.6 had a merge that lapsed in
+one process begun again "a rest later", where it is three rests, as Q13 and ADR-0016
+have it; and section 5.6 had `Standstill::held` "by the world store's word", where it
+is by what the region's ticks had been told, as R12 has it. Both are corrected above.
+Not written as described: R3's kills of the store inside a write (the store's disk is
+its own crate's; the runner is dropped at each stage and the store started anew
+instead), and Q5's "at every tick", which is shown as a lower bound through a served
+coordinator, whose clock a test outside the crate cannot hold.
