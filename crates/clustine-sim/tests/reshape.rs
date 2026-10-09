@@ -26,7 +26,7 @@ use clustine_sim::api::{
 };
 use clustine_sim::{
     Durable, EdgeEvent, EdgeState, Holdings, Knowledge, Misdirected, NoSplit, Part, PlayerChange,
-    PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig, RegionState,
+    PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig, RegionState, Sides,
     Splitting, TickInputs, TickOutput, Ticket,
 };
 use clustine_world::{
@@ -2864,8 +2864,8 @@ fn a_plan_that_is_not_taken_changes_nothing() {
     let merged = region.absorb(REGION_B, &absorbed_state());
     assert_eq!(region.absorb(REGION_B, &absorbed_state()), merged);
     assert_eq!(region, copy, "`absorb` changed the region");
-    let split = region.split(&[WEST, HOME, FAR], PART);
-    assert_eq!(region.split(&[WEST, HOME, FAR], PART), split);
+    let split = region.split(&[WEST, HOME, FAR], PART, &[]);
+    assert_eq!(region.split(&[WEST, HOME, FAR], PART, &[]), split);
     assert_eq!(region, copy, "`split` changed the region");
     assert_eq!(region.state(), copy.state());
 
@@ -2889,7 +2889,7 @@ fn a_split_that_is_planned_with_players_to_go_and_not_taken_changes_nothing() {
         &single_input(E, player(1), entity(1), 2, walk_to(IN_WEST)),
     );
     let mut copy = region.clone();
-    let splitting = region.split(&[WEST], PART).expect("player 1 goes");
+    let splitting = region.split(&[WEST], PART, &[]).expect("player 1 goes");
     assert_eq!(splitting.part.players.len(), 1);
     assert_eq!(region, copy);
     let mut inputs = single_input(E, player(1), entity(1), 3, walk_to(IN_HOME));
@@ -3302,6 +3302,10 @@ fn split_as_the_record_says(
         state: ours,
         part: theirs,
         chunks,
+        sides: Sides {
+            seeds: seeds.iter().copied().collect(),
+            staying: stayers.iter().copied().collect(),
+        },
     })
 }
 
@@ -3384,9 +3388,13 @@ fn a_split_is_off_when_no_named_chunk_has_a_player_the_region_could_send() {
             &[asked, asked, HOME, HOME],
         ];
         for named in off {
-            assert_eq!(region.split(named, PART), Err(NoSplit::Nobody), "{named:?}");
+            assert_eq!(
+                region.split(named, PART, &[]),
+                Err(NoSplit::Nobody),
+                "{named:?}"
+            );
         }
-        assert!(region.split(&[EAST], PART).is_ok());
+        assert!(region.split(&[EAST], PART, &[]).is_ok());
     }
 }
 
@@ -3397,23 +3405,26 @@ fn a_split_is_off_when_nobody_would_stay_in_a_region_without_home_chunk_or_area(
         on_open_land(&held),
         &[(1, E, EAST), (2, F, TEN), (3, F, TEN)],
     );
-    assert_eq!(region.split(&[EAST, TEN], PART), Err(NoSplit::NothingStays));
     assert_eq!(
-        region.split(&[TEN, EAST, HOME, WEST, TEN], PART),
+        region.split(&[EAST, TEN], PART, &[]),
+        Err(NoSplit::NothingStays)
+    );
+    assert_eq!(
+        region.split(&[TEN, EAST, HOME, WEST, TEN], PART, &[]),
         Err(NoSplit::NothingStays)
     );
     // With one who stays it is a split.
     for named in [[EAST], [TEN]] {
-        let splitting = region.split(&named, PART).expect("somebody stays");
+        let splitting = region.split(&named, PART, &[]).expect("somebody stays");
         assert_eq!(splitting.chunks, named);
     }
 
     // That nobody is in a named chunk is found first: a region with nobody at all is
     // not split for that reason, whatever it would be left with.
     let empty = with_players(on_open_land(&held), &[]);
-    assert_eq!(empty.split(&[EAST, TEN], PART), Err(NoSplit::Nobody));
+    assert_eq!(empty.split(&[EAST, TEN], PART, &[]), Err(NoSplit::Nobody));
     let elsewhere = with_players(on_open_land(&[]), &[(1, E, EAST)]);
-    assert_eq!(elsewhere.split(&[EAST], PART), Err(NoSplit::Nobody));
+    assert_eq!(elsewhere.split(&[EAST], PART, &[]), Err(NoSplit::Nobody));
 }
 
 #[test]
@@ -3423,7 +3434,7 @@ fn it_is_a_split_when_nobody_stays_in_a_region_that_is_pinned_or_holds_the_home_
     // Pinned, without the home chunk: everything it holds goes, and it stays pinned.
     let held = [EAST, TEN, ChunkPos::new(-7, 3)];
     let region = with_players(pinned_everywhere(&held), &players);
-    let splitting = region.split(&[EAST, TEN], PART).expect("it is pinned");
+    let splitting = region.split(&[EAST, TEN], PART, &[]).expect("it is pinned");
     assert!(splitting.state.players.is_empty());
     assert_eq!(numbers_of(&splitting.part), [1, 2]);
     assert_eq!(splitting.chunks, [ChunkPos::new(-7, 3), EAST, TEN]);
@@ -3435,12 +3446,14 @@ fn it_is_a_split_when_nobody_stays_in_a_region_that_is_pinned_or_holds_the_home_
         max_x: Some(501),
     }];
     let region = with_players(holdings, &players);
-    assert!(region.split(&[EAST, TEN], PART).is_ok());
+    assert!(region.split(&[EAST, TEN], PART, &[]).is_ok());
 
     // On open land with the home chunk, which stays, and what is nearer to it.
     let held = [HOME, EAST, TEN, ChunkPos::new(-7, 3)];
     let region = with_players(on_open_land(&held), &players);
-    let splitting = region.split(&[EAST, TEN], PART).expect("it holds home");
+    let splitting = region
+        .split(&[EAST, TEN], PART, &[])
+        .expect("it holds home");
     assert!(splitting.state.players.is_empty());
     assert_eq!(splitting.chunks, [EAST, TEN]);
 }
@@ -3470,7 +3483,7 @@ fn exactly_the_players_standing_in_named_chunks_that_are_held_and_not_home_go() 
         ];
         let region = with_players(holdings(&held), &players);
         let named = [asked, TEN, HOME, ChunkPos::new(12, 0)];
-        let splitting = region.split(&named, PART).expect("two players go");
+        let splitting = region.split(&named, PART, &[]).expect("two players go");
         assert_eq!(numbers_of(&splitting.part), [1, 2]);
         assert_eq!(numbers_of(&splitting.state), [3, 4, 5, 6]);
         // Whoever stays keeps the chunk they stand in, and what is nearer to it: the
@@ -3479,7 +3492,7 @@ fn exactly_the_players_standing_in_named_chunks_that_are_held_and_not_home_go() 
 
         // Named as well, player 3 goes, and the chunks beyond with them.
         let named = [beside, TEN];
-        let splitting = region.split(&named, PART).expect("three players go");
+        let splitting = region.split(&named, PART, &[]).expect("three players go");
         assert_eq!(numbers_of(&splitting.part), [1, 2, 3]);
         assert_eq!(splitting.chunks, [TEN, beside, ChunkPos::new(12, 0)]);
     }
@@ -3527,7 +3540,7 @@ fn the_chunks_nearer_to_a_player_who_goes_than_to_one_who_stays_go_and_ties_stay
     for holdings in [on_open_land, pinned_everywhere] {
         let held = held_for_the_row();
         let region = with_players(holdings(&held), &[(1, E, TEN), (2, F, HOME)]);
-        let splitting = region.split(&[TEN], PART).expect("player 1 goes");
+        let splitting = region.split(&[TEN], PART, &[]).expect("player 1 goes");
         assert_eq!(splitting.chunks, going_from_the_row());
         let went: BTreeSet<ChunkPos> = splitting.chunks.iter().copied().collect();
         // The row: x above 5 goes and x = 5 stays.
@@ -3548,7 +3561,9 @@ fn the_home_chunk_counts_as_a_place_where_somebody_stays() {
     for holdings in [on_open_land, pinned_everywhere] {
         let held = held_for_the_row();
         let region = with_players(holdings(&held), &[(1, E, TEN)]);
-        let splitting = region.split(&[TEN], PART).expect("the home chunk stays");
+        let splitting = region
+            .split(&[TEN], PART, &[])
+            .expect("the home chunk stays");
         assert_eq!(splitting.chunks, going_from_the_row());
         assert!(!splitting.chunks.contains(&HOME));
     }
@@ -3559,7 +3574,7 @@ fn with_nobody_staying_and_no_home_chunk_every_chunk_a_pinned_region_holds_goes(
     let mut held = held_for_the_row();
     held.retain(|chunk| *chunk != HOME);
     let region = with_players(pinned_everywhere(&held), &[(1, E, TEN)]);
-    let splitting = region.split(&[TEN], PART).expect("it is pinned");
+    let splitting = region.split(&[TEN], PART, &[]).expect("it is pinned");
     held.sort();
     assert_eq!(splitting.chunks, held);
 
@@ -3581,7 +3596,7 @@ fn a_chunk_goes_with_the_nearest_of_several_who_go_unless_one_who_stays_is_as_ne
     let region = with_players(on_open_land(&held), &players);
     // Players 1 and 3 go. The home chunk at 0 and players 2 and 4 stay, at 8 and 20.
     let named = [ChunkPos::new(14, 0), ChunkPos::new(4, 0)];
-    let splitting = region.split(&named, PART).expect("two go");
+    let splitting = region.split(&named, PART, &[]).expect("two go");
     let going: Vec<ChunkPos> = [3, 4, 5, 12, 13, 14, 15, 16]
         .into_iter()
         .map(|x| ChunkPos::new(x, 0))
@@ -3595,7 +3610,7 @@ fn a_named_chunk_without_a_player_and_one_that_is_not_held_are_no_seeds() {
     let outside = ChunkPos::new(40, 0);
     let players = [(1, E, TEN), (2, F, outside)];
     let region = with_players(on_open_land(&held), &players);
-    let plain = region.split(&[TEN], PART).expect("player 1 goes");
+    let plain = region.split(&[TEN], PART, &[]).expect("player 1 goes");
     assert_eq!(plain.chunks, row(6, 12));
 
     // An empty chunk next to the home chunk, named, does not go and takes nothing with
@@ -3603,11 +3618,17 @@ fn a_named_chunk_without_a_player_and_one_that_is_not_held_are_no_seeds() {
     // 2 stays, far to the east, and what they are nearer to stays with them: nothing,
     // as every chunk held is nearer to the home chunk or to player 1.
     let named = [ChunkPos::new(2, 0), TEN, outside];
-    assert_eq!(region.split(&named, PART).expect("player 1 goes"), plain);
+    assert_eq!(
+        region.split(&named, PART, &[]).expect("player 1 goes"),
+        plain
+    );
 
     // Named twice, and in another order.
     let named = [outside, TEN, TEN, ChunkPos::new(2, 0), TEN];
-    assert_eq!(region.split(&named, PART).expect("player 1 goes"), plain);
+    assert_eq!(
+        region.split(&named, PART, &[]).expect("player 1 goes"),
+        plain
+    );
 }
 
 #[test]
@@ -3630,7 +3651,7 @@ fn how_far_chunks_are_apart_is_worked_out_in_64_bits() {
         ChunkPos::new(i32::MIN, i32::MAX),
     ];
     let region = with_players(on_open_land(&held), &[(1, E, TEN), (2, F, stayer)]);
-    let splitting = region.split(&[TEN], PART).expect("player 1 goes");
+    let splitting = region.split(&[TEN], PART, &[]).expect("player 1 goes");
     assert_eq!(
         splitting.chunks,
         [
@@ -3651,7 +3672,7 @@ fn the_part_has_the_players_who_go_whole_the_empty_block_and_their_edges_known_s
     let players = [(1, E, TEN), (2, E, HOME), (3, E, TEN)];
     let region = with_players(on_open_land(&held), &players);
     let before = region.state();
-    let splitting = region.split(&[TEN], PART).expect("two go");
+    let splitting = region.split(&[TEN], PART, &[]).expect("two go");
 
     let part = &splitting.part;
     assert_eq!(part.tick, 41, "the tick after the region's last");
@@ -3683,7 +3704,7 @@ fn the_split_region_loses_those_who_go_and_tells_each_of_their_edges_once() {
     edges.push((EdgeId(3), untouched.clone()));
     let before = a_state(40, ids(), entity(20), &ordered, &edges);
     let region = Region::restore(config(0), before.clone(), on_open_land(&held));
-    let splitting = region.split(&[TEN], PART).expect("four go");
+    let splitting = region.split(&[TEN], PART, &[]).expect("four go");
 
     let state = &splitting.state;
     assert_eq!(state.tick, 41);
@@ -3787,7 +3808,7 @@ fn splitting_made_up_regions_gives_what_the_record_says_step_for_step() {
             },
         };
         let region = Region::restore(config(0), state.clone(), holdings);
-        let split = region.split(&named, PART);
+        let split = region.split(&named, PART, &[]);
         let expected = split_as_the_record_says(&state, &held, pinned, &named, PART);
         assert_eq!(
             split, expected,
@@ -3883,11 +3904,14 @@ fn before_a_split(pinned: bool) -> Region {
 }
 
 /// [`before_a_split`] after the players in `THIRD` were split off and the split taken,
-/// with `WANTED` granted meanwhile. Returns the region, the plan, the chunks that stay
-/// loaded and the part.
+/// with `WANTED` granted meanwhile, which is as near to those who stay as to the one
+/// who goes and so stays. Returns the region, the plan, the chunks that stay loaded and
+/// the part.
 fn taken(pinned: bool) -> (Region, Splitting, Vec<(ChunkPos, Chunk)>, Part) {
     let mut region = before_a_split(pinned);
-    let splitting = region.split(&[THIRD], PART).expect("player 2 goes");
+    let splitting = region
+        .split(&[THIRD], PART, &[WANTED])
+        .expect("player 2 goes");
     let (kept, part) = region.take_split(splitting.clone(), &[WANTED]);
     (region, splitting, kept, part)
 }
@@ -3904,7 +3928,7 @@ fn stone_without(position: BlockPos) -> Chunk {
 fn the_plan_of_the_split_is_as_the_scenario_has_it() {
     for pinned in [false, true] {
         let region = before_a_split(pinned);
-        let splitting = region.split(&[THIRD], PART).expect("player 2 goes");
+        let splitting = region.split(&[THIRD], PART, &[]).expect("player 2 goes");
         // `THIRD` with its player, and the outpost, which is six chunks from them and
         // seven from player 3. `EAST` is as near to the home chunk as to player 3, and
         // nearer to both than to player 2.
@@ -4330,9 +4354,9 @@ fn the_same_region_and_arguments_give_byte_identical_states_and_identical_chunk_
     for pinned in [false, true] {
         let (one, other) = (before_a_split(pinned), before_a_split(pinned));
         let named = [THIRD, SECOND];
-        let split = one.split(&named, PART).expect("two players go");
+        let split = one.split(&named, PART, &[]).expect("two players go");
         assert_eq!(split.part.players.len(), 2);
-        for again in [other.split(&named, PART), one.split(&named, PART)] {
+        for again in [other.split(&named, PART, &[]), one.split(&named, PART, &[])] {
             let again = again.expect("as before");
             assert_eq!(bytes(&again.state), bytes(&split.state));
             assert_eq!(bytes(&again.part), bytes(&split.part));
@@ -4340,7 +4364,7 @@ fn the_same_region_and_arguments_give_byte_identical_states_and_identical_chunk_
         }
         // The chunks named are a set: their order and number change nothing.
         let turned = [SECOND, WANTED, THIRD, SECOND, HOME, THIRD];
-        let again = other.split(&turned, PART).expect("as before");
+        let again = other.split(&turned, PART, &[]).expect("as before");
         assert_eq!(bytes(&again.state), bytes(&split.state));
         assert_eq!(bytes(&again.part), bytes(&split.part));
         assert_eq!(again.chunks, split.chunks);
@@ -4357,12 +4381,13 @@ fn the_order_in_which_a_split_is_handed_its_granted_chunks_changes_nothing() {
     for pinned in [false, true] {
         let more = [ChunkPos::new(-4, 4), WANTED, ChunkPos::new(0, 9)];
         let mut one = before_a_split(pinned);
-        let splitting = one.split(&[THIRD], PART).expect("player 2 goes");
+        let splitting = one.split(&[THIRD], PART, &more).expect("player 2 goes");
         let (kept, part) = one.take_split(splitting.clone(), &more);
 
         let mut other = before_a_split(pinned);
-        let again = other.split(&[THIRD], PART).expect("player 2 goes");
         let turned = [more[2], more[0], more[1]];
+        let again = other.split(&[THIRD], PART, &turned).expect("player 2 goes");
+        assert_eq!(again, splitting);
         let (kept_again, part_again) = other.take_split(again, &turned);
         assert_eq!(one, other);
         assert_eq!(kept, kept_again);
@@ -4960,22 +4985,26 @@ impl Cluster {
 
         let site = self.site(region);
         let before = site.region.clone();
-        let split = site.region.split(named, part);
+        // What the store has granted the region in answer to claims that no tick has
+        // been told of counts as held, for the plan as for what the region is
+        // afterwards (ADR-0017, section 3.6.1). The answers stay where they are if
+        // the split is off.
+        let granted = site.next.granted.clone();
+        let split = site.region.split(named, part, &granted);
         assert_eq!(site.region, before, "`split` changed the region");
-        let as_a_set: BTreeSet<ChunkPos> = held.iter().copied().collect();
+        let as_a_set: BTreeSet<ChunkPos> = held.iter().chain(&granted).copied().collect();
         let expected =
             split_as_the_record_says(&before.state(), &as_a_set, !pinned.is_empty(), named, part);
         assert_eq!(split, expected);
         let splitting = split?;
 
-        let granted = std::mem::take(&mut site.next.granted);
+        site.next.granted.clear();
         let (kept, made) = site.region.take_split(splitting.clone(), &granted);
-        let mut stays: Vec<ChunkPos> = held
+        let stays: Vec<ChunkPos> = as_a_set
             .iter()
             .copied()
             .filter(|chunk| !splitting.chunks.contains(chunk))
             .collect();
-        stays.extend(&granted);
         let holdings = Holdings {
             held: stays,
             pinned,

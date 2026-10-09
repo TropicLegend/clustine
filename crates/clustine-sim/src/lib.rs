@@ -29,5 +29,5 @@ pub use api::{
     Durable, EdgeEvent, Misdirected, PlayerChange, PlayerEvent, PlayerJoin, PlayerTransfer,
     RemoteAction, RemoteStep, TickInputs, TickOutput, Ticket,
 };
-pub use region::{Holdings, Knowledge, NoSplit, Part, Region, RegionConfig, Splitting};
+pub use region::{Holdings, Knowledge, NoSplit, Part, Region, RegionConfig, Sides, Splitting};
 pub use state::{EdgeDelta, EdgeState, PlayerState, RegionState, StateDelta};

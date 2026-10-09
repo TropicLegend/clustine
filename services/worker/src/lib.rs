@@ -1299,13 +1299,15 @@ impl RegionRunner {
                     })
                 }
             }
+            // Worked out without the grants that wait for the coming tick, which stay
+            // with the region as they did.
             Plan::Split {
                 named,
                 as_epoch,
                 part,
                 splitting,
                 ..
-            } => match self.region.split(named, *part) {
+            } => match self.region.split(named, *part, &[]) {
                 Err(NoSplit::Nobody) => Err(Off::Nobody),
                 Err(NoSplit::NothingStays) => Err(Off::NothingStays),
                 Ok(planned) => {

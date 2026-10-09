@@ -43,6 +43,38 @@ pub struct Splitting {
     pub part: RegionState,
     /// The chunks the new region holds, ascending.
     pub chunks: Vec<ChunkPos>,
+    /// Where the line of this split is.
+    pub sides: Sides,
+}
+
+/// Where a split put its line: the chunks in which those stood who went, and the
+/// chunks in which those stood who stayed, with the home chunk if the region held
+/// it. Both ascending.
+///
+/// It says more than the chunks that went do: of a chunk that neither region held at
+/// the split, too, on whose side it lies. See
+/// `docs/adr/0017-the-end-of-the-stripes.md`, section 3.6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sides {
+    /// The chunks in which those stood who went.
+    pub seeds: Vec<ChunkPos>,
+    /// The chunks in which those stood who stayed, and the home chunk if the region
+    /// held it, whether anyone stood there or not: only the home region is joined.
+    pub staying: Vec<ChunkPos>,
+}
+
+impl Sides {
+    /// Whether the chunk at `position` is on the part's side: nearer to a seed than
+    /// to every chunk of `staying`, and any chunk if nothing stays. Distance is
+    /// counted in chunks along the longer of the two axes, and a chunk that is as
+    /// near to the one as to the other is not on the part's side.
+    pub fn goes(&self, position: ChunkPos) -> bool {
+        let nearest = |to: &[ChunkPos]| to.iter().map(|to| distance(position, *to)).min();
+        match nearest(&self.staying) {
+            Some(to_stay) => nearest(&self.seeds).is_some_and(|to_go| to_go < to_stay),
+            None => true,
+        }
+    }
 }
 
 /// The region a split has made.
@@ -86,6 +118,13 @@ impl Region {
             matches!(known, Known::Held { .. }).then_some(*position)
         };
         self.land.known.iter().filter_map(held)
+    }
+
+    /// The chunks the region holds for a split: by what its ticks were told, or by a
+    /// grant of `granted`, which the world store made in answer to a claim that no
+    /// tick has been told of. The store's table has the one as it has the other.
+    fn held_with(&self, granted: &[ChunkPos]) -> BTreeSet<ChunkPos> {
+        self.held().chain(granted.iter().copied()).collect()
     }
 
     /// The whole state this region would have after absorbing `absorbed`, whose state
@@ -192,7 +231,9 @@ impl Region {
     }
 
     /// What this region and a new region `part` would be if the players standing in
-    /// `named` were split off, or why the split is off. Changes nothing.
+    /// `named` were split off, or why the split is off. Changes nothing. `granted`
+    /// are the chunks the world store has granted the region in answer to claims
+    /// that no tick has been told of; each counts as a chunk the region holds.
     ///
     /// Those go who stand in a chunk of `named` that the region holds and that is not
     /// the home chunk; everyone else stays. With them goes every chunk the region holds
@@ -202,18 +243,30 @@ impl Region {
     /// stays. Chunks of the region's own pinned areas go like any other; the region
     /// stays pinned to its areas.
     ///
+    /// A grant that waits goes by the same rule, and is not left to the region for
+    /// want of a tick that was told of it. A player who walks on has the row of chunks
+    /// that just came into view granted so, and would find it ahead of them as land of
+    /// the region they were split off; and one who stands in such a chunk would stay
+    /// behind alone. See `docs/adr/0017-the-end-of-the-stripes.md`, section 3.6.1.
+    ///
     /// The part's state has the players who go as they are, no entity ids to give out,
     /// and of the edges only those of its players, each known since this tick with the
     /// start this region knows and nothing applied or sent. This region's state tells
     /// each of those edges with a [`Durable::SplitOff`] which of its stays went.
-    pub fn split(&self, named: &[ChunkPos], part: RegionId) -> Result<Splitting, NoSplit> {
+    pub fn split(
+        &self,
+        named: &[ChunkPos],
+        part: RegionId,
+        granted: &[ChunkPos],
+    ) -> Result<Splitting, NoSplit> {
         let home = self.land.home;
+        let held = self.held_with(granted);
         let standing: BTreeSet<ChunkPos> =
             self.players.values().map(|player| player.chunk()).collect();
         let seeds: BTreeSet<ChunkPos> = named
             .iter()
             .filter(|position| {
-                self.land.holds(**position) && **position != home && standing.contains(*position)
+                held.contains(*position) && **position != home && standing.contains(*position)
             })
             .copied()
             .collect();
@@ -224,22 +277,23 @@ impl Region {
         // Where those are who stay; and the home chunk counts as a place where somebody
         // stays, whether anyone stands there or not: only the home region is joined.
         let mut staying: BTreeSet<ChunkPos> = standing.difference(&seeds).copied().collect();
-        if staying.is_empty() && !self.land.holds(home) && self.land.pinned.is_empty() {
+        if staying.is_empty() && !held.contains(&home) && self.land.pinned.is_empty() {
             // The region would only get a new name.
             return Err(NoSplit::NothingStays);
         }
-        if self.land.holds(home) {
+        if held.contains(&home) {
             staying.insert(home);
         }
-        let nearest =
-            |to: &BTreeSet<ChunkPos>, from: ChunkPos| to.iter().map(|to| distance(from, *to)).min();
+        let sides = Sides {
+            seeds: seeds.iter().copied().collect(),
+            staying: staying.into_iter().collect(),
+        };
         // With nobody and nothing to stay near, every chunk goes. A seed is among the
         // chunks in any case, and the home chunk never is.
-        let goes = |position: &ChunkPos| match nearest(&staying, *position) {
-            Some(to_stay) => nearest(&seeds, *position).is_some_and(|to_go| to_go < to_stay),
-            None => true,
-        };
-        let chunks: Vec<ChunkPos> = self.held().filter(goes).collect();
+        let chunks: Vec<ChunkPos> = held
+            .into_iter()
+            .filter(|position| sides.goes(*position))
+            .collect();
 
         let mut state = self.state();
         state.tick += 1;
@@ -275,15 +329,18 @@ impl Region {
             state,
             part: new,
             chunks,
+            sides,
         })
     }
 
     /// Makes the region what [`Region::restore`] makes of `splitting.state`, of the
-    /// chunks it holds without the part's and with `granted`, and of its pinned areas;
-    /// returns the chunks that were loaded and stay, in ascending order, and the part.
-    /// `splitting` is what [`Region::split`] gave for this very region, with no tick in
-    /// between; `granted` is what the world store has granted the region since, in
-    /// answer to claims that no tick has been told of.
+    /// chunks it holds and those of `granted`, without the part's, and of its pinned
+    /// areas; returns the chunks that were loaded and stay, in ascending order, and the
+    /// part. `splitting` is what [`Region::split`] gave for this very region, with no
+    /// tick in between, and `granted` has to be what `split` was given: the chunks the
+    /// world store has granted the region in answer to claims that no tick has been
+    /// told of. Those of them that are on the part's side are among
+    /// `splitting.chunks`; the others are the region's from here on.
     ///
     /// So the region knows nothing of the part's chunks, nor of any other region's, and
     /// asks again for what it wants. The part is restored with this region's
@@ -297,12 +354,13 @@ impl Region {
             state,
             part,
             chunks,
+            sides: _,
         } = splitting;
         let gone: BTreeSet<ChunkPos> = chunks.iter().copied().collect();
         let held = self
-            .held()
+            .held_with(granted)
+            .into_iter()
             .filter(|position| !gone.contains(position))
-            .chain(granted.iter().copied())
             .collect();
         let pinned = mem::take(&mut self.land.pinned);
         let (theirs, kept): (Vec<_>, Vec<_>) = mem::take(&mut self.chunks)
@@ -800,7 +858,7 @@ mod tests {
             vec![(E, quiet(1))],
         );
         region.absorb(ABSORBED, &there);
-        region.split(&[at(1, 0)], PART).unwrap();
+        region.split(&[at(1, 0)], PART, &[]).unwrap();
         assert_eq!(region, untouched);
         let inputs = TickInputs {
             tickets_removed: viewers(&[of_absorbed]),
@@ -838,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_region_is_not_split_where_nobody_would_go_or_nothing_would_stay() {
-        let off = |region: &Region, named: &[ChunkPos]| region.split(named, PART).unwrap_err();
+        let off = |region: &Region, named: &[ChunkPos]| region.split(named, PART, &[]).unwrap_err();
         let held = [row(0, 3, 0), vec![at(9, 9)]].concat();
         let region = standing(&[(1, at(0, 0)), (2, at(3, 0)), (3, at(7, 0))], &held, &[]);
 
@@ -848,7 +906,9 @@ mod tests {
             assert_eq!(off(&region, &named), NoSplit::Nobody, "{named:?}");
         }
         // One such chunk beside one that will do is passed over.
-        let split = region.split(&[HOME, at(7, 0), at(3, 0)], PART).unwrap();
+        let split = region
+            .split(&[HOME, at(7, 0), at(3, 0)], PART, &[])
+            .unwrap();
         assert_eq!(split.part.players.len(), 1);
 
         // Everyone would go from a region that neither holds the home chunk nor is
@@ -858,13 +918,16 @@ mod tests {
         assert_eq!(off(&region, &away), NoSplit::NothingStays);
         // Not so if one of them stays, if the region holds the home chunk, or if it is
         // pinned to an area, be it one it holds nothing of.
-        assert_eq!(region.split(&away[..1], PART).unwrap().chunks, [at(3, 0)]);
+        assert_eq!(
+            region.split(&away[..1], PART, &[]).unwrap().chunks,
+            [at(3, 0)]
+        );
         let with_home = [away.as_slice(), &[HOME]].concat();
         let region = standing(&[(1, at(3, 0)), (2, at(4, 0))], &with_home, &[]);
-        assert_eq!(region.split(&away, PART).unwrap().chunks, away);
+        assert_eq!(region.split(&away, PART, &[]).unwrap().chunks, away);
         let pinned = [area(Some(40), None)];
         let region = standing(&[(1, at(3, 0)), (2, at(4, 0))], &away, &pinned);
-        let split = region.split(&away, PART).unwrap();
+        let split = region.split(&away, PART, &[]).unwrap();
         assert_eq!(split.chunks, away);
         assert!(split.state.players.is_empty());
     }
@@ -897,12 +960,12 @@ mod tests {
         for (stands, config) in cases {
             let state = standing(&stands, &[], &[]).state();
             let region = Region::restore(config, state, holdings(&held, &[]));
-            let split = region.split(&[at(10, 0)], PART).unwrap();
+            let split = region.split(&[at(10, 0)], PART, &[]).unwrap();
             assert_eq!(split.chunks, going, "{stands:?}");
             // Naming the chunk twice, or more chunks in which nobody stands, changes
             // nothing.
             let named = [at(11, 0), at(10, 0), at(-2, 0), at(10, 0)];
-            assert_eq!(region.split(&named, PART).unwrap(), split);
+            assert_eq!(region.split(&named, PART, &[]).unwrap(), split);
         }
 
         // Nobody stays in a pinned region without the home chunk: every chunk it holds
@@ -910,7 +973,7 @@ mod tests {
         let state = standing(&[(1, at(10, 0))], &[], &[]).state();
         let pinned = [area(Some(-2), Some(9))];
         let mut region = Region::restore(elsewhere, state, holdings(&held, &pinned));
-        let split = region.split(&[at(10, 0)], PART).unwrap();
+        let split = region.split(&[at(10, 0)], PART, &[]).unwrap();
         assert_eq!(split.chunks, held);
         region.take_split(split, &[]);
         assert_eq!(region.held_chunk_count(), 0);
@@ -939,7 +1002,7 @@ mod tests {
         let held = row(0, 9, 0);
         let region = region(before.clone(), &held, &[]);
         let named = [at(8, 0), at(8, 5), at(9, 0), at(4, 0)];
-        let split = region.split(&named, PART).unwrap();
+        let split = region.split(&named, PART, &[]).unwrap();
 
         // The part has those who go as they were, no entity ids, and their edges as of
         // this tick with the start the region knows.
@@ -978,7 +1041,7 @@ mod tests {
 
         // Working it out changed nothing, and gives the same every time, to the byte.
         assert_eq!(region.state(), before);
-        let again = region.split(&named, PART).unwrap();
+        let again = region.split(&named, PART, &[]).unwrap();
         assert_eq!(bytes(&again.state), bytes(&split.state));
         assert_eq!(bytes(&again.part), bytes(&split.part));
         assert_eq!(again.chunks, split.chunks);
@@ -1015,10 +1078,11 @@ mod tests {
     #[test]
     fn a_region_that_takes_a_split_and_its_part_are_the_regions_restored_from_it() {
         let mut region = stretched();
-        let split = region.split(&[at(9, 0)], PART).unwrap();
-        assert_eq!(split.chunks, row(5, 9, 0));
-        // What the store granted the region meanwhile, which no tick has been told of.
+        // What the store granted the region meanwhile, which no tick has been told of:
+        // a chunk beside those who stay.
         let granted = [at(0, 3)];
+        let split = region.split(&[at(9, 0)], PART, &granted).unwrap();
+        assert_eq!(split.chunks, row(5, 9, 0));
         let (kept, part) = region.take_split(split.clone(), &granted);
 
         let stays = [row(0, 4, 0).as_slice(), &granted].concat();
@@ -1049,6 +1113,301 @@ mod tests {
             assert_eq!(part.region.knowledge(position), Knowledge::Unknown);
         }
         assert!(!part.region.pins(at(9, 0)));
+    }
+
+    /// The chunks of `chunks` in ascending order, each once.
+    fn ascending(chunks: &[ChunkPos]) -> Vec<ChunkPos> {
+        let chunks: BTreeSet<ChunkPos> = chunks.iter().copied().collect();
+        chunks.into_iter().collect()
+    }
+
+    /// A region as [`standing`] makes it that has claimed `asked` for viewers and has
+    /// had no answer. What the store grants of them waits for the next tick, which a
+    /// split comes before.
+    fn asking(
+        stands: &[(u128, ChunkPos)],
+        held: &[ChunkPos],
+        pinned: &[ChunkArea],
+        asked: &[ChunkPos],
+    ) -> Region {
+        let mut region = standing(stands, held, pinned);
+        region.tick(&TickInputs {
+            tickets_added: viewers(asked),
+            ..TickInputs::default()
+        });
+        for position in asked {
+            assert_eq!(
+                region.knowledge(*position),
+                Knowledge::Asked,
+                "{position:?}"
+            );
+        }
+        region
+    }
+
+    /// Holds the two regions of a split that was taken to its line: each of `chunks`
+    /// is the part's and unknown to the region if it is on the part's side, and the
+    /// region's and unknown to the part if it is not.
+    fn divided_by_the_line(sides: &Sides, region: &Region, part: &Region, chunks: &[ChunkPos]) {
+        for position in chunks {
+            let (ours, theirs) = if sides.goes(*position) {
+                (Knowledge::Unknown, Knowledge::Held)
+            } else {
+                (Knowledge::Held, Knowledge::Unknown)
+            };
+            assert_eq!(region.knowledge(*position), ours, "{position:?}");
+            assert_eq!(part.knowledge(*position), theirs, "{position:?}");
+        }
+        let held = region.held_chunk_count() + part.held_chunk_count();
+        assert_eq!(held, ascending(chunks).len());
+    }
+
+    /// Player 1 at home and player 2 at (12, 0), each on four chunks of the row that
+    /// the region holds.
+    const APART: [(u128, ChunkPos); 2] = [(1, HOME), (2, ChunkPos::new(12, 0))];
+
+    fn held_apart() -> Vec<ChunkPos> {
+        [row(0, 3, 0), row(9, 12, 0)].concat()
+    }
+
+    #[test]
+    fn a_grant_that_waits_goes_with_the_part_if_it_is_nearer_to_who_goes_and_stays_if_not() {
+        // The region has asked for a row ahead of player 2, as a player has who walks
+        // on, for one behind player 1, and for chunks between the two: one nearer to
+        // home, one nearer to player 2, and two that are six chunks from both. The
+        // store has granted them all, and no tick has been told.
+        let ahead = [at(14, -1), at(14, 0), at(14, 1)];
+        let behind = [at(-2, -1), at(-2, 0), at(-2, 1)];
+        let (nearer_home, nearer_two, ties) = (at(5, 0), at(7, 0), [at(6, 0), at(6, 6)]);
+        let between = [nearer_home, nearer_two, ties[0], ties[1]];
+        let granted = [ahead, behind].concat().into_iter().chain(between);
+        let granted: Vec<ChunkPos> = granted.collect();
+        let mut region = asking(&APART, &held_apart(), &[], &granted);
+        let untouched = region.clone();
+
+        let split = region.split(&[at(12, 0)], PART, &granted).unwrap();
+        let going = ascending(&[row(9, 12, 0).as_slice(), &ahead, &[nearer_two]].concat());
+        assert_eq!(split.chunks, going);
+        let line = Sides {
+            seeds: vec![at(12, 0)],
+            staying: vec![HOME],
+        };
+        assert_eq!(split.sides, line);
+        // The players and what their edge is told are those of a split that was handed
+        // no grant, which takes only what the ticks were told of.
+        let plain = region.split(&[at(12, 0)], PART, &[]).unwrap();
+        assert_eq!(plain.chunks, row(9, 12, 0));
+        assert_eq!((&plain.state, &plain.part), (&split.state, &split.part));
+        assert_eq!(plain.sides, line);
+        assert_eq!(region, untouched);
+
+        // Each of the two is what a restore makes of its state and of what the store
+        // has for it once the split is written down.
+        let (kept, part) = region.take_split(split.clone(), &granted);
+        let staying = [row(0, 3, 0).as_slice(), &behind, &[nearer_home], &ties].concat();
+        let restored = Region::restore(config(3), split.state.clone(), holdings(&staying, &[]));
+        assert_eq!(region, restored);
+        let restored = Region::restore(config(3), split.part.clone(), holdings(&going, &[]));
+        assert_eq!(part.region, restored);
+        assert!(kept.is_empty() && part.chunks.is_empty());
+        let all = [held_apart(), granted].concat();
+        divided_by_the_line(&split.sides, &region, &part.region, &all);
+
+        // Neither asks for anything it was granted so: the row ahead is the part's
+        // when its player's view is asked of it, with no word to the store, and the
+        // region is not told of it again.
+        let mut part = part.region;
+        let output = part.tick(&TickInputs {
+            tickets_added: viewers(&ahead),
+            ..TickInputs::default()
+        });
+        assert!(output.claims.is_empty());
+        assert_eq!(output.chunk_requests, ahead);
+        assert!(idle(&mut region).claims.is_empty());
+    }
+
+    #[test]
+    fn a_player_standing_in_a_chunk_whose_grant_waits_goes_and_the_part_holds_that_chunk() {
+        // Player 2 has walked off the row the region holds, and the region has claimed
+        // the chunk they stand in.
+        let mut region = standing(&[(1, HOME), (2, at(9, 0))], &row(0, 8, 0), &[]);
+        assert_eq!(idle(&mut region).claims, [at(9, 0)]);
+        assert_eq!(region.knowledge(at(9, 0)), Knowledge::Asked);
+        // By what its ticks were told the region does not hold the chunk, and nobody
+        // would go. By the grant that waits it does: the player goes, and the chunk
+        // with them, and what is nearer to it than to home.
+        let named = [at(9, 0)];
+        assert_eq!(region.split(&named, PART, &[]), Err(NoSplit::Nobody));
+        let split = region.split(&named, PART, &named).unwrap();
+        let gone: Vec<PlayerId> = split.part.players.keys().copied().collect();
+        assert_eq!(gone, [player(2)]);
+        assert_eq!(split.sides.seeds, named);
+        assert_eq!(split.chunks, row(5, 9, 0));
+
+        // The part holds the chunk its player stands in, and claims nothing for them.
+        let (_, part) = region.take_split(split, &named);
+        let mut part = part.region;
+        assert_eq!(part.knowledge(at(9, 0)), Knowledge::Held);
+        assert_eq!(region.knowledge(at(9, 0)), Knowledge::Unknown);
+        assert!(idle(&mut part).claims.is_empty());
+        assert_eq!(part.player_count(), 1);
+    }
+
+    #[test]
+    fn whether_anything_stays_is_judged_by_the_grants_that_wait_as_well() {
+        let off = |region: &Region, named: &[ChunkPos], granted: &[ChunkPos]| {
+            region.split(named, PART, granted).unwrap_err()
+        };
+        // A region that holds nothing by its ticks: with the grant of the chunk its
+        // only player stands in, somebody would go, and nothing would stay.
+        let away = [at(3, 0), at(4, 0)];
+        let region = standing(&[(1, at(3, 0))], &[], &[]);
+        assert_eq!(off(&region, &away, &[]), NoSplit::Nobody);
+        assert_eq!(off(&region, &away, &away[..1]), NoSplit::NothingStays);
+
+        // A home chunk that is held by a grant that waits is a place where somebody
+        // stays, as one that a tick was told of is, and is no seed for the player who
+        // stands in it.
+        let stands = [(1, at(3, 0)), (2, at(4, 0)), (3, HOME)];
+        let region = standing(&stands[..2], &away, &[]);
+        assert_eq!(off(&region, &away, &[]), NoSplit::NothingStays);
+        let split = region.split(&away, PART, &[HOME]).unwrap();
+        assert_eq!(split.sides.staying, [HOME]);
+        assert_eq!(split.chunks, away);
+        let region = standing(&stands, &away, &[]);
+        let named = [HOME, at(3, 0), at(4, 0)];
+        let split = region.split(&named, PART, &[HOME]).unwrap();
+        assert_eq!(split.sides.seeds, away);
+        assert_eq!(split.state.players.len(), 1);
+    }
+
+    #[test]
+    fn a_split_planned_with_grants_that_wait_and_not_taken_leaves_them_to_the_next_tick() {
+        let granted = [at(14, 0), at(-2, 0)];
+        let mut region = asking(&APART, &held_apart(), &[], &granted);
+        let mut untouched = region.clone();
+        let split = region.split(&[at(12, 0)], PART, &granted).unwrap();
+        assert!(split.chunks.contains(&at(14, 0)) && !split.chunks.contains(&at(-2, 0)));
+        assert_eq!(region, untouched);
+        // It gives the same every time, to the byte.
+        let again = region.split(&[at(12, 0)], PART, &granted).unwrap();
+        assert_eq!(bytes(&again.state), bytes(&split.state));
+        assert_eq!(bytes(&again.part), bytes(&split.part));
+        assert_eq!(again, split);
+
+        // The split is off or declined: the answers are where they were, the next tick
+        // takes them, and it is the tick of a region that never planned. Both chunks
+        // are the region's, the one ahead of player 2 as well.
+        let inputs = TickInputs {
+            granted: granted.to_vec(),
+            ..TickInputs::default()
+        };
+        let output = region.tick(&inputs);
+        assert_eq!(output, untouched.tick(&inputs));
+        assert_eq!(output.chunk_requests, [at(-2, 0), at(14, 0)]);
+        assert_eq!(region, untouched);
+    }
+
+    #[test]
+    fn a_grant_that_waits_for_a_chunk_of_a_pinned_area_goes_and_the_region_stays_pinned() {
+        // The region is pinned to the chunks with x below 20. It has asked for a chunk
+        // of that area ahead of player 2, for one beyond the area, and for one behind
+        // player 1.
+        let own = area(None, Some(20));
+        let (inside, beyond, behind) = (at(14, 0), at(25, 0), at(-2, 0));
+        let granted = [inside, beyond, behind];
+        let mut region = asking(&APART, &held_apart(), &[own], &granted);
+        let split = region.split(&[at(12, 0)], PART, &granted).unwrap();
+        let going = [row(9, 12, 0).as_slice(), &[inside, beyond]].concat();
+        assert_eq!(split.chunks, going);
+
+        let (_, part) = region.take_split(split.clone(), &granted);
+        let staying = [row(0, 3, 0).as_slice(), &[behind]].concat();
+        let restored = Region::restore(config(3), split.state.clone(), holdings(&staying, &[own]));
+        assert_eq!(region, restored);
+        let restored = Region::restore(config(3), split.part.clone(), holdings(&going, &[]));
+        assert_eq!(part.region, restored);
+        let all = [held_apart(), granted.to_vec()].concat();
+        divided_by_the_line(&split.sides, &region, &part.region, &all);
+        // The area is the region's still, the chunk that went among it; the part is
+        // pinned to nothing.
+        assert!(region.pins(inside) && !region.pins(beyond));
+        assert!(!part.region.pins(inside));
+
+        // With nobody and nothing to stay near, a grant that waits goes like every
+        // other chunk, however far off it is.
+        let far = at(-50, 7);
+        let mut region = standing(&[(1, at(3, 0))], &[at(3, 0)], &[area(Some(40), None)]);
+        let split = region.split(&[at(3, 0)], PART, &[far]).unwrap();
+        assert_eq!(split.chunks, [far, at(3, 0)]);
+        assert!(split.sides.staying.is_empty());
+        region.take_split(split, &[far]);
+        assert_eq!(region.held_chunk_count(), 0);
+        assert!(region.pins(at(40, 0)));
+    }
+
+    #[test]
+    fn a_grant_for_a_chunk_the_region_holds_and_one_that_is_named_twice_change_nothing() {
+        let region = stretched();
+        let named = [at(9, 0)];
+        let plain = region.split(&named, PART, &[]).unwrap();
+        // Chunks the ticks were told of already, on either side.
+        let known = [at(8, 0), at(2, 0), HOME];
+        assert_eq!(region.split(&named, PART, &known).unwrap(), plain);
+
+        let once = [at(11, 0)];
+        let waiting = region.split(&named, PART, &once).unwrap();
+        assert_eq!(waiting.chunks, [row(5, 9, 0).as_slice(), &once].concat());
+        let twice = [at(11, 0), at(9, 0), at(11, 0)];
+        assert_eq!(region.split(&named, PART, &twice).unwrap(), waiting);
+        let (mut one, mut other) = (region.clone(), region);
+        let taken = one.take_split(waiting.clone(), &once);
+        assert_eq!(other.take_split(waiting, &twice), taken);
+        assert_eq!(one, other);
+        assert_eq!(taken.1.region.held_chunk_count(), 6);
+    }
+
+    #[test]
+    fn a_chunk_is_on_the_parts_side_if_it_is_nearer_to_a_seed_than_to_all_that_stays() {
+        let sides = Sides {
+            seeds: vec![at(10, 0), at(10, 4)],
+            staying: vec![at(0, 0), at(20, 0)],
+        };
+        for position in &sides.seeds {
+            assert!(sides.goes(*position), "{position:?}");
+        }
+        for position in &sides.staying {
+            assert!(!sides.goes(*position), "{position:?}");
+        }
+        // Along the longer axis: (5, 9) is nine from the origin and five from the seed
+        // at (10, 4). A chunk that is as near to something that stays as to the
+        // nearest seed is not on the part's side.
+        for position in [at(6, 0), at(14, -3), at(5, 9), at(10, 2000)] {
+            assert!(sides.goes(position), "{position:?}");
+        }
+        for position in [at(5, 0), at(15, 0), at(5, -5), at(4, 2), at(-3, 0)] {
+            assert!(!sides.goes(position), "{position:?}");
+        }
+
+        // Where the difference of two coordinates does not fit into 32 bits.
+        let sides = Sides {
+            seeds: vec![at(10, 0)],
+            staying: vec![at(20, 0)],
+        };
+        assert!(sides.goes(at(i32::MIN, 0)) && sides.goes(at(i32::MIN, i32::MAX)));
+        assert!(!sides.goes(at(i32::MAX, 0)));
+        // As far along z from both as z reaches.
+        assert!(!sides.goes(at(15, i32::MIN)) && !sides.goes(at(0, i32::MAX)));
+
+        // Nothing stays: every chunk is on the part's side.
+        let sides = Sides {
+            seeds: vec![at(10, 0)],
+            staying: Vec::new(),
+        };
+        let ends = [i32::MIN, 0, i32::MAX];
+        for position in ends.iter().flat_map(|x| ends.map(|z| at(*x, z))) {
+            assert!(sides.goes(position), "{position:?}");
+        }
     }
 
     /// What a tick let go: each player with the region they go to.
@@ -1082,7 +1441,7 @@ mod tests {
     fn after_a_split_players_walk_between_the_two_and_the_part_can_be_absorbed_again() {
         let whole = stretched();
         let mut region = whole.clone();
-        let split = region.split(&[at(9, 0)], PART).unwrap();
+        let split = region.split(&[at(9, 0)], PART, &[]).unwrap();
         let (_, part) = region.take_split(split, &[]);
         let mut part = part.region;
         assert_eq!(region.tick_number(), part.tick_number());

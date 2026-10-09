@@ -17,7 +17,7 @@ use crate::state::{EdgeDelta, EdgeState, PlayerState, RegionState, StateDelta};
 
 mod reshape;
 
-pub use reshape::{NoSplit, Part, Splitting};
+pub use reshape::{NoSplit, Part, Sides, Splitting};
 
 /// What a region is created with, and restored with: what it is given rather than what
 /// it has come to know. Its block of entity ids is part of its [`RegionState`], and
