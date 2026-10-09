@@ -132,3 +132,41 @@ pub async fn spawn_server(
     }
     panic!("the server did not start");
 }
+
+/// Starts the real server binary as [`spawn_server`] does, for a test that reads what
+/// the process says: its log, which is its standard error, is appended to the file
+/// `log`, without colours. It is told no view distance, so that `more` can name one
+/// or leave the server the one it has when it is told nothing.
+#[allow(dead_code)] // Not every test binary uses it.
+pub async fn spawn_server_with_log(
+    address: &str,
+    world: &std::path::Path,
+    more: &[&str],
+    log: &std::path::Path,
+) -> tokio::process::Child {
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .unwrap();
+    let server = tokio::process::Command::new(env!("CARGO_BIN_EXE_clustine"))
+        .args(["--bind", address, "--world"])
+        .arg(world)
+        .args(more)
+        .env("NO_COLOR", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(written)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    for _ in 0..200 {
+        if clustine_botswarm::ping(address).await.is_ok() {
+            return server;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "the server did not start:\n{}",
+        std::fs::read_to_string(log).unwrap_or_default()
+    );
+}
