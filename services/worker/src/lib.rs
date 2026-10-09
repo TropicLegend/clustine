@@ -53,7 +53,8 @@ use clustine_rpc::{
 use clustine_sim::api::{PlayerInput, RegionEvent};
 use clustine_sim::{
     Durable, EdgeEvent, Holdings, Knowledge, Misdirected, NoSplit, Part, PlayerChange, PlayerEvent,
-    Region, RegionConfig, RegionState, RemoteStep, Splitting, StateDelta, TickInputs, Ticket,
+    Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting, StateDelta, TickInputs,
+    Ticket,
 };
 use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId};
 use clustine_worldstore::StoreHandle;
@@ -550,6 +551,41 @@ struct Subscription {
     condition: Condition,
 }
 
+/// How many chunks one message of a link asked for that the region took for a part's,
+/// by the part: all of them, and those that did not go with the part's split.
+type Taken = BTreeMap<RegionId, (usize, usize)>;
+
+/// Counts a chunk that [`RegionRunner::subscribe`] took for a part's.
+fn note_taken(taken: &mut Taken, for_part: Option<(RegionId, bool)>) {
+    if let Some((part, free)) = for_part {
+        let (chunks, of_them_free) = taken.entry(part).or_default();
+        *chunks += 1;
+        *of_them_free += usize::from(free);
+    }
+}
+
+/// Says what a message of the link `id` asked for that was taken for a part's.
+fn say_taken(id: LinkId, taken: &Taken) {
+    for (part, (chunks, free)) in taken {
+        info!(
+            link = id.0,
+            part = part.0,
+            chunks,
+            free,
+            "chunks asked for players who went are taken for the part's"
+        );
+    }
+}
+
+/// A split this runner made, kept while an edge has not heard of it; see
+/// `docs/adr/0017-the-end-of-the-stripes.md`, section 3.6.2.
+struct Parted {
+    /// Where its line is.
+    sides: Sides,
+    /// The chunks that went with it.
+    gone: BTreeSet<ChunkPos>,
+}
+
 /// A link to an edge and what the runner keeps for it.
 struct EdgeLink {
     end: WorkerEnd,
@@ -563,6 +599,11 @@ struct EdgeLink {
     unknown: bool,
     /// The answer to the hello, until the next tick takes it.
     resume: Option<Resume>,
+    /// The number of the last outbox entry the edge has said on this link that it has:
+    /// with a hello that was answered as a resume, or with a `Confirm`. What it says so
+    /// with takes the entry out of the outbox only when the coming tick has run, so
+    /// the region's state can still have an entry the edge has read.
+    heard: u64,
     /// The number of the last subscription message taken from this link, 0 for a hello
     /// that named chunks; `None` if there has been none. Each has to be above the one
     /// before.
@@ -686,6 +727,10 @@ pub struct RegionRunner {
     committed: u64,
     /// Chunks the store could not read. Nothing waits for a snapshot of them.
     unreadable: BTreeSet<ChunkPos>,
+    /// The splits this runner made of which some edge has not heard yet, by the part's
+    /// id. A runner that is made anew has none: its region is restored from the
+    /// store's record, which does not have where a split's line was.
+    parted: BTreeMap<RegionId, Parted>,
     /// How many loads of each chunk the store has been asked for and has not answered.
     /// The store answers the loads of one chunk in the order they were asked, so an
     /// answer that leaves some is to a request the region has dropped since; see
@@ -778,6 +823,7 @@ impl RegionRunner {
             pending: VecDeque::new(),
             committed: state.tick,
             unreadable: BTreeSet::new(),
+            parted: BTreeMap::new(),
             loads: BTreeMap::new(),
             crowds: Crowds::new(),
             unsaved: BTreeSet::new(),
@@ -1385,6 +1431,9 @@ impl RegionRunner {
                 let held: Vec<ChunkPos> = chunks.into_iter().chain(granted).collect();
                 let loaded = self.region.take_absorbed(state, &held, &pinned);
                 self.begin_anew(loaded.into_iter().chain(delivered));
+                // The region that made those splits may be the one that was absorbed
+                // or one that has grown: where their lines were says nothing any more.
+                self.parted.clear();
                 info!(
                     tick = self.region.tick_number(),
                     absorbed = absorbed.0,
@@ -1414,6 +1463,7 @@ impl RegionRunner {
                     .copied()
                     .collect();
                 let players = splitting.part.players.len();
+                let sides = splitting.sides.clone();
                 let (loaded, mut part) = self.region.take_split(splitting, &granted);
                 // What the runner has of the part's chunks beyond those that were
                 // loaded goes with them: what the store had delivered for the coming
@@ -1442,6 +1492,10 @@ impl RegionRunner {
                     waited = waited.len(),
                     "a part of the region has been split off"
                 );
+                // Until every edge that had a player go has heard of it: what such an
+                // edge asks this region for, for somebody it still takes for this
+                // region's, is not claimed on the part's side of the line.
+                self.parted.insert(region, Parted { sides, gone });
                 done.call(Reshaped::Split {
                     region,
                     as_epoch,
@@ -1754,6 +1808,7 @@ impl RegionRunner {
         for edge in self.edges.values_mut() {
             edge.settled = true;
         }
+        self.forget_parted();
         for (player, entity) in arriving {
             if let Some(state) = self.region.player_state(player)
                 && state.entity_id == entity
@@ -2175,6 +2230,7 @@ impl RegionRunner {
                 last: None,
                 unknown: false,
                 resume: None,
+                heard: 0,
                 asked: None,
                 hold: BTreeSet::new(),
                 held: VecDeque::new(),
@@ -2344,6 +2400,7 @@ impl RegionRunner {
                 return self.hello(id, link, edge, (start, since), resume, (chunks, guests));
             }
             EdgeToWorker::Confirm { number } => {
+                link.heard = link.heard.max(number);
                 // Without a hello there is no telling whose outbox is meant.
                 if let Some(edge) = link.edge {
                     self.inputs
@@ -2355,9 +2412,12 @@ impl RegionRunner {
                 if !Self::takes_ask(id, link, ask) {
                     return false;
                 }
+                let mut taken = Taken::new();
                 for position in chunks {
-                    self.subscribe(link, position, Ticket::Viewer, ask);
+                    let for_part = self.subscribe(link, position, Ticket::Viewer, ask);
+                    note_taken(&mut taken, for_part);
                 }
+                say_taken(id, &taken);
             }
             EdgeToWorker::SubscribeAsGuest { ask, chunks } => {
                 if !Self::takes_ask(id, link, ask) {
@@ -2581,18 +2641,21 @@ impl RegionRunner {
                 edge,
                 number: resume.seen,
             });
+            link.heard = resume.seen;
         }
         link.edge = Some(edge);
         link.unknown = resume.answer != Answer::Resumed;
         link.resume = Some(resume);
         // The subscriptions the link begins with: a viewer's for each of `chunks` and a
         // guest's for each of `guests`. A chunk in both is a viewer's.
+        let mut taken = Taken::new();
         for (positions, kind) in [(chunks, Ticket::Viewer), (guests, Ticket::Guest)] {
             for position in positions {
                 if link.subscriptions.contains_key(&position) {
                     continue;
                 }
-                self.subscribe(link, position, kind, 0);
+                let for_part = self.subscribe(link, position, kind, 0);
+                note_taken(&mut taken, for_part);
                 // What the edge sends next acts on these chunks, so it waits until each
                 // of them is answered: with a snapshot, which is made when the chunk is
                 // loaded, or with the word that the region does not hold it. So nothing
@@ -2603,6 +2666,7 @@ impl RegionRunner {
                 }
             }
         }
+        say_taken(id, &taken);
         true
     }
 
@@ -2613,7 +2677,18 @@ impl RegionRunner {
     /// A ticket is counted for the subscription whatever the region knows of the chunk.
     /// One that changes its kind stays in the condition it is in, so that a served one
     /// costs no second snapshot and loses no event.
-    fn subscribe(&mut self, link: &mut EdgeLink, position: ChunkPos, kind: Ticket, ask: u64) {
+    ///
+    /// Returns the part the chunk is taken to be of, and whether it is one that did
+    /// not go with that part's split, if this is a new viewer's subscription of an
+    /// edge that has not heard of a split this runner made
+    /// ([`RegionRunner::of_a_part`]).
+    fn subscribe(
+        &mut self,
+        link: &mut EdgeLink,
+        position: ChunkPos,
+        kind: Ticket,
+        ask: u64,
+    ) -> Option<(RegionId, bool)> {
         let Some(subscription) = link.subscriptions.get_mut(&position) else {
             let subscription = Subscription {
                 kind,
@@ -2623,7 +2698,14 @@ impl RegionRunner {
             link.subscriptions.insert(position, subscription);
             link.waiting.insert(position);
             self.inputs.tickets_added.push((position, kind));
-            return;
+            if kind != Ticket::Viewer {
+                return None;
+            }
+            // As if the store had said so: the coming tick believes it, claims nothing
+            // for the chunk while the ticket lasts, and answers that the part holds it.
+            let (part, free) = self.of_a_part(link, position)?;
+            self.inputs.foreign.push((position, part));
+            return Some((part, free));
         };
         subscription.ask = ask;
         if let Condition::Elsewhere(region) = subscription.condition {
@@ -2646,6 +2728,65 @@ impl RegionRunner {
                 .push((position, subscription.kind));
             subscription.kind = kind;
         }
+        None
+    }
+
+    /// The part this region takes the chunk at `position` to be of, when the edge of
+    /// `link` asks for it as a viewer for the first time: the lowest part of a split
+    /// this runner made that the edge has not heard of, on whose side of the line the
+    /// chunk is, if the region knows nothing of the chunk. With it, whether the chunk
+    /// is one that did not go with the split.
+    ///
+    /// An edge that has not read that its players were split off names all they see
+    /// as this region's to show them. What went with the split the store would call
+    /// the part's a tick or two later. What nobody holds yet would be granted to this
+    /// region, a row of chunks ahead of those who went, and they would be handed back
+    /// to it when they reach it and split off again. So the region claims neither; the
+    /// part does, when the edge has read the entry and asks it. See
+    /// `docs/adr/0017-the-end-of-the-stripes.md`, section 3.6.2, also for what follows
+    /// where the chunk is a third region's or somebody who stayed sees it as well.
+    fn of_a_part(&self, link: &EdgeLink, position: ChunkPos) -> Option<(RegionId, bool)> {
+        if self.parted.is_empty() || self.region.knowledge(position) != Knowledge::Unknown {
+            return None;
+        }
+        // The state is that of the last tick, so it still has an entry the edge has
+        // said on this link that it has: the number tells.
+        let state = self.region.edge(link.edge?)?;
+        let unheard = (Bound::Excluded(link.heard), Bound::Unbounded);
+        let parts: BTreeSet<RegionId> = state
+            .outbox
+            .range(unheard)
+            .filter_map(|(_, entry)| match entry {
+                Durable::SplitOff { region, .. } => Some(*region),
+                _ => None,
+            })
+            .collect();
+        parts.into_iter().find_map(|part| {
+            let parted = self.parted.get(&part)?;
+            let went = parted.gone.contains(&position);
+            let goes = went || (!self.region.pins(position) && parted.sides.goes(position));
+            goes.then_some((part, !went))
+        })
+    }
+
+    /// Forgets the splits every edge has heard of: those no outbox names any more,
+    /// each edge that had a player go having confirmed the entry, been forgotten or
+    /// started anew.
+    fn forget_parted(&mut self) {
+        if self.parted.is_empty() {
+            return;
+        }
+        let named: BTreeSet<RegionId> = self
+            .edges
+            .keys()
+            .filter_map(|edge| self.region.edge(*edge))
+            .flat_map(|state| state.outbox.values())
+            .filter_map(|entry| match entry {
+                Durable::SplitOff { region, .. } => Some(*region),
+                _ => None,
+            })
+            .collect();
+        self.parted.retain(|part, _| named.contains(part));
     }
 
     /// Drops from the coming tick's inputs everything that came from `edge`.
@@ -10052,5 +10193,187 @@ mod tests {
         }
         assert_eq!(split.held_chunk_count(), 2);
         assert_eq!(part.region.held_chunk_count(), 2);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // What an edge asks for before it has heard of a split: section 3.6.2 of
+    // `docs/adr/0017-the-end-of-the-stripes.md`.
+    // -----------------------------------------------------------------------------------
+
+    /// A chunk further east than [`BEYOND`], nobody's as well.
+    const FURTHER: ChunkPos = ChunkPos::new(9, 0);
+
+    /// The home region of [`Divided::gap`] with [`other_player`] split off it where
+    /// they stand in [`OUT_EAST`], the part's id, the edge whose link the split has
+    /// closed, and the number of the entry that tells it of the split.
+    async fn split_in_the_gap(
+        world: &Divided,
+    ) -> (RegionRunner, Arc<GateControl>, TestEdge, RegionId, u64) {
+        let (mut edge, worker_end) = in_process(256);
+        let (mut runner, gate) = world.gated(HOME, config(0));
+        runner.links().attach(worker_end);
+        two_players_apart_in_the_gap(&mut runner, &mut edge).await;
+        let (done, outcome) = outcome();
+        runner.reshape(split_off_in_the_gap(&[OUT_EAST]), done);
+        let Reshaped::Split { region, .. } = reshaped(&mut runner, &outcome) else {
+            panic!("no split");
+        };
+        let state = runner.region().edge(edge.edge).unwrap();
+        let entries: Vec<_> = state.outbox.iter().collect();
+        let [(number, Durable::SplitOff { region: named, .. })] = entries[..] else {
+            panic!("the outbox has not the one entry of the split: {entries:?}");
+        };
+        assert_eq!(*named, region);
+        let number = *number;
+        (runner, gate, edge, region, number)
+    }
+
+    /// The chunks the runner has claimed at the store since the gate was last asked
+    /// what it was asked for.
+    fn claimed(gate: &GateControl) -> BTreeSet<ChunkPos> {
+        let claims = gate.asked().into_iter().filter_map(|asked| match asked {
+            Asked::Claim(chunks) => Some(chunks),
+            _ => None,
+        });
+        claims.flatten().collect()
+    }
+
+    /// The lines about chunks taken for a part's among `lines`.
+    fn lines_of_the_parts(lines: &[String]) -> Vec<&str> {
+        let about = |line: &&String| line.starts_with("chunks asked for players who went");
+        lines.iter().filter(about).map(String::as_str).collect()
+    }
+
+    /// An edge that has not read that one of its players was split off links again
+    /// and names what both of them see as this region's to show. What is on the
+    /// part's side of the split's line and the region knows nothing of, it takes for
+    /// the part's: the chunk that went, and the chunk ahead that nobody holds, which
+    /// the region would otherwise be granted and the player handed back into. It
+    /// claims neither and says of each that the part holds it. A chunk on its own
+    /// side it claims as ever.
+    #[tokio::test]
+    async fn what_an_edge_asks_for_those_who_went_is_not_claimed_before_it_has_heard_of_the_split()
+    {
+        let world = Divided::gap();
+        let (mut runner, gate, edge, part, _) = split_in_the_gap(&world).await;
+        gate.asked();
+
+        let (edge_end, worker_end) = link::in_process(256);
+        let mut again = edge.again(edge_end, &runner);
+        runner.links().attach(worker_end);
+        let sees = [ORIGIN, BESIDE, OUT_EAST, BEYOND];
+        let hello = again.hello(0, &[player(), other_player()], &sees);
+        again.send(hello).await.unwrap();
+        let ((), lines) = logged(|| step(&mut runner));
+        let link = runner.links.keys().next().unwrap().0;
+        assert_eq!(
+            lines_of_the_parts(&lines),
+            [format!(
+                "chunks asked for players who went are taken for the part's link={link} \
+                 part={} chunks=2 free=1",
+                part.0
+            )]
+        );
+        for chunk in [OUT_EAST, BEYOND] {
+            assert_eq!(runner.region().knowledge(chunk), Knowledge::Foreign(part));
+        }
+        assert_eq!(runner.region().knowledge(BESIDE), Knowledge::Asked);
+        assert_eq!(claimed(&gate), BTreeSet::from([BESIDE]));
+        // The edge is told of the split before it is told who holds the chunks.
+        let said = again.everything();
+        let told = |wanted: &dyn Fn(&WorkerToEdge) -> bool| said.iter().position(wanted);
+        let of_the_split = told(&|message| {
+            matches!(
+                message,
+                WorkerToEdge::Outbox {
+                    entry: Durable::SplitOff { .. },
+                    ..
+                }
+            )
+        });
+        for chunk in [OUT_EAST, BEYOND] {
+            let elsewhere = WorkerToEdge::Elsewhere {
+                chunk,
+                ask: 0,
+                region: part,
+            };
+            let of_the_chunk = told(&|message| *message == elsewhere);
+            assert!(
+                of_the_split.is_some() && of_the_split < of_the_chunk,
+                "{said:?}"
+            );
+        }
+
+        // A chunk it asks for afterwards, still without having confirmed the entry,
+        // is taken the same way; and none of it is ever claimed while it is so.
+        again.send(asking_for(vec![FURTHER])).await.unwrap();
+        let ((), lines) = logged(|| {
+            step_until(&mut runner, |runner| {
+                runner.region().knowledge(FURTHER) != Knowledge::Unknown
+            })
+        });
+        assert_eq!(runner.region().knowledge(FURTHER), Knowledge::Foreign(part));
+        assert_eq!(lines_of_the_parts(&lines).len(), 1, "{lines:?}");
+        assert_eq!(claimed(&gate), BTreeSet::new());
+    }
+
+    /// An edge that says with its hello that it has the entry of the split has read
+    /// it, on a link before this one, and has moved the view of whoever went: what it
+    /// names as a viewer's is the view of somebody who stayed, and is claimed as ever.
+    /// The entry is still in the region's state then, as the tick that takes the
+    /// hello is the one that takes it out.
+    #[tokio::test]
+    async fn what_an_edge_asks_for_when_it_has_heard_of_the_split_is_claimed_as_ever() {
+        let world = Divided::gap();
+        let (mut runner, gate, edge, _, number) = split_in_the_gap(&world).await;
+        gate.asked();
+
+        let (edge_end, worker_end) = link::in_process(256);
+        let again = edge.again(edge_end, &runner);
+        runner.links().attach(worker_end);
+        let hello = again.hello(number, &[player()], &[ORIGIN, BEYOND]);
+        again.send(hello).await.unwrap();
+        let ((), lines) = logged(|| step(&mut runner));
+        assert_eq!(lines_of_the_parts(&lines), [""; 0]);
+        assert_eq!(runner.region().knowledge(BEYOND), Knowledge::Asked);
+        assert_eq!(claimed(&gate), BTreeSet::from([BEYOND]));
+    }
+
+    /// When the edge has confirmed the entry, the region has nothing left to go by:
+    /// the split is forgotten with the entry, and what the edge asks for is claimed
+    /// as ever, also on what was the part's side. A confirmation that is taken in the
+    /// same step as the asking counts already, though only the coming tick takes the
+    /// entry out of the region's state.
+    #[tokio::test]
+    async fn a_split_that_every_edge_has_confirmed_is_forgotten() {
+        let world = Divided::gap();
+        let (mut runner, gate, edge, _, number) = split_in_the_gap(&world).await;
+        assert_eq!(runner.parted.len(), 1);
+
+        let (edge_end, worker_end) = link::in_process(256);
+        let again = edge.again(edge_end, &runner);
+        runner.links().attach(worker_end);
+        // Only what the region holds, so that nothing the edge says next waits behind
+        // the hello for longer than the chunk takes to be shown.
+        let hello = again.hello(0, &[player(), other_player()], &[ORIGIN]);
+        again.send(hello).await.unwrap();
+        step_until(&mut runner, |runner| {
+            runner.links.values().all(|link| link.hold.is_empty())
+        });
+        assert_eq!(runner.parted.len(), 1);
+
+        gate.asked();
+        again.send(EdgeToWorker::Confirm { number }).await.unwrap();
+        again.send(asking_for(vec![BEYOND])).await.unwrap();
+        let ((), lines) = logged(|| {
+            step_until(&mut runner, |runner| {
+                runner.region().knowledge(BEYOND) != Knowledge::Unknown
+            })
+        });
+        assert_eq!(lines_of_the_parts(&lines), [""; 0]);
+        assert!(claimed(&gate).contains(&BEYOND));
+        step(&mut runner);
+        assert!(runner.region().edge(edge.edge).unwrap().outbox.is_empty());
+        assert!(runner.parted.is_empty());
     }
 }
