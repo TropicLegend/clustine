@@ -6,12 +6,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clustine::cluster::{
     self, COORDINATOR_PORT, CoordinatorArgs, EdgeArgs, MergeArgs, MoveArgs, SplitArgs, WORKER_PORT,
     WORLDSTORE_PORT, WorkerArgs,
 };
 use clustine::{Config, EdgeConfig, Server, stop_signal};
+use clustine_coordinator::Policy;
 use clustine_region::RegionId;
 use clustine_world::ChunkPos;
 use tracing::info;
@@ -59,6 +61,78 @@ impl Players {
             region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
             compression_threshold: usize::try_from(self.compression_threshold).ok(),
         }
+    }
+}
+
+/// Who decides when regions merge and split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Reshape {
+    /// Somebody who asks for it, with `clustine merge` and `clustine split`.
+    ByHand,
+    /// The coordinator as well, by where the players are.
+    ByItself,
+}
+
+/// When a coordinator merges and splits regions without being asked; see
+/// `docs/adr/0016-when-to-merge-and-split.md`, section 8.
+#[derive(Args)]
+struct Reshaping {
+    /// Who decides when regions merge and split. A coordinator that does it by itself
+    /// merges regions whose players come near each other and splits a region whose
+    /// players go apart, and does what it is asked besides. The distances and the
+    /// rest below are for that one; one that reshapes by hand checks them and does
+    /// nothing with them.
+    #[arg(long, value_enum, default_value_t = Reshape::ByHand)]
+    reshape: Reshape,
+
+    /// Largest view distance the edges grant, in chunks: what they are started with
+    /// as --view-distance. Nothing checks that the two agree. A coordinator that
+    /// reshapes by itself takes its two distances from it, so that a boundary between
+    /// regions is in nobody's view as a rule, and uses it for nothing else.
+    #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE as u32, value_parser = clap::value_parser!(u32).range(2..=32))]
+    view_distance: u32,
+
+    /// Regions with players this many chunks apart or nearer are merged by a
+    /// coordinator that reshapes by itself. Unless told, twice the view distance and
+    /// 6. It has to be 1 at least.
+    #[arg(long)]
+    merge_distance: Option<u32>,
+
+    /// Players of one region that are more than this many chunks apart are split by
+    /// a coordinator that reshapes by itself. Unless told, twice the view distance
+    /// and 14. It has to be 2 more than the merge distance at least.
+    #[arg(long)]
+    split_distance: Option<u32>,
+
+    /// Seconds a coordinator that reshapes by itself leaves a region alone after a
+    /// merge, a split or a change of owner. A region without players is absorbed
+    /// after three times as long.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+    rest_seconds: u64,
+}
+
+impl Reshaping {
+    /// What the coordinator goes by to merge and split regions by itself, or `None`
+    /// for one that leaves it to whoever asks. An error says why the distances do not
+    /// fit each other.
+    ///
+    /// The distances are checked whoever decides: a command line that is wrong is
+    /// refused when it is written, not on the day somebody changes --reshape. But for
+    /// that, a coordinator that reshapes by hand does nothing with the numbers.
+    fn follow(&self) -> Result<Option<Policy>, String> {
+        let mut policy = Policy::for_view_distance(self.view_distance);
+        if let Some(distance) = self.merge_distance {
+            policy.merge_distance = distance;
+        }
+        if let Some(distance) = self.split_distance {
+            policy.split_distance = distance;
+        }
+        policy.rest = Duration::from_secs(self.rest_seconds);
+        let policy = policy.checked()?;
+        Ok(match self.reshape {
+            Reshape::ByHand => None,
+            Reshape::ByItself => Some(policy),
+        })
     }
 }
 
@@ -115,6 +189,9 @@ enum Service {
         /// workers report, and refuses to merge and to split.
         #[arg(long, default_value_t = format!("127.0.0.1:{WORLDSTORE_PORT}"))]
         store: String,
+
+        #[command(flatten)]
+        reshaping: Reshaping,
     },
     /// Keeps the world on disk for the workers.
     Worldstore {
@@ -254,12 +331,23 @@ async fn main() -> Result<()> {
             boundaries,
             lease_seconds,
             store,
+            reshaping,
         }) => {
+            // Refused as the parser refuses what it finds wrong itself, with how the
+            // coordinator is started below it.
+            let follow = reshaping.follow().unwrap_or_else(|why| {
+                let mut command = Cli::command();
+                command.build();
+                let coordinator = command.find_subcommand_mut("coordinator");
+                let coordinator = coordinator.expect("the coordinator is a subcommand");
+                coordinator.error(ErrorKind::ValueValidation, why).exit()
+            });
             cluster::coordinator(CoordinatorArgs {
                 listen,
                 boundaries,
                 lease: Duration::from_secs(lease_seconds),
                 store,
+                follow,
             })
             .await
         }
@@ -433,5 +521,194 @@ mod tests {
         let complaint = split(&["--chunks", "3,4", "--coordinator", "there:1"])
             .expect_err("the coordinator is named behind the chunks");
         assert!(complaint.contains("before --chunks"), "{complaint}");
+    }
+
+    /// What `clustine coordinator` with the arguments behind it has the coordinator
+    /// go by to merge and split regions by itself, or what it complains of.
+    fn follow(arguments: &[&str]) -> Result<Option<Policy>, String> {
+        let words = ["clustine", "coordinator"];
+        let words = words.iter().chain(arguments);
+        let cli = Cli::try_parse_from(words).map_err(|error| error.to_string())?;
+        match cli.service {
+            Some(Service::Coordinator { reshaping, .. }) => reshaping.follow(),
+            _ => Err("not a coordinator".to_owned()),
+        }
+    }
+
+    fn policy(merge_distance: u32, split_distance: u32, rest_seconds: u64) -> Policy {
+        Policy {
+            merge_distance,
+            split_distance,
+            rest: Duration::from_secs(rest_seconds),
+        }
+    }
+
+    #[test]
+    fn a_coordinator_reshapes_by_hand_unless_told_otherwise() {
+        assert_eq!(follow(&[]), Ok(None));
+        assert_eq!(follow(&["--reshape", "by-hand"]), Ok(None));
+        // The other flags are taken and nothing is done with them.
+        let numbers = [
+            "--view-distance",
+            "12",
+            "--merge-distance",
+            "3",
+            "--split-distance",
+            "5",
+            "--rest-seconds",
+            "5",
+        ];
+        assert_eq!(follow(&numbers), Ok(None));
+        let complaint = follow(&["--reshape", "by-chance"]).expect_err("no such way");
+        assert!(complaint.contains("by-hand, by-itself"), "{complaint}");
+    }
+
+    #[test]
+    fn a_coordinator_that_reshapes_by_itself_goes_by_the_view_distance_unless_told_its_distances() {
+        let by_itself = |arguments: &[&str]| {
+            let words = ["--reshape", "by-itself"];
+            let words: Vec<&str> = words.iter().chain(arguments).copied().collect();
+            follow(&words)
+        };
+        // What the edges grant unless told otherwise, and a rest of ten seconds.
+        assert_eq!(by_itself(&[]), Ok(Some(policy(22, 30, 10))));
+        assert_eq!(by_itself(&[]), Ok(Some(Policy::for_view_distance(8))));
+        // The least and the most an edge can be told to grant.
+        assert_eq!(
+            by_itself(&["--view-distance", "2"]),
+            Ok(Some(policy(10, 18, 10)))
+        );
+        assert_eq!(
+            by_itself(&["--view-distance", "32"]),
+            Ok(Some(policy(70, 78, 10)))
+        );
+        // Each number that is given takes the place of what would follow, and the
+        // others stay.
+        assert_eq!(
+            by_itself(&["--merge-distance", "3"]),
+            Ok(Some(policy(3, 30, 10)))
+        );
+        assert_eq!(
+            by_itself(&["--split-distance", "40"]),
+            Ok(Some(policy(22, 40, 10)))
+        );
+        assert_eq!(
+            by_itself(&["--rest-seconds", "1"]),
+            Ok(Some(policy(22, 30, 1)))
+        );
+        assert_eq!(
+            by_itself(&["--view-distance", "12", "--split-distance", "33"]),
+            Ok(Some(policy(30, 33, 10)))
+        );
+        // As the tests of a cluster that reshapes by itself start their coordinator.
+        let small = [
+            "--merge-distance",
+            "3",
+            "--split-distance",
+            "5",
+            "--rest-seconds",
+            "5",
+        ];
+        assert_eq!(by_itself(&small), Ok(Some(policy(3, 5, 5))));
+        // The smallest distances there are.
+        assert_eq!(
+            by_itself(&["--merge-distance", "1", "--split-distance", "3"]),
+            Ok(Some(policy(1, 3, 10)))
+        );
+    }
+
+    #[test]
+    fn a_view_distance_no_edge_grants_a_rest_under_a_second_and_what_is_no_number_are_refused() {
+        for reshape in ["by-hand", "by-itself"] {
+            for view_distance in ["0", "1", "33", "eight"] {
+                let arguments = ["--reshape", reshape, "--view-distance", view_distance];
+                let complaint = follow(&arguments).expect_err(view_distance);
+                assert!(complaint.contains("--view-distance"), "{complaint}");
+            }
+            for rest in ["0", "0.5", "soon"] {
+                let arguments = ["--reshape", reshape, "--rest-seconds", rest];
+                let complaint = follow(&arguments).expect_err(rest);
+                assert!(complaint.contains("--rest-seconds"), "{complaint}");
+            }
+            // A distance is a number of chunks.
+            for distance in ["--merge-distance", "--split-distance"] {
+                for chunks in ["2.5", "near"] {
+                    let complaint = follow(&["--reshape", reshape, distance, chunks]);
+                    let complaint = complaint.expect_err(chunks);
+                    assert!(complaint.contains(distance), "{complaint}");
+                }
+            }
+            // What begins with a dash is taken for another option, which there is
+            // not.
+            let numbers = [
+                "--view-distance",
+                "--rest-seconds",
+                "--merge-distance",
+                "--split-distance",
+            ];
+            for number in numbers {
+                let refused = follow(&["--reshape", reshape, number, "-3"]);
+                assert!(refused.is_err(), "{number} -3: {refused:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn distances_that_do_not_fit_each_other_are_refused_whoever_decides() {
+        let none = "the merge distance has to be 1 at least";
+        let near = |merge: u32, split: u32| {
+            format!(
+                "the split distance has to be at least 2 more than the merge distance, \
+                 and {split} is not 2 more than {merge}"
+            )
+        };
+        let refused: [(&[&str], String); 6] = [
+            (&["--merge-distance", "0"], none.to_owned()),
+            (
+                &["--merge-distance", "5", "--split-distance", "6"],
+                near(5, 6),
+            ),
+            (
+                &["--merge-distance", "5", "--split-distance", "5"],
+                near(5, 5),
+            ),
+            // Against what follows from the view distance, too.
+            (&["--merge-distance", "29"], near(29, 30)),
+            (&["--split-distance", "23"], near(22, 23)),
+            (
+                &["--view-distance", "2", "--split-distance", "11"],
+                near(10, 11),
+            ),
+        ];
+        for reshape in ["by-hand", "by-itself"] {
+            for (distances, why) in &refused {
+                let words = ["--reshape", reshape];
+                let words: Vec<&str> = words.iter().chain(*distances).copied().collect();
+                assert_eq!(follow(&words), Err(why.clone()), "{words:?}");
+            }
+        }
+        // The nearest that fit.
+        let fits = ["--reshape", "by-itself", "--merge-distance", "28"];
+        assert_eq!(follow(&fits), Ok(Some(policy(28, 30, 10))));
+    }
+
+    #[test]
+    fn the_help_of_the_coordinator_names_every_flag_of_how_it_reshapes() {
+        let mut command = Cli::command();
+        let coordinator = command
+            .find_subcommand_mut("coordinator")
+            .expect("the coordinator is a subcommand");
+        let help = coordinator.render_long_help().to_string();
+        for flag in [
+            "--reshape <RESHAPE>",
+            "by-hand",
+            "by-itself",
+            "--view-distance <VIEW_DISTANCE>",
+            "--merge-distance <MERGE_DISTANCE>",
+            "--split-distance <SPLIT_DISTANCE>",
+            "--rest-seconds <REST_SECONDS>",
+        ] {
+            assert!(help.contains(flag), "{flag} is not in:\n{help}");
+        }
     }
 }

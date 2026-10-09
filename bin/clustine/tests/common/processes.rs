@@ -32,6 +32,9 @@ pub struct Cluster {
     /// The chunk x coordinates at which the coordinator divides the world, separated
     /// by commas.
     boundaries: String,
+    /// What the coordinator is started with besides where it listens, how it divides
+    /// the world, where the store is and its lease: how it reshapes, for one.
+    pub coordinator_arguments: Vec<String>,
     /// What every worker is started with besides what it needs to find the others.
     pub worker_arguments: Vec<String>,
     /// The largest view distance the edge grants, in chunks.
@@ -59,6 +62,7 @@ impl Cluster {
             workers: addresses,
             edge: (free_address().await, None),
             boundaries: boundaries.to_owned(),
+            coordinator_arguments: Vec::new(),
             worker_arguments: Vec::new(),
             view_distance: VIEW_DISTANCE,
             // The shortest there is. It is also how long a new coordinator waits before
@@ -132,6 +136,7 @@ impl Cluster {
         if let Some(lease) = &lease {
             arguments.extend(["--lease-seconds", lease]);
         }
+        arguments.extend(self.coordinator_arguments.iter().map(String::as_str));
         let coordinator = self.spawn("coordinator", &arguments);
         self.coordinator.1 = Some(coordinator);
     }

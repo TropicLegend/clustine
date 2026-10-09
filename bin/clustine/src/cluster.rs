@@ -14,6 +14,8 @@
 //! Regions are moved from worker to worker, merged and split when somebody asks the
 //! coordinator for that: `clustine move`, `clustine merge` and `clustine split`. The
 //! coordinator learns which regions there are from the world store's list of them.
+//! Every worker tells it where the players of its regions are, and a coordinator that
+//! is started with `--reshape by-itself` merges and splits regions by that as well.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -28,8 +30,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clustine_coordinator::{
-    Asker, ClientError, CoordinatorConfig, MoveAnswer, Mover, Orders, RoutingWatch, WorkerClient,
-    WorkerEvent,
+    Asker, ClientError, CoordinatorConfig, MoveAnswer, Mover, Orders, Policy, RoutingWatch,
+    WorkerClient, WorkerEvent,
 };
 use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{Layout, RegionId, RoutingTable};
@@ -69,6 +71,9 @@ pub struct CoordinatorArgs {
     pub lease: Duration,
     /// Host and port of the world store, whose list says which regions there are.
     pub store: String,
+    /// What the coordinator goes by to merge and split regions by itself, or `None`
+    /// for one that leaves that to whoever asks.
+    pub follow: Option<Policy>,
 }
 
 /// Runs a coordinator until the process is asked to stop.
@@ -83,13 +88,24 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
         store = %args.store,
         "coordinating"
     );
+    // How it reshapes and with which numbers, for whoever reads the log to know which
+    // of the two this coordinator is (`docs/adr/0016-when-to-merge-and-split.md`,
+    // section 8).
+    match &args.follow {
+        None => info!("reshaping by hand: regions merge and split when somebody asks"),
+        Some(policy) => info!(
+            merge_distance = policy.merge_distance,
+            split_distance = policy.split_distance,
+            margin = policy.margin(),
+            rest_seconds = policy.rest.as_secs(),
+            "reshaping by itself: regions merge and split by where their players are"
+        ),
+    }
     let config = CoordinatorConfig {
         layout,
         spawn: spawn_point(),
         lease: args.lease,
-        // Regions merge and split when somebody asks, until the command line can say
-        // otherwise (`docs/adr/0016-when-to-merge-and-split.md`, section 8).
-        follow: None,
+        follow: args.follow,
     };
     // Which regions there are, and which of them were absorbed, the world store says
     // (`docs/adr/0014-merging-and-splitting.md`, section 5.2). While it cannot be
