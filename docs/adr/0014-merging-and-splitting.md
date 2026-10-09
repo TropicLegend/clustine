@@ -967,7 +967,10 @@ up, or when the survivor loses its owner or its epoch changes, or the absorbed r
 loses its owner otherwise than by step 2, the reservation ends:
 
 - at stage 1, the release is an overdue release of ADR-0009: `B` is taken from its
-  owner, which is noted as having failed it, and assigned;
+  owner and assigned. That owner is noted as having failed the region **only if the
+  merge's time is up**: where the reservation ends because the survivor lost its
+  owner, or a reading of the list took the survivor away, `B`'s owner did nothing
+  wrong, and is not passed over for six leases for it;
 - at stage 2, the list is read first. `B` absorbed: the merge happened and the asker
   is told so. Otherwise `B` is assigned like a region its owner let go of, with an
   epoch above `as_epoch`, which fences a survivor's worker that is still at it: its
@@ -997,8 +1000,12 @@ lost: a split that is done twice makes two regions.
   because `Off::StoreLost` leaves open what happened.
 - **When a lease has passed** since it was asked, or the region loses its owner or
   changes its epoch: the reservation ends and the list is read. A new region that it
-  shows is one nobody is known to run, and is assigned; the asker is told `Ok` if
-  `part` is among the living and `Err` otherwise.
+  shows is one nobody is known to run, and is assigned; **the asker is told `Err`
+  (`Overdue`) whatever the list shows.** A region with the id that was ordered says
+  nothing of this split: the store can have declined it with `NotNext`, another split
+  having taken that id, and the runner have tried again with the next. The regions
+  are put right by the list either way; only the worker's word says which region a
+  split made.
 
 A `SplitEnded` with an `as_epoch` the coordinator has no reservation for is taken as a
 registration that reports the region is: `n` is the worker's unless the coordinator
