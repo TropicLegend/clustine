@@ -128,6 +128,16 @@ fn middle_of(x: i32, z: i32) -> (f64, f64) {
     (f64::from(16 * x) + 8.0, f64::from(16 * z) + 8.0)
 }
 
+/// Where a wanderer walks to who is to be in the chunk at `x` of the row z = 0 and
+/// comes from where players enter: along the block row they enter in, on which
+/// nobody builds. A straight walk to the middle of chunk 19 leads through the plot
+/// of the first bot of `A`, and a block that `A` places where the wanderer's body is
+/// at that tick is acknowledged and not placed, as in the game: one run in thirty
+/// or so failed for it.
+fn east_along_the_row(x: i32) -> (f64, f64) {
+    (f64::from(16 * x) + 8.0, 0.5)
+}
+
 /// What the scenarios do to a world, whichever way it is served.
 impl Wanders {
     /// `A` joins and settles in the chunk players enter in.
@@ -910,7 +920,7 @@ async fn regions_that_are_left(mut wanders: Wanders) {
     let made_by = wanders.a_cluster().and_then(|cluster| cluster.owner(0));
 
     let first = wanders.wanders("Rover1").await;
-    let (x, z) = middle_of(OUT, 0);
+    let (x, z) = east_along_the_row(OUT);
     wanders.wanderers[first].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(first, x, ON_FOOT).await;
     wanders
@@ -1099,7 +1109,7 @@ async fn two_parts_whose_players_meet_are_merged_and_the_home_region_is_in_no_me
     let from = wanders.now_at();
 
     let first = wanders.wanders("Rover1").await;
-    let (x, z) = middle_of(OUT, 0);
+    let (x, z) = east_along_the_row(OUT);
     wanders.wanderers[first].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(first, x, ON_FOOT).await;
     wanders
@@ -2360,14 +2370,14 @@ async fn an_edge_is_idle_again_after_a_region_was_absorbed() {
     ));
 
     let wanderer = wanders.wanders("Rover").await;
-    let (x, z) = middle_of(OUT, 0);
+    let (x, z) = east_along_the_row(OUT);
     wanders.wanderers[wanderer].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(wanderer, x, ON_FOOT).await;
     wanders
         .until_the_list("the wanderer is split off", |list| living(list) == [0, 1])
         .await;
     wanders.walks_for("A", GIVEN_BACK).await;
-    let (x, z) = middle_of(BACK, 0);
+    let (x, z) = east_along_the_row(BACK);
     wanders.wanderers[wanderer].walks_to(x, z, ON_FOOT);
     let merged = "the wanderer's region is merged into region 0";
     wanders
