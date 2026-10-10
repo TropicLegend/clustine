@@ -203,10 +203,9 @@ Then the owner's check: two clients walking towards and away from each other.
 **In one paragraph, on 2026-10-10.** All three phases are built and pushed: a worker
 or the store can die (A), a region is moved without anyone noticing more than a pause
 (B), and regions follow their players, merging and splitting by themselves, with no
-stripes left (C). One thing is open: a player left without a view when split off at
-a speed no client reaches, whose cause is not found yet. It does not stand in the way
-of the owner's trial with two clients, which is written down under "C5 is done"
-below, steps 1 to 12. What follows is the
+stripes left (C). Nothing that the tests found is open. What is left is the owner's
+trial with two clients, which is written down under "C5 is done" below, steps 1 to
+12. What follows is the
 history of each phase with what was measured and what was left.
 
 **Phase A is done.** A worker or the world store can die without anyone being
@@ -746,14 +745,19 @@ What those tests found:
   which is why no earlier test saw it; it showed as two edges at 100 % long after
   their tests had ended. Mended, and a test now holds an edge to being idle after a
   merge.
-- **A player who is split off while going at 160 blocks a second can be left without
-  a view** (open). Three times in twenty-six runs of eleven bots who ran to their
-  lanes at that speed, a region held only the chunk its player stood in, and once a
-  bot did not get even that chunk. At 60 blocks a second it did not show in eleven
-  runs, nor in four runs each at 34 (an elytra with rockets) and 22 (a sprint in
-  flight). No client reaches 160, but the cause is not known, so nothing says that a
-  slower player cannot meet it under rarer timing. The test is kept, ignored, as a
-  finding.
+- **A player who got ahead of their own view was left without one, for good.** Three
+  times in twenty-six runs of eleven bots who ran to their lanes at 160 blocks a
+  second, a region held only the chunk its player stood in, and once a bot did not
+  get even that chunk; never at a slower pace. The cause: an edge asks for what a
+  player sees by where the region says they are, and a region told an edge of a
+  move only in chunks the edge watched. Whoever outran what their edge had asked
+  for, in the few ticks an asking takes, was never reported again. No client goes
+  that fast, but a client that flies on while its region waits for a new worker
+  (five to seven seconds) gets further than a short view reaches, so it was a fault
+  a player could meet. Mended: a region tells an edge where its own players moved
+  to wherever that is. Found by having the runner and the edge say once a second
+  what they held and asked for, and running the test until it failed; the test is
+  no longer ignored.
 - **A crowd of a hundred stood still for about a second**, twice the half second the
   record set as what a player bears, and a crowd of two hundred could not be merged
   into at all. The time went into the store's way of writing, not into the edge.

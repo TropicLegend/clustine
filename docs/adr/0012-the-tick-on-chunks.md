@@ -939,7 +939,8 @@ or `NotMine` for it; rule 16 says what holds across links.
     waits or is served, as the subscriptions were when the tick ran. So events come
     for a chunk the edge has no snapshot of yet, and can still come for a chunk it
     has just unsubscribed; an edge takes or passes over both as today. None come for a
-    chunk that was told elsewhere.
+    chunk that was told elsewhere. **But that one of its own players moved, an edge is
+    told wherever that is** (see "Changed after step C5.8").
 32. **A player can be a region's while they stand in a chunk another region holds and
     serves the edge**, for the ticks the store takes to answer. Their moves come from
     their own region, and a snapshot of that chunk by its holder does not have them.
@@ -1652,6 +1653,20 @@ or leave a chunk unserved. They read so now:
   4.3 takes as it is.
 
 Nothing of this changes what a region does.
+
+## Changed after step C5.8
+
+- **Rule 31.** The `EntityMoved` of a player comes on the link of the player's own
+  edge whatever chunks that link is subscribed to. An edge asks for what a player
+  sees by where the player's region says they are, and rule 31 as it was told it of
+  a move only where it watched the chunk the player left or the one they came into.
+  An edge's wish for a chunk takes a few ticks to reach the region. A player who got
+  further than their view reaches in those ticks was in chunks the edge did not
+  watch yet, heard of no more, and the edge asked for the chunks around the place
+  they were last reported in for good. The end-to-end tests of step C5.8 met it
+  with bots that went at 160 blocks a second and were split off; a client needs a
+  wait of seconds, as while a region is taken over. Nothing changes for an edge: it
+  took such a move already when the player left what it watched within one tick.
 
 ## Open questions
 
