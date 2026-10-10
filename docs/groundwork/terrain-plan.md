@@ -7,7 +7,7 @@
   what happens without an answer. The two spikes of phase G (G1, G2) decide whether
   its claims can be tested at all, and are done before any decision record is written.
 
-**Steps G0, G1 and G2 have been done** (2026-10-10), and both trials went well; what
+**Steps G0 to G3 have been done** (2026-10-10), and both trials went well; what
 they found is in "What the first trials found", before section 0, and the text below
 is as it was proposed before them.
 
@@ -119,6 +119,36 @@ unpacks beside it on a first run) and run with them on the class path.
 - Left over: `MinecraftServer.halt(false)` followed by `System.exit` did not end the
   process, which had to be killed; F0 has to stop it properly. Set
   `pause-when-empty-seconds=-1`, or the server pauses after a minute without players.
+
+**G3, the audit of what a feature run reads and writes: shape C holds for every
+feature and structure piece of 26.3.** Read from SteelMC's 26.3 branch and the jar's
+data, type by type.
+
+- No read of live blocks lands beyond the three by three chunks around the run, but
+  for one corner case: a geode whose origin is in a chunk's outermost column, with
+  strongly positive noise, reads one block further and may schedule a fluid tick
+  there. It is rare (well under one geode in a thousand, by estimate; a geode is in
+  one chunk of 24). It is answered from terrain, the tick is dropped, and the
+  fixtures count it.
+- **The desert pyramid is not an exception**, as section 1 below has it: its box
+  starts at its start chunk's corner and lies in that chunk and the next, so its scan
+  of heights stays inside the three by three. No wider dependency and no order
+  within a class is needed.
+- No read of data frozen before features goes beyond the three by three either
+  (the farthest are 13 to 16 blocks: an ore's probe, a lake's biome, a shipwreck's
+  rectangle). The five by five frozen view is a margin and is kept until the fixtures
+  have counted the geode case.
+- Several pieces depend on the order inside the three by three (a pyramid's and a
+  beached shipwreck's height, a mineshaft's spawner, a chest's facing at a chunk
+  edge), which the fixed order covers on one condition for the decision record: a
+  run's result carries its changes to structure pieces, and a run sees pieces as the
+  runs of lower classes within two chunks left them.
+- For the harness: a height asked of a finished neighbour, or of an unfinished chunk
+  read back from disk, is of live blocks. Reference chunks stay below `full` and are
+  not saved and read back in the middle of a run.
+- The costs of section 1 reproduce: 812 to 822 feature runs and 1,301 to 1,337 chunks
+  of terrain for a first view, against 497 and 697 without a fixed order; walking
+  along an axis 26 to 32 runs a chunk, diagonally 51.
 
 Not tried yet: the two other packs (without carvers; with an empty material rule),
 which give the gates of T4 and T5; the Nether and the End; light; a second cluster.
