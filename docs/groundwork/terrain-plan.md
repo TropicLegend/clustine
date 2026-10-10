@@ -313,7 +313,7 @@ and cannot be evicted alone. Sized in W5; a guess is 10 to 30 KB per run.
 | Cost | 1 | 1 | 1.6 runs, 1.9 terrain at a join; 1.3 to 1.6 walking; 5 times for a lone cold chunk |
 
 **Recommendation: C with the even ranking, B as a switch in the same code**, decided in
-ADR-0020 after the two spikes and the audit. The policy lives in one place (which
+ADR-0021 after the two spikes and the audit. The policy lives in one place (which
 earlier runs a run sees), so phases W and T do not wait for it.
 
 - If G2 (the server inside a Java program) fails by every route, C is still what I
@@ -348,7 +348,7 @@ generation does needs to be durable for correctness. Changed, **if the owner agr
   (`docs/roadmap.md`, M3 plan).
 
 Generation leaves the chunk thread for a pool (W5). That changes an agreed
-specification and is written into ADR-0020 with new text for ADR-0017's test T10
+specification and is written into ADR-0021 with new text for ADR-0017's test T10
 (`docs/adr/0017-the-end-of-the-stripes.md:2262-2285`), which today holds a load inside
 the generator and expects the barrier behind it to wait:
 
@@ -437,9 +437,9 @@ Sizes are SteelMC's lines (check §9). Each step is one verified commit.
 |---|---|---|
 | G0 | `cargo datagen` run here; the inventory of section 0 completed with the reports (biome parameters, what `blocks.json` has) and kept with ADR-0019 | The inventory |
 | **G1** | **Spike: terrain from the unmodified server.** The oracle with a console (its standard input is closed and it has 1 GB: `tools/botswarm/src/oracle.rs:87-91`), a normal world on seed 13579, ticking frozen, single chunks force-loaded; a tool that writes three data packs from the jar's own files (never committed): biomes without features; the same without carvers; the same with an empty material rule; a reader for region files. Then: which statuses are saved; whether a terrain-status chunk is the same in two runs with different loaded chunks; **its MD5 against SteelMC's `terrain` hash for the same chunk** | Whether this is the terrain reference (section 4). The first evidence about SteelMC's fixture, and about what its branch does with `exclusion` and `chunk_surface_level` |
-| **G2** | **Spike: the server inside a Java program**, compiled with `javac` against the jar's own classes. Routes, in order: call `Main.main` on a thread and find the server through the server thread by reflection; an agent written with the JDK's own class-file API that keeps the server when it is constructed; Fabric (needs the owner, question 10). Then: one chunk asked for at `terrain` and hashed (must equal G1's); one cluster of SteelMC's brought to terrain with two rings, decorated in ascending x, z, hashed (compared with their `features` hash) | Whether features, light and the rest can be judged at all, before ADR-0020 claims it |
-| G3 | The audit of section 1 finished: the feature files not yet read, with the data's radii; C's reach and counts recomputed by a test | The list in ADR-0020 |
-| G4 | **ADR-0019** data and licences (section 7's questions 3 and 4; a notice that tables made from Mojang's data are not under the AGPL; budgets for size and build time). **ADR-0020** shape, order, the store's promise, the pool, the barrier, panics, with the spikes' results and what follows if G2 failed. **ADR-0021** what a chunk carries, light, the representation. An independent reviewer goes over the three | Review; the owner's questions asked with them |
+| **G2** | **Spike: the server inside a Java program**, compiled with `javac` against the jar's own classes. Routes, in order: call `Main.main` on a thread and find the server through the server thread by reflection; an agent written with the JDK's own class-file API that keeps the server when it is constructed; Fabric (needs the owner, question 10). Then: one chunk asked for at `terrain` and hashed (must equal G1's); one cluster of SteelMC's brought to terrain with two rings, decorated in ascending x, z, hashed (compared with their `features` hash) | Whether features, light and the rest can be judged at all, before ADR-0021 claims it |
+| G3 | The audit of section 1 finished: the feature files not yet read, with the data's radii; C's reach and counts recomputed by a test | The list in ADR-0021 |
+| G4 | **ADR-0019** data and licences (section 7's questions 3 and 4; a notice that tables made from Mojang's data are not under the AGPL; budgets for size and build time). **ADR-0021** shape, order, the store's promise, the pool, the barrier, panics, with the spikes' results and what follows if G2 failed. **ADR-0022** what a chunk carries, light, the representation. An independent reviewer goes over the three | Review; the owner's questions asked with them |
 | G5 | The shared types of section 2; empty crates with `NOTICE`s; the test profile | All existing tests; the flat comparison with the official server |
 | G6 | The Java program without a server: block properties, face shapes, fluid states, "used when clicked"; biome parameters if the report lacks them; noise and router values at points; hash-set orders | `datagen --check`; known values |
 | G7 | `tools/fixtures` whole; the fixture format; the first fixtures: starts as made, biomes, terrain under each of the three packs, three dimensions | Regenerating gives the same bytes |
@@ -523,7 +523,7 @@ In `clustine-sim`, one author, beside F and S. Sizes are guesses.
 
 | # | Scope | Verified by |
 |---|---|---|
-| B1 | ADR-0022: neighbour updates and scheduled ticks in a region, across chunks and across regions (passed on as block actions are today), in the region's durable state; reviewed | Review |
+| B1 | ADR-0023: neighbour updates and scheduled ticks in a region, across chunks and across regions (passed on as block actions are today), in the region's durable state; reviewed | Review |
 | B2 | Support: the other half of a double plant or door goes with it; plants, torches and snow go when what holds them goes | Simulation tests; oracle |
 | B3 | Sand, gravel and the like fall when undermined: at once, to where they would land in their column (no falling entity yet, named) | as B2 |
 | B4 | Scheduled ticks in region state: export, restore, merge, split | The existing state tests extended; tests from the record by someone else |
@@ -667,7 +667,7 @@ free.
 | Vanilla is not a function at biome ties | Certain, rare | T3's rule; named |
 | The generated crate compiles slowly or grows | Possible | Budgets in ADR-0019; measured in T2; tables for anything large (the JSON is 2 MB, so megabytes, not Pumpkin's 86) |
 | Real chunks with light are large in memory, on the wire and on disk | Certain | Measured in G5 on official chunks, again in W5 |
-| The pool changes the store's order of answers | A specification changes | ADR-0020, T10's new text, kills during generation |
+| The pool changes the store's order of answers | A specification changes | ADR-0021, T10's new text, kills during generation |
 | Phase B reaches into the simulation's state, where ordering mistakes hide | Certain | A record and a review of its own; one author; tests from the record by someone else |
 | The size: 69 feature kinds, 16 structure types, about 65 steps | Certain | Stubs that count; subagents on files of their own; shared types fixed in G5 |
 | This machine's defective memory | Seen before | A hash that differs once and not again is looked into and judged on GitHub |
@@ -701,7 +701,7 @@ the count and its cause go into the parity matrix, and the next stage does not w
 |---|---|---|---|
 | 1 | The terrain-status ring has been written into by neighbours' features | **Accepted** | Confirmed: only features ask for terrain, at radius 1, and they write at radius 1 (`chunk_pyramid.rs:390-392`). The reference is now the unmodified server under generated data packs without features (the review's "cheaper thing", made the main route, since every biome lists `features` and `carvers` in the jar), with the Java program as cross-check and fallback; spike G1 |
 | 2 | A run is not a function of its 3×3 | **Accepted; one detail rejected** | Confirmed at every cited line. Section 1 lists what reads and writes what; the view is 3×3 live and 5×5 frozen with a recorder, not a panic; the pyramid is a named case; the trait is fixed after the audit. Rejected: "twenty-five classes" to isolate reads at distance 2. Writes reach 1 and reads 2, so runs meet at distance 3 and sixteen classes would do. And a shipwreck is at most 28 long in the jar, not 32 (32 is the code's limit, `template_piece.rs:167-170`) |
-| 3 | Nothing from features on can be judged by the unmodified server; the tool was scheduled last | **Accepted** | Spike G2 before ADR-0020; fallbacks written; section 4 says per aspect where it comes from and whether CI can compare it; "same bytes twice" kept only where the reference is reproducible |
+| 3 | Nothing from features on can be judged by the unmodified server; the tool was scheduled last | **Accepted** | Spike G2 before ADR-0021; fallbacks written; section 4 says per aspect where it comes from and whether CI can compare it; "same bytes twice" kept only where the reference is reproducible |
 | 4 | Generator fixes after worlds exist | **Accepted** | Question 2, with (a) saving what was handed out recommended and the default; the disk cache is gone |
 | 5 | C's reach and cost | **Accepted** | Computed by search and exact count: the review's hand figures hold (row-major 16/8 and 4/2; least total 24; 329 chunks). Costs in section 1; sprint flight in section 6; run results as the cache; restore after a kill measured in W5 and mostly removed by question 2 (a) |
 | 6 | Light: the test at the rim, the fan-out task, relighting | **Accepted** | W1 compares inner chunks only; light is made with the chunk, the edge relights only changed neighbourhoods on a pool; face shapes in G6 |

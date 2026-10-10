@@ -1,6 +1,6 @@
 # Every service with several replicas: the plan, proposed
 
-- Status: **Proposed, not agreed.** Drafted on 2026-10-10 against `main` at
+- Status: **Agreed by the owner on 2026-10-10** (the four questions that waited were answered; the others go by its defaults). Its first record is written: [ADR-0020](../adr/0020-one-stay-per-player.md). As proposed: Drafted on 2026-10-10 against `main` at
   `d836674`, by reading the code and the records; nothing was built or run for it.
   An independent reviewer went over the first draft against the code and found
   fourteen things; section 11 says what each changed. It waits for the owner's
@@ -39,7 +39,7 @@ is `bin/clustine/src/cluster/…`.
    else. A stay that was replaced is dead at the store from that moment; regions
    and edges are told, and none of them is asked.
 3. **This needs a decision record of its own, reviewed twice, before anything of R1
-   is built** (ADR-0023). Section 4.1 is its starting point, not its text: I have
+   is built** (ADR-0020). Section 4.1 is its starting point, not its text: I have
    not traced the edge's resume logic through it, and nothing was run.
 4. **A join at a kept place does not go through the home region's land.** The home
    region gives the stay its number and lets it go to whoever holds the place in
@@ -130,7 +130,7 @@ between its phases the owner's updates are of the second kind.
 
 ### 4.1 One stay per player, and a player's place (R1)
 
-**This is a proposal for ADR-0023, which is the first step of R1 and is reviewed
+**This is a proposal for ADR-0020, which is the first step of R1 and is reviewed
 twice before any type is fixed or anything is built.** The reason is in the review's
 findings 1, 2, 4, 11 and 12: five orders of events broke the first draft, each found
 by reading, and I have again only read.
@@ -275,7 +275,7 @@ What regions and the runner already do for several edges, and what they do not:
 
 **What is said of an entity, for an edge that only watches.** The hops of 4.1 order
 introductions. Two of the three gaps are about removals and about absence, which
-carry no state today (`api.rs:495-512`). The rule ADR-0023 has to state, and what
+carry no state today (`api.rs:495-512`). The rule ADR-0020 has to state, and what
 each case needs:
 
 | Word | Rule | Closes |
@@ -633,8 +633,8 @@ file are its tests.
 | Before | Reviewed |
 |---|---|
 | R0.3 (greetings) | ADR-0024, whole: the greeting, the term, the elector's interface, the holder on disk, the deadlines of section 5 |
-| R1.0b (the types of R1) and everything of R1 | ADR-0023, **twice** |
-| R2.1 | ADR-0023's part on entities, which the second review covers |
+| R1.0b (the types of R1) and everything of R1 | ADR-0020, **twice** |
+| R2.1 | ADR-0020's part on entities, which the second review covers |
 | R3.1 | ADR-0024, as above. What a promotion does to the term and the holder is in it, so that R5 does not undo R3 |
 | R4.2 | ADR-0025 |
 | R5.1 | ADR-0026, twice |
@@ -644,7 +644,7 @@ file are its tests.
 | # | Scope | Size | Verified by | Who |
 |---|---|---|---|---|
 | R0.1 | This plan agreed; the owner's questions asked | S | – | main session |
-| R0.2 | ADR-0024 written and reviewed. ADR-0023 written and reviewed the first time | L | The reviews | main session; 0020 drafted by a subagent |
+| R0.2 | ADR-0024 written and reviewed. ADR-0020 written and reviewed the first time | L | The reviews | main session; 0020 drafted by a subagent |
 | R0.3 | The greeting, once, at all three doors, with the wire number; refused or passed over by everybody; pushed | M | All existing tests; a build with another number is refused with both numbers | main session |
 | R0.4a | The beat on the links of `clustine-rpc` | S | A peer stopped with `SIGSTOP` is given up within the deadline | subagent, `clustine-rpc` |
 | R0.4b | The beat on the store's sockets | M | The same | subagent, `services/worldstore`: the one who then has R1.1 |
@@ -656,7 +656,7 @@ file are its tests.
 
 | # | Scope | Size | Verified by | Who |
 |---|---|---|---|---|
-| R1.0a | ADR-0023 reviewed the second time | L | The review | main session |
+| R1.0a | ADR-0020 reviewed the second time | L | The review | main session |
 | R1.0b | Its types, in `clustine-rpc` and `clustine-sim`; the wire number and the state format raised; pushed | M | All existing tests | main session |
 | R1.1 | Store: records, floors, where a stay is, the answers of rules 2 to 4, the file and its format | L | The store killed at every write; scenarios from the record by another | subagent, `services/worldstore` |
 | R1.2 | Sim: hops; entering; what a commit says of stays; dead stays; flying; actions that name their stay; every replacement tells the loser's edge | L | Scenario and differential tests from the record by another | subagent, `crates/clustine-sim` |
@@ -860,7 +860,7 @@ is an operator's or M4's.
   Commit latency on a real disk was never timed (roadmap, line 296).
 - The edge's resume logic under section 4.1: an entering stay, a dead stay and a
   floor through a link that is lost, a merge and a split. Not traced; it is what
-  ADR-0023's reviews are for.
+  ADR-0020's reviews are for.
 - Where in `lanes.rs` the records and floors are kept once a segment is removed. I
   read that a file of the store's own is needed, not how recovery reads it.
 - I read `fanout.rs` and the runner only in the parts cited, and ADR-0011, 0012,
