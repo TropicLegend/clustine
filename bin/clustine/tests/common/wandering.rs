@@ -630,6 +630,9 @@ pub struct Setup {
     pub rest: Duration,
     /// Whether the cluster runs with no other beside it, for a test that measures.
     pub alone: bool,
+    /// How often the workers write a checkpoint, in seconds, or `None` for what
+    /// follows from the seed: every second or two, or practically never.
+    pub checkpoint: Option<u64>,
 }
 
 /// What serves the world.
@@ -743,7 +746,7 @@ impl Wanders {
     /// view distance and the rest of `setup`. Returns once players can join.
     pub async fn cluster(test: &str, setup: Setup) -> Self {
         let begun = Self::begin(test, &setup).await;
-        let checkpoints = checkpoint_seconds(begun.1);
+        let checkpoints = setup.checkpoint.unwrap_or(checkpoint_seconds(begun.1));
         println!("{test}: the workers checkpoint every {checkpoints} s");
         let mut attempt = 0;
         let cluster = loop {

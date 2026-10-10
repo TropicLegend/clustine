@@ -32,6 +32,12 @@
 //!
 //! `CLUSTINE_CROWD_SPACING` sets how far apart the lanes of a ledger are, in blocks,
 //! 4 unless said: with 16 the same crowd stands on four times the land.
+//! `CLUSTINE_CROWD_CHECKPOINT` sets how often the workers write a checkpoint, in
+//! seconds. Unless said that follows from the seed, as in the other tests here, and
+//! is every second or two in two runs of three; a server that is told nothing writes
+//! one every 300 s, and the measurement says so: with a hundred players and more a
+//! store that is asked for a checkpoint every second or two does not keep up, and
+//! what a split or a release waits for then is the store and not the region.
 //! `CLUSTINE_CROWD_SEED` runs a seed again, and `CLUSTINE_CROWD_KEEP` keeps the world
 //! and the logs of a run that passes.
 
@@ -117,6 +123,7 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
         rest: REST,
         // It measures, so it runs with no other cluster beside it.
         alone: true,
+        checkpoint: number_from("CLUSTINE_CROWD_CHECKPOINT"),
     };
     let mut wanders = Wanders::cluster("the crowd", world).await;
 
