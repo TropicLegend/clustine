@@ -183,9 +183,6 @@ impl PlayerAbilities {
 /// decides for itself. One byte of [`abilities`], of which the official client sets
 /// nothing but [`abilities::FLYING`].
 ///
-/// It is not yet among [`ServerboundPlay`], where it decodes as `Unhandled`: the edge
-/// matches every packet of that set, and is given this one in the step that reads it
-/// (ADR-0020, R1.4).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerboundPlayerAbilities {
     pub flags: u8,
@@ -1482,6 +1479,7 @@ packet_set! {
         UseItemOn,
         SetHeldItem,
         SetCreativeModeSlot,
+        ServerboundPlayerAbilities,
     }
 }
 
@@ -1650,16 +1648,12 @@ mod tests {
         assert_eq!(crate::packets::encode(&begin), [40, 0x02]);
         assert_eq!(crate::packets::encode(&stop), [40, 0x00]);
 
-        // It is not in the set of serverbound packets yet, so it is read directly.
+        // Whatever else a client sets in the byte comes back as it was sent.
         for packet in [begin, stop, ServerboundPlayerAbilities { flags: 0xFF }] {
             let bytes = crate::packets::encode(&packet);
-            let mut reader = Reader::new(&bytes);
-            assert_eq!(reader.var_int(), Ok(ServerboundPlayerAbilities::ID));
-            assert_eq!(ServerboundPlayerAbilities::decode(&mut reader), Ok(packet));
-            assert_eq!(reader.finish(), Ok(()));
             assert_eq!(
                 ServerboundPlay::decode(&bytes),
-                Ok(ServerboundPlay::Unhandled { id: 40 })
+                Ok(ServerboundPlay::ServerboundPlayerAbilities(packet))
             );
         }
     }

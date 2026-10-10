@@ -5,12 +5,16 @@ mod common;
 use std::time::Duration;
 
 use clustine::Config;
-use clustine_botswarm::{Bot, Connection, intention};
+use clustine_botswarm::{
+    Bot, Connection, Ending, Entry, SameName, Wire, intention, same_name_twice,
+};
 use clustine_data::{GAME_VERSION, SYNCED_REGISTRIES, TAGS, blocks};
+use clustine_protocol::codec::Writer;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::handshake::Intent;
 use clustine_protocol::packets::login::{ClientboundLogin, LoginStart};
 use clustine_protocol::packets::play::{ClientboundPlay, game_mode};
+use clustine_protocol::text::Text;
 use uuid::Uuid;
 
 use common::{SHORT_KEEP_ALIVE, VIEW_DISTANCE, config, start, start_with, view_area};
@@ -92,17 +96,46 @@ async fn bot_receives_the_chunks_around_it() {
     }
 }
 
+/// A player who logs in again while connected takes the place of their first
+/// connection, as on the official server (`a_second_login_as_one_name_on_the_official_server`
+/// in `oracle.rs`): the first is ended with the game's sentence for it, the second
+/// enters, and someone watching is left with one entity of the player, the later one.
 #[tokio::test]
-async fn second_connection_of_a_player_is_refused() {
+async fn a_second_login_of_a_player_puts_the_first_connection_out() {
     let (server, address) = start().await;
+    let mut bystander = Bot::join(&address, "Bystander").await.unwrap();
 
-    let mut first = Bot::join(&address, "Twin").await.unwrap();
-    let Err(error) = Bot::join(&address, "Twin").await else {
-        panic!("the second connection was accepted");
+    let patience = Duration::from_secs(10);
+    let SameName {
+        first,
+        first_end,
+        second,
+    } = same_name_twice(&address, "Twin", patience).await.unwrap();
+    let Some(Ending::Disconnected(reason)) = first_end else {
+        panic!("the first connection was not ended with a disconnect packet: {first_end:?}");
     };
-    assert!(error.to_string().contains("already connected"), "{error}");
-    // The first connection is not affected.
-    first.idle(Duration::from_millis(300)).await.unwrap();
+    // The reason as the official server sends it: a compound with the one key.
+    let sentence = Text::translatable("multiplayer.disconnect.duplicate_login").to_nbt();
+    let mut bytes = Writer::new();
+    bytes.put_nbt(&sentence);
+    let expected = Wire::Nbt {
+        bytes: bytes.into_bytes(),
+        value: sentence,
+    };
+    assert_eq!(reason.wire, expected, "{reason}");
+    let Ok(Entry::Entered(mut second)) = second else {
+        panic!("the second connection did not enter the world");
+    };
+    let entity = second.info.login.entity_id;
+    assert!(entity > first.info.login.entity_id);
+    second.wait_until(patience, Bot::is_loaded).await.unwrap();
+    bystander
+        .wait_until(patience, |bot| {
+            bot.entities.len() == 1 && bot.entities.contains_key(&entity)
+        })
+        .await
+        .unwrap();
+    assert!(bystander.seen_player("Twin").is_some());
 
     server.stop().await;
 }

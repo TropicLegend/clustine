@@ -161,6 +161,13 @@ async fn pump(
                             send_input(shared, client, input).await?;
                         }
                     }
+                    ServerboundPlay::ServerboundPlayerAbilities(packet) => {
+                        // The one thing a client says with it is whether it flies; the
+                        // region keeps that, so that whoever comes back comes back as
+                        // they left (ADR-0020, section 13).
+                        let flying = packet.is_flying();
+                        send_input(shared, client, PlayerInput::SetFlying { flying }).await?;
+                    }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}

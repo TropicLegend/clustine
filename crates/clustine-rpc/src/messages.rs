@@ -291,8 +291,9 @@ pub enum Presence {
     /// The region holds a stay of the player as entering, for this edge, from the join
     /// with this attempt.
     ///
-    /// No runner says it yet and an edge that hears it does nothing: steps R1.3 and
-    /// R1.4 of `docs/adr/0020-one-stay-per-player.md` give it meaning (section 4.2).
+    /// The connection of that join goes on waiting, where `Absent` would end it; an
+    /// edge that has no such connection does nothing
+    /// (`docs/adr/0020-one-stay-per-player.md`, section 4.2).
     Entering {
         attempt: u64,
     },
@@ -455,9 +456,7 @@ pub enum StoreReply {
     /// may enter. `place` is where the player was last, if anywhere; `holder` is the
     /// region that held the chunk of that place when the note was taken, if one did.
     ///
-    /// The store does not say it yet and a runner that hears it passes it over: steps
-    /// R1.1 and R1.3 of `docs/adr/0020-one-stay-per-player.md` give it meaning
-    /// (sections 3 and 4).
+    /// See `docs/adr/0020-one-stay-per-player.md`, sections 3 and 4.
     Enter {
         player: PlayerId,
         entity: EntityId,
@@ -467,8 +466,7 @@ pub enum StoreReply {
     /// Of each player named, a stay below `(stay, hops)` is dead: one with a lower
     /// entity id, or the stay `stay` with fewer hand-overs than `hops`.
     ///
-    /// Not said and passed over as [`StoreReply::Enter`] is, until the same steps
-    /// (section 5).
+    /// See section 5 of the same record.
     Dead {
         stays: Vec<(PlayerId, EntityId, u32)>,
     },

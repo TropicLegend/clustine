@@ -392,9 +392,8 @@ fn near(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
 /// (as read, as NBT and as bytes); "SECOND CONNECTION" whether it entered; "BYSTANDER"
 /// what a third client was shown of the two.
 ///
-/// Clustine's counterpart is step R1.4: the edge ends its view of the player with this
-/// sentence where it refuses the second login today, and this test then asks Clustine
-/// the same and compares the reason's NBT.
+/// Clustine's counterpart is `a_second_login_of_a_player_puts_the_first_connection_out`
+/// in `join.rs`, which holds Clustine to the same reason, byte for byte.
 #[tokio::test]
 #[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
 async fn a_second_login_as_one_name_on_the_official_server() {
@@ -497,8 +496,10 @@ async fn a_second_login_as_one_name_on_the_official_server() {
 /// what flying shows. That the bit is `0x02` this test cannot tell (a server takes any
 /// byte); `entering_again_after_leaving_in_flight_on_the_official_server` does.
 ///
-/// Clustine's counterpart is step R1.4, in which the edge reads the packet; until then
-/// it is passed over as a packet the edge does not model.
+/// Clustine's edge reads the packet and tells the player's region whether they fly
+/// (`services/edge/src/play.rs`); that a player who left in flight enters flying is
+/// held to the official server once a player's place is kept by the store (step R1.5
+/// of `docs/adr/0020-one-stay-per-player.md`).
 #[tokio::test]
 #[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
 async fn the_abilities_packet_is_taken_by_the_official_server() {

@@ -25,18 +25,19 @@ use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, BlockUpdate, ChunkBatchFinished, ChunkBatchStart, Disconnect,
     GameEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
     PositionPath, RemoveEntities, SetCenterChunk, SetContainerContent, SetHeadRotation,
-    SetHeldSlot, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk, angle,
-    game_event, game_mode, inventory, player_info,
+    SetHeldSlot, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk,
+    abilities, angle, game_event, game_mode, inventory, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
+use clustine_protocol::text::Text;
 use clustine_region::RegionId;
 use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
     Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerEvent,
-    PlayerInput, PlayerJoin, PlayerTransfer, RegionEvent, RemoteAction,
+    PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId, Vec3};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -397,6 +398,10 @@ pub(crate) struct Fanout {
     players: BTreeMap<PlayerId, PlayerView>,
     /// Which player each player entity of this edge belongs to.
     entity_owners: BTreeMap<EntityId, PlayerId>,
+    /// The latest stay of each player that the edge has been told of, by a region or
+    /// as its own. Entities are numbered by the world store in the order stays begin,
+    /// so the greater entity is the later stay.
+    highest: BTreeMap<PlayerId, EntityId>,
     replica: BTreeMap<ChunkPos, ReplicaChunk>,
     /// The entities in the chunks of the replica.
     entities: BTreeMap<EntityId, Shown>,
@@ -451,6 +456,7 @@ impl Fanout {
             commands,
             players: BTreeMap::new(),
             entity_owners: BTreeMap::new(),
+            highest: BTreeMap::new(),
             replica: BTreeMap::new(),
             entities: BTreeMap::new(),
             stands_for: BTreeMap::new(),
@@ -872,9 +878,13 @@ impl Fanout {
                 awaiting_teleport,
             } => {
                 let player = PlayerId(profile.uuid);
-                if self.players.contains_key(&player) {
-                    refuse(&outbound, "You are already connected to this server.");
-                    return;
+                if let Some(earlier) = self.players.get(&player) {
+                    // A second login puts the first out, as on the official server:
+                    // the earlier connection is told why and its stay is left, by a
+                    // leave that is in front of the join on the link to the region
+                    // (`docs/adr/0020-one-stay-per-player.md`, section 4, step 1).
+                    put_out(&earlier.outbound);
+                    self.remove_player(player).await;
                 }
                 let view_distance = requested_view_distance
                     .unwrap_or(self.config.view_distance)
@@ -995,20 +1005,31 @@ impl Fanout {
                 player,
                 event:
                     PlayerEvent::Spawned {
-                        // Which join this answers, the look and whether the player
-                        // flies are not read yet: step R1.4 of
-                        // `docs/adr/0020-one-stay-per-player.md` does (section 4.1).
-                        attempt: _,
+                        attempt,
                         entity_id,
                         pose,
-                        flying: _,
+                        flying,
                         hotbar,
                         selected_slot,
                     },
             } => {
-                let inventory = inventory_packets(&hotbar, selected_slot);
-                self.spawn_player(player, entity_id, pose.position, inventory)
-                    .await;
+                // Only the connection whose join this answers enters by it. An answer
+                // to an earlier join of the player, read by a later connection, would
+                // give that one an entity its region has ended since
+                // (`docs/adr/0020-one-stay-per-player.md`, section 4.1).
+                let theirs = self
+                    .players
+                    .get(&player)
+                    .is_some_and(|view| view.entity.is_none() && view.session.0 == attempt);
+                if theirs {
+                    let entering = Entering {
+                        entity: entity_id,
+                        pose,
+                        flying,
+                        inventory: inventory_packets(&hotbar, selected_slot),
+                    };
+                    self.spawn_player(player, entering).await;
+                }
             }
             WorkerToEdge::ToPlayer {
                 player,
@@ -1087,16 +1108,14 @@ impl Fanout {
                 let to = self.living(to);
                 self.hand_over(player, from, to, transfer, back).await;
             }
-            // Which join was refused is not read yet: step R1.4 of
-            // `docs/adr/0020-one-stay-per-player.md` holds the refusal to it
-            // (section 4.2).
-            Durable::Refused { player, attempt: _ } => {
+            Durable::Refused { player, attempt } => {
                 // A player who has an entity is in the world through another way than
-                // the join that was refused, and stays.
+                // the join that was refused, and stays; and so does a connection whose
+                // join is another than the one refused.
                 let waiting = self
                     .players
                     .get(&player)
-                    .filter(|view| view.entity.is_none());
+                    .filter(|view| view.entity.is_none() && view.session.0 == attempt);
                 if let Some(view) = waiting {
                     refuse(&view.outbound, "The world cannot take another player.");
                     self.remove_player(player).await;
@@ -1151,14 +1170,18 @@ impl Fanout {
                     self.hand_over(player, from, holder, transfer, back).await;
                 }
             }
-            // The stay the action was of is not read yet: step R1.4 of
-            // `docs/adr/0020-one-stay-per-player.md` takes a "done" only for a view
-            // that has that entity (section 11).
+            // A client numbers its actions afresh with every connection, so the word
+            // of an earlier stay's action must not end the wait for a later one's
+            // with the same number (`docs/adr/0020-one-stay-per-player.md`, section 11).
             Durable::RemoteDone {
                 player,
-                entity: _,
+                entity,
                 sequence,
-            } => self.arrived(player, sequence).await,
+            } => {
+                if self.has_stay(player, entity) {
+                    self.arrived(player, sequence).await;
+                }
+            }
             Durable::Absorbed {
                 region,
                 since,
@@ -1172,10 +1195,24 @@ impl Fanout {
                 let part = self.living(region);
                 self.split_off(from, part, players).await;
             }
-            // No region makes one yet, and it is confirmed like any entry: step R1.4
-            // of `docs/adr/0020-one-stay-per-player.md` ends the connection it is
-            // about (section 6).
-            Durable::Ended { .. } => {}
+            // A later stay of the player has taken this one's place. If it is the stay
+            // of the connection the edge has, that connection is told why and ends;
+            // otherwise the entry is about one the edge has ended itself
+            // (`docs/adr/0020-one-stay-per-player.md`, section 6).
+            Durable::Ended {
+                player,
+                entity,
+                attempt,
+            } => {
+                let theirs = self.players.get(&player).filter(|view| match view.entity {
+                    Some(shown) => shown == entity,
+                    None => attempt == Some(view.session.0),
+                });
+                if let Some(view) = theirs {
+                    put_out(&view.outbound);
+                    self.remove_player(player).await;
+                }
+            }
         }
         // Only now: what the entry led to is kept for the regions it concerns, so the
         // region may forget the entry.
@@ -1202,7 +1239,13 @@ impl Fanout {
         back: bool,
     ) {
         let (player, sequence) = (action.player, action.sequence);
-        let Some(view) = self.players.get_mut(&player) else {
+        // Only for the stay that acted: what an earlier stay of the player did is
+        // nobody's to hear of any more.
+        let acting = self
+            .players
+            .get_mut(&player)
+            .filter(|view| view.entity == Some(action.entity));
+        let Some(view) = acting else {
             // Nobody is left to be told how it ended.
             return;
         };
@@ -1256,9 +1299,10 @@ impl Fanout {
     /// entity, and by where the edge has that stay; see
     /// `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 2.1.
     async fn take_presence(&mut self, from: RegionId, player: PlayerId, answer: Presence) {
-        // No region says that a stay is entering yet, and one that did would have
-        // nothing done by it; it is counted like any answer. Step R1.4 of
-        // `docs/adr/0020-one-stay-per-player.md` gives it meaning (section 4.2).
+        // The region holds the stay of a join as entering and waits for the store's
+        // word. The connection of that join goes on waiting, where "absent" would put
+        // it out; for anyone else there is nothing to do
+        // (`docs/adr/0020-one-stay-per-player.md`, section 4.2).
         if matches!(answer, Presence::Entering { .. }) {
             return;
         }
@@ -1269,11 +1313,8 @@ impl Fanout {
             selected_slot,
             last_input,
             handled,
-            // Not read yet either: step R1.4 sends the client that it flies
-            // (section 4.1) and finds a view without an entity by the attempt
-            // (section 4.3, path 1).
-            flying: _,
-            attempt: _,
+            flying,
+            attempt,
         } = answer
         else {
             if self
@@ -1289,7 +1330,27 @@ impl Fanout {
             .players
             .get(&player)
             .map(|view| (view.entity, view.region));
+        // The stay of this connection's join, which the edge has not been told the
+        // entity of: it carries the join's attempt until its first input. Wherever
+        // it is by now (a split or a merge can have moved it), it is the view's
+        // (section 4.3, path 1).
+        let of_this_join = self
+            .players
+            .get(&player)
+            .is_some_and(|view| view.entity.is_none() && attempt == Some(view.session.0));
         match stay {
+            Some((None, _)) if of_this_join => {
+                if let Some(view) = self.players.get_mut(&player) {
+                    view.region = from;
+                }
+                let entering = Entering {
+                    entity,
+                    pose,
+                    flying,
+                    inventory: inventory_packets(&hotbar, selected_slot),
+                };
+                self.spawn_player(player, entering).await;
+            }
             // The stay the edge has, where it has it.
             Some((Some(shown), region)) if shown == entity && region == from => {}
             // The stay the edge has, under another region: it came here with a merge
@@ -1307,24 +1368,20 @@ impl Fanout {
                 }
                 self.move_stay(player, from).await;
             }
-            // A player who is entering the world. If their join is still among what is
-            // to be sent to the region again, the region had not applied it when it
-            // made this answer, which is then about who they were before: a stay the
-            // join will end. Taking it for them would put them into the world as
-            // their old self, with an entity the region removes a moment later.
-            Some((None, region)) if region == from => {
-                let port = &self.regions.entry(from).or_default();
-                let joining = port.kept.iter().any(|(_, body)| {
-                    matches!(body, EdgeToWorker::PlayerJoin(join) if join.player == player)
-                });
-                if joining {
-                    return;
-                }
-                // The region placed the player, and the word of it was lost with the
-                // link.
-                let inventory = inventory_packets(&hotbar, selected_slot);
-                self.spawn_player(player, entity, pose.position, inventory)
-                    .await;
+            // A player who is entering the world, and a stay that is not of their
+            // join. If the join is still among what is to be sent to the region again,
+            // the region had not applied it when it made this answer, which is then
+            // about who they were before: a stay the join will end, and nothing is
+            // done. Otherwise it is a stay the edge does not have, as below.
+            Some((None, region))
+                if region == from && {
+                    let port = &self.regions.entry(from).or_default();
+                    port.kept.iter().any(|(_, body)| {
+                        matches!(body, EdgeToWorker::PlayerJoin(join) if join.player == player)
+                    })
+                } =>
+            {
+                return;
             }
             // A stay the edge does not have: of a player it has given up, or has as
             // another entity. It is the region's stay that ends, by a leave that names
@@ -1625,10 +1682,19 @@ impl Fanout {
             // The part has gone back into the region since.
             return;
         }
-        // The attempt a stay carried is not read yet: step R1.4 of
-        // `docs/adr/0020-one-stay-per-player.md` finds a view without an entity by it
-        // (section 4.3, path 2).
-        for (player, entity, _attempt) in players {
+        for (player, entity, attempt) in players {
+            // The stay of a join the edge has not been told the entity of went with
+            // the part: the view is the part's from now on, and nothing else, as it
+            // sees nothing yet. The part's hello names the player, and its answer
+            // enters them (`docs/adr/0020-one-stay-per-player.md`, section 4.3, path 2).
+            if let Some(view) = self.players.get_mut(&player)
+                && view.entity.is_none()
+                && view.region == from
+                && attempt == Some(view.session.0)
+            {
+                view.region = part;
+                continue;
+            }
             let there = self
                 .players
                 .get(&player)
@@ -1831,6 +1897,17 @@ impl Fanout {
     ) {
         let position = transfer.pose.position;
         let chunk = ChunkPos::containing(position.x, position.z);
+        // The stay of this connection's join, let go before the edge was told its
+        // entity: by the home region without being placed, as the place it has is in
+        // another region's land, or placed and let go before the word of the placing
+        // was read (`docs/adr/0020-one-stay-per-player.md`, section 4.3, path 3).
+        let entering = self.players.get(&player).is_some_and(|view| {
+            view.entity.is_none() && view.region == from && transfer.attempt == Some(view.session.0)
+        });
+        if entering && (to != from || back) {
+            self.enter_by_arrival(player, to, transfer).await;
+            return;
+        }
         // The player's connection can have ended while the message was on its way, and
         // they can even be back already, as a new entity somewhere else.
         let current = self
@@ -1972,11 +2049,52 @@ impl Fanout {
         }
         let entity = state.entity;
         let pose = state.pose;
+        // Of one player only the latest stay the edge has been told of is shown. What
+        // two regions say of an earlier and a later stay reaches the edge in no order,
+        // and a client must never be shown two entities of one player
+        // (`docs/adr/0020-one-stay-per-player.md`, section 6, rule 6).
+        let EntityKind::Player { player, .. } = &state.kind;
+        let player = *player;
+        if self
+            .highest
+            .get(&player)
+            .is_some_and(|highest| entity < *highest)
+        {
+            return;
+        }
+        for earlier in self.note_stay(player, entity) {
+            self.remove_entity(earlier).await;
+        }
         let moved = self
             .entities
             .insert(entity, Shown { state, from })
             .is_some_and(|known| known.state.pose != pose);
         self.refresh_entity(entity, moved).await;
+    }
+
+    /// Notes `entity` as a stay of `player` the edge has been told of. Returns the
+    /// entities of earlier stays of the player that the edge still shows, which have
+    /// to go first.
+    fn note_stay(&mut self, player: PlayerId, entity: EntityId) -> Vec<EntityId> {
+        let highest = self.highest.entry(player).or_insert(entity);
+        if entity <= *highest {
+            return Vec::new();
+        }
+        *highest = entity;
+        let of_player = |shown: &Shown| {
+            let EntityKind::Player { player: of, .. } = &shown.state.kind;
+            *of == player
+        };
+        let earlier = self.entities.iter();
+        let earlier = earlier.filter(|(known, shown)| **known < entity && of_player(shown));
+        earlier.map(|(known, _)| *known).collect()
+    }
+
+    /// Whether the edge has `player` in the world as `entity`.
+    fn has_stay(&self, player: PlayerId, entity: EntityId) -> bool {
+        self.players
+            .get(&player)
+            .is_some_and(|view| view.entity == Some(entity))
     }
 
     /// Brings every player's client up to date about one entity: shows it to those who
@@ -2017,49 +2135,117 @@ impl Fanout {
         }
     }
 
-    /// Puts a player the worker has placed into the world: the packets that start the
+    /// Puts a player a region has placed into the world: the packets that start the
     /// play state, then the chunks around them.
-    async fn spawn_player(
-        &mut self,
-        player: PlayerId,
-        entity_id: EntityId,
-        position: Vec3,
-        inventory: [Bytes; 2],
-    ) {
-        let Some(view) = self.players.get_mut(&player) else {
-            // The player left before the worker answered.
-            return;
-        };
-        if view.entity.is_some() {
-            // Told twice: once as it happened and once on resuming with the region.
+    async fn spawn_player(&mut self, player: PlayerId, entering: Entering) {
+        if !self.note_entered(player, entering.entity).await {
             return;
         }
-        view.entity = Some(entity_id);
-        view.joining_since = None;
-        self.entity_owners.insert(entity_id, player);
-        self.config.online.fetch_add(1, Ordering::Relaxed);
-        info!(name = %view.name, entity_id = entity_id.0, "player joined");
+        let position = entering.pose.position;
+        if !self.tell_entered(player, entering).await {
+            return;
+        }
+        let center = ChunkPos::containing(position.x, position.z);
+        self.move_view(player, center).await;
+    }
 
+    /// Puts a player into the world whose stay a region let go before the edge was
+    /// told its entity. The order is that of any hand-over: what the edge notes, what
+    /// it asks of the region the stay goes to, the arrival, and only then anything to
+    /// the client. A client whose queue is full is removed by the first packet that
+    /// does not fit, and that removal sends the stay's leave: were the packets first,
+    /// the leave would be in front of the arrival, the region would apply it to nobody
+    /// and then take the stay in, with nobody behind it.
+    async fn enter_by_arrival(&mut self, player: PlayerId, to: RegionId, transfer: PlayerTransfer) {
+        let entity = transfer.entity_id;
+        let position = transfer.pose.position;
+        let entering = Entering {
+            entity,
+            pose: transfer.pose,
+            flying: transfer.flying,
+            inventory: inventory_packets(&transfer.hotbar, transfer.selected_slot),
+        };
+        if let Some(view) = self.players.get_mut(&player) {
+            view.region = to;
+        }
+        if !self.note_entered(player, entity).await {
+            return;
+        }
+        let center = ChunkPos::containing(position.x, position.z);
+        let view_packets = self.shift_view(player, center).await;
+        self.send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
+            .await;
+        if !self.tell_entered(player, entering).await {
+            return;
+        }
+        if let Some(packets) = view_packets
+            && self.send_to_player(player, packets).await
+        {
+            self.send_chunks(player).await;
+        }
+    }
+
+    /// Notes that `player` is in the world as `entity`. False if they are not there
+    /// to be entered: they left before the region answered, or have been entered,
+    /// as when the word comes once as it happened and once on resuming.
+    async fn note_entered(&mut self, player: PlayerId, entity: EntityId) -> bool {
+        let Some(view) = self.players.get_mut(&player) else {
+            return false;
+        };
+        if view.entity.is_some() {
+            return false;
+        }
+        view.entity = Some(entity);
+        view.joining_since = None;
+        self.entity_owners.insert(entity, player);
+        self.config.online.fetch_add(1, Ordering::Relaxed);
+        info!(name = %view.name, entity_id = entity.0, "player joined");
+        // What a region still shows of an earlier stay of the player goes first.
+        for earlier in self.note_stay(player, entity) {
+            self.remove_entity(earlier).await;
+        }
+        true
+    }
+
+    /// Sends a player who has just been noted as in the world what starts the play
+    /// state: the login, what they may do and whether they fly, where they are and
+    /// how they look, their inventory, and the player list. False if the player was
+    /// removed on the way.
+    async fn tell_entered(&mut self, player: PlayerId, entering: Entering) -> bool {
+        let Entering {
+            entity,
+            pose,
+            flying,
+            inventory,
+        } = entering;
+        let Some(view) = self.players.get_mut(&player) else {
+            return false;
+        };
         // Placing the player is the first teleport the client has to confirm.
         let teleport_id = 1;
         view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
+        let flags = if flying {
+            CREATIVE_ABILITIES | abilities::FLYING
+        } else {
+            CREATIVE_ABILITIES
+        };
         let entered = [
-            encoded(&login_packet(entity_id, &self.config)),
+            encoded(&login_packet(entity, &self.config)),
             encoded(&PlayerAbilities {
-                flags: CREATIVE_ABILITIES,
+                flags,
                 flying_speed: 0.05,
                 field_of_view_modifier: 0.1,
             }),
             encoded(&SynchronizePlayerPosition {
                 teleport_id,
-                x: position.x,
-                y: position.y,
-                z: position.z,
+                x: pose.position.x,
+                y: pose.position.y,
+                z: pose.position.z,
                 velocity_x: 0.0,
                 velocity_y: 0.0,
                 velocity_z: 0.0,
-                yaw: 0.0,
-                pitch: 0.0,
+                yaw: pose.yaw,
+                pitch: pose.pitch,
                 relative_flags: 0,
             }),
             encoded(&GameEvent {
@@ -2070,7 +2256,7 @@ impl Fanout {
         if !self.send_to_player(player, entered).await
             || !self.send_to_player(player, inventory).await
         {
-            return;
+            return false;
         }
 
         // Everyone in the world is in everyone's player list, including their own.
@@ -2105,19 +2291,27 @@ impl Fanout {
                 self.send_to_player(*other, [packet]).await;
             }
         }
-
-        let center = ChunkPos::containing(position.x, position.z);
-        self.move_view(player, center).await;
+        self.players.contains_key(&player)
     }
 
     /// Centres a player's view on `center`: tells the client, starts sending the chunks
     /// that came into view and makes the client forget those that left it.
     async fn move_view(&mut self, player: PlayerId, center: ChunkPos) {
-        let Some(view) = self.players.get_mut(&player) else {
-            return;
-        };
+        if let Some(packets) = self.shift_view(player, center).await
+            && self.send_to_player(player, packets).await
+        {
+            self.send_chunks(player).await;
+        }
+    }
+
+    /// The half of [`Fanout::move_view`] that the regions hear of: the view is centred
+    /// on `center` and the chunks that came into it are asked of the player's region.
+    /// Returns what the client is to be sent for it, which the caller sends; `None` if
+    /// nothing changed.
+    async fn shift_view(&mut self, player: PlayerId, center: ChunkPos) -> Option<Vec<Bytes>> {
+        let view = self.players.get_mut(&player)?;
         if view.center == center && !view.wanted.is_empty() {
-            return;
+            return None;
         }
         let wanted = view_area(center, view.view_distance);
         let mut packets = vec![encoded(&SetCenterChunk {
@@ -2179,9 +2373,7 @@ impl Fanout {
             self.want(region, chunk);
         }
         self.flush_asking().await;
-        if self.send_to_player(player, packets).await {
-            self.send_chunks(player).await;
-        }
+        Some(packets)
     }
 
     /// Takes in a snapshot of a chunk: the chunk as a region has it, and the entities in
@@ -2665,10 +2857,15 @@ impl Fanout {
                 }
             }
         }
-        // The entry in the player list is this edge's to remove.
+        // The entry in the player list is this edge's to remove. A client that shows
+        // another entity of the player keeps it: that is a later stay, through another
+        // edge, and nothing would list the player again until that entity left the
+        // client's view and came back (`docs/adr/0020-one-stay-per-player.md`,
+        // section 6).
         let listing: Vec<_> = self
             .players
             .iter_mut()
+            .filter(|(_, view)| !view.visible.values().any(|shown| *shown == player))
             .filter_map(|(other, view)| view.listed.remove(&player).then_some(*other))
             .collect();
         for other in listing {
@@ -2904,6 +3101,26 @@ fn encoded<P: Packet>(packet: &P) -> Bytes {
     packets::encode(packet).into()
 }
 
+/// The sentence of the game for a connection that a later login of the same player
+/// has put out; each client shows it in its own language. The official server sends
+/// this very component, which the comparisons hold it to.
+const DUPLICATE_LOGIN: &str = "multiplayer.disconnect.duplicate_login";
+
+/// Tells a client that a later login of its player has taken its place. Its
+/// connection ends when `outbound` is dropped.
+fn put_out(outbound: &mpsc::Sender<Bytes>) {
+    let reason = Text::Translatable(DUPLICATE_LOGIN.to_owned());
+    let _ = outbound.try_send(encoded(&Disconnect::from(reason)));
+}
+
+/// What a player is put into the world with.
+struct Entering {
+    entity: EntityId,
+    pose: Pose,
+    flying: bool,
+    inventory: [Bytes; 2],
+}
+
 /// Tells a client why it cannot join. Its connection ends when `outbound` is dropped.
 fn refuse(outbound: &mpsc::Sender<Bytes>, reason: &str) {
     let reason = Nbt::String(reason.to_owned());
@@ -2964,7 +3181,8 @@ fn login_packet(entity_id: EntityId, config: &FanoutConfig) -> Login {
 #[cfg(test)]
 mod tests {
     use clustine_rpc::link::WorkerEnd;
-    use clustine_sim::api::{Pose, RemoteAction, RemoteStep};
+    use clustine_sim::api::{RemoteAction, RemoteStep};
+    use clustine_world::Vec3;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use uuid::Uuid;
@@ -2993,6 +3211,9 @@ mod tests {
         regions: Vec<WorkerEnd>,
         task: JoinHandle<Stopped>,
         sessions: u64,
+        /// The session of each player's latest connection, which is the attempt of
+        /// its join.
+        attempts: BTreeMap<PlayerId, u64>,
         /// The number of the last outbox entry each region has made: the two the edge
         /// starts with, and one that a split makes.
         outbox: [u64; 3],
@@ -3031,6 +3252,7 @@ mod tests {
                 regions: vec![west_end, east_end],
                 task,
                 sessions: 0,
+                attempts: BTreeMap::new(),
                 outbox: [0; 3],
             };
             for region in [WEST, EAST] {
@@ -3108,9 +3330,17 @@ mod tests {
             }
         }
 
+        /// The word of a region that it has placed `player` as `entity`, in answer to
+        /// the join of the player's latest connection.
+        fn spawned(&self, player: PlayerId, entity: EntityId) -> WorkerToEdge {
+            let attempt = self.attempts.get(&player).copied().unwrap_or_default();
+            spawned(attempt, player, entity)
+        }
+
         /// A player connects. Returns what their connection is sent.
         async fn join(&mut self, player: PlayerId) -> mpsc::Receiver<Bytes> {
             self.sessions += 1;
+            self.attempts.insert(player, self.sessions);
             let (outbound, packets) = mpsc::channel(4096);
             let join = Command::Join {
                 session: SessionId(self.sessions),
@@ -3132,7 +3362,7 @@ mod tests {
             let packets = self.join(player).await;
             let (_, join) = self.next_numbered(WEST).await;
             assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
-            self.tell(WEST, spawned(player, entity));
+            self.tell(WEST, self.spawned(player, entity));
             self.settle(WEST).await;
             packets
         }
@@ -3190,15 +3420,13 @@ mod tests {
         PlayerId(Uuid::from_u128(number))
     }
 
-    /// A region's word to a player that they have entered the world as `entity`. It
-    /// names no attempt a join had: the edge does not read which join the word
-    /// answers before step R1.4 of `docs/adr/0020-one-stay-per-player.md`, and
-    /// sessions are numbered from 1.
-    fn spawned(player: PlayerId, entity: EntityId) -> WorkerToEdge {
+    /// The word of a region that it has placed `player` as `entity`, in answer to the
+    /// join with `attempt`.
+    fn spawned(attempt: u64, player: PlayerId, entity: EntityId) -> WorkerToEdge {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
-                attempt: 0,
+                attempt,
                 entity_id: entity,
                 pose: Pose::at(Vec3::new(0.5, -60.0, 0.5)),
                 flying: false,
@@ -3241,6 +3469,34 @@ mod tests {
             handled: None,
             flying: false,
             attempt: None,
+        }
+    }
+
+    /// A region's answer that it has the stay of the join with `attempt`, as
+    /// `entity`, of which it has applied no input yet.
+    fn present_of_join(entity: EntityId, attempt: u64) -> Presence {
+        let Presence::Present {
+            entity,
+            pose,
+            hotbar,
+            selected_slot,
+            last_input,
+            handled,
+            flying,
+            ..
+        } = present(entity, 0)
+        else {
+            unreachable!("`present` makes a `Present`");
+        };
+        Presence::Present {
+            entity,
+            pose,
+            hotbar,
+            selected_slot,
+            last_input,
+            handled,
+            flying,
+            attempt: Some(attempt),
         }
     }
 
@@ -3298,7 +3554,7 @@ mod tests {
         // Only once the edge has taken the join can it be told where the player is.
         let (_, join) = edge.next_numbered(WEST).await;
         assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
-        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        edge.tell(WEST, edge.spawned(player(1), EntityId(5)));
         let asked = next_asked(&mut edge, WEST).await;
         assert!(
             matches!(asked, EdgeToWorker::Subscribe { ask: 1, .. }),
@@ -3729,7 +3985,7 @@ mod tests {
             WEST,
             WorkerToEdge::Presence {
                 player: player(1),
-                answer: present(EntityId(5), 0),
+                answer: present_of_join(EntityId(5), 1),
             },
         );
 
@@ -3742,7 +3998,7 @@ mod tests {
         }
         assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
         // The spawn the region may still report for them changes nothing.
-        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        edge.tell(WEST, edge.spawned(player(1), EntityId(5)));
         edge.settle(WEST).await;
         edge.input(player(1), step(1.5)).await;
         assert_eq!(edge.next_numbered(WEST).await.0, 2);
@@ -3829,7 +4085,7 @@ mod tests {
         );
 
         // The region applies both and places them anew.
-        edge.tell(WEST, spawned(player(1), EntityId(6)));
+        edge.tell(WEST, edge.spawned(player(1), EntityId(6)));
         assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
         edge.tell(
             WEST,
@@ -3924,7 +4180,7 @@ mod tests {
         let mut packets = edge.join(player(1)).await;
         let (_, join) = edge.next_numbered(WEST).await;
         assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
-        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        edge.tell(WEST, edge.spawned(player(1), EntityId(5)));
         let ask = first_asked(&mut edge).await;
         let chunk = SHARED;
 
@@ -3982,7 +4238,7 @@ mod tests {
         let mut second = edge.join(player(2)).await;
         let (_, join) = edge.next_numbered(WEST).await;
         assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
-        edge.tell(WEST, spawned(player(2), EntityId(6)));
+        edge.tell(WEST, edge.spawned(player(2), EntityId(6)));
         let asked = loop {
             // Past what the hand-over of the first left for the west to hear.
             match next_asked(&mut edge, WEST).await {
@@ -4147,7 +4403,7 @@ mod tests {
         let mut packets = edge.join(player(1)).await;
         let (_, join) = edge.next_numbered(WEST).await;
         assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
-        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        edge.tell(WEST, edge.spawned(player(1), EntityId(5)));
         let ask = first_asked(&mut edge).await;
         // About a block of the chunk both regions' players can see.
         let action = |sequence| RemoteAction {
@@ -4375,7 +4631,11 @@ mod tests {
         assert_eq!(edge.next_numbered(WEST).await.0, 1);
         edge.relink(WEST, 2).await;
         edge.tell(WEST, resumed(1, 1));
-        edge.tell(WEST, says_present(player(1), EntityId(5)));
+        let of_join = WorkerToEdge::Presence {
+            player: player(1),
+            answer: present_of_join(EntityId(5), 1),
+        };
+        edge.tell(WEST, of_join);
         assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
         // The join is not sent again, and what they do names the stay they were told.
         edge.settle(WEST).await;
@@ -4410,7 +4670,7 @@ mod tests {
             packets.try_recv().err(),
             Some(mpsc::error::TryRecvError::Empty)
         );
-        edge.tell(WEST, spawned(player(1), EntityId(6)));
+        edge.tell(WEST, edge.spawned(player(1), EntityId(6)));
         assert!(timeout(SOON, packets.recv()).await.unwrap().is_some());
         edge.settle(WEST).await;
         edge.input(player(1), step(1.5)).await;
@@ -4728,9 +4988,7 @@ mod tests {
         assert!(connected(&mut packets));
     }
 
-    /// The stays carry no attempt, as stays do of which an input was applied: the
-    /// edge does not read it before step R1.4 of
-    /// `docs/adr/0020-one-stay-per-player.md`.
+    /// The stays carry no attempt, as stays do of which an input was applied.
     fn split_off(players: Vec<(PlayerId, EntityId)>) -> Durable {
         Durable::SplitOff {
             region: PART,
@@ -4905,9 +5163,12 @@ mod tests {
 /// marked as a finding is one the code does not pass.
 #[cfg(test)]
 mod scenarios {
+    use std::cell::RefCell;
+
     use clustine_protocol::packets::play::ClientboundPlay;
     use clustine_rpc::link::WorkerEnd;
-    use clustine_sim::api::{Pose, RemoteAction, RemoteStep};
+    use clustine_sim::api::{RemoteAction, RemoteStep};
+    use clustine_world::Vec3;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use uuid::Uuid;
@@ -5029,6 +5290,11 @@ mod scenarios {
         heard: Vec<Heard>,
         task: JoinHandle<Stopped>,
         sessions: u64,
+        /// The session of each player's latest connection, which is the attempt of
+        /// its join.
+        attempts: BTreeMap<PlayerId, u64>,
+        /// The entity each player was last placed as by a test.
+        placed: RefCell<BTreeMap<PlayerId, EntityId>>,
         /// The number of the last outbox entry each region has made.
         outbox: [u64; PORTS],
         /// The epoch of the owner each region's last link went to.
@@ -5087,6 +5353,8 @@ mod scenarios {
                 heard: (0..PORTS).map(|_| Heard::default()).collect(),
                 task,
                 sessions: 0,
+                attempts: BTreeMap::new(),
+                placed: RefCell::new(BTreeMap::new()),
                 outbox: [0; PORTS],
                 epochs: [1; PORTS],
                 sequences: 0,
@@ -5256,9 +5524,25 @@ mod scenarios {
                 .expect("the edge takes its commands");
         }
 
+        /// The word of a region that it has placed `player` as `entity`, in answer to
+        /// the join of the player's latest connection.
+        fn spawned(&self, player: PlayerId, entity: EntityId) -> WorkerToEdge {
+            let attempt = self.attempts.get(&player).copied().unwrap_or_default();
+            self.placed.borrow_mut().insert(player, entity);
+            spawned(attempt, player, entity)
+        }
+
+        /// The entity a test last placed `player` as, which is the stay their
+        /// actions are of.
+        fn entity_of(&self, player: PlayerId) -> EntityId {
+            let placed = self.placed.borrow();
+            *placed.get(&player).expect("the test placed the player")
+        }
+
         /// A player connects. Returns their client.
         async fn join(&mut self, player: PlayerId) -> Client {
             self.sessions += 1;
+            self.attempts.insert(player, self.sessions);
             let session = SessionId(self.sessions);
             let (outbound, packets) = mpsc::channel(4096);
             let join = Command::Join {
@@ -5282,7 +5566,7 @@ mod scenarios {
             let client = self.join(player).await;
             let (_, join) = self.next_numbered(WEST).await;
             assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
-            self.tell(WEST, spawned(player, entity));
+            self.tell(WEST, self.spawned(player, entity));
             self.settle(WEST).await;
             client
         }
@@ -5709,15 +5993,13 @@ mod scenarios {
         BlockPos::new(chunk.x * 16 + 3, -60, chunk.z * 16 + 5)
     }
 
-    /// A region's word to a player that they have entered the world as `entity`. It
-    /// names no attempt a join had: the edge does not read which join the word
-    /// answers before step R1.4 of `docs/adr/0020-one-stay-per-player.md`, and
-    /// sessions are numbered from 1.
-    fn spawned(player: PlayerId, entity: EntityId) -> WorkerToEdge {
+    /// The word of a region that it has placed `player` as `entity`, in answer to the
+    /// join with `attempt`.
+    fn spawned(attempt: u64, player: PlayerId, entity: EntityId) -> WorkerToEdge {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
-                attempt: 0,
+                attempt,
                 entity_id: entity,
                 pose: Pose::at(SPAWN),
                 flying: false,
@@ -5909,13 +6191,17 @@ mod scenarios {
         }
     }
 
-    /// What is left of a player's breaking of the block at `block_of(chunk)`. It
-    /// names no entity a player has: the edge does not read the stay an action is of
-    /// before step R1.4 of `docs/adr/0020-one-stay-per-player.md` (section 11).
-    fn breaking(player: PlayerId, sequence: i32, chunk: ChunkPos) -> RemoteAction {
+    /// What is left of the breaking of the block at `block_of(chunk)` by the stay
+    /// `entity` of `player`.
+    fn breaking(
+        player: PlayerId,
+        entity: EntityId,
+        sequence: i32,
+        chunk: ChunkPos,
+    ) -> RemoteAction {
         RemoteAction {
             player,
-            entity: EntityId(0),
+            entity,
             sequence,
             step: RemoteStep::Break {
                 position: block_of(chunk),
@@ -5985,7 +6271,7 @@ mod scenarios {
             number == 1 && matches!(join, EdgeToWorker::PlayerJoin(_)),
             "{join:?}"
         );
-        edge.tell(WEST, spawned(player(1), EntityId(5)));
+        edge.tell(WEST, edge.spawned(player(1), EntityId(5)));
         assert_eq!(edge.asked(WEST).await, [subscribe(1, view(HOME))]);
         for region in [EAST, NORTH] {
             let said = edge.said(region).await;
@@ -6740,7 +7026,12 @@ mod scenarios {
     async fn a_region_that_forgot_the_edge_still_serves_the_chunks_it_served() {
         let (mut edge, _first, mut second) = forgotten_by_the_west().await;
         edge.quiet().await;
-        let action = breaking(player(2), edge.sequence(), COMMON);
+        let action = breaking(
+            player(2),
+            edge.entity_of(player(2)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(EAST, remote(&action, None));
         // Behind the leaving of the player who is gone, numbered from 1 again.
         let passed_on = EdgeToWorker::Remote(action);
@@ -7091,7 +7382,7 @@ mod scenarios {
         let mut again = edge.join(player(1)).await;
         edge.drained().await;
         if placed {
-            edge.tell(WEST, spawned(player(1), EntityId(6)));
+            edge.tell(WEST, edge.spawned(player(1), EntityId(6)));
         }
         edge.quiet().await;
 
@@ -7110,7 +7401,7 @@ mod scenarios {
             }]
         );
         if !placed {
-            edge.tell(WEST, spawned(player(1), EntityId(6)));
+            edge.tell(WEST, edge.spawned(player(1), EntityId(6)));
         }
         edge.quiet().await;
         assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
@@ -7150,7 +7441,7 @@ mod scenarios {
         if again {
             now = Some(edge.join(player(1)).await);
             edge.drained().await;
-            edge.tell(WEST, spawned(player(1), EntityId(6)));
+            edge.tell(WEST, edge.spawned(player(1), EntityId(6)));
         }
         edge.quiet().await;
 
@@ -7346,7 +7637,12 @@ mod scenarios {
         let mut edge = Harness::start().await;
         let mut client = edge.joined(player(1), EntityId(5)).await;
         edge.quiet().await;
-        let first = breaking(player(1), edge.sequence(), COMMON);
+        let first = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&first, Some(NORTH)));
         let passed_on = EdgeToWorker::Remote(first.clone());
         assert_eq!(edge.next_numbered(NORTH).await, (1, passed_on));
@@ -7356,14 +7652,24 @@ mod scenarios {
         edge.settle(WEST).await;
         edge.tell(EAST, snapshot(COMMON, 1));
         edge.quiet().await;
-        let second = breaking(player(1), edge.sequence(), COMMON);
+        let second = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&second, None));
         let passed_on = EdgeToWorker::Remote(second.clone());
         assert_eq!(edge.next_numbered(EAST).await, (1, passed_on.clone()));
 
         // It still does for this purpose when its link has ended.
         edge.lose(EAST).await;
-        let third = breaking(player(1), edge.sequence(), COMMON);
+        let third = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&third, None));
         edge.settle(WEST).await;
         edge.nothing_numbered().await;
@@ -7392,19 +7698,39 @@ mod scenarios {
         let mut client = edge.joined(player(1), EntityId(5)).await;
         edge.quiet().await;
         // Nobody serves the chunk.
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&action, None));
         edge.acknowledged(&mut client, action.sequence).await;
         // The region the entry comes from serves it.
         edge.tell(WEST, snapshot(COMMON, 1));
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&action, None));
         edge.acknowledged(&mut client, action.sequence).await;
         // The entry names the region it comes from.
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&action, Some(WEST)));
         edge.acknowledged(&mut client, action.sequence).await;
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         let to_itself = Durable::NotMine {
             what: Misdirected::Remote(action.clone()),
             holder: WEST,
@@ -7422,7 +7748,12 @@ mod scenarios {
         let mut edge = Harness::start().await;
         let _client = edge.joined(player(1), EntityId(5)).await;
         edge.quiet().await;
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         let not_mine = Durable::NotMine {
             what: Misdirected::Remote(action.clone()),
             holder: EAST,
@@ -7442,7 +7773,12 @@ mod scenarios {
         let mut edge = Harness::start_with(&[WEST, EAST], patience).await;
         let mut client = edge.joined(player(1), EntityId(5)).await;
         edge.quiet().await;
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&action, Some(NORTH)));
         edge.tell(WEST, elsewhere(COMMON, 1, NORTH));
         edge.quiet().await;
@@ -7529,7 +7865,12 @@ mod scenarios {
 
         edge.leave(&first).await;
         edge.quiet().await;
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&action, None));
         edge.settle(WEST).await;
         edge.nothing_numbered().await;
@@ -7550,7 +7891,12 @@ mod scenarios {
         assert_eq!(edge.asked(EAST).await, [as_guest(1, [COMMON])]);
 
         // A third region passes an action on without knowing who holds the chunk.
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(NORTH, remote(&action, None));
         edge.acknowledged(&mut client, action.sequence).await;
         edge.nothing_numbered().await;
@@ -7564,7 +7910,12 @@ mod scenarios {
         edge.settle(EAST).await;
         edge.sync(&mut client).await;
         assert_eq!(client.state(COMMON), Some(STONE));
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(NORTH, remote(&action, None));
         let passed_on = EdgeToWorker::Remote(action);
         assert_eq!(edge.next_numbered(EAST).await, (1, passed_on));
@@ -7587,7 +7938,12 @@ mod scenarios {
         edge.tell(EAST, not_mine(COMMON, 1));
         edge.settle(EAST).await;
         assert_eq!(edge.asked(WEST).await, [subscribe(2, [COMMON])]);
-        let action = breaking(player(1), edge.sequence(), COMMON);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&action, None));
         edge.acknowledged(&mut client, action.sequence).await;
         edge.nothing_numbered().await;
@@ -7610,14 +7966,14 @@ mod scenarios {
         edge.tell(WEST, walked(EntityId(5), STEP_EAST, HOME));
         edge.quiet().await;
 
-        let action = breaking(player(1), edge.sequence(), FAR);
+        let action = breaking(player(1), edge.entity_of(player(1)), edge.sequence(), FAR);
         edge.say(NORTH, remote(&action, None));
         edge.acknowledged(&mut client, action.sequence).await;
         edge.nothing_numbered().await;
 
         edge.tell(WEST, snapshot(FAR, edge.ask(WEST, FAR)));
         edge.settle(WEST).await;
-        let action = breaking(player(1), edge.sequence(), FAR);
+        let action = breaking(player(1), edge.entity_of(player(1)), edge.sequence(), FAR);
         edge.say(NORTH, remote(&action, None));
         // Behind the join.
         let passed_on = EdgeToWorker::Remote(action);
@@ -8049,6 +8405,9 @@ mod scenarios {
         entity: EntityId,
         chunk: ChunkPos,
         last_input: u64,
+        /// The attempt of the stay's join, until the region applies an input of the
+        /// stay (`docs/adr/0020-one-stay-per-player.md`, section 4.3).
+        attempt: Option<u64>,
     }
 
     /// Something a region has made for its link and not sent yet.
@@ -8696,9 +9055,12 @@ mod scenarios {
                         entity,
                         chunk: HOME,
                         last_input: 0,
+                        attempt: Some(join.attempt),
                     };
                     played.residents.insert(join.player, resident);
-                    ticked.spawned.push(spawned(join.player, entity));
+                    ticked
+                        .spawned
+                        .push(spawned(join.attempt, join.player, entity));
                     ticked.events.push(RegionEvent::EntitySpawned(EntityState {
                         entity,
                         kind: EntityKind::Player {
@@ -8708,11 +9070,18 @@ mod scenarios {
                         pose: Pose::at(SPAWN),
                     }));
                 }
-                EdgeToWorker::PlayerLeave { player, entity, .. } => {
-                    // A leave ends the stay it names, and no other.
+                EdgeToWorker::PlayerLeave {
+                    player,
+                    entity,
+                    attempt,
+                } => {
+                    // A leave ends the stay it names, and no other: by its entity, or
+                    // by the attempt of its join for a stay the edge was not told the
+                    // entity of.
                     let residents = &mut self.played[index].residents;
-                    let named = residents.get(&player).is_some_and(|resident| {
-                        entity.is_none_or(|entity| resident.entity == entity)
+                    let named = residents.get(&player).is_some_and(|resident| match entity {
+                        Some(entity) => resident.entity == entity,
+                        None => attempt.is_some() && resident.attempt == attempt,
                     });
                     if named && let Some(resident) = residents.remove(&player) {
                         ticked.events.push(RegionEvent::EntityRemoved {
@@ -8766,6 +9135,7 @@ mod scenarios {
                                 entity: transfer.entity_id,
                                 chunk,
                                 last_input: transfer.last_input,
+                                attempt: transfer.attempt,
                             };
                             self.played[index].residents.insert(player, resident);
                             ticked.events.push(RegionEvent::EntitySpawned(EntityState {
@@ -8830,6 +9200,7 @@ mod scenarios {
                     let previous_chunk = resident.chunk;
                     let target = chunk_of(position);
                     resident.last_input = number;
+                    resident.attempt = None;
                     resident.chunk = target;
                     ticked.inputs.push((player, number));
                     ticked.events.push(RegionEvent::EntityMoved {
@@ -8994,6 +9365,14 @@ mod scenarios {
                 self.unwant(person.region, *chunk);
             }
             Some(person)
+        }
+
+        /// Whether the edge has `player` without an entity, on the connection whose
+        /// join was the attempt named: a stay that carries that attempt is theirs.
+        fn joined_by(&self, player: PlayerId, attempt: Option<u64>) -> bool {
+            self.people.get(&player).is_some_and(|person| {
+                person.entity.is_none() && attempt == Some(person.client.session.0)
+            })
         }
 
         /// A region has placed a player the edge has not shown their entity yet.
@@ -9261,7 +9640,15 @@ mod scenarios {
             part: RegionId,
             stays: &[(PlayerId, EntityId, Option<u64>)],
         ) {
-            for (player, entity, _) in stays {
+            for (player, entity, attempt) in stays {
+                // The stay of a join the edge was not told the entity of: the view
+                // is the part's, and nothing else (ADR-0020, section 4.3, path 2).
+                if self.joined_by(*player, *attempt) && self.people[player].region == from {
+                    self.count("a split off takes a player who is entering");
+                    let person = self.people.get_mut(player).expect("the player is there");
+                    person.region = part;
+                    continue;
+                }
                 let theirs = self
                     .people
                     .get(player)
@@ -9453,22 +9840,34 @@ mod scenarios {
                 .get(&player)
                 .map(|person| (person.region, person.entity));
             match (answer, has) {
+                // The stay of the join of the player's connection, wherever a split
+                // or a merge has taken it: ADR-0020, section 4.3, paths 1 and 1a.
+                (
+                    Presence::Present {
+                        entity,
+                        pose,
+                        attempt,
+                        ..
+                    },
+                    Some((_, None)),
+                ) if self.joined_by(player, *attempt) => {
+                    self.count("a present places a player");
+                    self.answered(region, player);
+                    let person = self.people.get_mut(&player).expect("the player is there");
+                    person.region = region;
+                    self.placed(region, player, *entity, chunk_of(pose.position));
+                }
                 (Presence::Present { entity, .. }, Some((theirs, Some(known))))
                     if theirs == region && known == *entity =>
                 {
                     self.count("a present for a stay the edge has there");
                     self.answered(region, player);
                 }
-                (Presence::Present { entity, pose, .. }, Some((theirs, None)))
-                    if theirs == region =>
+                (Presence::Present { .. }, Some((theirs, None)))
+                    if theirs == region && self.people[&player].join.is_some() =>
                 {
                     self.answered(region, player);
-                    if self.people[&player].join.is_some() {
-                        self.count("a present from before a player's join");
-                    } else {
-                        self.count("a present places a player");
-                        self.placed(region, player, *entity, chunk_of(pose.position));
-                    }
+                    self.count("a present from before a player's join");
                 }
                 (Presence::Present { entity, .. }, Some((_, Some(known)))) if known == *entity => {
                     self.count("a present moves a stay");
@@ -9664,9 +10063,17 @@ mod scenarios {
                     player,
                     event:
                         PlayerEvent::Spawned {
-                            entity_id, pose, ..
+                            attempt,
+                            entity_id,
+                            pose,
+                            ..
                         },
-                } => self.placed(region, *player, *entity_id, chunk_of(pose.position)),
+                } => {
+                    // Only the connection whose join it answers enters by it.
+                    if self.joined_by(*player, Some(*attempt)) {
+                        self.placed(region, *player, *entity_id, chunk_of(pose.position));
+                    }
+                }
                 WorkerToEdge::Progress { applied, .. } => self.progress(region, *applied),
                 WorkerToEdge::Presence { player, answer } => self.presence(region, *player, answer),
                 WorkerToEdge::Outbox { number, entry } => self.outbox(region, *number, entry),
@@ -9998,7 +10405,7 @@ mod scenarios {
                     last_input: resident.last_input,
                     handled: None,
                     flying: false,
-                    attempt: None,
+                    attempt: resident.attempt,
                 },
             };
             // ADR-0014, section 3.7: an answer for each player the hello named, and
@@ -10396,7 +10803,7 @@ mod scenarios {
             let mut stays = Vec::new();
             for player in go {
                 let resident = played.residents.remove(&player).expect("they stand there");
-                stays.push((player, resident.entity, None));
+                stays.push((player, resident.entity, resident.attempt));
                 residents.insert(player, resident);
             }
             played.sent += 1;
@@ -11158,11 +11565,12 @@ mod scenarios {
         }
     }
 
-    /// The outbox entry that says an action of `player` was dealt with.
-    fn done(player: PlayerId, sequence: i32) -> Durable {
+    /// The outbox entry that says an action of the stay `entity` of `player` was
+    /// dealt with.
+    fn done(player: PlayerId, entity: EntityId, sequence: i32) -> Durable {
         Durable::RemoteDone {
             player,
-            entity: EntityId(0),
+            entity,
             sequence,
         }
     }
@@ -11250,6 +11658,9 @@ mod scenarios {
         /// The stays it has for the edge, each with the number of the last input
         /// applied.
         stays: Vec<(PlayerId, EntityId, u64)>,
+        /// The attempt of the join that the stay of a player still carries: no input
+        /// of it has been applied.
+        attempts: BTreeMap<PlayerId, u64>,
     }
 
     impl Reply {
@@ -11279,6 +11690,13 @@ mod scenarios {
             self
         }
 
+        /// The stay of `who` is that of the join with `attempt`, and the region has
+        /// applied no input of it.
+        fn of_join(mut self, who: u128, attempt: u64) -> Self {
+            self.attempts.insert(player(who), attempt);
+            self
+        }
+
         /// The presence answers, by ADR-0014, section 3.7: one for each player the
         /// hello named, in its order, and then `Present` for every other stay, in
         /// ascending order of the players.
@@ -11296,6 +11714,15 @@ mod scenarios {
             others.sort();
             for (who, entity, last_input) in others {
                 answers.push(present_with(*who, *entity, *last_input));
+            }
+            for answer in &mut answers {
+                if let WorkerToEdge::Presence {
+                    player,
+                    answer: Presence::Present { attempt, .. },
+                } = answer
+                {
+                    *attempt = self.attempts.get(player).copied();
+                }
             }
             answers
         }
@@ -11763,7 +12190,12 @@ mod scenarios {
         /// An action of `who` about `COMMON` that the west passes on to `to`, where it
         /// is under way when this returns.
         async fn under_way(&mut self, who: u128, to: RegionId) -> RemoteAction {
-            let action = breaking(player(who), self.sequence(), COMMON);
+            let action = breaking(
+                player(who),
+                self.entity_of(player(who)),
+                self.sequence(),
+                COMMON,
+            );
             self.say(WEST, remote(&action, Some(to)));
             self.settle(WEST).await;
             action
@@ -11843,7 +12275,7 @@ mod scenarios {
 
         assert!(second.connected());
         assert_eq!(edge.acts(&second).await, (EAST, EntityId(6), 1));
-        edge.says(WEST, spawned(player(3), EntityId(7))).await;
+        edge.says(WEST, edge.spawned(player(3), EntityId(7))).await;
         assert!(third.connected());
         assert_eq!(edge.acts(&third).await, (WEST, EntityId(7), 1));
         edge.end().await;
@@ -11922,7 +12354,7 @@ mod scenarios {
                     "{sent:?}"
                 );
                 assert!(client.connected());
-                edge.says(WEST, spawned(player(1), EntityId(5))).await;
+                edge.says(WEST, edge.spawned(player(1), EntityId(5))).await;
                 assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
             }
             edge.end().await;
@@ -12050,7 +12482,10 @@ mod scenarios {
         edge.lose(WEST).await;
         edge.link(WEST).await;
         assert_eq!(edge.hello(WEST).players, [player(1)]);
-        let reply = Reply::resumed().applied(number).stay(1, 5, 0);
+        let reply = Reply::resumed()
+            .applied(number)
+            .stay(1, 5, 0)
+            .of_join(1, client.session.0);
         edge.answer(WEST, reply).await;
         let said = edge.sent(WEST).await;
         let sent = numbered(&said);
@@ -12089,7 +12524,7 @@ mod scenarios {
         let said = edge.sent(WEST).await;
         assert!(said.is_empty(), "{said:?}");
 
-        edge.says(WEST, spawned(player(1), EntityId(6))).await;
+        edge.says(WEST, edge.spawned(player(1), EntityId(6))).await;
         edge.sent(WEST).await;
         assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
         let (region, entity, _) = edge.acts(&client).await;
@@ -12136,7 +12571,7 @@ mod scenarios {
         let asked = subscriptions(said);
         assert!(asked.is_empty(), "placed as their old self: {asked:?}");
 
-        edge.says(WEST, spawned(player(1), EntityId(8))).await;
+        edge.says(WEST, edge.spawned(player(1), EntityId(8))).await;
         assert_eq!(edge.acts(&again).await, (WEST, EntityId(8), 1));
         assert!(again.connected());
         edge.end().await;
@@ -12194,7 +12629,12 @@ mod scenarios {
         let west = edge.settler(2, 6, WEST, HOME).await;
         edge.walks(&north, NORTHERN, 4).await;
         edge.tell(WEST, elsewhere(LENT, edge.ask(WEST, LENT), NORTH));
-        let action = breaking(player(1), edge.sequence(), SOUGHT);
+        let action = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            SOUGHT,
+        );
         edge.say(NORTH, remote(&action, Some(EAST)));
         edge.quiet().await;
         assert_eq!(edge.at(NORTH).chunks(Role::Viewer), view(NORTHERN));
@@ -12369,7 +12809,12 @@ mod scenarios {
         } = before_a_merge().await;
         // An action of a third player is under way to the north.
         let mut third = edge.settler(3, 7, WEST, HOME).await;
-        let given_up = breaking(player(3), edge.sequence(), NORTHERN);
+        let given_up = breaking(
+            player(3),
+            edge.entity_of(player(3)),
+            edge.sequence(),
+            NORTHERN,
+        );
         edge.say(WEST, remote(&given_up, Some(NORTH)));
         edge.quiet().await;
         assert_eq!(edge.at(NORTH).numbered, 6);
@@ -12439,17 +12884,26 @@ mod scenarios {
         }
         edge.quiet().await;
         assert_eq!(edge.at(NORTH).numbered, 3);
-        edge.say(NORTH, done(player(2), sequences[0]));
-        edge.say(NORTH, done(player(2), sequences[1]));
+        edge.say(
+            NORTH,
+            done(player(2), edge.entity_of(player(2)), sequences[0]),
+        );
+        edge.say(
+            NORTH,
+            done(player(2), edge.entity_of(player(2)), sequences[1]),
+        );
         edge.acknowledged(&mut client, sequences[1]).await;
         let seen = edge.outbox[NORTH.0 as usize];
         edge.lose(NORTH).await;
         (edge, client, seen, sequences)
     }
 
-    /// The north's last three entries, as they stand behind an `Absorbed`.
+    /// The north's last three entries, as they stand behind an `Absorbed`. The player
+    /// is the one `seen_of_the_north` settled, as entity 6.
     fn three_entries(sequences: [i32; 3]) -> Vec<Durable> {
-        sequences.map(|sequence| done(player(2), sequence)).to_vec()
+        sequences
+            .map(|sequence| done(player(2), EntityId(6), sequence))
+            .to_vec()
     }
 
     /// Each of the three actions was acknowledged to the player once: the first two
@@ -12712,8 +13166,11 @@ mod scenarios {
         }
         assert_eq!(edge.outbox[SOUTH.0 as usize], 0);
         for sequence in sequences {
-            edge.take(Step::Entry(SOUTH, done(player(2), sequence)))
-                .await;
+            edge.take(Step::Entry(
+                SOUTH,
+                done(player(2), edge.entity_of(player(2)), sequence),
+            ))
+            .await;
         }
         edge.acknowledged(&mut client, sequences[2]).await;
         assert_eq!(client.acknowledged, sequences);
@@ -12745,7 +13202,10 @@ mod scenarios {
         // The two actions, the arrival and the step.
         assert_eq!(edge.at(SOUTH).numbered, 4);
         assert_eq!(edge.at(NORTH).numbered, 2);
-        edge.say(SOUTH, done(player(3), seen_before));
+        edge.say(
+            SOUTH,
+            done(player(3), edge.entity_of(player(3)), seen_before),
+        );
         edge.acknowledged(&mut third, seen_before).await;
         let north = edge.outbox[NORTH.0 as usize];
         let south = edge.outbox[SOUTH.0 as usize];
@@ -12760,8 +13220,8 @@ mod scenarios {
         let reply = Reply::resumed()
             .entry(absorbed(NORTH, 1, 1, &[north + 1, north + 2, north + 3]))
             .entry(absorbed(SOUTH, 1, 3, &[south, south + 1]))
-            .entry(done(player(3), seen_before))
-            .entry(done(player(3), new))
+            .entry(done(player(3), edge.entity_of(player(3)), seen_before))
+            .entry(done(player(3), edge.entity_of(player(3)), new))
             .stay(1, 5, 0)
             .stay(2, 6, 0);
         edge.answer(EAST, reply).await;
@@ -12798,7 +13258,10 @@ mod scenarios {
         let mut third = edge.settler(3, 7, WEST, HOME).await;
         let seen_before = edge.under_way(3, SOUTH).await.sequence;
         let new = edge.under_way(3, SOUTH).await.sequence;
-        edge.say(SOUTH, done(player(3), seen_before));
+        edge.say(
+            SOUTH,
+            done(player(3), edge.entity_of(player(3)), seen_before),
+        );
         edge.acknowledged(&mut third, seen_before).await;
         let south = edge.outbox[SOUTH.0 as usize];
         edge.lose(SOUTH).await;
@@ -12820,8 +13283,8 @@ mod scenarios {
         edge.link(EAST).await;
         let reply = Reply::resumed()
             .entry(absorbed(NORTH, 1, 0, &[north + 1, north + 2]))
-            .entry(done(player(3), seen_before))
-            .entry(done(player(3), new));
+            .entry(done(player(3), edge.entity_of(player(3)), seen_before))
+            .entry(done(player(3), edge.entity_of(player(3)), new));
         edge.answer(EAST, reply).await;
         edge.acknowledged(&mut third, new).await;
         third.drain();
@@ -12863,12 +13326,12 @@ mod scenarios {
             edge.lose(EAST).await;
             let merged = Reply::resumed()
                 .entry(absorbed(NORTH, 1, 2, &[next, next + 1]))
-                .entry(done(player(2), sequence))
+                .entry(done(player(2), edge.entity_of(player(2)), sequence))
                 .entry(gone.clone());
             let scripts = vec![
                 vec![Step::Link(EAST), Step::Welcome(EAST, merged)],
                 vec![
-                    Step::Entry(NORTH, done(player(2), sequence)),
+                    Step::Entry(NORTH, done(player(2), edge.entity_of(player(2)), sequence)),
                     Step::Entry(NORTH, gone),
                 ],
             ];
@@ -12995,7 +13458,12 @@ mod scenarios {
             action,
         } = before_a_merge().await;
         let mut third = edge.settler(3, 7, WEST, HOME).await;
-        let given_up = breaking(player(3), edge.sequence(), NORTHERN);
+        let given_up = breaking(
+            player(3),
+            edge.entity_of(player(3)),
+            edge.sequence(),
+            NORTHERN,
+        );
         edge.say(WEST, remote(&given_up, Some(NORTH)));
         edge.quiet().await;
         edge.lose(NORTH).await;
@@ -13121,7 +13589,7 @@ mod scenarios {
             applied: 0,
         };
         edge.says(EAST, WorkerToEdge::Welcome(welcome)).await;
-        let nobody = done(player(u128::MAX), 0);
+        let nobody = done(player(u128::MAX), EntityId(0), 0);
         edge.take(Step::Entry(EAST, nobody.clone())).await;
         edge.pairs(vec![(NORTH, EAST)]).await;
         edge.handled(EAST).await;
@@ -13182,14 +13650,24 @@ mod scenarios {
         edge.pairs(vec![(NORTH, EAST)]).await;
         edge.ended_by_the_edge(NORTH).await;
 
-        let first = breaking(player(1), edge.sequence(), COMMON);
+        let first = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&first, Some(NORTH)));
         edge.settle(WEST).await;
         let said = edge.sent(EAST).await;
         assert_eq!(numbered(&said), [(1, EdgeToWorker::Remote(first))]);
         assert_eq!(asked_before_numbered(&said, Role::Guest), set(&[COMMON]));
 
-        let second = breaking(player(1), edge.sequence(), COMMON);
+        let second = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         let sent_on = Durable::NotMine {
             what: Misdirected::Remote(second.clone()),
             holder: NORTH,
@@ -13208,7 +13686,12 @@ mod scenarios {
         );
 
         // The east names the region it absorbed, as it believed before the merge.
-        let third = breaking(player(1), edge.sequence(), COMMON);
+        let third = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(EAST, remote(&third, Some(NORTH)));
         edge.settle(EAST).await;
         let said = edge.sent(EAST).await;
@@ -13585,7 +14068,12 @@ mod scenarios {
     async fn an_action_sent_on_to_a_region_is_asked_for_there_first() {
         let mut edge = Harness::witnessed().await;
         let mut client = edge.settler(1, 5, WEST, HOME).await;
-        let first = breaking(player(1), edge.sequence(), COMMON);
+        let first = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         edge.say(WEST, remote(&first, Some(EAST)));
         edge.settle(WEST).await;
         let said = edge.sent(EAST).await;
@@ -13599,7 +14087,12 @@ mod scenarios {
         assert_eq!(said, expected);
 
         // The edge is asking for the chunk there by now.
-        let second = breaking(player(1), edge.sequence(), COMMON);
+        let second = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            COMMON,
+        );
         let sent_on = Durable::NotMine {
             what: Misdirected::Remote(second.clone()),
             holder: EAST,
@@ -13615,7 +14108,12 @@ mod scenarios {
 
         // Nobody sees this chunk, so there is nothing to ask for.
         let unseen = ChunkPos::new(40, 40);
-        let third = breaking(player(1), edge.sequence(), unseen);
+        let third = breaking(
+            player(1),
+            edge.entity_of(player(1)),
+            edge.sequence(),
+            unseen,
+        );
         edge.say(WEST, remote(&third, Some(EAST)));
         edge.settle(WEST).await;
         let said = edge.sent(EAST).await;
@@ -13626,7 +14124,7 @@ mod scenarios {
         assert_eq!(said, expected);
 
         // A region without a link is asked in its hello, which holds what follows.
-        let fourth = breaking(player(1), edge.sequence(), FAR);
+        let fourth = breaking(player(1), edge.entity_of(player(1)), edge.sequence(), FAR);
         edge.say(WEST, remote(&fourth, Some(SOUTH)));
         edge.settle(WEST).await;
         edge.link(SOUTH).await;
@@ -13669,7 +14167,7 @@ mod scenarios {
         let reply = Reply::resumed()
             .applied(1)
             .entry(absorbed(NORTH, 1, 2, &[next]))
-            .entry(done(player(3), sequence))
+            .entry(done(player(3), edge.entity_of(player(3)), sequence))
             .stay(3, 7, 0)
             .stay(1, 5, 0);
         edge.answer(EAST, reply).await;
@@ -13762,7 +14260,7 @@ mod scenarios {
         let asked = subscriptions(said);
         assert!(asked.is_empty(), "placed as their old self: {asked:?}");
 
-        edge.says(WEST, spawned(player(1), EntityId(8))).await;
+        edge.says(WEST, edge.spawned(player(1), EntityId(8))).await;
         assert_eq!(edge.acts(&again).await, (WEST, EntityId(8), 1));
         assert!(again.connected());
         edge.end().await;
@@ -14099,7 +14597,7 @@ mod scenarios {
         assert!(client.entities.contains(&70), "{:?}", client.entities);
         assert_eq!(client.state(LENT), Some(STONE));
 
-        let action = breaking(player(2), edge.sequence(), LENT);
+        let action = breaking(player(2), edge.entity_of(player(2)), edge.sequence(), LENT);
         edge.say(WEST, remote(&action, None));
         edge.settle(WEST).await;
         let said = edge.sent(EAST).await;
