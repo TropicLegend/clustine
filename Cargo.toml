@@ -17,12 +17,14 @@ clustine-data = { path = "crates/clustine-data" }
 clustine-edge = { path = "services/edge" }
 clustine-format = { path = "crates/clustine-format" }
 clustine-light = { path = "crates/clustine-light" }
+clustine-noise = { path = "crates/clustine-noise" }
 clustine-protocol = { path = "crates/clustine-protocol" }
 clustine-region = { path = "crates/clustine-region" }
 clustine-rpc = { path = "crates/clustine-rpc" }
 clustine-sim = { path = "crates/clustine-sim" }
 clustine-worker = { path = "services/worker" }
 clustine-world = { path = "crates/clustine-world" }
+clustine-worldgen-data = { path = "crates/clustine-worldgen-data" }
 clustine-worldgen = { path = "services/worldgen" }
 clustine-worldstore = { path = "services/worldstore" }
 

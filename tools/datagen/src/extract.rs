@@ -9,6 +9,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::reference::RouterValues;
+
 /// A box as the bits of six doubles: the lower corner, then the upper corner.
 pub type ShapeBox = [u64; 6];
 
@@ -22,6 +24,9 @@ pub struct Extract {
     pub blocks: Vec<BlockDump>,
     /// The biome parameter lists the game knows, sorted by name.
     pub biome_parameters: Vec<ParameterList>,
+    /// What the game's noise routers give at fixed positions, by the name of the file
+    /// (`overworld_13579`: the noise settings and the seed), sorted.
+    pub router_values: Vec<(String, RouterValues)>,
 }
 
 /// What the game says of one block state.
@@ -93,6 +98,7 @@ impl Extract {
 
         let mut biome_parameters = Vec::new();
         let mut names = Vec::new();
+        let mut router_names = Vec::new();
         for entry in
             fs::read_dir(directory).with_context(|| format!("listing {}", directory.display()))?
         {
@@ -104,8 +110,21 @@ impl Extract {
             {
                 names.push(name.to_owned());
             }
+            if let Some(name) = file_name
+                .strip_prefix("router_")
+                .and_then(|rest| rest.strip_suffix(".txt"))
+            {
+                router_names.push(name.to_owned());
+            }
         }
         names.sort();
+        router_names.sort();
+        let mut router_values = Vec::new();
+        for name in router_names {
+            let values = RouterValues::parse(&read(&format!("router_{name}.txt"))?)
+                .with_context(|| format!("reading the router's values {name}"))?;
+            router_values.push((name, values));
+        }
         for name in names {
             let text = read(&format!("biome_parameters_{name}.txt"))?;
             biome_parameters.push(ParameterList {
@@ -122,6 +141,7 @@ impl Extract {
             states: states(&read("block_states.txt")?).context("reading block_states.txt")?,
             blocks: blocks(&read("blocks.txt")?).context("reading blocks.txt")?,
             biome_parameters,
+            router_values,
         })
     }
 }

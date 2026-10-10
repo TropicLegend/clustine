@@ -1,5 +1,6 @@
 //! `cargo datagen --dump <table>`: a packed table as text, one row a line, so that a
-//! version update can be read (ADR-0019, section 1).
+//! version update can be read (ADR-0019, section 1). A file of reference values is
+//! text already, of bits; it is printed with the numbers the bits are.
 //!
 //! It reads the committed file and needs no jar. The names of blocks and biomes are
 //! not in a packed table; they are read from the generated Rust beside it in the
@@ -14,18 +15,31 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::packed::{self, Parsed, ParsedSection};
+use crate::reference::RouterValues;
 use crate::tables::{FLAGS, PARAMETER_LISTS, PUSH_REACTIONS};
 
 const DATA_DIR: &str = "crates/clustine-data/src/generated";
+const REFERENCE_DIR: &str = "crates/clustine-worldgen-data/reference";
 
 /// The text of the table `table`: the name of a committed table (`block_states`,
-/// `biome_parameters`) or the path of a file.
+/// `biome_parameters`), the name of a file of reference values
+/// (`router_overworld_13579`) or the path of a file of either kind.
 pub fn run(root: &Path, table: &str) -> Result<String> {
     let path = match table {
         "block_states" | "biome_parameters" => root.join(DATA_DIR).join(format!("{table}.bin")),
+        name if name.starts_with("router_") && !name.contains(['/', '\\', '.']) => {
+            root.join(REFERENCE_DIR).join(format!("{name}.txt"))
+        }
         path => PathBuf::from(path),
     };
     let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    if bytes.starts_with(b"settings ") {
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("{} is not UTF-8", path.display()))?;
+        return Ok(RouterValues::parse(text)
+            .with_context(|| format!("reading {}", path.display()))?
+            .dump());
+    }
     let generated = root.join(DATA_DIR);
     let read = |name: &str| fs::read_to_string(generated.join(name)).unwrap_or_default();
     render(
@@ -299,6 +313,29 @@ mod tests {
     use crate::packed::Section;
 
     const SHA1: &str = "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c";
+
+    #[test]
+    fn reference_values_are_printed_by_their_name_or_their_path() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join(REFERENCE_DIR);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("router_end_7.txt");
+        fs::write(
+            &path,
+            "settings minecraft:end\nseed 7\nentry erosion\n1 2 3 3f000000\n",
+        )
+        .unwrap();
+        let expected = "values of the noise router of minecraft:end for the seed 7, 1 positions\n\
+                        1 2 3 erosion=0.5\n";
+        assert_eq!(run(root.path(), "router_end_7").unwrap(), expected);
+        assert_eq!(run(root.path(), path.to_str().unwrap()).unwrap(), expected);
+        assert!(run(root.path(), "router_end_8").is_err());
+        fs::write(&path, "settings minecraft:end\nseed 7\n").unwrap();
+        assert!(
+            run(root.path(), "router_end_7").is_err(),
+            "a file without rows"
+        );
+    }
 
     #[test]
     fn names_are_read_from_the_generated_rust() {

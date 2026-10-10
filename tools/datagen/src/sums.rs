@@ -291,6 +291,70 @@ mod tests {
     }
 
     #[test]
+    fn emitted_code_says_in_its_second_line_where_the_emitter_is_adapted_from() {
+        let root = workspace();
+        let mut routers = 0;
+        for directory in emit::DIRECTORIES {
+            for path in files_under(&root, directory).unwrap() {
+                let text = fs::read_to_string(root.join(&path)).unwrap_or_default();
+                let second = text.lines().nth(1);
+                if emit::is_emitted_code(&path) {
+                    routers += 1;
+                    assert_eq!(second, Some(emit::EMITTER_LINE), "{path}");
+                } else if path.ends_with("/splines.rs") {
+                    assert_eq!(second, Some(emit::EMITTER_LINE), "{path}");
+                } else {
+                    assert_ne!(second, Some(emit::EMITTER_LINE), "{path}");
+                }
+            }
+        }
+        assert_eq!(routers, emit::DIMENSIONS.len());
+    }
+
+    #[test]
+    fn the_emitted_code_is_within_its_budgets_of_bytes_and_of_lines() {
+        let root = workspace();
+        let mut bytes = 0;
+        for directory in emit::DIRECTORIES {
+            for path in files_under(&root, directory).unwrap() {
+                if !path.ends_with(".rs") {
+                    continue;
+                }
+                let text = fs::read_to_string(root.join(&path)).unwrap();
+                if emit::is_emitted_code(&path) {
+                    bytes += text.len();
+                }
+                // Every generated file is held to the lengths, not only the code.
+                let longest = crate::router::longest_function(&text);
+                assert!(
+                    longest <= crate::router::FUNCTION_LINES,
+                    "{path} has a function of {longest} lines"
+                );
+            }
+        }
+        assert!(bytes > 0, "no emitted code was found");
+        assert!(
+            bytes <= emit::CODE_BUDGET,
+            "{bytes} bytes of emitted code, over the budget of {}",
+            emit::CODE_BUDGET
+        );
+    }
+
+    #[test]
+    fn every_crate_with_adapted_code_that_this_tool_writes_into_or_is_has_its_notice() {
+        let root = workspace();
+        for directory in ["tools/datagen", "crates/clustine-worldgen-data"] {
+            let notice = fs::read_to_string(root.join(directory).join("NOTICE"))
+                .unwrap_or_else(|_| panic!("{directory} has no NOTICE"));
+            assert!(
+                notice.contains("885c4b3e60ed79862c37311780774f76806cb714")
+                    && notice.contains("Copyright (C) 2026 Alve Jeansson and"),
+                "{directory}"
+            );
+        }
+    }
+
+    #[test]
     fn every_generated_directory_has_a_notice_that_lists_its_files() {
         let root = workspace();
         for directory in emit::DIRECTORIES {

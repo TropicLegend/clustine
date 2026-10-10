@@ -1,0 +1,14 @@
+clustine-worldgen-data
+
+Parts of this crate are adapted from SteelMC
+(https://github.com/Steel-Foundation/SteelMC), branch `26.3` at commit
+`885c4b3e60ed79862c37311780774f76806cb714`. Steel: A high-performance Minecraft
+server implementation written in Rust. Copyright (C) 2026 Alve Jeansson and
+contributors. Licensed under the GNU Affero General Public License, version 3 or
+(at your option) any later version; see `LICENSE` at the root of this
+repository. The files that were adapted say so at their head.
+
+The files under src/generated/ are written by `cargo datagen`, whose emitter is itself
+adapted from SteelMC's (see tools/datagen/NOTICE). The data in them, and in the files
+under reference/, is Mojang's and not under that licence: see the NOTICE in each of the
+two directories and NOTICE.md at the root of the repository.

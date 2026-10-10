@@ -1,0 +1,14 @@
+clustine-datagen
+
+Parts of this crate are adapted from SteelMC
+(https://github.com/Steel-Foundation/SteelMC), branch `26.3` at commit
+`885c4b3e60ed79862c37311780774f76806cb714`. Steel: A high-performance Minecraft
+server implementation written in Rust. Copyright (C) 2026 Alve Jeansson and
+contributors. Licensed under the GNU Affero General Public License, version 3 or
+(at your option) any later version; see `LICENSE` at the root of this
+repository. The files that were adapted say so at their head.
+
+They are the reader of density functions (src/density.rs) and the emitter of noise
+routers (src/router.rs), so the Rust that emitter writes into
+crates/clustine-worldgen-data/src/generated/ is made by adapted code and says so in its
+second line.

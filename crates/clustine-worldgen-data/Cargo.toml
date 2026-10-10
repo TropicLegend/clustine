@@ -1,0 +1,12 @@
+[package]
+name = "clustine-worldgen-data"
+description = "Minecraft's world-generation data turned into Rust by cargo datagen: the noise routers of the overworld, the Nether and the End, their noises and settings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clustine-noise.workspace = true
+libm = "0.2"

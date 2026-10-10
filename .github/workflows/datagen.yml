@@ -12,6 +12,8 @@ on:
       - tools/datagen/**
       - crates/clustine-data/src/generated/**
       - crates/clustine-protocol/src/generated/**
+      - crates/clustine-worldgen-data/src/generated/**
+      - crates/clustine-worldgen-data/reference/**
       - Cargo.lock
       - .gitattributes
       - .github/workflows/datagen.yml
@@ -20,6 +22,8 @@ on:
       - tools/datagen/**
       - crates/clustine-data/src/generated/**
       - crates/clustine-protocol/src/generated/**
+      - crates/clustine-worldgen-data/src/generated/**
+      - crates/clustine-worldgen-data/reference/**
       - Cargo.lock
       - .gitattributes
       - .github/workflows/datagen.yml

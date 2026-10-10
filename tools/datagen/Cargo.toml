@@ -1,6 +1,6 @@
 [package]
 name = "clustine-datagen"
-description = "Generates the committed game data from the official server jar: its data generator's reports and what a program run against its classes extracts."
+description = "Generates the committed game data from the official server jar: its data generator's reports, its world-generation data turned into Rust, and what a program run against its classes extracts."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

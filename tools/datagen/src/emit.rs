@@ -6,30 +6,50 @@
 //! rows of one shape is packed instead (`tables.rs`). See
 //! `docs/adr/0019-data-made-from-mojangs-jar.md`, sections 1 and 3.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 
+use crate::density;
 use crate::jar::SERVER_JAR;
 use crate::model::{GameData, Property};
-use crate::{packed, sums, tables};
+use crate::worldgen::{NoiseParameters, NoiseSettings};
+use crate::{packed, router, sums, tables};
 
-/// Directories that hold nothing but generated files, relative to the workspace root.
-///
-/// ADR-0019 names two more, of the crate of world-generation data, which come with
-/// that crate.
-pub const DIRECTORIES: [&str; 2] = [DATA_DIR, PROTOCOL_DIR];
+/// Directories that hold nothing but generated files, relative to the workspace root
+/// (ADR-0019, section 3).
+pub const DIRECTORIES: [&str; 4] = [DATA_DIR, PROTOCOL_DIR, WORLDGEN_DIR, REFERENCE_DIR];
 
 const DATA_DIR: &str = "crates/clustine-data/src/generated";
 const PROTOCOL_DIR: &str = "crates/clustine-protocol/src/generated";
+const WORLDGEN_DIR: &str = "crates/clustine-worldgen-data/src/generated";
+/// Values the game computes, for tests to compare with. No Rust is in it.
+pub const REFERENCE_DIR: &str = "crates/clustine-worldgen-data/reference";
+
+/// The noise settings whose routers are emitted: the three dimensions the plan builds
+/// and no other preset (ADR-0019, section 1).
+pub const DIMENSIONS: [&str; 3] = ["overworld", "nether", "end"];
 
 const LINE_WIDTH: usize = 100;
 
 /// The most that all committed generated output may come to, in bytes: the generated
 /// directories and the sums (ADR-0019, section 6).
 pub const TOTAL_BUDGET: usize = 6_000_000;
+
+/// The most that the emitted code may come to, in bytes: the files whose form is
+/// "code", which are the routers (ADR-0019, section 6; provisional there).
+pub const CODE_BUDGET: usize = 1_000_000;
+
+/// The second line of every file of emitted code (ADR-0019, section 8).
+pub const EMITTER_LINE: &str = "// The emitter is adapted from SteelMC; see tools/datagen/NOTICE.";
+
+/// Whether the generated file at `path` (from the workspace root, with `/`) has the
+/// form "code": a noise router. Its splines and the other statics beside it do not.
+pub fn is_emitted_code(path: &str) -> bool {
+    path.starts_with(WORLDGEN_DIR) && path.ends_with("/router.rs")
+}
 
 /// The file in each generated directory that says whose the data in it is. Packed
 /// tables carry no comment, so the directory does.
@@ -66,7 +86,24 @@ pub fn all(data: &GameData, root: &Path) -> Result<Vec<Output>> {
         content: sums.into_bytes(),
     });
     check_budget(&outputs, TOTAL_BUDGET)?;
+    check_code_budget(&outputs, CODE_BUDGET)?;
     Ok(outputs)
+}
+
+/// Fails if the emitted code among `outputs` comes to more than `budget` bytes.
+pub fn check_code_budget(outputs: &[Output], budget: usize) -> Result<()> {
+    let mut total = 0;
+    for output in outputs {
+        if is_emitted_code(&sums::slashed(&output.path)?) {
+            total += output.content.len();
+        }
+    }
+    ensure!(
+        total <= budget,
+        "the emitted code comes to {total} bytes, over the budget of {budget} \
+         (docs/adr/0019-data-made-from-mojangs-jar.md, section 6)"
+    );
+    Ok(())
 }
 
 /// Fails if `outputs` come to more than `budget` bytes, so that nothing over budget is
@@ -133,8 +170,9 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         .context("packing block_states.bin")?,
     });
     outputs.push(Output {
-        // ADR-0019 puts this table into the crate of world-generation data; until
-        // that crate exists it is kept beside the block states.
+        // ADR-0019 puts this table into the crate of world-generation data. It is
+        // still beside the block states, where its reader is, and moves with it when
+        // the biome source is built (the terrain plan's T3).
         path: PathBuf::from(DATA_DIR).join("biome_parameters.bin"),
         content: tables::biome_parameters(
             &data.extract.biome_parameters,
@@ -144,6 +182,8 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         )
         .context("packing biome_parameters.bin")?,
     });
+
+    worldgen(data, &mut outputs)?;
 
     for directory in DIRECTORIES {
         let notice = notice(version, directory, &outputs);
@@ -155,6 +195,101 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     Ok(outputs)
 }
 
+/// The outputs of the crate of world-generation data: the routers of the three
+/// dimensions with their splines, the noises, the noise settings, and the values the
+/// routers are tested against.
+fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
+    let version = data.version.id.as_str();
+    let mut add = |name: &str, emitted: bool, body: String| {
+        let head = if emitted {
+            format!("{}\n{EMITTER_LINE}", head(version))
+        } else {
+            head(version)
+        };
+        outputs.push(Output {
+            path: PathBuf::from(WORLDGEN_DIR).join(name),
+            content: format!("{head}\n\n{body}").into_bytes(),
+        });
+    };
+
+    let registry = density::registry(data.worldgen.registry("density_function")?)?;
+    let mut all_settings = Vec::new();
+    for name in DIMENSIONS {
+        let json = data
+            .worldgen
+            .entry("noise_settings", &format!("minecraft:{name}"))?;
+        let settings = NoiseSettings::parse(json, &data.worldgen, &data.blocks)
+            .with_context(|| format!("reading the noise settings {name}"))?;
+        all_settings.push((name, settings));
+    }
+
+    let mut noises = BTreeMap::new();
+    for (name, json) in data.worldgen.registry("noise")? {
+        let parameters =
+            NoiseParameters::parse(json).with_context(|| format!("reading the noise {name}"))?;
+        noises.insert(name.clone(), parameters);
+    }
+
+    router::check_legacy_noises(&noises)?;
+
+    let mut top = vec!["noise_settings", "noises"];
+    top.extend(DIMENSIONS);
+    top.sort_unstable();
+    add("mod.rs", false, modules(&top));
+    add("noises.rs", false, router::noises(&noises)?);
+    let borrowed: Vec<(&str, &NoiseSettings)> = all_settings
+        .iter()
+        .map(|(name, settings)| (*name, settings))
+        .collect();
+    add(
+        "noise_settings.rs",
+        false,
+        router::noise_settings(&borrowed)?,
+    );
+
+    for (name, settings) in &all_settings {
+        let emitted = router::emit(name, settings, &registry, &noises)
+            .with_context(|| format!("emitting the noise router of {name}"))?;
+        let mut inner = vec!["router"];
+        if emitted.splines.is_some() {
+            inner.push("splines");
+        }
+        add(&format!("{name}/mod.rs"), false, modules(&inner));
+        add(&format!("{name}/router.rs"), true, emitted.router);
+        if let Some(splines) = emitted.splines {
+            add(&format!("{name}/splines.rs"), true, splines);
+        }
+    }
+
+    // The values the game's own routers give: one file for each dimension and seed.
+    let mut found = Vec::new();
+    for (file, values) in &data.extract.router_values {
+        let (name, settings) = all_settings
+            .iter()
+            .find(|(name, _)| values.settings == format!("minecraft:{name}"))
+            .with_context(|| format!("the values {file} are of no dimension that is emitted"))?;
+        ensure!(
+            *file == format!("{name}_{}", values.seed),
+            "the values {file} say that they are of {} and the seed {}",
+            values.settings,
+            values.seed
+        );
+        values.check_entries(settings.aquifers.is_some())?;
+        found.push(*name);
+        outputs.push(Output {
+            path: PathBuf::from(REFERENCE_DIR).join(format!("router_{file}.txt")),
+            content: values.render().into_bytes(),
+        });
+    }
+    for name in DIMENSIONS {
+        ensure!(
+            found.contains(&name),
+            "the extract program wrote no values of the router of {name}"
+        );
+    }
+    Ok(())
+}
+
 /// The notice of a generated directory: whose the data is, and the files it covers.
 fn notice(version: &str, directory: &str, outputs: &[Output]) -> String {
     let mut names: Vec<String> = outputs
@@ -163,11 +298,17 @@ fn notice(version: &str, directory: &str, outputs: &[Output]) -> String {
         .map(|name| name.to_string_lossy().replace('\\', "/"))
         .collect();
     names.sort();
+    // The directory of values to test against holds no file that could say it itself.
+    let files = if names.iter().any(|name| name.ends_with(".txt")) {
+        "The files, values to test against, which can carry no such line themselves:"
+    } else {
+        "The files, of which the packed tables (*.bin) can carry no such line themselves:"
+    };
     let mut out = format!(
         "Generated by cargo datagen from Minecraft {version}. Do not edit. The data in the files\n\
          of this directory is Mojang's and not under the AGPL; the code around it is: see\n\
          NOTICE.md at the root of the repository.\n\n\
-         The files, of which the packed tables (*.bin) can carry no such line themselves:\n\n"
+         {files}\n\n"
     );
     for name in names {
         out.push_str("  ");

@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 
 use crate::extract::Extract;
+use crate::worldgen::Worldgen;
 
 /// Registries the server sends to the client during configuration, in the order the
 /// vanilla server sends them (`RegistryDataLoader.SYNCHRONIZED_REGISTRIES`).
@@ -80,6 +81,8 @@ pub struct GameData {
     pub biome_reports: Vec<BiomeReport>,
     /// What the extract program wrote.
     pub extract: Extract,
+    /// The world-generation data, from the entries of the game's own jar.
+    pub worldgen: Worldgen,
 }
 
 /// One parameter list as the data generator reports it: numbers as decimals.
@@ -261,6 +264,7 @@ impl GameData {
             block_entity_types,
             biome_reports,
             extract,
+            worldgen: Worldgen::load(jar, generated)?,
         })
     }
 

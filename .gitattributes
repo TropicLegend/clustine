@@ -11,6 +11,8 @@
 # No checkout may change a line end under either (ADR-0019, section 3).
 crates/clustine-data/src/generated/** -text
 crates/clustine-protocol/src/generated/** -text
+crates/clustine-worldgen-data/src/generated/** -text
+crates/clustine-worldgen-data/reference/** -text
 tools/datagen/generated.sums -text
 tools/datagen/src/** -text
 tools/datagen/java/** -text

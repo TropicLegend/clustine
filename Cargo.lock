@@ -424,6 +424,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "clustine-worldgen-data"
+version = "0.0.0"
+dependencies = [
+ "clustine-noise",
+ "libm",
+]
+
+[[package]]
 name = "clustine-worldstore"
 version = "0.0.0"
 dependencies = [

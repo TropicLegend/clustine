@@ -2,19 +2,25 @@
 //!
 //! The server jar is downloaded into `target/datagen/`, its data generator is run with
 //! Java, a Java program of Clustine's own is compiled and run against its classes
-//! without a server, and Rust tables and packed tables are written into `clustine-data`
-//! and `clustine-protocol`. See `docs/adr/0004-game-data.md` and
+//! without a server, the world-generation data is read from the jar's own entries, and
+//! Rust tables, emitted Rust, packed tables and values to test against are written into
+//! `clustine-data`, `clustine-protocol` and `clustine-worldgen-data`. See `docs/adr/0004-game-data.md` and
 //! `docs/adr/0019-data-made-from-mojangs-jar.md`.
 
+mod density;
 mod dump;
 mod emit;
 mod extract;
 mod jar;
+mod json;
 mod model;
 mod packed;
+mod reference;
+mod router;
 mod sha256;
 mod sums;
 mod tables;
+mod worldgen;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -33,8 +39,10 @@ Usage: cargo datagen [--check] [--fresh] [--jar <path>]
   --fresh         Run the jar's data generator and the extract program again instead of
                   using what an earlier run left in target/datagen.
   --jar <path>    Use this copy of the pinned server jar instead of downloading it.
-  --dump <table>  Print a committed packed table as text, one row a line. <table> is
-                  block_states, biome_parameters or the path of a file. Needs no jar.
+  --dump <table>  Print a committed packed table, or a file of reference values, as
+                  text, one row a line. <table> is block_states, biome_parameters, the
+                  name of a file of reference values (router_overworld_13579) or the
+                  path of a file. Needs no jar.
 
 Needs a JDK 25 or newer (javac and java) on the path.";
 
@@ -187,12 +195,16 @@ mod tests {
     const RUST: &str = "crates/clustine-data/src/generated/blocks.rs";
     const TABLE: &str = "crates/clustine-data/src/generated/block_states.bin";
     const PROTOCOL: &str = "crates/clustine-protocol/src/generated/packet_ids.rs";
+    const ROUTER: &str = "crates/clustine-worldgen-data/src/generated/overworld/router.rs";
+    const REFERENCE: &str = "crates/clustine-worldgen-data/reference/router_overworld_0.txt";
 
     fn outputs() -> Vec<emit::Output> {
         [
             (RUST, &b"// blocks\n"[..]),
             (TABLE, &[b'C', b'L', b'T', b'1', 0, 255, 13, 10][..]),
             (PROTOCOL, &b"// ids\n"[..]),
+            (ROUTER, &b"// a router\n"[..]),
+            (REFERENCE, &b"settings s\nseed 0\n"[..]),
             (sums::PATH, &b"jar abc\n"[..]),
         ]
         .into_iter()
@@ -232,7 +244,7 @@ mod tests {
     #[test]
     fn the_check_names_the_file_of_which_one_byte_was_changed() {
         let outputs = outputs();
-        for changed in [RUST, TABLE, sums::PATH] {
+        for changed in [RUST, TABLE, ROUTER, REFERENCE, sums::PATH] {
             let root = written(&outputs);
             let path = root.path().join(changed);
             let mut bytes = fs::read(&path).unwrap();
@@ -255,7 +267,7 @@ mod tests {
     #[test]
     fn the_check_names_an_output_that_was_removed() {
         let outputs = outputs();
-        for removed in [RUST, TABLE, PROTOCOL, sums::PATH] {
+        for removed in [RUST, TABLE, PROTOCOL, ROUTER, REFERENCE, sums::PATH] {
             let root = written(&outputs);
             fs::remove_file(root.path().join(removed)).unwrap();
             assert_eq!(stale(root.path(), &outputs), [removed]);
@@ -277,6 +289,48 @@ mod tests {
                 "crates/clustine-data/src/generated/tables/deeper/stray.bin",
             ]
         );
+    }
+
+    #[test]
+    fn the_check_covers_both_directories_of_the_world_generation_data() {
+        let outputs = outputs();
+        let root = written(&outputs);
+        let crate_directory = root.path().join("crates/clustine-worldgen-data");
+        fs::create_dir_all(crate_directory.join("src/generated/nether")).unwrap();
+        fs::write(crate_directory.join("src/generated/nether/router.rs"), "").unwrap();
+        fs::write(crate_directory.join("reference/router_end_7.txt"), "").unwrap();
+        // What is beside the generated directories is the crate's own.
+        fs::write(crate_directory.join("src/lib.rs"), "").unwrap();
+        assert_eq!(
+            stale(root.path(), &outputs),
+            [
+                "crates/clustine-worldgen-data/src/generated/nether/router.rs",
+                "crates/clustine-worldgen-data/reference/router_end_7.txt",
+            ]
+        );
+    }
+
+    #[test]
+    fn emitted_code_over_its_budget_fails_and_only_routers_count_as_code() {
+        let outputs = outputs();
+        let router = outputs
+            .iter()
+            .find(|output| output.path == Path::new(ROUTER))
+            .unwrap()
+            .content
+            .len();
+        assert!(emit::check_code_budget(&outputs, router).is_ok());
+        let error = emit::check_code_budget(&outputs, router - 1).unwrap_err();
+        assert!(format!("{error}").contains("emitted code"));
+        assert!(emit::is_emitted_code(ROUTER));
+        for other in [
+            RUST,
+            REFERENCE,
+            "crates/clustine-worldgen-data/src/generated/overworld/splines.rs",
+            "crates/clustine-worldgen-data/src/generated/noises.rs",
+        ] {
+            assert!(!emit::is_emitted_code(other), "{other}");
+        }
     }
 
     #[test]

@@ -220,6 +220,67 @@ fn unpack_class_path(jar: &Path, directory: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// The bytes of the game's own jar, which the bundle `jar` holds as one of its entries:
+/// the one `META-INF/versions.list` names, checked against the checksum beside its
+/// name. The game's data files are entries of that inner jar.
+pub fn game_jar(jar: &Path) -> Result<Vec<u8>> {
+    let mut archive = zip::ZipArchive::new(File::open(jar)?)
+        .with_context(|| format!("opening {} as a zip file", jar.display()))?;
+    let list = "META-INF/versions.list";
+    let mut text = String::new();
+    archive
+        .by_name(list)
+        .with_context(|| format!("the server jar has no {list}"))?
+        .read_to_string(&mut text)?;
+    let entries = bundled_entries(&text).with_context(|| format!("reading {list}"))?;
+    let [entry] = &entries[..] else {
+        bail!("{list} names {} jars where one is expected", entries.len());
+    };
+    let name = format!("META-INF/versions/{}", entry.path);
+    let mut bytes = Vec::new();
+    archive
+        .by_name(&name)
+        .with_context(|| format!("the server jar has no {name}"))?
+        .read_to_end(&mut bytes)?;
+    let actual = sha256::hex(&bytes);
+    ensure!(
+        actual == entry.sha256,
+        "{} in the server jar has SHA-256 {actual}, its list says {}",
+        entry.path,
+        entry.sha256
+    );
+    Ok(bytes)
+}
+
+/// The files below `prefix` in a jar given as bytes, by their path after the prefix,
+/// sorted. Directories are left out.
+pub fn files_below(
+    jar: &[u8],
+    prefix: &str,
+) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(jar))
+        .context("opening the game's jar as a zip file")?;
+    let mut files = std::collections::BTreeMap::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let Some(rest) = entry.name().strip_prefix(prefix).map(str::to_owned) else {
+            continue;
+        };
+        if rest.is_empty() || entry.is_dir() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        entry
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("unpacking {prefix}{rest}"))?;
+        ensure!(
+            files.insert(rest.clone(), bytes).is_none(),
+            "the game's jar has {prefix}{rest} twice"
+        );
+    }
+    Ok(files)
+}
+
 /// A jar inside the bundle, as one line of a list names it.
 #[derive(Debug, PartialEq, Eq)]
 struct BundledEntry {
