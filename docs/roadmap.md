@@ -983,15 +983,38 @@ review first:
   the starting hotbar, whatever happened before, so no edge's death can be followed by
   a rejoin "where they were" until a player's place and hotbar are kept.
 - **Terrain generation**, reusing what SteelMC or Pumpkin have, which ADR-0002 chose
-  the AGPL for; `docs/library-evaluation.md` has what was found about both. The
-  groundwork for its plan is in
-  [groundwork/terrain-generation.md](groundwork/terrain-generation.md): what both
-  projects cover and test, their licences, how their code is built, what Minecraft 26.3
-  changed, what Clustine needs of its own in any case (biomes, light, heightmaps, block
-  properties), the options, a recommendation (a crate of Clustine's own, ported in
-  stages from SteelMC's 26.3 branch and checked against its per-stage hashes and the
-  official server) and **twelve questions for the owner** at its end, which the plan
-  waits for.
+  the AGPL for. **A plan is proposed and waits for the owner:**
+  [groundwork/terrain-plan.md](groundwork/terrain-plan.md). It rests on the groundwork
+  of 2026-10-08 ([groundwork/terrain-generation.md](groundwork/terrain-generation.md),
+  written from web pages) and on its check against clones of both projects, which the
+  owner allowed on 2026-10-10
+  ([groundwork/terrain-generation-check.md](groundwork/terrain-generation-check.md)).
+  An independent reviewer went over the first draft against the code and found
+  fourteen things, among them that the draft's reference for terrain was not terrain;
+  the plan as it stands answers each. In short: a generator of Clustine's own on
+  stable Rust, ported from SteelMC's 26.3 branch with notices and fed by tables made
+  from the official jar; generation stays a function of seed and position, with
+  features placed in a fixed order that the official server could have taken; what
+  is right is judged by the official server itself, run on this machine, and not by
+  either project's word; and the owner walks a world the official server made
+  before any terrain is generated. About 65 steps in seven phases. Its first steps
+  are two trials that decide whether its claims can be tested at all, and nothing
+  else is built before them.
+
+  **Ten questions are the owner's** (the plan's section 7 has each with what is
+  recommended and what happens without an answer). Those that cannot be undone
+  later, and so are not acted on without an answer: whether tables made from the
+  jar's code (what light a block gives, which climate is which biome) may be
+  committed as Rust generated from its world-generation data may; and whether
+  Mojang's buildings (1,511 structure templates, 4 MB) are committed or read from
+  the operator's own jar when a server starts (recommended: read, and only their
+  sizes committed). The others: what "block for block" means where the official
+  server itself depends on the order chunks were made in; whether a chunk that was
+  shown is stored from then on, so that a later fix to the generator does not
+  change a world that exists (recommended; it ends "only changes are stored");
+  whether water that flows and sand that falls belong in the same milestone
+  (recommended, as a player meets them within minutes); the Nether and the End as
+  worlds of one dimension for now; and the speed to aim for.
 
 **What the owner answered on 2026-10-08**, to the questions that shape the two plans
 most (the other questions of both documents are still open and are asked with the
