@@ -6,3 +6,7 @@ Parts of this crate are adapted from SteelMC
 General Public License, version 3. Each adapted file says in its first comment which
 file of SteelMC it is adapted from. The adaptations are licensed as the rest of
 Clustine is, AGPL-3.0-or-later.
+
+tests/noise_samples.json is copied unchanged from SteelMC's
+steel-worldgen/test_assets/noise_samples.json at the same commit. It holds values
+that SteelMC's extractor read out of the game.
