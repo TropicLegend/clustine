@@ -154,6 +154,7 @@ mod tests {
                 body: EdgeToWorker::PlayerLeave {
                     player,
                     entity: Some(EntityId(round as i32 + 1)),
+                    attempt: None,
                 },
             };
             edge.send(leave).await.unwrap();
@@ -170,6 +171,7 @@ mod tests {
                 body: EdgeToWorker::PlayerLeave {
                     player,
                     entity: Some(EntityId(round as i32 + 1)),
+                    attempt: None,
                 },
             };
             assert_eq!(worker.recv().await, Some(leave));

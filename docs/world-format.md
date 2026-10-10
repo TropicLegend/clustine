@@ -126,6 +126,7 @@ the format version (u8) and the kind of record (u8):
 | 5 | Returned | region u32, chunks |
 | 6 | Absorbed | region u32, epoch u64, absorbed u32, tick u64, state |
 | 7 | Split | region u32, epoch u64, tick u64, state, part u32, part epoch u64, chunks, part state |
+| 8 | Commit with stay notes | the fields of kind 2, stays |
 
 where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a u16
 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z; and a
@@ -135,6 +136,34 @@ order, and the region's own record of the change of its state, which the store d
 look into. The epoch is that of the owner that committed it. An opened record says that
 an owner opened the region and was restored up to tick `restored`; a commit of that
 region before it in the log with a later tick is not part of the region's history.
+
+A commit that has stay notes is of kind 8, and one that has none is of kind 2, as it
+was before there were notes: one record, so that a commit and its notes are on disk
+together or not at all. A note is what a region says to the store about a stay of a
+player (`docs/adr/0020-one-stay-per-player.md`, section 3). `stays` is a count (u32),
+which is not 0, followed, per note, by:
+
+| Field | Type |
+|---|---|
+| Kind | u8: 1 `Entering`, 2 `Has` |
+| Player | u128 |
+| Entity | i32 |
+| *`Has` only:* hops | u32 |
+| … the place | below |
+
+A place is where a player is and what they hold:
+
+| Field | Type |
+|---|---|
+| Position | f64 x, f64 y, f64 z |
+| Yaw, pitch | f32, f32 |
+| Flags | u8: bit 0 on-ground, bit 1 flying |
+| Selected slot | u8 |
+| Hotbar | nine times: u8 0 for an empty slot, or u8 1, i32 item, i32 count |
+
+The floating-point numbers are big-endian like the integers. No store writes a record
+of kind 8 yet, and none keeps the notes: the format is there before what uses it. A
+build from before kind 8 cannot read such a record and does not start.
 
 Kinds 4 to 7 are what decides which region holds which chunk and which regions there
 are. `Granted`: the region holds each of the chunks from its tick `tick` on. `Returned`:
@@ -208,6 +237,28 @@ segments are in the file already. The file is written when the world is first st
 when it is made over for another division, and whenever a checkpoint leaves the first
 segment of the log needed for nothing but the table: then `from` becomes the next
 segment, and the segments before it go.
+
+## The players
+
+`regions/players` is to what the store keeps of each player what the table is to the
+list of regions: all of it as of a place in the log
+(`docs/adr/0020-one-stay-per-player.md`, sections 2 and 8). All integers big-endian:
+
+| Field | Type |
+|---|---|
+| Format version | u8 |
+| Kind | u8, 4 |
+| `from`: the first log segment whose stay notes are not in this file | u64 |
+| `issued`: the highest entity id a stay was ever given, 0 if none was | i32 |
+| Records, ascending by player: count, then per record | u32 |
+| … player, stay, hops | u128, i32, u32 |
+| … has a place | u8 0 or 1 |
+| … the place, if it has one, as in a stay note of the log | |
+| CRC-32 of everything before | u32 |
+
+A record is of one player: the entity of the latest stay the store was told the
+player was given, the highest number of hand-overs it was told of that stay, and where
+the player was last, if a region has said. No store writes or reads the file yet.
 
 ## Regions
 

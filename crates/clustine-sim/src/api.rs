@@ -75,11 +75,60 @@ impl Face {
     }
 }
 
+/// Where a player is and what they hold: what the world store keeps of a player from
+/// one stay to the next. See `docs/adr/0020-one-stay-per-player.md`, section 2.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    pub pose: Pose,
+    pub flying: bool,
+    pub hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    pub selected_slot: u8,
+}
+
+/// What a region says to the world store about a stay, in the commit of a tick. See
+/// `docs/adr/0020-one-stay-per-player.md`, section 3.
+///
+/// No region makes one yet: step R1.2 of that record does, and R1.1 has the store take
+/// them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StayNote {
+    /// The home region has given `player` the stay `entity` and holds it as entering,
+    /// or still holds it so and names it again.
+    Entering { player: PlayerId, entity: EntityId },
+    /// The stay is in this region after the tick, or was let go in it, with `hops`
+    /// hand-overs behind it and this place.
+    Has {
+        player: PlayerId,
+        entity: EntityId,
+        hops: u32,
+        place: Place,
+    },
+}
+
+/// The world store's answer to a [`StayNote::Entering`]: the stay `entity` of `player`
+/// may enter. `place` is where the player was last, if anywhere, and `holder` the
+/// region that held the chunk of that place when the store took the note, if one did,
+/// which is advice and no more. See `docs/adr/0020-one-stay-per-player.md`, section 4.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entered {
+    pub player: PlayerId,
+    pub entity: EntityId,
+    pub place: Option<Place>,
+    pub holder: Option<RegionId>,
+}
+
 /// A player entering the region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerJoin {
     pub player: PlayerId,
     pub name: String,
+    /// Which of the edge's connections the join is of: the edge numbers them from 1
+    /// with every start. The stay the join begins carries it until its first input is
+    /// applied, and every answer to the join names it, so that an edge which has not
+    /// been told the stay's entity can tell the stay of this connection from one of an
+    /// earlier connection of the same player. See
+    /// `docs/adr/0020-one-stay-per-player.md`, sections 4.1 and 4.3.
+    pub attempt: u64,
 }
 
 /// A player as one region hands them to another: everything a region knows about them.
@@ -93,6 +142,15 @@ pub struct PlayerTransfer {
     pub selected_slot: u8,
     /// The number of the last input the region applied; see [`TickInputs::inputs`].
     pub last_input: u64,
+    /// How often the stay has been handed on from one region to another. Of two copies
+    /// of a stay the one with more is the later. Nothing raises it yet, so it is 0:
+    /// step R1.2 of `docs/adr/0020-one-stay-per-player.md` does.
+    pub hops: u32,
+    /// Whether the player flies. Nothing sets it yet, so it is false: step R1.2 does.
+    pub flying: bool,
+    /// [`PlayerJoin::attempt`] of the join that began the stay, for as long as no
+    /// input of the stay has been applied by any region.
+    pub attempt: Option<u64>,
 }
 
 /// A player entering or leaving the region. Each but `Discard` names the edge it came
@@ -115,7 +173,12 @@ pub enum PlayerChange {
     /// The entity names the stay that has ended: the player is removed only if they
     /// have that entity, as a leave that comes late must not end a later stay. With
     /// none, the leave is for the player whatever their entity.
-    Leave(EdgeId, PlayerId, Option<EntityId>),
+    ///
+    /// The last is the attempt of the connection that ended, which an edge names where
+    /// it names no entity. The region does not look at it yet: from step R1.2 of
+    /// `docs/adr/0020-one-stay-per-player.md` a leave without an entity ends only a
+    /// stay with that attempt (section 4.4).
+    Leave(EdgeId, PlayerId, Option<EntityId>, Option<u64>),
     /// A player comes in from another region, as that region let them go with
     /// [`Durable::Departed`], and is the edge's from then on.
     ///
@@ -185,6 +248,10 @@ pub enum PlayerInput {
     SelectSlot { slot: u8 },
     /// A creative-mode player put a stack into a hotbar slot, or emptied it.
     SetHotbarSlot { slot: u8, stack: Option<ItemStack> },
+    /// The player began or stopped flying. No edge makes it yet, and a region counts it
+    /// as an input and does nothing else with it: steps R1.2 and R1.4 of
+    /// `docs/adr/0020-one-stay-per-player.md` give it meaning (section 13).
+    SetFlying { flying: bool },
 }
 
 /// What is left to do of something a player did to blocks that the region the player is
@@ -197,6 +264,10 @@ pub enum PlayerInput {
 pub struct RemoteAction {
     /// Who did it.
     pub player: PlayerId,
+    /// The entity of the stay they did it in. A client numbers its actions afresh with
+    /// every connection, so the number alone does not say which stay an answer is for.
+    /// See `docs/adr/0020-one-stay-per-player.md`, section 11.
+    pub entity: EntityId,
     /// The number the player's client gave the action. Nobody acknowledges it to the
     /// player before the action has been dealt with; see [`Durable::RemoteDone`].
     pub sequence: i32,
@@ -260,8 +331,9 @@ pub enum Durable {
         to: RegionId,
     },
     /// The player could not enter the world, because the region has no entity id left
-    /// for them. Passed on to an edge as [`PlayerEvent::Refused`].
-    Refused { player: PlayerId },
+    /// for them. `attempt` is that of the join it answers. Passed on to an edge as
+    /// [`PlayerEvent::Refused`].
+    Refused { player: PlayerId, attempt: u64 },
     /// What is left of an action concerns a chunk this region does not hold: the one
     /// with the block [`RemoteStep::concerns`] names. The player's own action that is
     /// passed on is not among the acknowledged ones of the tick.
@@ -275,8 +347,13 @@ pub enum Durable {
     },
     /// A remote action has been dealt with, whether or not it changed anything. The
     /// player can now be told so, as with [`PlayerEvent::Acknowledged`]; what it changed
-    /// has been reported among the tick's events.
-    RemoteDone { player: PlayerId, sequence: i32 },
+    /// has been reported among the tick's events. `entity` is that of the action it
+    /// answers.
+    RemoteDone {
+        player: PlayerId,
+        entity: EntityId,
+        sequence: i32,
+    },
     /// An arrival or a remote action reached this region for a chunk it believes
     /// `holder` to hold, and goes there. For an arrival the player is on their way as
     /// after a `Departed`. A region that does not know who holds the chunk never says
@@ -307,11 +384,24 @@ pub enum Durable {
     },
     /// A part of this region has become the region `region`, and the stays named are
     /// in it from now on: those of the edge's players who went, each with their
-    /// entity, in ascending order. Which chunks went is said on the link, anew on
-    /// every link. See `docs/adr/0014-merging-and-splitting.md`, section 2.4.
+    /// entity and with the attempt the stay carried at the split
+    /// ([`PlayerTransfer::attempt`]), in ascending order. Which chunks went is said on
+    /// the link, anew on every link. See `docs/adr/0014-merging-and-splitting.md`,
+    /// section 2.4.
     SplitOff {
         region: RegionId,
-        players: Vec<(PlayerId, EntityId)>,
+        players: Vec<(PlayerId, EntityId, Option<u64>)>,
+    },
+    /// The stay `entity` of `player`, which was this edge's, has been ended by the
+    /// server: a later stay of the player took its place. `attempt` is that of the
+    /// stay's join, as long as the stay had it.
+    ///
+    /// No region makes one yet: step R1.2 of `docs/adr/0020-one-stay-per-player.md`
+    /// does (section 6), and R1.4 has the edge act on it.
+    Ended {
+        player: PlayerId,
+        entity: EntityId,
+        attempt: Option<u64>,
     },
 }
 
@@ -350,7 +440,8 @@ pub enum EdgeEvent {
 /// Everything that happened since the previous tick.
 ///
 /// A tick applies all of `edges`, then `applied`, then all of `player_changes`, then all
-/// of `remote_actions`, and then all of `inputs`. What players did
+/// of `remote_actions`, and then all of `inputs`. (`dead` and `entered`, which no tick
+/// looks at yet, are to come after `applied` and after `player_changes`.) What players did
 /// and what became of them arrives as one sequence, though, and its order is lost when
 /// it is sorted into the two. [`TickInputs::change`] and [`TickInputs::input`] sort it
 /// so that nothing a player did before they came to the region is applied after it.
@@ -412,6 +503,14 @@ pub struct TickInputs {
     /// hold them, and to claim again if it wants them. A belief that has changed since
     /// is left alone: it is newer than the doubt.
     pub unbelieve: Vec<(ChunkPos, RegionId)>,
+    /// The world store's answers to the region's [`StayNote::Entering`] notes. Nobody
+    /// fills it yet and the tick passes it over: steps R1.2 and R1.3 of
+    /// `docs/adr/0020-one-stay-per-player.md` give it meaning (section 4, step 7).
+    pub entered: Vec<Entered>,
+    /// Of each player named, a stay below `(entity, hops)` is dead: one with a lower
+    /// entity id, or that stay with fewer hand-overs. Nobody fills it yet and the tick
+    /// passes it over: steps R1.2 and R1.3 give it meaning (section 5).
+    pub dead: Vec<(PlayerId, EntityId, u32)>,
 }
 
 /// What a link's subscription to a chunk is for.
@@ -471,10 +570,13 @@ impl TickInputs {
 /// Something that concerns a single player.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlayerEvent {
-    /// The player has entered the world.
+    /// The player has entered the world. `attempt` is that of the join it answers
+    /// ([`PlayerJoin::attempt`]).
     Spawned {
+        attempt: u64,
         entity_id: EntityId,
-        position: Vec3,
+        pose: Pose,
+        flying: bool,
         hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
         selected_slot: u8,
     },
@@ -570,4 +672,7 @@ pub struct TickOutput {
     pub returns: Vec<ChunkPos>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,
+    /// What the region says to the world store of stays in this tick. No tick makes
+    /// any yet: step R1.2 of `docs/adr/0020-one-stay-per-player.md` does (section 3).
+    pub stays: Vec<StayNote>,
 }

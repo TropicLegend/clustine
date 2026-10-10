@@ -521,6 +521,7 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
         epoch,
         changes: vec![(BlockPos::new(x, y, 4), block)],
         state: crate::tests::delta(tick),
+        stays: Vec::new(),
     };
     let opened = |region, epoch| LogRecord::Opened {
         region,

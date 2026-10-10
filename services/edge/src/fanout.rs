@@ -909,6 +909,7 @@ impl Fanout {
                 let join = PlayerJoin {
                     player,
                     name: profile.name,
+                    attempt: session.0,
                 };
                 self.send_to_region(self.spawn_region, EdgeToWorker::PlayerJoin(join))
                     .await;
@@ -994,14 +995,19 @@ impl Fanout {
                 player,
                 event:
                     PlayerEvent::Spawned {
+                        // Which join this answers, the look and whether the player
+                        // flies are not read yet: step R1.4 of
+                        // `docs/adr/0020-one-stay-per-player.md` does (section 4.1).
+                        attempt: _,
                         entity_id,
-                        position,
+                        pose,
+                        flying: _,
                         hotbar,
                         selected_slot,
                     },
             } => {
                 let inventory = inventory_packets(&hotbar, selected_slot);
-                self.spawn_player(player, entity_id, position, inventory)
+                self.spawn_player(player, entity_id, pose.position, inventory)
                     .await;
             }
             WorkerToEdge::ToPlayer {
@@ -1081,7 +1087,10 @@ impl Fanout {
                 let to = self.living(to);
                 self.hand_over(player, from, to, transfer, back).await;
             }
-            Durable::Refused { player } => {
+            // Which join was refused is not read yet: step R1.4 of
+            // `docs/adr/0020-one-stay-per-player.md` holds the refusal to it
+            // (section 4.2).
+            Durable::Refused { player, attempt: _ } => {
                 // A player who has an entity is in the world through another way than
                 // the join that was refused, and stays.
                 let waiting = self
@@ -1142,7 +1151,14 @@ impl Fanout {
                     self.hand_over(player, from, holder, transfer, back).await;
                 }
             }
-            Durable::RemoteDone { player, sequence } => self.arrived(player, sequence).await,
+            // The stay the action was of is not read yet: step R1.4 of
+            // `docs/adr/0020-one-stay-per-player.md` takes a "done" only for a view
+            // that has that entity (section 11).
+            Durable::RemoteDone {
+                player,
+                entity: _,
+                sequence,
+            } => self.arrived(player, sequence).await,
             Durable::Absorbed {
                 region,
                 since,
@@ -1156,6 +1172,10 @@ impl Fanout {
                 let part = self.living(region);
                 self.split_off(from, part, players).await;
             }
+            // No region makes one yet, and it is confirmed like any entry: step R1.4
+            // of `docs/adr/0020-one-stay-per-player.md` ends the connection it is
+            // about (section 6).
+            Durable::Ended { .. } => {}
         }
         // Only now: what the entry led to is kept for the regions it concerns, so the
         // region may forget the entry.
@@ -1236,6 +1256,12 @@ impl Fanout {
     /// entity, and by where the edge has that stay; see
     /// `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 2.1.
     async fn take_presence(&mut self, from: RegionId, player: PlayerId, answer: Presence) {
+        // No region says that a stay is entering yet, and one that did would have
+        // nothing done by it; it is counted like any answer. Step R1.4 of
+        // `docs/adr/0020-one-stay-per-player.md` gives it meaning (section 4.2).
+        if matches!(answer, Presence::Entering { .. }) {
+            return;
+        }
         let Presence::Present {
             entity,
             pose,
@@ -1243,6 +1269,11 @@ impl Fanout {
             selected_slot,
             last_input,
             handled,
+            // Not read yet either: step R1.4 sends the client that it flies
+            // (section 4.1) and finds a view without an entity by the attempt
+            // (section 4.3, path 1).
+            flying: _,
+            attempt: _,
         } = answer
         else {
             if self
@@ -1303,7 +1334,7 @@ impl Fanout {
                 let leaving = port.kept.iter().any(|(_, body)| {
                     matches!(
                         body,
-                        EdgeToWorker::PlayerLeave { player: left, entity: named }
+                        EdgeToWorker::PlayerLeave { player: left, entity: named, .. }
                             if *left == player && *named == Some(entity)
                     )
                 });
@@ -1312,6 +1343,7 @@ impl Fanout {
                     let leave = EdgeToWorker::PlayerLeave {
                         player,
                         entity: Some(entity),
+                        attempt: None,
                     };
                     self.send_to_region(from, leave).await;
                 }
@@ -1586,14 +1618,17 @@ impl Fanout {
         &mut self,
         from: RegionId,
         part: RegionId,
-        players: Vec<(PlayerId, EntityId)>,
+        players: Vec<(PlayerId, EntityId, Option<u64>)>,
     ) {
         info!(%from, %part, players = players.len(), "a region has been split");
         if part == from {
             // The part has gone back into the region since.
             return;
         }
-        for (player, entity) in players {
+        // The attempt a stay carried is not read yet: step R1.4 of
+        // `docs/adr/0020-one-stay-per-player.md` finds a view without an entity by it
+        // (section 4.3, path 2).
+        for (player, entity, _attempt) in players {
             let there = self
                 .players
                 .get(&player)
@@ -2665,10 +2700,13 @@ impl Fanout {
         self.flush_asking().await;
         // If that region has just let the player go, it ignores this, and the message
         // saying so, which is on its way, makes `hand_over` clean up. The leave names
-        // the entity the player had, if the edge was told of one.
+        // the entity the player had, if the edge was told of one, and otherwise the
+        // attempt of the connection, which is what the stay of its join carries
+        // (`docs/adr/0020-one-stay-per-player.md`, section 4.4).
         let leave = EdgeToWorker::PlayerLeave {
             player,
             entity: view.entity,
+            attempt: view.entity.is_none().then_some(view.session.0),
         };
         self.send_to_region(view.region, leave).await;
     }
@@ -3058,6 +3096,7 @@ mod tests {
             // An entry about nobody, which the edge confirms like any other.
             let nobody = Durable::RemoteDone {
                 player: player(u128::MAX),
+                entity: EntityId(0),
                 sequence: 0,
             };
             let number = self.say(region, nobody);
@@ -3151,12 +3190,18 @@ mod tests {
         PlayerId(Uuid::from_u128(number))
     }
 
+    /// A region's word to a player that they have entered the world as `entity`. It
+    /// names no attempt a join had: the edge does not read which join the word
+    /// answers before step R1.4 of `docs/adr/0020-one-stay-per-player.md`, and
+    /// sessions are numbered from 1.
     fn spawned(player: PlayerId, entity: EntityId) -> WorkerToEdge {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
+                attempt: 0,
                 entity_id: entity,
-                position: Vec3::new(0.5, -60.0, 0.5),
+                pose: Pose::at(Vec3::new(0.5, -60.0, 0.5)),
+                flying: false,
                 hotbar: [None; HOTBAR_SLOTS],
                 selected_slot: 0,
             },
@@ -3180,6 +3225,9 @@ mod tests {
             hotbar: [None; HOTBAR_SLOTS],
             selected_slot: 0,
             last_input,
+            hops: 0,
+            flying: false,
+            attempt: None,
         }
     }
 
@@ -3191,6 +3239,8 @@ mod tests {
             selected_slot: 0,
             last_input,
             handled: None,
+            flying: false,
+            attempt: None,
         }
     }
 
@@ -3719,6 +3769,7 @@ mod tests {
                 EdgeToWorker::PlayerLeave {
                     player: player(1),
                     entity: Some(EntityId(5)),
+                    attempt: None,
                 }
             )
         );
@@ -3761,6 +3812,7 @@ mod tests {
                 EdgeToWorker::PlayerLeave {
                     player: player(1),
                     entity: Some(EntityId(5)),
+                    attempt: None,
                 }
             )
         );
@@ -3973,6 +4025,7 @@ mod tests {
         let third = RegionId(2);
         let action = RemoteAction {
             player: player(1),
+            entity: EntityId(5),
             sequence: 3,
             step: RemoteStep::Break {
                 position: BlockPos::new(640, -61, 0),
@@ -4027,6 +4080,7 @@ mod tests {
         );
         let done = |sequence| Durable::RemoteDone {
             player: player(u128::MAX),
+            entity: EntityId(0),
             sequence,
         };
         // The first entry is confirmed, and nothing that was kept has been sent.
@@ -4098,6 +4152,7 @@ mod tests {
         // About a block of the chunk both regions' players can see.
         let action = |sequence| RemoteAction {
             player: player(1),
+            entity: EntityId(5),
             sequence,
             step: RemoteStep::Break {
                 position: BlockPos::new(40, -61, 0),
@@ -4234,6 +4289,7 @@ mod tests {
         let leave = EdgeToWorker::PlayerLeave {
             player: player(2),
             entity: Some(EntityId(9)),
+            attempt: None,
         };
         assert_eq!(edge.next_numbered(WEST).await, (2, leave));
 
@@ -4244,6 +4300,7 @@ mod tests {
         let leave = EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: Some(EntityId(4)),
+            attempt: None,
         };
         assert_eq!(edge.next_numbered(WEST).await, (3, leave));
         edge.settle(WEST).await;
@@ -4500,6 +4557,7 @@ mod tests {
         let leave = EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: Some(EntityId(5)),
+            attempt: None,
         };
         assert_eq!(edge.next_numbered(WEST).await, (3, leave));
         disconnected(&mut packets).await;
@@ -4532,6 +4590,7 @@ mod tests {
         // player go back to the west.
         let action = |sequence| RemoteAction {
             player: player(1),
+            entity: EntityId(5),
             sequence,
             step: RemoteStep::Break {
                 position: BlockPos::new(40, -61, 0),
@@ -4641,6 +4700,7 @@ mod tests {
         let leave = EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: Some(EntityId(5)),
+            attempt: None,
         };
         assert_eq!(edge.next_numbered(WEST).await, (2, leave));
         disconnected(&mut packets).await;
@@ -4668,10 +4728,16 @@ mod tests {
         assert!(connected(&mut packets));
     }
 
+    /// The stays carry no attempt, as stays do of which an input was applied: the
+    /// edge does not read it before step R1.4 of
+    /// `docs/adr/0020-one-stay-per-player.md`.
     fn split_off(players: Vec<(PlayerId, EntityId)>) -> Durable {
         Durable::SplitOff {
             region: PART,
-            players,
+            players: players
+                .into_iter()
+                .map(|(player, entity)| (player, entity, None))
+                .collect(),
         }
     }
 
@@ -4729,6 +4795,7 @@ mod tests {
         let leave = EdgeToWorker::PlayerLeave {
             player: player(2),
             entity: Some(EntityId(9)),
+            attempt: None,
         };
         assert_eq!(edge.next_numbered(PART).await, (2, leave));
         assert!(connected(&mut packets));
@@ -5137,6 +5204,7 @@ mod scenarios {
         async fn settle(&mut self, region: RegionId) {
             let nobody = Durable::RemoteDone {
                 player: player(u128::MAX),
+                entity: EntityId(0),
                 sequence: 0,
             };
             let number = self.say(region, nobody);
@@ -5641,13 +5709,18 @@ mod scenarios {
         BlockPos::new(chunk.x * 16 + 3, -60, chunk.z * 16 + 5)
     }
 
-    /// A region's word to a player that they have entered the world as `entity`.
+    /// A region's word to a player that they have entered the world as `entity`. It
+    /// names no attempt a join had: the edge does not read which join the word
+    /// answers before step R1.4 of `docs/adr/0020-one-stay-per-player.md`, and
+    /// sessions are numbered from 1.
     fn spawned(player: PlayerId, entity: EntityId) -> WorkerToEdge {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
+                attempt: 0,
                 entity_id: entity,
-                position: SPAWN,
+                pose: Pose::at(SPAWN),
+                flying: false,
                 hotbar: [None; HOTBAR_SLOTS],
                 selected_slot: 0,
             },
@@ -5663,6 +5736,9 @@ mod scenarios {
             hotbar: [None; HOTBAR_SLOTS],
             selected_slot: 0,
             last_input,
+            hops: 0,
+            flying: false,
+            attempt: None,
         }
     }
 
@@ -5767,6 +5843,8 @@ mod scenarios {
                 selected_slot: 0,
                 last_input: 0,
                 handled: None,
+                flying: false,
+                attempt: None,
             },
         }
     }
@@ -5831,10 +5909,13 @@ mod scenarios {
         }
     }
 
-    /// What is left of a player's breaking of the block at `block_of(chunk)`.
+    /// What is left of a player's breaking of the block at `block_of(chunk)`. It
+    /// names no entity a player has: the edge does not read the stay an action is of
+    /// before step R1.4 of `docs/adr/0020-one-stay-per-player.md` (section 11).
     fn breaking(player: PlayerId, sequence: i32, chunk: ChunkPos) -> RemoteAction {
         RemoteAction {
             player,
+            entity: EntityId(0),
             sequence,
             step: RemoteStep::Break {
                 position: block_of(chunk),
@@ -6628,6 +6709,7 @@ mod scenarios {
         let left = EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: Some(EntityId(5)),
+            attempt: None,
         };
         assert_eq!(numbered(&said), [(1, left)]);
         assert!(edge.at(WEST).chunks(Role::Viewer).is_empty());
@@ -7381,6 +7463,7 @@ mod scenarios {
         assert_eq!(edge.next_numbered(NORTH).await, (1, passed_on));
         let done = Durable::RemoteDone {
             player: player(1),
+            entity: action.entity,
             sequence: action.sequence,
         };
         edge.say(NORTH, done);
@@ -7567,6 +7650,7 @@ mod scenarios {
         // The first of the two is one the edge has handled.
         let nobody = Durable::RemoteDone {
             player: player(u128::MAX),
+            entity: EntityId(0),
             sequence: 0,
         };
         let again = WorkerToEdge::Outbox {
@@ -8624,7 +8708,7 @@ mod scenarios {
                         pose: Pose::at(SPAWN),
                     }));
                 }
-                EdgeToWorker::PlayerLeave { player, entity } => {
+                EdgeToWorker::PlayerLeave { player, entity, .. } => {
                     // A leave ends the stay it names, and no other.
                     let residents = &mut self.played[index].residents;
                     let named = residents.get(&player).is_some_and(|resident| {
@@ -9171,8 +9255,13 @@ mod scenarios {
 
         /// ADR-0015, section 6: `SplitOff` from `from`, which names `part` as the
         /// edge reads it.
-        fn split_off(&mut self, from: RegionId, part: RegionId, stays: &[(PlayerId, EntityId)]) {
-            for (player, entity) in stays {
+        fn split_off(
+            &mut self,
+            from: RegionId,
+            part: RegionId,
+            stays: &[(PlayerId, EntityId, Option<u64>)],
+        ) {
+            for (player, entity, _) in stays {
                 let theirs = self
                     .people
                     .get(player)
@@ -9393,6 +9482,8 @@ mod scenarios {
                     self.judge(region, player);
                 }
                 (Presence::Absent, _) => self.count("an absent passed over"),
+                // No region says it yet, and the edge does nothing by it.
+                (Presence::Entering { .. }, _) => {}
             }
             if last {
                 self.presence_through(region);
@@ -9573,11 +9664,9 @@ mod scenarios {
                     player,
                     event:
                         PlayerEvent::Spawned {
-                            entity_id,
-                            position,
-                            ..
+                            entity_id, pose, ..
                         },
-                } => self.placed(region, *player, *entity_id, chunk_of(*position)),
+                } => self.placed(region, *player, *entity_id, chunk_of(pose.position)),
                 WorkerToEdge::Progress { applied, .. } => self.progress(region, *applied),
                 WorkerToEdge::Presence { player, answer } => self.presence(region, *player, answer),
                 WorkerToEdge::Outbox { number, entry } => self.outbox(region, *number, entry),
@@ -9908,6 +9997,8 @@ mod scenarios {
                     selected_slot: 0,
                     last_input: resident.last_input,
                     handled: None,
+                    flying: false,
+                    attempt: None,
                 },
             };
             // ADR-0014, section 3.7: an answer for each player the hello named, and
@@ -10305,7 +10396,7 @@ mod scenarios {
             let mut stays = Vec::new();
             for player in go {
                 let resident = played.residents.remove(&player).expect("they stand there");
-                stays.push((player, resident.entity));
+                stays.push((player, resident.entity, None));
                 residents.insert(player, resident);
             }
             played.sent += 1;
@@ -11031,6 +11122,8 @@ mod scenarios {
                 selected_slot: 0,
                 last_input,
                 handled: None,
+                flying: false,
+                attempt: None,
             },
         }
     }
@@ -11058,7 +11151,7 @@ mod scenarios {
 
     /// The outbox entry of a region of which `region` was split off with `stays`.
     fn split_off(region: RegionId, stays: &[(u128, i32)]) -> Durable {
-        let stay = |(who, entity): &(u128, i32)| (player(*who), EntityId(*entity));
+        let stay = |(who, entity): &(u128, i32)| (player(*who), EntityId(*entity), None);
         Durable::SplitOff {
             region,
             players: stays.iter().map(stay).collect(),
@@ -11067,7 +11160,11 @@ mod scenarios {
 
     /// The outbox entry that says an action of `player` was dealt with.
     fn done(player: PlayerId, sequence: i32) -> Durable {
-        Durable::RemoteDone { player, sequence }
+        Durable::RemoteDone {
+            player,
+            entity: EntityId(0),
+            sequence,
+        }
     }
 
     /// An input as the edge passes it on.
@@ -11085,6 +11182,7 @@ mod scenarios {
         EdgeToWorker::PlayerLeave {
             player: player(who),
             entity: entity.map(EntityId),
+            attempt: None,
         }
     }
 
@@ -11796,16 +11894,27 @@ mod scenarios {
             let mut client = edge.join(player(1)).await;
             let (number, join) = edge.next_numbered(WEST).await;
             assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+            // The join names the connection it is of.
+            let EdgeToWorker::PlayerJoin(joined) = &join else {
+                unreachable!("asserted above");
+            };
+            assert_eq!(joined.attempt, client.session.0);
             edge.lose(WEST).await;
             edge.link(WEST).await;
             assert_eq!(edge.hello(WEST).players, [player(1)]);
             let applied = if applied_the_join { number } else { number - 1 };
             edge.answer(WEST, Reply::resumed().applied(applied)).await;
             if applied_the_join {
-                // They quit, as far as any region can tell: no entity was told.
+                // They quit, as far as any region can tell: no entity was told. So the
+                // leave names the attempt of the join instead (ADR-0020, section 4.4).
                 client.disconnected().await;
                 let said = edge.sent(WEST).await;
-                assert_eq!(numbered(&said), [(number + 1, left(1, None))]);
+                let leave = EdgeToWorker::PlayerLeave {
+                    player: player(1),
+                    entity: None,
+                    attempt: Some(joined.attempt),
+                };
+                assert_eq!(numbered(&said), [(number + 1, leave)]);
             } else {
                 let sent = numbered(&edge.sent(WEST).await);
                 assert!(

@@ -78,6 +78,8 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -165,12 +167,13 @@ fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
         PlayerJoin {
             player: id,
             name: format!("player-{}", id.0.as_u128()),
+            attempt: 7000 + id.0.as_u128() as u64,
         },
     )
 }
 
 fn leave(edge: EdgeId, id: PlayerId, entity: Option<EntityId>) -> PlayerChange {
-    PlayerChange::Leave(edge, id, entity)
+    PlayerChange::Leave(edge, id, entity, None)
 }
 
 fn single_input(
@@ -381,6 +384,9 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         last_input: n as u64 % 50 + 2,
         handled: Some(n % 30),
         edge,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -403,7 +409,10 @@ fn edge_state(
 /// The edges of [`with_players`], as the region knows them before the split: `E` has
 /// an entry nobody has confirmed, so that what a split adds is numbered on.
 fn edges_before_a_split() -> [(EdgeId, EdgeState); 2] {
-    let refused = Durable::Refused { player: player(9) };
+    let refused = Durable::Refused {
+        player: player(9),
+        attempt: 7009,
+    };
     [
         (E, edge_state(10, 3, 17, 4, &[(4, refused)])),
         (F, edge_state(11, 5, 6, 0, &[])),
@@ -423,6 +432,7 @@ fn with_players(holdings: Holdings, players: &[(i32, EdgeId, ChunkPos)]) -> Regi
             .map(|(n, edge, chunk)| (player(*n as u128), someone(entity(*n), *edge, *chunk)))
             .collect(),
         edges: edges_before_a_split().into_iter().collect(),
+        entering: BTreeMap::new(),
     };
     Region::restore(config(LONG), state, holdings)
 }
@@ -585,14 +595,14 @@ fn split_by_the_record(
     ours.tick = tick;
     let mut theirs = RegionState::new(no_ids());
     theirs.tick = tick;
-    let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId)>> = BTreeMap::new();
+    let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId, Option<u64>)>> = BTreeMap::new();
     for (id, player) in &state.players {
         if goes(player) {
             ours.players.remove(id);
             theirs.players.insert(*id, player.clone());
             went.entry(player.edge)
                 .or_default()
-                .push((*id, player.entity_id));
+                .push((*id, player.entity_id, player.attempt));
         }
     }
     for (edge, players) in went {
@@ -891,7 +901,7 @@ fn somebody_who_stands_in_a_named_chunk_whose_grant_waits_is_a_seed_and_goes() {
     );
     let went = Durable::SplitOff {
         region: PART,
-        players: vec![(player(2), entity(2))],
+        players: vec![(player(2), entity(2), None)],
     };
     assert_eq!(splitting.state.edges[&E].outbox.get(&5), Some(&went));
     let by_the_record =
@@ -1499,6 +1509,8 @@ fn run_config() -> RegionConfig {
         spawn: ENTRANCE,
         starting_hotbar: hotbar(),
         return_after: 0,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -1999,7 +2011,9 @@ impl Cluster {
                     let next = &mut self.site(to).next;
                     next.remote_actions.push((*edge, action.clone()));
                 }
-                Durable::RemoteDone { player, sequence } => self.done(*player, *sequence),
+                Durable::RemoteDone {
+                    player, sequence, ..
+                } => self.done(*player, *sequence),
                 other => panic!("{from} made {other:?} in a tick"),
             }
         }
@@ -2179,7 +2193,7 @@ impl Cluster {
                 panic!("the last entry for {:?} is {entry:?}", player.edge);
             };
             assert_eq!(*region, part);
-            assert!(players.contains(&(*id, player.entity_id)));
+            assert!(players.contains(&(*id, player.entity_id, player.attempt)));
             match self.stays.get_mut(id) {
                 Some(stay) if stay.entity == Some(player.entity_id) => {
                     stay.site = part;
@@ -2229,7 +2243,7 @@ impl Cluster {
             let waiting = site.next.inputs.iter().any(|(_, actor, ..)| *actor == id);
             let coming = site.next.player_changes.iter().any(|change| match change {
                 PlayerChange::Join(_, join) => join.player == id,
-                PlayerChange::Arrive(_, player, _) | PlayerChange::Leave(_, player, _) => {
+                PlayerChange::Arrive(_, player, _) | PlayerChange::Leave(_, player, _, _) => {
                     *player == id
                 }
                 PlayerChange::Discard { .. } => false,

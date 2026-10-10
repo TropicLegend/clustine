@@ -104,6 +104,8 @@ fn config() -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after: 0,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -581,11 +583,22 @@ fn block_in(chunk: &Chunk, block: BlockPos) -> BlockState {
     chunk.get(x, block.y, z).expect("the block is in the chunk")
 }
 
+/// The attempt that a join of `id` names.
+fn attempt(id: PlayerId) -> u64 {
+    7000 + id.0.as_u128() as u64
+}
+
 fn join(id: PlayerId) -> EdgeToWorker {
     EdgeToWorker::PlayerJoin(PlayerJoin {
         player: id,
         name: format!("player-{}", id.0.as_u128()),
+        attempt: attempt(id),
     })
+}
+
+/// The entity that `id` has in another region, as the remote actions here name it.
+fn elsewhere(id: PlayerId) -> EntityId {
+    EntityId(9000 + id.0.as_u128() as i32)
 }
 
 /// The entity of the `n`th player to enter the region of a [`World`], counted from 1,
@@ -623,6 +636,7 @@ fn dig(position: BlockPos, sequence: i32) -> PlayerInput {
 fn remote_break(id: PlayerId, sequence: i32, position: BlockPos) -> EdgeToWorker {
     EdgeToWorker::Remote(RemoteAction {
         player: id,
+        entity: elsewhere(id),
         sequence,
         step: RemoteStep::Break { position },
     })
@@ -1112,6 +1126,7 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
     f.send(EdgeToWorker::PlayerLeave {
         player: three,
         entity: None,
+        attempt: None,
     });
     f.send(remote_break(player(9), 5, BlockPos::new(11, GROUND, 9)));
     runner = hand_on(&mut world, runner, &mut [&mut e, &mut f]);
@@ -1120,6 +1135,7 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
         f.witness.outbox.get(&1),
         Some(&Durable::RemoteDone {
             player: player(9),
+            entity: elsewhere(player(9)),
             sequence: 5
         })
     );
@@ -1510,6 +1526,8 @@ fn the_resume_comes_first_and_in_order_in(mut world: World) {
             last_input: 5,
             // The action beyond the region is not handled by this one.
             handled: Some(1),
+            flying: false,
+            attempt: None,
         }
     );
     // Player 2 has left the region, player 3 is another edge's, player 4 was never here.
@@ -1750,6 +1768,7 @@ fn after_a_restore_what_is_sent_again_is_not_applied_twice() {
         EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: None,
+            attempt: None,
         },
         join(player(1)),
         remote_break(stranger, 4, far),
@@ -2015,6 +2034,7 @@ fn what_was_held_when_a_link_ended_is_applied_once_when_it_is_sent_again_in(mut 
             1,
             &Durable::RemoteDone {
                 player: stranger,
+                entity: elsewhere(stranger),
                 sequence: 4
             }
         )
@@ -2946,6 +2966,7 @@ fn what_a_new_link_sends_again_is_dropped_and_the_link_stays() {
         EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: None,
+            attempt: None,
         },
     );
     wait_applied(&mut runner, &mut [&mut e, &mut watcher], 0, 2);
@@ -2968,6 +2989,7 @@ fn what_a_new_link_sends_again_is_dropped_and_the_link_stays() {
         EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: None,
+            attempt: None,
         },
     );
     back.numbered(3, join(player(1)));
@@ -5027,6 +5049,7 @@ fn store_by_hand(
             tick,
             changes: Vec::new(),
             state,
+            stays: Vec::new(),
         });
     }
     handle.flush();
@@ -5070,6 +5093,9 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         last_input: 0,
         handled: None,
         edge,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -5077,6 +5103,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
 fn done(sequence: i32) -> Durable {
     Durable::RemoteDone {
         player: player(9),
+        entity: elsewhere(player(9)),
         sequence,
     }
 }
@@ -5130,6 +5157,7 @@ fn joining(tick: u64, edge: EdgeId, id: PlayerId, entity: EntityId) -> clustine_
                 added: Vec::new(),
             }),
         )],
+        entering: Vec::new(),
     }
 }
 
@@ -5152,6 +5180,7 @@ fn answering(tick: u64, edge: EdgeId, since: u64) -> clustine_sim::StateDelta {
                 added: vec![(1, done(1))],
             }),
         )],
+        entering: Vec::new(),
     }
 }
 

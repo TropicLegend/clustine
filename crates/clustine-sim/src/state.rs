@@ -25,6 +25,25 @@ pub struct RegionState {
     pub players: BTreeMap<PlayerId, PlayerState>,
     /// The edges the region knows.
     pub edges: BTreeMap<EdgeId, EdgeState>,
+    /// The stays the region has given out and holds until the world store has said
+    /// where each is to enter. Nothing puts one here yet: step R1.2 of
+    /// `docs/adr/0020-one-stay-per-player.md` does (section 4, step 3).
+    pub entering: BTreeMap<PlayerId, EnteringState>,
+}
+
+/// A stay the home region has given a joining player and holds as entering: the player
+/// has an entity and is nowhere yet. See `docs/adr/0020-one-stay-per-player.md`,
+/// section 4.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnteringState {
+    pub entity_id: EntityId,
+    pub name: String,
+    /// The edge the join came through.
+    pub edge: EdgeId,
+    /// [`PlayerJoin::attempt`] of the join.
+    ///
+    /// [`PlayerJoin::attempt`]: crate::PlayerJoin::attempt
+    pub attempt: u64,
 }
 
 /// A player in the region.
@@ -44,6 +63,19 @@ pub struct PlayerState {
     pub handled: Option<i32>,
     /// The edge the player belongs to: the one they joined or arrived through.
     pub edge: EdgeId,
+    /// How often the stay has been handed on; see [`PlayerTransfer::hops`].
+    ///
+    /// [`PlayerTransfer::hops`]: crate::PlayerTransfer::hops
+    pub hops: u32,
+    /// Whether the player flies; see [`PlayerTransfer::flying`].
+    ///
+    /// [`PlayerTransfer::flying`]: crate::PlayerTransfer::flying
+    pub flying: bool,
+    /// The attempt of the join that began the stay, until the first input of the stay
+    /// is applied; see [`PlayerTransfer::attempt`].
+    ///
+    /// [`PlayerTransfer::attempt`]: crate::PlayerTransfer::attempt
+    pub attempt: Option<u64>,
 }
 
 /// What a region keeps for an edge.
@@ -74,6 +106,7 @@ impl RegionState {
             next_entity_id: entity_ids.first,
             players: BTreeMap::new(),
             edges: BTreeMap::new(),
+            entering: BTreeMap::new(),
         }
     }
 
@@ -91,6 +124,16 @@ impl RegionState {
                 }
                 None => {
                     self.players.remove(id);
+                }
+            }
+        }
+        for (id, entering) in &delta.entering {
+            match entering {
+                Some(entering) => {
+                    self.entering.insert(*id, entering.clone());
+                }
+                None => {
+                    self.entering.remove(id);
                 }
             }
         }
@@ -146,12 +189,19 @@ pub struct StateDelta {
     /// Each edge that changed, in the order of the edges: `None` for one the region has
     /// forgotten.
     pub edges: Vec<(EdgeId, Option<EdgeDelta>)>,
+    /// Each entering stay that changed, in the order of the players, as it is after
+    /// the tick: `None` for a player of whom the region holds none any more. No tick
+    /// names any yet; see [`RegionState::entering`].
+    pub entering: Vec<(PlayerId, Option<EnteringState>)>,
 }
 
 impl StateDelta {
     /// Whether nothing changed in the tick but its number.
     pub fn changes_only_the_tick(&self) -> bool {
-        self.next_entity_id.is_none() && self.players.is_empty() && self.edges.is_empty()
+        self.next_entity_id.is_none()
+            && self.players.is_empty()
+            && self.edges.is_empty()
+            && self.entering.is_empty()
     }
 }
 

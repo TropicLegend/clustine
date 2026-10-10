@@ -38,6 +38,18 @@ impl<'a> Input<'a> {
         Ok(u64::from_be_bytes(self.array()?))
     }
 
+    pub(crate) fn u128(&mut self) -> Result<u128, FormatError> {
+        Ok(u128::from_be_bytes(self.array()?))
+    }
+
+    pub(crate) fn f32(&mut self) -> Result<f32, FormatError> {
+        Ok(f32::from_be_bytes(self.array()?))
+    }
+
+    pub(crate) fn f64(&mut self) -> Result<f64, FormatError> {
+        Ok(f64::from_be_bytes(self.array()?))
+    }
+
     /// Succeeds only if everything has been read.
     pub(crate) fn finish(self) -> Result<(), FormatError> {
         if self.0.is_empty() {

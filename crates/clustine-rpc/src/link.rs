@@ -227,6 +227,7 @@ mod tests {
     fn remote() -> RemoteAction {
         RemoteAction {
             player: player(),
+            entity: EntityId(5),
             sequence: 31,
             step: RemoteStep::PlaceAgainst {
                 against: BlockPos::new(16, -61, 2),
@@ -244,6 +245,7 @@ mod tests {
             body: EdgeToWorker::PlayerLeave {
                 player: player(),
                 entity: None,
+                attempt: None,
             },
         }
     }
@@ -256,6 +258,9 @@ mod tests {
             hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
             selected_slot: 8,
             last_input: 77,
+            hops: 3,
+            flying: true,
+            attempt: Some(u64::MAX),
         }
     }
 
@@ -286,6 +291,7 @@ mod tests {
             EdgeToWorker::PlayerJoin(PlayerJoin {
                 player: player(),
                 name: "Notch".to_owned(),
+                attempt: 12,
             }),
             EdgeToWorker::Subscribe {
                 ask: 1,
@@ -331,10 +337,18 @@ mod tests {
             EdgeToWorker::PlayerLeave {
                 player: player(),
                 entity: Some(EntityId(5)),
+                attempt: None,
             },
             EdgeToWorker::PlayerLeave {
                 player: player(),
                 entity: None,
+                attempt: Some(12),
+            },
+            EdgeToWorker::Input {
+                player: player(),
+                entity: EntityId(5),
+                number: 3,
+                input: PlayerInput::SetFlying { flying: true },
             },
             EdgeToWorker::PlayerArrive {
                 player: player(),
@@ -367,8 +381,15 @@ mod tests {
             WorkerToEdge::ToPlayer {
                 player: player(),
                 event: PlayerEvent::Spawned {
+                    attempt: 12,
                     entity_id: EntityId(5),
-                    position: Vec3::new(0.5, -60.0, 0.5),
+                    pose: Pose {
+                        position: Vec3::new(0.5, -60.0, 0.5),
+                        yaw: 90.0,
+                        pitch: -30.0,
+                        on_ground: true,
+                    },
+                    flying: true,
                     hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
                     selected_slot: 3,
                 },
@@ -388,6 +409,7 @@ mod tests {
             WorkerToEdge::Remote(remote()),
             WorkerToEdge::RemoteDone {
                 player: player(),
+                entity: EntityId(5),
                 sequence: -4,
             },
             WorkerToEdge::ChunkSnapshot {
@@ -433,7 +455,10 @@ mod tests {
             },
             WorkerToEdge::Outbox {
                 number: 43,
-                entry: Durable::Refused { player: player() },
+                entry: Durable::Refused {
+                    player: player(),
+                    attempt: 12,
+                },
             },
             WorkerToEdge::Outbox {
                 number: 44,
@@ -470,7 +495,34 @@ mod tests {
                 number: 45,
                 entry: Durable::RemoteDone {
                     player: player(),
+                    entity: EntityId(5),
                     sequence: 9,
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 49,
+                entry: Durable::SplitOff {
+                    region: RegionId(2),
+                    players: vec![
+                        (player(), EntityId(5), Some(12)),
+                        (PlayerId(Uuid::from_u128(8)), EntityId(6), None),
+                    ],
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 50,
+                entry: Durable::Ended {
+                    player: player(),
+                    entity: EntityId(5),
+                    attempt: Some(12),
+                },
+            },
+            WorkerToEdge::Outbox {
+                number: 51,
+                entry: Durable::Ended {
+                    player: player(),
+                    entity: EntityId(5),
+                    attempt: None,
                 },
             },
             WorkerToEdge::Presence {
@@ -482,7 +534,26 @@ mod tests {
                     selected_slot: 2,
                     last_input: 77,
                     handled: Some(12),
+                    flying: true,
+                    attempt: Some(12),
                 },
+            },
+            WorkerToEdge::Presence {
+                player: player(),
+                answer: Presence::Present {
+                    entity: EntityId(5),
+                    pose: Pose::at(Vec3::new(1.5, -60.0, 2.5)),
+                    hotbar: [None; HOTBAR_SLOTS],
+                    selected_slot: 0,
+                    last_input: 0,
+                    handled: None,
+                    flying: false,
+                    attempt: None,
+                },
+            },
+            WorkerToEdge::Presence {
+                player: player(),
+                answer: Presence::Entering { attempt: 12 },
             },
             WorkerToEdge::Presence {
                 player: player(),

@@ -150,6 +150,8 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -1276,6 +1278,7 @@ fn presences(log: &[WorkerToEdge]) -> Vec<(PlayerId, Option<EntityId>)> {
                 match answer {
                     Presence::Present { entity, .. } => Some(*entity),
                     Presence::Absent => None,
+                    Presence::Entering { .. } => panic!("no region says {answer:?} yet"),
                 },
             )),
             _ => None,
@@ -1307,11 +1310,22 @@ fn block_of(runner: &RegionRunner, block: BlockPos) -> Option<BlockState> {
         .map(|chunk| block_in(chunk, block))
 }
 
+/// The attempt that a join of `id` names.
+fn attempt(id: PlayerId) -> u64 {
+    7000 + id.0.as_u128() as u64
+}
+
 fn join(id: PlayerId) -> EdgeToWorker {
     EdgeToWorker::PlayerJoin(PlayerJoin {
         player: id,
         name: format!("player-{}", id.0.as_u128()),
+        attempt: attempt(id),
     })
+}
+
+/// The entity that `id` has in another region, as the remote actions here name it.
+fn elsewhere(id: PlayerId) -> EntityId {
+    EntityId(9000 + id.0.as_u128() as i32)
 }
 
 fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> EdgeToWorker {
@@ -1324,7 +1338,11 @@ fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> Edg
 }
 
 fn leave(id: PlayerId, entity: Option<EntityId>) -> EdgeToWorker {
-    EdgeToWorker::PlayerLeave { player: id, entity }
+    EdgeToWorker::PlayerLeave {
+        player: id,
+        entity,
+        attempt: None,
+    }
 }
 
 /// A step along the line the tests walk on.
@@ -1340,9 +1358,11 @@ fn dig(position: BlockPos, sequence: i32) -> PlayerInput {
     PlayerInput::Dig { position, sequence }
 }
 
-fn breaking(id: PlayerId, sequence: i32, position: BlockPos) -> RemoteAction {
+/// What is left of `id` breaking the block at `position` in the stay `entity`.
+fn breaking(id: PlayerId, entity: EntityId, sequence: i32, position: BlockPos) -> RemoteAction {
     RemoteAction {
         player: id,
+        entity,
         sequence,
         step: RemoteStep::Break { position },
     }
@@ -1365,6 +1385,9 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         hotbar: hotbar(),
         selected_slot: 0,
         last_input: 0,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -1763,7 +1786,7 @@ fn a_dig_into_the_other_stripe_behind_a_subscribe_for_it_is_judged_in_the_tick_t
         matches!(
             entries.as_slice(),
             [(at, 1, Durable::Remote { action, to: None })]
-                if *action == breaking(player(1), 1, BEYOND) && *at < told
+                if *action == breaking(player(1), entity, 1, BEYOND) && *at < told
         ),
         "{}",
         brief(log)
@@ -1840,7 +1863,7 @@ fn a_dig_into_a_chunk_its_link_has_no_subscription_to_is_judged_at_once_in(mut w
         matches!(
             entries.as_slice(),
             [(_, 1, Durable::Remote { action, to: None })]
-                if *action == breaking(player(1), 1, BACK_BLOCK)
+                if *action == breaking(player(1), entity, 1, BACK_BLOCK)
         ),
         "{}",
         brief(log)
@@ -2032,7 +2055,12 @@ fn a_remote_action_behind_a_guests_subscription_for_its_chunk_waits_for_the_snap
 
     // Breaking, behind a guest's asking.
     let ask = e.subscribe_as_guest(vec![BACK]);
-    let broken = e.next(EdgeToWorker::Remote(breaking(player(9), 4, BACK_BLOCK)));
+    let broken = e.next(EdgeToWorker::Remote(breaking(
+        player(9),
+        elsewhere(player(9)),
+        4,
+        BACK_BLOCK,
+    )));
     let after = e.next(nothing());
     wait_applied(&mut runner, &mut [&mut e], 0, after);
     let log = &e.log;
@@ -2046,7 +2074,7 @@ fn a_remote_action_behind_a_guests_subscription_for_its_chunk_waits_for_the_snap
     assert!(
         matches!(
             entries.as_slice(),
-            [(at, 1, Durable::RemoteDone { player: who, sequence: 4 })]
+            [(at, 1, Durable::RemoteDone { player: who, sequence: 4, .. })]
                 if *who == player(9) && *at > shot
         ),
         "{}",
@@ -2059,6 +2087,7 @@ fn a_remote_action_behind_a_guests_subscription_for_its_chunk_waits_for_the_snap
     let ask = e.subscribe(vec![SECOND]);
     let placed = e.next(EdgeToWorker::Remote(RemoteAction {
         player: player(9),
+        entity: elsewhere(player(9)),
         sequence: 5,
         step: RemoteStep::Place {
             target,
@@ -2099,7 +2128,12 @@ fn an_action_behind_a_subscription_for_a_chunk_that_is_loaded_is_judged_in_the_t
 
     let before = runner.region().tick_number();
     let ask = f.subscribe_as_guest(vec![BACK]);
-    let broken = f.next(EdgeToWorker::Remote(breaking(player(9), 1, BACK_BLOCK)));
+    let broken = f.next(EdgeToWorker::Remote(breaking(
+        player(9),
+        elsewhere(player(9)),
+        1,
+        BACK_BLOCK,
+    )));
     wait_applied(&mut runner, &mut [&mut f, &mut e], 0, broken);
     settle(&mut runner, &mut [&mut e, &mut f]);
 
@@ -2156,7 +2190,7 @@ fn with_the_gap_a_dig_behind_a_subscribe_for_a_chunk_outside_the_pinned_areas_is
         matches!(
             entries.as_slice(),
             [(at, 1, Durable::Remote { action, to: None })]
-                if *action == breaking(player(1), 1, BEYOND) && *at < shot
+                if *action == breaking(player(1), entity, 1, BEYOND) && *at < shot
         ),
         "{}",
         brief(log)
@@ -2182,7 +2216,7 @@ fn with_the_gap_a_dig_behind_a_subscribe_for_a_chunk_outside_the_pinned_areas_is
         matches!(
             entries.as_slice(),
             [_, (at, 2, Durable::Remote { action, to: None })]
-                if *action == breaking(player(1), 2, block) && *at < told
+                if *action == breaking(player(1), entity, 2, block) && *at < told
         ),
         "{}",
         brief(log)
@@ -2218,7 +2252,7 @@ fn a_dig_behind_a_second_subscribe_for_a_chunk_that_was_told_elsewhere_is_not_he
         matches!(
             entries.as_slice(),
             [(at, 1, Durable::Remote { action, .. })]
-                if *action == breaking(player(1), 1, BEYOND) && *at < told
+                if *action == breaking(player(1), entity, 1, BEYOND) && *at < told
         ),
         "{}",
         brief(log)
@@ -2636,7 +2670,7 @@ fn pair_with(mut world: World, tweak: Tweak) -> Pair {
         matches!(
             outbox(&to_b.log).as_slice(),
             [(_, 1, Durable::Remote { action, to: Some(A) })]
-                if *action == breaking(player(2), 1, BEHIND)
+                if *action == breaking(player(2), two, 1, BEHIND)
         ),
         "{}",
         brief(&to_b.log)
@@ -2838,7 +2872,7 @@ fn a_merge_closes_the_survivors_link_and_the_next_hello_is_told_of_it_and_of_who
             (
                 3,
                 Durable::Remote {
-                    action: breaking(player(2), 1, BEHIND),
+                    action: breaking(player(2), pair.two, 1, BEHIND),
                     to: Some(A),
                 }
             ),
@@ -2858,6 +2892,8 @@ fn a_merge_closes_the_survivors_link_and_the_next_hello_is_told_of_it_and_of_who
             selected_slot: theirs.selected_slot,
             last_input: 3,
             handled: theirs.handled,
+            flying: false,
+            attempt: None,
         })
     );
     // The chunk that was told elsewhere is the region's own now, with the player in it.
@@ -3547,7 +3583,7 @@ fn an_edge_that_only_one_of_the_two_regions_knew_is_told_of_the_merge_and_of_its
                 ] if *since == g_since
                     && *applied == g_sent
                     && *numbers == [1]
-                    && *action == breaking(player(3), 7, BEHIND)
+                    && *action == breaking(player(3), STRANGER, 7, BEHIND)
             ),
             "{}",
             brief(log)
@@ -4189,7 +4225,7 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
         edge.sent,
         Durable::SplitOff {
             region: n,
-            players: vec![(player(2), whole.two)],
+            players: vec![(player(2), whole.two, None)],
         },
     );
     assert_eq!(edge.sent, 2);
@@ -4212,6 +4248,7 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
                 outbox: BTreeMap::new(),
             },
         )]),
+        entering: BTreeMap::new(),
     };
     assert_eq!(part.region.state(), goes);
 
@@ -4264,7 +4301,7 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
             2,
             Durable::SplitOff {
                 region: n,
-                players: vec![(player(2), whole.two)],
+                players: vec![(player(2), whole.two, None)],
             }
         )]
     );
@@ -4438,7 +4475,8 @@ fn a_runner_made_of_the_part_says_whom_it_has_and_serves_the_parts_chunks_in(wor
     assert!(
         matches!(
             outbox(&second.log).as_slice(),
-            [(_, 1, Durable::Refused { player: refused })] if *refused == player(7)
+            [(_, 1, Durable::Refused { player: refused, attempt: named })]
+                if *refused == player(7) && *named == attempt(player(7))
         ),
         "{}",
         brief(&second.log)
@@ -4593,7 +4631,7 @@ fn a_split_that_names_a_wrong_id_is_made_with_the_one_the_store_has_next_in(worl
         state.edges[&E].outbox.values().last(),
         Some(&Durable::SplitOff {
             region: RegionId(2),
-            players: vec![(player(2), whole.two)],
+            players: vec![(player(2), whole.two, None)],
         })
     );
     assert_eq!(state.edges[&E].sent, 2);
@@ -4741,7 +4779,7 @@ fn after_a_split_what_is_sent_to_the_split_region_about_the_part_goes_on_to_the_
             [
                 (_, 1, Durable::SplitOff { .. }),
                 (at, 2, Durable::Remote { action, to }),
-            ] if *action == breaking(player(1), 1, SECOND_BLOCK) && *to == Some(n) && *at > told
+            ] if *action == breaking(player(1), whole.one, 1, SECOND_BLOCK) && *to == Some(n) && *at > told
         ),
         "{}",
         brief(log)
@@ -4771,7 +4809,12 @@ fn after_a_split_what_is_sent_to_the_split_region_about_the_part_goes_on_to_the_
 
     // A remote action about such a chunk goes on, without a region or to the new one.
     let block = SECOND_BLOCK.offset(0, 0, 1);
-    let remote = again.next(EdgeToWorker::Remote(breaking(player(9), 5, block)));
+    let remote = again.next(EdgeToWorker::Remote(breaking(
+        player(9),
+        elsewhere(player(9)),
+        5,
+        block,
+    )));
     wait_applied(&mut whole.a, &mut [&mut again], 0, remote);
     sync(&mut whole.a, &mut [&mut again], 0);
     let entries = outbox(&again.log);
@@ -4779,11 +4822,12 @@ fn after_a_split_what_is_sent_to_the_split_region_about_the_part_goes_on_to_the_
     assert!(
         match last {
             Durable::Remote { action, to } =>
-                *action == breaking(player(9), 5, block) && (to.is_none() || *to == Some(n)),
+                *action == breaking(player(9), elsewhere(player(9)), 5, block)
+                    && (to.is_none() || *to == Some(n)),
             Durable::NotMine {
                 what: Misdirected::Remote(action),
                 holder,
-            } => *action == breaking(player(9), 5, block) && *holder == n,
+            } => *action == breaking(player(9), elsewhere(player(9)), 5, block) && *holder == n,
             _ => false,
         },
         "{}",
@@ -4837,7 +4881,7 @@ fn a_dig_held_for_a_chunk_of_the_part_is_judged_when_its_asking_is_told_elsewher
         let Some((at, _, Durable::Remote { action, to })) = entries.last() else {
             panic!("the dig was not passed on: {}", brief(log));
         };
-        assert_eq!(*action, breaking(player(1), 1, SECOND_BLOCK));
+        assert_eq!(*action, breaking(player(1), whole.one, 1, SECOND_BLOCK));
         assert!(
             *at > told,
             "the dig was judged before the asking was answered: {}",
@@ -4904,7 +4948,7 @@ fn with_the_gap_what_reaches_the_split_region_for_a_chunk_of_the_part_is_sent_on
         matches!(
             entries(&again.log).as_slice(),
             [(1, Durable::SplitOff { region, players })]
-                if *region == n && *players == [(player(2), whole.two)]
+                if *region == n && *players == [(player(2), whole.two, None)]
         ),
         "{}",
         brief(&again.log)
@@ -4914,7 +4958,12 @@ fn with_the_gap_what_reaches_the_split_region_for_a_chunk_of_the_part_is_sent_on
     let stray = transfer(STRANGER, 40.5);
     let block = BlockPos::new(33, GROUND, 8);
     again.next(arrive(player(7), &stray));
-    let remote = again.next(EdgeToWorker::Remote(breaking(player(9), 5, block)));
+    let remote = again.next(EdgeToWorker::Remote(breaking(
+        player(9),
+        elsewhere(player(9)),
+        5,
+        block,
+    )));
     wait_applied(&mut whole.a, &mut [&mut again], 0, remote);
     sync(&mut whole.a, &mut [&mut again], 0);
     let entries = outbox(&again.log);
@@ -4941,7 +4990,7 @@ fn with_the_gap_what_reaches_the_split_region_for_a_chunk_of_the_part_is_sent_on
             ] if *who == player(7)
                 && *transfer == stray
                 && *first == n
-                && *action == breaking(player(9), 5, block)
+                && *action == breaking(player(9), elsewhere(player(9)), 5, block)
                 && *second == n
         ),
         "{}",
@@ -5019,7 +5068,7 @@ fn a_player_who_went_with_the_part_and_walks_back_is_the_split_regions_again_in(
         matches!(
             entries(&last.log).as_slice(),
             [(1, Durable::SplitOff { region, players })]
-                if *region == n && *players == [(player(2), whole.two)]
+                if *region == n && *players == [(player(2), whole.two, None)]
         ),
         "{}",
         brief(&last.log)
@@ -5119,7 +5168,7 @@ fn a_region_that_was_split_off_is_split_itself_and_the_second_part_serves_its_ch
             1,
             Durable::SplitOff {
                 region,
-                players: vec![(player(3), three)],
+                players: vec![(player(3), three, None)],
             }
         )]
     );
@@ -5208,7 +5257,7 @@ fn a_region_that_merges_and_then_splits_says_at_every_hello_the_stays_its_state_
             4,
             Durable::SplitOff {
                 region: n,
-                players: vec![(player(2), whole.two)],
+                players: vec![(player(2), whole.two, None)],
             }
         )]
     );
@@ -5292,7 +5341,7 @@ fn a_region_that_splits_and_absorbs_the_part_again_says_at_every_hello_the_stays
                 2,
                 Durable::SplitOff {
                     region: n,
-                    players: vec![(player(2), whole.two)],
+                    players: vec![(player(2), whole.two, None)],
                 }
             ),
             (
@@ -5542,7 +5591,7 @@ fn a_merge_behind_a_merge_is_told_as_an_entry_among_the_entries_of_the_first_in(
             (
                 2,
                 Durable::Remote {
-                    action: breaking(player(3), 1, eastern),
+                    action: breaking(player(3), EASTERNER, 1, eastern),
                     to: None,
                 }
             ),
@@ -5558,7 +5607,7 @@ fn a_merge_behind_a_merge_is_told_as_an_entry_among_the_entries_of_the_first_in(
             (
                 4,
                 Durable::Remote {
-                    action: breaking(player(2), 1, western),
+                    action: breaking(player(2), WESTERNER, 1, western),
                     to: None,
                 }
             ),
@@ -6259,7 +6308,7 @@ impl Edge {
                 players,
             } => {
                 let part = self.living(part);
-                for (player, entity) in players {
+                for (player, entity, _) in players {
                     let coming_back = self.port(region).kept.iter().any(|(_, body)| {
                         matches!(body, EdgeToWorker::PlayerArrive { player: who, .. } if *who == player)
                     });
@@ -6310,6 +6359,9 @@ impl Edge {
                     self.look(region, view);
                 }
             }
+            // No runner says it yet. An edge that hears it of a player who is entering
+            // goes on waiting, and does nothing otherwise (ADR-0020, section 4.2).
+            Presence::Entering { .. } => {}
             Presence::Absent => {
                 let here = self
                     .players
@@ -7519,7 +7571,7 @@ fn a_hello_that_has_seen_the_entry_of_the_merge_is_sent_the_entries_behind_it_al
         vec![(
             3,
             Durable::Remote {
-                action: breaking(player(2), 1, BEHIND),
+                action: breaking(player(2), pair.two, 1, BEHIND),
                 to: Some(A),
             }
         )]
@@ -7829,7 +7881,7 @@ fn a_split_is_told_to_each_edge_that_has_a_player_in_the_part_and_to_no_other_in
             1,
             Durable::SplitOff {
                 region: n,
-                players: vec![(player(5), five)],
+                players: vec![(player(5), five, None)],
             }
         )]
     );
@@ -7844,7 +7896,7 @@ fn a_split_is_told_to_each_edge_that_has_a_player_in_the_part_and_to_no_other_in
             2,
             Durable::SplitOff {
                 region: n,
-                players: vec![(player(2), whole.two)],
+                players: vec![(player(2), whole.two, None)],
             }
         )]
     );

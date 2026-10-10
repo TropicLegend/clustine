@@ -15,7 +15,7 @@ use std::time::Duration;
 use clustine_data::{BlockState, blocks};
 use clustine_format::{RegionFile, TableFile, TableRegion};
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList, SplitPart, TickState};
-use clustine_world::{Chunk, ChunkArea, ChunkPos, EntityIds};
+use clustine_world::{Chunk, ChunkArea, ChunkPos, EntityId, EntityIds};
 use tracing::Level;
 
 use super::*;
@@ -933,6 +933,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             deltas: deltas(&[6]),
             held: vec![(MERGED, 5)],
             pinned: vec![west],
+            issued: EntityId(0),
         },
         Restored {
             entity_ids: before.files[1].entity_ids,
@@ -940,6 +941,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             deltas: deltas(&[2]),
             held: Vec::new(),
             pinned: vec![east],
+            issued: EntityId(0),
         },
         Restored {
             entity_ids: NO_ENTITY_IDS,
@@ -947,6 +949,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             deltas: deltas(&[3, 4]),
             held: vec![(PART[0], 2), (PART[1], 2)],
             pinned: Vec::new(),
+            issued: EntityId(0),
         },
     ];
     let mut handles = Vec::new();

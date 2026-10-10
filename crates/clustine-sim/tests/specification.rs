@@ -58,6 +58,8 @@ fn config_a() -> RegionConfig {
         spawn: Vec3::new(14.5, 64.0, 8.5),
         starting_hotbar: hotbar(),
         return_after: 0,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -79,6 +81,8 @@ fn config_b() -> RegionConfig {
         spawn: Vec3::new(24.5, 64.0, 8.5),
         starting_hotbar: hotbar(),
         return_after: 0,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -281,12 +285,18 @@ fn started(edge: EdgeId, start: u64) -> EdgeEvent {
     EdgeEvent::Started { edge, start }
 }
 
+/// The attempt that a join of `id` names.
+fn attempt(id: PlayerId) -> u64 {
+    7000 + id.0.as_u128() as u64
+}
+
 fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
             player: id,
             name: format!("player-{}", id.0.as_u128()),
+            attempt: attempt(id),
         },
     )
 }
@@ -369,10 +379,16 @@ fn outbox_numbers(region: &Region, edge: EdgeId) -> Vec<u64> {
         .collect()
 }
 
+/// The entity that `id` has in another region, as the remote actions here name it.
+fn elsewhere(id: PlayerId) -> EntityId {
+    EntityId(9000 + id.0.as_u128() as i32)
+}
+
 /// A remote action of a player of another region.
 fn remote_break(id: PlayerId, sequence: i32, position: BlockPos) -> RemoteAction {
     RemoteAction {
         player: id,
+        entity: elsewhere(id),
         sequence,
         step: RemoteStep::Break { position },
     }
@@ -793,7 +809,7 @@ fn a_leave_through_the_players_edge_removes_them() {
     let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &changes(vec![PlayerChange::Leave(E, player(1), None)]),
+        &changes(vec![PlayerChange::Leave(E, player(1), None, None)]),
     );
     assert_eq!(removed(&output), vec![entity]);
     assert!(region.player(player(1)).is_none());
@@ -806,7 +822,7 @@ fn a_leave_through_another_edge_does_not_end_the_current_connection() {
     let mut before = region.state();
     let output = checked_tick(
         &mut region,
-        &changes(vec![PlayerChange::Leave(F, player(1), None)]),
+        &changes(vec![PlayerChange::Leave(F, player(1), None, None)]),
     );
     assert!(output.events.is_empty());
     before.tick += 1;
@@ -821,7 +837,7 @@ fn a_leave_in_the_tick_of_the_join_removes_the_player() {
         &mut region,
         &changes(vec![
             join(E, player(1)),
-            PlayerChange::Leave(E, player(1), None),
+            PlayerChange::Leave(E, player(1), None, None),
         ]),
     );
     assert!(region.player(player(1)).is_none());
@@ -842,7 +858,7 @@ fn a_leave_of_a_player_the_edge_was_never_told_had_spawned_removes_them() {
     let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &changes(vec![PlayerChange::Leave(E, player(1), None)]),
+        &changes(vec![PlayerChange::Leave(E, player(1), None, None)]),
     );
     assert_eq!(removed(&output), vec![entity]);
     assert!(region.player(player(1)).is_none());
@@ -857,7 +873,7 @@ fn a_leave_of_the_earlier_connection_after_a_rejoin_in_the_same_tick_is_ignored(
         &mut region,
         &changes(vec![
             join(F, player(1)),
-            PlayerChange::Leave(E, player(1), None),
+            PlayerChange::Leave(E, player(1), None, None),
         ]),
     );
     assert!(
@@ -876,7 +892,7 @@ fn a_leave_and_a_rejoin_through_the_same_edge_in_one_tick_enter_the_player_anew(
     let output = checked_tick(
         &mut region,
         &changes(vec![
-            PlayerChange::Leave(E, player(1), None),
+            PlayerChange::Leave(E, player(1), None, None),
             join(E, player(1)),
         ]),
     );
@@ -898,6 +914,9 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         hotbar: hotbar(),
         selected_slot: 0,
         last_input,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -1015,7 +1034,14 @@ fn refused_goes_to_the_outbox_of_the_players_edge() {
     );
     assert_eq!(
         output.durable,
-        vec![(F, 1, Durable::Refused { player: player(2) })]
+        vec![(
+            F,
+            1,
+            Durable::Refused {
+                player: player(2),
+                attempt: attempt(player(2)),
+            }
+        )]
     );
     assert!(region.player(player(2)).is_none());
     assert_eq!(region.state().next_entity_id, EntityId(501));
@@ -1038,6 +1064,7 @@ fn a_players_own_remote_action_goes_to_the_outbox_of_their_edge() {
             Durable::Remote {
                 action: RemoteAction {
                     player: player(1),
+                    entity: entity(1),
                     sequence: 9,
                     step: RemoteStep::Break {
                         position: BORDER_BLOCK_B
@@ -1069,6 +1096,7 @@ fn remote_done_goes_to_the_edge_the_action_came_from() {
             1,
             Durable::RemoteDone {
                 player: player(1),
+                entity: elsewhere(player(1)),
                 sequence: 6
             }
         )]
@@ -1092,6 +1120,7 @@ fn a_remote_that_continues_a_remote_action_goes_to_the_edge_it_came_from() {
                 F,
                 RemoteAction {
                     player: player(1),
+                    entity: elsewhere(player(1)),
                     sequence: 3,
                     step: RemoteStep::PlaceAgainst {
                         against: BORDER_BLOCK_B,
@@ -1442,13 +1471,13 @@ fn refusals_go_in_the_order_of_the_joins_and_use_no_entity_id() {
             join(F, player(4)),
         ]),
     );
+    let refused = |number| Durable::Refused {
+        player: player(number),
+        attempt: attempt(player(number)),
+    };
     assert_eq!(
         output.durable,
-        vec![
-            (F, 1, Durable::Refused { player: player(3) }),
-            (E, 1, Durable::Refused { player: player(2) }),
-            (F, 2, Durable::Refused { player: player(4) }),
-        ]
+        vec![(F, 1, refused(3)), (E, 1, refused(2)), (F, 2, refused(4)),]
     );
     assert_eq!(region.state().next_entity_id, EntityId(501));
 }
@@ -1471,6 +1500,7 @@ fn a_remote_action_on_a_chunk_that_is_not_loaded_is_still_answered() {
             1,
             Durable::RemoteDone {
                 player: player(1),
+                entity: elsewhere(player(1)),
                 sequence: 6
             }
         )]
@@ -1705,7 +1735,7 @@ fn scenario() -> Vec<TickInputs> {
     script.push(edges(vec![EdgeEvent::Confirmed { edge: F, number: 1 }]));
     script.push(changes(vec![
         join(F, player(1)),
-        PlayerChange::Leave(E, player(1), None),
+        PlayerChange::Leave(E, player(1), None, None),
     ]));
     let mut inputs = TickInputs::default();
     // P1 was the fourth to enter the region when they joined through F.

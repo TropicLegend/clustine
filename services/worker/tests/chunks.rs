@@ -119,6 +119,8 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -1183,10 +1185,16 @@ fn block_in(chunk: &Chunk, block: BlockPos) -> BlockState {
     chunk.get(x, block.y, z).expect("the block is in the chunk")
 }
 
+/// The attempt that a join of `id` names.
+fn attempt(id: PlayerId) -> u64 {
+    7000 + id.0.as_u128() as u64
+}
+
 fn join(id: PlayerId) -> EdgeToWorker {
     EdgeToWorker::PlayerJoin(PlayerJoin {
         player: id,
         name: format!("player-{}", id.0.as_u128()),
+        attempt: attempt(id),
     })
 }
 
@@ -1230,6 +1238,9 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         hotbar: hotbar(),
         selected_slot: 0,
         last_input: 0,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -2449,9 +2460,11 @@ fn an_arrival_for_a_chunk_of_the_other_stripe_that_nothing_asked_about_is_taken_
     assert!(runner.region().player(player(7)).is_none());
 }
 
-fn breaking(id: PlayerId, sequence: i32, position: BlockPos) -> RemoteAction {
+/// What is left of `id` breaking the block at `position` in the stay `entity`.
+fn breaking(id: PlayerId, entity: EntityId, sequence: i32, position: BlockPos) -> RemoteAction {
     RemoteAction {
         player: id,
+        entity,
         sequence,
         step: RemoteStep::Break { position },
     }
@@ -2483,7 +2496,7 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
         matches!(
             entries.as_slice(),
             [(at, 1, Durable::Remote { action, to: None })]
-                if *action == breaking(player(1), 1, BEYOND) && *at < told
+                if *action == breaking(player(1), nth_entity(&runner, 1), 1, BEYOND) && *at < told
         ),
         "{}",
         brief(&e.log)
@@ -2514,7 +2527,7 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
         matches!(
             entries.as_slice(),
             [_, (at, 2, Durable::Remote { action, to: Some(NEIGHBOUR) })]
-                if *action == breaking(player(1), 2, further) && *at < told
+                if *action == breaking(player(1), nth_entity(&runner, 1), 2, further) && *at < told
         ),
         "{}",
         brief(&e.log)

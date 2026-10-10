@@ -45,6 +45,8 @@ fn config() -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar,
         return_after: 0,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -69,12 +71,18 @@ fn started(edge: EdgeId, start: u64) -> EdgeEvent {
     EdgeEvent::Started { edge, start }
 }
 
+/// The attempt that the join of the player with this number names.
+fn attempt(number: u128) -> u64 {
+    7000 + number as u64
+}
+
 fn join(edge: EdgeId, number: u128) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
             player: player(number),
             name: format!("Player{number}"),
+            attempt: attempt(number),
         },
     )
 }
@@ -485,7 +493,7 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
     let output = tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(B, player(1), None)],
+            player_changes: vec![PlayerChange::Leave(B, player(1), None, None)],
             inputs: vec![(B, player(1), EntityId(1), 1, walk(5.5))],
             ..TickInputs::default()
         },
@@ -496,7 +504,7 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
     let output = tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(A, player(1), None)],
+            player_changes: vec![PlayerChange::Leave(A, player(1), None, None)],
             ..TickInputs::default()
         },
     );
@@ -516,11 +524,11 @@ fn a_leave_keeps_what_waits_for_the_tick_and_a_join_drops_it() {
     ];
     let mut inputs = TickInputs::default();
     inputs.input(A, player(1), EntityId(1), 1, walk(3.5));
-    inputs.change(PlayerChange::Leave(B, player(1), None));
+    inputs.change(PlayerChange::Leave(B, player(1), None, None));
     inputs.input(B, player(1), EntityId(1), 2, walk(4.5));
-    inputs.change(PlayerChange::Leave(B, player(1), None));
-    inputs.change(PlayerChange::Leave(A, player(1), Some(EntityId(9))));
-    inputs.change(PlayerChange::Leave(A, player(1), None));
+    inputs.change(PlayerChange::Leave(B, player(1), None, None));
+    inputs.change(PlayerChange::Leave(A, player(1), Some(EntityId(9)), None));
+    inputs.change(PlayerChange::Leave(A, player(1), None, None));
     assert_eq!(inputs.inputs, waiting);
     assert_eq!(inputs.player_changes.len(), 4);
 
@@ -568,7 +576,7 @@ fn a_join_through_another_edge_replaces_the_player() {
     tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(A, player(1), None)],
+            player_changes: vec![PlayerChange::Leave(A, player(1), None, None)],
             ..TickInputs::default()
         },
     );
@@ -613,6 +621,7 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
                     A,
                     RemoteAction {
                         player: player(8),
+                        entity: EntityId(8008),
                         sequence: 5,
                         step: RemoteStep::Break {
                             position: BlockPos::new(-3, -61, 0),
@@ -623,6 +632,7 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
                     C,
                     RemoteAction {
                         player: player(9),
+                        entity: EntityId(9009),
                         sequence: 6,
                         step: RemoteStep::PlaceAgainst {
                             against,
@@ -642,6 +652,7 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
     );
     let next = RemoteAction {
         player: player(9),
+        entity: EntityId(9009),
         sequence: 6,
         step: RemoteStep::Place {
             target: Face::East.neighbour(against),
@@ -651,6 +662,7 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
     };
     let request = RemoteAction {
         player: player(2),
+        entity: EntityId(2),
         sequence: 2,
         step: RemoteStep::Break {
             position: BlockPos::new(17, -61, 0),
@@ -662,12 +674,20 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
     assert_eq!(
         output.durable,
         [
-            (B, 2, Durable::Refused { player: player(3) }),
+            (
+                B,
+                2,
+                Durable::Refused {
+                    player: player(3),
+                    attempt: attempt(3),
+                },
+            ),
             (
                 A,
                 1,
                 Durable::RemoteDone {
                     player: player(8),
+                    entity: EntityId(8008),
                     sequence: 5,
                 },
             ),
@@ -744,6 +764,9 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
         hotbar: [None; HOTBAR_SLOTS],
         selected_slot: 0,
         last_input: 0,
+        hops: 0,
+        flying: false,
+        attempt: None,
     };
     let before = region.state();
     let output = tick(
@@ -754,6 +777,7 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
                 C,
                 RemoteAction {
                     player: player(9),
+                    entity: EntityId(9009),
                     sequence: 1,
                     step: RemoteStep::Break {
                         position: BlockPos::new(3, -61, 0),
@@ -918,6 +942,8 @@ impl Scenario {
                     PlayerJoin {
                         player: id,
                         name: format!("{id:?}"),
+                        // No two joins of a run are of one tick and one player.
+                        attempt: state.tick * 100 + u64::from(id.0.as_u128() as u8),
                     },
                 ),
                 4..=6 => {
@@ -927,7 +953,7 @@ impl Scenario {
                         .get(&id)
                         .filter(|_| !random.once_in(4))
                         .map_or(edge, |player| player.edge);
-                    PlayerChange::Leave(edge, id, None)
+                    PlayerChange::Leave(edge, id, None, None)
                 }
                 7 | 8 if !self.departed.is_empty() => {
                     let index = random.below(self.departed.len() as u64) as usize;
@@ -965,6 +991,8 @@ impl Scenario {
             };
             let action = RemoteAction {
                 player: random.pick(&players),
+                // Of a stay in another region, which this one knows nothing of.
+                entity: EntityId(4040),
                 sequence: random.below(100) as i32,
                 step,
             };
@@ -1091,7 +1119,7 @@ impl Seen {
                     what: Misdirected::Remote(_),
                     ..
                 } => self.not_mine += 1,
-                Durable::Absorbed { .. } | Durable::SplitOff { .. } => {
+                Durable::Absorbed { .. } | Durable::SplitOff { .. } | Durable::Ended { .. } => {
                     panic!("a region made {entry:?}, which none does yet")
                 }
             }

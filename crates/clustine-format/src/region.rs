@@ -46,17 +46,38 @@
 //! An area is a u8 of flags (bit 0: it has a western end, bit 1: an eastern end) followed
 //! by i32 `min_x` and i32 `max_x`, each 0 if absent.
 //!
-//! All integers are big-endian. All three are written whole under a temporary name and
+//! The players' file is to the records of the players what the table file is to the list
+//! of regions: all of them as of a place in the log. See
+//! `docs/adr/0020-one-stay-per-player.md`, sections 2 and 8.
+//!
+//! | Field | Type |
+//! |---|---|
+//! | Format version | u8 |
+//! | Kind | u8, 4 for the players' file |
+//! | `from`: the first log segment whose stay notes are not in this file | u64 |
+//! | `issued`: the highest entity id a stay was ever given | i32 |
+//! | Records, ascending by player: count, then per record | u32 |
+//! | … player, stay, hops | u128, i32, u32 |
+//! | … has a place | u8 0 or 1 |
+//! | … the place, if it has one, as in a stay note of the log | |
+//! | CRC-32 of everything before | u32 |
+//!
+//! All integers are big-endian. All four are written whole under a temporary name and
 //! renamed, so a reader never sees half of one; the checksum is for damage.
 
 use clustine_world::{ChunkArea, ChunkPos, EntityId, EntityIds};
 
 use crate::bytes::Input;
+use crate::log::{LoggedPlace, put_place, take_place};
 use crate::{FORMAT_VERSION, FormatError};
 
 const KIND_REGION: u8 = 1;
 const KIND_STATE: u8 = 2;
 const KIND_TABLE: u8 = 3;
+const KIND_PLAYERS: u8 = 4;
+
+/// Bytes a player's record takes in a players' file at the least.
+const RECORD_LENGTH: usize = 25;
 
 /// Bytes an area takes in a table file.
 const AREA_LENGTH: usize = 9;
@@ -240,6 +261,88 @@ impl TableFile {
             division,
             regions,
             absorbed,
+        })
+    }
+}
+
+/// What the world store keeps of every player who ever joined, as of a place in the
+/// log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayersFile {
+    /// The first segment of the log whose stay notes are not in this file.
+    pub from: u64,
+    /// The highest entity id a stay was ever given; 0 if none was.
+    pub issued: i32,
+    /// The records, in ascending order of their players.
+    pub records: Vec<PlayerRecord>,
+}
+
+/// What the world store keeps of one player.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerRecord {
+    pub player: u128,
+    /// The entity of the latest stay the store was told the player was given.
+    pub stay: i32,
+    /// The highest number of hand-overs the store was told of that stay.
+    pub hops: u32,
+    /// Where the player was last, if a region has said.
+    pub place: Option<LoggedPlace>,
+}
+
+impl PlayersFile {
+    /// The file. The records are written in the order they are given in, which has to
+    /// be ascending for the file to be read again.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = vec![FORMAT_VERSION, KIND_PLAYERS];
+        out.extend_from_slice(&self.from.to_be_bytes());
+        out.extend_from_slice(&self.issued.to_be_bytes());
+        out.extend_from_slice(&(self.records.len() as u32).to_be_bytes());
+        for record in &self.records {
+            out.extend_from_slice(&record.player.to_be_bytes());
+            out.extend_from_slice(&record.stay.to_be_bytes());
+            out.extend_from_slice(&record.hops.to_be_bytes());
+            match &record.place {
+                None => out.push(0),
+                Some(place) => {
+                    out.push(1);
+                    put_place(&mut out, place);
+                }
+            }
+        }
+        seal(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
+        let mut input = opened(bytes, KIND_PLAYERS)?;
+        let from = input.u64()?;
+        let issued = input.i32()?;
+        let count = input.u32()? as usize;
+        // A forged count must not reserve more than the file can hold.
+        let mut records: Vec<PlayerRecord> =
+            Vec::with_capacity(count.min(input.0.len() / RECORD_LENGTH));
+        for _ in 0..count {
+            let player = input.u128()?;
+            if records.last().is_some_and(|before| before.player >= player) {
+                return Err(FormatError::Corrupt("players out of order"));
+            }
+            let (stay, hops) = (input.i32()?, input.u32()?);
+            let place = match input.u8()? {
+                0 => None,
+                1 => Some(take_place(&mut input)?),
+                _ => return Err(FormatError::Corrupt("whether a player has a place")),
+            };
+            records.push(PlayerRecord {
+                player,
+                stay,
+                hops,
+                place,
+            });
+        }
+        input.finish()?;
+        Ok(Self {
+            from,
+            issued,
+            records,
         })
     }
 }
@@ -480,6 +583,152 @@ mod tests {
         assert_eq!(TableFile::decode(&empty.encode()), Ok(empty));
     }
 
+    fn players() -> PlayersFile {
+        let mut hotbar = [None; crate::HOTBAR_SLOTS];
+        hotbar[1] = Some((7, 3));
+        PlayersFile {
+            from: 7,
+            issued: 258,
+            records: vec![
+                PlayerRecord {
+                    player: 2,
+                    stay: 257,
+                    hops: 0,
+                    place: None,
+                },
+                PlayerRecord {
+                    player: 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
+                    stay: 258,
+                    hops: 4,
+                    place: Some(LoggedPlace {
+                        position: [1.5, -2.0, 0.0],
+                        yaw: 90.0,
+                        pitch: -45.0,
+                        on_ground: true,
+                        flying: true,
+                        selected_slot: 1,
+                        hotbar,
+                    }),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn known_answer_of_the_players() {
+        let bytes = players().encode();
+        let body = [
+            1, 4, // version, kind
+            0, 0, 0, 0, 0, 0, 0, 7, // from
+            0, 0, 1, 2, // issued
+            0, 0, 0, 2, // two records
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, // the first player
+            0, 0, 1, 1, // their stay
+            0, 0, 0, 0, // its hops
+            0, // no place
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, // the second player
+            0, 0, 1, 2, // their stay
+            0, 0, 0, 4, // its hops
+            1, // a place
+            0x3F, 0xF8, 0, 0, 0, 0, 0, 0, // x: 1.5
+            0xC0, 0, 0, 0, 0, 0, 0, 0, // y: -2
+            0, 0, 0, 0, 0, 0, 0, 0, // z: 0
+            0x42, 0xB4, 0, 0, // yaw: 90
+            0xC2, 0x34, 0, 0, // pitch: -45
+            3, // on the ground and flying
+            1, // the selected slot
+            0, // an empty slot
+            1, 0, 0, 0, 7, 0, 0, 0, 3, // the second slot
+            0, 0, 0, 0, 0, 0, 0, // seven empty slots
+        ];
+        assert_eq!(bytes[..body.len()], body);
+        assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
+        assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
+
+        // A world nobody has joined.
+        let empty = PlayersFile {
+            from: 0,
+            issued: 0,
+            records: Vec::new(),
+        };
+        assert_eq!(empty.encode().len(), 2 + 8 + 4 + 4 + 4);
+        assert_eq!(PlayersFile::decode(&empty.encode()), Ok(empty));
+    }
+
+    #[test]
+    fn damage_anywhere_in_the_players_is_noticed() {
+        let bytes = players().encode();
+        for index in 0..bytes.len() {
+            let mut damaged = bytes.clone();
+            damaged[index] ^= 0x01;
+            assert!(PlayersFile::decode(&damaged).is_err(), "byte {index}");
+        }
+        for length in 0..bytes.len() {
+            assert!(
+                PlayersFile::decode(&bytes[..length]).is_err(),
+                "cut at {length}"
+            );
+        }
+        let mut longer = bytes;
+        longer.push(0);
+        assert!(PlayersFile::decode(&longer).is_err());
+    }
+
+    #[test]
+    fn players_that_check_out_but_make_no_sense_are_an_error() {
+        // Out of order, and one player twice.
+        let mut swapped = players();
+        swapped.records.swap(0, 1);
+        assert_eq!(
+            PlayersFile::decode(&swapped.encode()),
+            Err(FormatError::Corrupt("players out of order"))
+        );
+        let mut twice = players();
+        twice.records[1].player = twice.records[0].player;
+        assert_eq!(
+            PlayersFile::decode(&twice.encode()),
+            Err(FormatError::Corrupt("players out of order"))
+        );
+        // Neither with a place nor without. The byte is behind the head of 18 bytes
+        // and the first record's player, stay and hops.
+        let mut body = players().encode();
+        body.truncate(body.len() - 4);
+        assert_eq!(body[18 + 24], 0);
+        body[18 + 24] = 2;
+        assert_eq!(
+            PlayersFile::decode(&seal(body)),
+            Err(FormatError::Corrupt("whether a player has a place"))
+        );
+        // More records than the file holds, which must not be reserved either.
+        let mut body = players().encode();
+        body.truncate(body.len() - 4);
+        body[14..18].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(
+            PlayersFile::decode(&seal(body)),
+            Err(FormatError::Truncated)
+        );
+    }
+
+    #[test]
+    fn the_players_are_not_taken_for_another_kind_of_file_nor_another_for_them() {
+        for other in [
+            table().encode(),
+            StateFile {
+                tick: 1,
+                state: Vec::new(),
+            }
+            .encode(),
+        ] {
+            assert_eq!(
+                PlayersFile::decode(&other),
+                Err(FormatError::Corrupt("file kind"))
+            );
+        }
+        assert!(TableFile::decode(&players().encode()).is_err());
+        assert!(StateFile::decode(&players().encode()).is_err());
+        assert!(RegionFile::decode(&players().encode()).is_err());
+    }
+
     #[test]
     fn damage_anywhere_in_the_table_is_noticed() {
         let bytes = table().encode();
@@ -637,6 +886,60 @@ mod tests {
             let _ = RegionFile::decode(&bytes);
             let _ = StateFile::decode(&bytes);
             let _ = TableFile::decode(&bytes);
+            let _ = PlayersFile::decode(&bytes);
+        }
+
+        /// Bytes that pass for a players' file as far as its checksum, version and kind
+        /// go.
+        #[test]
+        fn arbitrary_players_never_panic(mut body: Vec<u8>) {
+            body.splice(0..0, [FORMAT_VERSION, KIND_PLAYERS]);
+            let _ = PlayersFile::decode(&seal(body));
+        }
+
+        #[test]
+        fn players_round_trip(
+            from: u64,
+            issued: i32,
+            records in prop::collection::btree_map(
+                any::<u128>(),
+                (
+                    any::<(i32, u32)>(),
+                    prop::option::of((
+                        any::<[f64; 3]>(),
+                        any::<(f32, f32, bool, bool, u8)>(),
+                        any::<[Option<(i32, i32)>; crate::HOTBAR_SLOTS]>(),
+                    )),
+                ),
+                0..12,
+            ),
+        ) {
+            let players = PlayersFile {
+                from,
+                issued,
+                records: records
+                    .into_iter()
+                    .map(|(player, ((stay, hops), place))| PlayerRecord {
+                        player,
+                        stay,
+                        hops,
+                        place: place.map(
+                            |(position, (yaw, pitch, on_ground, flying, selected_slot), hotbar)| {
+                                LoggedPlace {
+                                    position,
+                                    yaw,
+                                    pitch,
+                                    on_ground,
+                                    flying,
+                                    selected_slot,
+                                    hotbar,
+                                }
+                            },
+                        ),
+                    })
+                    .collect(),
+            };
+            prop_assert_eq!(PlayersFile::decode(&players.encode()), Ok(players));
         }
 
         /// Bytes that pass for a table file as far as its checksum, version and kind go.

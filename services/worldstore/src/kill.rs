@@ -77,6 +77,7 @@ fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState
         tick,
         changes: vec![(position, state)],
         state: delta,
+        stays: Vec::new(),
     });
 }
 

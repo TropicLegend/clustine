@@ -13,7 +13,7 @@ use crate::api::{
     PlayerChange, PlayerEvent, PlayerInput, PlayerTransfer, Pose, RegionEvent, RemoteAction,
     RemoteStep, TickInputs, TickOutput, Ticket,
 };
-use crate::state::{EdgeDelta, EdgeState, PlayerState, RegionState, StateDelta};
+use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
 mod reshape;
 
@@ -32,6 +32,16 @@ pub struct RegionConfig {
     /// How many ticks a chunk the region holds outside its pinned areas may be without
     /// use before the region gives it back.
     pub return_after: u64,
+    /// Whether the world store keeps the players' places: a join is then held as
+    /// entering until the store has said where the player was last, and the region
+    /// tells the store of its stays. It is there for the steps in which that is built
+    /// and goes with the last of them; no region looks at it yet. See
+    /// `docs/adr/0020-one-stay-per-player.md`, "Building it".
+    pub place_by_store: bool,
+    /// The height of the world's lowest block. A place the store kept whose feet are
+    /// below it counts as no place. No region looks at it yet; see section 4 of the
+    /// same record.
+    pub lowest_y: i32,
 }
 
 /// What the world store says of a region's chunks when the region is opened.
@@ -176,6 +186,10 @@ struct Player {
     handled: Option<i32>,
     /// The edge the player belongs to.
     edge: EdgeId,
+    /// See [`PlayerState::hops`], [`PlayerState::flying`] and [`PlayerState::attempt`].
+    hops: u32,
+    flying: bool,
+    attempt: Option<u64>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -213,6 +227,9 @@ pub struct Region {
     requested: BTreeSet<ChunkPos>,
     players: BTreeMap<PlayerId, Player>,
     edges: BTreeMap<EdgeId, EdgeState>,
+    /// [`RegionState::entering`]: kept as the state has it, and changed by no tick
+    /// yet.
+    entering: BTreeMap<PlayerId, EnteringState>,
     journal: Journal,
 }
 
@@ -254,6 +271,7 @@ impl Region {
             requested: BTreeSet::new(),
             players,
             edges: state.edges,
+            entering: state.entering,
             journal: Journal::default(),
         }
     }
@@ -270,6 +288,7 @@ impl Region {
                 .map(|(id, player)| (*id, player.to_state()))
                 .collect(),
             edges: self.edges.clone(),
+            entering: self.entering.clone(),
         }
     }
 
@@ -328,6 +347,13 @@ impl Region {
     /// edge they belong to, which is whom the region tells what concerns them.
     pub fn player_state(&self, player: PlayerId) -> Option<PlayerState> {
         self.players.get(&player).map(Player::to_state)
+    }
+
+    /// The stay the region holds as entering for `player`, if it holds one: the runner
+    /// answers an edge's hello by it. There is none before step R1.2 of
+    /// `docs/adr/0020-one-stay-per-player.md` (section 4.2).
+    pub fn entering_state(&self, player: PlayerId) -> Option<&EnteringState> {
+        self.entering.get(&player)
     }
 
     /// What the region keeps for `edge`, if it knows the edge.
@@ -392,6 +418,7 @@ impl Region {
                     if !self.entity_ids.contains(entity_id) {
                         let refused = Durable::Refused {
                             player: join.player,
+                            attempt: join.attempt,
                         };
                         self.send(*edge, refused, &mut output);
                         continue;
@@ -409,12 +436,21 @@ impl Region {
                         last_input: 0,
                         handled: None,
                         edge: *edge,
+                        hops: 0,
+                        flying: false,
+                        // Until the first input of the stay is applied, so that the
+                        // edge finds the stay of this connection by whatever way it
+                        // hears of it. See `docs/adr/0020-one-stay-per-player.md`,
+                        // section 4.3.
+                        attempt: Some(join.attempt),
                     };
                     output.player_events.push((
                         join.player,
                         PlayerEvent::Spawned {
+                            attempt: join.attempt,
                             entity_id,
-                            position: player.pose.position,
+                            pose: player.pose,
+                            flying: player.flying,
                             hotbar: player.hotbar,
                             selected_slot: player.selected_slot,
                         },
@@ -425,10 +461,13 @@ impl Region {
                     self.players.insert(join.player, player);
                     self.journal.players.insert(join.player);
                 }
-                PlayerChange::Leave(edge, id, entity) => {
+                PlayerChange::Leave(edge, id, entity, _attempt) => {
                     // A leave ends the stay it names, and no later one of the player. One
                     // that names none ends whatever stay there is: a player who quit while
-                    // entering the world has no entity yet that the edge knows of.
+                    // entering the world has no entity yet that the edge knows of. The
+                    // attempt such a leave names is not looked at yet: step R1.2 of
+                    // `docs/adr/0020-one-stay-per-player.md` holds the leave to it
+                    // (section 4.4).
                     let ended = |player: &Player| {
                         player.edge == *edge
                             && entity.is_none_or(|entity| player.entity_id == entity)
@@ -500,6 +539,9 @@ impl Region {
                         last_input: transfer.last_input,
                         handled: None,
                         edge: *edge,
+                        hops: transfer.hops,
+                        flying: transfer.flying,
+                        attempt: transfer.attempt,
                     };
                     // Those watching already show the entity if they saw it cross over;
                     // to them this is nothing new.
@@ -742,6 +784,8 @@ impl Region {
                     (id, delta)
                 })
                 .collect(),
+            // No tick changes an entering stay yet.
+            entering: Vec::new(),
         }
     }
 
@@ -784,6 +828,9 @@ impl Region {
             return;
         }
         player.last_input = number;
+        // The edge has been heard from as this entity, so it knows the entity, and the
+        // stay needs no other name from here on.
+        player.attempt = None;
         self.journal.players.insert(id);
         match input {
             PlayerInput::Move {
@@ -808,6 +855,10 @@ impl Region {
                     *held = *stack;
                 }
             }
+            // Counted as an input and no more: step R1.2 of
+            // `docs/adr/0020-one-stay-per-player.md` has the player fly by it
+            // (section 13).
+            PlayerInput::SetFlying { .. } => {}
             PlayerInput::Dig { position, sequence } => {
                 let (position, sequence) = (*position, *sequence);
                 let knowledge = self.land.knowledge(position.chunk());
@@ -818,6 +869,7 @@ impl Region {
                     // that is because of a click; it names whom it believes, if anyone.
                     let action = RemoteAction {
                         player: id,
+                        entity,
                         sequence,
                         step: RemoteStep::Break { position },
                     };
@@ -877,6 +929,7 @@ impl Region {
                     Some((step, to)) => {
                         let action = RemoteAction {
                             player: id,
+                            entity,
                             sequence,
                             step,
                         };
@@ -898,6 +951,7 @@ impl Region {
     fn apply_remote(&mut self, action: &RemoteAction, output: &mut TickOutput) -> Durable {
         let done = Durable::RemoteDone {
             player: action.player,
+            entity: action.entity,
             sequence: action.sequence,
         };
         // A step about a chunk this region does not hold is not taken here. It goes to
@@ -1189,6 +1243,9 @@ impl Player {
             last_input: self.last_input,
             handled: self.handled,
             edge: self.edge,
+            hops: self.hops,
+            flying: self.flying,
+            attempt: self.attempt,
         }
     }
 
@@ -1204,6 +1261,9 @@ impl Player {
             last_input: state.last_input,
             handled: state.handled,
             edge: state.edge,
+            hops: state.hops,
+            flying: state.flying,
+            attempt: state.attempt,
         }
     }
 
@@ -1216,6 +1276,9 @@ impl Player {
             hotbar: self.hotbar,
             selected_slot: self.selected_slot,
             last_input: self.last_input,
+            hops: self.hops,
+            flying: self.flying,
+            attempt: self.attempt,
         }
     }
 
@@ -1351,6 +1414,8 @@ mod tests {
             spawn: SPAWN,
             starting_hotbar: hotbar(),
             return_after: 0,
+            place_by_store: false,
+            lowest_y: -64,
         }
     }
 
@@ -1711,7 +1776,7 @@ mod tests {
             .durable
             .iter()
             .filter_map(|(_, _, entry)| match entry {
-                Durable::Refused { player } => Some((*player, PlayerEvent::Refused)),
+                Durable::Refused { player, .. } => Some((*player, PlayerEvent::Refused)),
                 _ => None,
             });
         let departed = output
@@ -1783,7 +1848,9 @@ mod tests {
         let entries = output.durable.iter().filter(|(edge, ..)| *edge == REMOTE);
         entries
             .map(|(_, _, entry)| match entry {
-                Durable::RemoteDone { player, sequence } => RemoteOutcome::Done {
+                Durable::RemoteDone {
+                    player, sequence, ..
+                } => RemoteOutcome::Done {
                     player: *player,
                     sequence: *sequence,
                 },
@@ -1801,18 +1868,25 @@ mod tests {
         PlayerId(uuid::Uuid::from_u128(number))
     }
 
+    /// The attempt that the join of the player with this number names: no number of
+    /// an entity, of an input or of a tick, so that it is not taken for one.
+    fn attempt(number: u128) -> u64 {
+        7000 + u64::try_from(number).unwrap()
+    }
+
     fn join(number: u128) -> PlayerChange {
         PlayerChange::Join(
             EDGE,
             PlayerJoin {
                 player: player(number),
                 name: format!("Player{number}"),
+                attempt: attempt(number),
             },
         )
     }
 
     fn leave(number: u128) -> PlayerChange {
-        PlayerChange::Leave(EDGE, player(number), None)
+        PlayerChange::Leave(EDGE, player(number), None, None)
     }
 
     fn changes(player_changes: Vec<PlayerChange>) -> TickInputs {
@@ -1904,15 +1978,17 @@ mod tests {
     fn joining_players_spawn_with_distinct_entity_ids() {
         let mut region = region();
         let output = region.tick(&changes(vec![join(1), join(2)]));
-        let spawned = |entity| PlayerEvent::Spawned {
+        let spawned = |entity, number| PlayerEvent::Spawned {
+            attempt: attempt(number),
             entity_id: EntityId(entity),
-            position: SPAWN,
+            pose: Pose::at(SPAWN),
+            flying: false,
             hotbar: hotbar(),
             selected_slot: 0,
         };
         assert_eq!(
             told(&output),
-            [(player(1), spawned(1)), (player(2), spawned(2))]
+            [(player(1), spawned(1, 1)), (player(2), spawned(2, 2))]
         );
         assert_eq!(
             output.events,
@@ -2007,8 +2083,10 @@ mod tests {
         let output = region.tick(&changes(vec![join(1)]));
         // The entity they had goes where it stood, and they enter the world anew.
         let spawned = PlayerEvent::Spawned {
+            attempt: attempt(1),
             entity_id: EntityId(2),
-            position: SPAWN,
+            pose: Pose::at(SPAWN),
+            flying: false,
             hotbar: hotbar(),
             selected_slot: 0,
         };
@@ -2058,12 +2136,13 @@ mod tests {
         // Player 1 has entity 1. A leave for another stay of theirs changes nothing, be
         // that an earlier one or one the region has yet to hear of; nor does a leave
         // that names their entity and comes through another edge.
-        let naming = |edge, entity| PlayerChange::Leave(edge, player(1), Some(EntityId(entity)));
+        let naming =
+            |edge, entity| PlayerChange::Leave(edge, player(1), Some(EntityId(entity)), None);
         let output = region.tick(&changes(vec![
             naming(EDGE, 2),
             naming(EDGE, 0),
             naming(REMOTE, 1),
-            PlayerChange::Leave(REMOTE, player(1), None),
+            PlayerChange::Leave(REMOTE, player(1), None, None),
         ]));
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert!(output.delta.changes_only_the_tick());
@@ -2083,8 +2162,8 @@ mod tests {
     /// and [`TickInputs::input`] keep it.
     #[test]
     fn a_leave_takes_nothing_from_what_waits_for_the_tick() {
-        let stale = PlayerChange::Leave(EDGE, player(1), Some(EntityId(9)));
-        let ending = PlayerChange::Leave(EDGE, player(1), Some(EntityId(1)));
+        let stale = PlayerChange::Leave(EDGE, player(1), Some(EntityId(9)), None);
+        let ending = PlayerChange::Leave(EDGE, player(1), Some(EntityId(1)), None);
         let step = |inputs: &mut TickInputs, entity: i32, number: u64| {
             let (edge, player, entity, number, input) =
                 as_entity(entity, with_number(number, walk(1, 5.5, 0.5)));
@@ -2637,6 +2716,9 @@ mod tests {
             hotbar,
             selected_slot: 6,
             last_input,
+            hops: 0,
+            flying: false,
+            attempt: None,
         }
     }
 
@@ -3183,6 +3265,9 @@ mod tests {
                         hotbar: carried,
                         selected_slot: 4,
                         last_input: 4,
+                        hops: 0,
+                        flying: false,
+                        attempt: None,
                     }
                 ),
             ]
@@ -3443,11 +3528,15 @@ mod tests {
         });
         let output = region.tick(&changes(vec![join(1)]));
         let spawned = PlayerEvent::Spawned {
+            attempt: attempt(1),
             entity_id: EntityId(1),
-            position: SPAWN,
+            pose: Pose::at(SPAWN),
+            flying: false,
             hotbar: hotbar(),
             selected_slot: 0,
         };
+        // No input of theirs was applied, so the stay still carries the attempt of
+        // its join.
         let transfer = PlayerTransfer {
             entity_id: EntityId(1),
             name: "Player1".to_owned(),
@@ -3455,6 +3544,9 @@ mod tests {
             hotbar: hotbar(),
             selected_slot: 0,
             last_input: 0,
+            hops: 0,
+            flying: false,
+            attempt: Some(attempt(1)),
         };
         assert_eq!(told(&output), [(player(1), spawned), departed(1, transfer)]);
         assert_eq!(let_go(&output), [(player(1), WEST_REGION)]);
@@ -3901,9 +3993,12 @@ mod tests {
         (edge, player, entity, number, input)
     }
 
+    /// An action of the player with this number, who has the entity of that number:
+    /// the players of these tests join in the order of their numbers.
     fn remote(number: u128, sequence: i32, step: RemoteStep) -> RemoteAction {
         RemoteAction {
             player: player(number),
+            entity: EntityId(i32::try_from(number).unwrap()),
             sequence,
             step,
         }
@@ -4262,6 +4357,260 @@ mod tests {
         assert_eq!(asked_of(&output), [Some(WEST_REGION); 4]);
         assert_eq!(output.events, [changed(3, -61, 2, blocks::AIR)]);
         assert_eq!(told(&output), [acknowledged(1, 2)]);
+    }
+
+    /// A join names the attempt of its connection. The stay it begins carries it, and
+    /// the word that the player has entered the world says it. See
+    /// `docs/adr/0020-one-stay-per-player.md`, sections 4.1 and 4.3.
+    #[test]
+    fn a_join_gives_the_stay_its_attempt_and_the_word_of_entering_names_it() {
+        let mut region = region();
+        let output = region.tick(&changes(vec![join(1), join(2)]));
+        for number in [1, 2] {
+            let state = region.player_state(player(number)).unwrap();
+            assert_eq!(state.attempt, Some(attempt(number)));
+            // What nothing changes yet is as it is for a stay that has just begun.
+            assert_eq!((state.hops, state.flying), (0, false));
+        }
+        let named = |output: &TickOutput| -> Vec<(PlayerId, u64)> {
+            let entered = told(output).into_iter();
+            entered
+                .map(|(id, event)| match event {
+                    PlayerEvent::Spawned { attempt, .. } => (id, attempt),
+                    other => panic!("{other:?} is no word of entering"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            named(&output),
+            [(player(1), attempt(1)), (player(2), attempt(2))]
+        );
+        // The state's change has the stays as they are.
+        let changed: Vec<_> = output.delta.players.iter().collect();
+        assert!(matches!(
+            changed[..],
+            [(_, Some(first)), (_, Some(second))]
+                if first.attempt == Some(attempt(1)) && second.attempt == Some(attempt(2))
+        ));
+
+        // Another join of a player begins another stay, which carries the attempt of
+        // that join and not of the one before.
+        let again = PlayerChange::Join(
+            EDGE,
+            PlayerJoin {
+                player: player(1),
+                name: "Player1".to_owned(),
+                attempt: 99,
+            },
+        );
+        let output = region.tick(&changes(vec![again]));
+        assert_eq!(named(&output), [(player(1), 99)]);
+        assert_eq!(region.player_state(player(1)).unwrap().attempt, Some(99));
+        assert_eq!(
+            region.player_state(player(2)).unwrap().attempt,
+            Some(attempt(2))
+        );
+        // Nothing here is the store's business yet.
+        assert!(output.stays.is_empty() && region.state().entering.is_empty());
+        assert!(region.entering_state(player(1)).is_none());
+    }
+
+    /// The stay carries the attempt until an input of it is applied, and no longer: from
+    /// then on its edge has been heard from as that entity.
+    #[test]
+    fn the_first_input_that_is_applied_takes_the_attempt_from_the_stay() {
+        let mut region = joined(&[1, 2]);
+        let carried = |region: &Region, number: u128| {
+            let state = region.player_state(player(number)).unwrap();
+            state.attempt
+        };
+        // A tick without an input of theirs leaves it.
+        region.tick(&TickInputs::default());
+        assert_eq!(carried(&region, 1), Some(attempt(1)));
+        // So does an input that is not applied: one through another edge, and one of
+        // another stay.
+        let (_, id, entity, number, input) = walk(1, 3.5, 0.5);
+        let output = region.tick(&moves(vec![
+            (REMOTE, id, entity, number, input),
+            as_entity(9, walk(1, 3.5, 0.5)),
+        ]));
+        assert!(output.delta.changes_only_the_tick());
+        assert_eq!(carried(&region, 1), Some(attempt(1)));
+
+        let output = region.tick(&moves(vec![walk(1, 3.5, 0.5)]));
+        assert_eq!(carried(&region, 1), None);
+        assert_eq!(carried(&region, 2), Some(attempt(2)));
+        let changed: Vec<_> = output
+            .delta
+            .players
+            .iter()
+            .map(|(id, state)| (*id, state.as_ref().map(|state| state.attempt)))
+            .collect();
+        assert_eq!(changed, [(player(1), Some(None))]);
+        // It does not come back with later inputs or with a restore.
+        region.tick(&moves(vec![walk(1, 4.5, 0.5)]));
+        assert_eq!(carried(&region, 1), None);
+        let restored = Region::restore(config(), region.state(), Holdings::default());
+        assert_eq!(carried(&restored, 1), None);
+        assert_eq!(carried(&restored, 2), Some(attempt(2)));
+
+        // Whatever the input is: one that no region does anything by yet is an input.
+        let flying = PlayerInput::SetFlying { flying: true };
+        region.tick(&moves(vec![numbered(2, flying)]));
+        let state = region.player_state(player(2)).unwrap();
+        assert_eq!(state.attempt, None);
+        assert!(!state.flying);
+    }
+
+    /// What a region hands on of a player has the stay's attempt, how often it was
+    /// handed on and whether the player flies, and a region that takes the player in
+    /// keeps all three.
+    #[test]
+    fn a_transfer_carries_the_attempt_and_an_arrival_keeps_it() {
+        let mut region = region_in(EAST);
+        let arriving = PlayerTransfer {
+            hops: 3,
+            flying: true,
+            attempt: Some(77),
+            ..transfer(5, 40, 2.5, 0)
+        };
+        region.tick(&changes(vec![arrive(5, &arriving)]));
+        let state = region.player_state(player(5)).unwrap();
+        assert_eq!(
+            (state.attempt, state.hops, state.flying),
+            (Some(77), 3, true)
+        );
+
+        // One who arrives for a chunk that is another region's goes on as they came.
+        let lost = PlayerTransfer {
+            hops: 4,
+            flying: true,
+            attempt: Some(78),
+            ..transfer(6, 41, -20.5, 0)
+        };
+        let output = region.tick(&changes(vec![arrive(6, &lost)]));
+        let sent_on: Vec<_> = output
+            .durable
+            .iter()
+            .map(|(_, _, entry)| entry.clone())
+            .collect();
+        let what = Misdirected::Arrival {
+            player: player(6),
+            transfer: lost,
+        };
+        let holder = WEST_REGION;
+        assert_eq!(sent_on, [Durable::NotMine { what, holder }]);
+
+        // A step into the neighbour's chunk: the player is let go with what the stay
+        // has, which after that step is no attempt.
+        let step = as_entity(40, walk(5, -0.5, 0.5));
+        let output = region.tick(&moves(vec![with_number(1, step)]));
+        let let_go: Vec<_> = output
+            .durable
+            .iter()
+            .filter_map(|(_, _, entry)| match entry {
+                Durable::Departed { transfer, .. } => Some(transfer.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                let_go[..],
+                [PlayerTransfer {
+                    entity_id: EntityId(40),
+                    last_input: 1,
+                    hops: 3,
+                    flying: true,
+                    attempt: None,
+                    ..
+                }]
+            ),
+            "{let_go:?}"
+        );
+    }
+
+    /// What a region passes on of a player's action on another region's blocks names
+    /// the entity of the player who acts. See `docs/adr/0020-one-stay-per-player.md`,
+    /// section 11.
+    #[test]
+    fn what_is_passed_on_of_an_action_names_the_entity_of_the_player_who_acts() {
+        // Player 2 joins first and has entity 1; player 1 has entity 2.
+        let mut region = on_floor_in(EAST, &[2, 1]);
+        let (first, second) = (EntityId(1), EntityId(2));
+        assert_eq!(region.player(player(2)).unwrap().0, first);
+        assert_eq!(region.player(player(1)).unwrap().0, second);
+        let other = Vec3::new(2.5, -60.0, 4.5);
+        let mut inputs = moves(vec![walk(1, FEET.x, FEET.z), walk(2, other.x, other.z)]);
+        name_the_stays_in(&region, &mut inputs);
+        region.tick(&inputs);
+
+        let mut inputs = moves(vec![
+            dig(2, -1, -61, 4, 1),
+            sequenced(1, place(1, -2, -61, 2, Face::Top)),
+        ]);
+        name_the_stays_in(&region, &mut inputs);
+        let output = region.tick(&inputs);
+        assert_eq!(
+            requests(&output),
+            [
+                RemoteAction {
+                    entity: first,
+                    ..remote(2, 1, break_at(-1, -61, 4))
+                },
+                RemoteAction {
+                    entity: second,
+                    ..remote(
+                        1,
+                        1,
+                        place_against(-2, -61, 2, Face::Top, blocks::STONE, FEET)
+                    )
+                },
+            ]
+        );
+    }
+
+    /// The answer to an action that was passed on to a region names the entity the
+    /// action named, whatever this region has of that player; and what is left of it
+    /// for yet another region goes on with that entity.
+    #[test]
+    fn the_answer_to_a_remote_action_names_the_entity_of_the_action() {
+        let mut region = west_with_floor();
+        let entries = |output: &TickOutput| -> Vec<Durable> {
+            let entries = output.durable.iter();
+            entries.map(|(_, _, entry)| entry.clone()).collect()
+        };
+        let action = RemoteAction {
+            entity: EntityId(4711),
+            ..remote(1, 7, break_at(-2, -61, 3))
+        };
+        let output = region.tick(&remotely(vec![action]));
+        assert_eq!(output.events, [changed(-2, -61, 3, blocks::AIR)]);
+        let done = Durable::RemoteDone {
+            player: player(1),
+            entity: EntityId(4711),
+            sequence: 7,
+        };
+        assert_eq!(entries(&output), [done]);
+
+        // Against a block of this region into a spot of the neighbour's.
+        let action = RemoteAction {
+            entity: EntityId(4712),
+            ..remote(
+                1,
+                8,
+                place_against(-1, -61, 3, Face::East, blocks::STONE, FEET),
+            )
+        };
+        let output = region.tick(&remotely(vec![action]));
+        let next = RemoteAction {
+            entity: EntityId(4712),
+            ..remote(1, 8, place_at(0, -61, 3, blocks::STONE, FEET))
+        };
+        assert!(
+            matches!(&entries(&output)[..], [Durable::Remote { action, .. }] if *action == next),
+            "{:?}",
+            output.durable
+        );
     }
 
     #[test]

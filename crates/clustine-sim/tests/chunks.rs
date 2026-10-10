@@ -92,6 +92,8 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -186,14 +188,28 @@ fn started(edge: EdgeId, start: u64) -> EdgeEvent {
     EdgeEvent::Started { edge, start }
 }
 
+/// The attempt that a join of `id` names.
+fn attempt(id: PlayerId) -> u64 {
+    7000 + id.0.as_u128() as u64
+}
+
 fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
             player: id,
             name: format!("player-{}", id.0.as_u128()),
+            attempt: attempt(id),
         },
     )
+}
+
+/// What a region says to a join of `id` that it refuses.
+fn refused(id: PlayerId) -> Durable {
+    Durable::Refused {
+        player: id,
+        attempt: attempt(id),
+    }
 }
 
 fn changes(list: Vec<PlayerChange>) -> TickInputs {
@@ -248,9 +264,26 @@ fn use_on(position: BlockPos, face: Face, sequence: i32) -> PlayerInput {
     }
 }
 
+/// The entity that `id` has in another region, as the remote actions here name it.
+fn elsewhere(id: PlayerId) -> EntityId {
+    EntityId(9000 + id.0.as_u128() as i32)
+}
+
 fn remote(id: PlayerId, sequence: i32, step: RemoteStep) -> RemoteAction {
     RemoteAction {
         player: id,
+        entity: elsewhere(id),
+        sequence,
+        step,
+    }
+}
+
+/// What is left of an action of `id` in the stay `entity`, as the region the player is
+/// in passes it on: it names the entity of the player who acts.
+fn own(id: PlayerId, entity: EntityId, sequence: i32, step: RemoteStep) -> RemoteAction {
+    RemoteAction {
+        player: id,
+        entity,
         sequence,
         step,
     }
@@ -265,6 +298,9 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         hotbar: hotbar(),
         selected_slot: 0,
         last_input,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -277,6 +313,9 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         hotbar: state.hotbar,
         selected_slot: state.selected_slot,
         last_input: state.last_input,
+        hops: state.hops,
+        flying: state.flying,
+        attempt: state.attempt,
     }
 }
 
@@ -601,7 +640,7 @@ impl Model {
                         next_entity.0 += 1;
                     }
                 }
-                PlayerChange::Leave(edge, id, entity) => {
+                PlayerChange::Leave(edge, id, entity, _) => {
                     let ended = |(of, has): &(EdgeId, EntityId)| {
                         of == edge && entity.is_none_or(|named| named == *has)
                     };
@@ -2070,8 +2109,12 @@ fn a_player_who_steps_into_a_chunk_believed_anothers_is_let_go_in_that_tick_to_t
         },
         selected_slot: 2,
         last_input: 3,
+        // An input of the stay was applied, so it no longer carries the attempt of
+        // its join.
+        attempt: None,
         ..transfer_of(&before)
     };
+    assert_eq!(before.attempt, Some(attempt(player(1))));
     assert_eq!(
         output.durable,
         vec![(
@@ -2429,7 +2472,7 @@ fn a_leave_behind_an_arrival_that_went_on_finds_nobody() {
     let arriving = transfer(TRAVELLER, 3, IN_EAST);
     let output = world.tick(&changes(vec![
         PlayerChange::Arrive(E, player(5), arriving.clone()),
-        PlayerChange::Leave(E, player(5), None),
+        PlayerChange::Leave(E, player(5), None, None),
     ]));
     assert_eq!(
         entries(&output),
@@ -2778,7 +2821,7 @@ fn a_dig_at_a_block_of_a_chunk_believed_anothers_is_passed_on_with_that_region()
             E,
             1,
             Durable::Remote {
-                action: remote(player(1), 5, break_at(BORDER_BLOCK_B)),
+                action: own(player(1), entity(1), 5, break_at(BORDER_BLOCK_B)),
                 to: Some(REGION_B),
             }
         )]
@@ -2813,7 +2856,7 @@ fn a_dig_at_a_block_of_a_chunk_the_region_has_asked_for_is_passed_on_without_a_r
             E,
             1,
             Durable::Remote {
-                action: remote(player(1), 5, break_at(SOUTH_BLOCK)),
+                action: own(player(1), entity(1), 5, break_at(SOUTH_BLOCK)),
                 to: None,
             }
         )]
@@ -2838,7 +2881,7 @@ fn a_dig_at_a_block_of_an_unknown_chunk_is_passed_on_without_a_region_and_claims
             E,
             1,
             Durable::Remote {
-                action: remote(player(1), 5, break_at(NORTH_BLOCK)),
+                action: own(player(1), entity(1), 5, break_at(NORTH_BLOCK)),
                 to: None,
             }
         )]
@@ -2875,7 +2918,7 @@ fn a_dig_in_the_tick_its_chunk_is_called_anothers_names_that_region_although_not
     assert_eq!(
         entries(&output),
         [Durable::Remote {
-            action: remote(player(1), 5, break_at(SOUTH_BLOCK)),
+            action: own(player(1), entity(1), 5, break_at(SOUTH_BLOCK)),
             to: Some(OTHER),
         }]
     );
@@ -2998,7 +3041,7 @@ fn placing_against_a_held_block_into_a_chunk_believed_anothers_is_passed_on_with
             E,
             1,
             Durable::Remote {
-                action: remote(player(1), 6, place_at(BORDER_BLOCK_B, SPAWN)),
+                action: own(player(1), entity(1), 6, place_at(BORDER_BLOCK_B, SPAWN)),
                 to: Some(REGION_B),
             }
         )]
@@ -3013,7 +3056,7 @@ fn placing_against_a_held_block_into_an_unknown_or_asked_chunk_is_passed_on_with
             E,
             1,
             Durable::Remote {
-                action: remote(player(1), 6, place_at(NORTH_BLOCK, BY_NORTH)),
+                action: own(player(1), entity(1), 6, place_at(NORTH_BLOCK, BY_NORTH)),
                 to: None,
             }
         )]
@@ -3024,7 +3067,7 @@ fn placing_against_a_held_block_into_an_unknown_or_asked_chunk_is_passed_on_with
             E,
             1,
             Durable::Remote {
-                action: remote(player(1), 6, place_at(SOUTH_BLOCK, BY_SOUTH)),
+                action: own(player(1), entity(1), 6, place_at(SOUTH_BLOCK, BY_SOUTH)),
                 to: None,
             }
         )]
@@ -3045,7 +3088,12 @@ fn placing_against_a_block_of_a_chunk_believed_anothers_is_passed_on_with_that_r
                 E,
                 1,
                 Durable::Remote {
-                    action: remote(player(1), 6, place_against(BORDER_BLOCK_B, target, SPAWN)),
+                    action: own(
+                        player(1),
+                        entity(1),
+                        6,
+                        place_against(BORDER_BLOCK_B, target, SPAWN)
+                    ),
                     to: Some(REGION_B),
                 }
             )]
@@ -3068,7 +3116,12 @@ fn placing_against_a_block_of_an_unknown_or_asked_chunk_is_passed_on_without_a_r
                 E,
                 1,
                 Durable::Remote {
-                    action: remote(player(1), 6, place_against(against, target, from)),
+                    action: own(
+                        player(1),
+                        entity(1),
+                        6,
+                        place_against(against, target, from)
+                    ),
                     to: None,
                 }
             )]
@@ -3182,6 +3235,7 @@ fn a_remote_action_about_a_held_chunk_is_taken() {
             1,
             Durable::RemoteDone {
                 player: player(9),
+                entity: elsewhere(player(9)),
                 sequence: 4,
             }
         )]
@@ -3195,6 +3249,7 @@ fn a_remote_action_about_a_held_chunk_is_taken() {
         entries(&output),
         [Durable::RemoteDone {
             player: player(9),
+            entity: elsewhere(player(9)),
             sequence: 5,
         }]
     );
@@ -3269,6 +3324,7 @@ fn a_remote_placement_against_a_held_block_into_a_held_spot_is_placed_and_done()
             1,
             Durable::RemoteDone {
                 player: player(9),
+                entity: elsewhere(player(9)),
                 sequence: 4,
             }
         )]
@@ -3316,6 +3372,7 @@ fn a_remote_placement_against_no_block_of_a_held_chunk_is_done_and_goes_nowhere(
         entries(&output),
         [Durable::RemoteDone {
             player: player(9),
+            entity: elsewhere(player(9)),
             sequence: 4,
         }]
     );
@@ -3477,7 +3534,7 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
                     holder: REGION_B,
                 }
             ),
-            (F, 1, Durable::Refused { player: player(6) }),
+            (F, 1, refused(player(6))),
             (
                 F,
                 2,
@@ -3489,13 +3546,14 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
                     holder: REGION_B,
                 }
             ),
-            (E, 2, Durable::Refused { player: player(8) }),
+            (E, 2, refused(player(8))),
             // Step 5, one for one.
             (
                 F,
                 3,
                 Durable::RemoteDone {
                     player: player(20),
+                    entity: elsewhere(player(20)),
                     sequence: 1,
                 }
             ),
@@ -3520,7 +3578,7 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
                 E,
                 4,
                 Durable::Remote {
-                    action: remote(player(1), 11, break_at(BORDER_BLOCK_B)),
+                    action: own(player(1), entity(1), 11, break_at(BORDER_BLOCK_B)),
                     to: Some(REGION_B),
                 }
             ),
@@ -3528,7 +3586,7 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
                 F,
                 5,
                 Durable::Remote {
-                    action: remote(player(2), 12, place_at(BORDER_BLOCK_B, SPAWN)),
+                    action: own(player(2), entity(2), 12, place_at(BORDER_BLOCK_B, SPAWN)),
                     to: Some(REGION_B),
                 }
             ),
@@ -4125,19 +4183,13 @@ fn a_region_with_the_empty_block_of_entity_ids_answers_every_join_with_refused()
     let output = world.tick(&changes(vec![join(E, player(1)), join(F, player(2))]));
     assert_eq!(
         output.durable,
-        vec![
-            (E, 1, Durable::Refused { player: player(1) }),
-            (F, 1, Durable::Refused { player: player(2) }),
-        ]
+        vec![(E, 1, refused(player(1))), (F, 1, refused(player(2))),]
     );
     assert_eq!(world.region.player_count(), 0);
     assert!(output.events.is_empty() && output.player_events.is_empty());
 
     let output = world.tick(&changes(vec![join(E, player(1))]));
-    assert_eq!(
-        output.durable,
-        vec![(E, 2, Durable::Refused { player: player(1) })]
-    );
+    assert_eq!(output.durable, vec![(E, 2, refused(player(1)))]);
     assert_eq!(world.region.state().next_entity_id, EntityId(0));
 
     // A player who arrives brings their entity, and is taken in.
@@ -4155,7 +4207,7 @@ fn a_join_that_is_refused_claims_nothing() {
     let mut world = World::new(config(0), empty, Holdings::default());
     world.tick(&edges(vec![started(E, 10)]));
     let output = world.tick(&changes(vec![join(E, player(1))]));
-    assert_eq!(entries(&output), [Durable::Refused { player: player(1) }]);
+    assert_eq!(entries(&output), [refused(player(1))]);
     assert!(output.claims.is_empty());
     assert_eq!(world.knowledge(HOME), Knowledge::Unknown);
 }
@@ -4498,8 +4550,8 @@ enum Made {
     Entry(EdgeId, Durable),
     /// A departure, of which the made-up run does not know the whole transfer: the
     /// player, where they stood, the number of the last input applied to them, and the
-    /// region they go to.
-    LetGo(EdgeId, PlayerId, Vec3, u64, RegionId),
+    /// region they go to; and the attempt the stay still carries.
+    LetGo(EdgeId, PlayerId, Vec3, u64, RegionId, Option<u64>),
 }
 
 /// A player of the region as far as a made-up run moves them.
@@ -4509,6 +4561,9 @@ struct Walker {
     last_input: u64,
     edge: EdgeId,
     entity: EntityId,
+    /// The attempt of the join that began the stay, until an input of the stay is
+    /// applied (ADR-0020, section 4.3).
+    attempt: Option<u64>,
 }
 
 /// The transfer of an entry that says a player is on their way.
@@ -4576,6 +4631,7 @@ fn check_made_up_tick(
                 last_input: state.last_input,
                 edge: state.edge,
                 entity: state.entity_id,
+                attempt: state.attempt,
             };
             (*id, walker)
         })
@@ -4628,6 +4684,7 @@ fn check_made_up_tick(
                     last_input: 0,
                     edge: *edge,
                     entity: next_entity,
+                    attempt: Some(join.attempt),
                 };
                 next_entity.0 += 1;
                 here.insert(join.player, walker);
@@ -4649,6 +4706,7 @@ fn check_made_up_tick(
                             last_input: transfer.last_input,
                             edge: *edge,
                             entity: transfer.entity_id,
+                            attempt: transfer.attempt,
                         };
                         here.insert(*id, walker);
                     }
@@ -4664,6 +4722,7 @@ fn check_made_up_tick(
         let entry = match during.knowledge(action.step.concerns().chunk()) {
             Knowledge::Held => Durable::RemoteDone {
                 player: action.player,
+                entity: action.entity,
                 sequence: action.sequence,
             },
             Knowledge::Foreign(holder) => Durable::NotMine {
@@ -4705,7 +4764,7 @@ fn check_made_up_tick(
                 };
                 match to.filter(|_| away <= 3.0) {
                     Some(to) => {
-                        let action = remote(*id, *sequence, break_at(*position));
+                        let action = own(*id, *entity, *sequence, break_at(*position));
                         made.push(Made::Entry(*edge, Durable::Remote { action, to }));
                     }
                     // Out of reach, or the region's own to break.
@@ -4717,6 +4776,7 @@ fn check_made_up_tick(
             other => panic!("a made-up run has no {other:?}"),
         }
         walker.last_input = *number;
+        walker.attempt = None;
     }
 
     // Step 8.
@@ -4728,9 +4788,10 @@ fn check_made_up_tick(
                     position,
                     last_input,
                     edge,
+                    attempt,
                     ..
                 } = walker;
-                made.push(Made::LetGo(edge, id, position, last_input, to));
+                made.push(Made::LetGo(edge, id, position, last_input, to, attempt));
             }
             None => {
                 stay.insert(id, walker);
@@ -4753,6 +4814,7 @@ fn check_made_up_tick(
                 transfer.pose.position,
                 transfer.last_input,
                 *to,
+                transfer.attempt,
             ),
             other => Made::Entry(*edge, other.clone()),
         })
@@ -4767,6 +4829,7 @@ fn check_made_up_tick(
                 last_input: state.last_input,
                 edge: state.edge,
                 entity: state.entity_id,
+                attempt: state.attempt,
             };
             (*id, walker)
         })
@@ -5411,7 +5474,9 @@ impl Cluster {
                         let next = &mut self.sites[holder.0 as usize].next;
                         next.remote_actions.push((E, action.clone()));
                     }
-                    Durable::RemoteDone { player, sequence } => {
+                    Durable::RemoteDone {
+                        player, sequence, ..
+                    } => {
                         self.done(*player, *sequence);
                     }
                     other => panic!("{region} made {other:?}"),

@@ -456,7 +456,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 3;
+pub const STATE_FORMAT: u8 = 4;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1113,6 +1113,10 @@ impl RegionRunner {
                 }
                 StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
                 StoreReply::Flushed => self.flushes_answered += 1,
+                // The store does not say these yet, and they are passed over: step
+                // R1.3 of `docs/adr/0020-one-stay-per-player.md` puts them into the
+                // coming tick's inputs (section 4, step 6, and section 5).
+                StoreReply::Enter { .. } | StoreReply::Dead { .. } => {}
                 // The answer to the merge or the split the store was handed. It is
                 // acted on by the step that finds it, not here: taking it makes the
                 // runner begin anew, and this is also called between two ticks.
@@ -1803,6 +1807,11 @@ impl RegionRunner {
                     selected_slot: state.selected_slot,
                     last_input: state.last_input,
                     handled: state.handled,
+                    flying: state.flying,
+                    // For as long as the stay has it: an edge that was not told the
+                    // entity finds the stay of its connection by it. See
+                    // `docs/adr/0020-one-stay-per-player.md`, section 4.3.
+                    attempt: state.attempt,
                 })
             };
             let mut answers: Vec<_> = resume
@@ -1951,6 +1960,10 @@ impl RegionRunner {
                 tick: output.tick,
                 changes,
                 state: stored(&output.delta),
+                // No tick makes a stay note yet: step R1.3 of
+                // `docs/adr/0020-one-stay-per-player.md` sends the tick's notes and
+                // commits a tick that has any (section 3).
+                stays: Vec::new(),
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -1996,7 +2009,8 @@ impl RegionRunner {
                     .durable
                     .iter()
                     .find_map(|(edge, _, entry)| match entry {
-                        Durable::Departed { player: of, .. } | Durable::Refused { player: of }
+                        Durable::Departed { player: of, .. }
+                        | Durable::Refused { player: of, .. }
                             if *of == player =>
                         {
                             Some(*edge)
@@ -2428,7 +2442,8 @@ impl RegionRunner {
                 }
                 PlayerInput::Move { .. }
                 | PlayerInput::SelectSlot { .. }
-                | PlayerInput::SetHotbarSlot { .. } => return false,
+                | PlayerInput::SetHotbarSlot { .. }
+                | PlayerInput::SetFlying { .. } => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],
@@ -2957,9 +2972,13 @@ impl RegionRunner {
             EdgeToWorker::PlayerJoin(join) => {
                 self.inputs.change(PlayerChange::Join(edge, join));
             }
-            EdgeToWorker::PlayerLeave { player, entity } => {
+            EdgeToWorker::PlayerLeave {
+                player,
+                entity,
+                attempt,
+            } => {
                 self.inputs
-                    .change(PlayerChange::Leave(edge, player, entity));
+                    .change(PlayerChange::Leave(edge, player, entity, attempt));
             }
             EdgeToWorker::PlayerArrive { player, transfer } => {
                 self.inputs
@@ -3725,6 +3744,8 @@ mod tests {
             spawn: SPAWN,
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
+            place_by_store: false,
+            lowest_y: -64,
         }
     }
 
@@ -3820,10 +3841,16 @@ mod tests {
         PlayerId(Uuid::from_u128(3))
     }
 
+    /// The attempt that a join of `player` names in these tests.
+    fn attempt_of(player: PlayerId) -> u64 {
+        7000 + player.0.as_u128() as u64
+    }
+
     fn join(player: PlayerId, name: &str) -> EdgeToWorker {
         EdgeToWorker::PlayerJoin(PlayerJoin {
             player,
             name: name.to_owned(),
+            attempt: attempt_of(player),
         })
     }
 
@@ -3836,6 +3863,9 @@ mod tests {
             hotbar: [None; HOTBAR_SLOTS],
             selected_slot: 4,
             last_input: 7,
+            hops: 0,
+            flying: false,
+            attempt: None,
         }
     }
 
@@ -4078,8 +4108,10 @@ mod tests {
             assert_eq!(
                 spawned,
                 Some(PlayerEvent::Spawned {
+                    attempt: attempt_of(player()),
                     entity_id: EntityId(1),
-                    position: SPAWN,
+                    pose: Pose::at(SPAWN),
+                    flying: false,
                     hotbar: [None; HOTBAR_SLOTS],
                     selected_slot: 0,
                 })
@@ -4187,6 +4219,7 @@ mod tests {
         edge.send(EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
+            attempt: None,
         })
         .await
         .unwrap();
@@ -4898,6 +4931,7 @@ mod tests {
             .send(EdgeToWorker::PlayerLeave {
                 player: player(),
                 entity: None,
+                attempt: None,
             })
             .await
             .unwrap();
@@ -4925,6 +4959,7 @@ mod tests {
         let leave = || EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
+            attempt: None,
         };
 
         owner.send(join(player(), "Notch")).await.unwrap();
@@ -4956,6 +4991,7 @@ mod tests {
         edge.send(EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
+            attempt: None,
         })
         .await
         .unwrap();
@@ -5080,6 +5116,8 @@ mod tests {
             edge.send(dig_by(player(), 16, 7)).await.unwrap();
             let request = RemoteAction {
                 player: player(),
+                // The entity of the player who acts.
+                entity: EntityId(1),
                 sequence: 7,
                 step: RemoteStep::Break {
                     position: BlockPos::new(16, -61, 0),
@@ -5106,6 +5144,7 @@ mod tests {
             other
                 .send(EdgeToWorker::Remote(RemoteAction {
                     player: other_player(),
+                    entity: EntityId(4040),
                     sequence: 3,
                     step: RemoteStep::Break { position: block },
                 }))
@@ -5122,6 +5161,8 @@ mod tests {
                     number: 1,
                     entry: Durable::RemoteDone {
                         player: other_player(),
+                        // That of the action it answers.
+                        entity: EntityId(4040),
                         sequence: 3,
                     },
                 }
@@ -5141,6 +5182,7 @@ mod tests {
             other
                 .send(EdgeToWorker::Remote(RemoteAction {
                     player: other_player(),
+                    entity: EntityId(4040),
                     sequence: 4,
                     step: RemoteStep::PlaceAgainst {
                         against,
@@ -5158,6 +5200,7 @@ mod tests {
                     entry: Durable::Remote {
                         action: RemoteAction {
                             player: other_player(),
+                            entity: EntityId(4040),
                             sequence: 4,
                             step: RemoteStep::Place {
                                 target,
@@ -5188,6 +5231,7 @@ mod tests {
         let leave = || EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
+            attempt: None,
         };
 
         // The stay that is still on its way had the first entity the region gave out,
@@ -5312,6 +5356,7 @@ mod tests {
             number: 1,
             entry: Durable::Refused {
                 player: other_player(),
+                attempt: attempt_of(other_player()),
             },
         };
         assert!(
@@ -5592,6 +5637,8 @@ mod tests {
                 selected_slot: 0,
                 last_input: input,
                 handled: None,
+                flying: false,
+                attempt: None,
             }
         );
     }
@@ -5743,6 +5790,10 @@ mod tests {
             selected_slot: 0,
             last_input: 0,
             handled: None,
+            flying: false,
+            // No input of the stay was applied in that state, so it still carries the
+            // attempt of its join.
+            attempt: Some(attempt_of(third_player())),
         };
         let told = but_for_moves(again.everything());
         let [
@@ -6136,6 +6187,7 @@ mod tests {
             entity_ids: EntityIds::block(0).unwrap(),
             state,
             deltas,
+            issued: EntityId(0),
         };
         // Of this build by its first two bytes, and nothing postcard can read behind.
         let unreadable = |tick| clustine_rpc::TickState {
@@ -6284,6 +6336,7 @@ mod tests {
             PlayerJoin {
                 player: player(),
                 name: "Steve".to_owned(),
+                attempt: 21,
             },
         );
         // The edge looks at two chunks of the neighbour, and the store says whose they
@@ -6307,6 +6360,7 @@ mod tests {
             PlayerJoin {
                 player: other_player(),
                 name: "Alex".to_owned(),
+                attempt: 22,
             },
         ));
         // One who arrives for a chunk of the neighbour and is sent on to it, which is
@@ -6319,6 +6373,9 @@ mod tests {
             hotbar: [None; HOTBAR_SLOTS],
             selected_slot: 0,
             last_input: 5,
+            hops: 2,
+            flying: true,
+            attempt: Some(23),
         };
         inputs.change(PlayerChange::Arrive(edge, third_player(), arriving));
         // A step into a chunk of the neighbour: the player is let go, which is a
@@ -6353,8 +6410,23 @@ mod tests {
         // The two entries of a merge and of a split, which no tick makes yet
         // (ADR-0014, section 9): they are put behind the others by hand, into the
         // state's outbox and among what the delta adds, so that the delta still
-        // turns the state before the tick into this one.
+        // turns the state before the tick into this one. So are the entry for a stay
+        // that the server ended and a stay that is entering, which no tick makes yet
+        // either (ADR-0020, "Building it").
         let (mut state, mut delta) = (region.state(), output.delta);
+        let entering = clustine_sim::EnteringState {
+            entity_id: EntityId(78),
+            name: "Jeb".to_owned(),
+            edge,
+            attempt: 25,
+        };
+        state.entering.insert(third_player(), entering.clone());
+        delta.entering.push((third_player(), Some(entering)));
+        let ended = Durable::Ended {
+            player: third_player(),
+            entity: EntityId(76),
+            attempt: Some(24),
+        };
         let absorbed = Durable::Absorbed {
             region: EAST,
             since: 4,
@@ -6363,7 +6435,7 @@ mod tests {
         };
         let split_off = Durable::SplitOff {
             region: RegionId(9),
-            players: vec![(third_player(), EntityId(77))],
+            players: vec![(third_player(), EntityId(77), Some(23))],
         };
         let known = state
             .edges
@@ -6372,7 +6444,7 @@ mod tests {
         let change = delta.edges.iter_mut().find(|(id, _)| *id == edge);
         let change = change.and_then(|(_, change)| change.as_mut());
         let change = change.expect("the edge changed in the tick");
-        for entry in [absorbed, split_off] {
+        for entry in [absorbed, split_off, ended] {
             known.sent += 1;
             known.outbox.insert(known.sent, entry.clone());
             change.added.push((known.sent, entry));
@@ -6386,36 +6458,45 @@ mod tests {
     /// that changes the shape of a state has to say so with [`STATE_FORMAT`]. This test
     /// has the bytes of a state and of a delta written out. **If it fails, a shape has
     /// changed: raise `STATE_FORMAT` and write the new bytes down here.**
+    ///
+    /// The bytes of format 4 differ from those of format 3 by what ADR-0020 added: a
+    /// player and a transfer have their hand-overs, whether they fly and the attempt of
+    /// their join; a remote action and the entry that says it is done name an entity;
+    /// an entry of a split names each stay's attempt; there is an entry for a stay the
+    /// server ended; and a state has its entering stays, a delta those that changed.
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 3);
+        assert_eq!(STATE_FORMAT, 4);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "0003020280808001060110000000000000000000000000000000020404416c65780000000000002d",
-                "400000000000004ec0000000000000e03f0000000000000000010000000000000000000002000701",
-                "07030102050501040010000000000000000000000000000000039a01054e6f746368000000000040",
-                "44400000000000004ec0000000000000e03f00000000000000000000000000000000000000050102",
-                "02100000000000000000000000000000000212002079000101030010000000000000000000000000",
-                "000000010205537465766500000000004044400000000000004ec0000000000000e03f0000000000",
-                "00000001000000000000000000000101040501040602010305060901100000000000000000000000",
-                "00000000039a01",
+                "0004020280808001060110000000000000000000000000000000020404416c65780000000000002d",
+                "400000000000004ec0000000000000e03f0000000000000000010000000000000000000002000700",
+                "00000107030102060601040010000000000000000000000000000000039a01054e6f746368000000",
+                "00004044400000000000004ec0000000000000e03f00000000000000000000000000000000000000",
+                "05020101170102021000000000000000000000000000000002041200207900010103001000000000",
+                "0000000000000000000000010205537465766500000000004044400000000000004ec00000000000",
+                "00e03f00000000000000000100000000000000000000010000000104050104060201030506090110",
+                "000000000000000000000000000000039a0101170607100000000000000000000000000000000398",
+                "0101180110000000000000000000000000000000039c01034a65620719",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00030201060210000000000000000000000000000000010010000000000000000000000000000000",
+                "00040201060210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010404416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
-                "01000000000000000000000200070107010301020500000501040010000000000000000000000000",
-                "000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f00000000",
-                "00000000000000000000000000000005010202100000000000000000000000000000000212002079",
-                "00010103001000000000000000000000000000000001020553746576650000000000404440000000",
-                "0000004ec0000000000000e03f000000000000000001000000000000000000000101040501040602",
-                "01030506090110000000000000000000000000000000039a01",
+                "01000000000000000000000200070000000107010301020600000601040010000000000000000000",
+                "000000000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f00",
+                "00000000000000000000000000000000000005020101170102021000000000000000000000000000",
+                "00000204120020790001010300100000000000000000000000000000000102055374657665000000",
+                "00004044400000000000004ec0000000000000e03f00000000000000000100000000000000000000",
+                "010000000104050104060201030506090110000000000000000000000000000000039a0101170607",
+                "10000000000000000000000000000000039801011801100000000000000000000000000000000301",
+                "9c01034a65620719",
             )
         );
     }
@@ -6432,6 +6513,7 @@ mod tests {
             entity_ids: ids,
             state,
             deltas,
+            issued: EntityId(0),
         };
         let (state, delta) = a_state_and_a_delta();
         let item = |tick, state| clustine_rpc::TickState { tick, state };
@@ -8480,6 +8562,7 @@ mod tests {
         let mut runner = west(worker_end);
         let action = RemoteAction {
             player: player(),
+            entity: EntityId(4040),
             sequence: 4,
             step: RemoteStep::Break {
                 position: BlockPos::new(-1, -61, 0),
@@ -8502,6 +8585,7 @@ mod tests {
         let entries: Vec<_> = state.outbox.values().collect();
         let done = Durable::RemoteDone {
             player: player(),
+            entity: EntityId(4040),
             sequence: 4,
         };
         assert_eq!(entries, [&done]);
@@ -8533,6 +8617,7 @@ mod tests {
                 let entity = match answer {
                     Presence::Present { entity, .. } => Some(*entity),
                     Presence::Absent => None,
+                    Presence::Entering { .. } => panic!("no region says {answer:?} yet"),
                 };
                 Some((*player, entity))
             }
@@ -8657,6 +8742,7 @@ mod tests {
         let leave = |entity| EdgeToWorker::PlayerLeave {
             player: player(),
             entity: Some(entity),
+            attempt: None,
         };
         again.send(leave(EntityId(entity.0 + 1))).await.unwrap();
         step(&mut runner);
@@ -8810,6 +8896,7 @@ mod tests {
             .unwrap();
         let beyond = RemoteAction {
             player: other_player(),
+            entity: EntityId(4040),
             sequence: 3,
             step: RemoteStep::Break {
                 position: BlockPos::new(3, -61, 0),
@@ -9490,7 +9577,7 @@ mod tests {
             assert_eq!(again.welcomed, Some(welcome));
             let went = Durable::SplitOff {
                 region: new,
-                players: vec![(other_player(), EntityId(2))],
+                players: vec![(other_player(), EntityId(2), None)],
             };
             let state = west.region().edge(edge.edge).unwrap();
             assert_eq!(state.outbox.values().collect::<Vec<_>>(), [&went]);
@@ -9571,7 +9658,7 @@ mod tests {
         let state = west.region().edge(edge.edge).unwrap();
         let went = Durable::SplitOff {
             region: RegionId(2),
-            players: vec![(other_player(), EntityId(2))],
+            players: vec![(other_player(), EntityId(2), None)],
         };
         assert_eq!(state.outbox.values().collect::<Vec<_>>(), [&went]);
         let list = world.store.regions().unwrap();
@@ -11527,7 +11614,7 @@ mod tests {
             let state = runner.region().edge(edge.edge).unwrap();
             let went = Durable::SplitOff {
                 region: part,
-                players: vec![(other_player(), p)],
+                players: vec![(other_player(), p, None)],
             };
             assert_eq!(state.outbox.values().collect::<Vec<_>>(), [&went]);
 
@@ -11749,7 +11836,7 @@ mod tests {
             assert_eq!(again.welcomed, Some(welcome));
             let went = Durable::SplitOff {
                 region: part,
-                players: vec![(other_player(), scene.p)],
+                players: vec![(other_player(), scene.p, None)],
             };
             assert_eq!(entries(&heard), [(number, went)]);
             assert_eq!(

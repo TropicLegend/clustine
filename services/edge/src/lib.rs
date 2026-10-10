@@ -262,7 +262,9 @@ impl Edge {
                 opening_packets: configuration::opening_packets(),
                 registry_packets: configuration::registry_packets(),
                 fanout: commands,
-                next_session: AtomicU64::new(0),
+                // From 1: a session is the attempt its join names to the region
+                // (`docs/adr/0020-one-stay-per-player.md`, section 4, step 2).
+                next_session: AtomicU64::new(1),
                 online,
             }),
             fanout: Fanout::new(fanout_config, routing, command_receiver),

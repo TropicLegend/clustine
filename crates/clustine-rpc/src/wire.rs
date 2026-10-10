@@ -267,10 +267,12 @@ mod tests {
             EdgeToWorker::PlayerLeave {
                 player,
                 entity: Some(EntityId(41)),
+                attempt: None,
             },
             EdgeToWorker::PlayerLeave {
                 player,
                 entity: None,
+                attempt: None,
             },
             EdgeToWorker::Input {
                 player,
@@ -328,7 +330,10 @@ mod tests {
                 number: 7,
                 entry: Durable::SplitOff {
                     region: RegionId(10),
-                    players: vec![(player, EntityId(41))],
+                    players: vec![
+                        (player, EntityId(41), Some(3)),
+                        (player, EntityId(42), None),
+                    ],
                 },
             },
         ] {
@@ -466,7 +471,7 @@ mod tests {
     #[test]
     fn the_messages_of_the_world_store_round_trip() {
         use clustine_data::blocks;
-        use clustine_world::{BlockPos, ChunkArea, ChunkPos, EntityIds};
+        use clustine_world::{BlockPos, ChunkArea, ChunkPos, EntityId, EntityIds};
 
         use crate::{
             Restored, RestoredItem, RestoredPart, RestoredPiece, StoreReply, StoreRequest,
@@ -494,12 +499,14 @@ mod tests {
                     state: vec![0xFF; 300],
                 },
             ],
+            issued: EntityId(0),
         };
         assert_eq!(restored.tick(), 9);
         let welcomes = [
             StoreWelcome::Accepted {
                 entity_ids: restored.entity_ids,
                 pinned: restored.pinned.clone(),
+                issued: EntityId(i32::MAX),
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Absorbed {
@@ -517,6 +524,7 @@ mod tests {
             tick: 9,
             changes: vec![(BlockPos::new(-1, -64, 3), blocks::GLASS)],
             state: vec![4, 5],
+            stays: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -589,6 +597,7 @@ mod tests {
             entity_ids: EntityIds::block(0).unwrap(),
             state: None,
             deltas: Vec::new(),
+            issued: EntityId(0),
         };
         assert_eq!(fresh.tick(), 0);
         fresh.state = Some(TickState {
@@ -596,6 +605,105 @@ mod tests {
             state: Vec::new(),
         });
         assert_eq!(fresh.tick(), 4);
+    }
+
+    /// What a region and the world store say to each other about stays, and what the
+    /// store says of the entity ids that were given out, come out as they went in. See
+    /// `docs/adr/0020-one-stay-per-player.md`, sections 3, 5 and 7.
+    #[test]
+    fn what_is_said_of_stays_to_and_by_the_world_store_round_trips() {
+        use clustine_sim::api::{HOTBAR_SLOTS, ItemStack, Place, Pose, StayNote};
+        use clustine_world::{EntityId, EntityIds, PlayerId, Vec3};
+
+        use crate::{Restored, StoreReply, StoreRequest, StoreWelcome};
+
+        let player = PlayerId(uuid::Uuid::from_u128(7));
+        let other = PlayerId(uuid::Uuid::from_u128(u128::MAX));
+        let mut hotbar = [None; HOTBAR_SLOTS];
+        hotbar[0] = Some(ItemStack { item: 1, count: 64 });
+        hotbar[8] = Some(ItemStack { item: 35, count: 1 });
+        let place = Place {
+            pose: Pose {
+                position: Vec3::new(-1234.5, 71.25, 0.5),
+                yaw: -179.5,
+                pitch: 89.0,
+                on_ground: false,
+            },
+            flying: true,
+            hotbar,
+            selected_slot: 8,
+        };
+        let standing = Place {
+            pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
+            flying: false,
+            hotbar: [None; HOTBAR_SLOTS],
+            selected_slot: 0,
+        };
+
+        round_trip(StoreRequest::Commit {
+            tick: 9,
+            changes: Vec::new(),
+            state: vec![4, 5],
+            stays: vec![
+                StayNote::Entering {
+                    player,
+                    entity: EntityId(41),
+                },
+                StayNote::Has {
+                    player,
+                    entity: EntityId(41),
+                    hops: 0,
+                    place: standing.clone(),
+                },
+                StayNote::Has {
+                    player: other,
+                    entity: EntityId(i32::MAX),
+                    hops: u32::MAX,
+                    place: place.clone(),
+                },
+            ],
+        });
+        for reply in [
+            StoreReply::Enter {
+                player,
+                entity: EntityId(41),
+                place: None,
+                holder: None,
+            },
+            StoreReply::Enter {
+                player,
+                entity: EntityId(41),
+                place: Some(standing),
+                holder: None,
+            },
+            StoreReply::Enter {
+                player: other,
+                entity: EntityId(i32::MAX),
+                place: Some(place),
+                holder: Some(clustine_region::RegionId(u32::MAX)),
+            },
+            StoreReply::Dead { stays: Vec::new() },
+            StoreReply::Dead {
+                stays: vec![(player, EntityId(41), 0), (other, EntityId(42), u32::MAX)],
+            },
+        ] {
+            round_trip(reply);
+        }
+        for issued in [EntityId(0), EntityId(41), EntityId(i32::MAX)] {
+            round_trip(StoreWelcome::Accepted {
+                entity_ids: EntityIds::block(3).unwrap(),
+                pinned: Vec::new(),
+                issued,
+            });
+            round_trip(Restored {
+                held: Vec::new(),
+                pinned: Vec::new(),
+                entity_ids: EntityIds::block(3).unwrap(),
+                state: None,
+                deltas: Vec::new(),
+                issued,
+            });
+        }
     }
 
     /// What is said first to the world store is one of two things, and neither is

@@ -3,8 +3,8 @@
 use clustine_data::BlockState;
 use clustine_region::{RegionId, RoutingTable};
 use clustine_sim::api::{
-    Durable, EntityState, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput, PlayerJoin,
-    PlayerTransfer, Pose, RegionEvent, RemoteAction,
+    Durable, EntityState, HOTBAR_SLOTS, ItemStack, Place, PlayerEvent, PlayerInput, PlayerJoin,
+    PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote,
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3,
@@ -76,9 +76,14 @@ pub enum EdgeToWorker {
     /// player has, which names the stay that ends with the connection, or `None` if
     /// the edge was told of none: the leave is then for the player whatever their
     /// entity. See `docs/adr/0014-merging-and-splitting.md`, section 2.1.
+    ///
+    /// `attempt` is that of the connection that ended ([`PlayerJoin::attempt`]) if the
+    /// edge was told of no entity, and `None` otherwise. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 4.4.
     PlayerLeave {
         player: PlayerId,
         entity: Option<EntityId>,
+        attempt: Option<u64>,
     },
     /// A player has walked in from another region, which let them go with
     /// [`PlayerEvent::Departed`].
@@ -182,7 +187,12 @@ pub enum WorkerToEdge {
     /// A [`RemoteAction`] that reached this region has been dealt with. What it changed
     /// was reported before, in the [`WorkerToEdge::TickDelta`] of the same tick, so the
     /// player can now be told that their action with this sequence number was handled.
-    RemoteDone { player: PlayerId, sequence: i32 },
+    /// `entity` is that of the action: the stay the player did it in.
+    RemoteDone {
+        player: PlayerId,
+        entity: EntityId,
+        sequence: i32,
+    },
     /// The answer to [`EdgeToWorker::Hello`], before anything else on the link.
     Welcome(Welcome),
     /// An entry of the region's outbox for this edge, with its number. It is sent again
@@ -269,8 +279,23 @@ pub enum Presence {
         /// The highest sequence number of the player's own actions on blocks of this
         /// region that has been handled, if any.
         handled: Option<i32>,
+        /// Whether the player flies. Always false as yet; see
+        /// `docs/adr/0020-one-stay-per-player.md`, section 13.
+        flying: bool,
+        /// The attempt of the join that began the stay, for as long as the stay has
+        /// it: until a region has applied an input of it. See
+        /// `docs/adr/0020-one-stay-per-player.md`, section 4.3.
+        attempt: Option<u64>,
     },
     Absent,
+    /// The region holds a stay of the player as entering, for this edge, from the join
+    /// with this attempt.
+    ///
+    /// No runner says it yet and an edge that hears it does nothing: steps R1.3 and
+    /// R1.4 of `docs/adr/0020-one-stay-per-player.md` give it meaning (section 4.2).
+    Entering {
+        attempt: u64,
+    },
 }
 
 /// What a worker asks of the world store through the handle of a region it has opened.
@@ -301,6 +326,10 @@ pub enum StoreRequest {
         tick: u64,
         changes: Vec<(BlockPos, BlockState)>,
         state: Vec<u8>,
+        /// What the region says of stays in this tick; see ADR-0020, section 3. No
+        /// runner sends any yet, and the store does not look at them: steps R1.1 and
+        /// R1.3 of that record give them meaning.
+        stays: Vec<StayNote>,
     },
     /// `state` is the region's whole state after `tick`, and every change committed up
     /// to `tick` is contained in a chunk saved before this request. Once those saves are
@@ -422,6 +451,27 @@ pub enum StoreReply {
         position: ChunkPos,
         holder: Option<RegionId>,
     },
+    /// To the home region: the stay `entity` of `player`, which it named as entering,
+    /// may enter. `place` is where the player was last, if anywhere; `holder` is the
+    /// region that held the chunk of that place when the note was taken, if one did.
+    ///
+    /// The store does not say it yet and a runner that hears it passes it over: steps
+    /// R1.1 and R1.3 of `docs/adr/0020-one-stay-per-player.md` give it meaning
+    /// (sections 3 and 4).
+    Enter {
+        player: PlayerId,
+        entity: EntityId,
+        place: Option<Place>,
+        holder: Option<RegionId>,
+    },
+    /// Of each player named, a stay below `(stay, hops)` is dead: one with a lower
+    /// entity id, or the stay `stay` with fewer hand-overs than `hops`.
+    ///
+    /// Not said and passed over as [`StoreReply::Enter`] is, until the same steps
+    /// (section 5).
+    Dead {
+        stays: Vec<(PlayerId, EntityId, u32)>,
+    },
 }
 
 /// Why the world store did not do a merge or a split. See ADR-0011, section 7.
@@ -471,6 +521,12 @@ pub struct Restored {
     /// was granted. The store does not say which those are; a region finds out about
     /// a chunk by claiming it.
     pub pinned: Vec<ChunkArea>,
+    /// The highest entity id the store was ever told a stay was given: the region goes
+    /// on above it. The store keeps no such number yet and says 0, which is what it
+    /// says of a world in which no stay was ever issued, and a runner does not look at
+    /// it: steps R1.1 and R1.3 of `docs/adr/0020-one-stay-per-player.md` give it
+    /// meaning (section 7).
+    pub issued: EntityId,
 }
 
 impl Restored {
@@ -516,6 +572,8 @@ pub enum StoreWelcome {
         entity_ids: EntityIds,
         /// [`Restored::pinned`].
         pinned: Vec<ChunkArea>,
+        /// [`Restored::issued`].
+        issued: EntityId,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.

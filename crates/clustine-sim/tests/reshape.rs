@@ -109,6 +109,8 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -213,18 +215,24 @@ fn started(edge: EdgeId, start: u64) -> EdgeEvent {
     EdgeEvent::Started { edge, start }
 }
 
+/// The attempt that a join of `id` names.
+fn attempt(id: PlayerId) -> u64 {
+    7000 + id.0.as_u128() as u64
+}
+
 fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
             player: id,
             name: format!("player-{}", id.0.as_u128()),
+            attempt: attempt(id),
         },
     )
 }
 
 fn leave(edge: EdgeId, id: PlayerId, entity: Option<EntityId>) -> PlayerChange {
-    PlayerChange::Leave(edge, id, entity)
+    PlayerChange::Leave(edge, id, entity, None)
 }
 
 fn changes(list: Vec<PlayerChange>) -> TickInputs {
@@ -294,9 +302,26 @@ fn use_on(position: BlockPos, face: Face, sequence: i32) -> PlayerInput {
     }
 }
 
+/// The entity that `id` has in another region, as the remote actions here name it.
+fn elsewhere(id: PlayerId) -> EntityId {
+    EntityId(9000 + id.0.as_u128() as i32)
+}
+
 fn remote(id: PlayerId, sequence: i32, step: RemoteStep) -> RemoteAction {
     RemoteAction {
         player: id,
+        entity: elsewhere(id),
+        sequence,
+        step,
+    }
+}
+
+/// What is left of an action of `id` in the stay `entity`, as the region the player is
+/// in passes it on: it names the entity of the player who acts.
+fn own(id: PlayerId, entity: EntityId, sequence: i32, step: RemoteStep) -> RemoteAction {
+    RemoteAction {
+        player: id,
+        entity,
         sequence,
         step,
     }
@@ -332,6 +357,9 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         hotbar: hotbar(),
         selected_slot: 0,
         last_input,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -344,6 +372,9 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         hotbar: state.hotbar,
         selected_slot: state.selected_slot,
         last_input: state.last_input,
+        hops: state.hops,
+        flying: state.flying,
+        attempt: state.attempt,
     }
 }
 
@@ -358,6 +389,9 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         last_input: transfer.last_input,
         handled: None,
         edge,
+        hops: transfer.hops,
+        flying: transfer.flying,
+        attempt: transfer.attempt,
     }
 }
 
@@ -679,8 +713,10 @@ fn a_join_of_a_player_the_region_has_under_the_same_edge_begins_a_new_stay() {
         vec![(
             player(1),
             PlayerEvent::Spawned {
+                attempt: attempt(player(1)),
                 entity_id: entity(2),
-                position: SPAWN,
+                pose: Pose::at(SPAWN),
+                flying: false,
                 hotbar: hotbar(),
                 selected_slot: 0,
             }
@@ -822,10 +858,7 @@ fn a_join_that_is_refused_still_ends_the_stay_the_region_has() {
         let mut region = with_no_id_left(block);
         let output = tick(&mut region, &changes(vec![join(E, player(1))]));
         assert_eq!(removed(&output), [(TRAVELLER, HOME)]);
-        assert_eq!(
-            output.durable,
-            vec![(E, 1, Durable::Refused { player: player(1) })]
-        );
+        assert_eq!(output.durable, vec![(E, 1, refused(1))]);
         assert!(spawned(&output).is_empty() && output.player_events.is_empty());
         assert_eq!(region.player_count(), 0);
     }
@@ -1455,7 +1488,7 @@ impl Stays {
                     self.players.insert(join.player, stay);
                 }
                 // A leave names the stay it ends.
-                PlayerChange::Leave(edge, id, named) => {
+                PlayerChange::Leave(edge, id, named, _) => {
                     let ends = |stay: &StayHere| {
                         stay.edge == *edge && named.is_none_or(|entity| entity == stay.entity)
                     };
@@ -1616,7 +1649,10 @@ fn made_up_joins_arrivals_leaves_and_inputs_keep_to_what_the_record_says_of_stay
             let refused: Vec<Durable> = expected
                 .refused
                 .iter()
-                .map(|(_, id)| Durable::Refused { player: *id })
+                .map(|(_, id)| Durable::Refused {
+                    player: *id,
+                    attempt: attempt(*id),
+                })
                 .collect();
             assert_eq!(entries(&output), refused, "{context}");
             let edges: Vec<EdgeId> = output.durable.iter().map(|(edge, ..)| *edge).collect();
@@ -1847,7 +1883,7 @@ fn a_players_own_action_on_a_doubted_chunk_names_the_believed_region_as_before()
             E,
             1,
             Durable::Remote {
-                action: remote(player(1), 6, break_at(SOUTH_BLOCK)),
+                action: own(player(1), entity(1), 6, break_at(SOUTH_BLOCK)),
                 to: Some(OTHER),
             }
         )]
@@ -1966,6 +2002,9 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         last_input: n as u64 % 50 + 2,
         handled: Some(n % 30),
         edge,
+        hops: 0,
+        flying: false,
+        attempt: None,
     }
 }
 
@@ -1998,6 +2037,7 @@ fn a_state(
         next_entity_id,
         players: players.iter().cloned().collect(),
         edges: edges.iter().cloned().collect(),
+        entering: BTreeMap::new(),
     }
 }
 
@@ -2007,12 +2047,16 @@ fn other_ids() -> EntityIds {
 }
 
 fn refused(n: u128) -> Durable {
-    Durable::Refused { player: player(n) }
+    Durable::Refused {
+        player: player(n),
+        attempt: attempt(player(n)),
+    }
 }
 
 fn done(n: u128, sequence: i32) -> Durable {
     Durable::RemoteDone {
         player: player(n),
+        entity: elsewhere(player(n)),
         sequence,
     }
 }
@@ -2190,7 +2234,7 @@ fn made_up_entry(random: &mut Random) -> Durable {
         4 => absorbed(OTHER, random.below(9), random.below(9), &[2, 5]),
         _ => Durable::SplitOff {
             region: PART,
-            players: vec![(player(n), entity)],
+            players: vec![(player(n), entity, None)],
         },
     }
 }
@@ -2638,7 +2682,7 @@ fn entries_that_name_either_region_or_tell_of_an_earlier_merge_or_split_are_carr
             6,
             Durable::SplitOff {
                 region: PART,
-                players: vec![(player(5), entity(5)), (player(6), entity(4))],
+                players: vec![(player(5), entity(5), None), (player(6), entity(4), None)],
             },
         ),
     ];
@@ -3274,14 +3318,14 @@ fn split_as_the_record_says(
     ours.tick = tick;
     let mut theirs = RegionState::new(no_ids());
     theirs.tick = tick;
-    let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId)>> = BTreeMap::new();
+    let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId, Option<u64>)>> = BTreeMap::new();
     for (id, player) in &state.players {
         if goes(player) {
             ours.players.remove(id);
             theirs.players.insert(*id, player.clone());
             went.entry(player.edge)
                 .or_default()
-                .push((*id, player.entity_id));
+                .push((*id, player.entity_id, player.attempt));
         }
     }
     for (edge, players) in went {
@@ -3719,14 +3763,14 @@ fn the_split_region_loses_those_who_go_and_tells_each_of_their_edges_once() {
     let to_e = Durable::SplitOff {
         region: PART,
         players: vec![
-            (player(1), entity(7)),
-            (player(3), entity(3)),
-            (player(5), entity(1)),
+            (player(1), entity(7), None),
+            (player(3), entity(3), None),
+            (player(5), entity(1), None),
         ],
     };
     let to_f = Durable::SplitOff {
         region: PART,
-        players: vec![(player(4), entity(6))],
+        players: vec![(player(4), entity(6), None)],
     };
     let expected: BTreeMap<EdgeId, EdgeState> = [
         (E, edge_state(10, 3, 17, 5, &[(4, refused(9)), (5, to_e)])),
@@ -3944,7 +3988,7 @@ fn the_plan_of_the_split_is_as_the_scenario_has_it() {
                 1,
                 Durable::SplitOff {
                     region: PART,
-                    players: vec![(player(2), entity(2))],
+                    players: vec![(player(2), entity(2), None)],
                 }
             )]
             .into()
@@ -4089,10 +4133,7 @@ fn a_player_who_stays_and_steps_into_a_chunk_of_the_part_is_let_go_to_it_when_th
 fn a_join_at_the_part_is_refused() {
     let (_, _, _, mut part) = taken(false);
     let output = tick(&mut part.region, &changes(vec![join(E, player(7))]));
-    assert_eq!(
-        output.durable,
-        vec![(E, 1, Durable::Refused { player: player(7) })]
-    );
+    assert_eq!(output.durable, vec![(E, 1, refused(7))]);
     assert!(spawned(&output).is_empty());
     assert_eq!(part.region.player_count(), 1);
     assert_eq!(part.region.state().next_entity_id, EntityId(0));
@@ -4420,6 +4461,8 @@ fn run_config() -> RegionConfig {
         spawn: ENTRANCE,
         starting_hotbar: hotbar(),
         return_after: 0,
+        place_by_store: false,
+        lowest_y: -64,
     }
 }
 
@@ -4884,7 +4927,9 @@ impl Cluster {
                     let next = &mut self.site(to).next;
                     next.remote_actions.push((*edge, action.clone()));
                 }
-                Durable::RemoteDone { player, sequence } => self.done(*player, *sequence),
+                Durable::RemoteDone {
+                    player, sequence, ..
+                } => self.done(*player, *sequence),
                 other => panic!("{from} made {other:?} in a tick"),
             }
         }
@@ -5063,7 +5108,7 @@ impl Cluster {
                 panic!("the last entry for {:?} is {entry:?}", player.edge);
             };
             assert_eq!(*region, part);
-            assert!(players.contains(&(*id, player.entity_id)));
+            assert!(players.contains(&(*id, player.entity_id, player.attempt)));
             match self.stays.get_mut(id) {
                 Some(stay) if stay.entity == Some(player.entity_id) => {
                     stay.site = part;
@@ -5124,7 +5169,7 @@ impl Cluster {
             let waiting = site.next.inputs.iter().any(|(_, actor, ..)| *actor == id);
             let coming = site.next.player_changes.iter().any(|change| match change {
                 PlayerChange::Join(_, join) => join.player == id,
-                PlayerChange::Arrive(_, player, _) | PlayerChange::Leave(_, player, _) => {
+                PlayerChange::Arrive(_, player, _) | PlayerChange::Leave(_, player, _, _) => {
                     *player == id
                 }
                 PlayerChange::Discard { .. } => false,

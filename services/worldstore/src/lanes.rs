@@ -646,6 +646,11 @@ impl Lanes {
                 tick,
                 changes,
                 state,
+                // What the region says of stays is neither kept nor answered yet, and
+                // no runner sends any: step R1.1 of
+                // `docs/adr/0020-one-stay-per-player.md` has the store take the notes
+                // (section 3).
+                stays: _,
             } => {
                 let record = LogRecord::Commit {
                     region: session.region.0,
@@ -653,6 +658,7 @@ impl Lanes {
                     epoch: owner.epoch,
                     changes,
                     state,
+                    stays: Vec::new(),
                 }
                 .encode();
                 self.group.regions.insert(session.region);
@@ -1275,6 +1281,10 @@ impl Lanes {
             deltas,
             held: self.table.grants(region),
             pinned: self.table.pinned(region).to_vec(),
+            // The store keeps no such number yet, and 0 is what it says of a world in
+            // which no stay was ever issued: step R1.1 of
+            // `docs/adr/0020-one-stay-per-player.md` keeps it (section 7).
+            issued: EntityId(0),
         };
         let opened = Opened {
             session,

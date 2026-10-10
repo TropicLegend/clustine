@@ -301,14 +301,14 @@ impl Region {
         let mut new = RegionState::new(NO_ENTITY_IDS);
         new.tick = tick;
         // The stays that go, by the edge they are of: ascending, as the players are.
-        let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId)>> = BTreeMap::new();
+        let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId, Option<u64>)>> = BTreeMap::new();
         for (id, player) in &self.players {
             if seeds.contains(&player.chunk())
                 && let Some(player) = state.players.remove(id)
             {
                 went.entry(player.edge)
                     .or_default()
-                    .push((*id, player.entity_id));
+                    .push((*id, player.entity_id, player.attempt));
                 new.players.insert(*id, player);
             }
         }
@@ -411,6 +411,8 @@ mod tests {
             spawn: SPAWN,
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
+            place_by_store: false,
+            lowest_y: -64,
         }
     }
 
@@ -454,7 +456,16 @@ mod tests {
             last_input: entity as u64 * 3,
             handled: Some(entity * 7),
             edge,
+            hops: entity as u32 % 4,
+            flying: entity % 3 == 0,
+            attempt: attempt_of(entity),
         }
+    }
+
+    /// The attempt the stay with the entity `entity` carries: every other one has had
+    /// no input applied yet and carries one.
+    fn attempt_of(entity: i32) -> Option<u64> {
+        (entity % 2 == 0).then_some(entity as u64 + 500)
     }
 
     /// The stay as a region hands it to another.
@@ -466,6 +477,9 @@ mod tests {
             hotbar: stay.hotbar,
             selected_slot: stay.selected_slot,
             last_input: stay.last_input,
+            hops: stay.hops,
+            flying: stay.flying,
+            attempt: stay.attempt,
         }
     }
 
@@ -473,6 +487,7 @@ mod tests {
     fn entry(number: i32) -> Durable {
         Durable::RemoteDone {
             player: player(900),
+            entity: EntityId(900),
             sequence: number,
         }
     }
@@ -509,6 +524,7 @@ mod tests {
                 .map(|(number, state)| (player(number), state))
                 .collect(),
             edges: edges.into_iter().collect(),
+            entering: BTreeMap::new(),
         }
     }
 
@@ -614,6 +630,7 @@ mod tests {
             PlayerJoin {
                 player: player(8),
                 name: "Late".to_owned(),
+                attempt: 41,
             },
         );
         let output = merged_region.tick(&TickInputs {
@@ -1018,6 +1035,7 @@ mod tests {
                 .map(|(number, stay)| (player(number), stay))
                 .collect(),
             edges: [(E, edge(3, 21, 0, 0, &[])), (F, edge(5, 21, 0, 0, &[]))].into(),
+            entering: BTreeMap::new(),
         };
         assert_eq!(split.part, expected);
         // The region has lost them, and tells each of their edges which stays went
@@ -1026,7 +1044,7 @@ mod tests {
             region: PART,
             players: stays
                 .iter()
-                .map(|(number, entity)| (player(*number), EntityId(*entity)))
+                .map(|(number, entity)| (player(*number), EntityId(*entity), attempt_of(*entity)))
                 .collect(),
         };
         let mut expected = state(21, 0, 9, stayed, edges);
@@ -1452,6 +1470,7 @@ mod tests {
             PlayerJoin {
                 player: player(8),
                 name: "Late".to_owned(),
+                attempt: 41,
             },
         );
         let output = part.tick(&TickInputs {
@@ -1460,7 +1479,14 @@ mod tests {
         });
         assert_eq!(
             output.durable,
-            [(E, 1, Durable::Refused { player: player(8) })]
+            [(
+                E,
+                1,
+                Durable::Refused {
+                    player: player(8),
+                    attempt: 41
+                }
+            )]
         );
         // Its player is its own: what the stay does is applied there, with the numbers
         // going on from where they were, and no longer in the region it was split off.

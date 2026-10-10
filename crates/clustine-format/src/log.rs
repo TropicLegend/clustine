@@ -21,11 +21,36 @@
 //! | 5 | [`LogRecord::Returned`] | region u32, chunks |
 //! | 6 | [`LogRecord::Absorbed`] | region u32, epoch u64, absorbed u32, tick u64, state bytes |
 //! | 7 | [`LogRecord::Split`] | region u32, epoch u64, tick u64, state bytes, part u32, part epoch u64, chunks, part state bytes |
+//! | 8 | [`LogRecord::Commit`] with stay notes | the fields of kind 2, stays |
 //!
 //! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
 //! u16 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z;
 //! and `bytes` is a length (u32) followed by that many bytes. All integers are
-//! big-endian.
+//! big-endian, and so are the floating-point numbers.
+//!
+//! A commit is written as kind 2 if it has no stay notes and as kind 8 if it has any, so
+//! that a commit and its notes are on disk together or not at all. `stays` is a count
+//! (u32), which is not 0, followed, per note ([`LoggedStay`]), by:
+//!
+//! | Field | Type |
+//! |---|---|
+//! | Kind | u8: 1 `Entering`, 2 `Has` |
+//! | Player | u128 |
+//! | Entity | i32 |
+//! | *`Has` only:* hops | u32 |
+//! | … the place | see below |
+//!
+//! and a place ([`LoggedPlace`]) is:
+//!
+//! | Field | Type |
+//! |---|---|
+//! | Position | f64 x, f64 y, f64 z |
+//! | Yaw, pitch | f32, f32 |
+//! | Flags | u8: bit 0 on-ground, bit 1 flying |
+//! | Selected slot | u8 |
+//! | Hotbar | nine times: u8 0 for an empty slot, or u8 1, i32 item, i32 count |
+//!
+//! See `docs/adr/0020-one-stay-per-player.md`, section 8.
 //!
 //! Kinds 4 to 7 are what decides which region holds which chunk and which regions there
 //! are; see `docs/adr/0011-the-world-store-and-regions.md`.
@@ -47,6 +72,21 @@ const KIND_GRANTED: u8 = 4;
 const KIND_RETURNED: u8 = 5;
 const KIND_ABSORBED: u8 = 6;
 const KIND_SPLIT: u8 = 7;
+const KIND_COMMIT_WITH_STAYS: u8 = 8;
+
+/// The kinds of a stay note.
+const STAY_ENTERING: u8 = 1;
+const STAY_HAS: u8 = 2;
+
+/// The flags of a place.
+const ON_GROUND: u8 = 1;
+const FLYING: u8 = 2;
+
+/// Bytes a stay note takes in a payload at the least.
+const STAY_LENGTH: usize = 21;
+
+/// The number of slots in a player's hotbar.
+pub const HOTBAR_SLOTS: usize = 9;
 
 /// Bytes of the length and the checksum in front of every payload.
 const FRAME_HEADER_LENGTH: usize = 8;
@@ -65,6 +105,54 @@ const CHANGE_LENGTH: usize = 14;
 /// Bytes a chunk takes in a payload.
 const CHUNK_LENGTH: usize = 8;
 
+/// What a region said of a stay in a commit, as the log keeps it: in plain numbers, so
+/// that the layout is the store's own and does not change with what a region's state
+/// looks like. See `docs/adr/0020-one-stay-per-player.md`, sections 3 and 8.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoggedStay {
+    /// The home region has given `player` the stay `entity` and holds it as entering.
+    Entering { player: u128, entity: i32 },
+    /// The stay is in the region after the tick, or was let go in it, with `hops`
+    /// hand-overs behind it and this place.
+    Has {
+        player: u128,
+        entity: i32,
+        hops: u32,
+        place: LoggedPlace,
+    },
+}
+
+/// Where a player is and what they hold, in plain numbers.
+///
+/// Two places are equal if their bytes on disk are: the numbers with a fraction are
+/// compared by their bits.
+#[derive(Debug, Clone, Copy)]
+pub struct LoggedPlace {
+    /// The position of the feet: x, y, z.
+    pub position: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
+    pub flying: bool,
+    pub selected_slot: u8,
+    /// Each slot of the hotbar: the item and how many, if there is anything in it.
+    pub hotbar: [Option<(i32, i32)>; HOTBAR_SLOTS],
+}
+
+impl PartialEq for LoggedPlace {
+    fn eq(&self, other: &Self) -> bool {
+        self.position.map(f64::to_bits) == other.position.map(f64::to_bits)
+            && self.yaw.to_bits() == other.yaw.to_bits()
+            && self.pitch.to_bits() == other.pitch.to_bits()
+            && self.on_ground == other.on_ground
+            && self.flying == other.flying
+            && self.selected_slot == other.selected_slot
+            && self.hotbar == other.hotbar
+    }
+}
+
+impl Eq for LoggedPlace {}
+
 /// A record of the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogRecord {
@@ -79,7 +167,7 @@ pub enum LogRecord {
     },
     /// What one tick of a region committed: the blocks that changed, in the order they
     /// changed, and the region's own record of what else changed, which the store keeps
-    /// as it is.
+    /// as it is; and what the region said of stays in that tick, which the store reads.
     Commit {
         region: u32,
         tick: u64,
@@ -87,6 +175,9 @@ pub enum LogRecord {
         epoch: u64,
         changes: Vec<(BlockPos, BlockState)>,
         state: Vec<u8>,
+        /// The stay notes of the tick. A commit without any is written as it was
+        /// before there were notes.
+        stays: Vec<LoggedStay>,
     },
     /// The region was opened by an owner with `epoch` and restored up to tick
     /// `restored`. A record of the region that comes before this one with a later tick
@@ -156,13 +247,21 @@ impl LogRecord {
                 epoch,
                 changes,
                 state,
+                stays,
             } => {
-                payload.push(KIND_COMMIT);
+                payload.push(if stays.is_empty() {
+                    KIND_COMMIT
+                } else {
+                    KIND_COMMIT_WITH_STAYS
+                });
                 payload.extend_from_slice(&region.to_be_bytes());
                 payload.extend_from_slice(&tick.to_be_bytes());
                 payload.extend_from_slice(&epoch.to_be_bytes());
                 put_changes(&mut payload, changes);
                 put_bytes(&mut payload, state);
+                if !stays.is_empty() {
+                    put_stays(&mut payload, stays);
+                }
             }
             Self::Opened {
                 region,
@@ -245,6 +344,15 @@ impl LogRecord {
                 epoch: input.u64()?,
                 changes: take_changes(&mut input)?,
                 state: take_bytes(&mut input)?,
+                stays: Vec::new(),
+            },
+            KIND_COMMIT_WITH_STAYS => Self::Commit {
+                region: input.u32()?,
+                tick: input.u64()?,
+                epoch: input.u64()?,
+                changes: take_changes(&mut input)?,
+                state: take_bytes(&mut input)?,
+                stays: take_stays(&mut input)?,
             },
             KIND_OPENED => Self::Opened {
                 region: input.u32()?,
@@ -342,6 +450,107 @@ fn take_bytes(input: &mut Input<'_>) -> Result<Vec<u8>, FormatError> {
     Ok(input.take(length)?.to_vec())
 }
 
+fn put_stays(payload: &mut Vec<u8>, stays: &[LoggedStay]) {
+    payload.extend_from_slice(&(stays.len() as u32).to_be_bytes());
+    for stay in stays {
+        match stay {
+            LoggedStay::Entering { player, entity } => {
+                payload.push(STAY_ENTERING);
+                payload.extend_from_slice(&player.to_be_bytes());
+                payload.extend_from_slice(&entity.to_be_bytes());
+            }
+            LoggedStay::Has {
+                player,
+                entity,
+                hops,
+                place,
+            } => {
+                payload.push(STAY_HAS);
+                payload.extend_from_slice(&player.to_be_bytes());
+                payload.extend_from_slice(&entity.to_be_bytes());
+                payload.extend_from_slice(&hops.to_be_bytes());
+                put_place(payload, place);
+            }
+        }
+    }
+}
+
+fn take_stays(input: &mut Input<'_>) -> Result<Vec<LoggedStay>, FormatError> {
+    let count = input.u32()? as usize;
+    // A commit without notes is of the other kind, so that one commit has one form.
+    if count == 0 {
+        return Err(FormatError::Corrupt("a commit with stays that has none"));
+    }
+    // A forged count must not reserve more than the payload can hold.
+    let mut stays = Vec::with_capacity(count.min(input.0.len() / STAY_LENGTH));
+    for _ in 0..count {
+        let kind = input.u8()?;
+        let (player, entity) = (input.u128()?, input.i32()?);
+        stays.push(match kind {
+            STAY_ENTERING => LoggedStay::Entering { player, entity },
+            STAY_HAS => LoggedStay::Has {
+                player,
+                entity,
+                hops: input.u32()?,
+                place: take_place(input)?,
+            },
+            _ => return Err(FormatError::Corrupt("stay kind")),
+        });
+    }
+    Ok(stays)
+}
+
+/// Appends a place as the log and the players' file have it.
+pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
+    for coordinate in place.position {
+        out.extend_from_slice(&coordinate.to_be_bytes());
+    }
+    out.extend_from_slice(&place.yaw.to_be_bytes());
+    out.extend_from_slice(&place.pitch.to_be_bytes());
+    let on_ground = if place.on_ground { ON_GROUND } else { 0 };
+    let flying = if place.flying { FLYING } else { 0 };
+    out.push(on_ground | flying);
+    out.push(place.selected_slot);
+    for slot in place.hotbar {
+        match slot {
+            None => out.push(0),
+            Some((item, count)) => {
+                out.push(1);
+                out.extend_from_slice(&item.to_be_bytes());
+                out.extend_from_slice(&count.to_be_bytes());
+            }
+        }
+    }
+}
+
+/// Reads what [`put_place`] wrote.
+pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatError> {
+    let position = [input.f64()?, input.f64()?, input.f64()?];
+    let (yaw, pitch) = (input.f32()?, input.f32()?);
+    let flags = input.u8()?;
+    if flags & !(ON_GROUND | FLYING) != 0 {
+        return Err(FormatError::Corrupt("place flags"));
+    }
+    let selected_slot = input.u8()?;
+    let mut hotbar = [None; HOTBAR_SLOTS];
+    for slot in &mut hotbar {
+        *slot = match input.u8()? {
+            0 => None,
+            1 => Some((input.i32()?, input.i32()?)),
+            _ => return Err(FormatError::Corrupt("hotbar slot")),
+        };
+    }
+    Ok(LoggedPlace {
+        position,
+        yaw,
+        pitch,
+        on_ground: flags & ON_GROUND != 0,
+        flying: flags & FLYING != 0,
+        selected_slot,
+        hotbar,
+    })
+}
+
 /// A record read from a log, with where it is in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Logged {
@@ -411,6 +620,7 @@ mod tests {
                 .map(|index| (BlockPos::new(index, -61, -index), blocks::STONE))
                 .collect(),
             state: vec![tick as u8; count as usize],
+            stays: Vec::new(),
         }
     }
 
@@ -422,6 +632,7 @@ mod tests {
             epoch: 1,
             changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
             state: vec![7, 8],
+            stays: Vec::new(),
         };
         let bytes = record.encode();
         let payload = [
@@ -652,8 +863,9 @@ mod tests {
 
     #[test]
     fn a_record_of_regions_that_checks_out_but_makes_no_sense_is_an_error() {
-        // Kinds there are none of.
-        for kind in [0, 8, 255] {
+        // Kinds there are none of. 8 was among them until a commit with stay notes
+        // became a kind of its own; 9 stands in for it.
+        for kind in [0, 9, 255] {
             assert_eq!(
                 read_log(&frame(&[1, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -709,6 +921,266 @@ mod tests {
         assert_eq!(read_log(&too_long), Ok((Vec::new(), 0)));
     }
 
+    /// A place in which nothing is as it is by default.
+    fn place() -> LoggedPlace {
+        let mut hotbar = [None; HOTBAR_SLOTS];
+        hotbar[0] = Some((1, 64));
+        hotbar[8] = Some((-2, 258));
+        LoggedPlace {
+            position: [1.5, -2.0, 0.0],
+            yaw: 90.0,
+            pitch: -45.0,
+            on_ground: false,
+            flying: true,
+            selected_slot: 8,
+            hotbar,
+        }
+    }
+
+    /// A commit with one note of each kind.
+    fn commit_with_stays() -> LogRecord {
+        LogRecord::Commit {
+            region: 4,
+            tick: 2,
+            epoch: 1,
+            changes: Vec::new(),
+            state: vec![7, 8],
+            stays: vec![
+                LoggedStay::Entering {
+                    player: 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
+                    entity: 258,
+                },
+                LoggedStay::Has {
+                    player: 3,
+                    entity: -1,
+                    hops: 5,
+                    place: place(),
+                },
+            ],
+        }
+    }
+
+    /// A commit with stay notes is a record of a kind of its own: the fields of a
+    /// commit, and then the notes.
+    #[test]
+    fn known_answer_of_a_commit_with_stays() {
+        let record = commit_with_stays();
+        let bytes = record.encode();
+        let payload = [
+            1, 8, // version, kind
+            0, 0, 0, 4, // region
+            0, 0, 0, 0, 0, 0, 0, 2, // tick
+            0, 0, 0, 0, 0, 0, 0, 1, // epoch
+            0, 0, 0, 0, // no changes
+            0, 0, 0, 2, 7, 8, // the state
+            0, 0, 0, 2, // two notes
+            1, // entering
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, // the player
+            0, 0, 1, 2, // the entity
+            2, // has
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, // the player
+            0xFF, 0xFF, 0xFF, 0xFF, // the entity
+            0, 0, 0, 5, // hops
+            0x3F, 0xF8, 0, 0, 0, 0, 0, 0, // x: 1.5
+            0xC0, 0, 0, 0, 0, 0, 0, 0, // y: -2
+            0, 0, 0, 0, 0, 0, 0, 0, // z: 0
+            0x42, 0xB4, 0, 0, // yaw: 90
+            0xC2, 0x34, 0, 0, // pitch: -45
+            2, // flying, not on the ground
+            8, // the selected slot
+            1, 0, 0, 0, 1, 0, 0, 0, 64, // the first slot
+            0, 0, 0, 0, 0, 0, 0, // seven empty slots
+            1, 0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 1, 2, // the last slot
+        ];
+        assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
+        assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
+        assert_eq!(bytes[8..], payload);
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+    }
+
+    /// A commit without notes is written as it was before there were any, and such a
+    /// record is read as a commit without notes.
+    #[test]
+    fn a_commit_without_stays_is_of_the_kind_it_always_was() {
+        let LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            ..
+        } = commit_with_stays()
+        else {
+            unreachable!()
+        };
+        let without = LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            stays: Vec::new(),
+        };
+        let bytes = without.encode();
+        assert_eq!(bytes[8..10], [1, KIND_COMMIT]);
+        // Nothing follows the state.
+        assert_eq!(bytes[bytes.len() - 6..], [0, 0, 0, 2, 7, 8]);
+        assert_eq!(read_log(&bytes), Ok((vec![without], bytes.len())));
+        assert_eq!(commit_with_stays().encode()[8..10], [1, 8]);
+    }
+
+    /// A commit with stays is cut off and damaged like any other record.
+    #[test]
+    fn a_commit_with_stays_cut_off_or_damaged_anywhere_ends_the_log() {
+        let first = record(1, 2);
+        let mut log = first.encode();
+        let start = log.len();
+        log.extend_from_slice(&commit_with_stays().encode());
+        for length in start..log.len() {
+            assert_eq!(
+                read_log(&log[..length]),
+                Ok((vec![first.clone()], start)),
+                "cut at {length}"
+            );
+        }
+        for index in start..log.len() {
+            let mut damaged = log.clone();
+            damaged[index] ^= 0x10;
+            assert_eq!(
+                read_log(&damaged),
+                Ok((vec![first.clone()], start)),
+                "byte {index}"
+            );
+        }
+        assert_eq!(
+            read_log(&log),
+            Ok((vec![first, commit_with_stays()], log.len()))
+        );
+    }
+
+    #[test]
+    fn a_commit_with_stays_that_checks_out_but_makes_no_sense_is_an_error() {
+        let payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
+        assert_eq!(
+            read_log(&frame(&payload[..payload.len() - 1])),
+            Err(FormatError::Truncated)
+        );
+        let mut longer = payload.clone();
+        longer.push(0);
+        assert_eq!(
+            read_log(&frame(&longer)),
+            Err(FormatError::Corrupt("trailing bytes"))
+        );
+        // The payload up to the count of the notes, which begin 32 bytes in.
+        let notes = 32;
+        assert_eq!(payload[notes..notes + 4], [0, 0, 0, 2]);
+        // No notes at all: such a commit is of the other kind.
+        let mut none = payload[..notes].to_vec();
+        none.extend_from_slice(&[0; 4]);
+        assert_eq!(
+            read_log(&frame(&none)),
+            Err(FormatError::Corrupt("a commit with stays that has none"))
+        );
+        // More notes than the payload holds, which must not be reserved either.
+        let mut many = payload.clone();
+        many[notes..notes + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(read_log(&frame(&many)), Err(FormatError::Truncated));
+        // A note of no kind.
+        let mut unknown = payload.clone();
+        unknown[notes + 4] = 3;
+        assert_eq!(
+            read_log(&frame(&unknown)),
+            Err(FormatError::Corrupt("stay kind"))
+        );
+        // The second note begins behind the first, which is 21 bytes; its place begins
+        // behind its kind, player, entity and hops, with 32 bytes of position and look.
+        let flags = notes + 4 + 21 + 25 + 32;
+        assert_eq!(payload[flags], 2);
+        let mut flagged = payload.clone();
+        flagged[flags] = 4;
+        assert_eq!(
+            read_log(&frame(&flagged)),
+            Err(FormatError::Corrupt("place flags"))
+        );
+        let mut slot = payload.clone();
+        assert_eq!(slot[flags + 2], 1);
+        slot[flags + 2] = 2;
+        assert_eq!(
+            read_log(&frame(&slot)),
+            Err(FormatError::Corrupt("hotbar slot"))
+        );
+    }
+
+    /// Places are the same if their bytes are, so that a record that was read is the
+    /// record that was written whatever numbers a region put into it.
+    #[test]
+    fn places_are_compared_by_their_bytes() {
+        let nan = LoggedPlace {
+            position: [f64::NAN, 0.0, -0.0],
+            yaw: f32::NAN,
+            ..place()
+        };
+        assert_eq!(nan, nan);
+        let zero = LoggedPlace {
+            position: [f64::NAN, 0.0, 0.0],
+            ..nan
+        };
+        assert_ne!(nan, zero);
+        let record = LogRecord::Commit {
+            region: 1,
+            tick: 1,
+            epoch: 1,
+            changes: Vec::new(),
+            state: Vec::new(),
+            stays: vec![LoggedStay::Has {
+                player: 1,
+                entity: 1,
+                hops: 0,
+                place: nan,
+            }],
+        };
+        let bytes = record.encode();
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+    }
+
+    fn places() -> impl Strategy<Value = LoggedPlace> {
+        (
+            any::<[f64; 3]>(),
+            any::<(f32, f32)>(),
+            any::<(bool, bool, u8)>(),
+            any::<[Option<(i32, i32)>; HOTBAR_SLOTS]>(),
+        )
+            .prop_map(
+                |(position, (yaw, pitch), (on_ground, flying, selected_slot), hotbar)| {
+                    LoggedPlace {
+                        position,
+                        yaw,
+                        pitch,
+                        on_ground,
+                        flying,
+                        selected_slot,
+                        hotbar,
+                    }
+                },
+            )
+    }
+
+    fn stays() -> impl Strategy<Value = Vec<LoggedStay>> {
+        let stay = prop_oneof![
+            (any::<u128>(), any::<i32>())
+                .prop_map(|(player, entity)| LoggedStay::Entering { player, entity }),
+            (any::<u128>(), any::<i32>(), any::<u32>(), places()).prop_map(
+                |(player, entity, hops, place)| LoggedStay::Has {
+                    player,
+                    entity,
+                    hops,
+                    place,
+                }
+            ),
+        ];
+        prop::collection::vec(stay, 0..20)
+    }
+
     fn chunks() -> impl Strategy<Value = Vec<ChunkPos>> {
         prop::collection::vec(
             (any::<i32>(), any::<i32>()).prop_map(|(x, z)| ChunkPos::new(x, z)),
@@ -762,6 +1234,7 @@ mod tests {
             changes in prop::collection::vec((any::<i32>(), any::<i32>(), any::<i32>(), any::<u16>()), 0..50),
             state in prop::collection::vec(any::<u8>(), 0..200),
             restored: u64,
+            stays in stays(),
         ) {
             let commit = LogRecord::Commit {
                 region,
@@ -772,6 +1245,7 @@ mod tests {
                     .map(|(x, y, z, state)| (BlockPos::new(x, y, z), BlockState(state)))
                     .collect(),
                 state,
+                stays,
             };
             let opened = LogRecord::Opened { region, epoch, restored };
             let mut bytes = commit.encode();

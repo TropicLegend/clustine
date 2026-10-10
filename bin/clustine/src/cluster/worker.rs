@@ -1359,8 +1359,22 @@ fn hold(orders: &Orders, assignment: Assignment) -> Held {
             spawn: orders.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
+            // Off until the store, the sim, the runner and the edge have their parts
+            // of it: step R1.5 of `docs/adr/0020-one-stay-per-player.md` turns it on
+            // here and takes the setting away.
+            place_by_store: false,
+            lowest_y: lowest_y(),
         },
     }
+}
+
+/// The height of the world's lowest block: the bottom of the overworld.
+fn lowest_y() -> i32 {
+    clustine_data::DIMENSION_TYPES
+        .iter()
+        .find(|dimension| dimension.name == "minecraft:overworld")
+        .expect("the overworld is a vanilla dimension type")
+        .min_y
 }
 
 /// Opens the region at the world store, trying until the store can be reached. An

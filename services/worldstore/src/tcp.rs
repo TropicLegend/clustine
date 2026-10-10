@@ -32,7 +32,7 @@ use clustine_rpc::{
     RegionHello, RegionList, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreHello,
     StoreReply, StoreRequest, StoreWelcome, TickState, held_bytes, held_from_bytes, wire,
 };
-use clustine_world::{ChunkArea, ChunkPos, EntityIds};
+use clustine_world::{ChunkArea, ChunkPos, EntityId, EntityIds};
 use tracing::{info, warn};
 
 use crate::{Link, Store, StoreError, StoreHandle};
@@ -317,9 +317,14 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         entity_ids,
         state,
         deltas,
+        issued,
     } = restored;
     stream.set_write_timeout(Some(patience))?;
-    let accepted = StoreWelcome::Accepted { entity_ids, pinned };
+    let accepted = StoreWelcome::Accepted {
+        entity_ids,
+        pinned,
+        issued,
+    };
     wire::blocking::write(&mut &*stream, &accepted)?;
     for part in Parts::new(state, deltas, &held, PART_BYTES) {
         wire::blocking::write(&mut &*stream, &part)?;
@@ -447,7 +452,7 @@ struct Arriving {
 }
 
 impl Arriving {
-    fn new(entity_ids: EntityIds, pinned: Vec<ChunkArea>) -> Self {
+    fn new(entity_ids: EntityIds, pinned: Vec<ChunkArea>, issued: EntityId) -> Self {
         Self {
             restored: Restored {
                 held: Vec::new(),
@@ -455,6 +460,7 @@ impl Arriving {
                 entity_ids,
                 state: None,
                 deltas: Vec::new(),
+                issued,
             },
             cut: None,
             held: false,
@@ -658,8 +664,12 @@ fn welcomed(
     stream: &mut &TcpStream,
     hello: RegionHello,
 ) -> io::Result<Option<Result<Restored, StoreError>>> {
-    let (entity_ids, pinned) = match wire::blocking::read(stream)? {
-        Some(StoreWelcome::Accepted { entity_ids, pinned }) => (entity_ids, pinned),
+    let (entity_ids, pinned, issued) = match wire::blocking::read(stream)? {
+        Some(StoreWelcome::Accepted {
+            entity_ids,
+            pinned,
+            issued,
+        }) => (entity_ids, pinned, issued),
         Some(StoreWelcome::EpochRefused { seen }) => {
             return Ok(Some(Err(StoreError::EpochRefused {
                 region: hello.region,
@@ -678,7 +688,7 @@ fn welcomed(
         }
         None => return Ok(None),
     };
-    let mut arriving = Arriving::new(entity_ids, pinned);
+    let mut arriving = Arriving::new(entity_ids, pinned, issued);
     loop {
         let Some(part) = wire::blocking::read(stream)? else {
             return Err(io::Error::new(
@@ -933,6 +943,7 @@ mod tests {
                 tick: 6,
                 state: delta(6),
             }],
+            issued: EntityId(0),
         };
         let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
         assert_eq!(restored, expected);
@@ -1460,6 +1471,7 @@ mod tests {
             let welcome = StoreWelcome::Accepted {
                 entity_ids: EntityIds::block(0).unwrap(),
                 pinned: Vec::new(),
+                issued: EntityId(0),
             };
             wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
@@ -1594,6 +1606,7 @@ mod tests {
                 tick,
                 changes: Vec::new(),
                 state: bytes(tick, *length),
+                stays: Vec::new(),
             });
         }
         committed(&owner, tick);
@@ -1620,7 +1633,7 @@ mod tests {
 
     /// Puts together what [`Parts`] made.
     fn together(entity_ids: EntityIds, parts: Vec<RestoredPart>) -> io::Result<Restored> {
-        let mut arriving = Arriving::new(entity_ids, Vec::new());
+        let mut arriving = Arriving::new(entity_ids, Vec::new(), EntityId(0));
         let mut parts = parts.into_iter();
         loop {
             let part = parts.next().expect("the last part ends them");
@@ -1653,6 +1666,7 @@ mod tests {
                 .zip(deltas)
                 .map(|(tick, length)| tick_state(tick, *length))
                 .collect(),
+            issued: EntityId(0),
         };
         // Next to nothing thousands of times over, with and without bytes at all.
         let tiny: Vec<usize> = (0..3000).map(|index| index % 5).collect();
@@ -1857,6 +1871,7 @@ mod tests {
                 tick: 5,
                 state: vec![1, 2, 1, 2],
             }],
+            issued: EntityId(0),
         };
         assert_eq!(together(entity_ids, parts).unwrap(), expected);
     }
@@ -2039,6 +2054,7 @@ mod tests {
                 let accepted = StoreWelcome::Accepted {
                     entity_ids: expected.entity_ids,
                     pinned: expected.pinned.clone(),
+                    issued: EntityId(0),
                 };
                 assert_eq!(welcome, Some(accepted));
                 for _ in 0..parts {
@@ -2078,6 +2094,7 @@ mod tests {
                 tick: 1,
                 state: vec![0; 4 * LIMIT],
             }],
+            issued: EntityId(0),
         };
         let error = welcome(&stream, Duration::from_millis(300), restored).unwrap_err();
         // Which of the two a write that ran out of time reports depends on the system.

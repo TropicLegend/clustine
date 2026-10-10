@@ -26,8 +26,8 @@ mod region;
 mod state;
 
 pub use api::{
-    Durable, EdgeEvent, Misdirected, PlayerChange, PlayerEvent, PlayerJoin, PlayerTransfer,
-    RemoteAction, RemoteStep, TickInputs, TickOutput, Ticket,
+    Durable, EdgeEvent, Entered, Misdirected, Place, PlayerChange, PlayerEvent, PlayerJoin,
+    PlayerTransfer, RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
 };
 pub use region::{Holdings, Knowledge, NoSplit, Part, Region, RegionConfig, Sides, Splitting};
-pub use state::{EdgeDelta, EdgeState, PlayerState, RegionState, StateDelta};
+pub use state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
