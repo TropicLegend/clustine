@@ -1,7 +1,8 @@
 # ADR-0018: A checkpoint's chunks are written together
 
-- Status: **Accepted**, after an independent review against the code, whose ten
-  findings are worked in (see "Review"). The design of step C5.10 of milestone M3,
+- Status: **Built** (step C5.10), after an independent review against the code,
+  whose ten findings are worked in (see "Review"); what building it settled and what
+  it measured is at the end. The design of step C5.10 of milestone M3,
   phase C. It changes the world store's thread for chunks and its `Disk`; it changes
   no message and nothing of the format on disk. What it changes for whoever looks at
   the store's files is in section 3.
@@ -86,8 +87,7 @@ beside its manifest for that), and from the files otherwise.
    is renamed into place, and all their directories are synced together.
 2. **Manifests.** Each pending manifest's directory is made, the manifest is written
    under its temporary name, all temporaries are synced together, each is renamed
-   into place, and all their directories, with those in `unsynced`, are synced
-   together.
+   into place, and all their directories are synced together.
 
 Only then is `pending` empty. What holds at every moment, as it does today:
 
@@ -303,6 +303,41 @@ test says what the point is.
   made directory is never synced, which the simulated disk cannot see; and whether
   an error of writing a file that is closed before it is synced is always reported
   by the sync.
+
+## Built, and measured
+
+Built as decided, with these things settled on the way:
+
+- `Chunks` says how many chunks wait through a fourth method, `pending`, which is
+  none unless a store holds saves back.
+- `FileChunks` no longer keeps the directories of manifests that are still to be
+  synced: a manifest is put in place only inside `sync`, which syncs its directory in
+  the same call or forgets it.
+- The 64 threads of a round count the calling thread.
+- A flush whose sync fails loses the handles that saved and still answers a handle
+  that saved nothing.
+- A checkpoint of more than 128 chunks is written in several sets of rounds: one for
+  every 128 saves and one for the rest.
+- `Job::Fold` syncs without losing handles, as before; it runs only while a world is
+  made over, when none is open.
+
+The tests of the record, written without sight of the change, are in
+`services/worldstore/src/rounds.rs`: seventeen, of which eleven could not pass before
+the change and each failed where the record says the store was to change. All pass.
+They found nothing in the change and nothing in the store as it was.
+
+Two hundred chunks are saved and made durable in 0.7 s on the disk that took 28 ms a
+chunk (half of it describing the chunks, half the rounds). `crowds.rs`, as in step
+C5.8 and on the same machine, least / middle / worst:
+
+| Crowd | Split: the crowd waited, before | after | Merge: the crowd waited, before | after |
+|---|---|---|---|---|
+| 100 | 0.40 / 1.03 / 1.07 s | 0.31 / 0.36 / 0.41 s | 0.40 / 0.97 / 0.97 s | 0.35 / 0.36 / 0.36 s |
+| 200 | one split, 1.44 s without a tick | 0.24 / 0.26 / 0.35 s | no merge was made | 0.26 / 0.26 / 0.55 s |
+| 100 on lanes four times as far apart | one split, 0.73 s without a tick | 0.26 / 0.30 / 0.35 s | no merge was made | 0.26 / 0.26 / 0.35 s |
+
+The bound of ADR-0017 is met for a hundred and for two hundred, and every merge is
+made. The syncs that stay in turn were left as they are.
 
 ## Review
 

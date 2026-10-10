@@ -2297,7 +2297,9 @@ impl Fanout {
         };
         for packet in packets {
             if let Err(error) = view.outbound.try_send(packet) {
-                debug!(name = %view.name, %error, "dropping a player that does not keep up");
+                // Said where an operator reads it: the player is disconnected for it,
+                // and "player left" alone looks like their own doing.
+                warn!(name = %view.name, %error, "dropping a player that does not keep up");
                 self.remove_player(player).await;
                 return false;
             }

@@ -193,7 +193,7 @@ differently, so that each leaves everything working.
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos. Designed in [ADR-0012](adr/0012-the-tick-on-chunks.md), in steps C2b.1 to C2b.5 | Hand-over, block, takeover, chaos and move tests on two pinned regions | done |
 | C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | done ([ADR-0014](adr/0014-merging-and-splitting.md), [ADR-0015](adr/0015-the-edge-through-merges-and-splits.md)) |
 | C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | done ([ADR-0016](adr/0016-when-to-merge-and-split.md)); off unless asked for until C5 |
-| C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | done ([ADR-0017](adr/0017-the-end-of-the-stripes.md)), but for the pause of a crowd (below) |
+| C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | done ([ADR-0017](adr/0017-the-end-of-the-stripes.md); the crowd's pause in [ADR-0018](adr/0018-a-checkpoints-chunks-written-together.md)) |
 | C6 | Docs; what to try with real clients | CI | done: README, architecture, and the trial under "C5 is done" below |
 
 Then the owner's check: two clients walking towards and away from each other.
@@ -203,12 +203,10 @@ Then the owner's check: two clients walking towards and away from each other.
 **In one paragraph, on 2026-10-10.** All three phases are built and pushed: a worker
 or the store can die (A), a region is moved without anyone noticing more than a pause
 (B), and regions follow their players, merging and splitting by themselves, with no
-stripes left (C). Two things are open and being worked on: the pause of a crowd of a
-hundred or more at a merge or a split, which is the world store's way of writing
-(step C5.10, [ADR-0018](adr/0018-a-checkpoints-chunks-written-together.md)), and a
-player left without a view when split off at a speed no client reaches, whose cause
-is not found yet. Neither stands in the way of the owner's trial with two clients,
-which is written down under "C5 is done" below, steps 1 to 12. What follows is the
+stripes left (C). One thing is open: a player left without a view when split off at
+a speed no client reaches, whose cause is not found yet. It does not stand in the way
+of the owner's trial with two clients, which is written down under "C5 is done"
+below, steps 1 to 12. What follows is the
 history of each phase with what was measured and what was left.
 
 **Phase A is done.** A worker or the world store can die without anyone being
@@ -421,19 +419,19 @@ stored is dropped instead of being read as something else.
 C1 is built as [ADR-0011](adr/0011-the-world-store-and-regions.md) has it, in its seven
 steps: the store is told how the world is divided when it starts (`clustine worldstore
 --boundaries` then, the same as the coordinator; `--pin` since C5), keeps a table of
-regions and of which region holds which chunk, lets only the holder load and save a chunk, grants and takes
-back chunks, replays a region's log only into what it holds, merges and splits regions
-as one record of the log each, and gives the coordinator the list of regions. After a
-failed write of the log every region loses its owner and nobody is served until the
-log is cut back durably. It is killed at every write and sync of claims, returns, a
-merge and a split (`kill_regions.rs`), which found a fault in the chunk store older
-than this work: a section file left behind by two faults in a row was taken for stored.
-Nothing asks the store for any of the new things yet: the stripes are pinned regions
-and work as before. What the builder decided where the record was silent is at the
-record's end. The scenarios of its section 9 were then written by someone else from
-the record alone (`services/worldstore/src/scenarios.rs`, 79 tests, the thread for
-chunks held at chosen points and the store killed there): they found nothing, and
-catch each of ten faults that were put into the store to see whether they can.
+regions and of which region holds which chunk, lets only the holder load and save a
+chunk, grants and takes back chunks, replays a region's log only into what it holds,
+merges and splits regions as one record of the log each, and gives the coordinator the
+list of regions. After a failed write of the log every region loses its owner and nobody
+is served until the log is cut back durably. It is killed at every write and sync of
+claims, returns, a merge and a split (`kill_regions.rs`), which found a fault in the
+chunk store older than this work: a section file left behind by two faults in a row was
+taken for stored. Nothing asks the store for any of the new things yet: the stripes are
+pinned regions and work as before. What the builder decided where the record was silent
+is at the record's end. The scenarios of its section 9 were then written by someone else
+from the record alone (`services/worldstore/src/scenarios.rs`, 79 tests, the thread for
+chunks held at chosen points and the store killed there): they found nothing, and catch
+each of ten faults that were put into the store to see whether they can.
 
 C2b.2 is built: the sim has no area any more. A region knows of each chunk whether it
 holds it, has asked for it, believes another region to hold it, or knows nothing; it
@@ -469,12 +467,12 @@ tick they were handed on; both are put right.
 
 C2b.5 is built, and C2b with it: the given stripes are gone, and with them `clustine
 worker --ask-the-store`, the fifth check and its variable. A region knows of a chunk
-only what the store has told it, in a cluster and in the single process, which until
-now always started with the stripes given: `cargo run -p clustine -- --boundaries 4`
-(as it was then) runs regions that ask for the first time. The worker's unit tests
-that ran a western area on a world of one region run on a world divided at 1. Measured in turn with one
-seed, the pause at a move is 0.95 seconds in the middle with regions that ask and 0.90
-with the stripes given (both within one hour; the 0.8 above was measured at another
+only what the store has told it, in a cluster and in the single process, which until now
+always started with the stripes given: `cargo run -p clustine -- --boundaries 4` (as it
+was then) runs regions that ask for the first time. The worker's unit tests that ran a
+western area on a world of one region run on a world divided at 1. Measured in turn with
+one seed, the pause at a move is 0.95 seconds in the middle with regions that ask and
+0.90 with the stripes given (both within one hour; the 0.8 above was measured at another
 time, on a machine less busy): asking costs about a tick there, and taking the given
 stripes out changed nothing.
 
@@ -686,8 +684,8 @@ to it: `Departed` and `Remote` naming the region they go to, `since` in an `Edge
 and in hellos, the welcome saying how many entries follow (all C2b); how `Restored::held`
 and the list of regions travel between the store and others (C1).
 
-**C5 is done but for the pause of a crowd (below): the stripes are gone, and regions
-follow their players unless a server is told otherwise.**
+**C5 is done: the stripes are gone, and regions follow their players unless a server
+is told otherwise.**
 [ADR-0017](adr/0017-the-end-of-the-stripes.md) is its design, reviewed twice before
 anything was built and corrected as the building found more (its last section).
 
@@ -756,9 +754,12 @@ What those tests found:
   flight). No client reaches 160, but the cause is not known, so nothing says that a
   slower player cannot meet it under rarer timing. The test is kept, ignored, as a
   finding.
-- **A crowd of a hundred stands still for about a second**, twice the half second the
-  record set as what a player bears. Where the time goes is the store's disk, not the
-  edge. See the table and what is done about it, below.
+- **A crowd of a hundred stood still for about a second**, twice the half second the
+  record set as what a player bears, and a crowd of two hundred could not be merged
+  into at all. The time went into the store's way of writing, not into the edge.
+  Mended in step C5.10; see the tables below.
+- **A player whom the edge drops for not keeping up left no reason in its log**: the
+  line was written only for whoever asked for debugging. It is a warning now.
 - Three things the record said that are not so, and now are said as they are: if
   more players leave than stay, it is those who stay whose region is moved to the
   other worker, so they stand still twice in five to ten seconds; a group that turns
@@ -787,7 +788,7 @@ rest apart, so the last of them stood still up to nine times.
 **What a crowd at the spawn point goes through when two players leave it and come
 back**, optimised, at the usual view distance of 8 (distances of 22 and 30 chunks),
 five rounds, the bots of the crowd each placing and digging without a pause (least /
-middle / worst):
+middle / worst). First as step C5.8 measured it, before step C5.10:
 
 | Crowd | Chunks of the home region | Split: the crowd waited | Split: the region did not tick | Merge: the crowd waited | Merge: the region did not tick |
 |---|---|---|---|---|---|
@@ -804,21 +805,44 @@ are never merged: the merge takes longer than the coordinator waits for it, and 
 attempt stands the crowd still for a second and a half; attempts come 15, 30 and 60 s
 apart. The same happens with a hundred spread over twice the land.
 
-**What is done about the crowd's pause (step C5.10, next).** The record expected the
-time to go into the edge finding its way back to the region, and named keeping the
-links as the remedy. The measurement says otherwise: of the second, the edge's way
-back is a quarter; the rest is the region waiting for the world store to write its
-last checkpoint. The store makes every changed chunk durable on its own, with three
-syncs to disk each at least, one after the other; a hundred bots who all build leave
-a hundred changed chunks at every checkpoint. On this machine a hundred small files synced in
-turn took 1.3 s, on eight threads 0.26 s, and written first and synced with one call
-0.02 s. So the step is the store writing a checkpoint's chunks together, with a
-record of its own and a review first, as it changes what is durable when. Until then
-the limit is: a crowd of a hundred builders stands still for a second when a group
-leaves or comes back, and with two hundred, or with a hundred on twice the land, a group
-that left cannot come back into the crowd's region. Workers that checkpoint every second or two (the
-default is every five minutes) do not keep up with a crowd of a hundred or more at
-all.
+**What was done about the crowd's pause (step C5.10,
+[ADR-0018](adr/0018-a-checkpoints-chunks-written-together.md)).** ADR-0017 expected
+the time to go into the edge finding its way back to the region, and named keeping
+the links as the remedy. The measurement said otherwise: of the second, the edge's
+way back was a quarter; the rest was the region waiting for the world store to write
+its last checkpoint. The store made every changed chunk durable by itself, with
+three syncs to disk each, one after the other, and a hundred bots who all build
+leave a hundred changed chunks at every checkpoint. A hundred small files synced in
+turn took 1.4 s on this machine; with the syncs waiting at the same time, 0.03 s. So
+the store now notes a saved chunk and writes all that were saved together, when they
+are made durable: the sections, then the manifests, each round's files synced at the
+same time. Nothing of the format changed. The design was reviewed against the code
+before it was built (ten findings, one of which would have lost chunks after a
+failed write), and its tests were written from the record by someone who did not
+see the change: the store stopped at every step of such a write, and with any part
+of a round synced, leaves every chunk as it was or as it was saved.
+
+The same measurement after it:
+
+| Crowd | Chunks of the home region | Split: the crowd waited | Split: the region did not tick | Merge: the crowd waited | Merge: the region did not tick |
+|---|---|---|---|---|---|
+| 4 | 935 | 0.17 / 0.19 / 0.30 s | 0.05 / 0.05 / 0.05 s | 0.19 / 0.21 / 0.21 s | 0.05 / 0.05 / 0.05 s |
+| 20 | 1007 | 0.21 / 0.25 / 0.29 s | 0.05 / 0.05 / 0.05 s | 0.21 / 0.21 / 0.25 s | 0.05 / 0.05 / 0.05 s |
+| 50 | 1159 | 0.25 / 0.26 / 0.32 s | 0.05 / 0.05 / 0.05 s | 0.21 / 0.26 / 0.33 s | 0.05 / 0.05 / 0.05 s |
+| 100 | 1406 | 0.31 / 0.36 / 0.41 s | 0.09 / 0.14 / 0.15 s | 0.35 / 0.36 / 0.36 s | 0.10 / 0.13 / 0.14 s |
+| 200 | 1919 | 0.24 / 0.26 / 0.35 s | 0.05 / 0.05 / 0.05 s | 0.26 / 0.26 / 0.55 s | 0.05 / 0.05 / 0.05 s |
+| 100 on lanes four times as far apart | 2831 | 0.26 / 0.30 / 0.35 s | 0.13 / 0.13 / 0.14 s | 0.26 / 0.26 / 0.35 s | 0.11 / 0.12 / 0.13 s |
+
+A hundred are within what ADR-0017 set (half a second in the middle, a second at
+worst), and so are two hundred, for whom every merge is made now (two runs of five
+rounds; the row has both). What is left of a pause is mostly the edge's way back,
+about a fifth of a second whatever the crowd. In the first run with two hundred the
+edge dropped one bot while all two hundred joined within a moment, before anything
+merged or split; step C5.8 saw the same once. All bots and all servers share six
+processors there, so it is taken for the test's load, and the edge now says in its
+log when it drops somebody. Workers that checkpoint every second or two (the default
+is every five minutes) did not keep up with a crowd of a hundred before this step;
+that was not measured again.
 
 **For the owner to try with real clients** (two clients, creative mode; flying is a
 double tap on the jump key; F3 shows the block and the chunk). An optimised build,
