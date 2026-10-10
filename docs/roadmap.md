@@ -974,18 +974,36 @@ To be planned as milestones of their own, each with a written plan and an indepe
 review first:
 
 - **Every service with several replicas**, highly available and balanced by load. M3
-  leaves one coordinator with nothing on disk and one edge whose death takes its players
-  with it (see the limits below); regions that survive their worker and edges that
-  survive a region are what this builds on. The groundwork for its plan is in
-  [groundwork/replicas-and-availability.md](groundwork/replicas-and-availability.md):
-  for each service what its death costs today, what state another replica would need,
-  the options with what each needs changed, an order of work, and **twelve questions
-  for the owner**. Its three findings that matter most: regions, runner and coordinator
-  handle several edges, and the edge itself does not yet; two coordinators at once are
-  safe for the world, as the store admits only the highest epoch, but would keep taking
-  regions from each other; and a player who joins again starts at the spawn point with
-  the starting hotbar, whatever happened before, so no edge's death can be followed by
-  a rejoin "where they were" until a player's place and hotbar are kept.
+  leaves one coordinator with nothing on disk and one edge whose death takes its
+  players with it (see the limits below); regions that survive their worker and edges
+  that survive a region are what this builds on. **A plan is proposed and waits for
+  the owner:** [groundwork/replicas-plan.md](groundwork/replicas-plan.md). It rests on
+  the groundwork of 2026-10-08
+  ([groundwork/replicas-and-availability.md](groundwork/replicas-and-availability.md)),
+  which was written before regions followed their players and is checked against the
+  code as it is now. An independent reviewer went over the first draft against the
+  code and found fourteen things, the gravest that its way of keeping a player from
+  being in the world twice did not hold; the plan as it stands answers each. In
+  short, five phases: a player's place, look, flying and hotbar are kept by the world
+  store, so that whoever joins again is back where they were, and a second login
+  puts the first out; several edges, with a planned stop that sends each player on
+  to another edge; several coordinators, of which one decides, fenced by a term the
+  store gives out; regions moved by load, drains, and numbers to scale by; and last
+  the store surviving the loss of its node. Before any of it, every connection
+  between services gets a beat, because today nothing notices a peer that has gone
+  silent, only one that was killed.
+
+  **Nine questions are the owner's** (the plan's section 8). Two are not acted on
+  without an answer: whether a port of the test cluster may be mapped to this
+  machine's loopback address so that real clients reach several edges on
+  Kubernetes (without it, several edges are tried as processes, and on Kubernetes
+  only by bots), and whether a client library for the Kubernetes API may be
+  downloaded when the last phase needs one. The others have defaults that can be
+  taken back: a standby store of Clustine's own or replicated storage that
+  whoever runs the cluster provides (recommended: its own, built last); a shared
+  secret between services; the test cluster growing to three nodes; and whether a
+  group that walks away stays on the worker it was split off on while the workers
+  are nearly even, which would spare it the second pause.
 - **Terrain generation**, reusing what SteelMC or Pumpkin have, which ADR-0002 chose
   the AGPL for. **A plan is proposed and waits for the owner:**
   [groundwork/terrain-plan.md](groundwork/terrain-plan.md). It rests on the groundwork
