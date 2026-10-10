@@ -5860,6 +5860,20 @@ mod scenarios {
         disconnected: Option<String>,
         /// Whether the edge has ended the connection.
         closed: bool,
+        /// What it was told of entities and of the player list, in order, for the
+        /// tests that ask what a client showed at any moment and not only at the end.
+        told: Vec<Told>,
+    }
+
+    /// Something a client was told that changes whom it shows or lists.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Told {
+        /// It was put into the world: the login packet.
+        Entered,
+        Shown(i32),
+        Hidden(i32),
+        Listed(Uuid),
+        Unlisted(Uuid),
     }
 
     impl Client {
@@ -5876,6 +5890,7 @@ mod scenarios {
                 batches: 0,
                 disconnected: None,
                 closed: false,
+                told: Vec::new(),
             }
         }
 
@@ -5903,10 +5918,12 @@ mod scenarios {
                 }
                 ClientboundPlay::SpawnEntity(entity) => {
                     self.entities.insert(entity.entity_id);
+                    self.told.push(Told::Shown(entity.entity_id));
                 }
                 ClientboundPlay::RemoveEntities(removed) => {
                     for entity in removed.entity_ids {
                         self.entities.remove(&entity);
+                        self.told.push(Told::Hidden(entity));
                     }
                 }
                 ClientboundPlay::AcknowledgeBlockChange(acknowledged) => {
@@ -5915,6 +5932,17 @@ mod scenarios {
                 ClientboundPlay::ChunkBatchFinished(_) => self.batches += 1,
                 ClientboundPlay::Disconnect(disconnect) => {
                     self.disconnected = Some(format!("{:?}", disconnect.reason));
+                }
+                ClientboundPlay::Login(_) => self.told.push(Told::Entered),
+                ClientboundPlay::PlayerInfoUpdate(update) => {
+                    if update.actions & player_info::ADD_PLAYER != 0 {
+                        let listed = update.entries.iter().map(|entry| Told::Listed(entry.uuid));
+                        self.told.extend(listed);
+                    }
+                }
+                ClientboundPlay::PlayerInfoRemove(removed) => {
+                    self.told
+                        .extend(removed.players.into_iter().map(Told::Unlisted));
                 }
                 _ => {}
             }
@@ -14868,6 +14896,1551 @@ mod scenarios {
             again,
             "neither region is asked again for the chunk: {asked:?}"
         );
+        edge.end().await;
+    }
+
+    // ---------------------------------------------------------------------------
+    // ADR-0020, step R1.4, written from the record by someone who did not write the
+    // edge's code.
+    //
+    // What each of these tests expects is taken from
+    // `docs/adr/0020-one-stay-per-player.md`: sections 4 (step 1), 4.1 to 4.4 and 6
+    // (rules 5 and 6, "The player list"), and the row "Edge" of its table of tests.
+    // Where the edge does otherwise the test is kept as it is and marked as a finding.
+    //
+    // Most of them begin with a player who has connected twice: the first connection
+    // joined and went before the home region answered, so that there is an attempt
+    // of an earlier connection of the same player for a region to name, which is what
+    // "stale" means below.
+    // ---------------------------------------------------------------------------
+
+    /// The reason of the disconnect packet a connection is sent that a later login
+    /// of its player has put out, as `Client::disconnected` has it: the compound
+    /// `{ translate: "multiplayer.disconnect.duplicate_login" }` of section 6, and
+    /// not a string.
+    fn duplicate_login() -> String {
+        let key = Nbt::String("multiplayer.disconnect.duplicate_login".to_owned());
+        format!("{:?}", Nbt::Compound(vec![("translate".to_owned(), key)]))
+    }
+
+    /// A stay as the home region lets it go without having placed it, or having
+    /// placed it without an input applied since: one hand-over behind it, and the
+    /// attempt of its join if it still carries one (section 4, step 7; section 4.3).
+    fn let_go(entity: i32, chunk: ChunkPos, attempt: Option<u64>) -> PlayerTransfer {
+        PlayerTransfer {
+            hops: 1,
+            attempt,
+            ..transfer(EntityId(entity), 0, chunk)
+        }
+    }
+
+    /// The outbox entry with which a region lets `stay` of `who` go to `to`.
+    fn gone_to(who: u128, stay: &PlayerTransfer, to: RegionId) -> Durable {
+        Durable::Departed {
+            player: player(who),
+            transfer: stay.clone(),
+            to,
+        }
+    }
+
+    /// The outbox entry of a region of which `region` was split off with one stay,
+    /// which carries `attempt`.
+    fn split_with(region: RegionId, who: u128, entity: i32, attempt: Option<u64>) -> Durable {
+        Durable::SplitOff {
+            region,
+            players: vec![(player(who), EntityId(entity), attempt)],
+        }
+    }
+
+    /// The outbox entry that says the server has ended a stay (section 6, rule 5).
+    fn ended(who: u128, entity: i32, attempt: Option<u64>) -> Durable {
+        Durable::Ended {
+            player: player(who),
+            entity: EntityId(entity),
+            attempt,
+        }
+    }
+
+    /// The leave of a view that was never told its entity: it names the attempt of
+    /// its join instead (section 4.4).
+    fn left_unentered(who: u128, attempt: u64) -> EdgeToWorker {
+        EdgeToWorker::PlayerLeave {
+            player: player(who),
+            entity: None,
+            attempt: Some(attempt),
+        }
+    }
+
+    /// A region's word that an entity of `who` has come into existence in `chunk`.
+    fn introduced(who: u128, entity: i32, chunk: ChunkPos) -> WorkerToEdge {
+        WorkerToEdge::TickDelta {
+            tick: 2,
+            events: vec![RegionEvent::EntitySpawned(own(who, entity, chunk))],
+        }
+    }
+
+    /// The arrival of `stay` of `who`, as the edge sends it.
+    fn arrives(who: u128, stay: &PlayerTransfer) -> EdgeToWorker {
+        EdgeToWorker::PlayerArrive {
+            player: player(who),
+            transfer: stay.clone(),
+        }
+    }
+
+    /// How often the client was put into the world, by everything the edge has sent
+    /// it so far.
+    fn times_entered(client: &mut Client) -> usize {
+        client.drain();
+        let entered = |told: &&Told| **told == Told::Entered;
+        client.told.iter().filter(entered).count()
+    }
+
+    /// Makes sure that the connection goes on waiting: it is open, and its client
+    /// has not been put into the world.
+    fn waits(client: &mut Client) {
+        assert_eq!(times_entered(client), 0, "the player was entered");
+        assert!(!client.closed, "the connection was ended");
+        assert_eq!(client.disconnected, None);
+    }
+
+    /// Makes sure that the client was put into the world, once, and is still served.
+    fn is_in_the_world(client: &mut Client) {
+        assert_eq!(times_entered(client), 1, "{:?}", client.told);
+        assert!(!client.closed, "the connection was ended");
+        assert_eq!(client.disconnected, None);
+    }
+
+    /// Whether the client has `who` in its player list, by what it was told last.
+    fn lists(client: &Client, who: u128) -> bool {
+        let uuid = player(who).0;
+        let last = client.told.iter().rev().find_map(|told| match told {
+            Told::Listed(listed) if *listed == uuid => Some(true),
+            Told::Unlisted(unlisted) if *unlisted == uuid => Some(false),
+            _ => None,
+        });
+        last.unwrap_or(false)
+    }
+
+    /// Goes through everything the client was told of entities and makes sure that
+    /// it never showed `older` and `newer` at once and was never shown `older` after
+    /// `newer` (section 6, rule 6).
+    fn never_both_and_never_the_older_again(client: &Client, older: i32, newer: i32) {
+        let mut shown = BTreeSet::new();
+        let mut had_the_newer = false;
+        for told in &client.told {
+            match told {
+                Told::Shown(entity) => {
+                    assert!(
+                        !(*entity == older && had_the_newer),
+                        "the older entity came back: {:?}",
+                        client.told
+                    );
+                    had_the_newer |= *entity == newer;
+                    shown.insert(*entity);
+                }
+                Told::Hidden(entity) => {
+                    shown.remove(entity);
+                }
+                _ => {}
+            }
+            assert!(
+                !(shown.contains(&older) && shown.contains(&newer)),
+                "both entities were shown at once: {:?}",
+                client.told
+            );
+        }
+    }
+
+    impl Harness {
+        /// A player whose first connection joined and went before the west said
+        /// anything of it, and who has connected again. The west has been sent the
+        /// first join, the leave of the first connection and the second join, in
+        /// that order. Returns the client of the second connection, the number of
+        /// its join (the leave has the number before it and the first join the one
+        /// before that) and the attempt of the first connection.
+        async fn come_again(&mut self, who: u128) -> (Client, u64, u64) {
+            let first = self.join(player(who)).await;
+            let (_, join) = self.next_numbered(WEST).await;
+            assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+            self.leave(&first).await;
+            let again = self.join(player(who)).await;
+            let (_, leave) = self.next_numbered(WEST).await;
+            assert!(
+                matches!(leave, EdgeToWorker::PlayerLeave { .. }),
+                "{leave:?}"
+            );
+            let (number, join) = self.next_numbered(WEST).await;
+            assert!(
+                matches!(&join, EdgeToWorker::PlayerJoin(join) if join.attempt == again.session.0),
+                "{join:?}"
+            );
+            (again, number, first.session.0)
+        }
+
+        /// A player connects with a client that takes only `room` packets before
+        /// its queue is full.
+        async fn join_with_room(&mut self, player: PlayerId, room: usize) -> Client {
+            self.sessions += 1;
+            self.attempts.insert(player, self.sessions);
+            let session = SessionId(self.sessions);
+            let (outbound, packets) = mpsc::channel(room);
+            let join = Command::Join {
+                session,
+                profile: Profile {
+                    uuid: player.0,
+                    name: format!("Player{}", self.sessions),
+                },
+                requested_view_distance: None,
+                outbound,
+                awaiting_teleport: Arc::new(AtomicI32::new(NO_TELEPORT)),
+            };
+            self.commands.send(join).await.unwrap();
+            Client::new(player, session, packets)
+        }
+
+        /// Makes sure that no region the test plays is asked for anything.
+        fn nobody_is_asked_for_anything(&self) {
+            for region in self.linked() {
+                let left = &self.at(region).subscriptions;
+                assert!(left.is_empty(), "{region:?} is asked for {left:?}");
+            }
+        }
+    }
+
+    /// Section 4.1, the table's first row: `Spawned` with the attempt of the view's
+    /// join enters the player, with the view's region as it is.
+    #[tokio::test]
+    async fn spawned_with_the_attempt_of_the_views_join_enters_the_player() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        let placed = spawned(client.session.0, player(1), EntityId(5));
+        edge.says(WEST, placed).await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+        assert_eq!(edge.at(WEST).numbered, join + 1);
+
+        // Told again, or told by another path for the same stay while it still
+        // carries its attempt, the view has its entity: it is not entered twice.
+        let again = spawned(client.session.0, player(1), EntityId(5));
+        edge.says(WEST, again).await;
+        edge.link(WEST).await;
+        let reply = Reply::resumed().applied(join).stay(1, 5, 0);
+        edge.answer(WEST, reply.of_join(1, client.session.0)).await;
+        edge.sent(WEST).await;
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 2));
+        edge.end().await;
+    }
+
+    /// Section 4.3, the departure from the first draft: one path serves "a stay
+    /// placed and let go before its edge heard of the placing" and one whose edge
+    /// did hear. Here the edge has read `Spawned`, and the `Departed` still carries
+    /// the attempt, as no input was applied. The view has its entity, so this is a
+    /// hand-over like any other: one arrival, and the client is not entered again.
+    #[tokio::test]
+    async fn a_departed_that_still_carries_the_attempt_of_a_view_that_was_entered_is_a_hand_over() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, _, _) = edge.come_again(1).await;
+        let attempt = client.session.0;
+        edge.says(WEST, spawned(attempt, player(1), EntityId(5)))
+            .await;
+        edge.quiet().await;
+        let stay = let_go(5, EASTERN, Some(attempt));
+        edge.say(WEST, gone_to(1, &stay, EAST));
+        edge.settle(WEST).await;
+        let said = edge.sent(EAST).await;
+        assert_eq!(numbered(&said), [(1, arrives(1, &stay))]);
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.1, after its table: "a view that was entered and whose arrival
+    /// waits for a region without a link is in the world with no chunks". The stay
+    /// is let go unplaced to a region the edge has no link to. The arrival is kept
+    /// and is the first thing numbered on the region's next link; a client that was
+    /// gone leaves its leave behind it there.
+    #[tokio::test]
+    async fn a_stay_let_go_unplaced_to_a_region_without_a_link_is_entered_and_its_arrival_kept() {
+        for gone in [false, true] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, _, _) = edge.come_again(1).await;
+            let stay = let_go(5, EASTERN, Some(client.session.0));
+            edge.lose(EAST).await;
+            if gone {
+                client.packets.close();
+            }
+            edge.say(WEST, gone_to(1, &stay, EAST));
+            edge.settle(WEST).await;
+            if !gone {
+                is_in_the_world(&mut client);
+            }
+
+            edge.link(EAST).await;
+            let hello = edge.hello(EAST);
+            if gone {
+                assert!(
+                    hello.players.is_empty() && hello.chunks.is_empty(),
+                    "{hello:?}"
+                );
+            } else {
+                assert_eq!(hello.players, [player(1)]);
+                assert_eq!(set(&hello.chunks), view(EASTERN));
+            }
+            // The east has yet to hear of the player: `Absent` for whom the hello
+            // named, which a kept arrival answers.
+            edge.answer(EAST, Reply::resumed()).await;
+            let sent = numbered(&edge.sent(EAST).await);
+            if gone {
+                let expected = [(1, arrives(1, &stay)), (2, left(1, Some(5)))];
+                assert_eq!(sent, expected);
+            } else {
+                assert_eq!(sent, [(1, arrives(1, &stay))]);
+                is_in_the_world(&mut client);
+                assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+            }
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.1, "Why the join names its attempt": the answer to the join of an
+    /// earlier connection finds the later connection's view without an entity. It is
+    /// passed over, the connection goes on waiting, and the answer to its own join
+    /// then enters it. Taken, it would give the view an entity no region has.
+    #[tokio::test]
+    async fn spawned_with_the_attempt_of_an_earlier_connection_is_passed_over() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, _, stale) = edge.come_again(1).await;
+        edge.says(WEST, spawned(stale, player(1), EntityId(5)))
+            .await;
+        let said = edge.sent(WEST).await;
+        assert!(said.is_empty(), "{said:?}");
+        waits(&mut client);
+        edge.nobody_is_asked_for_anything();
+
+        let placed = spawned(client.session.0, player(1), EntityId(6));
+        edge.says(WEST, placed).await;
+        edge.sent(WEST).await;
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(6), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.3, path 1. The link to the home region is lost before `Spawned` is
+    /// read. The region's `Present` carries the attempt of the view's join, so the
+    /// stay is the view's: the player is entered and stays when the presence is
+    /// through.
+    #[tokio::test]
+    async fn a_present_from_the_views_region_with_the_views_attempt_enters_the_player() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let reply = Reply::resumed().applied(join).stay(1, 5, 0);
+        edge.answer(WEST, reply.of_join(1, client.session.0)).await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.3, the second row of the new table: a `Present` with another attempt
+    /// or none for a view without an entity, from the region the view is under, while
+    /// the join is kept for that region. Nothing is done with it: it is a stay from
+    /// before the join, which the join will end. The join is sent again and its own
+    /// answer enters the player.
+    #[tokio::test]
+    async fn a_present_from_the_views_region_with_another_attempt_does_nothing_while_the_join_is_kept()
+     {
+        for carries_the_earlier_attempt in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, stale) = edge.come_again(1).await;
+            edge.lose(WEST).await;
+            edge.link(WEST).await;
+            assert_eq!(edge.hello(WEST).players, [player(1)]);
+            // The west had applied the first connection's join and nothing after it.
+            let mut reply = Reply::resumed().applied(join - 2).stay(1, 4, 0);
+            if carries_the_earlier_attempt {
+                reply = reply.of_join(1, stale);
+            }
+            edge.answer(WEST, reply).await;
+            let said = edge.sent(WEST).await;
+            let sent = numbered(&said);
+            assert_eq!(sent.len(), 2, "{sent:?}");
+            assert_eq!(sent[0], (join - 1, left_unentered(1, stale)));
+            assert!(
+                matches!(&sent[1], (again, EdgeToWorker::PlayerJoin(_)) if *again == join),
+                "{sent:?}"
+            );
+            let asked = subscriptions(said);
+            assert!(asked.is_empty(), "placed as an earlier stay: {asked:?}");
+            waits(&mut client);
+
+            let placed = spawned(client.session.0, player(1), EntityId(6));
+            edge.says(WEST, placed).await;
+            edge.sent(WEST).await;
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (WEST, EntityId(6), 1));
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.3, the same row, "otherwise": no join is kept for the region, and
+    /// its `Present` has another attempt or none. That stay is one the edge does not
+    /// have, so it is ended with a leave that names its entity, and the view is not
+    /// entered as it.
+    #[tokio::test]
+    async fn a_present_with_another_attempt_and_no_join_kept_is_a_stay_the_edge_does_not_have() {
+        for carries_the_earlier_attempt in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, stale) = edge.come_again(1).await;
+            edge.lose(WEST).await;
+            edge.link(WEST).await;
+            let mut reply = Reply::resumed().applied(join).stay(1, 4, 0);
+            if carries_the_earlier_attempt {
+                reply = reply.of_join(1, stale);
+            }
+            edge.answer(WEST, reply).await;
+            let said = edge.sent(WEST).await;
+            assert_eq!(numbered(&said), [(join + 1, left(1, Some(4)))]);
+            let asked = subscriptions(said);
+            assert!(asked.is_empty(), "placed as an earlier stay: {asked:?}");
+            assert_eq!(times_entered(&mut client), 0);
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.3, path 1a, before the `SplitOff` is read: the link to the part
+    /// comes first. Its `Present` has the view's attempt, so the stay is the view's
+    /// whatever region the view is under: the view is the part's and the player is
+    /// entered. The `SplitOff` then finds the view with an entity under the part and
+    /// does nothing, and the split region's `Absent` is passed over.
+    #[tokio::test]
+    async fn a_present_from_a_part_before_the_split_off_is_read_enters_the_player_there() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        let attempt = client.session.0;
+        edge.lose(WEST).await;
+
+        edge.link(PART).await;
+        assert!(edge.hello(PART).players.is_empty());
+        let part = Reply::unknown(40).stay(1, 5, 0).of_join(1, attempt);
+        edge.answer(PART, part).await;
+        let said = edge.sent(PART).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(edge.at(PART).chunks(Role::Viewer), view(HOME));
+        is_in_the_world(&mut client);
+
+        edge.link(WEST).await;
+        let hello = edge.hello(WEST);
+        assert!(hello.players.is_empty(), "{hello:?}");
+        let split = Reply::resumed().applied(join);
+        edge.answer(WEST, split.entry(split_with(PART, 1, 5, Some(attempt))))
+            .await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        let said = edge.sent(PART).await;
+        assert!(said.is_empty(), "the SplitOff changed something: {said:?}");
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (PART, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.3, the second row for a `Present` from another region: with another
+    /// attempt or none it is a stay the edge does not have, ended with a leave that
+    /// names its entity. The view is untouched: it waits under the home region, whose
+    /// answer to its own join enters it.
+    #[tokio::test]
+    async fn a_present_from_a_part_with_another_attempt_is_ended_there_and_the_view_waits() {
+        for carries_the_earlier_attempt in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, stale) = edge.come_again(1).await;
+            edge.lose(WEST).await;
+
+            edge.link(PART).await;
+            let mut part = Reply::unknown(40).stay(1, 4, 0);
+            if carries_the_earlier_attempt {
+                part = part.of_join(1, stale);
+            }
+            edge.answer(PART, part).await;
+            let said = edge.sent(PART).await;
+            assert_eq!(numbered(&said), [(1, left(1, Some(4)))]);
+            let asked = subscriptions(said);
+            assert!(asked.is_empty(), "placed as an earlier stay: {asked:?}");
+            waits(&mut client);
+
+            // The view is still the home region's: its hello names the player.
+            edge.link(WEST).await;
+            assert_eq!(edge.hello(WEST).players, [player(1)]);
+            edge.answer(WEST, Reply::resumed().applied(join - 2)).await;
+            let sent = numbered(&edge.sent(WEST).await);
+            assert_eq!(sent.len(), 2, "{sent:?}");
+            waits(&mut client);
+            let placed = spawned(client.session.0, player(1), EntityId(6));
+            edge.says(WEST, placed).await;
+            edge.sent(WEST).await;
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (WEST, EntityId(6), 1));
+            edge.end().await;
+        }
+    }
+
+    /// What the tests of path 2 begin with: the link to the home region was lost
+    /// before `Spawned` was read, and its next welcome has a `SplitOff` that names
+    /// the stay with `named`, followed by `Absent` for the player the hello named.
+    /// The west had applied everything up to `applied`. Returns what the west was
+    /// sent.
+    async fn split_before_spawned_was_read(
+        edge: &mut Harness,
+        applied: u64,
+        named: Option<u64>,
+    ) -> Vec<EdgeMessage> {
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let split = Reply::resumed().applied(applied);
+        edge.answer(WEST, split.entry(split_with(PART, 1, 5, named)))
+            .await;
+        edge.sent(WEST).await
+    }
+
+    /// Section 4.3, path 2: the `SplitOff` alone, followed by the split region's
+    /// `Absent`. The entry has the view's attempt, so the view is under the part
+    /// before the `Absent` is read, and that is passed over: the connection goes on
+    /// waiting, nothing is asked of anyone and nothing is sent, and the part's first
+    /// hello names the player.
+    #[tokio::test]
+    async fn a_view_that_a_split_off_names_by_its_attempt_survives_the_split_regions_absent() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        let attempt = client.session.0;
+        let said = split_before_spawned_was_read(&mut edge, join, Some(attempt)).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        let asked = subscriptions(said);
+        assert!(asked.is_empty(), "{asked:?}");
+        waits(&mut client);
+
+        edge.link(PART).await;
+        let hello = edge.hello(PART);
+        assert_eq!(hello.players, [player(1)]);
+        assert!(
+            hello.chunks.is_empty() && hello.guests.is_empty(),
+            "{hello:?}"
+        );
+        waits(&mut client);
+        // The part has the stay and says so, and the player is entered there: the
+        // test after this one looks at that.
+        let part = Reply::unknown(40).stay(1, 5, 0).of_join(1, attempt);
+        edge.answer(PART, part).await;
+        is_in_the_world(&mut client);
+        edge.end().await;
+    }
+
+    /// Section 4.3, paths 2 and 1: after the `SplitOff` the part's hello names the
+    /// player, and the part's `Present` enters them there.
+    #[tokio::test]
+    async fn a_present_from_a_part_after_the_split_off_was_read_enters_the_player_there() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        let attempt = client.session.0;
+        split_before_spawned_was_read(&mut edge, join, Some(attempt)).await;
+
+        edge.link(PART).await;
+        assert_eq!(edge.hello(PART).players, [player(1)]);
+        let part = Reply::unknown(40).stay(1, 5, 0).of_join(1, attempt);
+        edge.answer(PART, part).await;
+        let said = edge.sent(PART).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(edge.at(PART).chunks(Role::Viewer), view(HOME));
+        assert!(edge.at(WEST).subscriptions.is_empty());
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (PART, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.3, "What makes each safe": the split region's welcome and the
+    /// part's, with their messages in every order. Whichever of `SplitOff` and the
+    /// part's `Present` is read first, the player is entered once, under the part,
+    /// and nobody is sent an arrival, a leave or a join.
+    #[tokio::test]
+    async fn a_split_off_and_the_parts_present_in_any_order_enter_the_player_once_at_the_part() {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, _) = edge.come_again(1).await;
+            let attempt = client.session.0;
+            edge.lose(WEST).await;
+            let split = Reply::resumed().applied(join);
+            let split = split.entry(split_with(PART, 1, 5, Some(attempt)));
+            let part = Reply::unknown(40).stay(1, 5, 0).of_join(1, attempt);
+            let scripts = vec![
+                vec![Step::Link(WEST), Step::Welcome(WEST, split)],
+                vec![Step::Link(PART), Step::Welcome(PART, part)],
+            ];
+            edge.play(scripts, &mut orders).await;
+            for region in [WEST, PART] {
+                let sent = numbered(&edge.sent(region).await);
+                assert!(sent.is_empty(), "{region:?} was sent {sent:?}");
+            }
+            assert_eq!(edge.at(PART).chunks(Role::Viewer), view(HOME));
+            assert!(edge.at(WEST).chunks(Role::Viewer).is_empty());
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (PART, EntityId(5), 1));
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.3, path 2, with another attempt or none in the entry: the view is
+    /// not the one the entry means, and stays under the home region. Here the home
+    /// region had applied only the first connection's join, so the view is carried
+    /// by its kept join; the part's hello does not name the player, and the part's
+    /// `Present` for that stay is of a stay the edge does not have.
+    #[tokio::test]
+    async fn a_split_off_with_another_attempt_leaves_the_view_under_the_home_region() {
+        for carries_the_earlier_attempt in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, stale) = edge.come_again(1).await;
+            let named = carries_the_earlier_attempt.then_some(stale);
+            let said = split_before_spawned_was_read(&mut edge, join - 2, named).await;
+            let sent = numbered(&said);
+            assert_eq!(sent.len(), 2, "{sent:?}");
+            assert_eq!(sent[0], (join - 1, left_unentered(1, stale)));
+            assert!(
+                matches!(&sent[1], (again, EdgeToWorker::PlayerJoin(_)) if *again == join),
+                "{sent:?}"
+            );
+            waits(&mut client);
+
+            edge.link(PART).await;
+            let hello = edge.hello(PART);
+            assert!(hello.players.is_empty(), "{hello:?}");
+            let mut part = Reply::unknown(40).stay(1, 5, 0);
+            if carries_the_earlier_attempt {
+                part = part.of_join(1, stale);
+            }
+            edge.answer(PART, part).await;
+            let said = edge.sent(PART).await;
+            assert_eq!(numbered(&said), [(1, left(1, Some(5)))]);
+            waits(&mut client);
+
+            let placed = spawned(client.session.0, player(1), EntityId(6));
+            edge.says(WEST, placed).await;
+            edge.sent(WEST).await;
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (WEST, EntityId(6), 1));
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.3, path 2 as it was before this record, which a stale entry still
+    /// meets: the entry does not move the view, the home region had applied the
+    /// join and answers `Absent`, nothing is kept, and the player is put out. Their
+    /// leave names the attempt of their join (section 4.4).
+    #[tokio::test]
+    async fn a_view_that_a_split_off_does_not_mean_is_put_out_by_the_absent_when_nothing_is_kept() {
+        for carries_the_earlier_attempt in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, stale) = edge.come_again(1).await;
+            let attempt = client.session.0;
+            let named = carries_the_earlier_attempt.then_some(stale);
+            edge.lose(WEST).await;
+            edge.link(WEST).await;
+            let split = Reply::resumed().applied(join);
+            edge.answer(WEST, split.entry(split_with(PART, 1, 5, named)))
+                .await;
+            client.disconnected().await;
+            let said = edge.sent(WEST).await;
+            assert_eq!(numbered(&said), [(join + 1, left_unentered(1, attempt))]);
+            assert_eq!(times_entered(&mut client), 0);
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.3, path 3, and row 22 of section 10. The home region placed the
+    /// player far from home and let them go, or let the stay go without placing it;
+    /// the link was lost before anything of it was read. The `Departed` has the
+    /// view's attempt. In order: the region the stay goes to is asked for the view
+    /// around the transfer's chunk, then sent the arrival with the transfer as it
+    /// came, and the client is put into the world. The split region's `Absent`,
+    /// which follows the entries, is passed over.
+    #[tokio::test]
+    async fn a_departed_with_the_views_attempt_asks_for_the_view_then_sends_the_arrival_and_enters()
+    {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        let stay = let_go(5, EASTERN, Some(client.session.0));
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let reply = Reply::resumed().applied(join);
+        edge.answer(WEST, reply.entry(gone_to(1, &stay, EAST)))
+            .await;
+
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(EASTERN));
+        assert_eq!(numbered(&said), [(1, arrives(1, &stay))]);
+        assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(EASTERN));
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        // The view saw nothing under the home region, so nothing is left there.
+        assert!(edge.at(WEST).subscriptions.is_empty());
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.3, the last row of path 3, and row 16 of section 10: a `Departed`
+    /// with another attempt or none, for a view without an entity. It is the stay
+    /// of an earlier connection: `Discard` where it was sent, and nothing else. The
+    /// view waits for the answer to its own join.
+    #[tokio::test]
+    async fn a_departed_with_another_attempt_is_discarded_and_the_view_waits() {
+        for carries_the_earlier_attempt in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, stale) = edge.come_again(1).await;
+            let attempt = carries_the_earlier_attempt.then_some(stale);
+            let stay = let_go(5, EASTERN, attempt);
+            edge.lose(WEST).await;
+            edge.link(WEST).await;
+            // The west had applied the first connection's join and nothing after it.
+            let reply = Reply::resumed().applied(join - 2);
+            edge.answer(WEST, reply.entry(gone_to(1, &stay, EAST)))
+                .await;
+
+            let said = edge.sent(EAST).await;
+            let discard = EdgeToWorker::Discard {
+                entity: EntityId(5),
+                chunk: EASTERN,
+            };
+            assert_eq!(numbered(&said), [(1, discard)]);
+            let asked = subscriptions(said);
+            assert!(asked.is_empty(), "{asked:?}");
+            let sent = numbered(&edge.sent(WEST).await);
+            assert_eq!(sent.len(), 2, "{sent:?}");
+            assert_eq!(sent[0], (join - 1, left_unentered(1, stale)));
+            assert!(
+                matches!(&sent[1], (again, EdgeToWorker::PlayerJoin(_)) if *again == join),
+                "{sent:?}"
+            );
+            waits(&mut client);
+
+            let placed = spawned(client.session.0, player(1), EntityId(6));
+            edge.says(WEST, placed).await;
+            edge.sent(WEST).await;
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (WEST, EntityId(6), 1));
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.3, by the name the record gives it. The client's queue is closed
+    /// when the `Departed` is read. The arrival is sent before the client is told
+    /// anything, so the leave that the first packet's failure brings is numbered
+    /// behind it: the region takes the stay in and then ends it. The other way round
+    /// it would apply the leave to nobody and keep an entity nobody is behind.
+    #[tokio::test]
+    async fn a_client_that_is_gone_when_its_stay_is_let_go_to_it_unplaced_leaves_an_arrival_followed_by_a_leave_in_that_order()
+     {
+        let mut edge = Harness::witnessed().await;
+        let (client, _, _) = edge.come_again(1).await;
+        let stay = let_go(5, EASTERN, Some(client.session.0));
+        // The connection is gone, and the edge has not been told so.
+        drop(client);
+        edge.say(WEST, gone_to(1, &stay, EAST));
+        edge.settle(WEST).await;
+
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(EASTERN));
+        let expected = [(1, arrives(1, &stay)), (2, left(1, Some(5)))];
+        assert_eq!(numbered(&said), expected);
+        let sent = numbered(&edge.sent(WEST).await);
+        assert!(sent.is_empty(), "{sent:?}");
+        edge.quiet().await;
+        edge.nobody_is_asked_for_anything();
+        edge.end().await;
+    }
+
+    /// The same with a client whose queue is full: it takes one packet. It is
+    /// removed by the first packet that does not fit, which is after the arrival.
+    #[tokio::test]
+    async fn a_client_that_is_full_when_its_stay_is_let_go_to_it_unplaced_leaves_an_arrival_followed_by_a_leave()
+     {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.join_with_room(player(1), 1).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        let stay = let_go(5, EASTERN, Some(client.session.0));
+        edge.say(WEST, gone_to(1, &stay, EAST));
+        edge.settle(WEST).await;
+
+        let said = edge.sent(EAST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(EASTERN));
+        let expected = [(1, arrives(1, &stay)), (2, left(1, Some(5)))];
+        assert_eq!(numbered(&said), expected);
+        client.disconnected().await;
+        edge.quiet().await;
+        edge.nobody_is_asked_for_anything();
+        edge.end().await;
+    }
+
+    /// Section 4.3, path 3: "`to` ... may be `R` itself under the same condition as
+    /// at any hand-over: the region the stay was let go to has gone into `R` since".
+    /// The west let the stay go to the north and then absorbed it, which the edge
+    /// knows from the routing table when it reads the `Departed`. That is no fault
+    /// of the west's: the player arrives at the west and is entered.
+    #[tokio::test]
+    async fn a_stay_let_go_unplaced_to_a_region_that_has_gone_into_the_one_that_says_so_arrives_there()
+     {
+        let mut edge = Harness::witnessed().await;
+        edge.pairs(vec![(NORTH, WEST)]).await;
+        edge.ended_by_the_edge(NORTH).await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        let stay = let_go(5, NORTHERN, Some(client.session.0));
+        edge.say(WEST, gone_to(1, &stay, NORTH));
+        edge.settle(WEST).await;
+
+        let said = edge.sent(WEST).await;
+        assert_eq!(asked_before_numbered(&said, Role::Viewer), view(NORTHERN));
+        assert_eq!(numbered(&said), [(join + 1, arrives(1, &stay))]);
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(NORTHERN));
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 6, "The edge, on `Ended`": it applies to the view whose entity it
+    /// names, whether or not the stay still carried its attempt. The client is sent
+    /// the disconnect with the game's sentence as a translatable component, the view
+    /// is removed, with its leave to the view's region as ever, and the entry is
+    /// confirmed.
+    #[tokio::test]
+    async fn ended_for_the_views_entity_puts_the_player_out_with_the_sentence_of_a_second_login() {
+        for (region, chunk) in [(WEST, HOME), (EAST, EASTERN)] {
+            for with_the_attempt in [false, true] {
+                let mut edge = Harness::witnessed().await;
+                let mut client = edge.settler(1, 5, region, chunk).await;
+                let before = edge.at(region).numbered;
+                let attempt = with_the_attempt.then_some(client.session.0);
+                let number = edge.say(region, ended(1, 5, attempt));
+                client.disconnected().await;
+                assert_eq!(client.disconnected, Some(duplicate_login()));
+                let said = edge.sent(region).await;
+                assert_eq!(numbered(&said), [(before + 1, left(1, Some(5)))]);
+                assert_eq!(confirmed(&said), Some(number));
+                edge.quiet().await;
+                edge.nobody_is_asked_for_anything();
+                edge.end().await;
+            }
+        }
+    }
+
+    /// Section 6: an `Ended` that names another entity than the view has is about a
+    /// connection the edge has ended itself, and is passed over, also when it
+    /// carries the session of the view, which counts only for a view without an
+    /// entity. The connection stays. The entry is confirmed all the same.
+    #[tokio::test]
+    async fn ended_for_another_entity_than_the_views_is_passed_over_and_confirmed() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        let session = client.session.0;
+        for (entity, attempt) in [(4, None), (4, Some(session)), (9, None)] {
+            let number = edge.say(WEST, ended(1, entity, attempt));
+            let said = edge.sent(WEST).await;
+            let sent = numbered(&said);
+            assert!(sent.is_empty(), "{sent:?}");
+            assert_eq!(confirmed(&said), Some(number));
+            is_in_the_world(&mut client);
+        }
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view(HOME));
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 6, and rows 13 and 14 of section 10: an `Ended` with the attempt of a
+    /// view that has no entity yet ends that view. Its leave names the attempt
+    /// (section 4.4).
+    #[tokio::test]
+    async fn ended_with_the_attempt_of_a_view_that_is_entering_puts_the_player_out() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, _) = edge.come_again(1).await;
+        let attempt = client.session.0;
+        let number = edge.say(WEST, ended(1, 5, Some(attempt)));
+        client.disconnected().await;
+        assert_eq!(client.disconnected, Some(duplicate_login()));
+        assert_eq!(times_entered(&mut client), 0);
+        let said = edge.sent(WEST).await;
+        assert_eq!(numbered(&said), [(join + 1, left_unentered(1, attempt))]);
+        assert_eq!(confirmed(&said), Some(number));
+        edge.end().await;
+    }
+
+    /// Section 6: an `Ended` with another attempt, or with none, is not about a view
+    /// that is entering. It is passed over and confirmed, and the view goes on
+    /// waiting for the answer to its join.
+    #[tokio::test]
+    async fn ended_with_another_attempt_is_passed_over_by_a_view_that_is_entering() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, _, stale) = edge.come_again(1).await;
+        for attempt in [Some(stale), None] {
+            let number = edge.say(WEST, ended(1, 5, attempt));
+            let said = edge.sent(WEST).await;
+            let sent = numbered(&said);
+            assert!(sent.is_empty(), "{sent:?}");
+            assert_eq!(confirmed(&said), Some(number));
+            waits(&mut client);
+        }
+        let placed = spawned(client.session.0, player(1), EntityId(6));
+        edge.says(WEST, placed).await;
+        edge.sent(WEST).await;
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(6), 1));
+        edge.end().await;
+    }
+
+    /// Section 6, rule 6, and row 1 of section 10 for an edge that watches. The west
+    /// has shown the older entity of a player; the east then introduces a newer one.
+    /// The older is taken off the screen before the newer is shown. The older then
+    /// walks on for a tick, as the row has it, and is even introduced anew: neither
+    /// brings it back, and the newer stays.
+    #[tokio::test]
+    async fn the_older_entity_of_a_player_that_moves_after_the_newer_was_shown_does_not_come_back()
+    {
+        let mut edge = Harness::witnessed().await;
+        let mut watcher = edge.settler(2, 6, WEST, HOME).await;
+        edge.tell(WEST, elsewhere(COMMON, edge.ask(WEST, COMMON), EAST));
+        edge.quiet().await;
+        let older = vec![own(1, 5, HOME)];
+        let home = snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), older);
+        edge.says(WEST, home).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&5), "{:?}", watcher.entities);
+
+        let newer = vec![own(1, 8, COMMON)];
+        let common = snapshot_of(COMMON, edge.ask(EAST, COMMON), empty_chunk(), newer);
+        edge.says(EAST, common).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&8), "{:?}", watcher.entities);
+        assert!(!watcher.entities.contains(&5), "{:?}", watcher.entities);
+
+        edge.says(WEST, walked(EntityId(5), HOME, STEP_EAST)).await;
+        edge.sync(&mut watcher).await;
+        assert!(!watcher.entities.contains(&5), "the older entity is back");
+        assert!(watcher.entities.contains(&8), "the newer entity is hidden");
+        edge.says(WEST, walked(EntityId(5), STEP_EAST, HOME)).await;
+        edge.says(WEST, introduced(1, 5, HOME)).await;
+        edge.sync(&mut watcher).await;
+        assert!(!watcher.entities.contains(&5), "the older entity is back");
+        assert!(watcher.entities.contains(&8), "the newer entity is hidden");
+        // The older stay's region reads its `Dead` and reports the entity removed.
+        let removed = RegionEvent::EntityRemoved {
+            entity: EntityId(5),
+            chunk: HOME,
+        };
+        let delta = WorkerToEdge::TickDelta {
+            tick: 3,
+            events: vec![removed],
+        };
+        edge.says(WEST, delta).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&8), "the newer entity is hidden");
+        never_both_and_never_the_older_again(&watcher, 5, 8);
+        edge.end().await;
+    }
+
+    /// Rule 6 with both entities in one region's word, as a home region has them
+    /// when a join removes the older stay (row 3 of section 10) and the edge reads
+    /// of the newer first.
+    #[tokio::test]
+    async fn the_older_entity_of_a_player_is_hidden_before_the_newer_is_shown() {
+        let mut edge = Harness::witnessed().await;
+        let mut watcher = edge.settler(2, 6, WEST, HOME).await;
+        let older = vec![own(1, 5, HOME)];
+        let home = snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), older);
+        edge.says(WEST, home).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&5), "{:?}", watcher.entities);
+
+        edge.says(WEST, introduced(1, 8, HOME)).await;
+        edge.says(WEST, walked(EntityId(5), HOME, HOME)).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&8), "{:?}", watcher.entities);
+        assert!(!watcher.entities.contains(&5), "{:?}", watcher.entities);
+        never_both_and_never_the_older_again(&watcher, 5, 8);
+        edge.end().await;
+    }
+
+    /// Rule 6: the highest entity the edge has been told of is also one it was told
+    /// by entering one of its own players. An introduction of an older entity of
+    /// that player, which another edge's connection left somewhere, is passed over.
+    #[tokio::test]
+    async fn an_older_entity_of_a_player_the_edge_has_entered_is_never_shown() {
+        let mut edge = Harness::witnessed().await;
+        let mut watcher = edge.settler(2, 6, WEST, HOME).await;
+        let _own = edge.settler(1, 8, WEST, HOME).await;
+        older_is_introduced_and_not_shown(&mut edge, &mut watcher).await;
+        edge.end().await;
+    }
+
+    /// The same for a player entered by a `Present` (section 4.3, path 1) and for
+    /// one entered by a `Departed` (path 3, whose first step notes "rule 6's map").
+    #[tokio::test]
+    async fn an_older_entity_of_a_player_entered_by_another_path_is_never_shown() {
+        for by_departure in [false, true] {
+            let mut edge = Harness::witnessed().await;
+            let mut watcher = edge.settler(2, 6, WEST, HOME).await;
+            let (mut client, join, _) = edge.come_again(1).await;
+            let attempt = client.session.0;
+            if by_departure {
+                let stay = let_go(8, EASTERN, Some(attempt));
+                edge.say(WEST, gone_to(1, &stay, EAST));
+                edge.settle(WEST).await;
+            } else {
+                edge.link(WEST).await;
+                // The hello names both; the answers come in its order.
+                let reply = Reply::resumed().applied(join).stay(2, 6, 0);
+                let reply = reply.stay(1, 8, 0).of_join(1, attempt);
+                edge.answer(WEST, reply).await;
+            }
+            edge.quiet().await;
+            is_in_the_world(&mut client);
+            older_is_introduced_and_not_shown(&mut edge, &mut watcher).await;
+            edge.end().await;
+        }
+    }
+
+    /// The west shows an entity 5 of the first player in the chunk `HOME`, in a
+    /// snapshot, as newly come and as moving. The watcher, who sees that chunk, is
+    /// never shown it.
+    async fn older_is_introduced_and_not_shown(edge: &mut Harness, watcher: &mut Client) {
+        let older = vec![own(1, 5, HOME)];
+        let home = snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), older);
+        edge.says(WEST, home).await;
+        edge.says(WEST, introduced(1, 5, HOME)).await;
+        edge.says(WEST, walked(EntityId(5), HOME, HOME)).await;
+        edge.sync(watcher).await;
+        assert!(!watcher.entities.contains(&5), "{:?}", watcher.told);
+        assert!(
+            !watcher.told.contains(&Told::Shown(5)),
+            "{:?}",
+            watcher.told
+        );
+    }
+
+    /// Section 6, "The player list", by the name the record gives it. The player
+    /// logged in a second time through another edge. This edge is shown the winner's
+    /// entity first and reads `Ended` for its own view after that. A friend who
+    /// shows the higher entity keeps the player in the list: nothing would list
+    /// them again until the entity left the friend's view and came back.
+    #[tokio::test]
+    async fn a_friend_keeps_the_player_in_the_list_when_the_first_connection_is_ended_after_the_second_was_shown()
+     {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, WEST, HOME).await;
+        let mut friend = edge.settler(2, 6, WEST, HOME).await;
+        let there = vec![own(1, 5, HOME)];
+        let home = snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), there);
+        edge.says(WEST, home).await;
+        edge.sync(&mut friend).await;
+        assert!(friend.entities.contains(&5), "{:?}", friend.entities);
+        assert!(lists(&friend, 1), "{:?}", friend.told);
+
+        edge.says(WEST, introduced(1, 8, HOME)).await;
+        edge.sync(&mut friend).await;
+        assert!(friend.entities.contains(&8), "{:?}", friend.entities);
+        edge.say(WEST, ended(1, 5, None));
+        first.disconnected().await;
+        assert_eq!(first.disconnected, Some(duplicate_login()));
+        edge.quiet().await;
+        edge.sync(&mut friend).await;
+        assert!(lists(&friend, 1), "{:?}", friend.told);
+        assert!(friend.entities.contains(&8), "{:?}", friend.entities);
+        assert!(!friend.entities.contains(&5), "{:?}", friend.entities);
+        never_both_and_never_the_older_again(&friend, 5, 8);
+        edge.end().await;
+    }
+
+    /// The other side of the same paragraph, which is as before: a friend who shows
+    /// no higher entity of the player loses them from the list when their view is
+    /// removed on `Ended`.
+    #[tokio::test]
+    async fn a_friend_who_shows_no_later_stay_loses_the_player_from_the_list_when_the_connection_is_ended()
+     {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, WEST, HOME).await;
+        let mut friend = edge.settler(2, 6, WEST, HOME).await;
+        edge.sync(&mut friend).await;
+        assert!(lists(&friend, 1), "{:?}", friend.told);
+        edge.say(WEST, ended(1, 5, None));
+        first.disconnected().await;
+        edge.quiet().await;
+        edge.sync(&mut friend).await;
+        assert!(!lists(&friend, 1), "{:?}", friend.told);
+        edge.end().await;
+    }
+
+    /// Section 6, the end of "The player list": "on one edge nothing changes: step 1
+    /// of section 4 removes the old view before the join is sent". A friend loses
+    /// the player from the list with the old view and is given the entry again when
+    /// the entity of the second login comes into view; the old entity, which its
+    /// region may not have reported removed yet, is hidden for it by rule 6.
+    #[tokio::test]
+    async fn a_friend_lists_the_player_again_when_the_stay_of_a_second_login_on_the_edge_comes_into_view()
+     {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, WEST, HOME).await;
+        let mut friend = edge.settler(2, 6, WEST, HOME).await;
+        let there = vec![own(1, 5, HOME)];
+        let home = snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), there);
+        edge.says(WEST, home).await;
+        edge.sync(&mut friend).await;
+        assert!(friend.entities.contains(&5), "{:?}", friend.entities);
+
+        let mut second = edge.join(player(1)).await;
+        first.disconnected().await;
+        edge.drained().await;
+        let placed = spawned(second.session.0, player(1), EntityId(8));
+        edge.says(WEST, placed).await;
+        edge.says(WEST, introduced(1, 8, HOME)).await;
+        edge.sync(&mut friend).await;
+        assert!(lists(&friend, 1), "{:?}", friend.told);
+        assert!(friend.entities.contains(&8), "{:?}", friend.entities);
+        assert!(!friend.entities.contains(&5), "{:?}", friend.entities);
+        never_both_and_never_the_older_again(&friend, 5, 8);
+        is_in_the_world(&mut second);
+        edge.end().await;
+    }
+
+    /// Section 4.2: a `Refused` names the attempt of the join it answers, and puts
+    /// out only a view without an entity that has that session. One of an earlier
+    /// connection leaves the view, and is confirmed; the refusal of the view's own
+    /// join puts it out.
+    #[tokio::test]
+    async fn a_refusal_of_an_earlier_attempt_leaves_the_view_and_one_of_its_own_puts_it_out() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, _, stale) = edge.come_again(1).await;
+        let earlier = Durable::Refused {
+            player: player(1),
+            attempt: stale,
+        };
+        let number = edge.say(WEST, earlier);
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(confirmed(&said), Some(number));
+        waits(&mut client);
+
+        let its_own = Durable::Refused {
+            player: player(1),
+            attempt: client.session.0,
+        };
+        edge.say(WEST, its_own);
+        client.disconnected().await;
+        assert_eq!(times_entered(&mut client), 0);
+        edge.end().await;
+    }
+
+    /// Section 4.2: a view that has its entity is not put out by a `Refused`, also
+    /// not by one that names its session.
+    #[tokio::test]
+    async fn a_refusal_does_not_put_out_a_view_that_has_its_entity() {
+        let mut edge = Harness::witnessed().await;
+        let mut client = edge.settler(1, 5, WEST, HOME).await;
+        let refused = Durable::Refused {
+            player: player(1),
+            attempt: client.session.0,
+        };
+        let number = edge.say(WEST, refused);
+        let said = edge.sent(WEST).await;
+        assert_eq!(confirmed(&said), Some(number));
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.3, the last of "What makes each safe", and the row of paths 1 and
+    /// 1a ("it is an arm of the match and falls through"), by the name the record
+    /// gives it. A `SplitOff` put the view under a part, which another region
+    /// absorbed before the edge had a link to it. The survivor's `Absorbed` brings
+    /// the view, its `Present` with the view's attempt enters the player, and the
+    /// player is not judged absent when the presence is through.
+    #[tokio::test]
+    async fn a_view_without_an_entity_that_a_merge_brought_is_entered_by_the_survivors_answer_and_stays()
+     {
+        for survivor in [EAST, WEST] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, _) = edge.come_again(1).await;
+            let attempt = client.session.0;
+            split_before_spawned_was_read(&mut edge, join, Some(attempt)).await;
+            waits(&mut client);
+
+            edge.lose(survivor).await;
+            edge.link(survivor).await;
+            // The view is the part's: the hello does not name the player.
+            assert!(edge.hello(survivor).players.is_empty());
+            let mut merged = Reply::resumed();
+            if survivor == WEST {
+                merged = merged.applied(join);
+            }
+            let merged = merged.entry(absorbed(PART, 40, 0, &[])).stay(1, 5, 0);
+            edge.answer(survivor, merged.of_join(1, attempt)).await;
+            let said = edge.sent(survivor).await;
+            let sent = numbered(&said);
+            assert!(sent.is_empty(), "{sent:?}");
+            assert_eq!(edge.at(survivor).chunks(Role::Viewer), view(HOME));
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (survivor, EntityId(5), 1));
+            is_in_the_world(&mut client);
+            edge.offers_in_vain(PART).await;
+            edge.end().await;
+        }
+    }
+
+    /// The same with the split region's welcome and the survivor's in every order
+    /// of their messages: the player is entered once, at the survivor, and stays.
+    #[tokio::test]
+    async fn a_view_split_off_into_a_part_that_was_absorbed_is_entered_at_the_survivor_in_any_order()
+     {
+        let mut orders = Orders::new();
+        while orders.another() {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, _) = edge.come_again(1).await;
+            let attempt = client.session.0;
+            edge.lose(WEST).await;
+            edge.lose(EAST).await;
+            let split = Reply::resumed().applied(join);
+            let split = split.entry(split_with(PART, 1, 5, Some(attempt)));
+            let merged = Reply::resumed()
+                .entry(absorbed(PART, 40, 0, &[]))
+                .stay(1, 5, 0)
+                .of_join(1, attempt);
+            let scripts = vec![
+                vec![Step::Link(WEST), Step::Welcome(WEST, split)],
+                vec![Step::Link(EAST), Step::Welcome(EAST, merged)],
+            ];
+            edge.play(scripts, &mut orders).await;
+            for region in [WEST, EAST] {
+                let sent = numbered(&edge.sent(region).await);
+                assert!(sent.is_empty(), "{region:?} was sent {sent:?}");
+            }
+            assert_eq!(edge.at(EAST).chunks(Role::Viewer), view(HOME));
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (EAST, EntityId(5), 1));
+            edge.offers_in_vain(PART).await;
+            edge.end().await;
+        }
+    }
+
+    /// Section 4, step 1, and R1.4's "first step that changes what a client is
+    /// sent": a second connection of a player on one edge puts the first out with
+    /// the game's sentence, and the first stay's leave, which names its entity, is
+    /// sent to its region before the new join. What the first connection's task
+    /// says when it ends does not touch the second.
+    #[tokio::test]
+    async fn a_second_login_on_the_edge_puts_the_first_out_and_sends_its_leave_before_the_join() {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, WEST, HOME).await;
+        let before = edge.at(WEST).numbered;
+        let mut second = edge.join(player(1)).await;
+        first.disconnected().await;
+        assert_eq!(first.disconnected, Some(duplicate_login()));
+        edge.drained().await;
+        let sent = numbered(&edge.sent(WEST).await);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent[0], (before + 1, left(1, Some(5))));
+        let session = second.session.0;
+        assert!(
+            matches!(
+                &sent[1],
+                (number, EdgeToWorker::PlayerJoin(join))
+                    if *number == before + 2 && join.player == player(1) && join.attempt == session
+            ),
+            "{sent:?}"
+        );
+        assert!(edge.at(WEST).chunks(Role::Viewer).is_empty());
+        waits(&mut second);
+
+        // The first connection's task ends and says so.
+        edge.leave(&first).await;
+        let sent = numbered(&edge.sent(WEST).await);
+        assert!(sent.is_empty(), "{sent:?}");
+        waits(&mut second);
+        edge.says(WEST, spawned(session, player(1), EntityId(8)))
+            .await;
+        edge.sent(WEST).await;
+        is_in_the_world(&mut second);
+        assert_eq!(edge.acts(&second).await, (WEST, EntityId(8), 1));
+        edge.end().await;
+    }
+
+    /// Step 1 with a first connection whose stay is another region's: the leave
+    /// goes there, the join to the home region.
+    #[tokio::test]
+    async fn a_second_login_ends_the_first_stay_at_the_region_it_is_in() {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, EAST, EASTERN).await;
+        let (at_the_east, at_the_west) = (edge.at(EAST).numbered, edge.at(WEST).numbered);
+        let mut second = edge.join(player(1)).await;
+        first.disconnected().await;
+        assert_eq!(first.disconnected, Some(duplicate_login()));
+        edge.drained().await;
+        let sent = numbered(&edge.sent(EAST).await);
+        assert_eq!(sent, [(at_the_east + 1, left(1, Some(5)))]);
+        let sent = numbered(&edge.sent(WEST).await);
+        let session = second.session.0;
+        assert!(
+            matches!(
+                &sent[..],
+                [(number, EdgeToWorker::PlayerJoin(join))]
+                    if *number == at_the_west + 1 && join.attempt == session
+            ),
+            "{sent:?}"
+        );
+        waits(&mut second);
+        edge.end().await;
+    }
+
+    /// Step 1 with a first connection that was not entered yet: its leave names its
+    /// attempt, and is sent before the new join. The answer to the first join is
+    /// then stale and the answer to the second enters the second connection.
+    #[tokio::test]
+    async fn a_second_login_puts_out_a_first_that_was_entering_with_a_leave_that_names_its_attempt()
+    {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.join(player(1)).await;
+        let (number, join) = edge.next_numbered(WEST).await;
+        assert!(
+            matches!(&join, EdgeToWorker::PlayerJoin(join) if join.attempt == first.session.0),
+            "{join:?}"
+        );
+        let mut second = edge.join(player(1)).await;
+        first.disconnected().await;
+        assert_eq!(first.disconnected, Some(duplicate_login()));
+        assert_eq!(times_entered(&mut first), 0);
+        edge.drained().await;
+        let sent = numbered(&edge.sent(WEST).await);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent[0], (number + 1, left_unentered(1, first.session.0)));
+        let session = second.session.0;
+        assert!(
+            matches!(
+                &sent[1],
+                (again, EdgeToWorker::PlayerJoin(join))
+                    if *again == number + 2 && join.attempt == session
+            ),
+            "{sent:?}"
+        );
+
+        edge.says(WEST, spawned(first.session.0, player(1), EntityId(5)))
+            .await;
+        edge.sent(WEST).await;
+        waits(&mut second);
+        edge.says(WEST, spawned(session, player(1), EntityId(6)))
+            .await;
+        edge.sent(WEST).await;
+        is_in_the_world(&mut second);
+        assert_eq!(edge.acts(&second).await, (WEST, EntityId(6), 1));
+        edge.end().await;
+    }
+
+    /// The home region answers a hello that named one player, having applied
+    /// everything up to `applied`, with `answer` for that player.
+    async fn answers_for_the_one_named(edge: &mut Harness, applied: u64, answer: Presence) {
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let welcome = Welcome::Resumed {
+            entries: 0,
+            presences: 1,
+            applied,
+        };
+        edge.says(WEST, WorkerToEdge::Welcome(welcome)).await;
+        let presence = WorkerToEdge::Presence {
+            player: player(1),
+            answer,
+        };
+        edge.says(WEST, presence).await;
+    }
+
+    /// Section 4.2, and row 18 of section 10. The link to the home region is lost
+    /// between a player's join and their entering, and the region had applied the
+    /// join: nothing is kept. `Entering` with the view's attempt has the connection
+    /// go on waiting, where `Absent` puts it out with a leave that names the
+    /// attempt. The region's `Spawned` then enters the player.
+    #[tokio::test]
+    async fn a_connection_whose_join_the_region_holds_as_entering_goes_on_waiting_where_absent_puts_it_out()
+     {
+        for entering in [true, false] {
+            let mut edge = Harness::witnessed().await;
+            let (mut client, join, _) = edge.come_again(1).await;
+            let attempt = client.session.0;
+            edge.lose(WEST).await;
+            edge.link(WEST).await;
+            if !entering {
+                answers_for_the_one_named(&mut edge, join, Presence::Absent).await;
+                client.disconnected().await;
+                let sent = numbered(&edge.sent(WEST).await);
+                assert_eq!(sent, [(join + 1, left_unentered(1, attempt))]);
+                edge.end().await;
+                continue;
+            }
+            answers_for_the_one_named(&mut edge, join, Presence::Entering { attempt }).await;
+            let said = edge.sent(WEST).await;
+            assert!(said.is_empty(), "{said:?}");
+            waits(&mut client);
+            edge.nobody_is_asked_for_anything();
+
+            edge.says(WEST, spawned(attempt, player(1), EntityId(5)))
+                .await;
+            edge.sent(WEST).await;
+            is_in_the_world(&mut client);
+            assert_eq!(edge.acts(&client).await, (WEST, EntityId(5), 1));
+            edge.end().await;
+        }
+    }
+
+    /// Section 4.2: "in every other case it does nothing". The region holds the
+    /// stay of an earlier connection's join as entering: it had applied that join
+    /// and neither the leave nor the join after it. Nothing is concluded from the
+    /// answer; the leave and the join are sent again, and the view waits.
+    #[tokio::test]
+    async fn an_entering_with_the_attempt_of_an_earlier_connection_changes_nothing() {
+        let mut edge = Harness::witnessed().await;
+        let (mut client, join, stale) = edge.come_again(1).await;
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        let answer = Presence::Entering { attempt: stale };
+        answers_for_the_one_named(&mut edge, join - 2, answer).await;
+        let said = edge.sent(WEST).await;
+        let sent = numbered(&said);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent[0], (join - 1, left_unentered(1, stale)));
+        assert!(
+            matches!(&sent[1], (again, EdgeToWorker::PlayerJoin(_)) if *again == join),
+            "{sent:?}"
+        );
+        waits(&mut client);
+
+        let placed = spawned(client.session.0, player(1), EntityId(6));
+        edge.says(WEST, placed).await;
+        edge.sent(WEST).await;
+        is_in_the_world(&mut client);
+        assert_eq!(edge.acts(&client).await, (WEST, EntityId(6), 1));
+        edge.end().await;
+    }
+
+    /// Section 4.4: the leave of a view without an entity names the attempt of its
+    /// join and no entity; the leave of a view that has its entity names the entity
+    /// and no attempt.
+    #[tokio::test]
+    async fn a_leave_names_the_attempt_for_a_view_without_an_entity_and_the_entity_otherwise() {
+        let mut edge = Harness::witnessed().await;
+        let unentered = edge.join(player(1)).await;
+        let (number, join) = edge.next_numbered(WEST).await;
+        assert!(
+            matches!(&join, EdgeToWorker::PlayerJoin(join) if join.attempt == unentered.session.0),
+            "{join:?}"
+        );
+        edge.leave(&unentered).await;
+        let sent = numbered(&edge.sent(WEST).await);
+        let expected = EdgeToWorker::PlayerLeave {
+            player: player(1),
+            entity: None,
+            attempt: Some(unentered.session.0),
+        };
+        assert_eq!(sent, [(number + 1, expected)]);
+
+        let entered = edge.settler(2, 6, WEST, HOME).await;
+        let before = edge.at(WEST).numbered;
+        edge.leave(&entered).await;
+        let sent = numbered(&edge.sent(WEST).await);
+        let expected = EdgeToWorker::PlayerLeave {
+            player: player(2),
+            entity: Some(EntityId(6)),
+            attempt: None,
+        };
+        assert_eq!(sent, [(before + 1, expected)]);
+        edge.end().await;
+    }
+
+    /// Section 4.4: since path 2 a view without an entity can be under another
+    /// region than the home region, and its leave goes there, with its attempt.
+    #[tokio::test]
+    async fn the_leave_of_a_view_that_a_split_off_put_under_a_part_goes_to_the_part_with_its_attempt()
+     {
+        let mut edge = Harness::witnessed().await;
+        let (client, join, _) = edge.come_again(1).await;
+        let attempt = client.session.0;
+        split_before_spawned_was_read(&mut edge, join, Some(attempt)).await;
+        edge.leave(&client).await;
+        let sent = numbered(&edge.sent(WEST).await);
+        assert!(sent.is_empty(), "{sent:?}");
+
+        edge.link(PART).await;
+        assert!(edge.hello(PART).players.is_empty());
+        edge.answer(PART, Reply::unknown(40)).await;
+        let sent = numbered(&edge.sent(PART).await);
+        assert_eq!(sent, [(1, left_unentered(1, attempt))]);
+        edge.end().await;
+    }
+
+    /// Section 4.4, its order of events on one edge. A first connection is placed
+    /// far from home, the link is lost, the home region is split and the view goes
+    /// under the part, which has no link; the client goes, and its leave is kept
+    /// for the part; the player joins again; the home region absorbs the part, and
+    /// what was kept for the part is put behind what is kept for the survivor. The
+    /// leave that reaches the home region behind the join names the first
+    /// connection's attempt, so that it ends nothing but its own stay, and the
+    /// second connection is entered by the stay of its own join.
+    #[tokio::test]
+    async fn a_leave_kept_for_a_part_that_is_absorbed_names_the_attempt_of_the_connection_that_went()
+     {
+        let mut edge = Harness::witnessed().await;
+        let first = edge.join(player(1)).await;
+        let (join, body) = edge.next_numbered(WEST).await;
+        assert!(matches!(body, EdgeToWorker::PlayerJoin(_)), "{body:?}");
+        let gone = first.session.0;
+        split_before_spawned_was_read(&mut edge, join, Some(gone)).await;
+        edge.leave(&first).await;
+
+        let mut second = edge.join(player(1)).await;
+        edge.drained().await;
+        let sent = numbered(&edge.sent(WEST).await);
+        let session = second.session.0;
+        assert!(
+            matches!(
+                &sent[..],
+                [(number, EdgeToWorker::PlayerJoin(again))]
+                    if *number == join + 1 && again.attempt == session
+            ),
+            "{sent:?}"
+        );
+
+        // The west absorbs the part. It has applied the second join and placed the
+        // player; the older stay, which came back with the part, went by rule 7.
+        edge.lose(WEST).await;
+        edge.link(WEST).await;
+        assert_eq!(edge.hello(WEST).players, [player(1)]);
+        let merged = Reply::resumed()
+            .applied(join + 1)
+            .entry(absorbed(PART, 40, 0, &[]))
+            .stay(1, 8, 0)
+            .of_join(1, session);
+        edge.answer(WEST, merged).await;
+        let sent = numbered(&edge.sent(WEST).await);
+        assert_eq!(sent, [(join + 2, left_unentered(1, gone))]);
+        is_in_the_world(&mut second);
+        assert_eq!(edge.acts(&second).await, (WEST, EntityId(8), 1));
         edge.end().await;
     }
 }
