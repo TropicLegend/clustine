@@ -1278,7 +1278,8 @@ fn presences(log: &[WorkerToEdge]) -> Vec<(PlayerId, Option<EntityId>)> {
                 match answer {
                     Presence::Present { entity, .. } => Some(*entity),
                     Presence::Absent => None,
-                    Presence::Entering { .. } => panic!("no region says {answer:?} yet"),
+                    // The store does not keep the players' places in these tests.
+                    Presence::Entering { .. } => panic!("no region here says {answer:?}"),
                 },
             )),
             _ => None,
@@ -6367,8 +6368,9 @@ impl Edge {
                     self.look(region, view);
                 }
             }
-            // No runner says it yet. An edge that hears it of a player who is entering
-            // goes on waiting, and does nothing otherwise (ADR-0020, section 4.2).
+            // No region here says it: the store does not keep the players' places in
+            // these tests. An edge that hears it of a player who is entering goes on
+            // waiting, and does nothing otherwise (ADR-0020, section 4.2).
             Presence::Entering { .. } => {}
             Presence::Absent => {
                 let here = self

@@ -17,6 +17,12 @@
 //! region holds it, or that it is elsewhere. See `docs/adr/0012-the-tick-on-chunks.md`,
 //! section 4.
 //!
+//! Where a player enters the world, and which of two stays of a player is the later, is
+//! the world store's to say as well. The runner hands the store what a tick says of
+//! stays with the tick's commit, and passes the store's answers into the ticks that
+//! follow: that a stay may enter and where, and that a stay is dead. See
+//! `docs/adr/0020-one-stay-per-player.md`, sections 3 to 5.
+//!
 //! Edges come and go. Each has one link at a time, which begins with a hello. Players
 //! belong to edges, not to links: a link that ends or does not keep up is dropped without
 //! the region missing a tick, and its edge's players stay until the edge is back, has
@@ -50,7 +56,7 @@ use clustine_rpc::{
     Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Presence, Restored, SplitPart, StoreReply,
     StoreRequest, Welcome, WorkerToEdge,
 };
-use clustine_sim::api::{PlayerInput, RegionEvent};
+use clustine_sim::api::{Entered, PlayerInput, RegionEvent};
 use clustine_sim::{
     Durable, EdgeEvent, Holdings, Knowledge, Misdirected, NoSplit, Part, PlayerChange, PlayerEvent,
     Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting, StateDelta, TickInputs,
@@ -729,8 +735,9 @@ struct KnownEdge {
 /// What a tick produced for edges, held until the world store has confirmed the tick.
 struct HeldTick {
     tick: u64,
-    /// Whether a commit was sent for the tick. A tick that changed nothing sends none and
-    /// counts as committed as soon as the tick before it is.
+    /// Whether a commit was sent for the tick. A tick that changed nothing and says
+    /// nothing of any stay sends none and counts as committed as soon as the tick before
+    /// it is.
     needs_commit: bool,
     /// What goes to which link, in the order it is to be published.
     outgoing: Vec<(LinkId, WorkerToEdge)>,
@@ -739,6 +746,9 @@ struct HeldTick {
 /// Runs one region for the edges that are linked to it.
 pub struct RegionRunner {
     region: Region,
+    /// Which region this is, if the runner was told ([`RegionRunner::with_id`]). The
+    /// region itself does not know.
+    id: Option<RegionId>,
     store: Box<dyn RegionStore>,
     /// The links to edges, in the order they were attached.
     links: BTreeMap<LinkId, EdgeLink>,
@@ -831,8 +841,11 @@ impl RegionRunner {
     /// A runner for the region as the world store has it: `restored` is what the store
     /// returned when the region was opened, and `store` the handle it came with. The
     /// region carries on after the last tick the store has; one that was never opened
-    /// before starts with the entity ids the store issued to it. It has no links until
-    /// some are attached through [`RegionRunner::links`].
+    /// before starts with the entity ids the store issued to it. Whatever its state
+    /// says, it gives out ids of the block the store names and none that the store
+    /// was ever told a stay was given. It has no links until some are attached through
+    /// [`RegionRunner::links`], and does not know which region it is until it is told
+    /// ([`RegionRunner::with_id`]).
     pub fn restore(
         config: RegionConfig,
         store: StoreHandle,
@@ -854,6 +867,7 @@ impl RegionRunner {
         let state = region.state();
         let mut runner = Self {
             region,
+            id: None,
             store,
             links: BTreeMap::new(),
             next_link: 0,
@@ -921,6 +935,23 @@ impl RegionRunner {
     /// Counters that are kept up to date while the runner runs.
     pub fn status(&self) -> Arc<RegionStatus> {
         Arc::clone(&self.status)
+    }
+
+    /// Says which region the runner runs. The home region's runner has to be told:
+    /// the world store answers a stay that is entering with the region that held the
+    /// player's last place, and the region is to place the player itself where that is
+    /// the region itself. A region does not know its own id, so the runner says
+    /// "nobody" to it in place of this id ([`Entered::holder`]).
+    ///
+    /// A runner that was not told passes on whichever region the store names. For its
+    /// own that means that the stay is let go to this very region without being
+    /// placed, and comes back through its edge as an arrival. The store names a
+    /// region so only to the home region, and only where the store keeps the players'
+    /// places (`RegionConfig::place_by_store`). See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 7.
+    pub fn with_id(mut self, region: RegionId) -> Self {
+        self.id = Some(region);
+        self
     }
 
     /// Sets how many ticks pass between two checkpoints. Until a checkpoint, changes to
@@ -1113,10 +1144,34 @@ impl RegionRunner {
                 }
                 StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
                 StoreReply::Flushed => self.flushes_answered += 1,
-                // The store does not say these yet, and they are passed over: step
-                // R1.3 of `docs/adr/0020-one-stay-per-player.md` puts them into the
-                // coming tick's inputs (section 4, step 6, and section 5).
-                StoreReply::Enter { .. } | StoreReply::Dead { .. } => {}
+                // The store's answer to a stay the region named as entering, behind the
+                // answer to the commit that named it. Like a claim's answer it goes
+                // into the coming tick whenever that runs. A merge or a split that is
+                // taken first drops it with everything else that waits; the tick after
+                // it names every stay again, and the store answers again. See
+                // `docs/adr/0020-one-stay-per-player.md`, section 4, step 6, and
+                // section 9.
+                StoreReply::Enter {
+                    player,
+                    entity,
+                    place,
+                    holder,
+                } => {
+                    // The region does not know which region it is: for a place it
+                    // held itself, it is told that nobody did, and places the player.
+                    let holder = holder.filter(|holder| Some(*holder) != self.id);
+                    self.inputs.entered.push(Entered {
+                        player,
+                        entity,
+                        place,
+                        holder,
+                    });
+                }
+                // Stays that a later one has replaced: in answer to what the region
+                // said of them, or, at any time, because the home region has given a
+                // player a new one (section 5 of the same record). The coming tick
+                // removes what the region has of them, and keeps nothing of the word.
+                StoreReply::Dead { stays } => self.inputs.dead.extend(stays),
                 // The answer to the merge or the split the store was handed. It is
                 // acted on by the step that finds it, not here: taking it makes the
                 // runner begin anew, and this is also called between two ticks.
@@ -1650,9 +1705,12 @@ impl RegionRunner {
     /// Everything else is dropped. What a link sent and no tick took was not applied,
     /// is not counted as received, and is sent again by its edge on its next link.
     /// What the store said is another region's is forgotten with everything else the
-    /// region believed or had asked. A delivered chunk is passed on only if the region
-    /// holds it by what its ticks were told: then it has held the chunk since it asked
-    /// for it, and the chunk is what the store has.
+    /// region believed or had asked. So is what the store said of stays, that one may
+    /// enter or that some are dead: the region's first tick after the merge or the
+    /// split names every stay it has, and the store says both again
+    /// (`docs/adr/0020-one-stay-per-player.md`, section 9). A delivered chunk is passed
+    /// on only if the region holds it by what its ticks were told: then it has held
+    /// the chunk since it asked for it, and the chunk is what the store has.
     fn waiting_for_the_tick(&mut self) -> (Vec<ChunkPos>, Vec<(ChunkPos, Chunk)>) {
         let inputs = mem::take(&mut self.inputs);
         self.discards.clear();
@@ -1814,10 +1872,28 @@ impl RegionRunner {
                     attempt: state.attempt,
                 })
             };
+            // A player the hello names whose join the region has taken and holds as
+            // entering, until the store has said where they enter: the edge goes on
+            // waiting. Only for a player the hello names. An edge that does not name
+            // them has ended that connection, and its leave ends the stay. See
+            // `docs/adr/0020-one-stay-per-player.md`, section 4.2.
+            let entering = |player: PlayerId| {
+                let state = self
+                    .region
+                    .entering_state(player)
+                    .filter(|state| from_state && state.edge == edge)?;
+                Some(Presence::Entering {
+                    attempt: state.attempt,
+                })
+            };
+            let answer = |player: PlayerId| {
+                let found = present(player).or_else(|| entering(player));
+                found.unwrap_or(Presence::Absent)
+            };
             let mut answers: Vec<_> = resume
                 .players
                 .iter()
-                .map(|player| (*player, present(*player).unwrap_or(Presence::Absent)))
+                .map(|player| (*player, answer(*player)))
                 .collect();
             if from_state {
                 // `last_inputs` has every player of the region as of its last tick.
@@ -1952,7 +2028,12 @@ impl RegionRunner {
                 _ => None,
             })
             .collect();
-        let needs_commit = !(changes.is_empty() && output.delta.changes_only_the_tick());
+        // A tick that says something of a stay is committed whatever else it changed:
+        // the first tick of a region names every stay it has, changed or not, and the
+        // store's answers to that are what removes a dead one and lets an entering one
+        // in. See `docs/adr/0020-one-stay-per-player.md`, section 3.
+        let unchanged = changes.is_empty() && output.delta.changes_only_the_tick();
+        let needs_commit = !(unchanged && output.stays.is_empty());
         if needs_commit {
             self.unsaved
                 .extend(changes.iter().map(|(position, _)| position.chunk()));
@@ -1960,10 +2041,7 @@ impl RegionRunner {
                 tick: output.tick,
                 changes,
                 state: stored(&output.delta),
-                // No tick makes a stay note yet: step R1.3 of
-                // `docs/adr/0020-one-stay-per-player.md` sends the tick's notes and
-                // commits a tick that has any (section 3).
-                stays: Vec::new(),
+                stays: output.stays,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -2001,7 +2079,10 @@ impl RegionRunner {
 
         // What concerns a single player goes to the edge they belong to. One who was let
         // go or refused in this very tick is no longer in the region, but then the outbox
-        // entry saying so names their edge.
+        // entry saying so names their edge. That is also how a player is told that they
+        // entered who was placed where the region believes the chunk another's and let
+        // go in the same tick: a tick lets at most one stay of a player go, and the
+        // stay it placed is the only one the region had of them then.
         let edge_of = |player: PlayerId| {
             let present = self.region.player_state(player).map(|state| state.edge);
             present.or_else(|| {
@@ -3132,6 +3213,16 @@ fn holdings(restored: &Restored) -> Holdings {
 /// edges do not outlive a server that is replaced by another build, and the chunks have
 /// every block. The same comes out every time the region is opened, until its next
 /// checkpoint replaces what was dropped.
+///
+/// The block of entity ids is the one the store names, whatever the state says: the
+/// store gives the home region a new block when the one it had has no id left above
+/// the highest stay ever given (`Restored::issued`), and until the next checkpoint the
+/// whole state on disk names the old block while the commits since have next ids of
+/// the new one. The next id is the state's if it is of that block, and the block's
+/// first otherwise; and it is above the highest stay ever given if that is of the
+/// block. So no entity id is given twice in the life of a world, also where a state was
+/// dropped for another build and the region counts from the start of its block again.
+/// See `docs/adr/0020-one-stay-per-player.md`, section 7.
 fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
     let fresh = |tick| {
         let mut state = RegionState::new(restored.entity_ids);
@@ -3179,6 +3270,18 @@ fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
                 state = fresh(stored.tick);
             }
         }
+    }
+    let block = restored.entity_ids;
+    state.entity_ids = block;
+    // The end of the block is the next id of a region that has given out every id of
+    // it, and stays so: a block that is used up refuses every join.
+    let of_the_block = |id: EntityId| block.contains(id) || id == block.end;
+    if !of_the_block(state.next_entity_id) {
+        state.next_entity_id = block.first;
+    }
+    if block.contains(restored.issued) {
+        let above = EntityId(restored.issued.0 + 1);
+        state.next_entity_id = state.next_entity_id.max(above);
     }
     Ok(state)
 }
@@ -3531,6 +3634,12 @@ mod tests {
         holding_loads: AtomicBool,
         /// Whether the answer to a merge or a split is held back.
         holding_reshapes: AtomicBool,
+        /// Whether what the store says of stays is held back: that one may enter, and
+        /// that some are dead.
+        holding_stays: AtomicBool,
+        /// The commits asked for that said something of a stay, in that order: the
+        /// tick of each and its notes.
+        noted: Mutex<Vec<(u64, Vec<clustine_sim::StayNote>)>>,
         /// Everything the runner asked for, in that order.
         asked: Mutex<Vec<Asked>>,
         lost: AtomicBool,
@@ -3579,6 +3688,19 @@ mod tests {
             self.holding_reshapes.store(true, Ordering::SeqCst);
         }
 
+        fn hold_stays(&self) {
+            self.holding_stays.store(true, Ordering::SeqCst);
+        }
+
+        fn release_stays(&self) {
+            self.holding_stays.store(false, Ordering::SeqCst);
+        }
+
+        /// The commits asked for so far that said something of a stay.
+        fn noted(&self) -> Vec<(u64, Vec<clustine_sim::StayNote>)> {
+            self.noted.lock().unwrap().clone()
+        }
+
         /// Loses the handle, as the store does when it gives the region to another
         /// owner or cannot be reached.
         fn lose(&self) {
@@ -3595,6 +3717,9 @@ mod tests {
                 StoreReply::Absorbed { .. }
                 | StoreReply::Split { .. }
                 | StoreReply::Declined { .. } => self.holding_reshapes.load(Ordering::SeqCst),
+                StoreReply::Enter { .. } | StoreReply::Dead { .. } => {
+                    self.holding_stays.load(Ordering::SeqCst)
+                }
                 _ => false,
             }
         }
@@ -3692,8 +3817,12 @@ mod tests {
     impl RegionStore for Gate {
         fn request(&self, request: StoreRequest) {
             self.control.asked.lock().unwrap().push(Asked::of(&request));
-            if let StoreRequest::Commit { tick, .. } = &request {
+            if let StoreRequest::Commit { tick, stays, .. } = &request {
                 self.control.commits.lock().unwrap().push(*tick);
+                if !stays.is_empty() {
+                    let mut noted = self.control.noted.lock().unwrap();
+                    noted.push((*tick, stays.clone()));
+                }
             }
             if request == StoreRequest::Flush {
                 self.control.flushes.fetch_add(1, Ordering::SeqCst);
@@ -8619,7 +8748,9 @@ mod tests {
                 let entity = match answer {
                     Presence::Present { entity, .. } => Some(*entity),
                     Presence::Absent => None,
-                    Presence::Entering { .. } => panic!("no region says {answer:?} yet"),
+                    // Only where the store keeps the players' places, which the tests
+                    // of `stays` are about and have a reading of their own for.
+                    Presence::Entering { .. } => panic!("no region here says {answer:?}"),
                 };
                 Some((*player, entity))
             }
@@ -13158,4 +13289,6 @@ mod tests {
             assert_eq!(told.try_iter().count(), 0);
         }
     }
+
+    mod stays;
 }
