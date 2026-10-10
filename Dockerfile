@@ -13,8 +13,12 @@
 # (and libgcc, which comes with it) and against nothing else, and a binary that was built
 # against a newer glibc than the one it finds does not start.
 ARG DEBIAN_RELEASE=trixie
+# Where the two base images come from. Docker Hub limits how often a machine may pull
+# without signing in, and GitHub's runners share addresses: the workflow that builds
+# this image there names a mirror of Docker Hub's official images instead.
+ARG REGISTRY=docker.io/library
 
-FROM rust:1-slim-${DEBIAN_RELEASE} AS build
+FROM ${REGISTRY}/rust:1-slim-${DEBIAN_RELEASE} AS build
 
 WORKDIR /src
 
@@ -29,7 +33,7 @@ RUN cargo build --release --locked -p clustine -p clustine-botswarm \
     && cp target/release/clustine target/release/clustine-botswarm /out/
 
 
-FROM debian:${DEBIAN_RELEASE}-slim
+FROM ${REGISTRY}/debian:${DEBIAN_RELEASE}-slim
 
 LABEL org.opencontainers.image.title="Clustine" \
       org.opencontainers.image.source="https://github.com/TropicLegend/clustine" \

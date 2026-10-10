@@ -748,13 +748,15 @@ impl Chaos {
             },
         )
         .await;
-        // In a world that follows its players a worker comes to run two regions
-        // when the spare is passed over for having been frozen a moment ago, and
-        // one that wakes up goes on running what was not taken from it: what it
-        // said of that before it froze still holds, unless its process has been
-        // replaced since.
+        // A worker comes to run two regions when the spare is passed over for
+        // having been frozen a moment ago, and one that wakes up goes on running
+        // what was not taken from it: what it said of that before it froze still
+        // holds, unless its process has been replaced since. In a pinned world too:
+        // on a slow machine both earlier takeovers went to the third worker, which
+        // was then frozen for the one region and kept the other, and the test
+        // waited in vain for it to say again that it runs that one. What is counted
+        // names the epoch, so nothing of a region that was taken is counted.
         if let Some(before) = before
-            && self.following.is_some()
             && self.since[&worker] == length
         {
             self.since.insert(worker, before);

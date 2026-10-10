@@ -8,8 +8,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# The four checks of CLAUDE.md, in jobs that run at the same time: together they take
+# as long as the longest, where one after another they took an hour and three quarters.
+# The end-to-end tests of a world without pins are half of all the time and have a job
+# of their own.
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,21 +23,46 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Everything of `cargo test --workspace` but the binary `wanders`.
+          - name: workspace
+            run: |
+              cargo test --workspace --exclude clustine --locked --no-fail-fast
+              others=$(ls bin/clustine/tests/*.rs | xargs -n 1 basename -s .rs | grep -v -x wanders | sed 's/^/--test /')
+              cargo test -p clustine --locked --no-fail-fast --lib --bins $others
+          - name: wanders
+            run: cargo test -p clustine --locked --no-fail-fast --test wanders
+          # The end-to-end tests once more, with the world divided into three regions:
+          # one boundary runs through the spawn point, where the tests build, and one
+          # where their longer walks cross it.
+          - name: pinned
+            pins: "0,4"
+            run: cargo test -p clustine --locked --no-fail-fast
+    name: test (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
       # The output of the tests is kept as well as shown, for the step at the end.
-      # `shell: bash` makes the step fail when cargo does and not only when tee does.
+      # `pipefail` makes the step fail when cargo does and not only when tee does.
       # Every test binary is run, also those behind one that failed, which cargo would
       # leave out: what fails there is named by the step at the end as well.
-      - name: cargo test --workspace --locked
+      - name: Run the tests
         shell: bash
-        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee test.log
-      # The end-to-end tests once more, with the world divided into three regions: one
-      # boundary runs through the spawn point, where the tests build, and one where
-      # their longer walks cross it.
-      - name: cargo test -p clustine --locked, on a divided world
-        shell: bash
-        run: cargo test -p clustine --locked --no-fail-fast 2>&1 | tee -a test.log
-        env:
-          CLUSTINE_TEST_PINS: "0,4"
+        run: |
+          set -eo pipefail
+          # Only where it is meant: set to nothing it would still be read as set.
+          if [ -n "${{ matrix.pins }}" ]; then export CLUSTINE_TEST_PINS="${{ matrix.pins }}"; fi
+          { ${{ matrix.run }}
+          } 2>&1 | tee test.log
       # Says on the run's summary page which tests failed and with what, where it can be
       # read without opening the log, which takes being signed in.
       - name: Name the tests that failed
@@ -45,3 +74,16 @@ jobs:
             while IFS= read -r line; do
               echo "::error::${line}"
             done
+      # A test that fails keeps the logs of its processes and names the directory; one
+      # that failed here once could not be looked into for want of them.
+      - name: Keep the logs of the processes of tests that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.name }}
+          path: |
+            /tmp/clustine-*/logs
+            /tmp/clustine-*/**/logs
+            test.log
+          if-no-files-found: ignore
+          retention-days: 7

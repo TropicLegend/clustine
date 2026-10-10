@@ -42,6 +42,9 @@ jobs:
           # default and for which .dockerignore does not count.
           context: .
           tags: clustine:dev
+          # Not Docker Hub, which has refused this runner's pulls for their number.
+          build-args: |
+            REGISTRY=mirror.gcr.io/library
           # Into the runner's Docker, where `kind load` takes it from.
           load: true
           # Without attestations the image is a single manifest, the plainest thing to
