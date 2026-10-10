@@ -51,6 +51,8 @@ mod stays_kill;
 #[cfg(test)]
 mod stripes_end;
 #[cfg(test)]
+mod syncs;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod unpinned;
