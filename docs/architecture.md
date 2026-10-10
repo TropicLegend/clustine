@@ -18,8 +18,8 @@ Where the implementation is simpler than the design below:
 
 | Design | So far |
 |---|---|
-| Regions of nearby active chunks that merge, split and migrate | Fixed stripes along the x axis, set when the cluster is started; see [ADR-0006](adr/0006-static-regions-and-handoff.md) |
-| Boundaries only run through inactive gaps | A boundary can run past players. What they do to blocks on its other side is passed on to the region that has them and takes effect a tick or two later |
+| Regions of nearby active chunks that merge, split and migrate | A region is the chunks its players see. Regions whose players come within 22 chunks of each other are merged, a group that is 30 chunks from everybody else is split off (at a view distance of 8), and regions are moved between workers to even their numbers out; see [ADR-0010](adr/0010-regions-that-follow-players.md), [ADR-0016](adr/0016-when-to-merge-and-split.md) and [ADR-0017](adr/0017-the-end-of-the-stripes.md). Load is no reason to split or to move yet |
+| Boundaries only run through inactive gaps | So it is unless regions are pinned side by side (`--pin`), or for the seconds a merge waits. Where a boundary does run past players, what they do to blocks on its other side is passed on to the region that has them and takes effect a tick or two later |
 | Coordinator replicated with Raft, leases fenced everywhere | One coordinator with its state in memory; only the world store acts on epochs; see [ADR-0007](adr/0007-coordinator-scope.md) |
 | Losing a worker is recovered from by migration | Another worker is given the region once the dead one's lease of 5 seconds is over and restores it from the world store; the region's players stand still meanwhile and stay connected. A region is moved on purpose the same way, with the old owner letting go first, so that nobody waits for the lease (`clustine move`, and every worker that is told to stop) |
 | An edge can be lost without its players noticing | An edge that dies takes its players with it |

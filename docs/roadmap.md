@@ -193,12 +193,23 @@ differently, so that each leaves everything working.
 | C2b | Sim, worker and edge on chunk sets: claims, guests, `Elsewhere`, `NotMine`, departures that name a region, `since` in hellos. Designed in [ADR-0012](adr/0012-the-tick-on-chunks.md), in steps C2b.1 to C2b.5 | Hand-over, block, takeover, chaos and move tests on two pinned regions | done |
 | C3 | Absorb and split through sim, worker, edge and coordinator, asked for by hand | Differential tests against one region; kills at every step; an edge away during several merges and splits in a row | done ([ADR-0014](adr/0014-merging-and-splitting.md), [ADR-0015](adr/0015-the-edge-through-merges-and-splits.md)) |
 | C4 | The coordinator decides by itself | State-machine tests with scripted and random movement; no flapping | done ([ADR-0016](adr/0016-when-to-merge-and-split.md)); off unless asked for until C5 |
-| C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | to do |
-| C6 | Docs; what to try with real clients | CI | to do |
+| C5 | Stripes, `Layout` and `--boundaries` go; the single process and the cluster on the new model by default | Bots meeting and parting; crowds; every chaos and move test again; kind | done ([ADR-0017](adr/0017-the-end-of-the-stripes.md)), but for the pause of a crowd (below) |
+| C6 | Docs; what to try with real clients | CI | done: README, architecture, and the trial under "C5 is done" below |
 
 Then the owner's check: two clients walking towards and away from each other.
 
 ### Where M3 stands
+
+**In one paragraph, on 2026-10-10.** All three phases are built and pushed: a worker
+or the store can die (A), a region is moved without anyone noticing more than a pause
+(B), and regions follow their players, merging and splitting by themselves, with no
+stripes left (C). Two things are open and being worked on: the pause of a crowd of a
+hundred or more at a merge or a split, which is the world store's way of writing
+(step C5.10, [ADR-0018](adr/0018-a-checkpoints-chunks-written-together.md)), and a
+player left without a view when split off at a speed no client reaches, whose cause
+is not found yet. Neither stands in the way of the owner's trial with two clients,
+which is written down under "C5 is done" below, steps 1 to 12. What follows is the
+history of each phase with what was measured and what was left.
 
 **Phase A is done.** A worker or the world store can die without anyone being
 disconnected or losing anything they were shown.
@@ -240,8 +251,8 @@ What checks it:
 1. A cluster as processes, each in a terminal of its own:
    ```bash
    cargo build -p clustine
-   target/debug/clustine coordinator --boundaries 4
-   target/debug/clustine worldstore --world world --boundaries 4
+   target/debug/clustine coordinator --reshape by-hand
+   target/debug/clustine worldstore --world world --pin 4
    target/debug/clustine worker --name a --listen 127.0.0.1:25611
    target/debug/clustine worker --name b --listen 127.0.0.1:25612
    target/debug/clustine worker --name c --listen 127.0.0.1:25613
@@ -409,8 +420,8 @@ stored is dropped instead of being read as something else.
 
 C1 is built as [ADR-0011](adr/0011-the-world-store-and-regions.md) has it, in its seven
 steps: the store is told how the world is divided when it starts (`clustine worldstore
---boundaries`, the same as the coordinator), keeps a table of regions and of which
-region holds which chunk, lets only the holder load and save a chunk, grants and takes
+--boundaries` then, the same as the coordinator; `--pin` since C5), keeps a table of
+regions and of which region holds which chunk, lets only the holder load and save a chunk, grants and takes
 back chunks, replays a region's log only into what it holds, merges and splits regions
 as one record of the log each, and gives the coordinator the list of regions. After a
 failed write of the log every region loses its owner and nobody is served until the
@@ -460,8 +471,8 @@ C2b.5 is built, and C2b with it: the given stripes are gone, and with them `clus
 worker --ask-the-store`, the fifth check and its variable. A region knows of a chunk
 only what the store has told it, in a cluster and in the single process, which until
 now always started with the stripes given: `cargo run -p clustine -- --boundaries 4`
-runs regions that ask for the first time. The worker's unit tests that ran a western
-area on a world of one region run on a world divided at 1. Measured in turn with one
+(as it was then) runs regions that ask for the first time. The worker's unit tests
+that ran a western area on a world of one region run on a world divided at 1. Measured in turn with one
 seed, the pause at a move is 0.95 seconds in the middle with regions that ask and 0.90
 with the stripes given (both within one hour; the 0.8 above was measured at another
 time, on a machine less busy): asking costs about a tick there, and taking the given
@@ -573,8 +584,8 @@ workers are enough) and two clients:
    routing table shows which.
 
 What to say if it is not so: which step, what was seen, and the logs of the terminals.
-In the single process (`cargo run -p clustine -- --boundaries 4`) nothing merges or
-splits yet; that comes with C5.
+In the single process nothing merged or split when this was written; since C5 it
+does, by itself (below).
 
 Seen and left as it is, or not tried:
 
@@ -588,8 +599,9 @@ Seen and left as it is, or not tried:
   splits on Kubernetes beyond the one of `deploy/kind/test.sh`.
 
 **C4 is done: the coordinator can decide by itself when regions merge and when one is
-split.** It is off unless asked for (`clustine coordinator --reshape by-itself`), and
-the owner's trial of it comes with C5, for the reason given below.
+split.** Until C5 it was off unless asked for (`clustine coordinator --reshape
+by-itself`), for the reason given below; since C5 it is what a server does unless it
+is told `--reshape by-hand`.
 [ADR-0016](adr/0016-when-to-merge-and-split.md) is its design, reviewed twice before
 anything was built (eleven defects, then six, all worked in).
 
@@ -649,16 +661,14 @@ which the two groups saw each other across the boundary for two to four seconds.
 a worker was killed and not started again, every region ran again within 3.9 s with a
 lease of 3 s.
 
-**Why it is not the default yet.** On stripes a part can only be cut out of what its
+**Why it was not the default until C5.** On stripes a part can only be cut out of what its
 region holds, so a group that walks on leaves its part, falls back into the region it
 was split from, and is split off again where it stands: a stop every ten seconds for a
-group that travels (K15 in the record). C5 takes the stripes away and lets a part grow
-with its players, and makes `by-itself` the default; the trial with two clients
-walking towards and away from each other is written down then. Whoever wants to look
-before that: start the coordinator of the cluster above with `--reshape by-itself`
-and watch its log for `a merge is begun by the distances`, `a split is begun by
-itself` and `a region is moved to even regions out`. Under it, a merge or a split
-asked for by hand is undone again after a rest where the distances say otherwise.
+group that travels (K15 in the record). C5 took the stripes away, lets a part grow
+with its players and made `by-itself` the default; the trial with two clients walking
+towards and away from each other is written down under C5 below. Where regions follow
+their players, a merge or a split asked for by hand is undone again after a rest
+where the distances say otherwise.
 
 Seen and left as it is, or not tried, in C4:
 
@@ -675,6 +685,260 @@ What C0 left to the steps that use it, because it changes what exists instead of
 to it: `Departed` and `Remote` naming the region they go to, `since` in an `EdgeState`
 and in hellos, the welcome saying how many entries follow (all C2b); how `Restored::held`
 and the list of regions travel between the store and others (C1).
+
+**C5 is done but for the pause of a crowd (below): the stripes are gone, and regions
+follow their players unless a server is told otherwise.**
+[ADR-0017](adr/0017-the-end-of-the-stripes.md) is its design, reviewed twice before
+anything was built and corrected as the building found more (its last section).
+
+How it is now, in short:
+
+- A new world is one region, the home region, which holds what its players see and
+  nothing else. A chunk goes to the region whose player sees it first, and a region
+  gives a chunk back half a minute after the last of its players stopped seeing it.
+  Nothing is divided beforehand: `Layout`, the stripes and `--boundaries` are gone
+  from every process, and `--boundaries` is refused with a sentence that says what to
+  write instead.
+- The coordinator knows no region until it has read the store's list. It decides by
+  itself when regions merge and split (C4) unless it is started with `--reshape
+  by-hand`. The single process does the same, with the same code.
+- A group that is split off takes the land on its side of the split with it, and what
+  lies ahead of it is its own to claim. So it walks on, however far, without being
+  handed back and split off again, which is what the stripes could not do.
+- `--pin 4` on the store, or on the single process, pins regions side by side: for
+  tests, and for whoever wants a boundary at a known place.
+- A world directory that was served with `--boundaries` is opened as it is and made
+  over; what was built in it is there.
+- A worker logs for every merge and split how long its region did not tick: `a region
+  stood still for a merge or a split region=… players=… held=… milliseconds=…`.
+
+What checks it. Every step came with tests of its own in the store, the coordinator,
+the runner and the single process. Then, written from the record by someone who had
+not seen the code (step C5.8), and run on a world without pins under the ledger bots,
+who count every block they place and dig and every answer they wait for:
+
+- `bin/clustine/tests/wanders.rs`, in a cluster of processes and in the single
+  process. A group is split off, walks on and is merged when it comes back, round
+  after round, with the store's list, the routing table and the logs checked after
+  every step; the same while players keep joining at the spawn point; a group that
+  walks along the rim between the two distances; regions that are left give their land
+  back and are absorbed; two parts whose players meet are merged without the home
+  region; a worker, the coordinator or the store killed at logged moments of a merge
+  or a split; a part that grows on while the store is away; eleven lone players who
+  come to a region each; one and eight who go straight on, on foot and at a sprint,
+  split off once and never handed over.
+- `chaos.rs` and `moves.rs` once more, on a world that follows its players, beside
+  their runs on a pinned one.
+- `crowds.rs`: a crowd at the spawn point while two leave it and come back (below).
+- `deploy/kind/test.sh`: on Kubernetes a group of bots walks out, is split off by the
+  coordinator, moved to the other worker and merged again; the bots waited 0.08 to
+  0.31 s.
+
+Ten runs of `wanders.rs` in a row: nine passed, and the tenth failed for a fault of
+the test (a bot walked through the spot where another placed a block, which the server
+rightly refuses), since mended. Three runs each of `chaos.rs`, `moves.rs` and
+`crowds.rs` passed. These tests add about three quarters of an hour to
+`cargo test --workspace` on six processors.
+
+What those tests found:
+
+- **The edge used a whole processor after about every merge**, in the cluster and in
+  the single process, until it was stopped: the task that keeps its links kept waking
+  for a region that had been absorbed. Nobody was disconnected and nothing was lost,
+  which is why no earlier test saw it; it showed as two edges at 100 % long after
+  their tests had ended. Mended, and a test now holds an edge to being idle after a
+  merge.
+- **A player who is split off while going at 160 blocks a second can be left without
+  a view** (open). Three times in twenty-six runs of eleven bots who ran to their
+  lanes at that speed, a region held only the chunk its player stood in, and once a
+  bot did not get even that chunk. At 60 blocks a second it did not show in eleven
+  runs, nor in four runs each at 34 (an elytra with rockets) and 22 (a sprint in
+  flight). No client reaches 160, but the cause is not known, so nothing says that a
+  slower player cannot meet it under rarer timing. The test is kept, ignored, as a
+  finding.
+- **A crowd of a hundred stands still for about a second**, twice the half second the
+  record set as what a player bears. Where the time goes is the store's disk, not the
+  edge. See the table and what is done about it, below.
+- Three things the record said that are not so, and now are said as they are: if
+  more players leave than stay, it is those who stay whose region is moved to the
+  other worker, so they stand still twice in five to ten seconds; a group that turns
+  round at once after its split walks into land the home region still holds and is
+  handed over into it, leaving an empty region behind; and the home region keeps the
+  trail of a group that came back for half a minute, so a second split takes more land
+  along than the first.
+
+**What a group that walks out and back goes through**, in those ten runs (60 of each;
+unoptimised processes, a view distance of 2, so distances of 10 and 18 chunks, and a
+rest of 5 s; least / middle / worst):
+
+| | Those who stayed waited | Those who went waited | The home region did not tick |
+|---|---|---|---|
+| Split, 18 chunks out | 0.20 / 0.32 / 0.65 s | 0.19 / 0.31 / 0.67 s | 0.05 / 0.14 / 0.36 s |
+| The part moved to the other worker, a rest later | 0.03 / 0.08 / 0.18 s | 0.16 / 0.29 / 0.49 s | not at all |
+| Merge, coming back within 10 chunks | 0.18 / 0.29 / 0.53 s | 0.46 / 0.65 / 1.01 s | 0.05 / 0.09 / 0.33 s |
+
+A split or a merge was begun about two seconds after the group crossed the distance.
+While the group walked on, nobody was handed over and nothing was split again, in
+every one of 60 counted rounds. After a worker was killed, every region ran again
+within 2.4 to 3.3 s (a lease of 3 s). Eleven lone players each had a region of their
+own 4.5 to 11.3 s after the last had arrived; they are split off one at a time, a
+rest apart, so the last of them stood still up to nine times.
+
+**What a crowd at the spawn point goes through when two players leave it and come
+back**, optimised, at the usual view distance of 8 (distances of 22 and 30 chunks),
+five rounds, the bots of the crowd each placing and digging without a pause (least /
+middle / worst):
+
+| Crowd | Chunks of the home region | Split: the crowd waited | Split: the region did not tick | Merge: the crowd waited | Merge: the region did not tick |
+|---|---|---|---|---|---|
+| 4 | 935 | 0.17 / 0.18 / 0.24 s | 0.05 / 0.05 / 0.08 s | 0.16 / 0.19 / 0.21 s | 0.05 / 0.05 / 0.05 s |
+| 20 | 1007 | 0.21 / 0.41 / 0.41 s | 0.05 / 0.21 / 0.21 s | 0.25 / 0.36 / 0.40 s | 0.05 / 0.17 / 0.18 s |
+| 50 | 1159 | 0.30 / 0.35 / 0.67 s | 0.09 / 0.12 / 0.46 s | 0.30 / 0.57 / 0.61 s | 0.08 / 0.35 / 0.38 s |
+| 100 | 1404 | 0.40 / 1.03 / 1.07 s | 0.17 / 0.78 / 0.81 s | 0.40 / 0.97 / 0.97 s | 0.17 / 0.70 / 0.72 s |
+| 200 | 1917 | one split: 1.44 s without a tick | | no merge was ever made | 1.5 to 1.6 s at each attempt |
+
+So with a handful of players a merge or a split is a fifth of a second for everybody,
+of which the region itself stands for a twentieth; that is what the owner's trial
+below meets. With a hundred it is a second. With two hundred the two who come back
+are never merged: the merge takes longer than the coordinator waits for it, and each
+attempt stands the crowd still for a second and a half; attempts come 15, 30 and 60 s
+apart. The same happens with a hundred spread over twice the land.
+
+**What is done about the crowd's pause (step C5.10, next).** The record expected the
+time to go into the edge finding its way back to the region, and named keeping the
+links as the remedy. The measurement says otherwise: of the second, the edge's way
+back is a quarter; the rest is the region waiting for the world store to write its
+last checkpoint. The store makes every changed chunk durable on its own, with three
+syncs to disk each at least, one after the other; a hundred bots who all build leave
+a hundred changed chunks at every checkpoint. On this machine a hundred small files synced in
+turn took 1.3 s, on eight threads 0.26 s, and written first and synced with one call
+0.02 s. So the step is the store writing a checkpoint's chunks together, with a
+record of its own and a review first, as it changes what is durable when. Until then
+the limit is: a crowd of a hundred builders stands still for a second when a group
+leaves or comes back, and with two hundred, or with a hundred on twice the land, a group
+that left cannot come back into the crowd's region. Workers that checkpoint every second or two (the
+default is every five minutes) do not keep up with a crowd of a hundred or more at
+all.
+
+**For the owner to try with real clients** (two clients, creative mode; flying is a
+double tap on the jump key; F3 shows the block and the chunk). An optimised build,
+because the pauses of an unoptimised one are three to six times as long, and a new
+world directory, so that the regions have the numbers below. The directory served
+until now (`world`, with `--boundaries 4`) can be opened as well: it is made over,
+what was built in it is there, the log says `the world was divided otherwise before;
+what its regions had is in the stored chunks now`, and its parts are numbered from
+where that world's numbers had got to. Nobody can see on a screen what a region
+holds, so every expectation is a line of the log or something both of you see. A
+pause of a fifth of a second is not something a lone player sees on their own screen;
+two who look at each other see the other's figure stop for that long.
+
+```bash
+cargo run --release -p clustine -- --world trial
+```
+
+1. Join with both. **Expected in the log** before you join: `reshaping by itself:
+   regions merge and split by where their players are merge_distance=22
+   split_distance=30`, `a region was assigned region=0 worker=local`, `running a
+   region region=0`.
+2. One stays at the spawn point, the other flies east. **Expected**: no line until
+   the one who flies is past x = 496. Within two seconds of that: `a split is begun
+   by itself region=0 part=1`, then `a worker says what came of a split` with
+   `outcome=Ok(RegionId(1))` and `a region stood still for a merge or a split
+   region=0 players=2` with `milliseconds` of about 50. On the screens: nothing you
+   should notice.
+3. The one who flies goes on east for a minute or more, sprinting in the air.
+   **Expected**: no line with `split`, `merge` or `departed` in it, however far and
+   however fast. This is what C5 is for; on stripes a group was split off again every
+   ten chunks.
+4. Fly back. **Expected**: within two seconds of coming west of x = 368, if ten
+   seconds have passed since the split: `a merge is begun by the distances survivor=0
+   absorbed=1`, `a merge has ended survivor=0 absorbed=1` with `outcome=Ok`, and `a
+   region stood still for a merge or a split region=0 players=1`. You are 350 blocks
+   apart and cannot see each other.
+5. Fly out again and to and fro between x = 368 and x = 496. **Expected**: `a split
+   is begun by itself region=0 part=2` once, past x = 496; then nothing while you stay
+   east of x = 368; a merge with `absorbed=2` when you come west of it, not sooner
+   than ten seconds after the split.
+6. Both fly out past x = 496, within a few chunks of each other. **Expected**: one
+   line `a split is begun by itself region=0 part=3` for the two of you, and none
+   after it whatever you do out there. Each sees the other and what the other builds,
+   as at the spawn point.
+7. One of you leaves the game out there and joins again. **Expected**: they are at
+   the spawn point; the other sees their figure go and nothing else; no line with
+   `split` or `merge`. Then the one at the spawn point flies out to the other.
+   **Expected**: within 352 blocks of the other, `a merge is begun by the distances
+   survivor=0 absorbed=3`; and when both are east of x = 496 and ten seconds have
+   passed, `a split is begun by itself region=0 part=4`. The one who stayed out there
+   stood still twice for a fifth of a second. That is the rule as it is (whoever
+   joins is in the home region, which survives every merge), not a fault.
+8. Build and break out there and at the spawn point, stop the server with Ctrl-C,
+   start it again with the same line. **Expected**: `running a region` for region 0
+   and for a part that was there; you join at the spawn point; every block is as you
+   left it, out there as well.
+
+To see it sooner, on foot: `cargo run --release -p clustine -- --world trial3
+--view-distance 3`. The split then comes past x = 336 and the merge west of x = 208.
+
+A line between two regions that you can stand at is not something the default has:
+no player sees another region's land. To build at one and across one, as after C3:
+`cargo run --release -p clustine -- --world pinned --pin 4 --reshape by-hand`. The
+log has `reshaping by hand: regions merge and split when somebody asks`; the regions
+meet at block x = 64; walking across logs `player departed to another region` and
+`player arrived from another region`, and nothing may show on either screen.
+
+The cluster of processes, each in a terminal of its own, on a world directory no
+other server has open:
+
+```bash
+cargo build --release -p clustine
+target/release/clustine worldstore --world trial-cluster
+target/release/clustine coordinator
+target/release/clustine worker --name a --listen 127.0.0.1:25611
+target/release/clustine worker --name b --listen 127.0.0.1:25612
+target/release/clustine edge
+```
+
+9. Steps 1 to 8. The lines about splits and merges are in the coordinator's terminal,
+   `a region stood still` and `running a region` in the workers'. **One thing more at
+   step 2**: ten seconds after the split, `a region is moved to even regions out
+   region=1` in the coordinator's log and `running a region region=1` in the other
+   worker's. The one who flew stood still once more, for about a third of a second.
+10. After a split, find the worker that runs region 1 (the coordinator's last line
+    `the routing table changed` has `region 1 at 127.0.0.1:25611` or `…:25612`) and
+    `kill -9` it. **Expected**: for five to seven seconds the one out there is not
+    answered: chunks ahead do not come and nobody else sees what they build; then the
+    coordinator logs `the lease of a worker ran out` and `a region was assigned
+    region=1`, and they go on, with everything they built in those seconds. The one at
+    the spawn point notices nothing.
+11. Both at the spawn point, in one region. Stop the coordinator with Ctrl-C; one of
+    you flies out past x = 496 and stays there. **Expected**: both play on and nothing
+    is split. Start the coordinator again: within about a quarter of a minute its log
+    has `a split is begun by itself region=0`.
+12. One of you at x = 100, z = 8, the other at the spawn point. In a further terminal:
+    `target/release/clustine split --region 0 --chunks 6,0`. **Expected**: no error;
+    `a worker says what came of a split` with `outcome=Ok`; and ten to twenty seconds
+    later `a merge is begun by the distances survivor=0`, as you are within 22 chunks:
+    what is asked by hand lasts only where the distances agree.
+
+What to say if it is not so: which step, what was seen, and the logs of the
+terminals. The record has more on each step (section 10) and on what a player notices
+in ordinary play.
+
+Seen and left as it is, or not tried, in C5:
+
+- A player who leaves the others stands still twice within ten seconds in a cluster:
+  for the split, and when their new region is moved to the other worker. Whether a
+  part should stay where it was made while the workers are nearly even is a question
+  to the owner (the record's open question 2).
+- Somebody who joins again and flies back out to a friend stands that friend still
+  twice (step 7 above).
+- Nothing prints which regions there are; their numbers are in the coordinator's log
+  only. A `clustine regions` is a day's work and comes with C6 if the trial is hard to
+  read without it.
+- The comparisons with the official server were not run for C5.0 to C5.9 when those
+  were pushed, as this machine had no Java then. Run on the commit that has the
+  tests of C5.8, all six pass.
+- Not tried: two edges; more than two workers; real clients.
 
 ### After M3, as the owner asked on 2026-10-08
 

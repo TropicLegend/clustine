@@ -104,8 +104,12 @@ KEEP=1 deploy/kind/test.sh
 kubectl --kubeconfig target/kind/kubeconfig --namespace clustine port-forward service/clustine-edge 25565:25565
 ```
 
-Then connect a Minecraft: Java Edition 26.3 client to `localhost:25565`. Walking east
-past x = 64 takes you from one worker to the other, which shows in the workers' logs:
+Then connect a Minecraft: Java Edition 26.3 client to `localhost:25565`. The cluster
+the test leaves is a world whose regions follow their players. With a second player
+at the spawn point, flying east past x = 496 gets you split off into a region of your
+own, which is moved to the other worker ten seconds later; alone on the server you
+are split off the spawn point the same way. The workers' logs show which of them
+runs which region:
 
 ```bash
 kubectl --kubeconfig target/kind/kubeconfig --namespace clustine logs --follow --prefix --selector app.kubernetes.io/name=clustine-worker

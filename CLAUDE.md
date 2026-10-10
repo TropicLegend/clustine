@@ -54,7 +54,9 @@ The tests that start clusters of processes run several at a time
 
 - **Comparisons with the official server** (`#[ignore]` tests): need Java and the jar that
   `cargo datagen` downloads. `CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace
-  --locked -- --ignored`. Not in CI. Run them after anything that touches the protocol.
+  --locked -- --ignored official_server`. Not in CI. Run them after anything that touches
+  the protocol. (Without the name, `--ignored` also runs tests that are ignored for their
+  length or as findings.)
 - **Cluster test**: `deploy/kind/test.sh` needs Docker, kubectl and kind
   (`deploy/kind/get-kind.sh`). The `Cluster` workflow runs it on GitHub for every push
   that touches code or `deploy/`, so it is checked there even where Docker is missing.

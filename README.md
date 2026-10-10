@@ -5,12 +5,12 @@ instances**. Adding instances adds compute and memory to the same world rather t
 creating more separate servers.
 
 > **Status: pre-alpha.** Players walk around a flat creative world, see each other and
-> build; that world can be simulated by several worker processes, with players handed
-> from one to the next as they walk; and a worker or the world store can die without
-> anyone being disconnected or losing anything they were shown: another worker carries
-> on with the region from what is on disk. The regions are still fixed parts of the
-> world, shared out among the workers, and there is one edge and one coordinator. See the
-> [roadmap](docs/roadmap.md).
+> build; that world is simulated in regions that follow the players, split when a group
+> goes off on its own and merged when it comes back, and shared out among several
+> worker processes; and a worker or the world store can die without anyone being
+> disconnected or losing anything they were shown: another worker carries on with the
+> region from what is on disk. There is one edge and one coordinator, and no terrain
+> yet. See the [roadmap](docs/roadmap.md).
 
 ## Goals
 
@@ -72,9 +72,16 @@ happen, so they survive the server being killed.
 cargo run -p clustine
 ```
 
-The world can be divided into regions that are simulated separately, each on a thread
-of its own, by naming the chunk x coordinates where they meet. Players are handed from
-region to region as they walk, and build across the boundaries, without noticing them:
+The world begins as one region. A group of players that goes far from everybody else
+(30 chunks at the usual view distance) is split off into a region of its own, which is
+simulated on a thread of its own, and merged again when it comes back within 22
+chunks. Each is a pause of about a fifth of a second for those it concerns, and the
+log says when it happens. `--release` makes the pauses several times shorter.
+
+Regions can also be pinned side by side, by naming the chunk x coordinates where they
+meet, to have a boundary at a known place. Players are handed from region to region as
+they walk, and build across the boundary, without noticing it. This one is at block
+x = 64:
 
 ```bash
 cargo run -p clustine -- --pin 4 --reshape by-hand
@@ -83,15 +90,16 @@ cargo run -p clustine -- --pin 4 --reshape by-hand
 ### Running a cluster
 
 The same binary is each service of a cluster when given a subcommand. This starts a
-world of two regions on one machine; the processes find each other on their default
-ports and can be started in any order:
+world on two workers on one machine; the processes find each other on their default
+ports and can be started in any order. A group that is split off gets a region that
+is moved to the other worker ten seconds later:
 
 ```bash
-cargo run -p clustine -- coordinator --reshape by-hand
+cargo run -p clustine -- coordinator
 ```
 
 ```bash
-cargo run -p clustine -- worldstore --world world --pin 4
+cargo run -p clustine -- worldstore --world world
 ```
 
 ```bash
@@ -106,9 +114,12 @@ cargo run -p clustine -- worker --name worker-1 --listen 127.0.0.1:25611
 cargo run -p clustine -- edge
 ```
 
-Players connect to the edge on `127.0.0.1:25565` once both workers have a region, which
-takes a moment: a coordinator gives nothing away for the first ten seconds. The services
-do not authenticate each other, so their ports are for a private network only.
+Players connect to the edge on `127.0.0.1:25565` once a worker runs the region players
+enter the world in, which takes a moment: a coordinator gives nothing away for the
+first ten seconds. With `coordinator --reshape by-hand` and `worldstore --pin 4` the
+world is two pinned regions, one for each worker, and nothing merges or splits unless
+it is asked for (`clustine merge`, `clustine split`, `clustine move`). The services do
+not authenticate each other, so their ports are for a private network only.
 
 [deploy/](deploy/README.md) has the same as Kubernetes manifests, and a test that runs
 it in a local cluster.
@@ -131,7 +142,7 @@ cargo run -p clustine-botswarm -- --vanilla --accept-eula idle
 ```
 
 ```bash
-CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace -- --ignored
+CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace -- --ignored official_server
 ```
 
 ### Game data
