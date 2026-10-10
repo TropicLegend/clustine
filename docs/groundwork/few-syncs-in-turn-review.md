@@ -1,9 +1,8 @@
 # Review 1 of "Few syncs in turn" (draft of 2026-10-10)
 
-Reviewed read-only against the worktree
-`/home/claude/clustine/.claude/worktrees/agent-a91a1adb6eb784888` (`main` at `12e445f`
-plus the draft, the measurement and `syncs.rs`). Nothing was built or run. Paths below
-are relative to that worktree. "Draft" is `docs/groundwork/few-syncs-in-turn-draft.md`,
+Reviewed read-only against a worktree of `main` at `12e445f` plus the draft, the
+measurement and `syncs.rs`. Nothing was built or run. Paths below are relative to the
+repository. "Draft" is `docs/groundwork/few-syncs-in-turn-draft.md`,
 "measured" is `docs/groundwork/disk-syncs-measured.md`.
 
 Each finding is marked **defect** (the draft is wrong, or loses something the code or a

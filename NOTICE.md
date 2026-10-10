@@ -22,10 +22,9 @@ Clustine grants no rights to it.** The programs that make these files, and the
 Rust around the data in them, are Clustine's and are under that licence. Clustine
 is not affiliated with or endorsed by Mojang or Microsoft.
 
-Of the places this paragraph names, the crate `clustine-worldgen-data` and
-`tools/fixtures` do not exist yet; they come with later steps of
-[the terrain plan](docs/groundwork/terrain-plan.md) and are named here so that the
-paragraph covers them from their first commit.
+Of the places this paragraph names, `tools/fixtures` does not exist yet; it comes
+with a later step of [the terrain plan](docs/groundwork/terrain-plan.md) and is named
+here so that the paragraph covers it from its first commit.
 
 Every generated Rust file says the same in its first line, and each generated
 directory has a `NOTICE` for the packed tables in it, which can carry no comment.
