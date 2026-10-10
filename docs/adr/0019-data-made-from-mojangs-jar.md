@@ -423,10 +423,12 @@ in the option's help and in the line at the start:
 - It is for good: the world records it, and a jar given later does not change it.
 
 **How a world records it.** The `generator` line of `meta` carries
-`structures=blocks` or `structures=none` beside the seed and the generator's version.
+`structures=blocks` or `structures=none` beside the seed; the generator's version has
+a line of its own (ADR-0021).
 It is part of the generator's settings, so the store's rule for those applies.
 Changing it for an existing world is the same question as a fix to the generator
-after worlds exist, which ADR-0020 decides; nothing is offered here.
+after worlds exist, which [ADR-0021](0021-generation-is-a-function.md) decides;
+nothing is offered here.
 
 **Tests.** Every test that makes a world with terrain names the setting: `none`, or
 `blocks` with a jar the test gives. Since `none` never looks for a jar, a test's
