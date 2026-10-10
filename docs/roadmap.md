@@ -1048,6 +1048,22 @@ review first:
   (recommended, as a player meets them within minutes); the Nether and the End as
   worlds of one dimension for now; and the speed to aim for.
 
+**What the owner answered on 2026-10-10**, to the four questions of the two plans that
+were not to be acted on without an answer, with which the work on both begins. The
+other questions go by what the plans recommend unless the owner says otherwise.
+
+- *Terrain.* Tables made from the jar's code (what light a block gives, its shapes,
+  which climate is which biome) may be committed, as Rust generated from its
+  world-generation data may, with a notice that they are Mojang's data and not under
+  the AGPL. Structure templates are not committed: their sizes and connection points
+  are, and the blocks are read from the operator's own jar when a server starts.
+- *Replicas.* A port of the test cluster may be mapped to this machine, to its
+  loopback address or to the node's own local address, so that real clients reach
+  several edges on Kubernetes. A client library for the Kubernetes API may be
+  downloaded and used.
+- Downloads in general are allowed on the owner's machine where the work needs them
+  (`CLAUDE.md`).
+
 **What the owner answered on 2026-10-08**, to the questions that shape the two plans
 most (the other questions of both documents are still open and are asked with the
 plans):

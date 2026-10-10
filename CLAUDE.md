@@ -27,9 +27,12 @@ The decision records in `docs/adr/` say why things are the way they are.
   2026-10-08 the work does not wait for that: what to try is written into the roadmap
   ("Where M3 stands") and the next phase begins. The owner asked for as much as
   possible to be done without them.
-- Ask before downloading anything. On the owner's machine the Mojang server jar (for the
-  comparisons below; the owner has agreed to the Minecraft EULA for that), kind and the
-  container images of the cluster test are approved. Anywhere else, ask again.
+- Downloads: since 2026-10-10 the owner allows downloading what the work needs on
+  their machine ("You can generally download stuff you need"): a JDK, reference clones
+  of other projects, crates, the Mojang server jar (the owner has agreed to the
+  Minecraft EULA for the comparisons below), kind and container images. Say what was
+  downloaded and from where. Subagents still download nothing. On any other machine,
+  ask first.
 
 ## Checking work
 
