@@ -1,0 +1,12 @@
+# Light must come out the same on every machine, and the simulation may use this crate:
+# the rules of `crates/clustine-sim/clippy.toml` hold here too.
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use BTreeMap" },
+    { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use BTreeSet" },
+]
+
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "light has no clock" },
+    { path = "std::time::SystemTime::now", reason = "light has no clock" },
+]

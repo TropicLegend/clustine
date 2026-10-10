@@ -16,6 +16,7 @@ clustine-coordinator = { path = "services/coordinator" }
 clustine-data = { path = "crates/clustine-data" }
 clustine-edge = { path = "services/edge" }
 clustine-format = { path = "crates/clustine-format" }
+clustine-light = { path = "crates/clustine-light" }
 clustine-protocol = { path = "crates/clustine-protocol" }
 clustine-region = { path = "crates/clustine-region" }
 clustine-rpc = { path = "crates/clustine-rpc" }
