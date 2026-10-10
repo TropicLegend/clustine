@@ -11,6 +11,7 @@ use crate::codec::{Decode, DecodeError, Encode, Position, Reader, Writer};
 use crate::item::ItemStack;
 use crate::nbt::Nbt;
 use crate::packet_ids::play::{clientbound, serverbound};
+use crate::text::Text;
 
 /// Game mode ids as used in [`Login`].
 pub mod game_mode {
@@ -131,10 +132,19 @@ impl Decode for Login {
     }
 }
 
+/// The bits of the flags in [`PlayerAbilities`] and [`ServerboundPlayerAbilities`].
+pub mod abilities {
+    pub const INVULNERABLE: u8 = 0x01;
+    pub const FLYING: u8 = 0x02;
+    pub const MAY_FLY: u8 = 0x04;
+    /// Breaks blocks instantly, as in creative mode.
+    pub const INSTANT_BREAK: u8 = 0x08;
+}
+
 /// What the player is allowed to do, mainly depending on the game mode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerAbilities {
-    /// 0x01 invulnerable, 0x02 flying, 0x04 may fly, 0x08 breaks blocks instantly.
+    /// A combination of [`abilities`].
     pub flags: u8,
     pub flying_speed: f32,
     pub field_of_view_modifier: f32,
@@ -159,6 +169,54 @@ impl Decode for PlayerAbilities {
             flying_speed: r.f32()?,
             field_of_view_modifier: r.f32()?,
         })
+    }
+}
+
+impl PlayerAbilities {
+    /// Whether the server has the player flying.
+    pub fn is_flying(&self) -> bool {
+        self.flags & abilities::FLYING != 0
+    }
+}
+
+/// The client says that its player began or stopped flying: the only ability a client
+/// decides for itself. One byte of [`abilities`], of which the official client sets
+/// nothing but [`abilities::FLYING`].
+///
+/// It is not yet among [`ServerboundPlay`], where it decodes as `Unhandled`: the edge
+/// matches every packet of that set, and is given this one in the step that reads it
+/// (ADR-0020, R1.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerboundPlayerAbilities {
+    pub flags: u8,
+}
+
+impl ServerboundPlayerAbilities {
+    /// What a client sends when its player begins (`true`) or stops flying.
+    pub fn flying(flying: bool) -> Self {
+        Self {
+            flags: if flying { abilities::FLYING } else { 0 },
+        }
+    }
+
+    pub fn is_flying(&self) -> bool {
+        self.flags & abilities::FLYING != 0
+    }
+}
+
+impl Packet for ServerboundPlayerAbilities {
+    const ID: i32 = serverbound::PLAYER_ABILITIES;
+}
+
+impl Encode for ServerboundPlayerAbilities {
+    fn encode(&self, w: &mut Writer) {
+        w.put_u8(self.flags);
+    }
+}
+
+impl Decode for ServerboundPlayerAbilities {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { flags: r.u8()? })
     }
 }
 
@@ -341,8 +399,24 @@ empty_packet!(
 /// Ends the connection with a message shown to the player.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Disconnect {
-    /// A text component; a plain string tag is the simplest form.
+    /// A text component ([`crate::text::Text`]); a plain string tag is the simplest
+    /// form.
     pub reason: Nbt,
+}
+
+impl Disconnect {
+    /// The reason as a text component.
+    pub fn text(&self) -> Text {
+        Text::from_nbt(self.reason.clone())
+    }
+}
+
+impl From<Text> for Disconnect {
+    fn from(reason: Text) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
 }
 
 impl Packet for Disconnect {
@@ -1564,6 +1638,64 @@ mod tests {
         );
         assert_round_trip(ClientTickEnd, Set::decode, Set::ClientTickEnd);
         assert_round_trip(PlayerLoaded, Set::decode, Set::PlayerLoaded);
+    }
+
+    #[test]
+    fn the_serverbound_abilities_packet_is_its_id_and_one_byte_of_flags() {
+        let (begin, stop) = (
+            ServerboundPlayerAbilities::flying(true),
+            ServerboundPlayerAbilities::flying(false),
+        );
+        assert!(begin.is_flying() && !stop.is_flying());
+        assert_eq!(crate::packets::encode(&begin), [40, 0x02]);
+        assert_eq!(crate::packets::encode(&stop), [40, 0x00]);
+
+        // It is not in the set of serverbound packets yet, so it is read directly.
+        for packet in [begin, stop, ServerboundPlayerAbilities { flags: 0xFF }] {
+            let bytes = crate::packets::encode(&packet);
+            let mut reader = Reader::new(&bytes);
+            assert_eq!(reader.var_int(), Ok(ServerboundPlayerAbilities::ID));
+            assert_eq!(ServerboundPlayerAbilities::decode(&mut reader), Ok(packet));
+            assert_eq!(reader.finish(), Ok(()));
+            assert_eq!(
+                ServerboundPlay::decode(&bytes),
+                Ok(ServerboundPlay::Unhandled { id: 40 })
+            );
+        }
+    }
+
+    #[test]
+    fn the_clientbound_abilities_packet_says_whether_the_player_flies() {
+        let with = |flags| PlayerAbilities {
+            flags,
+            flying_speed: 0.05,
+            field_of_view_modifier: 0.1,
+        };
+        let creative = abilities::INVULNERABLE | abilities::MAY_FLY | abilities::INSTANT_BREAK;
+        assert!(!with(creative).is_flying());
+        assert!(with(creative | abilities::FLYING).is_flying());
+        assert_eq!(
+            crate::packets::encode(&with(abilities::FLYING))[..2],
+            [65, 0x02]
+        );
+    }
+
+    #[test]
+    fn a_disconnect_carries_a_reason_in_either_form() {
+        use ClientboundPlay as Set;
+        for reason in [
+            Text::literal("bye"),
+            Text::translatable("multiplayer.disconnect.kicked"),
+        ] {
+            let packet = Disconnect::from(reason.clone());
+            assert_eq!(packet.text(), reason);
+            let bytes = crate::packets::encode(&packet);
+            let Ok(Set::Disconnect(read)) = Set::decode(&bytes) else {
+                panic!("not a disconnect: {bytes:?}");
+            };
+            assert_eq!(read.text(), reason);
+            assert_eq!(read, packet);
+        }
     }
 
     #[test]

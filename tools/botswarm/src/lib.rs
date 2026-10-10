@@ -9,6 +9,8 @@ pub mod connection;
 pub mod cross;
 pub mod ledger;
 pub mod oracle;
+pub mod reason;
+pub mod twice;
 
 use std::time::{Duration, Instant};
 
@@ -17,13 +19,15 @@ use clustine_data::PROTOCOL_VERSION;
 use clustine_protocol::packets::handshake::{Intent, Intention};
 use clustine_protocol::packets::status::{ClientboundStatus, PingRequest, StatusRequest};
 
-pub use bot::{Behaviour, Bot, JoinInfo, PlayStats, SeenEntity};
+pub use bot::{Behaviour, Bot, Entry, JoinInfo, PlayStats, SeenEntity};
 pub use connection::Connection;
 pub use cross::{Crossing, CrossingReport, cross};
 pub use ledger::{
     Ledger, LedgerReport, Progress, Random, Wait, audit_blocks, ledger, longest_wait,
 };
 pub use oracle::Oracle;
+pub use reason::{Ending, Reason, Wire};
+pub use twice::{SameName, same_name_twice};
 
 /// A server's answer to the server list ping.
 #[derive(Debug)]

@@ -257,6 +257,29 @@ Y 0x02, Z 0x04, yaw 0x08, pitch 0x10, velocity 0x20/0x40/0x80, rotate delta 0x10
 
 Confirm Teleportation in 26.3: VarInt id, position (3 Double), yaw, pitch (Float).
 
+## Abilities
+
+| Direction | Packet | Id | Layout |
+|---|---|---|---|
+| S→C | Player Abilities (`player_abilities`) | 65 | Flags byte, flying speed and field-of-view modifier as Float |
+| C→S | Player Abilities (`player_abilities`) | 40 | Flags byte |
+
+The ids are those of the game's packets report (`generated/packet_ids.rs`). The flags
+are 0x01 invulnerable, 0x02 flying, 0x04 may fly, 0x08 instant break. A client sends
+its packet when its player begins or stops flying and sets nothing but 0x02 in it; a
+server answers nothing. The codec has it as `ServerboundPlayerAbilities`, which is not
+among `ServerboundPlay` until the edge reads it (ADR-0020, R1.4).
+
+## Text components and the reason of a disconnect
+
+Disconnect (`disconnect`) in the configuration and play states carries one text
+component as nameless NBT; in the login state (`login_disconnect`) it is a JSON string.
+A component is a plain string tag, shown as it is, or a compound. The compound
+`{translate: "<key>"}` names a sentence of the game, which each client shows in its own
+language: `multiplayer.disconnect.duplicate_login` is "You logged in from another
+location". The codec reads and writes the two forms as `text::Text` and keeps any other
+component as the NBT it came as.
+
 ## Blocks
 
 Player Action (`player_action`): VarInt status, Position, face byte, VarInt sequence.
@@ -368,4 +391,10 @@ Removal: Remove Entities (array of VarInt) and Player Info Remove (array of UUID
 - That the direct block palette is 16 bits: computed from the state count, not observed.
 - The encoding of item stacks with component changes in Set Creative Mode Slot.
 - That entity id 0 is rejected: taken from a ViaVersion comment.
+- That the serverbound Player Abilities is one byte in which 0x02 is flying, that a
+  second login as a connected name ends the first connection with
+  `{translate: "multiplayer.disconnect.duplicate_login"}` and nothing more in the
+  compound, and that a player who left flying is sent 0x02 before their position on
+  entering again: from earlier versions, not observed. The last three tests of
+  `bin/clustine/tests/oracle.rs` ask the official server (ADR-0020, R1.0c).
 - Lighting behaviour with empty masks, and the neighbour-chunk rendering rule: wiki notes from 1.20.x.

@@ -10,6 +10,7 @@ pub mod frame;
 pub mod item;
 pub mod nbt;
 pub mod packets;
+pub mod text;
 
 #[rustfmt::skip]
 mod generated;

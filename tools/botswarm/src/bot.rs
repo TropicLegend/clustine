@@ -22,17 +22,35 @@ use clustine_protocol::packets::login::{
 };
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
-    Login, PlayerAction, PlayerLoaded, ServerboundKeepAlive, SetCreativeModeSlot, SetHeldItem,
-    SetPlayerPosition, SynchronizePlayerPosition, UseItemOn, face, inventory, movement_flags,
-    player_action,
+    Login, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
+    ServerboundPlayerAbilities, SetCreativeModeSlot, SetHeldItem, SetPlayerPosition,
+    SetPlayerPositionAndRotation, SynchronizePlayerPosition, UseItemOn, face, inventory,
+    movement_flags, player_action,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
 
-use crate::{Connection, intention};
+use crate::{Connection, Ending, Reason, intention};
 
 /// The length of a client tick.
 const TICK: Duration = Duration::from_millis(50);
+
+/// How many runs of packets of one kind a bot remembers the order of: enough for
+/// everything a server sends on entering, without growing for as long as a bot plays.
+const ARRIVALS: usize = 256;
+
+/// The bits of a position packet that make its yaw or its pitch relative.
+const RELATIVE_LOOK: i32 = 0x08 | 0x10;
+
+/// How an attempt to join ended, for a scenario in which being refused is an answer
+/// and not a failure.
+pub enum Entry {
+    /// The server put the bot into the world.
+    Entered(Box<Bot>),
+    /// The server sent a disconnect packet instead. `state` says when, in words that
+    /// follow "disconnected".
+    Refused { state: &'static str, reason: Reason },
+}
 
 /// What a server told a bot while it joined.
 #[derive(Debug)]
@@ -202,6 +220,20 @@ pub struct Bot {
     /// Where the bot is, as x, y and z. Starts where the server put it and changes when
     /// the bot moves or the server moves it.
     pub location: (f64, f64, f64),
+    /// Where the bot looks, as yaw and pitch in degrees: as the server last turned it or
+    /// as it last turned itself.
+    pub look: (f32, f32),
+    /// Every abilities packet the server has sent, in the order they came.
+    pub abilities: Vec<PlayerAbilities>,
+    /// Whether the bot flies: as the server last said or as the bot last told it, as a
+    /// client keeps it.
+    pub flying: bool,
+    /// The names of the packets of the play state in the order they came, the login
+    /// packet first, each with how many of it came in a row. Only the first
+    /// [`ARRIVALS`] runs are kept: it is for what a server sends on entering.
+    pub arrivals: Vec<(&'static str, u32)>,
+    /// How the connection ended, once it has.
+    pub ended: Option<Ending>,
 }
 
 impl Bot {
@@ -213,6 +245,15 @@ impl Bot {
 
     /// Like [`Bot::join`], for a bot that deviates from what a vanilla client does.
     pub async fn join_with(address: &str, name: &str, behaviour: Behaviour) -> Result<Self> {
+        match Self::attempt(address, name, behaviour).await? {
+            Entry::Entered(bot) => Ok(*bot),
+            Entry::Refused { state, reason } => bail!("disconnected {state}: {}", reason.wire),
+        }
+    }
+
+    /// Like [`Bot::join_with`], but a disconnect packet in place of an entry is an
+    /// answer: a second login as a name that is connected gets one from some servers.
+    pub async fn attempt(address: &str, name: &str, behaviour: Behaviour) -> Result<Entry> {
         let mut connection = Connection::connect(address).await?;
         connection
             .write(&intention(address, Intent::Login)?)
@@ -233,7 +274,10 @@ impl Bot {
                 }
                 ClientboundLogin::LoginSuccess(profile) => break profile,
                 ClientboundLogin::LoginDisconnect(packet) => {
-                    bail!("disconnected during login: {}", packet.reason_json)
+                    return Ok(Entry::Refused {
+                        state: "during login",
+                        reason: Reason::from_json(&packet.reason_json),
+                    });
                 }
                 ClientboundLogin::Unhandled { id } => bail!(
                     "unsupported login packet {}; is the server in online mode?",
@@ -269,7 +313,8 @@ impl Bot {
         let mut entries_with_data = 0;
         let mut tags = BTreeMap::new();
         loop {
-            match ClientboundConfiguration::decode(&connection.read_frame().await?)? {
+            let frame = connection.read_frame().await?;
+            match ClientboundConfiguration::decode(&frame)? {
                 ClientboundConfiguration::FeatureFlags(packet) => feature_flags = packet.features,
                 ClientboundConfiguration::ClientboundKnownPacks(packet) => {
                     // Like a vanilla client, the bot has the core pack of its own version.
@@ -312,8 +357,11 @@ impl Bot {
                         .write(&ConfigurationKeepAlive { id: packet.id })
                         .await?;
                 }
-                ClientboundConfiguration::Disconnect(packet) => {
-                    bail!("disconnected during configuration: {}", packet.reason)
+                ClientboundConfiguration::Disconnect(_) => {
+                    return Ok(Entry::Refused {
+                        state: "during configuration",
+                        reason: Reason::from_frame(&frame)?,
+                    });
                 }
                 ClientboundConfiguration::FinishConfiguration(_) => {
                     connection.write(&AcknowledgeFinishConfiguration).await?;
@@ -324,10 +372,14 @@ impl Bot {
             }
         }
 
-        let login = match ClientboundPlay::decode(&connection.read_frame().await?)? {
+        let frame = connection.read_frame().await?;
+        let login = match ClientboundPlay::decode(&frame)? {
             ClientboundPlay::Login(login) => login,
-            ClientboundPlay::Disconnect(packet) => {
-                bail!("disconnected on entering the world: {}", packet.reason)
+            ClientboundPlay::Disconnect(_) => {
+                return Ok(Entry::Refused {
+                    state: "on entering the world",
+                    reason: Reason::from_frame(&frame)?,
+                });
             }
             _ => bail!("the play state did not start with a login packet"),
         };
@@ -365,16 +417,30 @@ impl Bot {
             loaded: false,
             center: None,
             location: (0.0, 0.0, 0.0),
+            look: (0.0, 0.0),
+            abilities: Vec::new(),
+            flying: false,
+            arrivals: vec![("minecraft:login", 1)],
+            ended: None,
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
         while bot.position.is_none() {
-            ensure!(
-                bot.step(deadline).await?,
-                "the server did not send a position"
-            );
+            match bot.step(deadline).await {
+                Ok(true) => {}
+                Ok(false) => bail!("the server did not send a position"),
+                Err(error) => match bot.ended.take() {
+                    Some(Ending::Disconnected(reason)) => {
+                        return Ok(Entry::Refused {
+                            state: "before it was placed",
+                            reason,
+                        });
+                    }
+                    _ => return Err(error),
+                },
+            }
         }
-        Ok(bot)
+        Ok(Entry::Entered(Box::new(bot)))
     }
 
     /// Confirms that the bot has been moved by `teleport`, as a client does on its own
@@ -457,6 +523,136 @@ impl Bot {
             })
             .await?;
         self.connection.write(&ClientTickEnd).await
+    }
+
+    /// Tells the server that the bot begins (`true`) or stops flying, as a client does
+    /// when its player does. A server answers nothing; one that keeps a player's place
+    /// lets them enter flying again.
+    pub async fn set_flying(&mut self, flying: bool) -> Result<()> {
+        self.flying = flying;
+        self.connection
+            .write(&ServerboundPlayerAbilities::flying(flying))
+            .await
+    }
+
+    /// Moves in a straight line through the air to `to` (x, y and z) while looking
+    /// along `look` (yaw and pitch in degrees), `blocks_per_tick` every twentieth of a
+    /// second, never on the ground. At least one position is sent, so the look reaches
+    /// the server even where the bot already is at `to`.
+    ///
+    /// A bot has no gravity and stays wherever it says it is. What keeps a real client
+    /// up there is that it flies: see [`Bot::set_flying`].
+    pub async fn fly_to(
+        &mut self,
+        to: (f64, f64, f64),
+        look: (f32, f32),
+        blocks_per_tick: f64,
+    ) -> Result<()> {
+        self.look = look;
+        loop {
+            let (dx, dy, dz) = (
+                to.0 - self.location.0,
+                to.1 - self.location.1,
+                to.2 - self.location.2,
+            );
+            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+            let arrives = distance <= blocks_per_tick + 1e-9;
+            if arrives {
+                self.location = to;
+            } else {
+                let fraction = blocks_per_tick / distance;
+                self.location.0 += dx * fraction;
+                self.location.1 += dy * fraction;
+                self.location.2 += dz * fraction;
+            }
+            self.connection
+                .write(&SetPlayerPositionAndRotation {
+                    x: self.location.0,
+                    y: self.location.1,
+                    z: self.location.2,
+                    yaw: look.0,
+                    pitch: look.1,
+                    flags: 0,
+                })
+                .await?;
+            self.connection.write(&ClientTickEnd).await?;
+            let next_tick = Instant::now() + TICK;
+            while self.step(next_tick).await? {}
+            if arrives {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Whether the bot has left the loading screen and told the server so. Before that
+    /// the official server does not take its movement.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
+    /// Stays connected until the connection ends, and says how it did; `None` if it is
+    /// still there when `patience` has run out.
+    pub async fn wait_for_end(&mut self, patience: Duration) -> Option<Ending> {
+        let deadline = Instant::now() + patience;
+        loop {
+            if let Some(ending) = &self.ended {
+                return Some(ending.clone());
+            }
+            // An error leaves its ending behind, which the next round returns.
+            if let Ok(false) = self.step(deadline).await {
+                return None;
+            }
+        }
+    }
+
+    /// What the server sent the bot and how the connection ended, for a person to read:
+    /// the packets in the order they came, every abilities packet, and where and with
+    /// which look the server last put the bot.
+    pub fn report(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut text = format!(
+            "{} ({}), entity {}\n  packets in order:",
+            self.info.profile.name, self.info.profile.uuid, self.info.login.entity_id
+        );
+        for (name, count) in &self.arrivals {
+            let name = name.trim_start_matches("minecraft:");
+            if *count == 1 {
+                let _ = write!(text, " {name}");
+            } else {
+                let _ = write!(text, " {name} x{count}");
+            }
+        }
+        if self.arrivals.len() == ARRIVALS {
+            text.push_str(" (and what came after)");
+        }
+        text.push_str("\n  abilities packets:");
+        if self.abilities.is_empty() {
+            text.push_str(" none");
+        }
+        for packet in &self.abilities {
+            let _ = write!(
+                text,
+                " [flags {:#04x}, flying {}, flying speed {}, field of view {}]",
+                packet.flags,
+                packet.is_flying(),
+                packet.flying_speed,
+                packet.field_of_view_modifier
+            );
+        }
+        let _ = write!(
+            text,
+            "\n  the bot flies: {}\n  last position packet: {:?}\n  positions confirmed: {}\n  \
+             the bot is at {:?} looking along {:?}\n  the connection: ",
+            self.flying, self.position, self.stats.teleports_confirmed, self.location, self.look
+        );
+        match &self.ended {
+            Some(ending) => {
+                let _ = write!(text, "ended with {ending}");
+            }
+            None => text.push_str("has not ended"),
+        }
+        text
     }
 
     /// Breaks the block at `x`, `y`, `z` the way a creative-mode client does, and returns
@@ -581,12 +777,28 @@ impl Bot {
         Ok(Some(sections))
     }
 
-    /// Handles the next packet. Returns false if `deadline` passed first.
+    /// Handles the next packet. Returns false if `deadline` passed first. An error is
+    /// the end of the connection as far as the bot goes, and [`Bot::ended`] says which.
     async fn step(&mut self, deadline: Instant) -> Result<bool> {
+        let handled = self.handle_next(deadline).await;
+        if let Err(error) = &handled {
+            self.ended
+                .get_or_insert_with(|| Ending::Failed(format!("{error:#}")));
+        }
+        handled
+    }
+
+    async fn handle_next(&mut self, deadline: Instant) -> Result<bool> {
         let Ok(frame) = timeout_at(deadline, self.connection.read_frame()).await else {
             return Ok(false);
         };
-        let frame = frame?;
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.ended = Some(Ending::Closed(format!("{error:#}")));
+                return Err(error);
+            }
+        };
         let id = Reader::new(&frame).var_int()?;
         let name = usize::try_from(id)
             .ok()
@@ -596,6 +808,12 @@ impl Bot {
         let packet = ClientboundPlay::decode(&frame)
             .with_context(|| format!("decoding {name} ({} bytes)", frame.len()))?;
         *self.stats.received.entry(name).or_default() += 1;
+        let room = self.arrivals.len() < ARRIVALS;
+        match self.arrivals.last_mut() {
+            Some((last, count)) if *last == name => *count += 1,
+            _ if room => self.arrivals.push((name, 1)),
+            _ => {}
+        }
 
         match packet {
             ClientboundPlay::ClientboundKeepAlive(packet) => {
@@ -609,6 +827,9 @@ impl Bot {
                     self.confirm_teleport(&packet).await?;
                 }
                 self.location = (packet.x, packet.y, packet.z);
+                if packet.relative_flags & RELATIVE_LOOK == 0 {
+                    self.look = (packet.yaw, packet.pitch);
+                }
                 self.position = Some(packet);
             }
             ClientboundPlay::SetCenterChunk(packet) => {
@@ -724,7 +945,13 @@ impl Bot {
                     .push((packet.sequence, Instant::now()));
             }
             ClientboundPlay::Disconnect(packet) => {
+                self.ended = Some(Ending::Disconnected(Reason::from_frame(&frame)?));
                 bail!("disconnected: {}", packet.reason)
+            }
+            ClientboundPlay::PlayerAbilities(packet) => {
+                // A client takes the server's word for whether it flies.
+                self.flying = packet.is_flying();
+                self.abilities.push(packet);
             }
             ClientboundPlay::LevelChunkWithLight(packet) => {
                 // A chunk that is sent again replaces what was known about it.
@@ -751,7 +978,6 @@ impl Bot {
             }
             ClientboundPlay::Login(_) => bail!("received a second login packet"),
             ClientboundPlay::ChunkBatchStart(_)
-            | ClientboundPlay::PlayerAbilities(_)
             | ClientboundPlay::GameEvent(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
