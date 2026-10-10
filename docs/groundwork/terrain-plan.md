@@ -150,6 +150,17 @@ data, type by type.
   of terrain for a first view, against 497 and 697 without a fixed order; walking
   along an axis 26 to 32 runs a chunk, diagonally 51.
 
+**T1, the noises, is built** (`crates/clustine-noise`, 4,850 lines, scalar, stable
+Rust): all 90 samples of SteelMC's fixture reproduce bit for bit. One thing the plan
+had wrong: "`libm` everywhere" does not give the game's numbers. `libm`'s logarithm
+is the older routine of Java's `StrictMath`, while the game calls `Math.log`, and the
+two differ in the last place for about six arguments in a hundred: the ninth normal
+number of a legacy generator already came out different. On this machine's Java 25,
+`Math.log` equalled the correctly rounded logarithm for 20,000 of 20,000 arguments
+and `StrictMath.log` did not for 1,516. So the crate has a correctly rounded
+logarithm of its own, from additions, multiplications and divisions only. The same
+question comes with `exp` in the beardifier (T7b).
+
 Not tried yet: the two other packs (without carvers; with an empty material rule),
 which give the gates of T4 and T5; the Nether and the End; light; a second cluster.
 None of them stands in the way of the decision records of G4.
