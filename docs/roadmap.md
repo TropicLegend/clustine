@@ -1025,9 +1025,13 @@ review first:
   unmodified official server, given a data pack made from its own biome files with
   their features taken out, leaves chunks at the terrain stage in its region files,
   and their blocks equal SteelMC's fixture in 14 of 14 chunks compared. So terrain
-  can be judged by the official server alone. The second trial, the server run
-  inside a small Java program, on which everything from trees and ores on rests, is
-  next.
+  can be judged by the official server alone. **The second went well too**: the
+  server runs inside a Java program of a hundred lines, with no mod loader and no
+  change to it, decorates the chunks it is asked for in the order it is asked, and
+  for a hundred chunks gives the same blocks as SteelMC's fixture at both stages,
+  100 of 100 each. So everything from trees and ores on can be judged by the
+  official server as well, and SteelMC's fixture has been shown right where it was
+  compared.
 
   **Ten questions are the owner's** (the plan's section 7 has each with what is
   recommended and what happens without an answer). Those that cannot be undone

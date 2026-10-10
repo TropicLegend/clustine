@@ -7,8 +7,9 @@
   what happens without an answer. The two spikes of phase G (G1, G2) decide whether
   its claims can be tested at all, and are done before any decision record is written.
 
-**Steps G0 and G1 have been done** (2026-10-10); what they found is in "What the first
-trials found", before section 0, and the text below is as it was proposed before them.
+**Steps G0, G1 and G2 have been done** (2026-10-10), and both trials went well; what
+they found is in "What the first trials found", before section 0, and the text below
+is as it was proposed before them.
 
 It rests on [terrain-generation.md](terrain-generation.md) ("groundwork §n"), on that
 document's check against clones of both projects
@@ -94,9 +95,34 @@ the Java program of G6, as assumed.
   properties}` otherwise, each wrapped in a compound where a palette has both kinds.
   The reader of G7 has to know both.
 
+**G2, the server inside a plain Java program: it works, by the first route.**
+[terrain-g2/G2.java](terrain-g2/G2.java) is a hundred lines, compiled with `javac`
+against the server's own classes (the inner jar and the libraries that the bundler
+unpacks beside it on a first run) and run with them on the class path.
+
+- It calls `net.minecraft.server.Main.main` as it is, which starts the server on its
+  own thread and returns. No mod loader, no agent, no change to any class.
+- It finds the server through the thread that reads the console, which is an inner
+  class of the server and holds it. That thread ends at once when standard input is
+  closed, so the program is started with its input kept open.
+- `ServerChunkCache.getChunk(x, z, status, true)` brings one chunk to a status and
+  returns when it is there, from any thread. Asked for chunk after chunk, it runs the
+  features of exactly those chunks in exactly that order.
+- **For the first cluster of SteelMC's fixture, ten by ten chunks around (−418462,
+  366791), brought to `terrain` and then to `features` in ascending x and z: 100 of
+  100 terrain hashes and 100 of 100 features hashes equal the fixture's.** It took
+  ten seconds.
+- So everything from features on can be judged by the official server on this
+  machine, in an order of Clustine's choosing; and for that cluster SteelMC's 26.3
+  fixture is what the released 26.3 makes when it decorates in their order,
+  trees, hash-set order and all.
+- Left over: `MinecraftServer.halt(false)` followed by `System.exit` did not end the
+  process, which had to be killed; F0 has to stop it properly. Set
+  `pause-when-empty-seconds=-1`, or the server pauses after a minute without players.
+
 Not tried yet: the two other packs (without carvers; with an empty material rule),
-which give the gates of T4 and T5; the Nether and the End; G2, the server inside a
-Java program, on which everything from features on rests.
+which give the gates of T4 and T5; the Nether and the End; light; a second cluster.
+None of them stands in the way of the decision records of G4.
 
 ---
 
