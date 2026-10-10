@@ -87,6 +87,13 @@ fn join(edge: EdgeId, number: u128) -> PlayerChange {
     )
 }
 
+/// A leave that names no entity, as an edge sends it for a player whom it has not told
+/// one: it names the attempt of the join, and ends the stay that still carries it
+/// (`docs/adr/0020-one-stay-per-player.md`, section 4.4).
+fn leave(edge: EdgeId, number: u128) -> PlayerChange {
+    PlayerChange::Leave(edge, player(number), None, Some(attempt(number)))
+}
+
 fn walk(x: f64) -> PlayerInput {
     PlayerInput::Move {
         position: Some(Vec3::new(x, -60.0, 0.5)),
@@ -493,7 +500,7 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
     let output = tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(B, player(1), None, None)],
+            player_changes: vec![leave(B, 1)],
             inputs: vec![(B, player(1), EntityId(1), 1, walk(5.5))],
             ..TickInputs::default()
         },
@@ -501,10 +508,23 @@ fn a_leave_needs_no_entity_but_has_to_come_from_the_players_edge() {
     assert!(output.events.is_empty(), "{:?}", output.events);
     assert_eq!(region.player(player(1)).unwrap().1, Pose::at(SPAWN));
 
+    // Without an entity it names the attempt of the join, and without that, or with
+    // another, it names no stay the region has
+    // (`docs/adr/0020-one-stay-per-player.md`, section 4.4).
+    for other in [None, Some(attempt(1) + 1)] {
+        let output = tick(
+            &mut region,
+            &TickInputs {
+                player_changes: vec![PlayerChange::Leave(A, player(1), None, other)],
+                ..TickInputs::default()
+            },
+        );
+        assert!(output.events.is_empty(), "{other:?}: {:?}", output.events);
+    }
     let output = tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(A, player(1), None, None)],
+            player_changes: vec![leave(A, 1)],
             ..TickInputs::default()
         },
     );
@@ -524,11 +544,11 @@ fn a_leave_keeps_what_waits_for_the_tick_and_a_join_drops_it() {
     ];
     let mut inputs = TickInputs::default();
     inputs.input(A, player(1), EntityId(1), 1, walk(3.5));
-    inputs.change(PlayerChange::Leave(B, player(1), None, None));
+    inputs.change(leave(B, 1));
     inputs.input(B, player(1), EntityId(1), 2, walk(4.5));
-    inputs.change(PlayerChange::Leave(B, player(1), None, None));
+    inputs.change(leave(B, 1));
     inputs.change(PlayerChange::Leave(A, player(1), Some(EntityId(9)), None));
-    inputs.change(PlayerChange::Leave(A, player(1), None, None));
+    inputs.change(leave(A, 1));
     assert_eq!(inputs.inputs, waiting);
     assert_eq!(inputs.player_changes.len(), 4);
 
@@ -576,7 +596,7 @@ fn a_join_through_another_edge_replaces_the_player() {
     tick(
         &mut region,
         &TickInputs {
-            player_changes: vec![PlayerChange::Leave(A, player(1), None, None)],
+            player_changes: vec![leave(A, 1)],
             ..TickInputs::default()
         },
     );
@@ -947,13 +967,21 @@ impl Scenario {
                     },
                 ),
                 4..=6 => {
-                    // Mostly through the edge the player belongs to.
-                    let edge = state
-                        .players
-                        .get(&id)
+                    // Mostly through the edge the player belongs to, and naming the
+                    // stay as an edge does: by its entity, or by the attempt of its
+                    // join while it carries that. Now and then it names neither.
+                    let present = state.players.get(&id);
+                    let edge = present
                         .filter(|_| !random.once_in(4))
                         .map_or(edge, |player| player.edge);
-                    PlayerChange::Leave(edge, id, None, None)
+                    let (entity, attempt) = match present {
+                        Some(player) if !random.once_in(8) => match player.attempt {
+                            Some(attempt) if random.once_in(2) => (None, Some(attempt)),
+                            _ => (Some(player.entity_id), None),
+                        },
+                        _ => (None, None),
+                    };
+                    PlayerChange::Leave(edge, id, entity, attempt)
                 }
                 7 | 8 if !self.departed.is_empty() => {
                     let index = random.below(self.departed.len() as u64) as usize;
@@ -1287,7 +1315,7 @@ fn states_and_deltas_survive_serialisation() {
     let mut region = generated_region();
     // A seed with which the run is full enough, see below: how full it is varies a
     // good deal from seed to seed, and with every change to what a region does.
-    let mut scenario = Scenario::new(4);
+    let mut scenario = Scenario::new(6);
     let mut full = 0;
     for _ in 0..300 {
         let inputs = with_foreign_entities(scenario.inputs(&region));

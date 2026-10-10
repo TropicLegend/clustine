@@ -290,6 +290,14 @@ fn attempt(id: PlayerId) -> u64 {
     7000 + id.0.as_u128() as u64
 }
 
+/// A leave as an edge sends it for a player whom it has not told an entity: it names
+/// the attempt of the join, and ends the stay that still carries it (ADR-0020, section
+/// 4.4). Until that record such a leave named nothing and ended whatever stay of the
+/// edge there was.
+fn leave(edge: EdgeId, id: PlayerId) -> PlayerChange {
+    PlayerChange::Leave(edge, id, None, Some(attempt(id)))
+}
+
 fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
@@ -807,10 +815,7 @@ fn a_join_through_the_same_edge_begins_a_new_stay_too() {
 fn a_leave_through_the_players_edge_removes_them() {
     let mut region = one_player();
     let entity = entity_of(&region, player(1));
-    let output = checked_tick(
-        &mut region,
-        &changes(vec![PlayerChange::Leave(E, player(1), None, None)]),
-    );
+    let output = checked_tick(&mut region, &changes(vec![leave(E, player(1))]));
     assert_eq!(removed(&output), vec![entity]);
     assert!(region.player(player(1)).is_none());
     assert!(!region.state().players.contains_key(&player(1)));
@@ -820,10 +825,7 @@ fn a_leave_through_the_players_edge_removes_them() {
 fn a_leave_through_another_edge_does_not_end_the_current_connection() {
     let mut region = one_player();
     let mut before = region.state();
-    let output = checked_tick(
-        &mut region,
-        &changes(vec![PlayerChange::Leave(F, player(1), None, None)]),
-    );
+    let output = checked_tick(&mut region, &changes(vec![leave(F, player(1))]));
     assert!(output.events.is_empty());
     before.tick += 1;
     assert_eq!(region.state(), before);
@@ -835,10 +837,7 @@ fn a_leave_in_the_tick_of_the_join_removes_the_player() {
     checked_tick(&mut region, &edges(vec![started(E, 10)]));
     let output = checked_tick(
         &mut region,
-        &changes(vec![
-            join(E, player(1)),
-            PlayerChange::Leave(E, player(1), None, None),
-        ]),
+        &changes(vec![join(E, player(1)), leave(E, player(1))]),
     );
     assert!(region.player(player(1)).is_none());
     // Whatever was shown of the player within the tick is taken away again, so that
@@ -856,10 +855,7 @@ fn a_leave_of_a_player_the_edge_was_never_told_had_spawned_removes_them() {
     checked_tick(&mut region, &edges(vec![started(E, 10)]));
     checked_tick(&mut region, &changes(vec![join(E, player(1))]));
     let entity = entity_of(&region, player(1));
-    let output = checked_tick(
-        &mut region,
-        &changes(vec![PlayerChange::Leave(E, player(1), None, None)]),
-    );
+    let output = checked_tick(&mut region, &changes(vec![leave(E, player(1))]));
     assert_eq!(removed(&output), vec![entity]);
     assert!(region.player(player(1)).is_none());
 }
@@ -871,10 +867,7 @@ fn a_leave_of_the_earlier_connection_after_a_rejoin_in_the_same_tick_is_ignored(
     let mut region = one_player();
     let output = checked_tick(
         &mut region,
-        &changes(vec![
-            join(F, player(1)),
-            PlayerChange::Leave(E, player(1), None, None),
-        ]),
+        &changes(vec![join(F, player(1)), leave(E, player(1))]),
     );
     assert!(
         region.player(player(1)).is_some(),
@@ -891,10 +884,7 @@ fn a_leave_and_a_rejoin_through_the_same_edge_in_one_tick_enter_the_player_anew(
     let old = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
-        &changes(vec![
-            PlayerChange::Leave(E, player(1), None, None),
-            join(E, player(1)),
-        ]),
+        &changes(vec![leave(E, player(1)), join(E, player(1))]),
     );
     assert!(removed(&output).contains(&old));
     assert_eq!(edge_of(&region, player(1)), E);
@@ -1733,10 +1723,7 @@ fn scenario() -> Vec<TickInputs> {
     script.push(inputs);
     script.push(TickInputs::default());
     script.push(edges(vec![EdgeEvent::Confirmed { edge: F, number: 1 }]));
-    script.push(changes(vec![
-        join(F, player(1)),
-        PlayerChange::Leave(E, player(1), None, None),
-    ]));
+    script.push(changes(vec![join(F, player(1)), leave(E, player(1))]));
     let mut inputs = TickInputs::default();
     // P1 was the fourth to enter the region when they joined through F.
     inputs.input(

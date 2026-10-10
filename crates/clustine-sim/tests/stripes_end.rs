@@ -161,19 +161,27 @@ fn started(edge: EdgeId, start: u64) -> EdgeEvent {
     EdgeEvent::Started { edge, start }
 }
 
+/// The attempt that a join of `id` names.
+fn attempt(id: PlayerId) -> u64 {
+    7000 + id.0.as_u128() as u64
+}
+
 fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
             player: id,
             name: format!("player-{}", id.0.as_u128()),
-            attempt: 7000 + id.0.as_u128() as u64,
+            attempt: attempt(id),
         },
     )
 }
 
+/// A leave as an edge sends it: it names the entity of the stay if the edge has been
+/// told one, and the attempt of the join otherwise (ADR-0020, section 4.4).
 fn leave(edge: EdgeId, id: PlayerId, entity: Option<EntityId>) -> PlayerChange {
-    PlayerChange::Leave(edge, id, entity, None)
+    let attempt = entity.is_none().then(|| attempt(id));
+    PlayerChange::Leave(edge, id, entity, attempt)
 }
 
 fn single_input(
@@ -599,7 +607,13 @@ fn split_by_the_record(
     for (id, player) in &state.players {
         if goes(player) {
             ours.players.remove(id);
-            theirs.players.insert(*id, player.clone());
+            // Whole, but for one hand-over more: the split is one to each of them
+            // (ADR-0020, section 9).
+            let handed_on = PlayerState {
+                hops: player.hops + 1,
+                ..player.clone()
+            };
+            theirs.players.insert(*id, handed_on);
             went.entry(player.edge)
                 .or_default()
                 .push((*id, player.entity_id, player.attempt));
@@ -2455,8 +2469,10 @@ impl Pair {
                     (*region, Some(player.entity_id)),
                     "where the edge takes {id:?} to be"
                 );
+                // How often a player was handed on only several regions count.
                 let plain = PlayerState {
                     handled: None,
+                    hops: 0,
                     ..player
                 };
                 assert!(
@@ -2471,6 +2487,7 @@ impl Pair {
             .map(|(id, player)| {
                 let plain = PlayerState {
                     handled: None,
+                    hops: 0,
                     ..player
                 };
                 (id, plain)

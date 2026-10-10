@@ -86,10 +86,8 @@ pub struct Place {
 }
 
 /// What a region says to the world store about a stay, in the commit of a tick. See
-/// `docs/adr/0020-one-stay-per-player.md`, section 3.
-///
-/// No region makes one yet: step R1.2 of that record does, and R1.1 has the store take
-/// them.
+/// `docs/adr/0020-one-stay-per-player.md`, section 3, and [`TickOutput::stays`] for
+/// which tick makes which.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StayNote {
     /// The home region has given `player` the stay `entity` and holds it as entering,
@@ -109,6 +107,10 @@ pub enum StayNote {
 /// may enter. `place` is where the player was last, if anywhere, and `holder` the
 /// region that held the chunk of that place when the store took the note, if one did,
 /// which is advice and no more. See `docs/adr/0020-one-stay-per-player.md`, section 4.
+///
+/// A region does not know its own id, so whoever makes this for it says `None` for a
+/// place the region itself was holding: a `holder` is always another region to the
+/// tick, which lets the stay go there without placing it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entered {
     pub player: PlayerId,
@@ -142,11 +144,12 @@ pub struct PlayerTransfer {
     pub selected_slot: u8,
     /// The number of the last input the region applied; see [`TickInputs::inputs`].
     pub last_input: u64,
-    /// How often the stay has been handed on from one region to another. Of two copies
-    /// of a stay the one with more is the later. Nothing raises it yet, so it is 0:
-    /// step R1.2 of `docs/adr/0020-one-stay-per-player.md` does.
+    /// How often the stay has been handed on from one region to another, this time
+    /// counted: a region that lets a player go, and a split for those who go with it,
+    /// each add one. Of two copies of a stay the one with more is the later. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 6.
     pub hops: u32,
-    /// Whether the player flies. Nothing sets it yet, so it is false: step R1.2 does.
+    /// Whether the player flies; see [`PlayerInput::SetFlying`].
     pub flying: bool,
     /// [`PlayerJoin::attempt`] of the join that began the stay, for as long as no
     /// input of the stay has been applied by any region.
@@ -171,13 +174,16 @@ pub enum PlayerChange {
     /// which must not end the current one.
     ///
     /// The entity names the stay that has ended: the player is removed only if they
-    /// have that entity, as a leave that comes late must not end a later stay. With
-    /// none, the leave is for the player whatever their entity.
+    /// have that entity, as a leave that comes late must not end a later stay.
     ///
     /// The last is the attempt of the connection that ended, which an edge names where
-    /// it names no entity. The region does not look at it yet: from step R1.2 of
-    /// `docs/adr/0020-one-stay-per-player.md` a leave without an entity ends only a
-    /// stay with that attempt (section 4.4).
+    /// it names no entity: the edge has not been told the entity of a player who is
+    /// still entering the world. Such a leave ends only a stay of that edge that
+    /// carries that attempt, one the region has or one it holds as entering. A stay
+    /// carries its attempt until its first input is applied, and an edge sends no
+    /// input of a stay whose entity it does not know, so the leave and its stay meet.
+    /// A leave that names neither names no stay and ends none. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 4.4.
     Leave(EdgeId, PlayerId, Option<EntityId>, Option<u64>),
     /// A player comes in from another region, as that region let them go with
     /// [`Durable::Departed`], and is the edge's from then on.
@@ -185,10 +191,23 @@ pub enum PlayerChange {
     /// Of two stays of a player the one with the higher entity id is the later, so an
     /// arrival takes the place of a player the region has with a lower entity id: the
     /// entity that was there is reported removed where it stood. A player the region
-    /// has with a higher entity id or the same stays as they are, and the entity that
-    /// was on its way is reported removed if it is another one; so is the entity of an
-    /// arrival through an edge the region does not know, as nobody could be told about
-    /// the player.
+    /// has with a higher entity id stays as they are, and the entity that was on its
+    /// way is reported removed; so is the entity of an arrival through an edge the
+    /// region does not know, as nobody could be told about the player.
+    ///
+    /// Of two copies of one stay the one that was handed on more often is the later
+    /// ([`PlayerTransfer::hops`]). An arrival of the stay the region has, as often
+    /// handed on or less, changes nothing; one that was handed on more often takes the
+    /// place of the copy that is there, and nothing is reported removed, as the entity
+    /// lives on. See `docs/adr/0020-one-stay-per-player.md`, section 6.
+    ///
+    /// Where the world store keeps the players' places
+    /// ([`RegionConfig::place_by_store`]), an arrival is also passed over if the region
+    /// holds a later stay of the player as entering, and whoever loses to a later stay
+    /// has their edge told with [`Durable::Ended`]: the edge of the stay that was
+    /// there, or the edge an arrival that is passed over came through.
+    ///
+    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
     ///
     /// A player who arrives in a chunk the region believes another to hold is not taken
     /// in: the arrival goes on to that region with a [`Durable::NotMine`]. Not so in
@@ -248,9 +267,9 @@ pub enum PlayerInput {
     SelectSlot { slot: u8 },
     /// A creative-mode player put a stack into a hotbar slot, or emptied it.
     SetHotbarSlot { slot: u8, stack: Option<ItemStack> },
-    /// The player began or stopped flying. No edge makes it yet, and a region counts it
-    /// as an input and does nothing else with it: steps R1.2 and R1.4 of
-    /// `docs/adr/0020-one-stay-per-player.md` give it meaning (section 13).
+    /// The player began or stopped flying. The region keeps it, hands it on with the
+    /// player and tells the world store with their place; nobody else is shown it. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 13.
     SetFlying { flying: bool },
 }
 
@@ -317,7 +336,9 @@ impl RemoteStep {
 /// `Departed`, `Refused`, a `Remote` made of a player's own action and a `NotMine` for
 /// an arrival go to the outbox of the edge the player belongs to or arrived through;
 /// `RemoteDone`, and a `Remote` or a `NotMine` that answers a remote action, go to the
-/// outbox of the edge the action came from.
+/// outbox of the edge the action came from. `Ended` goes to the outbox of the edge of
+/// the stay it ends, or, for an arrival that is passed over, of the edge the arrival
+/// came through.
 pub enum Durable {
     /// The player has stepped into a chunk the region believes `to` to hold, and is no
     /// longer in the region. Whoever routes the player passes this on to `to` as
@@ -396,8 +417,15 @@ pub enum Durable {
     /// server: a later stay of the player took its place. `attempt` is that of the
     /// stay's join, as long as the stay had it.
     ///
-    /// No region makes one yet: step R1.2 of `docs/adr/0020-one-stay-per-player.md`
-    /// does (section 6), and R1.4 has the edge act on it.
+    /// Made only where the world store keeps the players' places
+    /// ([`RegionConfig::place_by_store`]), by every removal of a stay that its own edge
+    /// did not ask for: a join or an arrival over a stay that is there, an arrival
+    /// that is passed over for a later stay, an entering stay that is placed or let go
+    /// over a present one, and the store's word that a stay is dead. Not by a leave,
+    /// nor for an edge that is gone or reset. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 6.
+    ///
+    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
     Ended {
         player: PlayerId,
         entity: EntityId,
@@ -439,12 +467,12 @@ pub enum EdgeEvent {
 
 /// Everything that happened since the previous tick.
 ///
-/// A tick applies all of `edges`, then `applied`, then all of `player_changes`, then all
-/// of `remote_actions`, and then all of `inputs`. (`dead` and `entered`, which no tick
-/// looks at yet, are to come after `applied` and after `player_changes`.) What players did
-/// and what became of them arrives as one sequence, though, and its order is lost when
-/// it is sorted into the two. [`TickInputs::change`] and [`TickInputs::input`] sort it
-/// so that nothing a player did before they came to the region is applied after it.
+/// A tick applies all of `edges`, then `applied`, then `dead`, then all of
+/// `player_changes`, then `entered`, then all of `remote_actions`, and then all of
+/// `inputs`. What players did and what became of them arrives as one sequence, though,
+/// and its order is lost when it is sorted into the two. [`TickInputs::change`] and
+/// [`TickInputs::input`] sort it so that nothing a player did before they came to the
+/// region is applied after it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickInputs {
     /// What became of edges, in the order it happened. Applied before anything else.
@@ -503,13 +531,34 @@ pub struct TickInputs {
     /// hold them, and to claim again if it wants them. A belief that has changed since
     /// is left alone: it is newer than the doubt.
     pub unbelieve: Vec<(ChunkPos, RegionId)>,
-    /// The world store's answers to the region's [`StayNote::Entering`] notes. Nobody
-    /// fills it yet and the tick passes it over: steps R1.2 and R1.3 of
-    /// `docs/adr/0020-one-stay-per-player.md` give it meaning (section 4, step 7).
+    /// The world store's answers to the region's [`StayNote::Entering`] notes, in the
+    /// order they came. An answer is taken only for the very stay the region still
+    /// holds as entering for the player, and passed over otherwise. Whatever the case,
+    /// a stay of the player that is in the region goes first, with a
+    /// [`Durable::Ended`] to its edge. Then the stay enters by its place:
+    ///
+    /// - none, or one whose feet are below [`RegionConfig::lowest_y`]: the player is
+    ///   placed at the spawn point, looking ahead and not flying, with the starting
+    ///   hotbar if there is no place and with what the place has them hold otherwise;
+    /// - a place and no `holder`: the player is placed there as the place has them;
+    /// - a place and a `holder`: the stay is let go to that region in this tick
+    ///   without being placed, with a [`Durable::Departed`] whose transfer has one
+    ///   hand-over and the attempt of the join.
+    ///
+    /// Passed over as a whole where the store does not keep the players' places
+    /// ([`RegionConfig::place_by_store`]). See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 7.
+    ///
+    /// [`RegionConfig::lowest_y`]: crate::RegionConfig::lowest_y
+    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
     pub entered: Vec<Entered>,
     /// Of each player named, a stay below `(entity, hops)` is dead: one with a lower
-    /// entity id, or that stay with fewer hand-overs. Nobody fills it yet and the tick
-    /// passes it over: steps R1.2 and R1.3 give it meaning (section 5).
+    /// entity id, or that stay with fewer hand-overs. Such a stay that the region has
+    /// is removed, and so is one with a lower entity id that it holds as entering;
+    /// its entity is reported removed if it had been shown, and its edge is told with
+    /// [`Durable::Ended`]. Nothing of an entry is kept after the tick. Passed over
+    /// where the store does not keep the players' places. See section 5 of the same
+    /// record.
     pub dead: Vec<(PlayerId, EntityId, u32)>,
 }
 
@@ -529,12 +578,18 @@ pub enum Ticket {
 impl TickInputs {
     /// Adds what became of a player, which came after everything added so far.
     ///
-    /// For a join or an arrival, what that player did before, through any edge and as
-    /// far as it waits here for the coming tick, is dropped. The player was not there
-    /// then, so the region would have ignored it. Applied after the arrival instead, it
-    /// would be taken for what the player did since, and an input sent to the region
-    /// while the player was away would be applied ahead of earlier ones that are sent
-    /// again with the arrival, which then count as applied already and are lost.
+    /// For a join, what that player did before, through any edge and as far as it
+    /// waits here for the coming tick, is dropped; for an arrival, what waits that
+    /// names the entity that arrives. The stay was not there then, so the region would
+    /// have ignored it. Applied after the arrival instead, it would be taken for what
+    /// the player did since, and an input sent to the region while the player was away
+    /// would be applied ahead of earlier ones that are sent again with the arrival,
+    /// which then count as applied already and are lost.
+    ///
+    /// An arrival leaves what waits of another stay of the player: with several edges
+    /// an earlier stay can arrive where a later one is, and must not take away what
+    /// the later one did in that tick. See `docs/adr/0020-one-stay-per-player.md`,
+    /// section 12.
     ///
     /// A leave drops nothing. Whether it applies only the tick can tell: one for a stay
     /// the region does not have changes nothing, and must not take away what the stay
@@ -544,9 +599,13 @@ impl TickInputs {
     /// that brings them drops it.
     pub fn change(&mut self, change: PlayerChange) {
         match &change {
-            PlayerChange::Join(_, PlayerJoin { player, .. })
-            | PlayerChange::Arrive(_, player, _) => {
+            PlayerChange::Join(_, PlayerJoin { player, .. }) => {
                 self.inputs.retain(|(_, actor, ..)| actor != player);
+            }
+            PlayerChange::Arrive(_, player, transfer) => {
+                let arriving = transfer.entity_id;
+                self.inputs
+                    .retain(|(_, actor, entity, ..)| actor != player || *entity != arriving);
             }
             PlayerChange::Leave(..) | PlayerChange::Discard { .. } => {}
         }
@@ -638,9 +697,10 @@ impl RegionEvent {
 pub struct TickOutput {
     /// The number of this tick; the first tick of a region is 1.
     pub tick: u64,
-    /// [`PlayerEvent::Spawned`], in the order the players joined, and then
-    /// [`PlayerEvent::Acknowledged`], in the order of the players. What else concerns a
-    /// single player is among `durable`.
+    /// [`PlayerEvent::Spawned`], in the order the players joined, or, where the world
+    /// store says where a player enters, in the order of its answers
+    /// ([`TickInputs::entered`]); and then [`PlayerEvent::Acknowledged`], in the order
+    /// of the players. What else concerns a single player is among `durable`.
     pub player_events: Vec<(PlayerId, PlayerEvent)>,
     pub events: Vec<RegionEvent>,
     /// Chunks that have to be fetched from storage and passed in through
@@ -650,12 +710,22 @@ pub struct TickOutput {
     /// and its number there. An edge's entries are numbered on from its
     /// [`EdgeState::sent`].
     ///
-    /// They are in the order they were made: refusals and the arrivals that are another
-    /// region's, in the order of [`TickInputs::player_changes`]; the answers to
+    /// They are in this order: the stays that [`TickInputs::dead`] ended; refusals,
+    /// the stays that a join or an arrival ended and the arrivals that are another
+    /// region's, in the order of [`TickInputs::player_changes`]; the stays that
+    /// [`TickInputs::entered`] ended, in its order; the answers to
     /// [`TickInputs::remote_actions`], one for one and in their order; what players did
     /// to blocks of chunks the region does not hold, in the order of
-    /// [`TickInputs::inputs`]; and the players who were let go, in the order of the
-    /// players.
+    /// [`TickInputs::inputs`]; and those who were let go: the stays let go without
+    /// being placed, in the order of [`TickInputs::entered`], and then the players, in
+    /// their order.
+    ///
+    /// So every [`Durable::Ended`] of a tick has a lower number than every
+    /// [`Durable::Departed`] of that tick in the same outbox, and a stay that is let
+    /// go without being placed is numbered with the tick's other departures and not
+    /// where it is decided. An edge remembers only the highest number it has seen, and
+    /// the runner publishes a tick's departures last. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 6.
     ///
     /// [`EdgeState::sent`]: crate::EdgeState::sent
     pub durable: Vec<(EdgeId, u64, Durable)>,
@@ -672,7 +742,27 @@ pub struct TickOutput {
     pub returns: Vec<ChunkPos>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,
-    /// What the region says to the world store of stays in this tick. No tick makes
-    /// any yet: step R1.2 of `docs/adr/0020-one-stay-per-player.md` does (section 3).
+    /// What the region says to the world store of stays in this tick, in the order of
+    /// the players, a [`StayNote::Entering`] before a [`StayNote::Has`] of the same
+    /// player:
+    ///
+    /// - `Entering` for the stay a join of this tick began, if the region still holds
+    ///   it as entering at the end of the tick;
+    /// - `Has` for every player who is in the region after the tick and of whom the
+    ///   tick changed anything, which is the players of [`StateDelta::players`]: one
+    ///   who was placed, one who arrived, one who did something;
+    /// - `Has` for every player who was let go, and for every stay let go without
+    ///   being placed, with the hand-overs and the place of the transfer;
+    /// - in the first tick of a region, which is the first after
+    ///   [`Region::restore`], after a merge or after a split: a note for every stay
+    ///   the region has, changed or not.
+    ///
+    /// None for a player who was removed. None at all where the store does not keep
+    /// the players' places ([`RegionConfig::place_by_store`]). A tick with notes is to
+    /// be committed whatever else it changed. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 3.
+    ///
+    /// [`Region::restore`]: crate::Region::restore
+    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
     pub stays: Vec<StayNote>,
 }

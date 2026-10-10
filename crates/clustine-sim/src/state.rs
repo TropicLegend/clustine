@@ -26,8 +26,9 @@ pub struct RegionState {
     /// The edges the region knows.
     pub edges: BTreeMap<EdgeId, EdgeState>,
     /// The stays the region has given out and holds until the world store has said
-    /// where each is to enter. Nothing puts one here yet: step R1.2 of
-    /// `docs/adr/0020-one-stay-per-player.md` does (section 4, step 3).
+    /// where each is to enter: at most one for a player. Only a region for which the
+    /// store keeps the players' places holds any. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 3.
     pub entering: BTreeMap<PlayerId, EnteringState>,
 }
 
@@ -190,8 +191,7 @@ pub struct StateDelta {
     /// forgotten.
     pub edges: Vec<(EdgeId, Option<EdgeDelta>)>,
     /// Each entering stay that changed, in the order of the players, as it is after
-    /// the tick: `None` for a player of whom the region holds none any more. No tick
-    /// names any yet; see [`RegionState::entering`].
+    /// the tick: `None` for a player of whom the region holds none any more.
     pub entering: Vec<(PlayerId, Option<EnteringState>)>,
 }
 

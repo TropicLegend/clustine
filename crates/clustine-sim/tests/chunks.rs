@@ -304,7 +304,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
     }
 }
 
-/// A player of the region as the region would let them go now.
+/// A player of the region as the region would let them go now: handed on once more
+/// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
         entity_id: state.entity_id,
@@ -313,7 +314,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         hotbar: state.hotbar,
         selected_slot: state.selected_slot,
         last_input: state.last_input,
-        hops: state.hops,
+        hops: state.hops + 1,
         flying: state.flying,
         attempt: state.attempt,
     }
@@ -603,29 +604,40 @@ impl Model {
     /// region does not have the player with that entity id or a higher one; an action,
     /// if it comes through an edge the region knows. So this follows who is in the
     /// region through the tick's edge events and player changes, by section 2.1 there.
+    ///
+    /// Since ADR-0020 two stays are ordered by the entity and then by how often they
+    /// were handed on (its section 6), and a leave that names no entity ends only the
+    /// stay that carries the attempt it names (its section 4.4). A stay loses its
+    /// attempt by an input, and a tick applies inputs after every change, so within
+    /// these steps a stay has the attempt it began the tick or came with.
     fn doubt(&mut self, before: &RegionState, inputs: &TickInputs) {
         let mut edges: BTreeMap<EdgeId, u64> = before
             .edges
             .iter()
             .map(|(edge, state)| (*edge, state.start))
             .collect();
-        // Each player's edge and entity.
-        let mut stays: BTreeMap<PlayerId, (EdgeId, EntityId)> = before
+        // Each player's edge and entity, how often the stay was handed on, and the
+        // attempt it carries.
+        type Stay = (EdgeId, EntityId, u32, Option<u64>);
+        let mut stays: BTreeMap<PlayerId, Stay> = before
             .players
             .iter()
-            .map(|(id, state)| (*id, (state.edge, state.entity_id)))
+            .map(|(id, state)| {
+                let stay = (state.edge, state.entity_id, state.hops, state.attempt);
+                (*id, stay)
+            })
             .collect();
         for event in &inputs.edges {
             match event {
                 EdgeEvent::Started { edge, start } => {
                     if edges.get(edge).is_none_or(|known| known < start) {
-                        stays.retain(|_, (of, _)| of != edge);
+                        stays.retain(|_, (of, ..)| of != edge);
                         edges.insert(*edge, *start);
                     }
                 }
                 EdgeEvent::Gone { edge } => {
                     edges.remove(edge);
-                    stays.retain(|_, (of, _)| of != edge);
+                    stays.retain(|_, (of, ..)| of != edge);
                 }
                 EdgeEvent::Confirmed { .. } => {}
             }
@@ -636,13 +648,18 @@ impl Model {
                 PlayerChange::Join(edge, join) if edges.contains_key(edge) => {
                     stays.remove(&join.player);
                     if before.entity_ids.contains(next_entity) {
-                        stays.insert(join.player, (*edge, next_entity));
+                        let stay = (*edge, next_entity, 0, Some(join.attempt));
+                        stays.insert(join.player, stay);
                         next_entity.0 += 1;
                     }
                 }
-                PlayerChange::Leave(edge, id, entity, _) => {
-                    let ended = |(of, has): &(EdgeId, EntityId)| {
-                        of == edge && entity.is_none_or(|named| named == *has)
+                PlayerChange::Leave(edge, id, entity, attempt) => {
+                    let ended = |(of, has, _, carried): &Stay| {
+                        of == edge
+                            && match entity {
+                                Some(named) => named == has,
+                                None => attempt.is_some() && attempt == carried,
+                            }
                     };
                     if stays.get(id).is_some_and(ended) {
                         stays.remove(id);
@@ -650,7 +667,8 @@ impl Model {
                 }
                 PlayerChange::Arrive(edge, id, transfer) if edges.contains_key(edge) => {
                     let entity = transfer.entity_id;
-                    if stays.get(id).is_some_and(|(_, has)| *has >= entity) {
+                    let arriving = (entity, transfer.hops);
+                    if (stays.get(id)).is_some_and(|(_, has, hops, _)| (*has, *hops) >= arriving) {
                         continue;
                     }
                     stays.remove(id);
@@ -660,7 +678,8 @@ impl Model {
                     }
                     // Sent on where the chunk is still believed another's.
                     if !self.foreign.contains_key(&chunk) {
-                        stays.insert(*id, (*edge, entity));
+                        let stay = (*edge, entity, transfer.hops, transfer.attempt);
+                        stays.insert(*id, stay);
                     }
                 }
                 PlayerChange::Join(..)
@@ -2472,7 +2491,7 @@ fn a_leave_behind_an_arrival_that_went_on_finds_nobody() {
     let arriving = transfer(TRAVELLER, 3, IN_EAST);
     let output = world.tick(&changes(vec![
         PlayerChange::Arrive(E, player(5), arriving.clone()),
-        PlayerChange::Leave(E, player(5), None, None),
+        PlayerChange::Leave(E, player(5), Some(TRAVELLER), None),
     ]));
     assert_eq!(
         entries(&output),
@@ -5566,8 +5585,11 @@ impl Cluster {
     /// counts: its own acknowledgements.
     fn player(&self, id: PlayerId) -> PlayerState {
         let site = &self.sites[self.whereabouts[&id]];
+        // Without what only several regions count: what each has handled of the
+        // player's actions, and how often the player was handed on.
         PlayerState {
             handled: None,
+            hops: 0,
             ..site.world.state_of(id)
         }
     }

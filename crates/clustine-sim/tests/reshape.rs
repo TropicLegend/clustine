@@ -25,9 +25,9 @@ use clustine_sim::api::{
     Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
 };
 use clustine_sim::{
-    Durable, EdgeEvent, EdgeState, Holdings, Knowledge, Misdirected, NoSplit, Part, PlayerChange,
-    PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig, RegionState, Sides,
-    Splitting, TickInputs, TickOutput, Ticket,
+    Durable, EdgeEvent, EdgeState, Entered, EnteringState, Holdings, Knowledge, Misdirected,
+    NoSplit, Part, Place, PlayerChange, PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer,
+    Region, RegionConfig, RegionState, Sides, Splitting, StayNote, TickInputs, TickOutput, Ticket,
 };
 use clustine_world::{
     Biome, BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId,
@@ -231,8 +231,16 @@ fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     )
 }
 
+/// A leave as an edge sends it: it names the entity of the stay if the edge has been
+/// told one, and the attempt of the join otherwise (ADR-0020, section 4.4).
 fn leave(edge: EdgeId, id: PlayerId, entity: Option<EntityId>) -> PlayerChange {
-    PlayerChange::Leave(edge, id, entity, None)
+    let attempt = entity.is_none().then(|| attempt(id));
+    PlayerChange::Leave(edge, id, entity, attempt)
+}
+
+/// A leave that names no entity and this attempt, or none.
+fn leave_of_attempt(edge: EdgeId, id: PlayerId, attempt: Option<u64>) -> PlayerChange {
+    PlayerChange::Leave(edge, id, None, attempt)
 }
 
 fn changes(list: Vec<PlayerChange>) -> TickInputs {
@@ -363,7 +371,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
     }
 }
 
-/// A player as the region that has them would let them go now.
+/// A player as the region that has them would let them go now: handed on once more
+/// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
         entity_id: state.entity_id,
@@ -372,7 +381,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         hotbar: state.hotbar,
         selected_slot: state.selected_slot,
         last_input: state.last_input,
-        hops: state.hops,
+        hops: state.hops + 1,
         flying: state.flying,
         attempt: state.attempt,
     }
@@ -1090,12 +1099,48 @@ fn a_leave_that_names_another_entity_changes_nothing() {
     }
 }
 
+/// Until ADR-0020 a leave that named no entity removed the player whatever their
+/// entity. Its section 4.4 holds such a leave to the attempt it names: it ends the
+/// stay that carries that attempt, which is one no input of which has been applied.
 #[test]
-fn a_leave_that_names_no_entity_removes_the_player_whatever_their_entity() {
+fn a_leave_that_names_no_entity_removes_the_player_whose_stay_carries_the_attempt_it_names() {
     let mut region = at_the_line();
+    assert_eq!(
+        state_of(&region, player(1)).attempt,
+        Some(attempt(player(1)))
+    );
+    // Another attempt, and none at all: the stay is not the one that is meant.
+    for other in [Some(attempt(player(1)) + 1), Some(0), None] {
+        let mut expected = region.state();
+        let output = tick(
+            &mut region,
+            &changes(vec![leave_of_attempt(E, player(1), other)]),
+        );
+        assert!(silent(&output), "{other:?}: {output:?}");
+        expected.tick += 1;
+        assert_eq!(region.state(), expected, "{other:?}");
+    }
     let output = tick(&mut region, &changes(vec![leave(E, player(1), None)]));
     assert_eq!(removed(&output), [(entity(1), HOME)]);
     assert_eq!(region.player_count(), 0);
+    assert!(output.durable.is_empty());
+
+    // A stay that has been heard from carries no attempt: its edge knows the entity
+    // and names it, and a leave that names the attempt of the join finds nobody.
+    let mut region = at_the_line();
+    tick(
+        &mut region,
+        &single_input(E, player(1), entity(1), 1, move_to(10.5)),
+    );
+    assert_eq!(state_of(&region, player(1)).attempt, None);
+    for named in [Some(attempt(player(1))), None] {
+        let output = tick(
+            &mut region,
+            &changes(vec![leave_of_attempt(E, player(1), named)]),
+        );
+        assert!(silent(&output), "{named:?}: {output:?}");
+    }
+    assert_eq!(region.player_count(), 1);
 }
 
 #[test]
@@ -1283,18 +1328,24 @@ fn a_leave_in_the_tick_of_the_arrival_ends_the_stay_only_if_it_names_it_or_none(
         (E, None, true),
     ] {
         let mut region = at_the_line();
-        let arriving = transfer(TRAVELLER, 17, IN_HOME);
+        // The stay comes with the attempt of its join still: no region has applied an
+        // input of it, so a leave that names no entity can name that (ADR-0020,
+        // section 4.4).
+        let arriving = PlayerTransfer {
+            attempt: Some(attempt(player(5))),
+            ..transfer(TRAVELLER, 0, IN_HOME)
+        };
         let mut inputs = changes(vec![
             PlayerChange::Arrive(F, player(5), arriving),
             leave(edge, player(5), named),
         ]);
-        inputs.input(F, player(5), TRAVELLER, 18, move_to(10.5));
+        inputs.input(F, player(5), TRAVELLER, 1, move_to(10.5));
         let output = tick(&mut region, &inputs);
         if stays {
             let state = state_of(&region, player(5));
             assert_eq!(
                 (state.entity_id, state.pose.position.x, state.last_input),
-                (TRAVELLER, 10.5, 18),
+                (TRAVELLER, 10.5, 1),
                 "{edge:?}, {named:?}"
             );
             assert!(removed(&output).is_empty());
@@ -1439,6 +1490,10 @@ struct StayHere {
     edge: EdgeId,
     last_input: u64,
     position: Vec3,
+    /// How often the stay was handed on, and the attempt of its join for as long as no
+    /// input of it has been applied (ADR-0020, sections 6 and 4.3).
+    hops: u32,
+    attempt: Option<u64>,
 }
 
 /// What a tick shows of stays: the entities removed, each with the chunk, the entities
@@ -1482,15 +1537,22 @@ impl Stays {
                         edge: *edge,
                         last_input: 0,
                         position: SPAWN,
+                        hops: 0,
+                        attempt: Some(join.attempt),
                     };
                     self.next_entity_id.0 += 1;
                     shown.spawned.push(stay.entity);
                     self.players.insert(join.player, stay);
                 }
-                // A leave names the stay it ends.
-                PlayerChange::Leave(edge, id, named, _) => {
+                // A leave names the stay it ends: by its entity, or, where it names
+                // none, by the attempt of its join (ADR-0020, section 4.4).
+                PlayerChange::Leave(edge, id, named, attempt) => {
                     let ends = |stay: &StayHere| {
-                        stay.edge == *edge && named.is_none_or(|entity| entity == stay.entity)
+                        stay.edge == *edge
+                            && match named {
+                                Some(entity) => *entity == stay.entity,
+                                None => attempt.is_some() && *attempt == stay.attempt,
+                            }
                     };
                     if self.players.get(id).is_some_and(ends) {
                         let old = self.players.remove(id).expect("it was there");
@@ -1503,9 +1565,16 @@ impl Stays {
                         shown.removed.push(on_its_way);
                         continue;
                     }
-                    // The later stay stays: an arrival replaces a lower entity id.
+                    // The later stay stays: an arrival replaces a lower entity id, and
+                    // of two copies of one stay the one that was handed on more often
+                    // stays, without anything being shown removed (ADR-0020,
+                    // section 6).
                     match self.players.get(id) {
-                        Some(has) if has.entity == transfer.entity_id => continue,
+                        Some(has) if has.entity == transfer.entity_id => {
+                            if has.hops >= transfer.hops {
+                                continue;
+                            }
+                        }
                         Some(has) if has.entity > transfer.entity_id => {
                             shown.removed.push(on_its_way);
                             continue;
@@ -1518,6 +1587,8 @@ impl Stays {
                         edge: *edge,
                         last_input: transfer.last_input,
                         position: transfer.pose.position,
+                        hops: transfer.hops,
+                        attempt: transfer.attempt,
                     };
                     shown.spawned.push(stay.entity);
                     self.players.insert(*id, stay);
@@ -1534,6 +1605,8 @@ impl Stays {
                 continue;
             }
             stay.last_input = *number;
+            // The edge has been heard from as this entity.
+            stay.attempt = None;
             if let PlayerInput::Move {
                 position: Some(position),
                 ..
@@ -1588,8 +1661,18 @@ fn made_up_joins_arrivals_leaves_and_inputs_keep_to_what_the_record_says_of_stay
                 match random.below(12) {
                     0 | 1 => inputs.change(join(edge, id)),
                     2 | 3 => {
-                        let named = (!random.once_in(4)).then_some(named);
-                        inputs.change(leave(edge, id, named));
+                        // One in four names no entity: the attempt of the player's
+                        // join, as an edge does, or now and then another, or none.
+                        if random.once_in(4) {
+                            let attempt = match random.below(6) {
+                                0 => Some(attempt(id) + 1),
+                                1 => None,
+                                _ => Some(attempt(id)),
+                            };
+                            inputs.change(leave_of_attempt(edge, id, attempt));
+                        } else {
+                            inputs.change(leave(edge, id, Some(named)));
+                        }
                     }
                     4 | 5 => {
                         // Every third arrival is of a stay that began elsewhere. No
@@ -1614,8 +1697,14 @@ fn made_up_joins_arrivals_leaves_and_inputs_keep_to_what_the_record_says_of_stay
                         if edge == STRANGER && has.is_some_and(|stay| stay.entity == named) {
                             continue;
                         }
+                        // Handed on more or less often than the copy that may be there,
+                        // and now and then with the attempt of the join still.
                         let last = random.below(30);
-                        let arriving = transfer(named, last, point);
+                        let arriving = PlayerTransfer {
+                            hops: random.pick(&[0, 0, 1, 1, 2, 3]),
+                            attempt: random.once_in(3).then(|| attempt(id)),
+                            ..transfer(named, last, point)
+                        };
                         inputs.change(PlayerChange::Arrive(edge, id, arriving));
                     }
                     _ => {
@@ -1639,6 +1728,8 @@ fn made_up_joins_arrivals_leaves_and_inputs_keep_to_what_the_record_says_of_stay
                         edge: player.edge,
                         last_input: player.last_input,
                         position: player.pose.position,
+                        hops: player.hops,
+                        attempt: player.attempt,
                     };
                     (*id, stay)
                 })
@@ -1733,7 +1824,11 @@ fn what_the_store_answers_after_a_doubt_is_the_truth_of_that_moment() {
             1,
             Durable::Departed {
                 player: player(5),
-                transfer: arriving,
+                // As they came, and handed on once more (ADR-0020, section 6).
+                transfer: PlayerTransfer {
+                    hops: arriving.hops + 1,
+                    ..arriving
+                },
                 to: OTHER,
             }
         )]
@@ -2123,6 +2218,9 @@ fn absorbed_as_the_record_says(
             }
             (Some(a), Some(b)) if a.start < b.start => {
                 state.players.retain(|_, player| player.edge != *edge);
+                // Its entering stays of the edge go where its players of it go
+                // (ADR-0020, section 9).
+                state.entering.retain(|_, entering| entering.edge != *edge);
                 state.edges.insert(*edge, anew(b.start));
             }
             (None, Some(b)) => {
@@ -2133,14 +2231,15 @@ fn absorbed_as_the_record_says(
     }
 
     // 3. Players of the other state whose edge was not reset away, in ascending order.
+    // Since ADR-0020 the later stay is the one with the higher entity id, and of the
+    // same entity the one with more hand-overs (its section 6). The entering stays are
+    // this region's alone: what the other state has of them is dropped (its section 9).
     for (id, theirs) in &theirs.players {
         if reset_away.contains(&theirs.edge) {
             continue;
         }
-        let stays = state
-            .players
-            .get(id)
-            .is_some_and(|own| own.entity_id >= theirs.entity_id);
+        let stays = (state.players.get(id))
+            .is_some_and(|own| (own.entity_id, own.hops) >= (theirs.entity_id, theirs.hops));
         if !stays {
             state.players.insert(*id, theirs.clone());
         }
@@ -2213,9 +2312,25 @@ fn made_up_state(random: &mut Random, entity_ids: EntityIds) -> RegionState {
         let entity = EntityId(ids().first.0 + random.below(12) as i32);
         let edge = random.pick(&known);
         let chunk = random.pick(&chunks);
-        state
-            .players
-            .insert(player(n), someone(entity, edge, chunk));
+        // Handed on more or less often, so that two copies of a stay differ in it.
+        let stay = PlayerState {
+            hops: random.below(3) as u32,
+            ..someone(entity, edge, chunk)
+        };
+        state.players.insert(player(n), stay);
+    }
+    // Now and then a stay that is entering (ADR-0020, section 4), of a player the
+    // region has or has not.
+    for n in 1..=6 {
+        if random.once_in(5) {
+            let entering = EnteringState {
+                entity_id: EntityId(ids().first.0 + 20 + random.below(12) as i32),
+                name: format!("entering-{n}"),
+                edge: random.pick(&known),
+                attempt: 100 + random.below(50),
+            };
+            state.entering.insert(player(n), entering);
+        }
     }
     state
 }
@@ -3322,7 +3437,13 @@ fn split_as_the_record_says(
     for (id, player) in &state.players {
         if goes(player) {
             ours.players.remove(id);
-            theirs.players.insert(*id, player.clone());
+            // Whole, but for one hand-over more: the split is one to each of them
+            // (ADR-0020, section 9).
+            let handed_on = PlayerState {
+                hops: player.hops + 1,
+                ..player.clone()
+            };
+            theirs.players.insert(*id, handed_on);
             went.entry(player.edge)
                 .or_default()
                 .push((*id, player.entity_id, player.attempt));
@@ -3725,6 +3846,14 @@ fn the_part_has_the_players_who_go_whole_the_empty_block_and_their_edges_known_s
     let went: BTreeMap<PlayerId, PlayerState> = [player(1), player(3)]
         .into_iter()
         .map(|id| (id, before.players[&id].clone()))
+        .collect();
+    // As they were, and handed on once more (ADR-0020, section 9).
+    let went: BTreeMap<PlayerId, PlayerState> = went
+        .into_iter()
+        .map(|(id, stay)| {
+            let hops = stay.hops + 1;
+            (id, PlayerState { hops, ..stay })
+        })
         .collect();
     assert_eq!(part.players, went, "as they were");
     // The one edge that has a player who goes, with the split region's start for it,
@@ -4456,13 +4585,118 @@ const ENTRANCE: Vec3 = Vec3::new(14.5, 64.0, 7.5);
 /// The start every edge of the runs has.
 const START: u64 = 10;
 
-fn run_config() -> RegionConfig {
+/// What the regions of a run are made with: `on` is whether the world store keeps the
+/// players' places (ADR-0020), which the runs are played with and without.
+fn run_config(on: bool) -> RegionConfig {
     RegionConfig {
         spawn: ENTRANCE,
         starting_hotbar: hotbar(),
         return_after: 0,
-        place_by_store: false,
+        place_by_store: on,
         lowest_y: -64,
+    }
+}
+
+/// Where a player is and what they hold, as the store keeps it.
+fn place_of(state: &PlayerState) -> Place {
+    Place {
+        pose: state.pose,
+        flying: state.flying,
+        hotbar: state.hotbar,
+        selected_slot: state.selected_slot,
+    }
+}
+
+/// What the world store keeps of a player: the latest stay, how often it was handed
+/// on, and its place (ADR-0020, section 2).
+#[derive(Debug, Clone, PartialEq)]
+struct Kept {
+    stay: EntityId,
+    hops: u32,
+    place: Option<Place>,
+}
+
+/// The world store as far as stays go: the table of section 3 of ADR-0020, which the
+/// regions of a run are held to. A note of a stay that was never issued, and a copy of
+/// the living stay with fewer hand-overs, are what the record says cannot be: no run
+/// makes one.
+#[derive(Debug, Clone, Default)]
+struct Places {
+    records: BTreeMap<PlayerId, Kept>,
+    /// How many answers named a place, and how many notes were answered `Dead`.
+    kept: usize,
+    dead: usize,
+}
+
+impl Places {
+    /// Takes the notes of one commit of a region, which is the home region or not.
+    /// `holder` says who holds a chunk, `None` for the home region itself. Returns the
+    /// answers `Enter` and `Dead` for that region, and the `Dead` every region is told.
+    #[allow(clippy::type_complexity)]
+    fn take(
+        &mut self,
+        home: bool,
+        notes: &[StayNote],
+        holder: impl Fn(ChunkPos) -> Option<RegionId>,
+    ) -> (
+        Vec<Entered>,
+        Vec<(PlayerId, EntityId, u32)>,
+        Vec<(PlayerId, EntityId, u32)>,
+    ) {
+        let (mut enter, mut dead, mut all) = (Vec::new(), Vec::new(), Vec::new());
+        for note in notes {
+            match note {
+                StayNote::Entering { player, entity } => {
+                    assert!(home, "{note:?} from a region that is not joined");
+                    let record = self.records.entry(*player).or_insert(Kept {
+                        stay: EntityId(0),
+                        hops: 0,
+                        place: None,
+                    });
+                    if *entity < record.stay {
+                        self.dead += 1;
+                        dead.push((*player, record.stay, record.hops));
+                        continue;
+                    }
+                    if *entity > record.stay {
+                        record.stay = *entity;
+                        record.hops = 0;
+                        all.push((*player, *entity, 0));
+                    }
+                    let place = record.place.clone();
+                    self.kept += usize::from(place.is_some());
+                    let holder = place
+                        .as_ref()
+                        .and_then(|place| holder(chunk_of(place.pose.position)));
+                    enter.push(Entered {
+                        player: *player,
+                        entity: *entity,
+                        place,
+                        holder,
+                    });
+                }
+                StayNote::Has {
+                    player,
+                    entity,
+                    hops,
+                    place,
+                } => {
+                    let record = self.records.get_mut(player);
+                    let record =
+                        record.unwrap_or_else(|| panic!("{note:?} of a stay never issued"));
+                    assert!(*entity <= record.stay, "{note:?} of a stay never issued");
+                    if *entity < record.stay {
+                        self.dead += 1;
+                        dead.push((*player, record.stay, record.hops));
+                        continue;
+                    }
+                    assert!(*hops >= record.hops, "{note:?} against {record:?}");
+                    record.hops = *hops;
+                    record.place = Some(place.clone());
+                }
+            }
+        }
+        (enter, dead, all)
     }
 }
 
@@ -4570,6 +4804,8 @@ impl Site {
             chunks_loaded: std::mem::take(&mut next.chunks_loaded),
             granted: std::mem::take(&mut next.granted),
             foreign: std::mem::take(&mut next.foreign),
+            entered: std::mem::take(&mut next.entered),
+            dead: std::mem::take(&mut next.dead),
             ..TickInputs::default()
         }
     }
@@ -4591,7 +4827,8 @@ impl Site {
                 })
     }
 
-    /// Whether nothing waits for the region.
+    /// Whether nothing waits for the region, and it waits for nothing: no stay is
+    /// entering.
     fn idle(&self) -> bool {
         let next = &self.next;
         !self.holding
@@ -4601,6 +4838,9 @@ impl Site {
             && next.granted.is_empty()
             && next.foreign.is_empty()
             && next.chunks_loaded.is_empty()
+            && next.entered.is_empty()
+            && next.dead.is_empty()
+            && self.region.state().entering.is_empty()
     }
 }
 
@@ -4608,7 +4848,9 @@ impl Site {
 #[derive(Debug, Clone)]
 struct Stay {
     edge: EdgeId,
-    /// The entity, once the home region has said it.
+    /// Which connection it is: the attempt its join names.
+    attempt: u64,
+    /// The entity, once a region has said it.
     entity: Option<EntityId>,
     /// The region the edge takes the stay to be in.
     site: RegionId,
@@ -4660,12 +4902,21 @@ struct Cluster {
     passed_on: usize,
     sent_on: usize,
     ended: usize,
+    /// Whether the store keeps the players' places, and what it keeps (ADR-0020).
+    on: bool,
+    places: Places,
+    /// The attempt of the last join: no two connections of a run have one.
+    attempts: u64,
+    /// How many stays were found by the attempt their transfer carries, and how many
+    /// `Ended` entries regions made.
+    by_attempt: usize,
+    told_ended: usize,
 }
 
 impl Cluster {
     /// Regions pinned to `areas`, numbered in their order, of which region 0 is the
     /// home region, with a ticket of the kind `ticket` on every chunk of the grid.
-    fn new(areas: &[ChunkArea], ticket: Ticket) -> Self {
+    fn new(areas: &[ChunkArea], ticket: Ticket, on: bool) -> Self {
         let mut grants = Grants {
             pinned: Vec::new(),
             granted: BTreeMap::new(),
@@ -4681,7 +4932,7 @@ impl Cluster {
             };
             let entity_ids = EntityIds::block(3 + index as u32).expect("the block exists");
             let mut site = Site {
-                region: Region::new(run_config(), entity_ids, holdings),
+                region: Region::new(run_config(on), entity_ids, holdings),
                 next: TickInputs::default(),
                 holding: false,
             };
@@ -4702,6 +4953,11 @@ impl Cluster {
             passed_on: 0,
             sent_on: 0,
             ended: 0,
+            on,
+            places: Places::default(),
+            attempts: 0,
+            by_attempt: 0,
+            told_ended: 0,
         };
         cluster.settle();
         cluster
@@ -4709,7 +4965,8 @@ impl Cluster {
 
     /// The edges say hello to a region that has begun anew: they are there, and every
     /// subscription begins anew. What the store and storage were about to tell the
-    /// region is not told it: it asks again.
+    /// region is not told it: it asks again, and names its stays again, to which the
+    /// store says again who may enter and who is dead (ADR-0020, section 9).
     fn hello(site: &mut Site, ticket: Ticket) {
         let next = &mut site.next;
         next.edges.push(started(E, START));
@@ -4719,6 +4976,8 @@ impl Cluster {
         next.granted.clear();
         next.foreign.clear();
         next.chunks_loaded.clear();
+        next.entered.clear();
+        next.dead.clear();
         site.holding = true;
     }
 
@@ -4735,25 +4994,39 @@ impl Cluster {
         self.sites.get_mut(&region).expect("the region lives")
     }
 
-    /// A player enters the world, in the home region.
-    fn join(&mut self, id: PlayerId, edge: EdgeId) {
+    /// A player enters the world, in the home region, on a connection of their own:
+    /// returns the join, which names an attempt no other join of the run names.
+    fn join(&mut self, id: PlayerId, edge: EdgeId) -> PlayerChange {
+        self.attempts += 1;
         let stay = Stay {
             edge,
+            attempt: self.attempts,
             entity: None,
             site: self.home,
             made: Vec::new(),
         };
+        let join = PlayerJoin {
+            player: id,
+            name: format!("player-{}", id.0.as_u128()),
+            attempt: stay.attempt,
+        };
         self.stays.insert(id, stay);
         let home = self.home;
-        self.site(home).next.change(join(edge, id));
+        let change = PlayerChange::Join(edge, join);
+        self.site(home).next.change(change.clone());
+        change
     }
 
     /// A player's connection ends: the edge tells the region it takes them to be in,
-    /// names the stay, and has given it up.
-    fn leave(&mut self, id: PlayerId) {
+    /// names the stay, and has given it up. Returns the leave, which names the entity
+    /// if the edge has been told one, and else the attempt of the join (ADR-0020,
+    /// section 4.4).
+    fn leave(&mut self, id: PlayerId) -> PlayerChange {
         let stay = self.stays.remove(&id).expect("the player has a stay");
-        let change = leave(stay.edge, id, stay.entity);
-        self.site(stay.site).next.change(change);
+        let attempt = stay.entity.is_none().then_some(stay.attempt);
+        let change = PlayerChange::Leave(stay.edge, id, stay.entity, attempt);
+        self.site(stay.site).next.change(change.clone());
+        change
     }
 
     /// A player does something: the edge numbers it and sends it to the region it
@@ -4771,12 +5044,26 @@ impl Cluster {
     /// Passes a stay on to `to`, with everything the player did that the region they
     /// come from has not applied (ADR-0012, rules 18 and 20). A stay the edge has given
     /// up arrives nowhere, and its entity is discarded where it was seen last.
+    ///
+    /// The stay is the edge's if the edge has it with that entity, or has the player
+    /// with no entity yet, under the region the word comes from, on the connection
+    /// whose attempt the transfer carries (ADR-0020, section 4.3, path 3).
     fn arrive(&mut self, from: RegionId, id: PlayerId, transfer: &PlayerTransfer, to: RegionId) {
         let to = self.living(to);
         assert_ne!(to, from, "{from} sent {id:?} on to itself");
         let next = &mut self.sites.get_mut(&to).expect("it lives").next;
+        let theirs = |stay: &Stay| {
+            stay.entity == Some(transfer.entity_id)
+                || (stay.entity.is_none()
+                    && stay.site == from
+                    && transfer.attempt == Some(stay.attempt))
+        };
         match self.stays.get_mut(&id) {
-            Some(stay) if stay.entity == Some(transfer.entity_id) => {
+            Some(stay) if theirs(stay) => {
+                if stay.entity.is_none() {
+                    stay.entity = Some(transfer.entity_id);
+                    self.by_attempt += 1;
+                }
                 stay.site = to;
                 next.change(PlayerChange::Arrive(stay.edge, id, transfer.clone()));
                 for (index, input) in stay.made.iter().enumerate() {
@@ -4877,11 +5164,34 @@ impl Cluster {
         for (id, sequence) in acknowledged(output) {
             self.done(id, sequence);
         }
+        // The commit: the store takes the tick's notes, answers the region, and tells
+        // every region of a floor it raised (ADR-0020, sections 3 to 5).
+        if !self.on {
+            assert!(output.stays.is_empty(), "{from} named {:?}", output.stays);
+        }
+        let (home, grants) = (self.home, &self.grants);
+        let holder = |chunk| grants.holder(chunk).filter(|holder| *holder != home);
+        let (enter, dead, all) = self.places.take(from == home, &output.stays, holder);
+        let site = self.site(from);
+        site.next.entered.extend(enter);
+        site.next.dead.extend(dead);
+        for site in self.sites.values_mut() {
+            site.next.dead.extend(all.iter().copied());
+        }
+
         for (id, event) in &output.player_events {
-            if let PlayerEvent::Spawned { entity_id, .. } = event {
+            if let PlayerEvent::Spawned {
+                attempt, entity_id, ..
+            } = event
+            {
                 assert_eq!(from, self.home, "only the home region is joined");
-                if let Some(stay) = self.stays.get_mut(id) {
-                    stay.entity.get_or_insert(*entity_id);
+                // Only for the connection whose join it answers (ADR-0020, section
+                // 4.1).
+                if let Some(stay) = self.stays.get_mut(id)
+                    && stay.entity.is_none()
+                    && stay.attempt == *attempt
+                {
+                    stay.entity = Some(*entity_id);
                 }
             }
         }
@@ -4930,6 +5240,21 @@ impl Cluster {
                 Durable::RemoteDone {
                     player, sequence, ..
                 } => self.done(*player, *sequence),
+                // A stay that a later one replaced. No run has a player connect while
+                // they are connected, so it is never the stay the edge has.
+                Durable::Ended {
+                    player,
+                    entity,
+                    attempt,
+                } => {
+                    assert!(self.on, "{from} made {entry:?}");
+                    let meant = self.stays.get(player).is_some_and(|stay| {
+                        stay.entity == Some(*entity)
+                            || (stay.entity.is_none() && Some(stay.attempt) == *attempt)
+                    });
+                    assert!(!meant, "{from} ended the stay the edge has: {entry:?}");
+                    self.told_ended += 1;
+                }
                 other => panic!("{from} made {other:?} in a tick"),
             }
         }
@@ -4960,7 +5285,7 @@ impl Cluster {
         let (mut chunks, areas) = self.grants.absorb(survivor, absorbed);
         let mut held = self.held_by(survivor);
         let pinned = self.grants.areas_of(survivor);
-        let ticket = self.ticket;
+        let (ticket, on) = (self.ticket, self.on);
 
         let site = self.site(survivor);
         let before = site.region.clone();
@@ -4975,7 +5300,7 @@ impl Cluster {
         let loaded = site.region.take_absorbed(state.clone(), &chunks, &areas);
         held.extend(&chunks);
         let holdings = Holdings { held, pinned };
-        let restored = Region::restore(run_config(), state.clone(), holdings);
+        let restored = Region::restore(run_config(on), state.clone(), holdings);
         assert_eq!(site.region, restored, "after the merge");
         assert_eq!(loaded.len(), before.loaded_chunk_count());
         assert!(loaded.is_sorted_by_key(|(chunk, _)| *chunk));
@@ -5026,7 +5351,7 @@ impl Cluster {
         let part = RegionId(self.grants.next);
         let held = self.held_by(region);
         let pinned = self.grants.areas_of(region);
-        let ticket = self.ticket;
+        let (ticket, on) = (self.ticket, self.on);
 
         let site = self.site(region);
         let before = site.region.clone();
@@ -5054,13 +5379,13 @@ impl Cluster {
             held: stays,
             pinned,
         };
-        let restored = Region::restore(run_config(), splitting.state.clone(), holdings);
+        let restored = Region::restore(run_config(on), splitting.state.clone(), holdings);
         assert_eq!(site.region, restored, "the region after the split");
         let holdings = Holdings {
             held: splitting.chunks.clone(),
             pinned: Vec::new(),
         };
-        let restored = Region::restore(run_config(), splitting.part.clone(), holdings);
+        let restored = Region::restore(run_config(on), splitting.part.clone(), holdings);
         assert_eq!(made.region, restored, "the part");
         assert_eq!(
             kept.len() + made.chunks.len(),
@@ -5192,10 +5517,12 @@ struct One {
     region: Region,
     next: TickInputs,
     dealt_with: BTreeMap<PlayerId, i32>,
+    /// The store of this world, which answers the one region's notes.
+    places: Places,
 }
 
 impl One {
-    fn new() -> Self {
+    fn new(on: bool) -> Self {
         let holdings = Holdings {
             held: Vec::new(),
             pinned: vec![ChunkArea::EVERYWHERE],
@@ -5203,9 +5530,10 @@ impl One {
         let mut next = add(&grid().into_iter().map(viewer).collect::<Vec<_>>());
         next.edges = vec![started(E, START), started(F, START)];
         let mut one = Self {
-            region: Region::new(run_config(), ids(), holdings),
+            region: Region::new(run_config(on), ids(), holdings),
             next,
             dealt_with: BTreeMap::new(),
+            places: Places::default(),
         };
         for _ in 0..3 {
             one.tick();
@@ -5224,6 +5552,10 @@ impl One {
         );
         self.next.granted = output.claims.clone();
         self.next.chunks_loaded = delivered(&output.chunk_requests).chunks_loaded;
+        // The one region holds every place itself.
+        let (enter, dead, all) = self.places.take(true, &output.stays, |_| None);
+        self.next.entered = enter;
+        self.next.dead = dead.into_iter().chain(all).collect();
         for (id, sequence) in acknowledged(&output) {
             let highest = self.dealt_with.entry(id).or_insert(sequence);
             *highest = (*highest).max(sequence);
@@ -5279,9 +5611,15 @@ impl Drop for Pair {
 
 impl Pair {
     fn new(name: String, areas: &[ChunkArea], ticket: Ticket) -> Self {
+        Self::with(name, areas, ticket, false)
+    }
+
+    /// The pair whose regions are made for a store that keeps the players' places, or
+    /// that does not.
+    fn with(name: String, areas: &[ChunkArea], ticket: Ticket, on: bool) -> Self {
         Self {
-            cluster: Cluster::new(areas, ticket),
-            one: One::new(),
+            cluster: Cluster::new(areas, ticket, on),
+            one: One::new(on),
             steps: Vec::new(),
             name,
             compared: 0,
@@ -5291,8 +5629,8 @@ impl Pair {
     fn join(&mut self, id: PlayerId, edge: EdgeId) {
         self.steps
             .push(format!("player {} joins through {edge:?}", id.0.as_u128()));
-        self.cluster.join(id, edge);
-        self.one.next.change(join(edge, id));
+        let join = self.cluster.join(id, edge);
+        self.one.next.change(join);
     }
 
     fn leave(&mut self, id: PlayerId) {
@@ -5303,8 +5641,8 @@ impl Pair {
             stay.entity,
             stay.site
         ));
-        self.one.next.change(leave(stay.edge, id, stay.entity));
-        self.cluster.leave(id);
+        let leave = self.cluster.leave(id);
+        self.one.next.change(leave);
     }
 
     fn act(&mut self, id: PlayerId, input: PlayerInput) {
@@ -5366,14 +5704,22 @@ impl Pair {
                     Some(*region),
                     "{id:?} stands in {chunk:?} and is {region}'s"
                 );
+                // The store has the stay, how often it was handed on, and its place.
+                if cluster.on {
+                    let kept = &cluster.places.records[&id];
+                    assert_eq!((kept.stay, kept.hops), (player.entity_id, player.hops));
+                    assert_eq!(kept.place, Some(place_of(&player)), "{id:?}");
+                }
                 let stay = cluster.stays.get(&id).expect("the edge has the stay");
                 assert_eq!(
                     (stay.site, stay.entity),
                     (*region, Some(player.entity_id)),
                     "where the edge takes {id:?} to be"
                 );
+                // How often a player was handed on only several regions count.
                 let plain = PlayerState {
                     handled: None,
+                    hops: 0,
                     ..player
                 };
                 assert!(
@@ -5388,6 +5734,7 @@ impl Pair {
             .map(|(id, player)| {
                 let plain = PlayerState {
                     handled: None,
+                    hops: 0,
                     ..player
                 };
                 (id, plain)
@@ -5465,11 +5812,15 @@ struct Play {
 }
 
 impl Play {
-    fn new(test: &str, seed: u64, areas: &[ChunkArea]) -> Self {
+    /// The run in a world whose store keeps the players' places, or does not.
+    fn with(test: &str, seed: u64, areas: &[ChunkArea], on: bool) -> Self {
         let ticket = [Ticket::Viewer, Ticket::Guest][(seed % 2) as usize];
-        let name = format!("{test}, seed {seed} (CLUSTINE_RESHAPE_SEED={seed}), {ticket:?}");
+        let places = if on { "kept" } else { "not kept" };
+        let name = format!(
+            "{test}, seed {seed} (CLUSTINE_RESHAPE_SEED={seed}), {ticket:?}, places {places}"
+        );
         Self {
-            pair: Pair::new(name, areas, ticket),
+            pair: Pair::with(name, areas, ticket, on),
             random: Random(0x2545_F491_4F6C_DD1D ^ (seed << 20) ^ seed),
             positions: BTreeMap::new(),
             sequence: 0,
@@ -5547,11 +5898,25 @@ impl Play {
                     if self.random.once_in(8) {
                         let edge = if n % 2 == 0 { E } else { F };
                         self.pair.join(id, edge);
-                        self.positions.insert(id, ENTRANCE);
+                        // At the spawn point; or, where the store keeps the places,
+                        // where they were when they left, which is where every step
+                        // they made took them: they leave when nothing of theirs
+                        // waits.
+                        if self.pair.cluster.on {
+                            self.positions.entry(id).or_insert(ENTRANCE);
+                        } else {
+                            self.positions.insert(id, ENTRANCE);
+                        }
                     }
                 }
                 // The edge passes on nothing of a player it has not told their entity.
-                Some(None) => {}
+                // Now and then such a player gives up: the leave names the attempt of
+                // the join.
+                Some(None) => {
+                    if self.random.once_in(12) {
+                        self.pair.leave(id);
+                    }
+                }
                 Some(Some(_)) => {
                     // A leave in the tick of an input before it takes the input with it
                     // (a tick applies changes first), and the one region is given both
@@ -5702,6 +6067,20 @@ struct Tally {
     sent_on: usize,
     ended: usize,
     dealt_with: usize,
+    /// In the runs whose store keeps the places: how many joins were answered with a
+    /// place, how many stays were found by their attempt, how many notes the store
+    /// answered `Dead`, and how many `Ended` entries regions made.
+    kept: usize,
+    by_attempt: usize,
+    dead: usize,
+    told_ended: usize,
+}
+
+/// Every run of a test: each seed in a world whose store does not keep the players'
+/// places, as before ADR-0020, and in one whose store does.
+fn runs() -> Vec<(bool, u64)> {
+    let both = |seed| [(false, seed), (true, seed)];
+    seeds().into_iter().flat_map(both).collect()
 }
 
 impl Tally {
@@ -5716,6 +6095,10 @@ impl Tally {
         self.sent_on += cluster.sent_on;
         self.ended += cluster.ended;
         self.dealt_with += play.sequence as usize;
+        self.kept += cluster.places.kept;
+        self.by_attempt += cluster.by_attempt;
+        self.dead += cluster.places.dead;
+        self.told_ended += cluster.told_ended;
     }
 }
 
@@ -5725,9 +6108,9 @@ fn two_regions_on_stripes_of_which_one_absorbs_the_other_show_what_one_region_sh
     // the two and to either; the test gives the survivor the chunks and the area as
     // the store would, and its tickets again as its edges' hellos do.
     let mut tally = Tally::default();
-    for seed in seeds() {
+    for (on, seed) in runs() {
         let test = "two regions on stripes that merge";
-        let mut play = Play::new(test, seed, &[WESTERN, EASTERN]);
+        let mut play = Play::with(test, seed, &[WESTERN, EASTERN], on);
         let at = 60 + (seed as usize * 7) % 50;
         play.run(Reshaping::MergeAt(at), 280);
 
@@ -5739,7 +6122,7 @@ fn two_regions_on_stripes_of_which_one_absorbs_the_other_show_what_one_region_sh
         assert_eq!(cluster.grants.areas_of(REGION_A), [WESTERN, EASTERN]);
         tally.note(&play);
     }
-    let runs = seeds().len();
+    let runs = runs().len();
     assert_eq!(tally.merges, runs);
     assert!(tally.compared >= 60 * runs, "{tally:?}");
     assert!(
@@ -5753,13 +6136,13 @@ fn a_region_that_is_split_and_run_as_two_or_more_shows_what_one_region_shows() {
     // S36: one region pinned to the whole world, of which regions are split off around
     // its players, and of those again.
     let mut tally = Tally::default();
-    for seed in seeds() {
+    for (on, seed) in runs() {
         let test = "a region that is split";
-        let mut play = Play::new(test, seed, &[ChunkArea::EVERYWHERE]);
+        let mut play = Play::with(test, seed, &[ChunkArea::EVERYWHERE], on);
         play.run(Reshaping::Splits, 320);
         tally.note(&play);
     }
-    let runs = seeds().len();
+    let runs = runs().len();
     assert!(tally.splits >= 2 * runs, "{tally:?}");
     assert!(tally.compared >= 60 * runs, "{tally:?}");
     assert!(
@@ -5772,9 +6155,9 @@ fn a_region_that_is_split_and_run_as_two_or_more_shows_what_one_region_shows() {
 fn a_region_that_is_split_and_absorbs_its_part_again_is_as_one_that_never_was() {
     // S36, its second part: the players, the blocks and the held chunks.
     let mut tally = Tally::default();
-    for seed in seeds() {
+    for (on, seed) in runs() {
         let test = "a region that absorbs its part again";
-        let mut play = Play::new(test, seed, &[ChunkArea::EVERYWHERE]);
+        let mut play = Play::with(test, seed, &[ChunkArea::EVERYWHERE], on);
         play.run(Reshaping::SplitAndAbsorb, 320);
         let parts: Vec<RegionId> = play.pair.cluster.sites.keys().copied().skip(1).collect();
         for part in parts {
@@ -5796,7 +6179,7 @@ fn a_region_that_is_split_and_absorbs_its_part_again_is_as_one_that_never_was() 
         assert_eq!(region.state().next_entity_id, never.state().next_entity_id);
         tally.note(&play);
     }
-    let runs = seeds().len();
+    let runs = runs().len();
     assert!(
         tally.splits >= 3 * runs && tally.merges >= 3 * runs,
         "{tally:?}"
@@ -5810,7 +6193,7 @@ fn regions_that_split_and_absorb_each_other_in_any_order_show_what_one_region_sh
     // generator comes to: parts of parts, a part absorbed by the neighbour of the
     // region it was split from, the home region absorbing everything.
     let mut tally = Tally::default();
-    for seed in seeds() {
+    for (on, seed) in runs() {
         let test = "regions that merge and split";
         let both: &[ChunkArea] = &[WESTERN, EASTERN];
         let areas = if seed % 4 < 2 {
@@ -5818,11 +6201,16 @@ fn regions_that_split_and_absorb_each_other_in_any_order_show_what_one_region_sh
         } else {
             &[ChunkArea::EVERYWHERE]
         };
-        let mut play = Play::new(test, seed, areas);
+        let mut play = Play::with(test, seed, areas, on);
         play.run(Reshaping::Anything, 480);
         tally.note(&play);
     }
-    let runs = seeds().len();
+    // With the places kept, players came back in place, and in a region that was not
+    // the home region as well: let go to it without being placed, and found by the
+    // attempt of their join.
+    assert!(tally.kept >= seeds().len(), "{tally:?}");
+    assert!(tally.by_attempt >= 1, "{tally:?}");
+    let runs = runs().len();
     assert!(
         tally.splits >= 4 * runs && tally.merges >= 4 * runs,
         "{tally:?}"
@@ -6070,6 +6458,11 @@ fn a_player_who_left_before_their_region_was_split_and_joined_again_has_one_stay
         .split(REGION_A, &[SECOND])
         .expect("player 1 is still there, and goes");
     let made = &pair.cluster.sites[&part].region;
+    // As they were, and handed on once more by the split (ADR-0020, section 9).
+    let old = PlayerState {
+        hops: old.hops + 1,
+        ..old
+    };
     assert_eq!(state_of(made, player(1)), old);
     assert_eq!(pair.cluster.ended, 1, "the edge ends the stay the part has");
 
@@ -6136,11 +6529,11 @@ fn a_third_region_that_still_names_the_absorbed_region_reaches_the_survivor() {
 fn the_same_run_twice_gives_byte_identical_states_and_identical_chunks() {
     // Everything is deterministic, the merges and splits among it: two runs with one
     // seed leave every region the same, to the byte of its serialised state.
-    for seed in [1, 2] {
+    for (on, seed) in [(false, 1), (false, 2), (true, 1), (true, 2)] {
         let runs: Vec<Play> = (0..2)
             .map(|_| {
                 let test = "the same run twice";
-                let mut play = Play::new(test, seed, &[WESTERN, EASTERN]);
+                let mut play = Play::with(test, seed, &[WESTERN, EASTERN], on);
                 play.run(Reshaping::Anything, 200);
                 play
             })

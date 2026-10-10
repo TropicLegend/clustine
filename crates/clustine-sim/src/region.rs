@@ -9,9 +9,9 @@ use clustine_world::{
 };
 
 use crate::api::{
-    Durable, EdgeEvent, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected,
-    PlayerChange, PlayerEvent, PlayerInput, PlayerTransfer, Pose, RegionEvent, RemoteAction,
-    RemoteStep, TickInputs, TickOutput, Ticket,
+    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected,
+    Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent,
+    RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
 };
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
@@ -32,15 +32,20 @@ pub struct RegionConfig {
     /// How many ticks a chunk the region holds outside its pinned areas may be without
     /// use before the region gives it back.
     pub return_after: u64,
-    /// Whether the world store keeps the players' places: a join is then held as
-    /// entering until the store has said where the player was last, and the region
-    /// tells the store of its stays. It is there for the steps in which that is built
-    /// and goes with the last of them; no region looks at it yet. See
-    /// `docs/adr/0020-one-stay-per-player.md`, "Building it".
+    /// Whether the world store keeps the players' places. A join is then held as
+    /// entering until the store has said where the player was last
+    /// ([`TickInputs::entered`]), the region tells the store of its stays
+    /// ([`TickOutput::stays`]) and removes those the store calls dead
+    /// ([`TickInputs::dead`]), and an edge whose stay a later one replaced is told so
+    /// ([`Durable::Ended`]). Without it a join places the player at the spawn point at
+    /// once, no note is made by anything, and both inputs are passed over.
+    ///
+    /// It is there for the steps in which this is built and goes with the last of
+    /// them. See `docs/adr/0020-one-stay-per-player.md`, "Building it".
     pub place_by_store: bool,
     /// The height of the world's lowest block. A place the store kept whose feet are
-    /// below it counts as no place. No region looks at it yet; see section 4 of the
-    /// same record.
+    /// below it counts as no place: such a player enters at the spawn point, with what
+    /// they held. See section 4 of the same record.
     pub lowest_y: i32,
 }
 
@@ -208,7 +213,14 @@ struct Journal {
     next_entity_id: bool,
     players: BTreeSet<PlayerId>,
     edges: BTreeMap<EdgeId, EdgeJournal>,
+    /// The players whose entering stay was begun or ended.
+    entering: BTreeSet<PlayerId>,
 }
+
+/// A stay that the tick lets go, kept until the departures are numbered at the end of
+/// the tick: the edge whose outbox the entry goes to, the player, what the next region
+/// begins with, and that region.
+type Departure = (EdgeId, PlayerId, PlayerTransfer, RegionId);
 
 /// A part of the world that is simulated as one unit.
 #[derive(Debug, Clone, PartialEq)]
@@ -227,9 +239,14 @@ pub struct Region {
     requested: BTreeSet<ChunkPos>,
     players: BTreeMap<PlayerId, Player>,
     edges: BTreeMap<EdgeId, EdgeState>,
-    /// [`RegionState::entering`]: kept as the state has it, and changed by no tick
-    /// yet.
+    /// [`RegionState::entering`].
     entering: BTreeMap<PlayerId, EnteringState>,
+    /// Whether the region has not ticked since it was restored: its first tick names
+    /// every stay to the world store, which answers for each that is dead or may
+    /// enter. It is no part of the state. A merge and a split go through
+    /// [`Region::restore`], so the tick after either names every stay as well, in a
+    /// region that is run on from memory as in one that another worker restores.
+    unnamed: bool,
     journal: Journal,
 }
 
@@ -245,6 +262,11 @@ impl Region {
     /// asked or believed before, it asks again when it wants to know. Chunks come in as
     /// for any region: through tickets and what storage delivers. Ticks go on from
     /// [`RegionState::tick`], and the time before a chunk is given back starts anew.
+    ///
+    /// Its first tick names every stay it has to the world store
+    /// ([`TickOutput::stays`]), which answers for each that is dead or that may
+    /// enter: whatever the store was about to say to the region before is lost with
+    /// whoever ran it.
     pub fn restore(config: RegionConfig, state: RegionState, holdings: Holdings) -> Self {
         let players = state
             .players
@@ -272,6 +294,7 @@ impl Region {
             players,
             edges: state.edges,
             entering: state.entering,
+            unnamed: true,
             journal: Journal::default(),
         }
     }
@@ -350,8 +373,8 @@ impl Region {
     }
 
     /// The stay the region holds as entering for `player`, if it holds one: the runner
-    /// answers an edge's hello by it. There is none before step R1.2 of
-    /// `docs/adr/0020-one-stay-per-player.md` (section 4.2).
+    /// answers an edge's hello by it. See `docs/adr/0020-one-stay-per-player.md`,
+    /// section 4.2.
     pub fn entering_state(&self, player: PlayerId) -> Option<&EnteringState> {
         self.entering.get(&player)
     }
@@ -383,6 +406,7 @@ impl Region {
     /// Advances the region by one tick.
     pub fn tick(&mut self, inputs: &TickInputs) -> TickOutput {
         self.tick += 1;
+        let first = mem::take(&mut self.unnamed);
         let mut output = TickOutput {
             tick: self.tick,
             ..TickOutput::default()
@@ -401,155 +425,22 @@ impl Region {
             }
         }
 
+        // What the world store calls dead goes before anything of players, so that a
+        // stay that arrives in this tick is judged against what is left.
+        if self.config.place_by_store {
+            for (id, stay, hops) in &inputs.dead {
+                self.apply_dead(*id, *stay, *hops, &mut output);
+            }
+        }
+
         for change in &inputs.player_changes {
             match change {
-                PlayerChange::Join(edge, join) => {
-                    if !self.edges.contains_key(edge) {
-                        // Nobody could be told anything about the player.
-                        continue;
-                    }
-                    // A join begins a new stay whatever the region has. A player it has
-                    // has connected anew: through another edge, which the edge they had
-                    // may not have noticed yet, or through the same one, whose leave for
-                    // the stay that is here went to a region that was absorbed or split
-                    // since. The new stay replaces the old one.
-                    self.remove_player(join.player, &mut output);
-                    let entity_id = self.next_entity_id;
-                    if !self.entity_ids.contains(entity_id) {
-                        let refused = Durable::Refused {
-                            player: join.player,
-                            attempt: join.attempt,
-                        };
-                        self.send(*edge, refused, &mut output);
-                        continue;
-                    }
-                    self.next_entity_id = EntityId(entity_id.0 + 1);
-                    self.journal.next_entity_id = true;
-                    let player = Player {
-                        entity_id,
-                        name: join.name.clone(),
-                        pose: Pose::at(self.config.spawn),
-                        moved_from: None,
-                        handled_sequence: None,
-                        hotbar: self.config.starting_hotbar,
-                        selected_slot: 0,
-                        last_input: 0,
-                        handled: None,
-                        edge: *edge,
-                        hops: 0,
-                        flying: false,
-                        // Until the first input of the stay is applied, so that the
-                        // edge finds the stay of this connection by whatever way it
-                        // hears of it. See `docs/adr/0020-one-stay-per-player.md`,
-                        // section 4.3.
-                        attempt: Some(join.attempt),
-                    };
-                    output.player_events.push((
-                        join.player,
-                        PlayerEvent::Spawned {
-                            attempt: join.attempt,
-                            entity_id,
-                            pose: player.pose,
-                            flying: player.flying,
-                            hotbar: player.hotbar,
-                            selected_slot: player.selected_slot,
-                        },
-                    ));
-                    output
-                        .events
-                        .push(RegionEvent::EntitySpawned(player.entity_state(join.player)));
-                    self.players.insert(join.player, player);
-                    self.journal.players.insert(join.player);
-                }
-                PlayerChange::Leave(edge, id, entity, _attempt) => {
-                    // A leave ends the stay it names, and no later one of the player. One
-                    // that names none ends whatever stay there is: a player who quit while
-                    // entering the world has no entity yet that the edge knows of. The
-                    // attempt such a leave names is not looked at yet: step R1.2 of
-                    // `docs/adr/0020-one-stay-per-player.md` holds the leave to it
-                    // (section 4.4).
-                    let ended = |player: &Player| {
-                        player.edge == *edge
-                            && entity.is_none_or(|entity| player.entity_id == entity)
-                    };
-                    if self.players.get(id).is_some_and(ended) {
-                        self.remove_player(*id, &mut output);
-                    }
+                PlayerChange::Join(edge, join) => self.apply_join(*edge, join, &mut output),
+                PlayerChange::Leave(edge, id, entity, attempt) => {
+                    self.apply_leave(*edge, *id, *entity, *attempt, &mut output);
                 }
                 PlayerChange::Arrive(edge, id, transfer) => {
-                    let position = transfer.pose.position;
-                    let chunk = ChunkPos::containing(position.x, position.z);
-                    let present = self.players.get(id).map(|present| present.entity_id);
-                    // Of two stays of a player the one with the higher entity id is the
-                    // later: the home region gives the ids out in ascending order.
-                    let earlier = present.is_some_and(|present| present < transfer.entity_id);
-                    if !self.edges.contains_key(edge) || (present.is_some() && !earlier) {
-                        // Nobody could be told about the player, or they are here already
-                        // with this stay or a later one. Unless it is this very stay, the
-                        // entity that was on its way has nowhere to go.
-                        if present != Some(transfer.entity_id) {
-                            output.events.push(RegionEvent::EntityRemoved {
-                                entity: transfer.entity_id,
-                                chunk,
-                            });
-                        }
-                        continue;
-                    }
-                    // The stay that is here has ended, though the leave that said so went
-                    // elsewhere: a region that was absorbed or split since. It goes where
-                    // it stood, and the arrival is that of a player the region lacks.
-                    if earlier {
-                        self.remove_player(*id, &mut output);
-                    }
-                    if let Knowledge::Foreign(holder) = self.land.knowledge(chunk) {
-                        if self.land.is_pinned(chunk) {
-                            // A chunk of the region's own area that was split off and
-                            // given back is the region's again without anyone telling it,
-                            // and whoever sent the player was told so by the store. The
-                            // belief goes, and the player is taken in as into a chunk the
-                            // region knows nothing of.
-                            self.land.known.remove(&chunk);
-                        } else {
-                            // The store has said that the chunk is another region's, so
-                            // the player is not taken in and goes on to that region.
-                            // Nothing says that the entity is gone: it is on its way
-                            // still.
-                            let what = Misdirected::Arrival {
-                                player: *id,
-                                transfer: transfer.clone(),
-                            };
-                            self.send(*edge, Durable::NotMine { what, holder }, &mut output);
-                            continue;
-                        }
-                    }
-                    // Taken in whatever else the region knows of the chunk. A pinned
-                    // region does not know that a chunk of its area is its own before
-                    // it has claimed it, while the store tells its neighbours so all
-                    // the same; sent back, the player would be let go to this region
-                    // again for ever. A chunk it knows nothing of is claimed at the end
-                    // of the tick, because the player stands in it.
-                    let player = Player {
-                        entity_id: transfer.entity_id,
-                        name: transfer.name.clone(),
-                        pose: transfer.pose,
-                        moved_from: None,
-                        handled_sequence: None,
-                        hotbar: transfer.hotbar,
-                        selected_slot: transfer.selected_slot,
-                        last_input: transfer.last_input,
-                        handled: None,
-                        edge: *edge,
-                        hops: transfer.hops,
-                        flying: transfer.flying,
-                        attempt: transfer.attempt,
-                    };
-                    // Those watching already show the entity if they saw it cross over;
-                    // to them this is nothing new.
-                    output
-                        .events
-                        .push(RegionEvent::EntitySpawned(player.entity_state(*id)));
-                    self.players.insert(*id, player);
-                    self.journal.players.insert(*id);
+                    self.apply_arrival(*edge, *id, transfer, &mut output);
                 }
                 PlayerChange::Discard { entity, chunk } => {
                     output.events.push(RegionEvent::EntityRemoved {
@@ -557,6 +448,16 @@ impl Region {
                         chunk: *chunk,
                     });
                 }
+            }
+        }
+
+        // The store's answers to the stays that are entering. One that is let go
+        // without being placed is decided here and numbered with the tick's other
+        // departures, below.
+        let mut unplaced: Vec<Departure> = Vec::new();
+        if self.config.place_by_store {
+            for answer in &inputs.entered {
+                self.apply_entered(answer, &mut unplaced, &mut output);
             }
         }
 
@@ -599,20 +500,46 @@ impl Region {
         // Last, so that a player is told what became of their actions before they are
         // told that they are someone else's from now on. Nothing says that the entity
         // is gone: it lives on in the region it walked into.
-        for (id, to) in departing {
-            if let Some(player) = self.players.remove(&id) {
-                self.journal.players.insert(id);
-                let edge = player.edge;
-                let departed = Durable::Departed {
-                    player: id,
-                    transfer: player.into_transfer(),
-                    to,
-                };
-                self.send(edge, departed, &mut output);
-            }
+        //
+        // The stays that were let go without being placed are numbered here as well and
+        // not where they were decided. An input of the same edge can have made an entry
+        // since; the runner publishes a tick's departures behind its other entries, and
+        // an edge passes over a number that is not above the highest it has seen. See
+        // `docs/adr/0020-one-stay-per-player.md`, section 6.
+        let mut let_go: Vec<(PlayerId, StayNote)> = Vec::new();
+        let departing = departing.into_iter().filter_map(|(id, to)| {
+            let player = self.players.remove(&id)?;
+            self.journal.players.insert(id);
+            let edge = player.edge;
+            Some((edge, id, player.into_transfer(), to))
+        });
+        let departing: Vec<Departure> = unplaced.into_iter().chain(departing).collect();
+        for (edge, id, transfer, to) in departing {
+            // The world store is told the place the next region begins with.
+            let note = StayNote::Has {
+                player: id,
+                entity: transfer.entity_id,
+                hops: transfer.hops,
+                place: Place {
+                    pose: transfer.pose,
+                    flying: transfer.flying,
+                    hotbar: transfer.hotbar,
+                    selected_slot: transfer.selected_slot,
+                },
+            };
+            let_go.push((id, note));
+            let departed = Durable::Departed {
+                player: id,
+                transfer,
+                to,
+            };
+            self.send(edge, departed, &mut output);
         }
         self.settle_chunks(&mut output);
 
+        if self.config.place_by_store {
+            output.stays = self.notes(first, let_go);
+        }
         output.delta = self.take_delta();
         output
     }
@@ -696,6 +623,18 @@ impl Region {
             }
             self.remove_player(player, output);
         }
+        // The stays of the edge that are entering go with its players. None of them
+        // has an entity anyone was shown.
+        let entering: Vec<_> = self
+            .entering
+            .iter()
+            .filter(|(_, entering)| entering.edge == id)
+            .map(|(player, _)| *player)
+            .collect();
+        for player in entering {
+            self.entering.remove(&player);
+            self.journal.entering.insert(player);
+        }
         // A departed player can have come back since, through this edge or another, and
         // keeps their entity when they do. Such an entity is either reported removed
         // above already or alive in the region still, and must not be reported again.
@@ -743,6 +682,422 @@ impl Region {
         }
     }
 
+    /// Takes out of the region a player whose stay a later one replaces, and reports
+    /// their entity as removed. Their edge did not ask for it, so where the store keeps
+    /// the players' places it is told that the stay has ended.
+    fn end_player(&mut self, id: PlayerId, output: &mut TickOutput) {
+        let Some(player) = self.players.remove(&id) else {
+            return;
+        };
+        self.journal.players.insert(id);
+        output.events.push(RegionEvent::EntityRemoved {
+            entity: player.entity_id,
+            chunk: player.chunk(),
+        });
+        if self.config.place_by_store {
+            let ended = Durable::Ended {
+                player: id,
+                entity: player.entity_id,
+                attempt: player.attempt,
+            };
+            self.send(player.edge, ended, output);
+        }
+    }
+
+    /// Drops the stay the region holds as entering for a player, which a later stay
+    /// replaces, and tells its edge so as [`Region::end_player`] does. It has no entity
+    /// anyone was shown.
+    fn end_entering(&mut self, id: PlayerId, output: &mut TickOutput) {
+        let Some(entering) = self.entering.remove(&id) else {
+            return;
+        };
+        self.journal.entering.insert(id);
+        if self.config.place_by_store {
+            let ended = Durable::Ended {
+                player: id,
+                entity: entering.entity_id,
+                attempt: Some(entering.attempt),
+            };
+            self.send(entering.edge, ended, output);
+        }
+    }
+
+    /// The world store says that of `id` every stay below `(stay, hops)` is dead: one
+    /// with a lower entity id, or that stay with fewer hand-overs. What the region has
+    /// of such a stay goes. Nothing of the word is kept: a stay that arrives later is
+    /// named to the store in the tick that takes it in, and the store says it again.
+    /// See `docs/adr/0020-one-stay-per-player.md`, section 5.
+    fn apply_dead(&mut self, id: PlayerId, stay: EntityId, hops: u32, output: &mut TickOutput) {
+        let dead = |player: &Player| (player.entity_id, player.hops) < (stay, hops);
+        if self.players.get(&id).is_some_and(dead) {
+            self.end_player(id, output);
+        }
+        let dead = |entering: &EnteringState| entering.entity_id < stay;
+        if self.entering.get(&id).is_some_and(dead) {
+            self.end_entering(id, output);
+        }
+    }
+
+    /// A player enters the world through `edge`.
+    fn apply_join(&mut self, edge: EdgeId, join: &PlayerJoin, output: &mut TickOutput) {
+        if !self.edges.contains_key(&edge) {
+            // Nobody could be told anything about the player.
+            return;
+        }
+        // A join begins a new stay whatever the region has. A player it has has
+        // connected anew: through another edge, which the edge they had may not have
+        // noticed yet, or through the same one, whose leave for the stay that is here
+        // went to a region that was absorbed or split since. The new stay replaces the
+        // old one, and one that was still entering as well.
+        self.end_player(join.player, output);
+        self.end_entering(join.player, output);
+        let entity_id = self.next_entity_id;
+        if !self.entity_ids.contains(entity_id) {
+            let refused = Durable::Refused {
+                player: join.player,
+                attempt: join.attempt,
+            };
+            self.send(edge, refused, output);
+            return;
+        }
+        self.next_entity_id = EntityId(entity_id.0 + 1);
+        self.journal.next_entity_id = true;
+        if self.config.place_by_store {
+            // Where the player enters is the world store's to say: it is told of the
+            // stay with this tick's commit and answers with the place they were last
+            // in. Until then they are nowhere, and no edge is told anything. See
+            // `docs/adr/0020-one-stay-per-player.md`, section 4, step 3.
+            let entering = EnteringState {
+                entity_id,
+                name: join.name.clone(),
+                edge,
+                attempt: join.attempt,
+            };
+            self.entering.insert(join.player, entering);
+            self.journal.entering.insert(join.player);
+            return;
+        }
+        let player = Player {
+            entity_id,
+            name: join.name.clone(),
+            pose: Pose::at(self.config.spawn),
+            moved_from: None,
+            handled_sequence: None,
+            hotbar: self.config.starting_hotbar,
+            selected_slot: 0,
+            last_input: 0,
+            handled: None,
+            edge,
+            hops: 0,
+            flying: false,
+            // Until the first input of the stay is applied, so that the edge finds the
+            // stay of this connection by whatever way it hears of it. See
+            // `docs/adr/0020-one-stay-per-player.md`, section 4.3.
+            attempt: Some(join.attempt),
+        };
+        self.enter(join.player, player, join.attempt, output);
+    }
+
+    /// Puts a player into the region whose stay begins here, and tells them and
+    /// everyone who watches.
+    fn enter(&mut self, id: PlayerId, player: Player, attempt: u64, output: &mut TickOutput) {
+        output.player_events.push((
+            id,
+            PlayerEvent::Spawned {
+                attempt,
+                entity_id: player.entity_id,
+                pose: player.pose,
+                flying: player.flying,
+                hotbar: player.hotbar,
+                selected_slot: player.selected_slot,
+            },
+        ));
+        output
+            .events
+            .push(RegionEvent::EntitySpawned(player.entity_state(id)));
+        self.players.insert(id, player);
+        self.journal.players.insert(id);
+    }
+
+    /// A connection of a player through `edge` has ended.
+    fn apply_leave(
+        &mut self,
+        edge: EdgeId,
+        id: PlayerId,
+        entity: Option<EntityId>,
+        attempt: Option<u64>,
+        output: &mut TickOutput,
+    ) {
+        // A leave ends the stay it names, and no later one of the player. One that
+        // names an entity ends the stay with that entity. One that names none is of a
+        // player who quit while entering the world, whose edge had not been told an
+        // entity: it names the attempt of its join, and ends only the stay that carries
+        // it. It can come behind a later join of the player, where a merge has put what
+        // an edge kept for the absorbed region behind what it kept for the survivor,
+        // and must not end the stay that join began. See
+        // `docs/adr/0020-one-stay-per-player.md`, section 4.4.
+        let ended = |player: &Player| {
+            player.edge == edge
+                && match entity {
+                    Some(entity) => player.entity_id == entity,
+                    None => attempt.is_some() && player.attempt == attempt,
+                }
+        };
+        if self.players.get(&id).is_some_and(ended) {
+            self.remove_player(id, output);
+        }
+        // A stay that is still entering has no entity an edge could name.
+        let ended = |entering: &EnteringState| {
+            entering.edge == edge && entity.is_none() && attempt == Some(entering.attempt)
+        };
+        if self.entering.get(&id).is_some_and(ended) {
+            self.entering.remove(&id);
+            self.journal.entering.insert(id);
+        }
+    }
+
+    /// A player comes in from another region through `edge`.
+    fn apply_arrival(
+        &mut self,
+        edge: EdgeId,
+        id: PlayerId,
+        transfer: &PlayerTransfer,
+        output: &mut TickOutput,
+    ) {
+        let position = transfer.pose.position;
+        let chunk = ChunkPos::containing(position.x, position.z);
+        let arriving = transfer.entity_id;
+        let present = self
+            .players
+            .get(&id)
+            .map(|present| (present.entity_id, present.hops));
+        // An entity that is on its way and has nowhere to go is reported removed,
+        // unless a player who is here has it.
+        let nowhere_to_go = |output: &mut TickOutput| {
+            if present.is_none_or(|(entity, _)| entity != arriving) {
+                let entity = arriving;
+                output
+                    .events
+                    .push(RegionEvent::EntityRemoved { entity, chunk });
+            }
+        };
+        if !self.edges.contains_key(&edge) {
+            // Nobody could be told about the player.
+            nowhere_to_go(output);
+            return;
+        }
+        // Of two stays of a player the one with the higher entity id is the later: the
+        // home region gives the ids out in ascending order. An arrival of an earlier
+        // stay than one the region has is passed over, and where the store keeps the
+        // players' places so is one of an earlier stay than one the region holds as
+        // entering: taken in, it would be in the way of that stay when the store's
+        // answer comes. The edge it came through is told that the stay has ended.
+        let entering_later = self.config.place_by_store
+            && (self.entering.get(&id)).is_some_and(|entering| entering.entity_id > arriving);
+        if entering_later || present.is_some_and(|(entity, _)| entity > arriving) {
+            nowhere_to_go(output);
+            if self.config.place_by_store {
+                let ended = Durable::Ended {
+                    player: id,
+                    entity: arriving,
+                    attempt: transfer.attempt,
+                };
+                self.send(edge, ended, output);
+            }
+            return;
+        }
+        match present {
+            // This very stay. Of two copies of it the one that was handed on more
+            // often is the later: an arrival that is no later changes nothing, and for
+            // one that is, the copy that is here goes without a word to anyone, as the
+            // entity lives on in the arrival. Two copies of a stay should not be; the
+            // world store, which is told of both, is where that is logged.
+            Some((entity, hops)) if entity == arriving => {
+                if hops >= transfer.hops {
+                    return;
+                }
+                self.players.remove(&id);
+                self.journal.players.insert(id);
+            }
+            // The stay that is here has ended, though the leave that said so went
+            // elsewhere: a region that was absorbed or split since. It goes where it
+            // stood, and the arrival is that of a player the region lacks.
+            Some(_) => self.end_player(id, output),
+            None => {}
+        }
+        if let Knowledge::Foreign(holder) = self.land.knowledge(chunk) {
+            if self.land.is_pinned(chunk) {
+                // A chunk of the region's own area that was split off and given back is
+                // the region's again without anyone telling it, and whoever sent the
+                // player was told so by the store. The belief goes, and the player is
+                // taken in as into a chunk the region knows nothing of.
+                self.land.known.remove(&chunk);
+            } else {
+                // The store has said that the chunk is another region's, so the player
+                // is not taken in and goes on to that region. Nothing says that the
+                // entity is gone: it is on its way still.
+                let what = Misdirected::Arrival {
+                    player: id,
+                    transfer: transfer.clone(),
+                };
+                self.send(edge, Durable::NotMine { what, holder }, output);
+                return;
+            }
+        }
+        // Taken in whatever else the region knows of the chunk. A pinned region does
+        // not know that a chunk of its area is its own before it has claimed it, while
+        // the store tells its neighbours so all the same; sent back, the player would
+        // be let go to this region again for ever. A chunk it knows nothing of is
+        // claimed at the end of the tick, because the player stands in it.
+        let player = Player {
+            entity_id: transfer.entity_id,
+            name: transfer.name.clone(),
+            pose: transfer.pose,
+            moved_from: None,
+            handled_sequence: None,
+            hotbar: transfer.hotbar,
+            selected_slot: transfer.selected_slot,
+            last_input: transfer.last_input,
+            handled: None,
+            edge,
+            hops: transfer.hops,
+            flying: transfer.flying,
+            attempt: transfer.attempt,
+        };
+        // Those watching already show the entity if they saw it cross over; to them
+        // this is nothing new.
+        output
+            .events
+            .push(RegionEvent::EntitySpawned(player.entity_state(id)));
+        self.players.insert(id, player);
+        self.journal.players.insert(id);
+    }
+
+    /// The world store has answered the note of a stay that is entering: where the
+    /// player was last, and who held that place. See
+    /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 7.
+    fn apply_entered(
+        &mut self,
+        answer: &Entered,
+        unplaced: &mut Vec<Departure>,
+        output: &mut TickOutput,
+    ) {
+        let id = answer.player;
+        // An answer to a stay the region no longer holds as entering is passed over: a
+        // later join took its place, its player left, or it was answered before.
+        let held = |entering: &EnteringState| entering.entity_id == answer.entity;
+        if !self.entering.get(&id).is_some_and(held) {
+            return;
+        }
+        // A stay of the player that is here goes first, whatever becomes of the one
+        // that enters. It can be here: an earlier stay that arrived between the join
+        // and this answer, or came with a merge. A stay that is not below the entering
+        // one cannot be while only the home region gives out ids; if one is here all
+        // the same, it is the entering stay that goes.
+        if let Some(present) = self.players.get(&id) {
+            if present.entity_id < answer.entity {
+                self.end_player(id, output);
+            } else {
+                self.end_entering(id, output);
+                return;
+            }
+        }
+        let Some(entering) = self.entering.remove(&id) else {
+            return;
+        };
+        self.journal.entering.insert(id);
+        let EnteringState {
+            entity_id,
+            name,
+            edge,
+            attempt,
+        } = entering;
+        // A place below the world counts as no place, whoever holds it: nothing but
+        // joining again brings back a player who fell through the floor. They keep
+        // what they held.
+        let lowest = f64::from(self.config.lowest_y);
+        let kept = (answer.place.as_ref()).map(|place| (place, place.pose.position.y < lowest));
+        let at_spawn = Pose::at(self.config.spawn);
+        let (pose, flying, hotbar, selected_slot) = match kept {
+            None => (at_spawn, false, self.config.starting_hotbar, 0),
+            Some((place, true)) => (at_spawn, false, place.hotbar, place.selected_slot),
+            Some((place, false)) => {
+                if let Some(to) = answer.holder {
+                    // Another region held the place: the stay goes there without
+                    // being placed here. Nothing is claimed and no entity is shown; the
+                    // edge finds its view by the attempt the transfer carries.
+                    let transfer = PlayerTransfer {
+                        entity_id,
+                        name,
+                        pose: place.pose,
+                        hotbar: place.hotbar,
+                        selected_slot: place.selected_slot,
+                        last_input: 0,
+                        hops: 1,
+                        flying: place.flying,
+                        attempt: Some(attempt),
+                    };
+                    unplaced.push((edge, id, transfer, to));
+                    return;
+                }
+                // Nobody held it, or this region did. If the region knows nothing of
+                // the chunk it is claimed at the end of the tick, as for an arrival,
+                // and the player is let go when the store says it is another's.
+                (place.pose, place.flying, place.hotbar, place.selected_slot)
+            }
+        };
+        let player = Player {
+            entity_id,
+            name,
+            pose,
+            moved_from: None,
+            handled_sequence: None,
+            hotbar,
+            selected_slot,
+            last_input: 0,
+            handled: None,
+            edge,
+            hops: 0,
+            flying,
+            attempt: Some(attempt),
+        };
+        self.enter(id, player, attempt, output);
+    }
+
+    /// What the tick says to the world store of stays: see [`TickOutput::stays`].
+    /// `first` is whether this is the region's first tick, and `let_go` has the note of
+    /// every stay the tick let go. To be called before the journal is taken.
+    fn notes(&self, first: bool, let_go: Vec<(PlayerId, StayNote)>) -> Vec<StayNote> {
+        // By the player, an entering stay before one that is or was here.
+        let mut notes: BTreeMap<(PlayerId, bool), StayNote> = BTreeMap::new();
+        for (id, entering) in &self.entering {
+            // An entering stay changes in a tick only by being begun.
+            if first || self.journal.entering.contains(id) {
+                let note = StayNote::Entering {
+                    player: *id,
+                    entity: entering.entity_id,
+                };
+                notes.insert((*id, false), note);
+            }
+        }
+        for (id, player) in &self.players {
+            if first || self.journal.players.contains(id) {
+                let note = StayNote::Has {
+                    player: *id,
+                    entity: player.entity_id,
+                    hops: player.hops,
+                    place: player.place(),
+                };
+                notes.insert((*id, true), note);
+            }
+        }
+        // Whoever was let go is in the region no longer, so no note is replaced.
+        for (id, note) in let_go {
+            notes.insert((id, true), note);
+        }
+        notes.into_values().collect()
+    }
+
     /// Puts `entry` into the outbox of `edge` under the next number, and reports it.
     fn send(&mut self, id: EdgeId, entry: Durable, output: &mut TickOutput) {
         let edge = self
@@ -784,8 +1139,11 @@ impl Region {
                     (id, delta)
                 })
                 .collect(),
-            // No tick changes an entering stay yet.
-            entering: Vec::new(),
+            entering: journal
+                .entering
+                .into_iter()
+                .map(|id| (id, self.entering.get(&id).cloned()))
+                .collect(),
         }
     }
 
@@ -855,10 +1213,7 @@ impl Region {
                     *held = *stack;
                 }
             }
-            // Counted as an input and no more: step R1.2 of
-            // `docs/adr/0020-one-stay-per-player.md` has the player fly by it
-            // (section 13).
-            PlayerInput::SetFlying { .. } => {}
+            PlayerInput::SetFlying { flying } => player.flying = *flying,
             PlayerInput::Dig { position, sequence } => {
                 let (position, sequence) = (*position, *sequence);
                 let knowledge = self.land.knowledge(position.chunk());
@@ -1267,7 +1622,18 @@ impl Player {
         }
     }
 
-    /// What another region needs to carry on with the player.
+    /// Where the player is and what they hold, as the world store keeps it.
+    fn place(&self) -> Place {
+        Place {
+            pose: self.pose,
+            flying: self.flying,
+            hotbar: self.hotbar,
+            selected_slot: self.selected_slot,
+        }
+    }
+
+    /// What another region needs to carry on with the player, who has been handed on
+    /// once more by it.
     fn into_transfer(self) -> PlayerTransfer {
         PlayerTransfer {
             entity_id: self.entity_id,
@@ -1276,7 +1642,7 @@ impl Player {
             hotbar: self.hotbar,
             selected_slot: self.selected_slot,
             last_input: self.last_input,
-            hops: self.hops,
+            hops: self.hops + 1,
             flying: self.flying,
             attempt: self.attempt,
         }
@@ -1754,9 +2120,20 @@ mod tests {
     /// Has every input of `inputs` name the entity its player has in `region`, which
     /// is about to tick with them. The recorded runs make what players do without
     /// knowing who has joined or arrived by then, and with which entity.
+    ///
+    /// A leave likewise: an edge names the entity of a player it has been told of, and
+    /// the attempt of the join only for one who is still entering the world. A leave
+    /// for a player who is not there yet is left as it is.
     fn name_the_stays_in(region: &Region, inputs: &mut TickInputs) {
         for input in &mut inputs.inputs {
             *input = of_the_stay_in(region, input.clone());
+        }
+        for change in &mut inputs.player_changes {
+            if let PlayerChange::Leave(_, id, entity @ None, attempt) = change
+                && let Some((present, _)) = region.player(*id)
+            {
+                (*entity, *attempt) = (Some(present), None);
+            }
         }
     }
 
@@ -1885,8 +2262,17 @@ mod tests {
         )
     }
 
+    /// The connection of the player with this number ends before their edge has been
+    /// told an entity: the leave names the attempt of the join, and so ends a stay
+    /// none of whose inputs has been applied.
     fn leave(number: u128) -> PlayerChange {
-        PlayerChange::Leave(EDGE, player(number), None, None)
+        PlayerChange::Leave(EDGE, player(number), None, Some(attempt(number)))
+    }
+
+    /// The connection of the player with this number ends when their edge knows them
+    /// by `entity`, which the leave names.
+    fn leave_as(number: u128, entity: i32) -> PlayerChange {
+        PlayerChange::Leave(EDGE, player(number), Some(EntityId(entity)), None)
     }
 
     fn changes(player_changes: Vec<PlayerChange>) -> TickInputs {
@@ -2021,7 +2407,8 @@ mod tests {
     fn leaving_removes_the_entity_from_where_it_was() {
         let mut region = joined(&[1]);
         region.tick(&moves(vec![walk(1, 40.0, -1.0)]));
-        let output = region.tick(&changes(vec![leave(1)]));
+        // They have been heard from as their entity, so the leave names it.
+        let output = region.tick(&changes(vec![leave_as(1, 1)]));
         assert_eq!(
             output.events,
             [RegionEvent::EntityRemoved {
@@ -2033,7 +2420,7 @@ mod tests {
         // Leaving twice, or without having joined, changes nothing.
         assert!(
             region
-                .tick(&changes(vec![leave(1), leave(9)]))
+                .tick(&changes(vec![leave_as(1, 1), leave(1), leave(9)]))
                 .events
                 .is_empty()
         );
@@ -3265,7 +3652,8 @@ mod tests {
                         hotbar: carried,
                         selected_slot: 4,
                         last_input: 4,
-                        hops: 0,
+                        // Handed on for the first time.
+                        hops: 1,
                         flying: false,
                         attempt: None,
                     }
@@ -3477,6 +3865,8 @@ mod tests {
                 ..transfer.pose
             },
             last_input: 41,
+            // Handed on once more than when they came.
+            hops: transfer.hops + 1,
             ..transfer
         };
         assert_eq!(told(&output), [departed(1, handed_on)]);
@@ -3536,7 +3926,7 @@ mod tests {
             selected_slot: 0,
         };
         // No input of theirs was applied, so the stay still carries the attempt of
-        // its join.
+        // its join. It has been handed on once.
         let transfer = PlayerTransfer {
             entity_id: EntityId(1),
             name: "Player1".to_owned(),
@@ -3544,7 +3934,7 @@ mod tests {
             hotbar: hotbar(),
             selected_slot: 0,
             last_input: 0,
-            hops: 0,
+            hops: 1,
             flying: false,
             attempt: Some(attempt(1)),
         };
@@ -4454,12 +4844,12 @@ mod tests {
         assert_eq!(carried(&restored, 1), None);
         assert_eq!(carried(&restored, 2), Some(attempt(2)));
 
-        // Whatever the input is: one that no region does anything by yet is an input.
+        // Whatever the input is.
         let flying = PlayerInput::SetFlying { flying: true };
         region.tick(&moves(vec![numbered(2, flying)]));
         let state = region.player_state(player(2)).unwrap();
         assert_eq!(state.attempt, None);
-        assert!(!state.flying);
+        assert!(state.flying);
     }
 
     /// What a region hands on of a player has the stay's attempt, how often it was
@@ -4502,7 +4892,7 @@ mod tests {
         assert_eq!(sent_on, [Durable::NotMine { what, holder }]);
 
         // A step into the neighbour's chunk: the player is let go with what the stay
-        // has, which after that step is no attempt.
+        // has, which after that step is no attempt, and one hand-over more.
         let step = as_entity(40, walk(5, -0.5, 0.5));
         let output = region.tick(&moves(vec![with_number(1, step)]));
         let let_go: Vec<_> = output
@@ -4519,7 +4909,7 @@ mod tests {
                 [PlayerTransfer {
                     entity_id: EntityId(40),
                     last_input: 1,
-                    hops: 3,
+                    hops: 4,
                     flying: true,
                     attempt: None,
                     ..
@@ -4747,7 +5137,7 @@ mod tests {
         assert_eq!(outcomes(&output), [done(1, 3), done(1, 4)]);
 
         // When the player has gone, the spot is free.
-        region.tick(&changes(vec![leave(2)]));
+        region.tick(&changes(vec![leave_as(2, 77)]));
         let [step, _] = onto_floor(-4, 0, FEET);
         let output = region.tick(&remotely(vec![remote(1, 5, step)]));
         assert_eq!(output.events, [changed(-4, -60, 0, blocks::STONE)]);
@@ -4991,7 +5381,7 @@ mod tests {
 
         // A player who leaves in this tick is in the way no longer.
         let output = region.tick(&TickInputs {
-            player_changes: vec![leave(2)],
+            player_changes: vec![leave_as(2, 77)],
             remote_actions: vec![(
                 REMOTE,
                 remote(1, 5, place_at(-6, -59, 4, blocks::STONE, FEET)),

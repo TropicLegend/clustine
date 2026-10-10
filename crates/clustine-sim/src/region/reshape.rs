@@ -131,13 +131,15 @@ impl Region {
     /// is `other`, as of the tick after this region's last. Changes nothing.
     ///
     /// The players of both are in it. Of a player both have, the later stay stays,
-    /// which is the one with the higher entity id. The entity ids to give out are this
+    /// which is the one with the higher entity id, and of the same entity the one with
+    /// more hand-overs. The stays held as entering are this region's: only the home
+    /// region holds any, and it is never absorbed. The entity ids to give out are this
     /// region's; the absorbed region's block is never used again.
     ///
     /// Every edge either region knows is known with the higher of its starts, and the
     /// side that knew a lower one is reset as a higher start resets a region: its
-    /// players of that edge are not in the state, and its outbox for the edge is
-    /// dropped. An edge only the other region knew is known since this tick, with
+    /// players of that edge and its entering stays of that edge are not in the state,
+    /// and its outbox for the edge is dropped. An edge only the other region knew is known since this tick, with
     /// nothing applied or sent. Each edge's outbox then gains a [`Durable::Absorbed`]
     /// and, behind it, what the other region had in its outbox for the edge, in order
     /// and under the next numbers. Nothing of an entry is rewritten: one that names the
@@ -162,6 +164,7 @@ impl Region {
                 // it had any, were of a start that is over.
                 Some(_) | None => {
                     state.players.retain(|_, player| player.edge != *id);
+                    state.entering.retain(|_, entering| entering.edge != *id);
                     state.edges.insert(*id, noted(b.start, tick));
                 }
             }
@@ -172,9 +175,14 @@ impl Region {
             if !theirs.contains_key(&player.edge) {
                 continue;
             }
-            // Of two stays of a player the one with the higher entity id is the later.
-            // One id under two players cannot be, and is not looked for.
-            let later = |present: &PlayerState| present.entity_id >= player.entity_id;
+            // Of two stays of a player the one with the higher entity id is the later,
+            // and of two copies of one stay the one that was handed on more often: kept
+            // by the entity alone, a copy with fewer hand-overs would stand for the
+            // player, and the world store would call it dead. One id under two players
+            // cannot be, and is not looked for.
+            let later = |present: &PlayerState| {
+                (present.entity_id, present.hops) >= (player.entity_id, player.hops)
+            };
             if !state.players.get(id).is_some_and(later) {
                 state.players.insert(*id, player.clone());
             }
@@ -249,10 +257,12 @@ impl Region {
     /// the region they were split off; and one who stands in such a chunk would stay
     /// behind alone. See `docs/adr/0017-the-end-of-the-stripes.md`, section 3.6.1.
     ///
-    /// The part's state has the players who go as they are, no entity ids to give out,
-    /// and of the edges only those of its players, each known since this tick with the
-    /// start this region knows and nothing applied or sent. This region's state tells
-    /// each of those edges with a [`Durable::SplitOff`] which of its stays went.
+    /// The part's state has the players who go as they are but for one hand-over more,
+    /// which the split is to each of them, no entity ids to give out, and of the edges
+    /// only those of its players, each known since this tick with the start this
+    /// region knows and nothing applied or sent. This region's state tells each of
+    /// those edges with a [`Durable::SplitOff`] which of its stays went. The stays it
+    /// holds as entering stay.
     pub fn split(
         &self,
         named: &[ChunkPos],
@@ -304,8 +314,9 @@ impl Region {
         let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId, Option<u64>)>> = BTreeMap::new();
         for (id, player) in &self.players {
             if seeds.contains(&player.chunk())
-                && let Some(player) = state.players.remove(id)
+                && let Some(mut player) = state.players.remove(id)
             {
+                player.hops += 1;
                 went.entry(player.edge)
                     .or_default()
                     .push((*id, player.entity_id, player.attempt));
@@ -1021,18 +1032,23 @@ mod tests {
         let named = [at(8, 0), at(8, 5), at(9, 0), at(4, 0)];
         let split = region.split(&named, PART, &[]).unwrap();
 
-        // The part has those who go as they were, no entity ids, and their edges as of
-        // this tick with the start the region knows.
+        // The part has those who go as they were but for one hand-over more, which the
+        // split is to each of them, no entity ids, and their edges as of this tick with
+        // the start the region knows.
         let (gone, stayed): (Vec<_>, Vec<_>) = players
             .into_iter()
             .partition(|(number, _)| [2, 4, 5].contains(number));
+        let handed_on = |stay: PlayerState| PlayerState {
+            hops: stay.hops + 1,
+            ..stay
+        };
         let expected = RegionState {
             tick: 21,
             entity_ids: NO_ENTITY_IDS,
             next_entity_id: EntityId(0),
             players: gone
                 .into_iter()
-                .map(|(number, stay)| (player(number), stay))
+                .map(|(number, stay)| (player(number), handed_on(stay)))
                 .collect(),
             edges: [(E, edge(3, 21, 0, 0, &[])), (F, edge(5, 21, 0, 0, &[]))].into(),
             entering: BTreeMap::new(),
