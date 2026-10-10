@@ -332,9 +332,9 @@ impl Store {
     /// ask after this call is not waited for. Neither is what a handle in another
     /// process has asked that has not reached this one yet.
     ///
-    /// Saved chunks are not made durable by it: that is what a checkpoint and a
-    /// return do. A region's commits stay in the log until its checkpoint, so nothing
-    /// is lost by that.
+    /// Saved chunks are not written to their files or made durable by it: that is
+    /// what a checkpoint, a return and [`StoreHandle::flush`] do. A region's commits
+    /// stay in the log until its checkpoint, so nothing is lost by that.
     ///
     /// It takes as long as what the two threads have before them, and may wait for
     /// the disk: it is not for a thread that must not block.
@@ -478,6 +478,10 @@ impl StoreHandle {
 
     /// Waits until everything requested so far has been done. Answers to earlier
     /// requests that are still unread are discarded, so this is for shutting down.
+    ///
+    /// The chunks saved before it, through whatever handle, are in the store's files
+    /// then, and durable. If they could not be written, every handle that saved since
+    /// they were last made durable is lost.
     ///
     /// If the handle is lost, nothing requested is done any more and this returns
     /// without waiting for it.

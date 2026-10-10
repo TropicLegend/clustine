@@ -975,11 +975,13 @@ mod tests {
             chunk: generator().generate(HELD),
         };
         assert_eq!(reply(&remote), loaded);
+        // The saves are in the files when the flush is answered: it is what writes
+        // them, a save alone only notes the chunk.
         assert_eq!(reply(&remote), StoreReply::Flushed);
         assert_eq!(stored(directory.path()), 50);
 
-        // The same for the flush that waits. A load that is still unanswered does not
-        // confuse it.
+        // The same for the flush that waits, which writes the next fifty. A load that
+        // is still unanswered does not confuse it.
         for x in 50..100 {
             save(&remote, ChunkPos::new(x, 0), &edited());
         }

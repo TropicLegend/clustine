@@ -195,6 +195,8 @@ fn a_stored_chunk_that_cannot_be_read_is_answered_as_unreadable() {
     let position = ChunkPos::new(3, 4);
     let store = spawn_local(directory.path(), generator()).unwrap();
     save(&store, position, &edited());
+    // The flush has the chunk written: until then it is held by the store, which
+    // would answer the load from what it holds and not read the file.
     store.flush();
     let manifest = directory
         .path()
@@ -212,6 +214,8 @@ fn a_world_on_disk_outlives_the_store() {
     {
         let store = spawn_local(directory.path(), generator()).unwrap();
         save(&store, position, &edited());
+        // The flush is what puts the chunk in the files: a save alone only notes it,
+        // and it would go with the store.
         store.flush();
     }
     let store = spawn_local(directory.path(), generator()).unwrap();
@@ -229,6 +233,8 @@ fn flush_waits_for_everything_before_it() {
     store.request(StoreRequest::Load {
         position: ChunkPos::new(0, 0),
     });
+    // The saves are in the files once it returns, and not before: it is the flush
+    // that writes them, all together.
     store.flush();
     let manifests = directory.path().join("manifests/overworld");
     let stored: usize = fs::read_dir(manifests)
@@ -245,6 +251,8 @@ fn equal_sections_are_stored_once() {
     for x in 0..20 {
         save(&store, ChunkPos::new(x, 3), &edited());
     }
+    // Section files are written when the saves are flushed, each once for all the
+    // chunks of the flush that have the section.
     store.flush();
     // The edited chunk has two sections that are not plain air.
     let blobs: usize = fs::read_dir(directory.path().join("blobs"))
@@ -715,7 +723,8 @@ fn a_region_opened_again_has_what_its_last_owner_committed() {
     drop(first);
     assert!(!manifest.exists());
 
-    // The commits are applied to the stored chunks before the region is handed out.
+    // The commits are applied to the stored chunks before the region is handed out,
+    // and an opening writes what it applied: the manifest is there without a flush.
     let (second, restored) = store.open_region(hello(1, 1)).unwrap();
     assert_eq!(deltas(&restored), [(1, delta(1)), (2, delta(2))]);
     assert!(manifest.exists());
@@ -997,6 +1006,8 @@ fn a_damaged_chunk_is_not_replaced_by_a_generated_one() {
     let position = ChunkPos::new(1, 1);
     let store = spawn_local(directory.path(), generator()).unwrap();
     save(&store, position, &edited());
+    // There is a manifest to damage only once the save is flushed, and only from
+    // then on does a load read it.
     store.flush();
 
     let manifest = directory

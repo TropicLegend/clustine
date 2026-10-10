@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread;
 
 /// What the store does with files. Paths name files; directories are made with
 /// [`Disk::create_dir_all`] and otherwise only synced and listed.
@@ -37,14 +39,12 @@ pub(crate) trait Disk: Send + Sync {
     /// together are made durable together. Stops at the first that fails, so nothing
     /// may be taken for durable after an error. See
     /// `docs/adr/0018-a-checkpoints-chunks-written-together.md`, section 2.
-    #[expect(dead_code, reason = "used from step C5.10 on, which removes this line")]
     fn sync_files(&self, files: &[PathBuf]) -> io::Result<()> {
         files.iter().try_for_each(|file| self.sync(file))
     }
     /// Makes the files created, renamed or removed in each of `directories` durably
     /// so, as [`Disk::sync_directory`] does for one; in turn or at the same time, as
     /// [`Disk::sync_files`].
-    #[expect(dead_code, reason = "used from step C5.10 on, which removes this line")]
     fn sync_directories(&self, directories: &[PathBuf]) -> io::Result<()> {
         directories
             .iter()
@@ -59,9 +59,7 @@ pub(crate) trait Disk: Send + Sync {
 /// all of `contents`: it is written under another name, made durable and renamed. It is
 /// durably there once its directory is synced.
 pub(crate) fn replace(disk: &dyn Disk, path: &Path, contents: &[u8]) -> io::Result<()> {
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
+    let temporary = temporary(path);
     disk.write(&temporary, contents)?;
     // On disk before it takes the place of what was there, or a crash could leave an
     // empty file under the final name.
@@ -69,9 +67,76 @@ pub(crate) fn replace(disk: &dyn Disk, path: &Path, contents: &[u8]) -> io::Resu
     disk.rename(&temporary, path)
 }
 
+/// The name a file is written under before it is renamed to `path`.
+pub(crate) fn temporary(path: &Path) -> PathBuf {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    PathBuf::from(temporary)
+}
+
 /// The directory a stored file is in.
 pub(crate) fn parent(path: &Path) -> &Path {
     path.parent().expect("stored files are inside the world")
+}
+
+/// How many threads at most sync at the same time, the calling one among them. Syncs
+/// that wait together are made durable together, so a round is the shorter the more
+/// of them there are; this bounds what a round of very many files asks of the system.
+const SYNC_THREADS: usize = 64;
+
+/// Does `sync` for each of `paths`, at the same time on up to [`SYNC_THREADS`]
+/// threads, and returns the first error by the order of the paths. Every path is
+/// tried, whatever happens to another.
+///
+/// Nothing is kept between calls: a checkpoint is rare and a thread costs far less
+/// than a sync.
+fn together<S>(paths: &[PathBuf], sync: S) -> io::Result<()>
+where
+    S: Fn(&Path) -> io::Result<()> + Sync,
+{
+    match paths {
+        [] => return Ok(()),
+        // Nothing to wait together with.
+        [only] => return sync(only),
+        _ => {}
+    }
+    let next = AtomicUsize::new(0);
+    let failed: Mutex<Option<(usize, io::Error)>> = Mutex::new(None);
+    let work = || {
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(path) = paths.get(index) else {
+                break;
+            };
+            if let Err(error) = sync(path) {
+                // Whoever holds the lock only sets the error, so it is in order even
+                // after a panic.
+                let mut failed = failed.lock().unwrap_or_else(PoisonError::into_inner);
+                if failed.as_ref().is_none_or(|(earlier, _)| index < *earlier) {
+                    *failed = Some((index, error));
+                }
+            }
+        }
+    };
+    thread::scope(|scope| {
+        for _ in 1..paths.len().min(SYNC_THREADS) {
+            let started = thread::Builder::new()
+                .name("worldstore-sync".to_owned())
+                .spawn_scoped(scope, work);
+            // A system that has no thread to give makes the round slower and no more:
+            // the paths are taken by the threads there are, and by this one. A panic
+            // here would end the thread for chunks, which would leave every job after
+            // this one undone and the log never cut.
+            if started.is_err() {
+                break;
+            }
+        }
+        work();
+    });
+    match failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
+        Some((_, error)) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// The local file system.
@@ -208,6 +273,14 @@ impl Disk for OsDisk {
 
     fn sync_directory(&self, directory: &Path) -> io::Result<()> {
         File::open(directory)?.sync_all()
+    }
+
+    fn sync_files(&self, files: &[PathBuf]) -> io::Result<()> {
+        together(files, |file| self.sync(file))
+    }
+
+    fn sync_directories(&self, directories: &[PathBuf]) -> io::Result<()> {
+        together(directories, |directory| self.sync_directory(directory))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -693,6 +766,123 @@ mod tests {
         disk.append(&log, b"x").unwrap();
         disk.sync(&log).unwrap();
         assert_eq!(disk.read(&log).unwrap().unwrap(), b"abx");
+    }
+
+    fn paths(count: usize) -> Vec<PathBuf> {
+        (0..count).map(|index| path(&index.to_string())).collect()
+    }
+
+    /// Which of [`paths`] this one is.
+    fn index(path: &Path) -> usize {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        name.parse().unwrap()
+    }
+
+    #[test]
+    fn syncs_together_take_every_path_once_on_no_more_threads_than_the_limit() {
+        let paths = paths(200);
+        let taken = Mutex::new(Vec::new());
+        together(&paths, |path| {
+            taken
+                .lock()
+                .unwrap()
+                .push((index(path), thread::current().id()));
+            Ok(())
+        })
+        .unwrap();
+        let taken = taken.into_inner().unwrap();
+        let mut indices: Vec<_> = taken.iter().map(|(index, _)| *index).collect();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..200).collect::<Vec<_>>());
+        let mut threads = Vec::new();
+        for (_, thread) in taken {
+            if !threads.contains(&thread) {
+                threads.push(thread);
+            }
+        }
+        assert!(threads.len() <= SYNC_THREADS, "{} threads", threads.len());
+    }
+
+    /// Each sync waits until eight of them wait: it ends only if they are under way at
+    /// the same time, which is the point of doing them on threads.
+    #[test]
+    fn syncs_together_are_under_way_at_the_same_time() {
+        let all = std::sync::Barrier::new(8);
+        together(&paths(8), |_| {
+            all.wait();
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_single_sync_is_done_by_the_thread_that_asked_for_it() {
+        let by = Mutex::new(None);
+        together(&paths(1), |_| {
+            *by.lock().unwrap() = Some(thread::current().id());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(by.into_inner().unwrap(), Some(thread::current().id()));
+        // And none at all is nothing to do.
+        together(&[], |_| panic!("there is no path to sync")).unwrap();
+    }
+
+    #[test]
+    fn syncs_together_go_on_after_one_fails_and_return_the_first_error_by_path() {
+        let paths = paths(100);
+        for failing in [vec![99], vec![70, 3, 41], vec![0], (0..100).collect()] {
+            let tried = AtomicUsize::new(0);
+            let error = together(&paths, |path| {
+                tried.fetch_add(1, Ordering::Relaxed);
+                let index = index(path);
+                match failing.contains(&index) {
+                    true => Err(io::Error::other(index.to_string())),
+                    false => Ok(()),
+                }
+            })
+            .unwrap_err();
+            let first = failing.iter().min().unwrap();
+            assert_eq!(error.to_string(), first.to_string(), "{failing:?}");
+            assert_eq!(tried.into_inner(), 100, "{failing:?}");
+        }
+    }
+
+    /// What can be seen of the two on a real file system: files and directories that
+    /// are there are synced, also a file that is kept open for appending, and one that
+    /// is not there is the error although the others are.
+    #[test]
+    fn the_local_file_system_syncs_files_and_directories_together() {
+        let directory = tempfile::tempdir().unwrap();
+        let disk = OsDisk::default();
+        let mut files = Vec::new();
+        let mut directories = Vec::new();
+        for group in 0..3 {
+            let inner = directory.path().join(group.to_string());
+            disk.create_dir_all(&inner).unwrap();
+            for file in 0..4 {
+                let file = inner.join(file.to_string());
+                disk.write(&file, b"abc").unwrap();
+                files.push(file);
+            }
+            directories.push(inner);
+        }
+        let log = directory.path().join("log");
+        disk.append(&log, b"abc").unwrap();
+        files.push(log);
+        disk.sync_files(&files).unwrap();
+        disk.sync_directories(&directories).unwrap();
+        disk.sync_files(&files[..1]).unwrap();
+        disk.sync_directories(&directories[..1]).unwrap();
+        disk.sync_files(&[]).unwrap();
+        disk.sync_directories(&[]).unwrap();
+
+        files.insert(5, directory.path().join("none"));
+        directories.insert(1, directory.path().join("none"));
+        let error = disk.sync_files(&files).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        let error = disk.sync_directories(&directories).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
     }
 
     #[test]
