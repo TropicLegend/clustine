@@ -1892,9 +1892,12 @@ async fn lone_players_come_to_a_region_each_and_their_regions_are_absorbed_when_
 //
 // **A player whose region was split off while they went very fast is left with no
 // view: their region holds the chunk they stand in and nothing around it, and the
-// client is not sent the chunks around them.** Seen twice in ten runs of W9 at that
-// pace, in two guises, and in none of its runs at three blocks a tick. Not found: a
-// sequence that brings it about every time; the cause.
+// client is not sent the chunks around them.** Seen three times in twenty-six runs
+// of W9 at that pace, in two guises: twice in ten before the edge's link-keeper was
+// mended and once in sixteen after. Not seen in eleven runs at three blocks a tick,
+// nor in four each at 1.7 and at 1.1 blocks a tick, the paces of an elytra with
+// rockets and of a sprint in flight. Not found: a sequence that brings it about
+// every time; the cause.
 //
 // 1. Seed 453426. Eleven bots run to lanes 19 chunks apart at 160 blocks a second,
 //    ten chunks a second, and stand; the farthest arrive 9.5 s after joining. Region
@@ -1921,23 +1924,27 @@ async fn lone_players_come_to_a_region_each_and_their_regions_are_absorbed_when_
 //    arrive at z = -95 4.6 s later, just as region 0 is moved to the other worker,
 //    and wait 30 s in vain for the chunks around them. The list then has region 11
 //    holding the one chunk they stand in.
+// 3. Seed 1174, with the link-keeper mended. As the first: 35 s after every bot had
+//    a region of its own, the regions of the bots at z = -95 and z = -76 hold the
+//    one chunk their bot stands in, and the nine others their 7 by 7.
 //
 // What the record says: a region claims every chunk an edge asks of it for one of
 // its own players' view, and an edge asks a player's own region for every chunk the
 // player sees (section 3.1); a part is asked for its players' view as a viewer, by
 // the edge's hello or by a `Subscribe` (section 3.6.2, step 4).
 //
-// What a player notices: after flying out at a great pace and being split off, the
+// What a player notices: after going out at a great pace and being split off, the
 // world around them is not sent, or the chunk under them is missing, until they
-// walk on and their view moves. Whether it takes 160 blocks a second is not known;
-// both times the player had been split off within seconds of going that fast.
+// walk on and their view moves. It was met only where the player had been split
+// off within seconds of going at 160 blocks a second, which no client reaches.
 //
-// The logs of both runs are kept beside the briefs of this step, in
-// `c5-8-findings/lone-players-seed-453426` and `c5-8-findings/lone-players-seed-895297`.
+// The logs of the three runs are kept beside the briefs of this step, in
+// `c5-8-findings/lone-players-seed-453426`, `lone-players-seed-895297` and
+// `lone-players-after-the-fix-seed-1174`.
 
 /// W9 with the bots running to their lanes at eight blocks a tick, as it was first
 /// written: the pace at which the fault above was met.
-#[ignore = "finding: a player who is split off while going very fast is left without a view, twice in ten runs"]
+#[ignore = "finding: a player who is split off while going very fast is left without a view, three times in twenty-six runs"]
 #[tokio::test(flavor = "multi_thread")]
 async fn lone_players_who_ran_to_their_lanes_come_to_a_region_each() {
     if a_repetition() {
