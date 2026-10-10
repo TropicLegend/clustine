@@ -47,8 +47,9 @@ The last line runs the end-to-end tests on a world divided into three regions. T
 of chaos and of moves divide their worlds themselves and run only in the third line. CI
 runs all four, and names failed tests on the run's summary page (readable without
 signing in through the check run's annotations). `tools/check.sh` runs the four, the two
-test runs at the same time, and says which failed; that takes about ten minutes on six
-processors.
+test runs at the same time, and says which failed; that takes about an hour and a
+quarter on six processors, half of it the end-to-end tests of a world without pins
+(`bin/clustine/tests/wanders.rs`), and CI takes an hour and three quarters.
 The tests that start clusters of processes run several at a time
 (`CLUSTINE_TEST_CLUSTERS`, by default one for every two processors).
 
