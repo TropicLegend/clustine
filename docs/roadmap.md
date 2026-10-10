@@ -1021,7 +1021,13 @@ review first:
   either project's word; and the owner walks a world the official server made
   before any terrain is generated. About 65 steps in seven phases. Its first steps
   are two trials that decide whether its claims can be tested at all, and nothing
-  else is built before them.
+  else is built before them. **The first trial is done and went well**: the
+  unmodified official server, given a data pack made from its own biome files with
+  their features taken out, leaves chunks at the terrain stage in its region files,
+  and their blocks equal SteelMC's fixture in 14 of 14 chunks compared. So terrain
+  can be judged by the official server alone. The second trial, the server run
+  inside a small Java program, on which everything from trees and ores on rests, is
+  next.
 
   **Ten questions are the owner's** (the plan's section 7 has each with what is
   recommended and what happens without an answer). Those that cannot be undone

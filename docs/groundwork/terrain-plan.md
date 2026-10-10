@@ -7,6 +7,9 @@
   what happens without an answer. The two spikes of phase G (G1, G2) decide whether
   its claims can be tested at all, and are done before any decision record is written.
 
+**Steps G0 and G1 have been done** (2026-10-10); what they found is in "What the first
+trials found", before section 0, and the text below is as it was proposed before them.
+
 It rests on [terrain-generation.md](terrain-generation.md) ("groundwork §n"), on that
 document's check against clones of both projects
 ([terrain-generation-check.md](terrain-generation-check.md), "check §n") and on the
@@ -49,6 +52,51 @@ terrain makes necessary, **D** the other dimensions.
   chests, the spawn point on the ground as it is now, plants and sand that lose their
   support, and, as a phase of its own beside features and structures, flowing water.
 - About 65 steps. SteelMC's generation and light are 91,580 lines (check §9).
+
+---
+
+## What the first trials found
+
+Done on 2026-10-10 with a script kept beside this plan
+([terrain-g1.py](terrain-g1.py)): the official server on seed 13579, a data pack made
+from the jar's own 67 biome files with their `features` emptied, ticking frozen, one
+chunk force-loaded, the server stopped and its region files read.
+
+**G0, the data generator's reports.** `reports/biome_parameters/minecraft/overworld.json`
+and `nether.json` hold the climate parameters of every biome, so they come from
+`cargo datagen` and need no program of ours. `reports/blocks.json` has the properties
+and the state ids of every block and nothing else: light, shapes and fluid states need
+the Java program of G6, as assumed.
+
+**G1, terrain from the unmodified server: it works.**
+
+- The server takes the pack without a word but `Found new data pack file/spike,
+  loading it automatically`.
+- It generates force-loaded chunks while ticking is frozen.
+- It saves unfinished chunks with their status. Around one force-loaded chunk: 5 by
+  5 chunks at `full`, a ring at `initialize_light`, **a ring of 32 at `terrain`**, a
+  ring at `biomes`, and many at `structure_starts` further out.
+- **The blocks of the chunks left at `terrain` equal SteelMC's `terrain` hashes: 14
+  of 14** that fall into the first cluster of their fixture, around chunk (−418462,
+  366791), in two runs that loaded different neighbours. One of them, (−418462,
+  366791) itself, was left at `terrain` in one run and finished in the other; so the
+  ring is not written into by its neighbours when the biomes have no features.
+- So for those chunks SteelMC's fixture of terrain is what the released 26.3 makes,
+  and its 26.3 branch's two ignored fields of the noise settings (section 0) did not
+  show there. Fourteen chunks at one place say nothing about the rest; the fixtures of
+  G7 do.
+- The finished chunks there differ from their terrain by a village and a mineshaft
+  that happen to stand in that cluster (387, 284 and 353 blocks in three chunks:
+  planks, logs, rails, cobwebs, paths, cave air), which is what the structures' step
+  does and nothing else.
+- 26.3 keeps regions in `world/dimensions/minecraft/overworld/region`, and writes a
+  palette entry as the block's name alone for its default state and as `{id,
+  properties}` otherwise, each wrapped in a compound where a palette has both kinds.
+  The reader of G7 has to know both.
+
+Not tried yet: the two other packs (without carvers; with an empty material rule),
+which give the gates of T4 and T5; the Nether and the End; G2, the server inside a
+Java program, on which everything from features on rests.
 
 ---
 
