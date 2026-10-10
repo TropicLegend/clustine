@@ -66,6 +66,12 @@ The tests that start clusters of processes run several at a time
   that touches code or `deploy/`, so it is checked there even where Docker is missing.
 - Verify a commit as it will be pushed: in a clean checkout (a detached worktree with its
   own `CARGO_TARGET_DIR`), not in a tree with other work in progress.
+- **The disk Clustine runs on is network storage**: about 22 ms for a synced write on
+  the owner's nodes (2026-10-10), where a local disk takes well under one. The server
+  has to do well on that. Run the checks with the tests' worlds in memory
+  (`TMPDIR=/dev/shm/...`), so that they judge the logic and not the disk; measure
+  pauses (a merge, a split, a move, a take-over, a crowd) on the real disk, and say
+  which of the two a number is from.
 - A check with a real client needs the owner. `cargo run --release -p clustine` is what
   they run: one world whose regions follow the players (`--pin 4 --reshape by-hand` where
   a boundary at a known place is meant). Say exactly what to try.

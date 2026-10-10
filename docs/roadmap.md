@@ -1063,6 +1063,13 @@ other questions go by what the plans recommend unless the owner says otherwise.
   downloaded and used.
 - Downloads in general are allowed on the owner's machine where the work needs them
   (`CLAUDE.md`).
+- *The disk.* Clustine will run on nodes whose disk is network storage on NVMe, as the
+  machine the work is done on has had since the evening of 2026-10-10: a synced write
+  takes about 22 ms there. Measured on it, unoptimised, with four bots: a merge takes
+  about a second by the command (0.19 s with the world in memory), a move 0.3 to 0.4 s
+  (0.06 s), a split 0.3 s. That is over what ADR-0017 set for a merge, so the store's
+  syncs in turn are being counted and cut next; the pauses of the tables above were
+  measured on another disk.
 - *Terrain, later the same day.* The plan is agreed. Where the official server's
   result depends on the order chunks were made in, block for block means equal to the
   official server when it decorates in Clustine's fixed order. A chunk is stored once
