@@ -347,6 +347,13 @@ impl Region {
         self.entities().find(|state| state.entity == entity)
     }
 
+    /// The edge whose player the entity with the given id is, if it is a player's.
+    pub fn edge_of(&self, entity: EntityId) -> Option<EdgeId> {
+        let players = self.players.values();
+        let mut theirs = players.filter(|player| player.entity_id == entity);
+        theirs.next().map(|player| player.edge)
+    }
+
     /// Advances the region by one tick.
     pub fn tick(&mut self, inputs: &TickInputs) -> TickOutput {
         self.tick += 1;

@@ -1888,63 +1888,31 @@ async fn lone_players_come_to_a_region_each_and_their_regions_are_absorbed_when_
 }
 
 // What W9 found when its bots ran to their lanes at eight blocks a tick, as those of
-// `moves.rs` run to their wide lanes, and what the test below keeps.
+// `moves.rs` run to their wide lanes.
 //
-// **A player whose region was split off while they went very fast is left with no
-// view: their region holds the chunk they stand in and nothing around it, and the
-// client is not sent the chunks around them.** Seen three times in twenty-six runs
-// of W9 at that pace, in two guises: twice in ten before the edge's link-keeper was
-// mended and once in sixteen after. Not seen in eleven runs at three blocks a tick,
-// nor in four each at 1.7 and at 1.1 blocks a tick, the paces of an elytra with
-// rockets and of a sprint in flight. Not found: a sequence that brings it about
-// every time; the cause.
+// **A player whose region was split off while they went very fast was left with no
+// view: their region held the chunk they stood in and nothing around it, and the
+// client was not sent the chunks around them.** Seen three times in twenty-six runs
+// at that pace, not in eleven at three blocks a tick, nor in four each at 1.7 and
+// at 1.1 blocks a tick, the paces of an elytra with rockets and of a sprint in
+// flight.
 //
-// 1. Seed 453426. Eleven bots run to lanes 19 chunks apart at 160 blocks a second,
-//    ten chunks a second, and stand; the farthest arrive 9.5 s after joining. Region
-//    0 is split at 5.0 s (the two nearest go) and again at 10.5 s (the eight others,
-//    of whom the farthest had stood for a second), and the part is split again every
-//    5 s, one bot staying each time, until each has a region (47.4 s); five parts
-//    are moved to the other worker on the way. Nobody is disconnected and no
-//    process logs a fault. Thirty seconds later the store's list has the regions of
-//    the six bots that went farthest, at z = -95, -76, -57, 57, 76 and 95, holding
-//    one chunk each or little more, the chunk their bot stands in, where sections
-//    3.1 and 3.2 have a region hold what its players see: nothing asked those
-//    regions for their player's view, so they gave back what the splits had left
-//    them. The five nearer bots' regions hold their 7 by 7. And the bot at z = 57,
-//    told to stop, waits 30 s in vain for the chunk it stands in: its client does
-//    not have it.
-// 2. Seed 895297. The same cluster, killed and started from its disk when region 0
-//    had absorbed every other region and still held their land. Somebody joins
-//    (the auditor of the from-disk audit) and runs north at 160 blocks a second.
-//    Region 0 is split 5 s after it began to run, with them 50 chunks out and still
-//    running (`a part of the region has been split off part=11 players=1 chunks=259
-//    waited=1`). The worker that made the split does not log `chunks asked for
-//    players who went are taken for the part's` when the edge says hello to region
-//    0 again, as it does in every run that goes well (`chunks=49 free=0`). They
-//    arrive at z = -95 4.6 s later, just as region 0 is moved to the other worker,
-//    and wait 30 s in vain for the chunks around them. The list then has region 11
-//    holding the one chunk they stand in.
-// 3. Seed 1174, with the link-keeper mended. As the first: 35 s after every bot had
-//    a region of its own, the regions of the bots at z = -95 and z = -76 hold the
-//    one chunk their bot stands in, and the nine others their 7 by 7.
-//
-// What the record says: a region claims every chunk an edge asks of it for one of
-// its own players' view, and an edge asks a player's own region for every chunk the
-// player sees (section 3.1); a part is asked for its players' view as a viewer, by
-// the edge's hello or by a `Subscribe` (section 3.6.2, step 4).
-//
-// What a player notices: after going out at a great pace and being split off, the
-// world around them is not sent, or the chunk under them is missing, until they
-// walk on and their view moves. It was met only where the player had been split
-// off within seconds of going at 160 blocks a second, which no client reaches.
-//
-// The logs of the three runs are kept beside the briefs of this step, in
-// `c5-8-findings/lone-players-seed-453426`, `lone-players-seed-895297` and
-// `lone-players-after-the-fix-seed-1174`.
+// The cause, found with the edge and the runner saying once a second what they
+// asked and held: an edge asks for what a player sees by where the player's region
+// says they are, and a region told an edge of a move only if the edge watched the
+// chunk the player left or the one they came into. It takes a few ticks for an
+// edge's wish for a chunk to come back to the region. A player who in those ticks
+// got further than their view reaches was in chunks the edge did not watch yet; no
+// move of theirs was told any more, so the edge went on asking for the chunks
+// around the place they were last reported in, for good. At 160 blocks a second and
+// a view of three chunks a third of a second is enough, which the moments after a
+// split have. At a client's pace it takes a wait of seconds, as while a region
+// whose worker died is taken over. A region now tells an edge where its own players
+// moved to wherever that is (`EdgeLink::visible` in the runner), and the test below
+// holds the server to it at the pace that showed it.
 
 /// W9 with the bots running to their lanes at eight blocks a tick, as it was first
-/// written: the pace at which the fault above was met.
-#[ignore = "finding: a player who is split off while going very fast is left without a view, three times in twenty-six runs"]
+/// written: the pace at which a player outran what their edge had asked for.
 #[tokio::test(flavor = "multi_thread")]
 async fn lone_players_who_ran_to_their_lanes_come_to_a_region_each() {
     if a_repetition() {
@@ -1953,10 +1921,11 @@ async fn lone_players_who_ran_to_their_lanes_come_to_a_region_each() {
     lone_players("lone players, at a run", 8.0).await;
 }
 
-/// W9 at the paces a client can reach, to say whether the fault above shows there:
-/// 1.1 blocks a tick, 22 blocks a second, which is a sprint in creative flight, and
-/// 1.7 blocks a tick, 34 blocks a second, which is an elytra with rockets.
-#[ignore = "takes a quarter of an hour: W9 at a client's pace, for the finding beside it"]
+/// W9 at the paces a client can reach, which was run to say whether the fault above
+/// showed there: 1.1 blocks a tick, 22 blocks a second, which is a sprint in
+/// creative flight, and 1.7 blocks a tick, 34 blocks a second, which is an elytra
+/// with rockets.
+#[ignore = "takes a quarter of an hour: W9 at a client's pace"]
 #[tokio::test(flavor = "multi_thread")]
 async fn lone_players_who_flew_to_their_lanes_at_a_sprint_come_to_a_region_each() {
     if a_repetition() {
@@ -1966,7 +1935,7 @@ async fn lone_players_who_flew_to_their_lanes_at_a_sprint_come_to_a_region_each(
 }
 
 /// See above: 34 blocks a second.
-#[ignore = "takes a quarter of an hour: W9 at a client's pace, for the finding beside it"]
+#[ignore = "takes a quarter of an hour: W9 at a client's pace"]
 #[tokio::test(flavor = "multi_thread")]
 async fn lone_players_who_flew_to_their_lanes_with_rockets_come_to_a_region_each() {
     if a_repetition() {

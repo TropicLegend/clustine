@@ -658,8 +658,8 @@ impl EdgeLink {
             .is_some_and(|subscription| !matches!(subscription.condition, Condition::Elsewhere(_)))
     }
 
-    /// What the edge is to hear of `events`: what happened in chunks it watches, and
-    /// that the entities among `orphaned` are gone.
+    /// What the edge is to hear of `events`: what happened in chunks it watches, where
+    /// its own players have moved to, and that the entities among `orphaned` are gone.
     fn visible(
         &self,
         events: &[RegionEvent],
@@ -688,6 +688,17 @@ impl EdgeLink {
                     }
                 }
                 event if visible_now || visible_before => visible.push(event.clone()),
+                // Where its own player is, an edge is told wherever that is. It asks
+                // for what the player sees by where the region says they are, and
+                // would never ask again for someone who got ahead of what it watches:
+                // in the ticks it takes the edge's wish for a chunk to come back here,
+                // somebody fast enough leaves the chunks around the place they were
+                // last reported in, and so does anybody while those ticks are many.
+                RegionEvent::EntityMoved { entity, .. }
+                    if self.edge.is_some() && region.edge_of(*entity) == self.edge =>
+                {
+                    visible.push(event.clone());
+                }
                 _ => {}
             }
         }
@@ -3967,6 +3978,17 @@ mod tests {
         panic!("the worker sent nothing");
     }
 
+    /// What an edge was told, without the ticks that said nothing but where somebody
+    /// moved to: an edge hears of its own players' steps also where it watches no
+    /// chunk, which is beside the point of a test about something else.
+    fn but_for_moves(told: Vec<WorkerToEdge>) -> Vec<WorkerToEdge> {
+        let a_move = |event: &RegionEvent| matches!(event, RegionEvent::EntityMoved { .. });
+        let only_moves = |message: &WorkerToEdge| matches!(message, WorkerToEdge::TickDelta { events, .. } if events.iter().all(a_move));
+        told.into_iter()
+            .filter(|message| !only_moves(message))
+            .collect()
+    }
+
     /// Everything `edge` has been sent and has not looked at yet, but for what is said
     /// about resuming and progress.
     fn received(edge: &mut TestEdge) -> Vec<WorkerToEdge> {
@@ -4072,7 +4094,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn movement_is_published_only_for_subscribed_chunks() {
+    async fn movement_is_published_for_subscribed_chunks_and_to_the_edge_whose_player_moved() {
         let (mut edge, worker_end) = in_process(256);
         let mut runner = runner(worker_end);
 
@@ -4099,10 +4121,20 @@ mod tests {
             ));
         }
 
-        // From one chunk nobody subscribed to into another: nobody is told.
+        // From one chunk it has not subscribed to into another: the edge is told all
+        // the same, because the player is its own, and it is by where the region says
+        // they are that it asks for what they see. Were it not told, it would go on
+        // asking for the chunks around x = 20 whatever the player did out there.
         edge.send(walk(player(), 40.0)).await.unwrap();
         step(&mut runner);
-        assert_eq!(edge.try_recv(), Ok(None));
+        let Ok(Some(WorkerToEdge::TickDelta { events, .. })) = edge.try_recv() else {
+            panic!("expected a delta for the edge's own player beyond what it watches");
+        };
+        assert!(matches!(
+            events[..],
+            [RegionEvent::EntityMoved { pose, previous_chunk, .. }]
+                if pose.position.x == 40.0 && previous_chunk == ChunkPos::new(1, 0)
+        ));
     }
 
     /// An entity that walks into view from somewhere the edge was not watching is
@@ -4198,16 +4230,28 @@ mod tests {
             };
             assert_eq!(state.pose.position.x, 85.0);
 
-            // A step over there is for the far edge alone. The near edge is told next
-            // when they come back, and then as of someone it does not know.
+            // A step over there is for the far edge, which watches the chunk, and for
+            // the near edge, whose player it is and which watches nothing there: it
+            // follows its own players wherever they are. When they come back it is
+            // told as of someone it does not know, as it shows nobody out there.
             near.send(walk(player(), 86.0)).await.unwrap();
             let seen = events(step_for(&mut runner, &mut far));
+            assert!(matches!(seen[..], [RegionEvent::EntityMoved { .. }]));
+            let seen = events(step_for(&mut runner, &mut near));
             assert!(matches!(seen[..], [RegionEvent::EntityMoved { .. }]));
             near.send(walk(player(), 5.0)).await.unwrap();
             let seen = events(step_for(&mut runner, &mut near));
             assert!(matches!(seen[..], [RegionEvent::EntitySpawned(_)]));
             let seen = events(step_for(&mut runner, &mut far));
             assert!(matches!(seen[..], [RegionEvent::EntityMoved { .. }]));
+
+            // A step at the origin is for the near edge alone: the far edge watches
+            // nothing there, and the player is not its own.
+            near.send(walk(player(), 6.0)).await.unwrap();
+            let seen = events(step_for(&mut runner, &mut near));
+            assert!(matches!(seen[..], [RegionEvent::EntityMoved { .. }]));
+            step(&mut runner);
+            assert_eq!(far.try_recv(), Ok(None));
         }
     }
 
@@ -5396,7 +5440,7 @@ mod tests {
         step(&mut runner);
         assert_eq!(runner.region().tick_number(), 9);
         assert_eq!(x_of(&runner, player()), Some(20.0));
-        let told = edge.everything();
+        let told = but_for_moves(edge.everything());
         assert_eq!(told[0], UNKNOWN);
         assert!(matches!(
             told[1],
@@ -5700,7 +5744,7 @@ mod tests {
             last_input: 0,
             handled: None,
         };
-        let told = again.everything();
+        let told = but_for_moves(again.everything());
         let [
             RESUMED,
             WorkerToEdge::Outbox {
@@ -6017,7 +6061,8 @@ mod tests {
         };
         edge.send(aside).await.unwrap();
         step(&mut runner);
-        assert_eq!(edge.everything(), [progress(2, vec![(player(), number)])]);
+        let told = but_for_moves(edge.everything());
+        assert_eq!(told, [progress(2, vec![(player(), number)])]);
 
         // An input the region has already is dropped by the region, but the message that
         // carried it counts.

@@ -440,6 +440,8 @@ struct Book {
     said: BTreeMap<ChunkPos, Vec<(u64, Said)>>,
     /// Every answer read for a chunk, with its `ask`, in order.
     answered: BTreeMap<ChunkPos, Vec<(u64, Answer)>>,
+    /// The entities the link has sent inputs for: those of its edge's own players.
+    own: BTreeSet<EntityId>,
     /// Whether the hello was the first thing the link sent, once it has said hello.
     hello_first: Option<bool>,
     /// How many players the hello named.
@@ -570,6 +572,10 @@ impl Link {
 
     fn send(&mut self, message: EdgeMessage) {
         self.book.sent = true;
+        // Only the edge of a player sends what they do, with the entity they have.
+        if let EdgeToWorker::Input { entity, .. } = &message.body {
+            self.book.own.insert(*entity);
+        }
         self.end
             .try_send(message)
             .expect("the link is open and has room");
@@ -870,10 +876,25 @@ fn check(log: &[WorkerToEdge], book: &mut Book) {
         book.ticked = Some((index, tick));
     }
 
+    // Whom the region says it has for the edge is the edge's own as well: a stay that
+    // a merge or a split put there, for which this link has sent nothing yet.
+    if let WorkerToEdge::Presence {
+        answer: Presence::Present { entity, .. },
+        ..
+    } = last
+    {
+        book.own.insert(*entity);
+    }
     if let WorkerToEdge::TickDelta { events, .. } = last {
         assert!(!events.is_empty(), "a delta without events: {}", context());
         for event in events {
             if matches!(event, RegionEvent::EntityRemoved { .. }) {
+                continue;
+            }
+            // Where its own player moved to, an edge is told wherever that is: it asks
+            // for what the player sees by it. Only a player's own edge moves them.
+            if matches!(event, RegionEvent::EntityMoved { entity, .. } if book.own.contains(entity))
+            {
                 continue;
             }
             let [one, other] = event.chunks();
