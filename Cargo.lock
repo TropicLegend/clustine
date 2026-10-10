@@ -274,8 +274,10 @@ name = "clustine-datagen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "serde_json",
  "sha1",
+ "tempfile",
  "ureq",
  "zip",
 ]

@@ -1,0 +1,18 @@
+# Packed tables are not text: no line ends are changed, and they are not merged.
+#
+# To read a change of one in `git diff`, give git a text conversion for it: put
+#     *.bin diff=clustine-table
+# into .git/info/attributes (which overrides this file) and run
+#     git config diff.clustine-table.textconv "cargo datagen --dump"
+*.bin binary
+
+# `cargo datagen --check` compares generated output byte for byte, and
+# tools/datagen/generated.sums holds hashes of the output and of what it was made from.
+# No checkout may change a line end under either (ADR-0019, section 3).
+crates/clustine-data/src/generated/** -text
+crates/clustine-protocol/src/generated/** -text
+tools/datagen/generated.sums -text
+tools/datagen/src/** -text
+tools/datagen/java/** -text
+tools/datagen/Cargo.toml -text
+Cargo.lock -text

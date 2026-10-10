@@ -1,12 +1,15 @@
-//! Obtains the official server jar and runs its built-in data generator.
+//! Obtains the official server jar, runs its built-in data generator, and compiles and
+//! runs the extract program against its classes.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
 use sha1::{Digest, Sha1};
+
+use crate::sha256;
 
 /// The server jar the committed tables are generated from.
 pub struct ServerJar {
@@ -61,11 +64,11 @@ pub fn verify(jar: &Path) -> Result<()> {
 
 /// Runs the data generator of `jar` inside `cache` and returns the output directory.
 ///
-/// The output of an earlier complete run is reused. `jar` must already be verified, so
-/// the output only depends on the pinned version.
-pub fn run_data_generator(jar: &Path, cache: &Path) -> Result<PathBuf> {
+/// The output of an earlier complete run is reused unless `fresh` is set. `jar` must
+/// already be verified, so the output only depends on the pinned version.
+pub fn run_data_generator(jar: &Path, cache: &Path, fresh: bool) -> Result<PathBuf> {
     let output = cache.join("generated");
-    if output.join(STAMP).exists() {
+    if !fresh && output.join(STAMP).exists() {
         return Ok(output);
     }
     // The generator misbehaves when run over the output of an earlier run.
@@ -97,6 +100,160 @@ pub fn run_data_generator(jar: &Path, cache: &Path) -> Result<PathBuf> {
     Ok(output)
 }
 
+/// Compiles `source` (the Java program of ADR-0019, section 5) against the classes of
+/// `jar`, runs it without a server and returns the directory it wrote its dump into.
+///
+/// Everything happens in `cache/extract`, which is made anew each time: the jars the
+/// program needs are unpacked from `jar` by the lists the jar itself carries, each
+/// checked against the checksum beside its name, so nothing rests on what the data
+/// generator's own start left in `cache`. The dump of an earlier run is reused only if
+/// the stamp beside it holds the SHA-256 of this `source` and the SHA-1 of the pinned
+/// jar, and `fresh` is not set.
+pub fn run_extract(jar: &Path, cache: &Path, source: &Path, fresh: bool) -> Result<PathBuf> {
+    let directory = cache.join("extract");
+    let output = directory.join("out");
+    let stamp_path = directory.join(STAMP);
+    let source_bytes = fs::read(source).with_context(|| format!("reading {}", source.display()))?;
+    let stamp = format!("{} {}\n", sha256::hex(&source_bytes), SERVER_JAR.sha1);
+    if !fresh && fs::read_to_string(&stamp_path).is_ok_and(|found| found == stamp) {
+        return Ok(output);
+    }
+
+    if directory.exists() {
+        fs::remove_dir_all(&directory)?;
+    }
+    let classes = directory.join("classes");
+    let working = directory.join("run");
+    for made in [&classes, &working, &output] {
+        fs::create_dir_all(made)?;
+    }
+    let mut class_path = unpack_class_path(jar, &directory.join("classpath"))?;
+
+    eprintln!("compiling and running the extract program (needs a JDK 25 or newer)");
+    let log_path = directory.join("extract.log");
+    let log = File::create(&log_path)?;
+    let status = Command::new("javac")
+        .arg("-proc:none")
+        .arg("-cp")
+        .arg(std::env::join_paths(&class_path)?)
+        .arg("-d")
+        .arg(&classes)
+        .arg(fs::canonicalize(source)?)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log.try_clone()?)
+        .status()
+        .context("starting `javac`; is a JDK installed, and not only a Java runtime?")?;
+    if !status.success() {
+        bail!(
+            "compiling {} failed ({status}); see {}",
+            source.display(),
+            log_path.display()
+        );
+    }
+
+    class_path.insert(0, fs::canonicalize(&classes)?);
+    let main_class = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .context("the Java program's file has no name")?;
+    // The game's start writes a `logs` directory where it is run, so it gets a
+    // directory of its own.
+    let status = Command::new("java")
+        .arg("-cp")
+        .arg(std::env::join_paths(&class_path)?)
+        .arg(main_class)
+        .arg(fs::canonicalize(&output)?)
+        .current_dir(&working)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .status()
+        .context("starting `java`; is a Java runtime installed?")?;
+    if !status.success() {
+        bail!(
+            "the extract program failed ({status}); see {}",
+            log_path.display()
+        );
+    }
+    fs::write(&stamp_path, stamp)?;
+    Ok(output)
+}
+
+/// Unpacks the game's own jar and its libraries from the bundle `jar` into `directory`
+/// and returns their paths, the game's jar first and the libraries in the order of the
+/// bundle's list.
+fn unpack_class_path(jar: &Path, directory: &Path) -> Result<Vec<PathBuf>> {
+    let mut archive = zip::ZipArchive::new(File::open(jar)?)
+        .with_context(|| format!("opening {} as a zip file", jar.display()))?;
+    let mut paths = Vec::new();
+    for (list, prefix) in [
+        ("META-INF/versions.list", "META-INF/versions/"),
+        ("META-INF/libraries.list", "META-INF/libraries/"),
+    ] {
+        let mut text = String::new();
+        archive
+            .by_name(list)
+            .with_context(|| format!("the server jar has no {list}"))?
+            .read_to_string(&mut text)?;
+        for entry in bundled_entries(&text).with_context(|| format!("reading {list}"))? {
+            let mut bytes = Vec::new();
+            archive
+                .by_name(&format!("{prefix}{}", entry.path))
+                .with_context(|| format!("the server jar has no {prefix}{}", entry.path))?
+                .read_to_end(&mut bytes)?;
+            let actual = sha256::hex(&bytes);
+            ensure!(
+                actual == entry.sha256,
+                "{} in the server jar has SHA-256 {actual}, its list says {}",
+                entry.path,
+                entry.sha256
+            );
+            let path = directory.join(&entry.path);
+            let parent = path.parent().context("a bundled jar has no directory")?;
+            fs::create_dir_all(parent)?;
+            fs::write(&path, bytes)?;
+            paths.push(fs::canonicalize(&path)?);
+        }
+    }
+    ensure!(!paths.is_empty(), "the server jar bundles no jars");
+    Ok(paths)
+}
+
+/// A jar inside the bundle, as one line of a list names it.
+#[derive(Debug, PartialEq, Eq)]
+struct BundledEntry {
+    sha256: String,
+    path: String,
+}
+
+/// Reads a list of the bundle: one line a jar, with its SHA-256, its name and its path
+/// separated by tabs.
+fn bundled_entries(list: &str) -> Result<Vec<BundledEntry>> {
+    let mut entries = Vec::new();
+    for line in list.lines().filter(|line| !line.is_empty()) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [sha256, _name, path] = fields[..] else {
+            bail!(
+                "a line has {} fields where three are expected",
+                fields.len()
+            );
+        };
+        // The path is joined to a directory, so it must not lead out of it.
+        ensure!(
+            !path.starts_with('/')
+                && !path.contains('\\')
+                && path.split('/').all(|part| !part.is_empty() && part != ".."),
+            "the path {path:?} of a bundled jar cannot be unpacked"
+        );
+        entries.push(BundledEntry {
+            sha256: sha256.to_owned(),
+            path: path.to_owned(),
+        });
+    }
+    Ok(entries)
+}
+
 fn sha1_of(path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut hasher = Sha1::new();
@@ -113,4 +270,43 @@ fn sha1_of(path: &Path) -> Result<String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bundle_list_gives_checksum_and_path_of_each_jar() {
+        let list = "aa11\tcom.example:one:1.0\tcom/example/one/1.0/one-1.0.jar\n\
+                    bb22\t26.3\t26.3/server-26.3.jar\n";
+        assert_eq!(
+            bundled_entries(list).unwrap(),
+            [
+                BundledEntry {
+                    sha256: "aa11".to_owned(),
+                    path: "com/example/one/1.0/one-1.0.jar".to_owned(),
+                },
+                BundledEntry {
+                    sha256: "bb22".to_owned(),
+                    path: "26.3/server-26.3.jar".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bundle_list_whose_path_leads_out_of_the_directory_is_refused() {
+        for path in [
+            "../evil.jar",
+            "/etc/evil.jar",
+            "a/../../evil.jar",
+            "a//b.jar",
+            "",
+        ] {
+            let list = format!("aa11\tname\t{path}\n");
+            assert!(bundled_entries(&list).is_err(), "{path}");
+        }
+        assert!(bundled_entries("aa11\tonly-two-fields\n").is_err());
+    }
 }

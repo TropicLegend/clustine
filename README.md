@@ -147,20 +147,35 @@ CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace -- --ignored official
 
 ### Game data
 
-Ids and names of packets, block states, registry entries and tags are committed as
-generated Rust tables, so building needs nothing but cargo. To regenerate them, for
-example after changing the targeted Minecraft version, run the following. It downloads
-the official server jar (about 62 MB) into `target/datagen/` and needs Java 25.
+Ids and names of packets, block states, registry entries and tags, and what the game's
+code says of every block state (its light, its shapes, its fluid), are committed as
+generated Rust tables and packed tables, so building needs nothing but cargo. To
+regenerate them, for example after changing the targeted Minecraft version, run the
+following. It downloads the official server jar (about 62 MB) into `target/datagen/`,
+runs the jar's data generator, and compiles and runs a Java program of Clustine's own
+against the jar's classes without starting a server. It needs a JDK 25 (`javac` and
+`java` on the path), where a Java runtime was enough before.
 
 ```bash
 cargo datagen
 ```
+
+`cargo datagen --check` fails if the committed output is not, byte for byte, what the
+pinned jar gives; `tools/check.sh` runs it where the jar is already in `target/datagen/`.
+`tools/datagen/generated.sums` holds the hashes of what the output was made from, and
+an ordinary test fails when datagen's sources or `Cargo.lock` changed and it was not
+run again, so run it after such a change. `cargo datagen --dump block_states` prints a
+packed table as text. What is committed and why is in
+[ADR-0019](docs/adr/0019-data-made-from-mojangs-jar.md).
 
 ## Licence
 
 Clustine is free software under the GNU Affero General Public License, version 3 or
 later; see [LICENSE](LICENSE) and [ADR-0002](docs/adr/0002-licence.md). If you run a
 modified version for players, you have to offer them its source.
+
+Game data that is generated from Mojang's server and committed is Mojang's; it is not
+under this licence and Clustine grants no rights to it. See [NOTICE.md](NOTICE.md).
 
 ---
 

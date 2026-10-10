@@ -6,6 +6,9 @@
 # Every workspace member has to be let through, including tools/datagen, which is not
 # built for the image: cargo does not load a workspace with a member missing. If the
 # workspace ever gets members in another top-level directory, add it here.
+#
+# The licence and the notices go into the image beside the binaries, which have Mojang's
+# game data and code adapted from SteelMC compiled in (docs/adr/0019, section 8).
 *
 !.cargo
 !Cargo.toml
@@ -14,3 +17,5 @@
 !crates
 !services
 !tools
+!NOTICE.md
+!LICENSE

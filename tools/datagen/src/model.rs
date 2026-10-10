@@ -1,4 +1,5 @@
-//! Reads the data generator's output into the shape the emitters need.
+//! Reads the data generator's output, and the extract program's, into the shape the
+//! emitters need.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -7,6 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
+
+use crate::extract::Extract;
 
 /// Registries the server sends to the client during configuration, in the order the
 /// vanilla server sends them (`RegistryDataLoader.SYNCHRONIZED_REGISTRIES`).
@@ -69,7 +72,40 @@ pub struct GameData {
     pub synced_registries: Vec<Registry>,
     pub dimension_types: Vec<DimensionType>,
     pub tags: Vec<RegistryTags>,
+    /// The fluids and the block entity types by the ids of `registries.json`.
+    pub fluids: Vec<String>,
+    pub block_entity_types: Vec<String>,
+    /// The data generator's report of the biome parameter lists, which the lists of
+    /// the extract program are checked against.
+    pub biome_reports: Vec<BiomeReport>,
+    /// What the extract program wrote.
+    pub extract: Extract,
 }
+
+/// One parameter list as the data generator reports it: numbers as decimals.
+pub struct BiomeReport {
+    /// `overworld` or `nether`.
+    pub name: String,
+    pub entries: Vec<BiomeReportEntry>,
+}
+
+pub struct BiomeReportEntry {
+    pub biome: String,
+    /// The lower and upper bound of temperature, humidity, continentalness, erosion,
+    /// depth and weirdness.
+    pub bounds: [[f64; 2]; 6],
+    pub offset: f64,
+}
+
+/// The six parameters of a climate in the order the game's point has them.
+pub const CLIMATE_PARAMETERS: [&str; 6] = [
+    "temperature",
+    "humidity",
+    "continentalness",
+    "erosion",
+    "depth",
+    "weirdness",
+];
 
 pub struct Version {
     pub id: String,
@@ -90,6 +126,15 @@ pub struct Block {
     pub first_state: u64,
     pub last_state: u64,
     pub default_state: u64,
+    /// The properties in the order the game numbers the states by, which is by name,
+    /// each with its values in the game's order. The first counts most.
+    pub properties: Vec<Property>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Property {
+    pub name: String,
+    pub values: Vec<String>,
 }
 
 pub struct Item {
@@ -121,7 +166,7 @@ pub struct Tag {
 }
 
 impl GameData {
-    pub fn load(jar: &Path, generated: &Path) -> Result<Self> {
+    pub fn load(jar: &Path, generated: &Path, extract: &Path) -> Result<Self> {
         let reports = generated.join("reports");
         let data = generated.join("data/minecraft");
         let registries = read_json(&reports.join("registries.json"))?;
@@ -179,6 +224,30 @@ impl GameData {
             }
         }
 
+        let fluids = static_registry(&registries, "fluid")?;
+        let block_entity_types = static_registry(&registries, "block_entity_type")?;
+        let extract = Extract::load(extract)?;
+        // The ids the program wrote are the game's own; the tables name fluids and
+        // block entity types by the report's ids, so the two have to be the same.
+        ensure!(
+            extract.fluids == fluids,
+            "the extract program numbers the fluids otherwise than registries.json"
+        );
+        ensure!(
+            extract.block_entity_types == block_entity_types,
+            "the extract program numbers the block entity types otherwise than registries.json"
+        );
+
+        let mut biome_reports = Vec::new();
+        for name in ["overworld", "nether"] {
+            let path = reports.join(format!("biome_parameters/minecraft/{name}.json"));
+            biome_reports.push(BiomeReport {
+                name: name.to_owned(),
+                entries: biome_report_entries(&read_json(&path)?)
+                    .with_context(|| format!("reading {}", path.display()))?,
+            });
+        }
+
         Ok(Self {
             version: load_version(jar)?,
             packets: load_packets(&reports)?,
@@ -188,8 +257,71 @@ impl GameData {
             synced_registries,
             dimension_types,
             tags,
+            fluids,
+            block_entity_types,
+            biome_reports,
+            extract,
         })
     }
+
+    /// The ids of the blocks in the block tag called `name`.
+    pub fn block_tag(&self, name: &str) -> Result<BTreeSet<usize>> {
+        let tag = self
+            .tags
+            .iter()
+            .find(|tags| tags.registry == "block")
+            .and_then(|tags| tags.tags.iter().find(|tag| tag.name == name))
+            .with_context(|| format!("the generated data has no block tag {name}"))?;
+        Ok(tag.entries.iter().copied().collect())
+    }
+
+    /// The names of the biomes in the order Clustine numbers them, which is by name.
+    pub fn biomes(&self) -> Result<&[String]> {
+        let registry = self
+            .synced_registries
+            .iter()
+            .find(|registry| registry.name == "worldgen/biome")
+            .context("worldgen/biome is not a synchronised registry")?;
+        Ok(&registry.entries)
+    }
+}
+
+/// Reads a report of biome parameters: a list of entries, each a biome and its
+/// parameters, a parameter being one number or a lower and an upper bound.
+pub fn biome_report_entries(report: &Value) -> Result<Vec<BiomeReportEntry>> {
+    let entries = report["biomes"]
+        .as_array()
+        .context("the report has no list `biomes`")?;
+    let mut read = Vec::new();
+    for entry in entries {
+        let biome = entry["biome"]
+            .as_str()
+            .context("an entry has no biome")?
+            .to_owned();
+        let parameters = &entry["parameters"];
+        let mut bounds = [[0.0; 2]; 6];
+        for (slot, name) in bounds.iter_mut().zip(CLIMATE_PARAMETERS) {
+            *slot = match &parameters[name] {
+                Value::Array(pair) => match pair.as_slice() {
+                    [low, high] => [number(low, name)?, number(high, name)?],
+                    _ => bail!("{name} of {biome} is not a pair of bounds"),
+                },
+                point => [number(point, name)?, number(point, name)?],
+            };
+        }
+        read.push(BiomeReportEntry {
+            biome,
+            bounds,
+            offset: number(&parameters["offset"], "offset")?,
+        });
+    }
+    Ok(read)
+}
+
+fn number(value: &Value, what: &str) -> Result<f64> {
+    value
+        .as_f64()
+        .with_context(|| format!("{what} is not a number"))
 }
 
 fn load_version(jar: &Path) -> Result<Version> {
@@ -269,11 +401,14 @@ fn load_blocks(reports: &Path, names: &[String]) -> Result<Vec<Block>> {
             "the states of {name} are not a contiguous range following the previous block"
         );
         next_state = last_state + 1;
+        let properties = block_properties(&report[name], first_state)
+            .with_context(|| format!("reading the properties of {name}"))?;
         blocks.push(Block {
             name: name.clone(),
             first_state,
             last_state,
             default_state: default_state.with_context(|| format!("{name} has no default state"))?,
+            properties,
         });
     }
     ensure!(
@@ -281,6 +416,65 @@ fn load_blocks(reports: &Path, names: &[String]) -> Result<Vec<Block>> {
         "{next_state} block states no longer fit the 16-bit BlockState"
     );
     Ok(blocks)
+}
+
+/// The properties of one block of `blocks.json`, in the order that numbers its states.
+///
+/// The game numbers the states of a block as a number written in mixed radix: each
+/// property is a digit, the properties sorted by name with the first counting most, and
+/// a digit is the place of the value among the property's values. The committed table
+/// rests on that to turn a name and properties into a state id, so every state the
+/// report lists is checked against it here.
+pub fn block_properties(block: &Value, first_state: u64) -> Result<Vec<Property>> {
+    let mut properties = Vec::new();
+    if let Some(listed) = block["properties"].as_object() {
+        for (name, values) in listed {
+            let values = values
+                .as_array()
+                .with_context(|| format!("the values of {name} are not a list"))?
+                .iter()
+                .map(|value| value.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+                .with_context(|| format!("a value of {name} is not text"))?;
+            ensure!(!values.is_empty(), "{name} has no values");
+            properties.push(Property {
+                name: name.clone(),
+                values,
+            });
+        }
+    }
+    properties.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let states = block["states"].as_array().context("no states")?;
+    let combinations: usize = properties
+        .iter()
+        .map(|property| property.values.len())
+        .product();
+    ensure!(
+        combinations == states.len(),
+        "{} states for {combinations} combinations of property values",
+        states.len()
+    );
+    for state in states {
+        let id = state["id"].as_u64().context("a state has no id")?;
+        let mut index = 0;
+        for property in &properties {
+            let value = state["properties"][&property.name]
+                .as_str()
+                .with_context(|| format!("state {id} has no value of {}", property.name))?;
+            let place = property
+                .values
+                .iter()
+                .position(|known| known == value)
+                .with_context(|| format!("{value} is no value of {}", property.name))?;
+            index = index * property.values.len() + place;
+        }
+        ensure!(
+            first_state + index as u64 == id,
+            "state {id} is not where its property values put it"
+        );
+    }
+    Ok(properties)
 }
 
 fn load_tags(dir: &Path, registry: &str, entries: &[String]) -> Result<RegistryTags> {

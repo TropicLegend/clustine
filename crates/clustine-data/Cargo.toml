@@ -1,6 +1,6 @@
 [package]
 name = "clustine-data"
-description = "Game data generated from the official server jar's data reports: registries, block states, tags."
+description = "Game data generated from the official server jar: registries, block states and what the game says of them, tags."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

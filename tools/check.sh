@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Runs the four checks that every commit has to pass (see CLAUDE.md) and says which of
-# them failed, by exit code and with the tests that failed.
+# Runs the four checks that every commit has to pass (see CLAUDE.md), and a fifth where
+# the server jar is at hand, and says which of them failed, by exit code and with the
+# tests that failed.
 #
 # Usage: tools/check.sh
 #
@@ -32,6 +33,21 @@ cargo fmt --all --check >"${logs}/fmt.log" 2>&1
 report fmt $?
 cargo clippy --workspace --all-targets --locked -- -D warnings >"${logs}/clippy.log" 2>&1
 report clippy $?
+
+# A fifth check where it costs no download: that the committed game data is, byte for
+# byte, what the pinned server jar gives (docs/adr/0019, section 3). It runs only where
+# `cargo datagen` has left the jar and a JDK is installed, and says so when it does
+# not. The jar is named to datagen, which then refuses another file instead of
+# downloading the right one. Without it the ordinary tests still catch an edited
+# generated file and a datagen that was not run again (tools/datagen/generated.sums).
+jar="$(ls target/datagen/*/server.jar 2>/dev/null | head -n 1)"
+if [ -n "$jar" ] && command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1; then
+  cargo run --quiet --locked -p clustine-datagen -- --check --jar "$jar" \
+    >"${logs}/datagen.log" 2>&1
+  report datagen $?
+else
+  printf 'skipped datagen (no server jar in target/datagen, or no JDK on the path)\n'
+fi
 
 # Built once, before the two runs, so that neither waits for the other's build.
 cargo test --workspace --locked --no-run >"${logs}/build.log" 2>&1

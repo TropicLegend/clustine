@@ -50,6 +50,10 @@ RUN groupadd --gid 10001 clustine \
 
 COPY --from=build /out/ /usr/local/bin/
 
+# The binaries have game data made from Mojang's server compiled in, which is not under
+# the image's licence, and code adapted from SteelMC, whose notice travels with it.
+COPY --from=build /src/NOTICE.md /src/LICENSE /usr/share/doc/clustine/
+
 # The services colour their log unless told not to, whether or not a terminal reads it,
 # and what collects a container's output has no use for the escape codes.
 ENV NO_COLOR=1

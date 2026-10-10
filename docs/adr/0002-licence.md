@@ -44,3 +44,7 @@ Clustine is licensed under **AGPL-3.0-or-later**.
   ships; see the roadmap's plugin milestone.
 - Permissively licensed dependencies remain the default; a copyleft dependency is added
   only where it saves substantial work.
+- The licence covers what is Clustine's. Game data that is generated from Mojang's server
+  and committed is Mojang's and not under it, and code adapted from SteelMC keeps
+  SteelMC's notice: [ADR-0019](0019-data-made-from-mojangs-jar.md), sections 7 and 8,
+  and `NOTICE.md` at the root.
