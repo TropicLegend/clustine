@@ -1,6 +1,6 @@
 # Terrain generation: the plan, proposed
 
-- Status: **Proposed, not agreed.** Drafted on 2026-10-10, gone over by an independent
+- Status: **Agreed by the owner on 2026-10-10**, with its questions 1 to 5 answered as it recommends (the roadmap, "What the owner answered on 2026-10-10"). As proposed: Drafted on 2026-10-10, gone over by an independent
   reviewer against the code of both projects, and revised; the review's fourteen
   findings are answered one by one in the last section. It waits for the owner's
   answers to the ten questions of section 7, each of which has a recommendation and

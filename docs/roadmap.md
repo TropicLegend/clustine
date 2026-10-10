@@ -1063,6 +1063,12 @@ other questions go by what the plans recommend unless the owner says otherwise.
   downloaded and used.
 - Downloads in general are allowed on the owner's machine where the work needs them
   (`CLAUDE.md`).
+- *Terrain, later the same day.* The plan is agreed. Where the official server's
+  result depends on the order chunks were made in, block for block means equal to the
+  official server when it decorates in Clustine's fixed order. A chunk is stored once
+  it has been shown, so that a later fix to the generator does not change a world
+  that exists; "only changes are stored" ends with that. Water that flows and sand
+  that falls belong to the same milestone.
 
 **What the owner answered on 2026-10-08**, to the questions that shape the two plans
 most (the other questions of both documents are still open and are asked with the
