@@ -18,6 +18,7 @@
 //! ```text
 //! log/<n>.wal          the log, in segments numbered in the order they were begun
 //! regions/table        the regions there are and the chunks each holds
+//! regions/players      what is kept of every player who ever joined
 //! regions/<r>.region   per region, its highest epoch and its entity ids
 //! regions/<r>.state    per region, its state as of its last checkpoint
 //! layout               only in a world from before there was a table; that it is
@@ -26,6 +27,10 @@
 //!
 //! The table of regions is this thread's alone: it decides who holds a chunk, in the
 //! order the messages arrive. See `table.rs`.
+//!
+//! So are the records of the players: a commit says what its region knows of stays,
+//! and the store keeps of each player the latest stay and its place. See `players.rs`
+//! and `docs/adr/0020-one-stay-per-player.md`.
 //!
 //! A segment is removed once nothing in it is needed any more and every segment before
 //! it is gone. Records are not removed one by one: a record that a checkpoint covers is
@@ -41,18 +46,20 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use clustine_data::BlockState;
 use clustine_format::{
-    LogRecord, Logged, MAX_RECORD_LENGTH, RegionFile, StateFile, TableFile, read_log,
-    read_log_with_offsets,
+    LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, PlayersFile, RegionFile,
+    StateFile, TableFile, read_log, read_log_with_offsets,
 };
 use clustine_region::RegionId;
 use clustine_rpc::{
-    Decline, RegionHello, RegionList, Restored, SplitPart, StoreReply, StoreRequest, TickState,
+    Decline, RegionHello, RegionList, Restored, SplitPart, StayNote, StoreReply, StoreRequest,
+    TickState,
 };
-use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds};
+use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds, PlayerId};
 use tracing::{error, info, warn};
 
 use crate::chunks::Job;
 use crate::disk::{Disk, replace};
+use crate::players::{self, Players, Taken, Undo};
 use crate::table::{Division, Table};
 use crate::{Message, Opened, Peer, Session, StoreError};
 
@@ -82,6 +89,8 @@ pub(crate) struct Lanes {
     /// in the table file, if there is one. The segments from the file's `from` up to it
     /// hold what the file does not have.
     table_last: Option<u64>,
+    /// What is kept of every player who ever joined.
+    players: Players,
     /// The index of the next block of entity ids: above every block a region file has,
     /// whatever has become of its region, so that none is issued twice.
     next_block: u32,
@@ -183,6 +192,13 @@ struct Group {
     installs: BTreeSet<RegionId>,
     /// Handles to be told that everything they asked for is done.
     flushes: Vec<Arc<Peer>>,
+    /// What the group did to the records of the players, which is taken back if the
+    /// group cannot be made durable.
+    undo: Undo,
+    /// The floors the group raised: of each player named, every stay below this one
+    /// is dead, which every region that has an owner is told once the group is
+    /// durable (ADR-0020, section 5).
+    dead: Vec<(PlayerId, EntityId, u32)>,
 }
 
 impl Group {
@@ -273,6 +289,23 @@ impl Lanes {
             None => None,
         };
 
+        // What is kept of the players, as of the segment the file names. A world
+        // without the file has no records, and every note of its log counts.
+        let players_path = regions_directory.join("players");
+        let mut players = match disk.read(&players_path)? {
+            Some(bytes) => {
+                let file = PlayersFile::decode(&bytes).map_err(|error| StoreError::Damaged {
+                    path: players_path.clone(),
+                    error,
+                })?;
+                Players::read(file)
+            }
+            None => Players::default(),
+        };
+        // The notes of the commits in the segments the file does not stand for, each
+        // with its region and its tick, in the order of the log.
+        let mut noted: Vec<(u32, u64, Vec<LoggedStay>)> = Vec::new();
+
         let mut table_last = None;
         let mut log = Log {
             disk: Arc::clone(&disk),
@@ -280,6 +313,7 @@ impl Lanes {
             segments: BTreeSet::new(),
             active: None,
             next: 1,
+            floor: 0,
             unsettled: None,
         };
         let mut segments: Vec<u64> = disk
@@ -306,7 +340,12 @@ impl Lanes {
             } in logged
             {
                 match record {
-                    LogRecord::Commit { region, tick, .. } => {
+                    LogRecord::Commit {
+                        region,
+                        tick,
+                        stays,
+                        ..
+                    } => {
                         let lane = regions.entry(RegionId(region)).or_default();
                         if lane.state_tick.is_none_or(|state| tick > state) {
                             lane.live.push(Entry {
@@ -316,6 +355,12 @@ impl Lanes {
                                 length,
                             });
                         }
+                        // Whether or not a checkpoint covers the commit: its notes
+                        // are in no state file.
+                        if segment >= players.from && !stays.is_empty() {
+                            players.noted(segment, None);
+                            noted.push((region, tick, stays));
+                        }
                     }
                     LogRecord::Opened {
                         region, restored, ..
@@ -324,6 +369,9 @@ impl Lanes {
                             lane.live.retain(|entry| entry.tick <= restored);
                             lane.record.take_if(|record| record.tick > restored);
                         }
+                        // A commit that is no part of the region's history has said
+                        // nothing of stays either.
+                        noted.retain(|(noting, tick, _)| *noting != region || *tick <= restored);
                     }
                     LogRecord::Changes { .. } => {
                         warn!(
@@ -421,6 +469,11 @@ impl Lanes {
         if let Some(table) = &stored {
             log.next = log.next.max(table.from);
         }
+        // And for the players' file alike, whose `from` can be far above the table's:
+        // the notes of a segment numbered below it would be passed over by the start
+        // after this one (ADR-0020, section 8, rule P).
+        log.next = log.next.max(players.from);
+        log.floor = players.from;
 
         // A world from before there was a table has this file, which said how it was
         // divided. The store has nothing to hold against that any more, and does not
@@ -444,11 +497,35 @@ impl Lanes {
             table: stored.unwrap_or_else(|| Table::made_from(told, 0, 0)),
             regions,
             table_last,
+            players,
             next_block,
             sessions: 0,
             group: Group::default(),
         };
+        // What is left of the notes, in the order of the log and by the same rules as
+        // when they were taken, without answering anybody: every handle was lost with
+        // the store that took them, and a region names its stays when it is opened.
+        // The table is the one the notes were written under: a world that was made
+        // over has had its file written first, as below.
+        let home = lanes.table.home_region;
+        for (region, _, stays) in noted {
+            for note in &stays {
+                lanes.players.apply(note, RegionId(region) == home, None);
+            }
+        }
         if remake {
+            // Making the world over writes, for every region that had anything, that
+            // it was opened and restored with nothing, and the start after this one
+            // would forget every note since the file there is. So the file is written
+            // first, and stands for the whole log: no segment is being appended to
+            // while a store starts. If it cannot be written, the start fails
+            // (ADR-0020, section 8, step 5). A world in which no stay was ever given
+            // has nothing that could be forgotten, and gets no file for it.
+            if !lanes.players.is_empty() {
+                let from = lanes.log.next;
+                lanes.write_players(from)?;
+            }
+
             // Where there was no table, nobody was granted anything, and every change
             // the regions committed goes into the chunks.
             lanes.make_over(tabled)?;
@@ -548,6 +625,12 @@ impl Lanes {
                 // waits is told so.
                 let _ = self.jobs.send(Job::Barrier { reply_to, answer });
             }
+            #[cfg(test)]
+            Message::Players { answer } => {
+                // As the list of regions: nothing that is not durable.
+                self.end_group();
+                let _ = answer.send((self.players.issued(), self.players.list()));
+            }
             Message::Passed { answer } => {
                 // The thread for chunks has done what it was given before the barrier,
                 // and what it had to say of it has been handled here: state files are
@@ -646,22 +729,22 @@ impl Lanes {
                 tick,
                 changes,
                 state,
-                // What the region says of stays is neither kept nor answered yet, and
-                // no runner sends any: step R1.1 of
-                // `docs/adr/0020-one-stay-per-player.md` has the store take the notes
-                // (section 3).
-                stays: _,
+                stays,
             } => {
+                let region = session.region;
+                // The notes are in the commit's own record, so that the two are on
+                // disk together or not at all.
+                let notes: Vec<LoggedStay> = stays.iter().map(players::logged).collect();
                 let record = LogRecord::Commit {
-                    region: session.region.0,
+                    region: region.0,
                     tick,
                     epoch: owner.epoch,
                     changes,
                     state,
-                    stays: Vec::new(),
+                    stays: notes.clone(),
                 }
                 .encode();
-                self.group.regions.insert(session.region);
+                self.group.regions.insert(region);
                 match self.log.append(&record) {
                     Ok((segment, offset)) => {
                         lane.live.push(Entry {
@@ -673,9 +756,52 @@ impl Lanes {
                         owner.unsynced.push(StoreReply::Committed { tick });
                         lane.latest = lane.latest.max(tick);
                         lane.named = lane.named.max(tick);
+                        if notes.is_empty() {
+                            return;
+                        }
+                        // Only now that the commit is taken: the notes of an owner
+                        // that was replaced went with its commit above, and a note
+                        // whose record is not in the log would raise a floor for a
+                        // stay that is in no state (ADR-0020, section 3). What the
+                        // notes are answered with goes behind the commit's own
+                        // answer, and out when the group is durable.
+                        self.players.noted(segment, Some(&mut self.group.undo));
+                        let home = region == self.table.home_region;
+                        let mut dead = Vec::new();
+                        for (note, logged) in stays.iter().zip(&notes) {
+                            let (StayNote::Entering { player, entity }
+                            | StayNote::Has { player, entity, .. }) = *note;
+                            // Who holds the chunk of the place as the table is now.
+                            // It is advice: a claim later in this group can take the
+                            // chunk, and its holder can give it back a moment later.
+                            let enter = |place: Option<LoggedPlace>| StoreReply::Enter {
+                                player,
+                                entity,
+                                place: place.as_ref().map(players::place),
+                                holder: place
+                                    .and_then(|place| self.table.holder(players::chunk_of(&place))),
+                            };
+                            match self
+                                .players
+                                .take(region, home, logged, &mut self.group.undo)
+                            {
+                                Taken::Raised { place } => {
+                                    self.group.dead.push((player, entity, 0));
+                                    owner.unsynced.push(enter(place));
+                                }
+                                Taken::Again { place } => owner.unsynced.push(enter(place)),
+                                Taken::Dead { stay, hops, .. } => {
+                                    dead.push((player, EntityId(stay), hops));
+                                }
+                                Taken::Written | Taken::Ahead => {}
+                            }
+                        }
+                        if !dead.is_empty() {
+                            owner.unsynced.push(StoreReply::Dead { stays: dead });
+                        }
                     }
                     Err(error) => {
-                        error!(region = %session.region, %error, "a commit could not be written to the log");
+                        error!(%region, %error, "a commit could not be written to the log");
                         self.fail_log();
                     }
                 }
@@ -873,6 +999,12 @@ impl Lanes {
             self.log.close();
             self.collect();
             self.trim_for_the_table();
+            // After the table, not before: a first segment that is kept for the
+            // table and for the players alike is freed of the table there, and a look
+            // taken before would find it kept for more than the players, do nothing,
+            // and not come again until the next state file. At a clean stop there is
+            // none, and segments would stay.
+            self.trim_for_the_players();
         }
 
         for region in &group.regions {
@@ -888,6 +1020,17 @@ impl Lanes {
             }
             for job in owner.held.drain(..) {
                 let _ = self.jobs.send(job);
+            }
+        }
+        // The floors of the group are durable: every region that has an owner is
+        // told of the stays that are dead by them, behind the group's own answers.
+        // Whoever opens a region from now on does so after the floor is durable, and
+        // names its stays (ADR-0020, section 5).
+        if !group.dead.is_empty() {
+            for owner in self.regions.values().filter_map(|lane| lane.owner.as_ref()) {
+                owner.peer.answer(StoreReply::Dead {
+                    stays: group.dead.clone(),
+                });
             }
         }
         for peer in group.flushes {
@@ -922,6 +1065,10 @@ impl Lanes {
                 }
             }
         }
+        // What the notes of the group's commits did goes with the commits: each record
+        // is as it was before the group, a record the group made is gone, and so is
+        // what it added to the ids that were given out. Nobody was told of any of it.
+        self.players.undo(group.undo);
         for lane in self.regions.values_mut() {
             if let Some((segment, durable)) = failed {
                 lane.live
@@ -943,15 +1090,66 @@ impl Lanes {
     }
 
     /// Removes the segments at the start of the log that hold nothing needed any more:
-    /// no commit a region is restored with, and nothing the table file does not have.
+    /// no commit a region is restored with, nothing the table file does not have, and
+    /// no stay note the players' file does not have.
     fn collect(&mut self) {
         let needed = self.needed_by_lanes();
         let from = self.table.from;
         let table = self.table_last.map(|last| from..=last);
+        let from = self.players.from;
+        let players = self.players.last.map(|last| from..=last);
         self.log.remove_while(|segment| {
             !needed.contains(&segment)
                 && !table.as_ref().is_some_and(|kept| kept.contains(&segment))
+                && !players.as_ref().is_some_and(|kept| kept.contains(&segment))
         });
+    }
+
+    /// Writes the players' file, with `from` as the first segment of the log whose
+    /// notes are not in it, and makes it durable. Only when the records have nothing
+    /// that is not durable in the log, and no segment is being appended to: no
+    /// segment is numbered below `from` from then on.
+    fn write_players(&mut self, from: u64) -> Result<(), StoreError> {
+        let path = self.regions_directory().join("players");
+        let file = self.players.file(from).encode();
+        replace(self.disk.as_ref(), &path, &file)?;
+        self.disk.sync_directory(&self.regions_directory())?;
+        self.players.from = from;
+        self.players.last = None;
+        self.log.floor = from;
+        Ok(())
+    }
+
+    /// Writes the players' file anew if that lets the first segment of the log go: if
+    /// that segment is kept only for the stay notes in it, which no lane and not the
+    /// table need. The file then has what all notes so far made of the records, and
+    /// names the next segment as the first that is not in it.
+    ///
+    /// For the end of a group, as [`Lanes::trim_for_the_table`], and after it.
+    fn trim_for_the_players(&mut self) {
+        let (Some(&first), Some(last)) = (self.log.segments.first(), self.players.last) else {
+            return;
+        };
+        let kept_for_the_players = (self.players.from..=last).contains(&first);
+        let kept_for_the_table = self
+            .table_last
+            .is_some_and(|last| (self.table.from..=last).contains(&first));
+        if !kept_for_the_players
+            || kept_for_the_table
+            || self.needed_by_lanes().contains(&first)
+            || self.log.active.is_some()
+        {
+            return;
+        }
+        // Only once the file is durable are the segments it stands for let go of. If it
+        // cannot be written, the file there is stays the one that counts, with every
+        // segment from its `from` on.
+        match self.write_players(self.log.next) {
+            Ok(()) => self.collect(),
+            Err(error) => {
+                error!(%error, "the file of the players could not be written; the log is kept as it is");
+            }
+        }
     }
 
     /// Writes the table file anew if that lets the first segment of the log go: if no
@@ -1159,9 +1357,21 @@ impl Lanes {
         // A region that is pinned or home gets a block of entity ids when it is first
         // opened, and keeps it. A region that was split off another has none, unless
         // its id has become that of a pinned or home region since.
+        //
+        // Entity ids never go back for the life of a world, by which the later of two
+        // stays is told: the home region, which alone gives stays out, gets a new
+        // block if the one it has holds no id above the highest stay ever given.
+        // That is so of a home region that changed with the division, whose block
+        // can be a lower one. `end <= issued` would take a block whose last id is the
+        // highest stay for good, and every join would be refused from then on
+        // (ADR-0020, section 7).
+        let highest = self.players.issued();
         let issued = file
             .map(|file| file.entity_ids)
-            .filter(|ids| !is_empty(*ids));
+            .filter(|ids| !is_empty(*ids))
+            .filter(|ids| {
+                region != self.table.home_region || ids.end.0 > highest.saturating_add(1)
+            });
         let entity_ids = match issued {
             Some(entity_ids) => entity_ids,
             None if !self.table.pinned(region).is_empty() || region == self.table.home_region => {
@@ -1281,10 +1491,7 @@ impl Lanes {
             deltas,
             held: self.table.grants(region),
             pinned: self.table.pinned(region).to_vec(),
-            // The store keeps no such number yet, and 0 is what it says of a world in
-            // which no stay was ever issued: step R1.1 of
-            // `docs/adr/0020-one-stay-per-player.md` keeps it (section 7).
-            issued: EntityId(0),
+            issued: EntityId(highest),
         };
         let opened = Opened {
             session,
@@ -1786,6 +1993,8 @@ struct Log {
     active: Option<Active>,
     /// The number of the next segment.
     next: u64,
+    /// The players' file's `from`: no segment is numbered below it.
+    floor: u64,
     /// The segment a write or a sync of which failed, and how much of it is good, for as
     /// long as cutting it back to that is not durable.
     unsettled: Option<(u64, u64)>,
@@ -1820,6 +2029,13 @@ impl Log {
             Some(active) => active,
             None => {
                 let number = self.next;
+                // The notes of a segment below the players' file's `from` would be
+                // passed over in silence by the next start, which cannot tell such a
+                // segment from one that is rightly there. So it is held to here, where
+                // segments are numbered (ADR-0020, section 8, rule P).
+                number
+                    .checked_sub(self.floor)
+                    .expect("no segment of the log is numbered below the players' file's `from`");
                 self.next += 1;
                 self.segments.insert(number);
                 self.active.insert(Active {

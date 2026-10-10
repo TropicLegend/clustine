@@ -31,6 +31,7 @@ release.
   meta
   log/<segment>.wal
   regions/table
+  regions/players
   regions/<region>.region
   regions/<region>.state
   blobs/<first two hex digits>/<hash in hex>
@@ -44,6 +45,8 @@ release.
   order they were begun (twenty decimal digits).
 - `regions/table` holds the regions there are and the chunks each holds, as of a place
   in the log.
+- `regions/players` holds what the store keeps of every player who ever joined, as of a
+  place in the log. A world in which the file was never needed has none.
 - `regions` holds two files per region besides: `<region>.region`, with the highest
   epoch it was opened with and its entity ids, once it has been opened or was made by a
   split, and `<region>.state`, with its state as of its last checkpoint. `<region>` is
@@ -161,9 +164,12 @@ A place is where a player is and what they hold:
 | Selected slot | u8 |
 | Hotbar | nine times: u8 0 for an empty slot, or u8 1, i32 item, i32 count |
 
-The floating-point numbers are big-endian like the integers. No store writes a record
-of kind 8 yet, and none keeps the notes: the format is there before what uses it. A
-build from before kind 8 cannot read such a record and does not start.
+The floating-point numbers are big-endian like the integers. A build from before kind 8
+cannot read such a record and does not start.
+
+The store takes the notes of a commit when it takes the commit, and keeps of each
+player what they make of the player's record ("The players"). No region sends a note
+yet, so no record of kind 8 is written.
 
 Kinds 4 to 7 are what decides which region holds which chunk and which regions there
 are. `Granted`: the region holds each of the chunks from its tick `tick` on. `Returned`:
@@ -185,7 +191,8 @@ and goes on in a new one.
 
 A segment is removed once nothing in it is needed any more and every segment before it
 is gone: no commit that a region is restored with, no record of a merge or a split that
-is a region's latest whole state, and nothing the table file does not have. Commits are
+is a region's latest whole state, nothing the table file does not have, and no stay note
+the players' file does not have. Commits are
 not removed one by one: one that a checkpoint covers is passed over because its tick is
 not above that of the region's latest whole state. A segment that was removed can be
 there again after a crash, as removing it is not made durable; it is read like any
@@ -258,7 +265,19 @@ list of regions: all of it as of a place in the log
 
 A record is of one player: the entity of the latest stay the store was told the
 player was given, the highest number of hand-overs it was told of that stay, and where
-the player was last, if a region has said. No store writes or reads the file yet.
+the player was last, if a region has said.
+
+The records as the store has them are this file with the stay notes applied that are in
+commits in segments from `from` on, in the order of the log, but for a commit with a
+tick above what a later `Opened` record of its region was restored up to: such a commit
+is no part of the region's history, and neither are its notes. A world without the file
+has no records, and every note of its log counts. The file is written whenever a
+checkpoint leaves the first segment of the log needed for nothing but the notes in it,
+after the table file has been looked at in the same way, and before a world that has a
+record is made over for another division, which fails the start if the file cannot be
+written. `from`
+becomes the next segment each time, and **no segment is ever numbered below it**: a
+store that starts with no segment left numbers its next one from the file's `from`.
 
 ## Regions
 
@@ -306,7 +325,10 @@ the player was last, if a region has said. No store writes or reads the file yet
   all of them in it already; applying all of them again in order gives the same result,
   because each change sets a block to a definite state.
 - The first time a region is opened the store gives it a block of entity ids, which is
-  the region's for good. The region file is written before the owner is answered.
+  the region's for good, with one exception: the home region is given the next block
+  when it is opened with a block that has no id above the highest entity id a stay was
+  ever given, so that the ids of stays never go back. The region file is written before
+  the owner is answered.
 - A chunk a region gives back is free once the saves the region asked for before are
   durable; only then is the `Returned` record written.
 - When the store starts it leaves the log as it is, unless the world was divided

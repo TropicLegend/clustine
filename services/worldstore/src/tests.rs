@@ -1141,11 +1141,18 @@ fn a_load_after_a_save_finds_what_was_saved_even_while_the_save_waits() {
     );
 }
 
+/// Says of a record of the log whether writing it is to fail.
+pub(crate) type Failing = fn(&LogRecord) -> bool;
+
 /// A disk in memory with switches that make writes to the log, or syncs of it, fail, or
 /// hold a sync of it until the test lets it go on.
 pub(crate) struct Switched {
     pub(crate) disk: MemoryDisk,
     pub(crate) failing_appends: AtomicBool,
+    /// If set, a write to the log of a record that this says so of fails, as one does
+    /// while `failing_appends` is set: so that one record of a group can be made to
+    /// fail whatever else is in the group and however the threads take their turns.
+    pub(crate) failing_records: Mutex<Option<Failing>>,
     pub(crate) failing_syncs: AtomicBool,
     /// Holds the next sync of the log, whatever it is of. A hello is answered before
     /// the group it is in ends, and its record in the log is synced only then: a test
@@ -1165,6 +1172,7 @@ impl Default for Switched {
         Self {
             disk: MemoryDisk::default(),
             failing_appends: AtomicBool::new(false),
+            failing_records: Mutex::new(None),
             failing_syncs: AtomicBool::new(false),
             holding_syncs: AtomicBool::new(false),
             held: Barrier::new(2),
@@ -1176,6 +1184,15 @@ impl Default for Switched {
 impl Switched {
     fn of_log(path: &Path) -> bool {
         path.extension().is_some_and(|extension| extension == "wal")
+    }
+
+    /// Whether `contents` is a record that `failing_records` says is to fail.
+    fn of_a_failing_record(&self, contents: &[u8]) -> bool {
+        let Some(failing) = *self.failing_records.lock().unwrap() else {
+            return false;
+        };
+        let records = read_log(contents).map(|(records, _)| records);
+        records.is_ok_and(|records| records.iter().any(failing))
     }
 }
 
@@ -1199,7 +1216,9 @@ impl Disk for Switched {
         self.disk.write(path, contents)
     }
     fn append(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
-        if Self::of_log(path) && self.failing_appends.load(Ordering::SeqCst) {
+        let failing =
+            self.failing_appends.load(Ordering::SeqCst) || self.of_a_failing_record(contents);
+        if Self::of_log(path) && failing {
             // Half of it gets there, as when the disk fills up.
             self.disk.append(path, &contents[..contents.len() / 2])?;
             return Err(io::Error::other("the disk is full"));

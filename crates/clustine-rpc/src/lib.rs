@@ -10,6 +10,10 @@ mod messages;
 pub mod tcp;
 pub mod wire;
 
+// What the messages to the world store carry of a stay, for the store, which takes
+// the messages from here and needs nothing else of the simulation.
+pub use clustine_sim::api::{ItemStack, Pose};
+pub use clustine_sim::{Place, StayNote};
 pub use messages::{
     Assignment, ChunkBox, Crowds, Decline, EdgeMessage, EdgeToWorker, FromCoordinator, Off,
     PlayersOf, Presence, RegionHello, RegionInfo, RegionList, RegionWelcome, Restored,

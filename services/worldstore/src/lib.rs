@@ -26,6 +26,7 @@ mod chunks;
 mod disk;
 mod lanes;
 mod local;
+mod players;
 mod table;
 mod tcp;
 
@@ -43,6 +44,10 @@ mod rest;
 mod rounds;
 #[cfg(test)]
 mod scenarios;
+#[cfg(test)]
+mod stays;
+#[cfg(test)]
+mod stays_kill;
 #[cfg(test)]
 mod stripes_end;
 #[cfg(test)]
@@ -245,6 +250,12 @@ enum Message {
     Passed {
         answer: Sender<Result<(), StoreError>>,
     },
+    /// A test wants what the store keeps of the players: the highest stay ever given
+    /// and the records.
+    #[cfg(test)]
+    Players {
+        answer: Sender<(i32, Vec<clustine_format::PlayerRecord>)>,
+    },
 }
 
 /// A running store. It stops when it and every [`StoreHandle`] it has handed out have
@@ -347,6 +358,18 @@ impl Store {
     /// died, of which nothing more can be said.
     pub fn flush(&self) -> Result<(), StoreError> {
         Self::rested(&self.barrier())
+    }
+
+    /// What the store keeps of the players, once everything asked for before is
+    /// durable: the highest stay ever given, and the records in ascending order of
+    /// the players. Nothing outside the store reads the records; its tests do.
+    #[cfg(test)]
+    pub(crate) fn players(&self) -> (i32, Vec<clustine_format::PlayerRecord>) {
+        let (answer, answered) = mpsc::channel();
+        let _ = self.messages.send(Message::Players { answer });
+        answered
+            .recv()
+            .expect("the store answers every request for the players")
     }
 
     /// The first half of [`Store::flush`]: sends the barrier, and returns where its
