@@ -319,7 +319,6 @@ name = "clustine-noise"
 version = "0.0.0"
 dependencies = [
  "libm",
- "md-5",
  "serde",
  "serde_json",
 ]
