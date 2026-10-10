@@ -40,6 +40,8 @@ mod regions;
 #[cfg(test)]
 mod rest;
 #[cfg(test)]
+mod rounds;
+#[cfg(test)]
 mod scenarios;
 #[cfg(test)]
 mod stripes_end;
