@@ -32,6 +32,24 @@ pub(crate) trait Disk: Send + Sync {
     fn sync(&self, path: &Path) -> io::Result<()>;
     /// Makes the files that were created, renamed or removed in `directory` durably so.
     fn sync_directory(&self, directory: &Path) -> io::Result<()>;
+    /// Makes what was written to each of `files` durable, as [`Disk::sync`] does for
+    /// one: in turn here, and at the same time where a disk can, since syncs that wait
+    /// together are made durable together. Stops at the first that fails, so nothing
+    /// may be taken for durable after an error. See
+    /// `docs/adr/0018-a-checkpoints-chunks-written-together.md`, section 2.
+    #[expect(dead_code, reason = "used from step C5.10 on, which removes this line")]
+    fn sync_files(&self, files: &[PathBuf]) -> io::Result<()> {
+        files.iter().try_for_each(|file| self.sync(file))
+    }
+    /// Makes the files created, renamed or removed in each of `directories` durably
+    /// so, as [`Disk::sync_directory`] does for one; in turn or at the same time, as
+    /// [`Disk::sync_files`].
+    #[expect(dead_code, reason = "used from step C5.10 on, which removes this line")]
+    fn sync_directories(&self, directories: &[PathBuf]) -> io::Result<()> {
+        directories
+            .iter()
+            .try_for_each(|directory| self.sync_directory(directory))
+    }
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     /// Removes the file; one that is not there is not an error.
     fn remove(&self, path: &Path) -> io::Result<()>;
