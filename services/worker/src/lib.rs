@@ -4219,7 +4219,7 @@ mod tests {
         edge.send(EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
-            attempt: None,
+            attempt: Some(attempt_of(player())),
         })
         .await
         .unwrap();
@@ -4931,7 +4931,7 @@ mod tests {
             .send(EdgeToWorker::PlayerLeave {
                 player: player(),
                 entity: None,
-                attempt: None,
+                attempt: Some(attempt_of(player())),
             })
             .await
             .unwrap();
@@ -4959,7 +4959,7 @@ mod tests {
         let leave = || EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
-            attempt: None,
+            attempt: Some(attempt_of(player())),
         };
 
         owner.send(join(player(), "Notch")).await.unwrap();
@@ -4991,7 +4991,7 @@ mod tests {
         edge.send(EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
-            attempt: None,
+            attempt: Some(attempt_of(player())),
         })
         .await
         .unwrap();
@@ -5052,6 +5052,8 @@ mod tests {
                     ..arriving.pose
                 },
                 last_input: 8,
+                // Handed on once more (ADR-0020, section 6).
+                hops: arriving.hops + 1,
                 ..arriving
             };
             let departed = WorkerToEdge::Outbox {
@@ -5231,7 +5233,7 @@ mod tests {
         let leave = || EdgeToWorker::PlayerLeave {
             player: player(),
             entity: None,
-            attempt: None,
+            attempt: Some(attempt_of(player())),
         };
 
         // The stay that is still on its way had the first entity the region gave out,
@@ -6479,7 +6481,7 @@ mod tests {
                 "00004044400000000000004ec0000000000000e03f00000000000000000000000000000000000000",
                 "05020101170102021000000000000000000000000000000002041200207900010103001000000000",
                 "0000000000000000000000010205537465766500000000004044400000000000004ec00000000000",
-                "00e03f00000000000000000100000000000000000000010000000104050104060201030506090110",
+                "00e03f00000000000000000100000000000000000000010100000104050104060201030506090110",
                 "000000000000000000000000000000039a0101170607100000000000000000000000000000000398",
                 "0101180110000000000000000000000000000000039c01034a65620719",
             )
@@ -6494,7 +6496,7 @@ mod tests {
                 "00000000000000000000000000000000000005020101170102021000000000000000000000000000",
                 "00000204120020790001010300100000000000000000000000000000000102055374657665000000",
                 "00004044400000000000004ec0000000000000e03f00000000000000000100000000000000000000",
-                "010000000104050104060201030506090110000000000000000000000000000000039a0101170607",
+                "010100000104050104060201030506090110000000000000000000000000000000039a0101170607",
                 "10000000000000000000000000000000039801011801100000000000000000000000000000000301",
                 "9c01034a65620719",
             )

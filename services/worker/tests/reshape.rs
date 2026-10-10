@@ -1337,11 +1337,13 @@ fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> Edg
     }
 }
 
+/// A leave as an edge sends it: it names the entity of the stay if the edge has been
+/// told one, and the attempt of the join otherwise (ADR-0020, section 4.4).
 fn leave(id: PlayerId, entity: Option<EntityId>) -> EdgeToWorker {
     EdgeToWorker::PlayerLeave {
         player: id,
         entity,
-        attempt: None,
+        attempt: entity.is_none().then(|| attempt(id)),
     }
 }
 
@@ -2586,7 +2588,8 @@ fn a_leave_that_names_the_entity_of_a_presence_answer_ends_that_stay_and_another
         Some(two)
     );
 
-    // One that names no entity is for the player whatever their entity.
+    // One that names no entity names the attempt of the join, and is for the stay that
+    // carries it still (ADR-0020, section 4.4).
     let unnamed = again.next(leave(player(2), None));
     wait_applied(&mut runner, &mut [&mut again, &mut f], 0, unnamed);
     assert_eq!(runner.region().player_count(), 0);
@@ -4219,6 +4222,11 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
         .players
         .remove(&player(2))
         .expect("player 2 was there");
+    // Whole, and handed on once more by the split (ADR-0020, section 9).
+    let went = clustine_sim::PlayerState {
+        hops: went.hops + 1,
+        ..went
+    };
     let edge = stays.edges.get_mut(&E).expect("the region knows the edge");
     edge.sent += 1;
     edge.outbox.insert(

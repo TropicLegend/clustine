@@ -1123,9 +1123,11 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
     ));
     assert_eq!(e.witness.own.len(), 1);
 
+    // The edge has been told the entity, and the stay has been heard from as it: the
+    // leave names the entity (ADR-0020, section 4.4).
     f.send(EdgeToWorker::PlayerLeave {
         player: three,
-        entity: None,
+        entity: Some(third),
         attempt: None,
     });
     f.send(remote_break(player(9), 5, BlockPos::new(11, GROUND, 9)));
@@ -1768,7 +1770,7 @@ fn after_a_restore_what_is_sent_again_is_not_applied_twice() {
         EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: None,
-            attempt: None,
+            attempt: Some(attempt(player(1))),
         },
         join(player(1)),
         remote_break(stranger, 4, far),
@@ -2966,7 +2968,7 @@ fn what_a_new_link_sends_again_is_dropped_and_the_link_stays() {
         EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: None,
-            attempt: None,
+            attempt: Some(attempt(player(1))),
         },
     );
     wait_applied(&mut runner, &mut [&mut e, &mut watcher], 0, 2);
@@ -2989,7 +2991,7 @@ fn what_a_new_link_sends_again_is_dropped_and_the_link_stays() {
         EdgeToWorker::PlayerLeave {
             player: player(1),
             entity: None,
-            attempt: None,
+            attempt: Some(attempt(player(1))),
         },
     );
     back.numbered(3, join(player(1)));
