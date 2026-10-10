@@ -1935,6 +1935,28 @@ async fn lone_players_who_ran_to_their_lanes_come_to_a_region_each() {
     lone_players("lone players, at a run", 8.0).await;
 }
 
+/// W9 at the paces a client can reach, to say whether the fault above shows there:
+/// 1.1 blocks a tick, 22 blocks a second, which is a sprint in creative flight, and
+/// 1.7 blocks a tick, 34 blocks a second, which is an elytra with rockets.
+#[ignore = "takes a quarter of an hour: W9 at a client's pace, for the finding beside it"]
+#[tokio::test(flavor = "multi_thread")]
+async fn lone_players_who_flew_to_their_lanes_at_a_sprint_come_to_a_region_each() {
+    if a_repetition() {
+        return;
+    }
+    lone_players("lone players, at a sprint in flight", 1.1).await;
+}
+
+/// See above: 34 blocks a second.
+#[ignore = "takes a quarter of an hour: W9 at a client's pace, for the finding beside it"]
+#[tokio::test(flavor = "multi_thread")]
+async fn lone_players_who_flew_to_their_lanes_with_rockets_come_to_a_region_each() {
+    if a_repetition() {
+        return;
+    }
+    lone_players("lone players, with rockets", 1.7).await;
+}
+
 /// The chunk (49, 0), thirty chunks beyond where a wanderer is split off.
 const BEYOND: i32 = OUT + 30;
 
@@ -2277,36 +2299,20 @@ async fn eight_who_sprint_straight_on_are_split_off_together_and_never_handed_ov
 }
 
 // What the runs of these tests found beside what they assert, and what the test below
-// keeps.
+// keeps. It is mended (`next_retry` in `bin/clustine/src/cluster/edge.rs`), and the
+// test is no longer ignored.
 //
-// **An edge uses a whole processor from the first time a region leaves the routing
-// table while the edge waits to try its link again**, which is after about every
-// merge and every absorption.
-//
-// 1. A region is absorbed. Its owner releases it first, the edge's link to it ends,
-//    and the edge's link-keeper (`keep_linked` in `bin/clustine/src/cluster/edge.rs`)
-//    tries the route again, which the routing table still names: the worker turns
-//    the connection away (`region 1 is not running here`), and the keeper notes when
-//    to try again, 20 ms later (`LinkState::again`).
-// 2. The merge is made and the coordinator's next routing table has the region no
-//    more. The keeper goes through the routes of the table at every pass of its
-//    loop and takes `again` away only where it begins an attempt, so the time noted
-//    for a region that is in no table stays; and the loop sleeps until the earliest
-//    such time of all the regions it has ever known.
-// 3. That time is past from then on. The sleep returns at once, the pass changes
-//    nothing, and the loop goes round for as long as the process lives.
-//
-// Seen as two edges of clusters whose test had ended, each at 95 to 100 % of a
-// processor on its main thread for three quarters of an hour with no player and
-// nothing in its log; both had last logged `a region has been absorbed`. The single
-// process runs the same keeper. Every cluster of the tests whose coordinator merges
-// has had such an edge beside it, which is a processor in six for each: the pauses
-// these tests and those of `follows.rs` and `merges.rs` measured were measured so.
-//
-// The record does not say otherwise anywhere; it is ADR-0013's keeper as built, and
-// only a world whose regions come and go meets it at every turn. What a player
-// notices: nothing of the game; whoever runs the server, a processor that is busy
-// from the first time two players have met again.
+// **An edge used a whole processor from the first time a region left the routing
+// table while the edge waited to try its link again**, which was after about every
+// merge and every absorption. The edge's link-keeper noted when to try a region's
+// link again and slept until the earliest such time of every region it had ever
+// known; a region that left the table while such a time was noted kept it for ever,
+// and the loop went round without sleeping from then on. Seen as two edges of
+// clusters whose test had ended, each at a whole processor for three quarters of an
+// hour with no player and nothing in its log; measured by the test below as 0.02 of
+// a processor before a merge and 1.02 after. The single process ran the same
+// keeper, and every cluster of the tests whose coordinator merges had such an edge
+// beside it.
 
 /// How much of a processor the process `pid` has used so far, in seconds, by what
 /// the system says of it. A hundredth of a second is what it counts in.
@@ -2326,7 +2332,6 @@ fn processor_seconds(pid: u32) -> Option<f64> {
 /// at chunk 19 and walks back to chunk 8, where its region is merged into region 0,
 /// and leaves; then the edge's use of the processor is measured over twenty seconds
 /// of the steps of `A`.
-#[ignore = "finding: the edge's link-keeper spins a processor once a region has left the routing table"]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edge_is_idle_again_after_a_region_was_absorbed() {
     if a_repetition() {
