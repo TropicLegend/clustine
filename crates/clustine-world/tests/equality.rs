@@ -370,7 +370,6 @@ fn light_of_an_array_that_is_all_0_is_dark_and_of_one_that_is_all_15_is_full() {
 /// equal light is equal": two chunks with the same light are equal whichever way the
 /// light was written down by whoever gave it.
 #[test]
-#[ignore = "finding: a chunk keeps light given as an array of all 15 or all 0 as an array, so it is not equal to the chunk given the same light as full or dark"]
 fn chunks_given_the_same_light_as_an_array_and_as_full_or_dark_are_equal() {
     let mut as_cases = full();
     let mut light = some_light(&as_cases, 1);
@@ -392,7 +391,6 @@ fn chunks_given_the_same_light_as_an_array_and_as_full_or_dark_are_equal() {
 /// The same of the sky light that is reckoned from the heights until light is made:
 /// above flat ground a whole section is 15 throughout.
 #[test]
-#[ignore = "finding: sky_light gives a section that is 15 throughout as an array of levels, not as full"]
 fn reckoned_sky_light_that_is_15_throughout_a_section_is_full() {
     let mut chunk = of_air(0, 4);
     // Ground that fills the lowest section exactly: the next one is all sky.

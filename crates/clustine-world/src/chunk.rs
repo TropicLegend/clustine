@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use clustine_data::{BLOCK_INFO, BLOCK_STATE_COUNT, BlockState, DimensionType, blocks};
 use serde::{Deserialize, Serialize};
 
-use crate::light::Light;
+use crate::light::{Light, SectionLight};
 use crate::{Biome, COLUMNS_PER_CHUNK, ChunkPos, SECTION_SIZE, Section};
 
 /// The most data one block entity may have, in bytes, and the most all of a chunk's
@@ -390,6 +390,7 @@ impl Chunk {
             return Err(DataRefused::TooMuchForTheChunk);
         }
         let entity = self.block_entities.get_mut(&at).expect("found above");
+        // "As generated" is about the blocks, and the data is not one: it stays.
         entity.data = data;
         Ok(())
     }
@@ -449,7 +450,20 @@ impl Chunk {
             "light for {} sections has {entries} entries",
             self.sections.len()
         );
-        self.light = Some(light);
+        // Equal light is equal: an array that is 0 or 15 throughout is dark or full,
+        // whoever made it.
+        let one_form = |light: Vec<SectionLight>| -> Vec<SectionLight> {
+            let one_form = |section| match section {
+                SectionLight::Levels(levels) => SectionLight::of(levels),
+                other => other,
+            };
+            light.into_iter().map(one_form).collect()
+        };
+        self.light = Some(Light {
+            made_by: light.made_by,
+            sky: one_form(light.sky),
+            block: one_form(light.block),
+        });
     }
 
     /// The ticks generation scheduled, in its order.

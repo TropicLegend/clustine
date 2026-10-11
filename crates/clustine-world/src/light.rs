@@ -136,7 +136,7 @@ pub fn sky_light(chunk: &Chunk) -> Vec<SectionLight> {
             }
         }
         light.push(if any {
-            SectionLight::Levels(levels)
+            SectionLight::of(levels)
         } else {
             SectionLight::Dark
         });
@@ -195,10 +195,7 @@ mod tests {
         assert_eq!(light[0], SectionLight::Dark);
         assert_eq!(level(&light[1], 7, 3, 7), 0);
         assert_eq!(level(&light[1], 7, 4, 7), 15);
-        assert_eq!(
-            light[2],
-            SectionLight::Levels(Box::new([0xFF; LIGHT_ARRAY_LENGTH]))
-        );
+        assert_eq!(light[2], SectionLight::Full);
         assert!(
             light[3..]
                 .iter()
@@ -219,10 +216,7 @@ mod tests {
             assert_eq!(level(section, 4, 8, 5), 15);
             assert_eq!(level(section, 3, 8, 6), 15);
         }
-        assert_eq!(
-            light[5],
-            SectionLight::Levels(Box::new([0xFF; LIGHT_ARRAY_LENGTH]))
-        );
+        assert_eq!(light[5], SectionLight::Full);
         assert_eq!(light[6], SectionLight::Absent);
     }
 
@@ -239,7 +233,8 @@ mod tests {
         let light = sky_light(&chunk);
         assert_eq!(light[1], SectionLight::Dark);
         assert_eq!(light[2], SectionLight::Dark);
-        assert!(matches!(light[3], SectionLight::Levels(_)));
+        // Lit throughout, which is the one form of an array of fifteens.
+        assert_eq!(light[3], SectionLight::Full);
         assert_eq!(light[4], SectionLight::Absent);
     }
 }
