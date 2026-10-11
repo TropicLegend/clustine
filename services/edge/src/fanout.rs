@@ -2411,6 +2411,16 @@ impl Fanout {
             .as_ref()
             .is_some_and(|known| known.shows_the_same(&chunk));
         if same {
+            // Its viewers have it. The packet kept for those who come to view it later
+            // is made from the chunk's light too, which is not among what is shown: it
+            // is made anew if the light differs.
+            let lit_alike = entry
+                .chunk
+                .as_ref()
+                .is_some_and(|known| known.light() == chunk.light());
+            if !lit_alike {
+                entry.packet = None;
+            }
             entry.chunk = Some(chunk);
         } else {
             entry.chunk = Some(chunk);
