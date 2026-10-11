@@ -1,17 +1,51 @@
 //! Hand-built worlds and the light the game's rules give them.
+//!
+//! The worlds are plain arrays of blocks. [`World::lit`] makes the nine chunks of one
+//! and hands them to the crate as anyone would, so that every case goes through
+//! [`Around`] and through a chunk's packed sections.
 
 use clustine_data::{BlockState, Face, blocks};
-use clustine_light::{Blocks, ChunkLight, SectionLight, light};
+use clustine_light::{Around, VERSION};
+use clustine_world::{Biome, Chunk, LIGHT_ARRAY_LENGTH, Light, Section, SectionLight, sky_light};
 
-/// Nine chunks of a small world, 64 blocks high from y 0, all air to begin with.
+/// How the blocks of a test's world are put into chunks. The light may not depend on it.
+#[derive(Clone, Copy, PartialEq)]
+enum Built {
+    /// Each section from its 4,096 states at once: a section of one state is uniform.
+    FromStates,
+    /// Block by block into chunks of air: no section but one of air says of itself
+    /// that it is uniform, and every other has air in its palette, used or not.
+    BlockByBlock,
+}
+
+/// The chunks of a small world, 64 blocks high from y 0, all air to begin with: a
+/// centre chunk with `reach` chunks to each side of it. Blocks are named by `x` and `z`
+/// from the centre chunk's north-west corner, so that nine chunks span -16 to 31.
 #[derive(Clone)]
 struct World {
     height: usize,
+    /// The `y` of the lowest block as the chunks have it. The tests count from 0
+    /// whatever it is.
+    min_y: i32,
+    reach: i32,
     sky: bool,
-    /// By `(chunk_z + 1) * 3 + chunk_x + 1`.
+    /// Of the nine chunks light is made from, by `(chunk_z + 1) * 3 + chunk_x + 1`.
     present: [bool; 9],
     states: Vec<BlockState>,
 }
+
+/// The offsets of the eight neighbours in the order [`Around`] names them: north-west,
+/// north, north-east, west, east, south-west, south, south-east. North is negative z.
+const NEIGHBOURS: [(i32, i32); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
 
 impl World {
     fn new() -> World {
@@ -19,11 +53,20 @@ impl World {
     }
 
     fn of_height(height: usize) -> World {
+        World::reaching(1, height)
+    }
+
+    /// A world of `reach` chunks to each side of the centre chunk. Light is made from
+    /// the inner nine whatever the reach.
+    fn reaching(reach: i32, height: usize) -> World {
+        let width = (2 * reach as usize + 1) * 16;
         World {
             height,
+            min_y: 0,
+            reach,
             sky: true,
             present: [true; 9],
-            states: vec![blocks::AIR; 48 * 48 * height],
+            states: vec![blocks::AIR; width * width * height],
         }
     }
 
@@ -37,10 +80,72 @@ impl World {
         self
     }
 
+    /// Whether one of the nine chunks is there. Chunks further out always are.
+    fn has_chunk(&self, chunk_x: i32, chunk_z: i32) -> bool {
+        if chunk_x.abs() > 1 || chunk_z.abs() > 1 {
+            return true;
+        }
+        self.present[((chunk_z + 1) * 3 + chunk_x + 1) as usize]
+    }
+
+    /// The lowest `x` and `z` of the world, and the one beyond the highest.
+    fn span(&self) -> std::ops::Range<i32> {
+        -16 * self.reach..16 * (self.reach + 1)
+    }
+
+    fn width(&self) -> usize {
+        self.span().len()
+    }
+
     fn index(&self, x: i32, y: i32, z: i32) -> usize {
-        assert!((-16..32).contains(&x) && (-16..32).contains(&z));
+        assert!(self.span().contains(&x) && self.span().contains(&z));
         assert!((0..self.height as i32).contains(&y));
-        (y as usize * 48 + (z + 16) as usize) * 48 + (x + 16) as usize
+        let low = self.span().start;
+        (y as usize * self.width() + (z - low) as usize) * self.width() + (x - low) as usize
+    }
+
+    /// One of the world's chunks, by its offset from the centre.
+    fn chunk(&self, chunk_x: i32, chunk_z: i32, built: Built) -> Chunk {
+        let sections = self.height / 16;
+        let air = vec![Section::filled(blocks::AIR, Biome(0)); sections];
+        let mut chunk = Chunk::from_sections(self.min_y, air);
+        if built == Built::BlockByBlock {
+            for y in 0..self.height as i32 {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        let state = self.get(chunk_x * 16 + x, y, chunk_z * 16 + z);
+                        chunk.set(x as usize, self.min_y + y, z as usize, state);
+                    }
+                }
+            }
+            return chunk;
+        }
+        let sections = (0..sections as i32).map(|section| {
+            let states: Vec<BlockState> = (0..4096)
+                .map(|at| {
+                    let (x, y, z) = (at & 15, at >> 8, at >> 4 & 15);
+                    self.get(chunk_x * 16 + x, section * 16 + y, chunk_z * 16 + z)
+                })
+                .collect();
+            let states: Box<[BlockState; 4096]> = states.into_boxed_slice().try_into().unwrap();
+            Section::from_states(states, Biome(0))
+        });
+        Chunk::from_sections(self.min_y, sections.collect())
+    }
+
+    /// The light of the centre chunk, from the nine chunks built in the given way. A
+    /// chunk that is not there is not built at all, so nothing can ask for its blocks.
+    fn lit_as(&self, built: Built) -> Light {
+        let centre = self.chunk(0, 0, built);
+        let neighbours = NEIGHBOURS.map(|(chunk_x, chunk_z)| {
+            self.has_chunk(chunk_x, chunk_z)
+                .then(|| self.chunk(chunk_x, chunk_z, built))
+        });
+        clustine_light::light(&Around {
+            centre: &centre,
+            neighbours: neighbours.each_ref().map(Option::as_ref),
+            sky: self.sky,
+        })
     }
 
     fn get(&self, x: i32, y: i32, z: i32) -> BlockState {
@@ -63,52 +168,57 @@ impl World {
         }
     }
 
-    /// A whole layer of all nine chunks.
+    /// A whole layer of all the world's chunks.
     fn layers(&mut self, from_y: i32, to_y: i32, state: BlockState) {
-        self.fill([-16, from_y, -16], [32, to_y, 32], state);
+        let span = self.span();
+        self.fill(
+            [span.start, from_y, span.start],
+            [span.end, to_y, span.end],
+            state,
+        );
     }
 }
 
-impl Blocks for World {
-    fn min_y(&self) -> i32 {
-        0
-    }
-
-    fn height(&self) -> u32 {
-        self.height as u32
-    }
-
-    fn has_sky(&self) -> bool {
-        self.sky
-    }
-
-    fn has_chunk(&self, chunk_x: i32, chunk_z: i32) -> bool {
-        self.present[((chunk_z + 1) * 3 + chunk_x + 1) as usize]
-    }
-
-    fn state(&self, x: i32, y: i32, z: i32) -> BlockState {
-        assert!(
-            self.has_chunk(x.div_euclid(16), z.div_euclid(16)),
-            "a chunk that is not there is not asked for its blocks"
-        );
-        self.get(x, y, z)
-    }
+/// The light of the centre chunk of a world.
+fn light(world: &World) -> Light {
+    world.lit_as(Built::FromStates)
 }
 
 fn state(text: &str) -> BlockState {
     BlockState::parse(text).unwrap()
 }
 
-/// The level at a block of the centre chunk; `None` where the section has no light.
-fn at(sections: &[SectionLight], x: i32, y: i32, z: i32) -> Option<u8> {
-    sections[(y / 16 + 1) as usize].level(x as usize, (y % 16) as usize, z as usize)
+/// The level at a position within a light section, each coordinate below 16: the
+/// levels are four bits a block by `y << 8 | z << 4 | x`, the even index in the low
+/// half of its byte. `None` for a section that has no light of its own.
+fn level(light: &SectionLight, x: usize, y: usize, z: usize) -> Option<u8> {
+    assert!(x < 16 && y < 16 && z < 16, "a position within a section");
+    match light {
+        SectionLight::Absent => None,
+        SectionLight::Dark => Some(0),
+        SectionLight::Full => Some(15),
+        SectionLight::Levels(levels) => {
+            let index = y << 8 | z << 4 | x;
+            Some(levels[index / 2] >> (index % 2 * 4) & 15)
+        }
+    }
 }
 
-fn sky(light: &ChunkLight, x: i32, y: i32, z: i32) -> u8 {
+/// The level at a block of the centre chunk; `None` where the section has no light.
+fn at(sections: &[SectionLight], x: i32, y: i32, z: i32) -> Option<u8> {
+    level(
+        &sections[(y / 16 + 1) as usize],
+        x as usize,
+        (y % 16) as usize,
+        z as usize,
+    )
+}
+
+fn sky(light: &Light, x: i32, y: i32, z: i32) -> u8 {
     at(&light.sky, x, y, z).unwrap()
 }
 
-fn block(light: &ChunkLight, x: i32, y: i32, z: i32) -> u8 {
+fn block(light: &Light, x: i32, y: i32, z: i32) -> u8 {
     at(&light.block, x, y, z).unwrap()
 }
 
@@ -293,7 +403,7 @@ fn a_neighbour_that_is_not_there_gives_no_light_and_takes_none() {
 
 /// A shaft one block wide through stone, closed all round, with an emitter at its top,
 /// and `inside` put at y 10 of it.
-fn shaft_with(inside: BlockState) -> ChunkLight {
+fn shaft_with(inside: BlockState) -> Light {
     let mut world = World::new().without_sky();
     world.fill([6, 0, 6], [11, 20, 11], blocks::STONE);
     world.fill([8, 1, 8], [9, 18, 9], blocks::AIR);
@@ -370,7 +480,7 @@ fn a_stair_stops_light_at_its_back_and_lets_it_past_its_step() {
 }
 
 /// A shaft through stone that is open to the sky, with `inside` at y 10 of it.
-fn well_with(inside: BlockState) -> ChunkLight {
+fn well_with(inside: BlockState) -> Light {
     let mut world = World::new();
     world.fill([6, 0, 6], [11, 20, 11], blocks::STONE);
     world.fill([8, 1, 8], [9, 20, 9], blocks::AIR);
@@ -380,7 +490,7 @@ fn well_with(inside: BlockState) -> ChunkLight {
 
 #[test]
 fn the_sky_comes_straight_down_only_through_what_dampens_nothing_and_has_open_faces() {
-    let levels = |light: &ChunkLight| [11, 10, 9, 8].map(|y| sky(light, 8, y, 8));
+    let levels = |light: &Light| [11, 10, 9, 8].map(|y| sky(light, 8, y, 8));
     assert_eq!(levels(&well_with(blocks::AIR)), [15, 15, 15, 15]);
     assert_eq!(levels(&well_with(blocks::GLASS)), [15, 15, 15, 15]);
     // Into a lower slab and no further; not into an upper slab.
@@ -510,31 +620,202 @@ fn a_section_has_light_if_it_or_one_of_the_26_around_it_holds_a_block() {
     assert_eq!(light.sky[5], SectionLight::Full);
     assert!(matches!(light.sky[0], SectionLight::Levels(_)));
     // Below the world the sky comes down beside the block's column and creeps under it.
-    assert_eq!(light.sky[0].level(7, 15, 8), Some(15));
-    assert_eq!(light.sky[0].level(8, 15, 8), Some(14));
+    assert_eq!(level(&light.sky[0], 7, 15, 8), Some(15));
+    assert_eq!(level(&light.sky[0], 8, 15, 8), Some(14));
+}
+
+/// Whether an entry is in its one form: levels are never all 0 and never all 15.
+fn in_its_one_form(light: &SectionLight) -> bool {
+    match light {
+        SectionLight::Levels(levels) => {
+            levels.iter().any(|byte| *byte != 0) && levels.iter().any(|byte| *byte != 0xff)
+        }
+        _ => true,
+    }
 }
 
 #[test]
-fn an_array_of_one_level_is_dark_or_full_and_never_stored() {
-    assert_eq!(
-        SectionLight::from_array(Box::new([0; 2048])),
-        SectionLight::Dark
-    );
-    assert_eq!(
-        SectionLight::from_array(Box::new([0xff; 2048])),
-        SectionLight::Full
-    );
-    let mut one = Box::new([0xff; 2048]);
-    one[17] = 0xf7;
-    let mixed = SectionLight::from_array(one.clone());
-    assert_eq!(mixed, SectionLight::Levels(one.clone()));
-    // Index 34 is x 2, z 2, y 0: the low half of byte 17.
-    assert_eq!(mixed.level(2, 0, 2), Some(7));
-    assert_eq!(mixed.level(3, 0, 2), Some(15));
-    assert_eq!(mixed.to_array(), Some(one));
-    assert_eq!(SectionLight::Absent.to_array(), None);
-    assert_eq!(SectionLight::Full.to_array(), Some(Box::new([0xff; 2048])));
-    assert_eq!(SectionLight::Dark.level(0, 0, 0), Some(0));
+fn a_section_that_is_all_15_is_full_and_one_that_is_all_0_is_dark() {
+    // Stone in the two lowest sections, and a torch in the middle of the fourth, which
+    // the sky passes through.
+    let mut world = World::new();
+    world.layers(0, 32, blocks::STONE);
+    world.set(8, 56, 8, blocks::TORCH);
+    let made = light(&world);
+    // The sky reaches nothing of the stone and nothing below the world, and all of
+    // what is above the stone.
+    assert_eq!(made.sky[..3], [const { SectionLight::Dark }; 3]);
+    assert_eq!(made.sky[3..], [const { SectionLight::Full }; 3]);
+    // The torch's light ends 13 blocks below it, at y 43 of the third section, and
+    // never comes near the stone.
+    assert_eq!(made.block[..3], [const { SectionLight::Dark }; 3]);
+    assert!(matches!(made.block[3], SectionLight::Levels(_)));
+    assert_eq!(block(&made, 8, 43, 8), 1);
+    assert_eq!(block(&made, 8, 42, 8), 0);
+    assert!(matches!(made.block[4], SectionLight::Levels(_)));
+    assert!(matches!(made.block[5], SectionLight::Levels(_)));
+    assert!(made.sky.iter().chain(&made.block).all(in_its_one_form));
+
+    // A section of lamps is full of block light, and no array stands for that.
+    let mut lamps = World::new().without_sky();
+    lamps.layers(16, 32, blocks::GLOWSTONE);
+    assert_eq!(light(&lamps).block[2], SectionLight::Full);
+
+    // Nor does one in any light of a world of everything.
+    let random = light(&random_world(5, 32));
+    assert!(random.sky.iter().chain(&random.block).all(in_its_one_form));
+}
+
+#[test]
+fn levels_are_four_bits_a_block_by_y_then_z_then_x_with_the_even_index_low() {
+    let mut world = World::new().without_sky();
+    world.set(2, 16, 3, blocks::GLOWSTONE);
+    let light = light(&world);
+    let SectionLight::Levels(levels) = &light.block[2] else {
+        panic!("levels, not {:?}", light.block[2]);
+    };
+    assert_eq!(levels.len(), LIGHT_ARRAY_LENGTH);
+    // The lamp is at index 3 << 4 | 2 = 50 of its section: the low half of byte 25,
+    // whose high half is the block to the east of it.
+    assert_eq!(levels[25], 14 << 4 | 15);
+    // One to the south is 16 further, one up 256 further.
+    assert_eq!(levels[33], 13 << 4 | 14);
+    assert_eq!(levels[128 + 25], 13 << 4 | 14);
+    // The byte before holds x 0 and 1 of the lamp's row.
+    assert_eq!(levels[24], 14 << 4 | 13);
+}
+
+#[test]
+fn light_says_which_version_of_the_rules_made_it_and_has_an_entry_for_each_section() {
+    for height in [16, 64, 384] {
+        let mut world = World::of_height(height);
+        world.min_y = -64;
+        world.layers(0, 1, blocks::STONE);
+        let light = light(&world);
+        assert_eq!(light.made_by, VERSION);
+        assert_eq!(light.sky.len(), height / 16 + 2);
+        assert_eq!(light.block.len(), height / 16 + 2);
+    }
+}
+
+/// Test 6 of ADR-0022: until the edge's packet is made from what a chunk carries it is
+/// made from `sky_light`, and the flat world must not look otherwise afterwards.
+#[test]
+fn the_flat_chunk_gives_exactly_the_sky_light_that_is_reckoned_by_columns_today() {
+    // The overworld's heights, and the layers of the classic flat world.
+    let mut world = World::of_height(384);
+    world.min_y = -64;
+    world.layers(0, 1, blocks::BEDROCK);
+    world.layers(1, 3, blocks::DIRT);
+    world.layers(3, 4, blocks::GRASS_BLOCK);
+    for built in [Built::FromStates, Built::BlockByBlock] {
+        let made = world.lit_as(built);
+        let by_columns = sky_light(&world.chunk(0, 0, built));
+        assert_eq!(by_columns.len(), 26);
+        for (entry, (made, by_columns)) in made.sky.iter().zip(&by_columns).enumerate() {
+            assert_eq!(made, by_columns, "the sky's entry {entry}");
+        }
+        assert_eq!(made.sky, by_columns);
+        // What the two agree on, written out.
+        assert_eq!(made.sky[0], SectionLight::Dark);
+        assert!(matches!(made.sky[1], SectionLight::Levels(_)));
+        assert_eq!(made.sky[2], SectionLight::Full);
+        assert_eq!(made.sky[3..], [const { SectionLight::Absent }; 23]);
+        // And block light as the edge's packet has it today: dark wherever the sky's
+        // is listed.
+        assert_eq!(made.block[..3], [const { SectionLight::Dark }; 3]);
+        assert_eq!(made.block[3..], [const { SectionLight::Absent }; 23]);
+    }
+}
+
+#[test]
+fn a_pillar_shades_its_own_column_and_nothing_beside_it() {
+    let mut world = World::new();
+    world.layers(0, 1, blocks::STONE);
+    world.fill([3, 1, 5], [4, 40, 6], blocks::STONE);
+    let light = light(&world);
+    for y in 1..48 {
+        assert_eq!(sky(&light, 3, y, 5), if y < 40 { 0 } else { 15 }, "y {y}");
+        for (x, z) in [(2, 5), (4, 5), (3, 4), (3, 6)] {
+            assert_eq!(sky(&light, x, y, z), 15, "{x} {y} {z}");
+        }
+    }
+    // The sections the pillar stands in are levels, the one above it is full.
+    assert!(matches!(light.sky[1], SectionLight::Levels(_)));
+    assert!(matches!(light.sky[3], SectionLight::Levels(_)));
+    assert_eq!(light.sky[4], SectionLight::Full);
+    assert_eq!(light.sky[5], SectionLight::Absent);
+}
+
+#[test]
+fn a_torch_one_block_inside_a_neighbour_lights_the_chunk_across_the_border() {
+    let mut world = World::new();
+    world.layers(0, 1, blocks::STONE);
+    world.layers(6, 7, blocks::STONE);
+    world.set(-1, 1, 8, blocks::TORCH);
+    let light = light(&world);
+    for z in 0..16 {
+        for x in 0..16 {
+            // One step to the border, then by distance.
+            let away = x + 1 + i32::abs(z - 8);
+            assert_eq!(block(&light, x, 1, z), (14 - away).max(0) as u8, "{x} {z}");
+        }
+    }
+    assert_eq!(block(&light, 0, 1, 8), 13);
+    assert_eq!(block(&light, 0, 5, 8), 9);
+    // Under the roof there is no light but the torch's.
+    assert_eq!(sky(&light, 0, 1, 8), 0);
+}
+
+/// One lamp in one neighbour, just across the border or the corner, with each of the
+/// eight chunks built by hand in the order [`Around`] names them.
+#[test]
+fn the_neighbours_are_named_from_the_north_west_row_by_row_and_north_is_negative_z() {
+    let air = || Chunk::from_sections(0, vec![Section::filled(blocks::AIR, Biome(0)); 2]);
+    let empty = air();
+    // For each neighbour: where the lamp is in it, and the block of the centre chunk
+    // that is nearest to it, with the steps between them.
+    let cases: [(&str, [usize; 2], [usize; 2], u8); 8] = [
+        ("north-west", [15, 15], [0, 0], 2),
+        ("north", [8, 15], [8, 0], 1),
+        ("north-east", [0, 15], [15, 0], 2),
+        ("west", [15, 8], [0, 8], 1),
+        ("east", [0, 8], [15, 8], 1),
+        ("south-west", [15, 0], [0, 15], 2),
+        ("south", [8, 0], [8, 15], 1),
+        ("south-east", [0, 0], [15, 15], 2),
+    ];
+    for (slot, (name, lamp, nearest, steps)) in cases.into_iter().enumerate() {
+        let mut lit = air();
+        lit.set(lamp[0], 5, lamp[1], blocks::GLOWSTONE);
+        let mut neighbours = [Some(&empty); 8];
+        neighbours[slot] = Some(&lit);
+        let light = clustine_light::light(&Around {
+            centre: &empty,
+            neighbours,
+            sky: false,
+        });
+        let brightest = (0..256)
+            .map(|column| (level(&light.block[1], column & 15, 5, column >> 4), column))
+            .max()
+            .unwrap();
+        let column = nearest[1] << 4 | nearest[0];
+        assert_eq!(brightest, (Some(15 - steps), column), "{name}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "span the same heights")]
+fn a_neighbour_of_another_height_is_refused() {
+    let centre = Chunk::from_sections(0, vec![Section::filled(blocks::AIR, Biome(0)); 4]);
+    let lower = Chunk::from_sections(0, vec![Section::filled(blocks::AIR, Biome(0)); 3]);
+    let mut neighbours = [Some(&centre); 8];
+    neighbours[6] = Some(&lower);
+    clustine_light::light(&Around {
+        centre: &centre,
+        neighbours,
+        sky: true,
+    });
 }
 
 // ---------------------------------------------------------------------------------
@@ -554,6 +835,10 @@ impl Numbers {
 }
 
 fn random_world(seed: u64, height: usize) -> World {
+    random_world_reaching(1, seed, height)
+}
+
+fn random_world_reaching(reach: i32, seed: u64, height: usize) -> World {
     let shapes = [
         "minecraft:oak_slab[type=bottom]",
         "minecraft:oak_slab[type=top]",
@@ -568,7 +853,7 @@ fn random_world(seed: u64, height: usize) -> World {
     ]
     .map(state);
     let mut numbers = Numbers(seed);
-    let mut world = World::of_height(height);
+    let mut world = World::reaching(reach, height);
     for index in 0..world.states.len() {
         world.states[index] = match numbers.below(1000) {
             0..520 => blocks::AIR,
@@ -612,14 +897,17 @@ fn stops(from: BlockState, to: BlockState, towards: Face) -> bool {
 }
 
 /// The light of the centre chunk by the rules as the head of the crate states them,
-/// swept over all nine chunks until nothing changes. One level for each block from one
-/// section below the world to one above it, by `(y * 16 + z) * 16 + x`.
+/// swept over all the world's chunks, the nine or more, until nothing changes. One
+/// level for each block from one section below the world to one above it, by
+/// `(y * 16 + z) * 16 + x`.
 fn slowly(world: &World, of_sky: bool) -> Vec<u8> {
     let tall = world.height as i32 + 32;
-    let at = |x: i32, y: i32, z: i32| ((y * 48 + z + 16) * 48 + x + 16) as usize;
+    let span = world.span();
+    let (low, wide) = (span.start, span.len() as i32);
+    let at = |x: i32, y: i32, z: i32| ((y * wide + z - low) * wide + x - low) as usize;
     // `None` is a block of a chunk that is not there.
     let state_at = |x: i32, y: i32, z: i32| -> Option<BlockState> {
-        if !(-16..32).contains(&x) || !(-16..32).contains(&z) || !(0..tall).contains(&y) {
+        if !span.contains(&x) || !span.contains(&z) || !(0..tall).contains(&y) {
             return None;
         }
         if !world.has_chunk(x.div_euclid(16), z.div_euclid(16)) {
@@ -630,10 +918,10 @@ fn slowly(world: &World, of_sky: bool) -> Vec<u8> {
         }
         Some(world.get(x, y - 16, z))
     };
-    let mut levels = vec![0u8; (tall * 48 * 48) as usize];
+    let mut levels = vec![0u8; (tall * wide * wide) as usize];
     let mut fixed = vec![false; levels.len()];
-    for z in -16..32 {
-        for x in -16..32 {
+    for z in span.clone() {
+        for x in span.clone() {
             if of_sky {
                 let mut above = blocks::AIR;
                 for y in (0..tall).rev() {
@@ -665,8 +953,8 @@ fn slowly(world: &World, of_sky: bool) -> Vec<u8> {
     loop {
         let mut changed = false;
         for y in 0..tall {
-            for z in -16..32 {
-                for x in -16..32 {
+            for z in span.clone() {
+                for x in span.clone() {
                     let Some(here) = state_at(x, y, z) else {
                         continue;
                     };
@@ -720,7 +1008,7 @@ fn assert_equal_to_slowly(world: &World, what: &str) {
             for y in 0..16 {
                 for z in 0..16 {
                     for x in 0..16 {
-                        let Some(level) = made.level(x, y, z) else {
+                        let Some(level) = level(made, x, y, z) else {
                             continue;
                         };
                         let slow = expected[((section * 16 + y) * 16 + z) * 16 + x];
@@ -774,45 +1062,117 @@ fn the_light_of_a_chunk_does_not_depend_on_blocks_fifteen_or_more_away() {
 
 #[test]
 fn the_same_blocks_give_the_same_light_however_they_are_handed_over() {
-    /// The same world, which says of its uniform sections that they are.
-    struct Knowing(World);
-    impl Blocks for Knowing {
-        fn min_y(&self) -> i32 {
-            -64
-        }
-        fn height(&self) -> u32 {
-            self.0.height()
-        }
-        fn has_sky(&self) -> bool {
-            true
-        }
-        fn has_chunk(&self, chunk_x: i32, chunk_z: i32) -> bool {
-            self.0.has_chunk(chunk_x, chunk_z)
-        }
-        fn state(&self, x: i32, y: i32, z: i32) -> BlockState {
-            self.0.get(x, y + 64, z)
-        }
-        fn uniform_section(
-            &self,
-            chunk_x: i32,
-            chunk_z: i32,
-            section: usize,
-        ) -> Option<BlockState> {
-            let first = self.0.get(chunk_x * 16, section as i32 * 16, chunk_z * 16);
-            let uniform = (0..4096).all(|index| {
-                let (x, y, z) = (index & 15, index >> 8, index >> 4 & 15);
-                self.0
-                    .get(chunk_x * 16 + x, section as i32 * 16 + y, chunk_z * 16 + z)
-                    == first
-            });
-            uniform.then_some(first)
-        }
-    }
     let mut world = random_world(11, 64);
     world.layers(16, 32, blocks::WATER);
     world.layers(32, 48, blocks::AIR);
     world.fill([0, 48, 0], [16, 64, 16], blocks::GLOWSTONE);
     let plain = light(&world);
     assert_eq!(plain, light(&world));
-    assert_eq!(plain, light(&Knowing(world)));
+
+    // Sections that know they hold one state, and the same sections filled block by
+    // block, which do not.
+    let water = |built| world.chunk(0, 0, built).sections()[1].uniform_state();
+    assert_eq!(water(Built::FromStates), Some(blocks::WATER));
+    assert_eq!(water(Built::BlockByBlock), None);
+    assert_eq!(plain, world.lit_as(Built::BlockByBlock));
+
+    // The same blocks at another height of the world.
+    let mut lower = world.clone();
+    lower.min_y = -64;
+    assert_eq!(plain, light(&lower));
+
+    // Of a chunk only its blocks are read: not the light it carries, nor what else
+    // it does.
+    let mut alone = world.clone();
+    alone.present = [false; 9];
+    let mut centre = world.chunk(0, 0, Built::FromStates);
+    centre.set_light(Light {
+        made_by: 7,
+        sky: vec![SectionLight::Full; 6],
+        block: vec![SectionLight::Full; 6],
+    });
+    centre.mark_generated(3, true);
+    let made = clustine_light::light(&Around {
+        centre: &centre,
+        neighbours: [None; 8],
+        sky: true,
+    });
+    assert_eq!(made, light(&alone));
+    assert_ne!(made, plain);
+}
+
+#[test]
+fn stone_with_its_ores_is_lit_as_stone_is() {
+    let build = |ground: &dyn Fn(i32) -> BlockState| {
+        let mut world = World::new();
+        for y in 0..20 {
+            for z in world.span() {
+                for x in world.span() {
+                    world.set(x, y, z, ground(x + 3 * y + 7 * z));
+                }
+            }
+        }
+        // A pit down to the top of the lowest section, with a torch at its bottom and
+        // a slab half way up, so that there is light against that section.
+        world.fill([6, 16, 6], [10, 20, 10], blocks::AIR);
+        world.set(7, 16, 7, blocks::TORCH);
+        world.set(8, 18, 8, state("minecraft:oak_slab[type=top]"));
+        world
+    };
+    let stone = build(&|_| blocks::STONE);
+    let ores = build(&|at| match at.rem_euclid(5) {
+        0 => state("minecraft:coal_ore"),
+        1 => blocks::DIRT,
+        2 => blocks::BEDROCK,
+        _ => blocks::STONE,
+    });
+    // The lowest section holds four states and nothing light could tell apart.
+    let centre = ores.chunk(0, 0, Built::FromStates);
+    let lowest = &centre.sections()[0];
+    assert_eq!(lowest.uniform_state(), None);
+    assert_eq!(lowest.non_air_count(), 4096);
+    let lit = light(&stone);
+    assert_eq!(block(&lit, 7, 17, 7), 13);
+    assert_eq!(block(&lit, 7, 15, 7), 0);
+    assert_eq!(sky(&lit, 7, 16, 7), 15);
+    assert_eq!(sky(&lit, 8, 17, 8), 14);
+    assert_eq!(sky(&lit, 8, 15, 8), 0);
+    for built in [Built::FromStates, Built::BlockByBlock] {
+        assert_eq!(ores.lit_as(built), lit);
+    }
+}
+
+/// Test 6 of ADR-0022. [`clustine_light::light`] is handed nine chunks and can read no
+/// other, so by itself it cannot be shown a chunk two away. What can be shown is that
+/// the nine are enough: the rules swept slowly over five chunks by five, where light
+/// from the outer sixteen is free to come in, give the centre chunk the light that is
+/// made from the inner nine alone, whatever the outer sixteen hold.
+#[test]
+fn the_light_of_a_chunk_does_not_change_when_a_chunk_two_away_changes() {
+    let world = random_world_reaching(2, 21, 16);
+    let made = light(&world);
+    assert!(made.sky.iter().all(|s| *s != SectionLight::Absent));
+    assert_equal_to_slowly(&world, "beside sixteen chunks of everything");
+
+    // The sixteen chunks two away become lamps throughout: the brightest and the
+    // darkest a chunk can be, at once.
+    let mut changed = world.clone();
+    for y in 0..16 {
+        for z in world.span() {
+            for x in world.span() {
+                if x.div_euclid(16).abs() == 2 || z.div_euclid(16).abs() == 2 {
+                    changed.set(x, y, z, blocks::GLOWSTONE);
+                }
+            }
+        }
+    }
+    assert!(changed.states != world.states);
+    for (chunk_x, chunk_z) in NEIGHBOURS {
+        assert!(
+            changed.chunk(chunk_x, chunk_z, Built::FromStates)
+                == world.chunk(chunk_x, chunk_z, Built::FromStates)
+        );
+    }
+    assert_equal_to_slowly(&changed, "beside sixteen chunks of lamps");
+    assert_eq!(light(&changed), made);
 }

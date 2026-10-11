@@ -320,6 +320,7 @@ name = "clustine-light"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "clustine-world",
  "flate2",
 ]
 
@@ -419,6 +420,7 @@ name = "clustine-worldgen"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "clustine-light",
  "clustine-world",
 ]
 

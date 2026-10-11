@@ -18,6 +18,10 @@
 //!   light. From there it spreads as block light does, downwards too.
 //! - A chunk that is not there is solid: it gives no light and takes none. Above and
 //!   below the world is air.
+//! - A dimension without a sky has no sky light: every entry of [`Light::sky`] is
+//!   [`SectionLight::Absent`], so that a packet made from it lists no sky light at all.
+//!   That is the game's code as remembered (it has no engine for the sky there); no
+//!   packet and no file of the official server's nether was compared with it.
 //!
 //! A level falls by at least one a step, so light that reaches the centre chunk started
 //! at most 14 blocks from it: the nine chunks are all it depends on.
@@ -25,9 +29,10 @@
 //! Which case a light section comes out as is the official server's rule for its
 //! packet: a section has light at all if it, or one of the 26 sections around it in the
 //! nine chunks, holds a block that is not air; otherwise it is [`SectionLight::Absent`].
-//! The official server's files cannot tell a dark section from an absent one, so that
-//! half of the rule is from the game's code as remembered and from the flat world's
-//! packet, not from the comparison below.
+//! A section that has light is in the one form equal light has ([`SectionLight::of`]):
+//! dark, full, or its levels. The official server's files cannot tell a dark section
+//! from an absent one, so that half of the rule is from the game's code as remembered
+//! and from the flat world's packet, not from the comparison below.
 //!
 //! **Where this is not the game.** The game spreads light only into sections that have
 //! light of their own, and reads a section without any from the one above it. Here
@@ -45,119 +50,40 @@
 mod faces;
 mod flood;
 
-use clustine_data::BlockState;
+#[cfg(doc)]
+use clustine_world::SectionLight;
+use clustine_world::{Chunk, Light, SECTION_SIZE};
 
 /// The version of the rules in this crate. Raised whenever any chunk's light would come
-/// out otherwise. Light says which version made it.
+/// out otherwise. Light says which version made it ([`Light::made_by`]).
 pub const VERSION: u16 = 1;
 
-/// Bytes in the light array of one section: four bits a block.
-pub const LIGHT_ARRAY_LENGTH: usize = 2048;
-
 /// Blocks along the edge of a section.
-const SECTION_EDGE: usize = 16;
+const SECTION_EDGE: usize = SECTION_SIZE;
 
-/// The blocks light is made from: the chunk whose light is wanted and the eight around
-/// it, and what of the dimension light needs.
+/// The chunk whose light is wanted and the chunks around it.
 ///
-/// Chunks are named by their offset from the centre chunk, each of -1, 0 and 1; blocks
-/// by `x` and `z` from the centre chunk's north-west corner, so that the nine chunks
-/// span -16 to 31, and by their `y` in the world.
-pub trait Blocks {
-    /// The `y` of the lowest block of the world.
-    fn min_y(&self) -> i32;
-
-    /// The height of the world in blocks: a multiple of 16, and not 0.
-    fn height(&self) -> u32;
-
+/// North is towards negative `z` and west towards negative `x`, as in the game: the
+/// chunk to the north-west of the chunk at `(x, z)` is the one at `(x - 1, z - 1)`.
+#[derive(Debug, Clone, Copy)]
+pub struct Around<'a> {
+    pub centre: &'a Chunk,
+    /// North-west, north, north-east, west, east, south-west, south, south-east: row by
+    /// row from the north, each row from the west. One that is not there gives no light
+    /// and takes none.
+    pub neighbours: [Option<&'a Chunk>; 8],
     /// Whether the dimension has a sky. Without one there is no sky light at all.
-    fn has_sky(&self) -> bool;
-
-    /// Whether the chunk at this offset from the centre is there. One that is not gives
-    /// no light and takes none. The centre chunk is always there.
-    fn has_chunk(&self, chunk_x: i32, chunk_z: i32) -> bool;
-
-    /// The block at a position within the world's height, in a chunk that is there.
-    fn state(&self, x: i32, y: i32, z: i32) -> BlockState;
-
-    /// The one state of a whole section (counted from the lowest) of a chunk that is
-    /// there, if the section is known to hold one state only. It saves 4,096 calls of
-    /// [`Self::state`]; answering `None` is always right.
-    fn uniform_section(&self, chunk_x: i32, chunk_z: i32, section: usize) -> Option<BlockState> {
-        let _ = (chunk_x, chunk_z, section);
-        None
-    }
+    pub sky: bool,
 }
 
-/// The light of one section, sky or block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SectionLight {
-    /// The section has no light of its own: the packet lists it in neither mask.
-    Absent,
-    /// Level 0 everywhere.
-    Dark,
-    /// Level 15 everywhere.
-    Full,
-    /// Levels per block, four bits each, indexed by `y << 8 | z << 4 | x`; the block
-    /// with the even index is in the low half of its byte. Never all 0 and never all
-    /// 15: those are [`Self::Dark`] and [`Self::Full`], so that equal light is equal.
-    Levels(Box<[u8; LIGHT_ARRAY_LENGTH]>),
-}
-
-impl SectionLight {
-    /// The case for an array of levels: [`Self::Dark`] if all are 0, [`Self::Full`] if
-    /// all are 15, the array otherwise.
-    pub fn from_array(levels: Box<[u8; LIGHT_ARRAY_LENGTH]>) -> SectionLight {
-        if levels.iter().all(|byte| *byte == 0) {
-            SectionLight::Dark
-        } else if levels.iter().all(|byte| *byte == 0xff) {
-            SectionLight::Full
-        } else {
-            SectionLight::Levels(levels)
-        }
-    }
-
-    /// The level at a position within the section, each coordinate below 16. `None` for
-    /// a section that has no light of its own.
-    pub fn level(&self, x: usize, y: usize, z: usize) -> Option<u8> {
-        assert!(
-            x < SECTION_EDGE && y < SECTION_EDGE && z < SECTION_EDGE,
-            "a position within a section"
-        );
-        match self {
-            SectionLight::Absent => None,
-            SectionLight::Dark => Some(0),
-            SectionLight::Full => Some(15),
-            SectionLight::Levels(levels) => {
-                let index = y << 8 | z << 4 | x;
-                Some(levels[index / 2] >> (index % 2 * 4) & 15)
-            }
-        }
-    }
-
-    /// The 2,048 bytes the client is sent for this section, if it is sent any.
-    pub fn to_array(&self) -> Option<Box<[u8; LIGHT_ARRAY_LENGTH]>> {
-        match self {
-            SectionLight::Absent => None,
-            SectionLight::Dark => Some(Box::new([0; LIGHT_ARRAY_LENGTH])),
-            SectionLight::Full => Some(Box::new([0xff; LIGHT_ARRAY_LENGTH])),
-            SectionLight::Levels(levels) => Some(levels.clone()),
-        }
-    }
-}
-
-/// The light of a chunk: for sky and for block light one entry for the section below
-/// the world, one for each section and one for the section above, bottom first.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChunkLight {
-    /// All [`SectionLight::Absent`] in a dimension without a sky.
-    pub sky: Vec<SectionLight>,
-    pub block: Vec<SectionLight>,
-}
-
-/// The light of the centre chunk of `blocks`, as the game's rules give it.
+/// The light of the centre chunk, as the game's rules give it for these blocks: made by
+/// [`VERSION`], with an entry for the section below the chunk, one for each section and
+/// one for the section above, for the sky and for blocks, each in its one form.
 ///
-/// Panics if the height is 0 or not a multiple of 16; a dimension has neither.
-pub fn light<B: Blocks + ?Sized>(blocks: &B) -> ChunkLight {
-    flood::light(blocks)
+/// Nothing but the nine chunks is read, and of them only their blocks.
+///
+/// Panics if a neighbour does not span the heights the centre spans; the chunks of one
+/// dimension all do.
+pub fn light(around: &Around<'_>) -> Light {
+    flood::light(around)
 }

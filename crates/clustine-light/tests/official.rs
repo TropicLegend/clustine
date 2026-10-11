@@ -16,7 +16,8 @@ use std::io::Read;
 use std::path::Path;
 
 use clustine_data::BlockState;
-use clustine_light::{Blocks, SectionLight, light};
+use clustine_light::{Around, VERSION, light};
+use clustine_world::{Biome, Chunk, LIGHT_ARRAY_LENGTH, SectionLight};
 
 // --- NBT, as the region files have it --------------------------------------------------
 
@@ -293,50 +294,29 @@ fn chunks_of(world: &Path, section_count: usize) -> BTreeMap<(i64, i64), Officia
     found
 }
 
-/// A chunk and the eight around it, as [`light`] wants them.
-struct Nine<'a> {
-    /// North-west first, row by row.
-    chunks: [&'a Official; 9],
-}
-
-impl Nine<'_> {
-    fn chunk(&self, chunk_x: i32, chunk_z: i32) -> &Official {
-        self.chunks[((chunk_z + 1) * 3 + chunk_x + 1) as usize]
-    }
-}
-
-impl Blocks for Nine<'_> {
-    fn min_y(&self) -> i32 {
-        self.chunks[4].lowest as i32 * 16
-    }
-
-    fn height(&self) -> u32 {
-        self.chunks[4].sections.len() as u32 * 16
-    }
-
-    fn has_sky(&self) -> bool {
-        true
-    }
-
-    fn has_chunk(&self, _chunk_x: i32, _chunk_z: i32) -> bool {
-        true
-    }
-
-    fn state(&self, x: i32, y: i32, z: i32) -> BlockState {
-        let from_bottom = (y - self.min_y()) as usize;
-        match &self.chunk(x >> 4, z >> 4).sections[from_bottom / 16] {
-            Section::Uniform(state) => *state,
+impl Official {
+    /// The chunk's blocks as a chunk of this server, which is what [`light`] is handed.
+    /// The biome is of no account to light.
+    fn chunk(&self) -> Chunk {
+        let sections = self.sections.iter().map(|section| match section {
+            Section::Uniform(state) => clustine_world::Section::filled(*state, Biome(0)),
             Section::Mixed(states) => {
-                states[(from_bottom % 16) << 8 | ((z & 15) as usize) << 4 | (x & 15) as usize]
+                let states: Box<[BlockState; 4096]> =
+                    states.clone().into_boxed_slice().try_into().unwrap();
+                clustine_world::Section::from_states(states, Biome(0))
             }
-        }
+        });
+        Chunk::from_sections(self.lowest as i32 * 16, sections.collect())
     }
+}
 
-    fn uniform_section(&self, chunk_x: i32, chunk_z: i32, section: usize) -> Option<BlockState> {
-        match &self.chunk(chunk_x, chunk_z).sections[section] {
-            Section::Uniform(state) => Some(*state),
-            Section::Mixed(_) => None,
-        }
+/// The 2,048 bytes a client is sent for a light section, if it is sent any.
+fn array_of(light: &SectionLight) -> Option<Box<[u8; LIGHT_ARRAY_LENGTH]>> {
+    match light {
+        SectionLight::Absent => None,
+        SectionLight::Dark => Some(Box::new([0; LIGHT_ARRAY_LENGTH])),
+        SectionLight::Full => Some(Box::new([0xff; LIGHT_ARRAY_LENGTH])),
+        SectionLight::Levels(levels) => Some(levels.clone()),
     }
 }
 
@@ -409,25 +389,40 @@ fn official_chunks_are_lit_as_the_official_server_lit_them() {
     let full = chunks.values().filter(|chunk| chunk.full).count();
     println!("{} chunks read, {full} of them finished", chunks.len());
 
+    // The finished chunks as chunks of this server, made before any time is taken.
+    let finished: BTreeMap<(i64, i64), Chunk> = chunks
+        .iter()
+        .filter(|(_, chunk)| chunk.full)
+        .map(|(position, chunk)| (*position, chunk.chunk()))
+        .collect();
+
     let mut sky = Tally::default();
     let mut block = Tally::default();
     let mut compared = 0;
     let mut times = Vec::new();
     for (&(chunk_x, chunk_z), centre) in &chunks {
-        let mut around = Vec::new();
+        // North-west first, row by row: north is the lower z.
+        let mut nine = Vec::new();
         for dz in -1..=1 {
             for dx in -1..=1 {
-                around.extend(chunks.get(&(chunk_x + dx, chunk_z + dz)).filter(|c| c.full));
+                nine.extend(finished.get(&(chunk_x + dx, chunk_z + dz)));
             }
         }
-        let Ok(nine) = <[&Official; 9]>::try_from(around) else {
+        let Ok([nw, n, ne, w, own, e, sw, s, se]) = <[&Chunk; 9]>::try_from(nine) else {
             continue;
         };
-        let nine = Nine { chunks: nine };
+        let around = Around {
+            centre: own,
+            neighbours: [nw, n, ne, w, e, sw, s, se].map(Some),
+            sky: true,
+        };
         let started = std::time::Instant::now();
-        let made = light(&nine);
+        let made = light(&around);
         times.push(started.elapsed());
         compared += 1;
+        assert_eq!(made.made_by, VERSION);
+        assert_eq!(made.sky.len(), section_count + 2);
+        assert_eq!(made.block.len(), section_count + 2);
 
         for (tally, kind, made, stored) in [
             (&mut sky, "sky", &made.sky, &centre.sky),
@@ -436,7 +431,7 @@ fn official_chunks_are_lit_as_the_official_server_lit_them() {
             for (index, (made, stored)) in made.iter().zip(stored).enumerate() {
                 let section_y = centre.lowest + index as i64 - 1;
                 let place = format!("{kind} light, chunk {chunk_x} {chunk_z}, section {section_y}");
-                match (stored, made.to_array()) {
+                match (stored, array_of(made)) {
                     (None, _) if *made == SectionLight::Absent => tally.absent += 1,
                     (None, _) if *made == SectionLight::Dark => tally.dark += 1,
                     (None, _) => {
@@ -470,11 +465,9 @@ fn official_chunks_are_lit_as_the_official_server_lit_them() {
                             first = false;
                             let (x, y, z) = (cell & 15, cell >> 8, cell >> 4 & 15);
                             let world_y = section_y * 16 + y as i64;
-                            let here = if (0..section_count as i64).contains(&(index as i64 - 1)) {
-                                written(nine.state(x as i32, world_y as i32, z as i32))
-                            } else {
-                                "outside the world".to_owned()
-                            };
+                            let here = own
+                                .get(x, world_y as i32, z)
+                                .map_or("outside the world".to_owned(), written);
                             tally.show(format!(
                                 "{place}: at {x} {world_y} {z} ({here}) stored {} made {}",
                                 level(stored),

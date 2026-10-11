@@ -1,6 +1,7 @@
 //! World generation service: stateless chunk generation.
 
 use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks, synced_registry};
+use clustine_light::Around;
 use clustine_world::{Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE};
 
 /// Generates a flat world: the same layers of blocks in every chunk.
@@ -10,6 +11,9 @@ pub struct FlatGenerator {
     biome: Biome,
     /// Blocks from the bottom of the world upwards, one per layer.
     layers: Vec<BlockState>,
+    /// The chunk of every position, with its light: made once, since every chunk has
+    /// the same blocks and stands beside eight like it.
+    made: Chunk,
 }
 
 impl FlatGenerator {
@@ -23,15 +27,18 @@ impl FlatGenerator {
         let plains = synced_registry("minecraft:worldgen/biome")
             .and_then(|biomes| biomes.id_of("minecraft:plains"))
             .expect("plains is a vanilla biome");
+        let biome = Biome(plains as u16);
+        let layers = vec![
+            blocks::BEDROCK,
+            blocks::DIRT,
+            blocks::DIRT,
+            blocks::GRASS_BLOCK,
+        ];
         Self {
             dimension,
-            biome: Biome(plains as u16),
-            layers: vec![
-                blocks::BEDROCK,
-                blocks::DIRT,
-                blocks::DIRT,
-                blocks::GRASS_BLOCK,
-            ],
+            biome,
+            made: made(dimension, biome, &layers),
+            layers,
         }
     }
 
@@ -46,21 +53,35 @@ impl FlatGenerator {
 /// generator would make another chunk from the same settings.
 pub const FLAT_VERSION: u16 = 1;
 
-impl ChunkGenerator for FlatGenerator {
-    fn generate(&self, _position: ChunkPos) -> Chunk {
-        let mut chunk = Chunk::empty(self.dimension, self.biome);
-        for (layer, state) in self.layers.iter().enumerate() {
-            let y = self.dimension.min_y + layer as i32;
-            for z in 0..SECTION_SIZE {
-                for x in 0..SECTION_SIZE {
-                    chunk.set(x, y, z, *state);
-                }
+/// The chunk of the given layers, lit as it is beside eight like it, and marked as
+/// generated.
+fn made(dimension: &DimensionType, biome: Biome, layers: &[BlockState]) -> Chunk {
+    let mut chunk = Chunk::empty(dimension, biome);
+    for (layer, state) in layers.iter().enumerate() {
+        let y = dimension.min_y + layer as i32;
+        for z in 0..SECTION_SIZE {
+            for x in 0..SECTION_SIZE {
+                chunk.set(x, y, z, *state);
             }
         }
-        // Exactly as this generator makes it, until something changes it. It is given
-        // no light yet.
-        chunk.mark_generated(FLAT_VERSION, false);
-        chunk
+    }
+    let light = clustine_light::light(&Around {
+        centre: &chunk,
+        neighbours: [Some(&chunk); 8],
+        // The flat world is the overworld, which has a sky; a dimension type does not
+        // say yet whether it has one.
+        sky: true,
+    });
+    chunk.set_light(light);
+    // Exactly as this generator makes it, until something changes it. Said last: the
+    // blocks were put there by changes, each of which takes it back.
+    chunk.mark_generated(FLAT_VERSION, false);
+    chunk
+}
+
+impl ChunkGenerator for FlatGenerator {
+    fn generate(&self, _position: ChunkPos) -> Chunk {
+        self.made.clone()
     }
 
     fn settings(&self) -> String {
@@ -80,6 +101,8 @@ impl ChunkGenerator for FlatGenerator {
 
 #[cfg(test)]
 mod tests {
+    use clustine_world::SectionLight;
+
     use super::*;
 
     #[test]
@@ -113,6 +136,76 @@ mod tests {
             ),
             "{settings}"
         );
+    }
+
+    #[test]
+    fn a_flat_chunk_carries_the_light_of_its_blocks_beside_eight_like_it() {
+        let generator = FlatGenerator::classic();
+        let chunk = generator.generate(ChunkPos::new(3, -7));
+        let light = chunk.light().expect("a flat chunk has light");
+        assert_eq!(light.made_by, clustine_light::VERSION);
+        assert_eq!(light.sky.len(), chunk.sections().len() + 2);
+        assert_eq!(light.block.len(), chunk.sections().len() + 2);
+
+        // Made again from the chunk's blocks alone, without its light or its mark.
+        let bare = Chunk::from_sections(chunk.min_y(), chunk.sections().to_vec());
+        assert_eq!(bare.light(), None);
+        let again = clustine_light::light(&Around {
+            centre: &bare,
+            neighbours: [Some(&bare); 8],
+            sky: true,
+        });
+        assert_eq!(*light, again);
+    }
+
+    /// Test 6 of ADR-0022: the edge's packet is made from `sky_light` until it is made
+    /// from what the chunk carries, and the flat world must not change at that step.
+    #[test]
+    fn a_flat_chunk_has_exactly_the_sky_light_that_is_reckoned_by_columns_today() {
+        let chunk = FlatGenerator::classic().generate(ChunkPos::new(0, 0));
+        let light = chunk.light().expect("a flat chunk has light");
+        assert_eq!(light.sky, clustine_world::sky_light(&chunk));
+
+        // Written out, so that the two cannot be wrong together unseen: dark below the
+        // world, the ground's section dark in its four layers and 15 above them, the
+        // next section full, nothing further up.
+        assert_eq!(light.sky[0], SectionLight::Dark);
+        let SectionLight::Levels(ground) = &light.sky[1] else {
+            panic!("levels in the ground's section, not {:?}", light.sky[1]);
+        };
+        assert!(ground[..4 * 128].iter().all(|byte| *byte == 0));
+        assert!(ground[4 * 128..].iter().all(|byte| *byte == 0xff));
+        assert_eq!(light.sky[2], SectionLight::Full);
+        assert!(light.sky[3..].iter().all(|s| *s == SectionLight::Absent));
+
+        // Nothing gives light: block light is dark wherever the sky's is listed, which
+        // is what the edge's packet says today.
+        assert_eq!(light.block[..3], [const { SectionLight::Dark }; 3]);
+        assert!(light.block[3..].iter().all(|s| *s == SectionLight::Absent));
+    }
+
+    #[test]
+    fn a_flat_chunk_is_as_generated_and_lit_until_a_change() {
+        let generator = FlatGenerator::classic();
+        let chunk = generator.generate(ChunkPos::new(1, 1));
+        assert_eq!(chunk.generated(), FLAT_VERSION);
+        assert!(!chunk.with_failure());
+        assert!(chunk.light().is_some());
+
+        // Grass to dirt is a change light cannot see: no longer as generated, still lit.
+        let mut dug = chunk.clone();
+        dug.set(5, -61, 5, blocks::DIRT);
+        assert_eq!(dug.generated(), 0);
+        assert_eq!(dug.light(), chunk.light());
+
+        // A hole is one it can.
+        let mut holed = chunk.clone();
+        holed.set(5, -61, 5, blocks::AIR);
+        assert_eq!(holed.generated(), 0);
+        assert_eq!(holed.light(), None);
+
+        // The copy that was changed took nothing from the generator's own.
+        assert_eq!(generator.generate(ChunkPos::new(1, 1)), chunk);
     }
 
     #[test]

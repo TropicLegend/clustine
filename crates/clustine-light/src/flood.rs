@@ -14,9 +14,10 @@
 //! cell's level is final when its turn comes.
 
 use clustine_data::{BlockState, Face, blocks};
+use clustine_world::{Chunk, LIGHT_ARRAY_LENGTH, Light, SectionLight};
 
 use crate::faces;
-use crate::{Blocks, ChunkLight, LIGHT_ARRAY_LENGTH, SECTION_EDGE, SectionLight};
+use crate::{Around, SECTION_EDGE, VERSION};
 
 /// Cells along a horizontal edge of the grid: three chunks and a wall on either side,
 /// so that no step leaves the grid.
@@ -47,11 +48,10 @@ const STEPS: [isize; 6] = [
 ];
 
 /// What light needs of a block state.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Cell {
     kind: u8,
     gives: u8,
-    air: bool,
 }
 
 impl Cell {
@@ -68,7 +68,6 @@ impl Cell {
         Cell {
             kind,
             gives: props.light_emission().min(15),
-            air: props.is_air(),
         }
     }
 }
@@ -98,13 +97,10 @@ fn cell(x: usize, y: usize, z: usize) -> usize {
 }
 
 impl Grid {
-    fn read<B: Blocks + ?Sized>(blocks: &B) -> Grid {
-        let height = blocks.height() as usize;
-        assert!(
-            height > 0 && height % SECTION_EDGE == 0,
-            "a world's height is a multiple of 16 and not 0"
-        );
-        let sections = height / SECTION_EDGE;
+    fn read(around: &Around<'_>) -> Grid {
+        let centre = around.centre;
+        let sections = centre.sections().len();
+        assert!(sections > 0, "a chunk has a section");
         let cells = ((sections + 2) * SECTION_EDGE + 2) * LAYER;
         let mut grid = Grid {
             sections,
@@ -117,49 +113,58 @@ impl Grid {
                 .map(|column| beyond_centre(column % WIDTH) + beyond_centre(column / WIDTH))
                 .collect(),
         };
-        let min_y = blocks.min_y();
-        for (slot, (chunk_x, chunk_z)) in chunk_offsets().enumerate() {
-            if (chunk_x, chunk_z) != (0, 0) && !blocks.has_chunk(chunk_x, chunk_z) {
+        let air = Cell::of(blocks::AIR);
+        for (slot, chunk) in nine(around).into_iter().enumerate() {
+            let Some(chunk) = chunk else {
                 continue;
-            }
+            };
+            assert!(
+                chunk.min_y() == centre.min_y() && chunk.sections().len() == sections,
+                "the chunks of a dimension span the same heights"
+            );
             grid.present[slot] = true;
             let first_x = slot % 3 * SECTION_EDGE + 1;
             let first_z = slot / 3 * SECTION_EDGE + 1;
-            let air = Cell::of(blocks::AIR);
             grid.fill(first_x, 0, first_z, blocks::AIR, air);
             grid.fill(first_x, sections + 1, first_z, blocks::AIR, air);
-            for section in 0..sections {
-                if let Some(state) = blocks.uniform_section(chunk_x, chunk_z, section) {
-                    let of = Cell::of(state);
-                    grid.fill(first_x, section + 1, first_z, state, of);
-                    grid.occupied[slot * sections + section] = !of.air;
+            for (index, section) in chunk.sections().iter().enumerate() {
+                // The section's own count is by the table's `is_air`, which is what
+                // "holds a block" means in the rule for which sections have light.
+                grid.occupied[slot * sections + index] = section.non_air_count() > 0;
+                if let Some(state) = section.uniform_state() {
+                    grid.fill(first_x, index + 1, first_z, state, Cell::of(state));
                     continue;
                 }
+                // Stone with its ores is one thing to light. Where every state the
+                // section may hold is, and has no faces of its own, any of them stands
+                // for all: only a block with such faces is ever asked which state it is.
+                let any = section.get(0, 0, 0);
+                let of = Cell::of(any);
+                if of.kind & SHAPED == 0 && !section.may_hold(|state| Cell::of(state) != of) {
+                    grid.fill(first_x, index + 1, first_z, any, of);
+                    continue;
+                }
+                // Most positions hold what the one before held, so what light needs of
+                // a state is looked up once for each run of it.
                 let mut last = blocks::AIR;
                 let mut of = air;
-                let mut occupied = false;
-                for y in 0..SECTION_EDGE {
-                    let world_y = min_y + (section * SECTION_EDGE + y) as i32;
-                    for z in 0..SECTION_EDGE {
-                        let world_z = chunk_z * SECTION_EDGE as i32 + z as i32;
-                        let row = cell(first_x, (section + 1) * SECTION_EDGE + y, first_z + z);
-                        for x in 0..SECTION_EDGE {
-                            let world_x = chunk_x * SECTION_EDGE as i32 + x as i32;
-                            let state = blocks.state(world_x, world_y, world_z);
-                            if state != last {
-                                last = state;
-                                of = Cell::of(state);
-                            }
-                            grid.kind[row + x] = of.kind;
-                            grid.state[row + x] = state.0;
-                            occupied |= !of.air;
-                            if of.gives > 0 {
-                                grid.emitters.push(((row + x) as u32, of.gives));
-                            }
-                        }
+                let first = cell(first_x, (index + 1) * SECTION_EDGE, first_z);
+                for (position, state) in section.states().enumerate() {
+                    if state != last {
+                        last = state;
+                        of = Cell::of(state);
+                    }
+                    // A section's order is `y << 8 | z << 4 | x`.
+                    let at = first
+                        + (position >> 8) * LAYER
+                        + (position >> 4 & 15) * WIDTH
+                        + (position & 15);
+                    grid.kind[at] = of.kind;
+                    grid.state[at] = state.0;
+                    if of.gives > 0 {
+                        grid.emitters.push((at as u32, of.gives));
                     }
                 }
-                grid.occupied[slot * sections + section] = occupied;
             }
         }
         grid
@@ -364,7 +369,7 @@ impl Grid {
                         }
                     }
                 }
-                SectionLight::from_array(array)
+                SectionLight::of(array)
             })
             .collect()
     }
@@ -376,18 +381,43 @@ fn beyond_centre(at: usize) -> u8 {
     (CENTRE.saturating_sub(at) + at.saturating_sub(last)) as u8
 }
 
-/// The offsets of the nine chunks, north-west first, row by row.
-fn chunk_offsets() -> impl Iterator<Item = (i32, i32)> {
-    (-1..=1).flat_map(|chunk_z| (-1..=1).map(move |chunk_x| (chunk_x, chunk_z)))
+/// The nine chunks by their place in the grid: north-west first, row by row, the centre
+/// in the middle. North is the lower `z`, as the grid's rows are.
+fn nine<'a>(around: &Around<'a>) -> [Option<&'a Chunk>; 9] {
+    let [
+        north_west,
+        north,
+        north_east,
+        west,
+        east,
+        south_west,
+        south,
+        south_east,
+    ] = around.neighbours;
+    [
+        north_west,
+        north,
+        north_east,
+        west,
+        Some(around.centre),
+        east,
+        south_west,
+        south,
+        south_east,
+    ]
 }
 
-pub(crate) fn light<B: Blocks + ?Sized>(blocks: &B) -> ChunkLight {
-    let grid = Grid::read(blocks);
-    let sky = if blocks.has_sky() {
+pub(crate) fn light(around: &Around<'_>) -> Light {
+    let grid = Grid::read(around);
+    let sky = if around.sky {
         grid.sections_of(&grid.sky_light())
     } else {
         vec![SectionLight::Absent; grid.sections + 2]
     };
     let block = grid.sections_of(&grid.block_light());
-    ChunkLight { sky, block }
+    Light {
+        made_by: VERSION,
+        sky,
+        block,
+    }
 }
