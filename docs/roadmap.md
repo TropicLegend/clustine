@@ -1105,14 +1105,19 @@ what to try with real clients is written down here, and the next phase begins.
 the codec and the comparisons with the official server (R1.0c), the store's part
 (R1.1), the simulation's (R1.2), the runner's (R1.3), the edge's (R1.4, with 39 tests
 written from the record by someone who had not seen the code, none of which found a
-fault), and the setting turned on (R1.5). Still to come: the bots and their ledger
-across a leave (R1.6), end-to-end tests from the record with two edges (R1.7), the
-notes in the earlier records (R1.8), and taking the setting itself away, which the
-simulation's and the runner's own tests still run both ways.
+fault), the setting turned on (R1.5), end-to-end tests from the record in one process
+and in a cluster with two edges (R1.7: 34 tests, none found a fault) and the notes in
+the earlier records (R1.8). Still to come: the bots and their ledger across a leave
+(R1.6), and taking the setting itself away, which the simulation's and the runner's
+own tests still run both ways. One number from R1.7 is to be measured again on a quiet
+machine: with twenty players joining far apart at once, somebody at the spawn point
+stood still for 3.8 s at worst, where a second is the bound.
 
 What a player notices from here, and **what to try with a real client**
-(`cargo run --release -p clustine`; a world from an earlier build starts with
-everybody at the spawn point once, as the stored form changed):
+(`cargo run --release -p clustine`). **A world made by an earlier build is refused at
+the start**, with a sentence that says so: the stored form of a chunk changed (world
+format 2), and worlds are not carried over before the first release. Move the world's
+directory away, or name another with `--world`, and a new world is made:
 
 1. Walk some way from the spawn point, look at something, and leave. Join again: you
    are where you left, looking the same way, with the same hotbar and slot.
@@ -1129,9 +1134,14 @@ everybody at the spawn point once, as the stored form changed):
 
 **Terrain** ([plan](groundwork/terrain-plan.md)): the trials G0 to G3, the noise crate
 (T1), the emitted routers for all three dimensions (first part of T2), the light crate
-(W1) and the tables made from the jar (G6) are on `main`; nothing of it is in the
-running server yet, which still serves the flat world. Next are the chunk's new form
-(ADR-0022, steps C1 to C5), the biome source (T3) and the noise chunk (T4).
+(W1) and the tables made from the jar (G6) are built; nothing of it is in the running
+server yet, which still serves the flat world. The chunk's new form
+([ADR-0022](adr/0022-what-a-chunk-carries.md)) is built as far as its step C3: blocks
+packed behind a palette (2 KB a section where it was 8), a biome for each cell, block
+entities, the four heightmaps, light and what generation leaves for later carried by
+the chunk, and a stored chunk as one file. Next are the light a generator gives its
+chunks and the client's packet made from what the chunk carries (C4, C5), the biome
+source (T3) and the noise chunk (T4).
 
 **Pauses on network storage**: measured and written down
 ([groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)); the runner's
