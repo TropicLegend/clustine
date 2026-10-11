@@ -488,7 +488,10 @@ fn a_checkpoint_that_lets_a_segment_go_writes_the_table_file_first_with_two_more
 fn a_claim_is_answered_with_its_groups_sync_and_a_return_waits_for_one_with_no_answer() {
     let world = World::new();
     let home = world.open(2, 1);
-    // With the commit of the same tick, as a runner sends them: one sync for both.
+    // With the commit of the same tick, as a runner sends them: one sync for both,
+    // where the thread for commits finds both waiting. It can also have taken the
+    // commit before the claim was sent, which only a slow machine shows; then each
+    // is a group of its own, and the claim is answered after the second sync.
     let together = world.watch_reply(
         "a commit and a claim in one group",
         &home,
@@ -498,7 +501,10 @@ fn a_claim_is_answered_with_its_groups_sync_and_a_return_waits_for_one_with_no_a
         },
         |reply| matches!(reply, StoreReply::Claimed { .. }),
     );
-    assert_eq!(together, seen(&[COMMIT], Some(1)));
+    assert!(
+        together == seen(&[COMMIT], Some(1)) || together == seen(&[COMMIT, COMMIT], Some(2)),
+        "{together:?}"
+    );
 
     // A return of a chunk that was not saved since: the thread for chunks has nothing
     // to write, and the record that frees the chunk is synced with its group.
