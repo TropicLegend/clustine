@@ -1109,9 +1109,9 @@ fault), the setting turned on (R1.5), end-to-end tests from the record in one pr
 and in a cluster with two edges (R1.7: 34 tests, none found a fault) and the notes in
 the earlier records (R1.8), and the bots and their ledger across a leave (R1.6, which
 found no fault either). The setting that the steps were built behind is gone: there is
-one behaviour, and the phase is built. One number from R1.7 is to be measured again on a quiet
-machine: with twenty players joining far apart at once, somebody at the spawn point
-stood still for 3.8 s at worst, where a second is the bound.
+one behaviour, and the phase is built. The one number of R1.7 that looked wrong (3.8 s at the
+spawn point with twenty joining far apart, in an unoptimised build beside other work)
+is 0.25 s at worst in an optimised build on the network disk.8 s at worst, where a second is the bound.
 
 What a player notices from here, and **what to try with a real client**
 (`cargo run --release -p clustine`). **A world made by an earlier build is refused at

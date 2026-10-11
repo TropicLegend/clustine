@@ -1527,6 +1527,14 @@ joining far apart at once, somebody at the spawn point stood still for 3.8 s at 
 where "What is measured" compares with a second. The remedy this record names is a
 split that names several parts.
 
+**Measured again on 2026-10-11**, an optimised build on a quiet machine with the world
+on the network disk (22 ms a synced write): over the 104 s in which the twenty were
+split off one by one, somebody at the spawn point waited 0.05 s in the middle and
+**0.25 s at worst** (892 pulses, none above a quarter of a second), and the twenty
+themselves 0.38 s at worst (17,663 pulses, 55 above a quarter of a second). The 3.8 s
+were the unoptimised build beside other work. The bound holds, and the split that
+names several parts is not needed for it.
+
 **R1.6**: the ledger bots hold the server to a player's place across a leave, a lost
 connection and a second login (`tools/botswarm/src/kept.rs`,
 `bin/clustine/tests/returns.rs`). No fault of the server was found. Two things this
