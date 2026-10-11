@@ -523,7 +523,7 @@ In `clustine-sim`, one author, beside F and S. Sizes are guesses.
 
 | # | Scope | Verified by |
 |---|---|---|
-| B1 | ADR-0023: neighbour updates and scheduled ticks in a region, across chunks and across regions (passed on as block actions are today), in the region's durable state; reviewed | Review |
+| B1 | ADR-0024: neighbour updates and scheduled ticks in a region, across chunks and across regions (passed on as block actions are today), in the region's durable state; reviewed | Review |
 | B2 | Support: the other half of a double plant or door goes with it; plants, torches and snow go when what holds them goes | Simulation tests; oracle |
 | B3 | Sand, gravel and the like fall when undermined: at once, to where they would land in their column (no falling entity yet, named) | as B2 |
 | B4 | Scheduled ticks in region state: export, restore, merge, split | The existing state tests extended; tests from the record by someone else |

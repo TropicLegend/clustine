@@ -453,7 +453,7 @@ is a small part of 50 ms, and weights alone would move nothing.
 **ADR-0017's open question 2** (who walks away stands still twice, for the split
 and for the move ten seconds later) does not fall out of this, as the first draft
 said: the worker of the home region is the heavier because of the home region.
-ADR-0025 answers it by a rule of its own; it is the owner's question 9.
+ADR-0026 answers it by a rule of its own; it is the owner's question 9.
 
 **A planned stop of a node.** The pieces exist (`cluster/worker.rs:700-705`,
 `LEAVE_WITHIN` at line 81, `worker.yaml:78`). Missing: budgets so that a drain
@@ -492,7 +492,7 @@ loses its standby writes "alone" there before it answers any commit made alone; 
 standby promotes only if the Lease says it was in step. Outside Kubernetes, by
 hand. This does not rest on clocks for safety; clocks decide how long it takes.
 
-**What ADR-0026's reviews should attack**, the first draft's list and the review's:
+**What ADR-0027's reviews should attack**, the first draft's list and the review's:
 
 - A primary that answers a commit the standby does not have; a standby promoted
   while the primary still answers; the old primary coming back.
@@ -632,19 +632,19 @@ file are its tests.
 
 | Before | Reviewed |
 |---|---|
-| R0.3 (greetings) | ADR-0024, whole: the greeting, the term, the elector's interface, the holder on disk, the deadlines of section 5 |
+| R0.3 (greetings) | ADR-0025, whole: the greeting, the term, the elector's interface, the holder on disk, the deadlines of section 5 |
 | R1.0b (the types of R1) and everything of R1 | ADR-0020, **twice** |
 | R2.1 | ADR-0020's part on entities, which the second review covers |
-| R3.1 | ADR-0024, as above. What a promotion does to the term and the holder is in it, so that R5 does not undo R3 |
-| R4.2 | ADR-0025 |
-| R5.1 | ADR-0026, twice |
+| R3.1 | ADR-0025, as above. What a promotion does to the term and the holder is in it, so that R5 does not undo R3 |
+| R4.2 | ADR-0026 |
+| R5.1 | ADR-0027, twice |
 
 ### R0: what everything stands on
 
 | # | Scope | Size | Verified by | Who |
 |---|---|---|---|---|
 | R0.1 | This plan agreed; the owner's questions asked | S | – | main session |
-| R0.2 | ADR-0024 written and reviewed. ADR-0020 written and reviewed the first time | L | The reviews | main session; 0020 drafted by a subagent |
+| R0.2 | ADR-0025 written and reviewed. ADR-0020 written and reviewed the first time | L | The reviews | main session; 0020 drafted by a subagent |
 | R0.3 | The greeting, once, at all three doors, with the wire number; refused or passed over by everybody; pushed | M | All existing tests; a build with another number is refused with both numbers | main session |
 | R0.4a | The beat on the links of `clustine-rpc` | S | A peer stopped with `SIGSTOP` is given up within the deadline | subagent, `clustine-rpc` |
 | R0.4b | The beat on the store's sockets | M | The same | subagent, `services/worldstore`: the one who then has R1.1 |
@@ -712,7 +712,7 @@ it: the leader's log says it goes on in its term.
 
 | # | Scope | Size | Verified by | Who |
 |---|---|---|---|---|
-| R4.0 | ADR-0025, reviewed | M | – | subagent drafts |
+| R4.0 | ADR-0026, reviewed | M | – | subagent drafts |
 | R4.1 | Runner measures; the heartbeat carries it | S | Runner tests | subagent |
 | R4.2 | The weight in `lightest` and `even_out` | L | Scripted loads; generated runs held to ADR-0016's seven properties and to: nothing moves back and forth, a worker that joins gets regions, every worker replaced in turn ends spread, with no load it is today's rule | subagent; the generated runs by another |
 | R4.3 | `clustine status`; numbers in Prometheus' format | S | Tests | subagent |
@@ -723,7 +723,7 @@ it: the leader's log says it goes on in its term.
 
 | # | Scope | Size | Verified by | Who |
 |---|---|---|---|---|
-| R5.0 | ADR-0026, written during R1 to R3, reviewed twice | L | – | main session |
+| R5.0 | ADR-0027, written during R1 to R3, reviewed twice | L | – | main session |
 | R5.1 | A `Disk` that mirrors, and the standby that receives | L | The kill tests on two simulated disks and a connection, a fault at every operation of either and every message between, one side failing alone by name; a store opened on the standby's image restores everything confirmed | subagent; scenarios by another |
 | R5.2 | Bringing a standby up to date while the primary runs | L | The same, begun at every point | subagent |
 | R5.3 | Who may promote: the Lease, "alone", the hand; a client for the Kubernetes API (question 8) | M | – | main session, **not delegated** |
@@ -783,7 +783,7 @@ that can be taken back.
 
 | # | Question | Recommended | Without an answer |
 |---|---|---|---|
-| 1 | May the store's survival of a node rest on replicated storage that whoever runs the cluster provides, or is Clustine to carry a standby of its own? | A standby of its own, last | R0 to R4 are built; ADR-0026 is written and reviewed; the standby is built last unless the owner says a volume is enough |
+| 1 | May the store's survival of a node rest on replicated storage that whoever runs the cluster provides, or is Clustine to carry a standby of its own? | A standby of its own, last | R0 to R4 are built; ADR-0027 is written and reviewed; the standby is built last unless the owner says a volume is enough |
 | 2 | When the store fails over, everybody stands still, and the edge disconnects them after 20 s. Keep 20? | Keep; section 5 aims at 10 | Kept |
 | 3 | Authentication between services here: NetworkPolicies and a shared secret? | Yes | The policies are written and the greeting has room; the secret is built in R4 |
 | 4 | A second login puts the first out, as the official server does | Yes | Built so |
@@ -878,7 +878,7 @@ say is true. Three of their proposed remedies are not taken, with the reason.
 | 3 | A player who was flying comes back falling | **Accepted** | `fanout.rs:52` has no flying bit and nothing reads the client's. In R1 (4.1, R1.2, R1.4, R1.6) |
 | 4 | A join at a kept place makes the home region claim land | **Accepted**, both parts | The edge asks the home region for the view of whoever it places (`fanout.rs:2074-2126`). Rule 6: the home region lets the stay go without placing it. The answer reaches a tick as an input, so nothing waits behind a join (`sim/state.rs:60-61`). The case nobody holds is measured in R1.7, with what follows |
 | 5 | Silence: more than one crate, connects without an end, deadlines that follow the lease | **Accepted** | `client.rs:664` and `crates/clustine-rpc/src/tcp.rs:55` have no deadline; the store's sockets are its own. R0.4 is three steps; section 5 has the deadlines |
-| 6 | The worst case is never added up; one fence costs a leader | **Accepted** | Section 5. "Closes every connection" became "stops deciding"; the holder is on disk; the same holder goes on without a grace (4.3). Taken differently: the part on the lease is in ADR-0024, reviewed before R3.1, so ADR-0026 need not be written first |
+| 6 | The worst case is never added up; one fence costs a leader | **Accepted** | Section 5. "Closes every connection" became "stops deciding"; the holder is on disk; the same holder goes on without a grace (4.3). Taken differently: the part on the lease is in ADR-0025, reviewed before R3.1, so ADR-0027 need not be written first |
 | 7 | The term: fences incomplete as worded | **Accepted**, all of it | Fence 2 is about a hello that raises an epoch; the refusal says the term; the places are four (`state.rs:1514` was missing); the store's answers carry the term; a restored store goes above what it is shown; the elector is behind an interface; `alone` asks for a term |
 | 8 | Builds that cannot read each other; a build with another state format drops players without a record | **Accepted**; one remedy not needed | A wire number in one greeting (4.6); which updates are rolling (section 3). **Not taken**: the edge's drain in R1 so that an orderly stop writes records. Records no longer depend on how a stay ends. New from it: the entity id must survive a dropped state (4.1, rule 9) |
 | 9 | Weights in place of counts move nothing; the claim about parts is the wrong way round | **Accepted** | Count as the floor, tick time on top; the trigger and the choice as the review has them; the claim is withdrawn and is question 9 |

@@ -292,7 +292,7 @@ and a priority, as the official server keeps them in `block_ticks` and
 `fluid_ticks`. **A mark** is a position whose block is to take its shape, or whose
 fluid is to flow one step, when the chunk is first ticked (`PostProcessing`). They
 are carried and stored from the start and used by phase B (the plan's B6, under
-ADR-0023). They are not few: a mean of 59 marks and 6 ticks a chunk, 0.24 KB.
+ADR-0024). They are not few: a mean of 59 marks and 6 ticks a chunk, 0.24 KB.
 
 **When two chunks are equal, said field by field**, because the edge's resume turns
 on a comparison of chunks:
@@ -616,6 +616,8 @@ half of the meaning (I1): in the store's file (0.5 KB of the 5.1), in the answer
 to a load, in the region's memory, in the snapshot.
 
 ### 7. Light at the edge: a record of its own, before W3
+
+**That record is [ADR-0023](0023-light-at-the-edge.md), accepted on 2026-10-11.**
 
 The draft of this record decided it here, in seven rules (E1 to E7) and a step
 C6: carried light is sent while a chunk and its neighbours in the replica are as

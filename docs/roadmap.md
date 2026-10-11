@@ -1140,9 +1140,10 @@ server yet, which still serves the flat world. The chunk's new form
 packed behind a palette (2 KB a section where it was 8), a biome for each cell, block
 entities, the four heightmaps, light and what generation leaves for later carried by
 the chunk, and a stored chunk as one file. The flat generator's chunks carry the light crate's
-light, and the client's packet is made from what the chunk carries (C4, C5). Next are
-the record of light at the edge, which has had its second review, the biome source
-(T3) and the noise chunk (T4).
+light, and the client's packet is made from what the chunk carries (C4, C5). What an edge does
+about light once blocks have changed is decided
+([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice) and not built yet. Next are
+its steps, the biome source (T3) and the noise chunk (T4).
 
 **Pauses on network storage**: measured and written down
 ([groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)); the runner's
