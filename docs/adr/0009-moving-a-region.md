@@ -52,7 +52,10 @@ from; the rest of this record is about not turning it into one needlessly.
      again to the new owner. It waits until the store has confirmed every commit and
      publishes what those ticks produced. It checkpoints once more, which is the few
      chunks and the state changed since a moment ago, waits for the store to have it,
-     closes the region at the store, and closes the region's links.
+     closes the region at the store, and closes the region's links. (Since 2026-10-11
+     that last checkpoint is asked for as the region stops, before the commits are
+     confirmed: the store holds it behind them, and one wait is saved. See ADR-0014,
+     section 3.1.)
    - If the store handle is lost on the way, it skips what needs the store: the store
      has what was confirmed, and the rest was never shown.
    - It tells the coordinator `Released { region, epoch }`, never takes up that

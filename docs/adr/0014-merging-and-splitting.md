@@ -61,7 +61,9 @@ these was read in the code at commit `8ef6159`, and the review found each as sta
   through `Phase::Preparing` (a checkpoint and a flush while it ticks), `Settling` (no
   tick, nothing taken from links, new links closed, the pending ticks published as
   their commits are confirmed), and `Closing` (a second checkpoint and a flush), and
-  ends by dropping the handle and the links. The step that finds the first flush
+  ends by dropping the handle and the links. (Since 2026-10-11 the second checkpoint
+  is asked for as the region stops, and `Closing` only waits for it; see the note
+  under the table of phases in section 3.1.) The step that finds the first flush
   answered stops before it takes anything from a link; what an earlier step took and
   no tick has taken yet can still wait then (a hold that ended in the last tick has
   its queue passed on at that tick's end, and a step at the bound of eight ticks ahead
@@ -525,11 +527,34 @@ The phases are those of a release, with one more:
 |---|---|
 | `Preparing` | a checkpoint and a flush; the region ticks and serves its links until the flush is answered |
 | `Settling` | no tick; nothing is taken from links; links attached now are closed; the pending ticks are published as their commits are confirmed |
-| `Closing` | a second checkpoint and a flush |
+| `Closing` | a second checkpoint and a flush (since 2026-10-11: asked for at the stop, waited for here) |
 | `Committing` | only for a merge or a split: the plan is made and the commit sent; the runner waits for the store's answer |
 
 `Prepare` asks for a checkpoint (`RegionRunner::checkpoint`) and nothing else, in
-`Phase::Running` only. `stage` is public because the kill scenarios of section 10 are
+`Phase::Running` only.
+
+**Changed on 2026-10-11, for fewer waits in turn on a disk where each takes 20 ms and
+more** ([the measurement](../groundwork/disk-syncs-measured.md),
+[the review of what to change](../groundwork/few-syncs-in-turn-review.md)). The
+phases a test sees are the same four; three things in them moved:
+
+- *The last checkpoint is asked for at the stop*, with its flush, and not when every
+  commit is confirmed. The store holds what a handle asks behind that handle's
+  commits until they are durable, so the order on disk is the same and one wait is
+  saved. When that flush is answered the checkpoint covers every commit, every claim
+  and load is answered and every changed chunk saved, which is all a merge or a split
+  is worked out on.
+- *`Prepare` asks for a checkpoint and a flush*, and is good for one merge or split:
+  a runner that was told to prepare stops as soon as that flush is answered, without
+  a checkpoint of its own first, unless more than eight chunks have unsaved changes
+  by then, in which case it makes one more while ticking and stops when the store has
+  that. A repeated `Prepare` asks for nothing while the first is being made or little
+  has changed since.
+- *The runner's thread looks at once*: a command or a release is taken between two
+  ticks, and while it prepares it looks every millisecond whether the store has
+  answered. What is taken between ticks takes nothing from a link, so a tick is given
+  what it would have been given.
+ `stage` is public because the kill scenarios of section 10 are
 written by someone who has the crate's interface and nothing else: a test that steps
 a runner by hand can stop at the first step of each stage. **A step advances at most
 one stage**, for a release as well, which until now could pass from `Preparing`
