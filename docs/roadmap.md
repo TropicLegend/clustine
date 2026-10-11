@@ -1145,9 +1145,26 @@ about light once blocks have changed is decided
 ([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice) and not built yet. Next are
 its steps, the biome source (T3) and the noise chunk (T4).
 
-**Pauses on network storage**: measured and written down
-([groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)); the runner's
-changes for fewer waits in turn are being built.
+**Pauses on network storage** (22 ms a synced write; first measured in
+[groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)). Since then
+the runner asks for its last checkpoint as it stops and looks for orders between
+ticks, and a stored chunk is one file, written in one round. Measured on 2026-10-11
+with an optimised build on that disk, a crowd of a hundred at the spawn point with a
+view distance of 8, two players walking away and back five times (seconds, least /
+middle / worst):
+
+| | the crowd waited | the two who walk waited | the coordinator took | the home region stood still |
+|---|---|---|---|---|
+| split (5) | 0.36 / 0.38 / 0.41 | 0.41 / 0.46 / 0.51 | 0.38 / 0.42 / 0.44 | 0.20 / 0.22 / 0.24 |
+| merge (5) | 0.36 / 0.36 / 0.40 | 0.86 / 1.02 / 1.15 | 0.99 / 1.03 / 1.13 | 0.18 / 0.20 / 0.22 |
+
+When nothing happens a bot of the crowd waits 0.15 s at most. So a crowd is within
+ADR-0017's half a second, and what is left is the second that the players of a region
+that is absorbed wait: their region's own last checkpoint, the store opening it for
+the survivor, and their chunks, which are not at hand there. That is the store's part
+of [the review of what to change](groundwork/few-syncs-in-turn-review.md) and comes
+next. With twenty players joining far apart at once, somebody at the spawn point
+waits a quarter of a second at worst.
 
 ### Known limits after M3
 
