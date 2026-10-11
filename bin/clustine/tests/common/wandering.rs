@@ -2015,7 +2015,21 @@ impl Wanders {
         match &mut self.under {
             Under::Cluster(_) => self.the_cluster_starts_from_disk().await,
             Under::Server(server, config) => {
-                let (before, config) = (server.as_ref().map(Server::regions), config.clone());
+                // The last to leave may have stood far out, in a region of their own
+                // whose claims for what they saw are still being granted: the list is
+                // compared as it stands once two readings in a row are the same.
+                let reading = Instant::now();
+                let mut before = server.as_ref().map(Server::regions);
+                loop {
+                    tokio::time::sleep(LOOK * 10).await;
+                    let again = server.as_ref().map(Server::regions);
+                    let settled = matches!((&before, &again), (Some(Ok(a)), Some(Ok(b))) if a == b);
+                    before = again;
+                    if settled || reading.elapsed() > PATIENCE {
+                        break;
+                    }
+                }
+                let config = config.clone();
                 server.take().expect("it runs").stop().await;
                 let again = match Server::start(*config).await {
                     Ok(server) => server,
