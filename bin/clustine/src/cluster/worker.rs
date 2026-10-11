@@ -73,8 +73,9 @@ struct Held {
 type Opening = Pin<Box<dyn Future<Output = Result<(StoreHandle, Restored), StoreError>> + Send>>;
 
 /// How often a worker that is releasing a region looks whether the release is done.
-/// The region's players stand still meanwhile, so this is not left to [`LOOK`].
-const RELEASE_LOOK: Duration = Duration::from_millis(5);
+/// The region's players stand still meanwhile, so this is not left to [`LOOK`], and
+/// is as often as the region's own thread looks at the store's answers.
+const RELEASE_LOOK: Duration = Duration::from_millis(1);
 
 /// How long a worker that has been told to stop waits for its regions to be handed to
 /// other workers before it stops anyway. Kubernetes gives it 30 seconds in all.
@@ -807,7 +808,9 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                                     "asked to have the region absorb another; opening that one"
                                 );
                                 // If the order to prepare was lost, this is where the
-                                // checkpoint is made while the region ticks.
+                                // checkpoint is made while the region ticks. A runner
+                                // that has made it, or is at it, makes no second one
+                                // unless much has changed since.
                                 running.reshape(Reshape::Prepare, Box::new(|_| {}));
                                 let hello = RegionHello {
                                     region: absorbed,

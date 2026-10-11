@@ -46,7 +46,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
 use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -106,6 +106,17 @@ pub const MAX_RESHAPE_BYTES: usize = 8 * 1024 * 1024;
 /// time after which an edge that stays away is gone. A chunk nobody has asked for by
 /// then is not coming back to a screen soon.
 const WARM_FOR: u64 = DEFAULT_GONE_AFTER;
+
+/// How many chunks may have unsaved changes for a region that was told to prepare to
+/// stop for a merge or a split without another checkpoint first. The checkpoint that is
+/// made while the region stands still then saves that many chunks at most, which the
+/// store writes in as many waits as it writes one, each a little longer: where a sync
+/// took 20 ms, a round of eight files took 77 ms and a round of two 40
+/// (`docs/groundwork/disk-syncs-measured.md`, section 2), and a checkpoint made
+/// beforehand instead is six such waits. It is a number of chunks and not of ticks
+/// since the last checkpoint, because the chunks are what players stand still for: a
+/// crowd changes more of them in a second than a few players do in a minute.
+const FEW_UNSAVED: usize = 8;
 
 /// Counters of a region that others may read while its runner runs.
 #[derive(Debug, Default)]
@@ -219,7 +230,9 @@ pub enum Ended {
 pub enum Reshape {
     /// Checkpoint now and tick on: a merge or a split is coming, and what is saved
     /// now is not saved while players stand still for it. Changes nothing else, and
-    /// has no outcome.
+    /// has no outcome. The merge or the split that comes next makes no checkpoint of
+    /// its own before the region stops, if this one is done by then and few chunks
+    /// have changed since.
     Prepare,
     /// Absorb the region `absorbed`, which this worker has open with `absorbed_epoch`
     /// and whose whole state is `state` ([`absorbable`]). The handle of that region is
@@ -265,13 +278,16 @@ pub enum Reshaped {
 /// [`RegionRunner::stage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
-    /// A checkpoint and a flush have been asked for. The region ticks and serves its
-    /// links until the flush is answered.
+    /// A checkpoint and a flush have been asked for: for this, or by a
+    /// [`Reshape::Prepare`] before it. The region ticks and serves its links until
+    /// the flush is answered.
     Preparing,
     /// The region ticks no more and takes nothing from its links, and links attached
-    /// now are closed. The ticks that ran are published as their commits are confirmed.
+    /// now are closed. The last checkpoint and a flush have been asked for. The ticks
+    /// that ran are published as their commits are confirmed.
     Settling,
-    /// A second checkpoint and a flush have been asked for.
+    /// Every tick that ran is published, and the flush behind the last checkpoint is
+    /// waited for.
     Closing,
     /// Only for a merge or a split: the store has been handed it, and has not answered.
     Committing,
@@ -282,14 +298,17 @@ pub enum Stage {
 enum Phase {
     /// Nobody has asked for anything of the kind, or what was asked is done or off.
     Running,
-    /// The first checkpoint and a flush have been asked for. The region ticks on and
-    /// serves its links until the store has answered the flush, so that the checkpoint
-    /// that is taken while players stand still is a small one.
+    /// The first checkpoint and a flush have been asked for, or were by a
+    /// [`Reshape::Prepare`] before. The region ticks on and serves its links until the
+    /// store has answered the flush, so that the checkpoint that is taken while
+    /// players stand still is a small one.
     Preparing,
-    /// The region ticks no more and takes nothing from its links. It waits for the store
-    /// to confirm the commits of the ticks that have run, and publishes them.
+    /// The region ticks no more and takes nothing from its links. The last checkpoint
+    /// and a flush were asked for as it stopped. It waits for the store to confirm the
+    /// commits of the ticks that have run, and publishes them.
     Settling,
-    /// The last checkpoint and a flush have been asked for.
+    /// Every tick that ran is published. The flush behind the last checkpoint is
+    /// waited for.
     Closing,
     /// The store has been handed a merge or a split, and its answer is waited for.
     Committing,
@@ -360,6 +379,15 @@ impl Command {
         };
         Self { reshape, done }
     }
+}
+
+/// What another thread hands a runner's thread, which waits for it between two ticks.
+enum Order {
+    /// A command to take.
+    Reshape(Command),
+    /// A release has been asked for, which [`RegionRunner::release_asked`] says: this
+    /// only has the thread look now and not at its next tick.
+    Release,
 }
 
 /// A merge or a split that a runner is in the middle of.
@@ -812,12 +840,24 @@ pub struct RegionRunner {
     /// The store's answer to the merge or the split it was handed, until the step that
     /// finds it acts on it.
     answer: Option<StoreReply>,
-    /// Commands that were handed in from another thread and have not been taken.
-    commands: Receiver<Command>,
+    /// Whether a [`Reshape::Prepare`] has had the store asked for a checkpoint and a
+    /// flush that no merge or split has made use of yet.
+    prepared: bool,
+    /// While the runner prepares a release, a merge or a split: whether a checkpoint
+    /// was asked for it, and not only by a [`Reshape::Prepare`] before it. It then
+    /// stops when the store has that one, however much has changed meanwhile, so that
+    /// a region that changes faster than it is saved stops all the same.
+    checkpointed: bool,
+    /// What was handed in from another thread and has not been taken.
+    commands: Receiver<Order>,
     /// Kept to give to a [`Worker`].
-    command: Sender<Command>,
+    command: Sender<Order>,
     /// [`MAX_RESHAPE_BYTES`], unless a test has lowered it.
     max_reshape_bytes: usize,
+    /// [`FEW_UNSAVED`], unless a test has lowered it.
+    few_unsaved: usize,
+    /// [`TICK`], unless a test has set another time between two ticks.
+    pace: Duration,
     /// How the runner ended, once it has.
     ended: Option<Ended>,
     /// How many flushes the runner has asked the store for, and how many of them the
@@ -891,9 +931,13 @@ impl RegionRunner {
             phase: Phase::Running,
             reshaping: None,
             answer: None,
+            prepared: false,
+            checkpointed: false,
             commands,
             command,
             max_reshape_bytes: MAX_RESHAPE_BYTES,
+            few_unsaved: FEW_UNSAVED,
+            pace: TICK,
             ended: None,
             flushes_asked: 0,
             flushes_answered: 0,
@@ -1048,18 +1092,7 @@ impl RegionRunner {
             Phase::Preparing => {
                 // Looked at before anything is taken from a link, so that whatever a
                 // link is relieved of is also given to a tick.
-                if !self.take_replies() {
-                    return;
-                }
-                if self.flushes_answered == self.flushes_asked {
-                    info!(
-                        tick = self.region.tick_number(),
-                        reshaping = self.reshaping.is_some(),
-                        "the store has the first checkpoint of a release, a merge or a split; \
-                         the region stops ticking"
-                    );
-                    self.note_the_stop();
-                    self.phase = Phase::Settling;
+                if !self.take_replies() || self.stop_if_prepared() {
                     return;
                 }
             }
@@ -1093,6 +1126,68 @@ impl RegionRunner {
             // A tick that changed nothing has nothing to wait for.
             self.publish_committed();
         }
+    }
+
+    /// Stops the region's ticking for the release, the merge or the split it prepares,
+    /// if the store has what that waits for; returns whether it did. The store's
+    /// answers have been taken.
+    ///
+    /// The store has answered every flush: the one behind the checkpoint asked for
+    /// this, or the one behind the checkpoint of a [`Reshape::Prepare`] before it. In
+    /// the second case more than [`FEW_UNSAVED`] chunks can have changed since, and
+    /// then a checkpoint is asked for now and waited for as the region ticks, once.
+    ///
+    /// As it stops, the region asks for its last checkpoint and a flush. The commits of
+    /// the ticks that ran need not be confirmed first: the store holds what a handle
+    /// asks behind commits of that handle that are not durable until they are, and
+    /// drops it with the handle if they never are. The checkpoint is of the region's
+    /// last tick, no tick runs from here on, and it is asked behind everything that
+    /// tick asked; so when the flush behind it is answered, the store keeps the state
+    /// in place of every commit, has answered every claim and load, has every return
+    /// through and every changed chunk saved, whatever was or was not checkpointed
+    /// before the stop. That alone is what a merge or a split is worked out on
+    /// ([`RegionRunner::commit`]) and what a release ends on.
+    ///
+    /// This is also called between two ticks ([`RegionRunner::run`]). The region is
+    /// then stopped as the next step would have stopped it: that step looks here
+    /// before it takes anything from a link, so no tick is given anything else for it.
+    fn stop_if_prepared(&mut self) -> bool {
+        if self.flushes_answered != self.flushes_asked {
+            return false;
+        }
+        if !self.checkpointed && self.unsaved.len() > self.few_unsaved {
+            info!(
+                tick = self.region.tick_number(),
+                unsaved = self.unsaved.len(),
+                "much has changed since the region was told to prepare; bringing the store \
+                 up to date once more"
+            );
+            self.checkpoint();
+            self.ask_for_flush();
+            self.checkpointed = true;
+            return false;
+        }
+        info!(
+            tick = self.region.tick_number(),
+            reshaping = self.reshaping.is_some(),
+            unsaved = self.unsaved.len(),
+            "the store has the first checkpoint of a release, a merge or a split; \
+             the region stops ticking"
+        );
+        self.note_the_stop();
+        self.checkpoint();
+        self.ask_for_flush();
+        self.phase = Phase::Settling;
+        true
+    }
+
+    /// Whether the region has stopped ticking for a release, a merge or a split, and
+    /// the runner has not ended.
+    fn stands_still(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Settling | Phase::Closing | Phase::Committing
+        )
     }
 
     /// Takes the store's answers. Returns false if the store handle is lost, which
@@ -1264,11 +1359,11 @@ impl RegionRunner {
     /// 1. The region goes on ticking and serving its links until the store has the
     ///    checkpoint, which can be minutes of changed chunks.
     /// 2. Then it ticks no more, takes nothing more from its links and closes links that
-    ///    are attached from now on. It waits until the store has confirmed the commit of
-    ///    every tick that ran, and publishes what those ticks produced, in order.
-    /// 3. It checkpoints once more, which is what changed since a moment ago, waits
-    ///    until the store has that, closes the region at the store and then its links,
-    ///    and has ended as [`Ended::Released`].
+    ///    are attached from now on. It asks for a checkpoint once more, which is what
+    ///    changed since a moment ago, and publishes what the ticks that ran produced,
+    ///    in order, as the store confirms the commit of each.
+    /// 3. It waits until the store has that checkpoint, closes the region at the store
+    ///    and then its links, and has ended as [`Ended::Released`].
     ///
     /// If the store handle is lost on the way, the runner publishes nothing more, closes
     /// its links and has ended as [`Ended::StoreLost`]. A store that neither answers nor
@@ -1294,6 +1389,7 @@ impl RegionRunner {
         );
         self.checkpoint();
         self.ask_for_flush();
+        self.checkpointed = true;
         self.phase = Phase::Preparing;
     }
 
@@ -1314,21 +1410,27 @@ impl RegionRunner {
     /// hand; [`Worker::reshape`] is the same for a runner on a thread of its own. This
     /// returns at once, and [`RegionRunner::step`] does the rest.
     ///
-    /// [`Reshape::Prepare`] asks the store for an ordinary checkpoint and nothing else,
-    /// and that only of a runner that neither releases nor reshapes its region. `done`
-    /// is never called for it.
+    /// [`Reshape::Prepare`] asks the store for an ordinary checkpoint and to say when
+    /// it has it, and nothing else, and that only of a runner that neither releases
+    /// nor reshapes its region. One that has been told so before, and whose checkpoint
+    /// for it is still being made or has been followed by changes to no more than a
+    /// few chunks ([`FEW_UNSAVED`]), asks for nothing: the order comes more than once
+    /// before a merge. `done` is never called for it.
     ///
     /// A merge and a split go through the stages of a release
     /// ([`RegionRunner::stage`]) and one more:
     ///
     /// 1. The region goes on ticking and serving its links until the store has a
-    ///    checkpoint of it.
+    ///    checkpoint of it. That is the checkpoint of a [`Reshape::Prepare`] if there
+    ///    was one since the last merge or split: the runner then asks for none of its
+    ///    own, unless more than a few chunks have changed since by the time the store
+    ///    has it, and so stops at once where the store is prepared.
     /// 2. Then it ticks no more, takes nothing more from its links and closes links
-    ///    that are attached from now on. The ticks that ran are published as the store
-    ///    confirms them.
-    /// 3. It checkpoints once more. When the store has that, it has answered everything
-    ///    asked of it before: no commit of the region is left that a checkpoint does
-    ///    not cover, every claim is answered, and nothing is being loaded or unsaved.
+    ///    that are attached from now on. It checkpoints once more. The ticks that ran
+    ///    are published as the store confirms them.
+    /// 3. When the store has that checkpoint, it has answered everything asked of it
+    ///    before: no commit of the region is left that a checkpoint does not cover,
+    ///    every claim is answered, and nothing is being loaded or unsaved.
     /// 4. The merge or the split is worked out, as the tick after the region's last,
     ///    which changes nothing, and handed to the store. If none comes of it (nobody
     ///    stands in the chunks named, or it is too large to hand over), the region
@@ -1359,8 +1461,18 @@ impl RegionRunner {
         }
         let plan = match reshape {
             Reshape::Prepare => {
+                // The order comes twice before a merge, with the order to release
+                // the other region and with the order to absorb it. A checkpoint that
+                // is still being made would only keep a second one waiting behind it,
+                // and one that few chunks have changed since has left little to save.
+                let outstanding = self.flushes_answered != self.flushes_asked;
+                if self.prepared && (outstanding || self.unsaved.len() <= self.few_unsaved) {
+                    return;
+                }
                 // What a lost handle does not take, the next step finds out.
                 self.checkpoint();
+                self.ask_for_flush();
+                self.prepared = true;
                 return;
             }
             Reshape::Absorb {
@@ -1392,13 +1504,25 @@ impl RegionRunner {
             self.give_up();
             return;
         }
-        info!(
-            tick = self.region.tick_number(),
-            unsaved = self.unsaved.len(),
-            "bringing the store up to date for a merge or a split"
-        );
-        self.checkpoint();
-        self.ask_for_flush();
+        // The checkpoint of an order to prepare is the one the region ticks until the
+        // store has (`docs/adr/0014-merging-and-splitting.md`, section 3.1, step 1),
+        // once: the next merge or split is told to prepare again.
+        self.checkpointed = !mem::take(&mut self.prepared);
+        if self.checkpointed {
+            info!(
+                tick = self.region.tick_number(),
+                unsaved = self.unsaved.len(),
+                "bringing the store up to date for a merge or a split"
+            );
+            self.checkpoint();
+            self.ask_for_flush();
+        } else {
+            info!(
+                tick = self.region.tick_number(),
+                unsaved = self.unsaved.len(),
+                "the store was told to prepare for a merge or a split"
+            );
+        }
         self.phase = Phase::Preparing;
     }
 
@@ -1432,13 +1556,10 @@ impl RegionRunner {
         // not been told would have to be told again through the resume.
         self.publish_committed();
         match self.phase {
-            Phase::Settling if self.pending.is_empty() => {
-                // Only now: the store keeps this state in place of every commit up to
-                // the region's last tick, so those commits have to be confirmed first.
-                self.checkpoint();
-                self.ask_for_flush();
-                self.phase = Phase::Closing;
-            }
+            // The last checkpoint was asked for as the region stopped. The store keeps
+            // its state in place of every commit up to the region's last tick, and
+            // holds it back itself until those commits are durable.
+            Phase::Settling if self.pending.is_empty() => self.phase = Phase::Closing,
             Phase::Closing if self.flushes_answered == self.flushes_asked => {
                 if self.reshaping.is_none() {
                     info!(tick = self.region.tick_number(), "the region is released");
@@ -2328,13 +2449,19 @@ impl RegionRunner {
     /// region is released, which [`Worker::begin_release`] asks for.
     ///
     /// A release is carried on by looking at the store's answers every millisecond, and
-    /// never by waiting for one; so are a merge and a split, which are taken before a
-    /// step from what [`Worker::reshape`] handed in, as the wish for a release is
-    /// looked at. If `stop` is set while one of them is under way, the region is let
-    /// go of as it is, without anything more being asked of the store or waited for:
-    /// this ends as [`Ended::Abandoned`].
+    /// never by waiting for one; so are a merge and a split, which are taken from
+    /// what [`Worker::reshape`] handed in, as the wish for a release is looked at.
+    /// Neither waits for a tick: between two ticks the thread waits for what is
+    /// handed in and takes it at once, and while it prepares one of the three it looks
+    /// every millisecond whether the store has the checkpoint, and stops the region
+    /// then. A tick runs when it is due all the same, and is given what it would have
+    /// been given: what is taken up between two ticks asks the store for a checkpoint
+    /// of the region as its last tick left it, and takes nothing from a link. If
+    /// `stop` is set while one of them is under way, the region is let go of as it
+    /// is, without anything more being asked of the store or waited for: this ends as
+    /// [`Ended::Abandoned`].
     pub fn run(&mut self, stop: &AtomicBool) -> Ended {
-        let mut deadline = Instant::now() + TICK;
+        let mut deadline = Instant::now() + self.pace;
         loop {
             if let Some(ended) = self.ended {
                 return ended;
@@ -2342,45 +2469,62 @@ impl RegionRunner {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            if self.release_asked.load(Ordering::Relaxed) {
-                self.begin_release();
-            }
-            while let Ok(command) = self.commands.try_recv() {
-                self.take_command(command);
-            }
+            self.take_orders();
             self.step();
-            if matches!(
-                self.phase,
-                Phase::Settling | Phase::Closing | Phase::Committing
-            ) {
+            if self.stands_still() {
                 // No tick is due meanwhile; all there is to do is to take the store's
                 // answers. A merge or a split that is through or off goes on ticking
                 // from here, late by as long as it took.
                 thread::sleep(COMMIT_POLL);
                 continue;
             }
-            // Between two ticks the runner publishes what the store confirms meanwhile.
+            // Between two ticks the runner publishes what the store confirms
+            // meanwhile, and takes what it is told to do.
             loop {
                 if let Some(ended) = self.ended {
                     return ended;
                 }
+                // Stopped between two ticks. The tick that was due next is the one
+                // that runs when the region ticks on.
+                if self.stands_still() {
+                    break;
+                }
                 let now = Instant::now();
                 let Some(early) = deadline.checked_duration_since(now) else {
-                    if now.duration_since(deadline) > TICK * MAX_CATCH_UP_TICKS {
+                    if now.duration_since(deadline) > self.pace * MAX_CATCH_UP_TICKS {
                         deadline = now;
                     }
                     break;
                 };
-                if self.pending.is_empty() {
-                    thread::sleep(early);
-                    break;
+                // Whether an answer of the store is waited for: to a commit, or to
+                // the flush behind the checkpoint that a stop waits for.
+                let awaited = !self.pending.is_empty() || self.phase == Phase::Preparing;
+                let wait = if awaited {
+                    early.min(COMMIT_POLL)
+                } else {
+                    early
+                };
+                match self.commands.recv_timeout(wait) {
+                    Ok(order) => self.take_order(order),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    // Cannot be, as the runner keeps an end to hand things in by.
+                    Err(RecvTimeoutError::Disconnected) => thread::sleep(wait),
                 }
-                thread::sleep(early.min(COMMIT_POLL));
-                if self.take_replies() {
+                self.take_orders();
+                // The store's answers are taken as a step takes them before it takes
+                // anything from a link: while the region prepares to stop, and, as
+                // ever, while a tick waits to be published.
+                if (awaited || self.phase == Phase::Preparing) && self.take_replies() {
                     self.publish_committed();
+                    if self.phase == Phase::Preparing {
+                        self.stop_if_prepared();
+                    }
                 }
             }
-            deadline += TICK;
+            if self.stands_still() {
+                continue;
+            }
+            deadline += self.pace;
         }
         if self.phase != Phase::Running {
             // Whoever stops a release, a merge or a split has waited long enough for
@@ -2403,6 +2547,25 @@ impl RegionRunner {
         }
         self.end(Ended::Stopped);
         Ended::Stopped
+    }
+
+    /// Takes what other threads have handed in: the wish for a release, and every
+    /// command.
+    fn take_orders(&mut self) {
+        if self.release_asked.load(Ordering::Relaxed) {
+            self.begin_release();
+        }
+        while let Ok(order) = self.commands.try_recv() {
+            self.take_order(order);
+        }
+    }
+
+    fn take_order(&mut self, order: Order) {
+        match order {
+            Order::Reshape(command) => self.take_command(command),
+            // Looked at by whoever took this, as before every step.
+            Order::Release => {}
+        }
     }
 
     /// Makes `end` a link of the runner.
@@ -3291,7 +3454,7 @@ pub struct Worker {
     thread: JoinHandle<Ended>,
     stop: Arc<AtomicBool>,
     release: Arc<AtomicBool>,
-    commands: Sender<Command>,
+    commands: Sender<Order>,
 }
 
 impl Worker {
@@ -3321,8 +3484,9 @@ impl Worker {
         }
     }
 
-    /// Hands `reshape` to the region's thread, which takes it before its next step,
-    /// and returns at once; see [`RegionRunner::reshape`] for what becomes of it.
+    /// Hands `reshape` to the region's thread, which takes it as soon as it is not in
+    /// the middle of a step and without waiting for its next tick, and returns at
+    /// once; see [`RegionRunner::reshape`] for what becomes of it.
     ///
     /// `done` is called with the outcome, once, and never for [`Reshape::Prepare`]: on
     /// the region's thread, so it must not wait for anything; a closure that sends
@@ -3332,7 +3496,9 @@ impl Worker {
     pub fn reshape(&self, reshape: Reshape, done: Box<dyn FnOnce(Reshaped) + Send>) {
         // A thread that has ended takes nothing more. The command that comes back is
         // dropped, which calls `done`.
-        let _ = self.commands.send(Command::new(reshape, done));
+        let _ = self
+            .commands
+            .send(Order::Reshape(Command::new(reshape, done)));
     }
 
     /// Asks the region thread to release the region, as [`RegionRunner::begin_release`]
@@ -3345,6 +3511,9 @@ impl Worker {
     /// closes. [`Worker::stop`] ends that wait.
     pub fn begin_release(&self) {
         self.release.store(true, Ordering::Relaxed);
+        // So that the thread looks now, and not when its next tick is due. One that
+        // has ended takes nothing more.
+        let _ = self.commands.send(Order::Release);
     }
 
     /// Releases the region and waits until that is done: [`Worker::begin_release`], and
@@ -9880,7 +10049,12 @@ mod tests {
         gate.asked();
         west.reshape(Reshape::Prepare, never());
         let tick = west.region().tick_number();
-        assert_eq!(asked_beside_commits(&gate), [Asked::Checkpoint(tick)]);
+        // And the word when the store has it, by which the merge that follows knows
+        // that it need not make a checkpoint of its own before it stops.
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Checkpoint(tick), Asked::Flush]
+        );
         assert_eq!(west.stage(), None);
 
         let (done, outcome) = outcome();
@@ -9918,6 +10092,528 @@ mod tests {
         assert!(state.tick >= merged.tick);
         state.tick = merged.tick;
         assert_eq!(state, merged);
+    }
+
+    /// Steps `runner`, which may be standing still with ticks that are not confirmed,
+    /// until the store has answered every flush it was asked for.
+    fn step_until_flushed(runner: &mut RegionRunner) {
+        for _ in 0..20_000 {
+            runner.step();
+            if runner.flushes_answered == runner.flushes_asked {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the store did not answer the flushes");
+    }
+
+    /// The chunk at `position` as the store has it, read through `handle`.
+    fn stored_chunk(handle: &StoreHandle, position: ChunkPos) -> Chunk {
+        handle.request(StoreRequest::Load { position });
+        for _ in 0..20_000 {
+            match handle.try_reply() {
+                Some(StoreReply::Loaded { chunk, .. }) => return chunk,
+                Some(other) => panic!("the store answered a load with {other:?}"),
+                None => thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        panic!("the store did not answer the load");
+    }
+
+    /// A call for the outcome of an order to prepare, which has none.
+    fn no_outcome() -> Box<dyn FnOnce(Reshaped) + Send> {
+        Box::new(|outcome: Reshaped| panic!("a checkpoint has an outcome: {outcome:?}"))
+    }
+
+    /// Whether `message` is what the tick `tick` did, as an edge is told.
+    fn delta_of(message: &WorkerToEdge, tick: u64) -> bool {
+        matches!(message, WorkerToEdge::TickDelta { tick: of, .. } if *of == tick)
+    }
+
+    /// The last checkpoint is asked for as the region stops, behind the commits of its
+    /// ticks and without waiting for the store to confirm them: the store holds it
+    /// back itself until they are durable. The merge is handed to the store only when
+    /// the store has that checkpoint and every tick is confirmed and published as
+    /// well, and then the store has the state in place of every commit, and the chunk
+    /// with what the last tick changed.
+    #[tokio::test]
+    async fn the_last_checkpoint_is_asked_for_at_the_stop_and_the_merge_waits_for_the_ticks_too() {
+        for on_disk_too in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let world = match on_disk_too {
+                true => Divided::stripes_in(directory.path()),
+                false => Divided::stripes(),
+            };
+            let (mut edge, worker_end) = in_process(256);
+            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            west.links().attach(worker_end);
+            joined(&edge, &mut west).await;
+            let east = untouched_east(&world);
+            edge.everything();
+
+            // A tick that changes a block runs while the first checkpoint is made,
+            // and the store's word that it has the commit does not arrive.
+            gate.hold_flushes();
+            gate.hold();
+            let (done, outcome) = outcome();
+            west.reshape(east.absorb(), done);
+            edge.send(dig(1)).await.unwrap();
+            west.step();
+            let tick = west.region().tick_number();
+            assert_eq!(west.stage(), Some(Stage::Preparing));
+            assert_eq!(west.pending.len(), 1);
+            wait_for_kept(&mut west, &gate, 1);
+            gate.asked();
+
+            gate.release_flushes();
+            step_to(&mut west, Stage::Settling);
+            assert_eq!(west.region().tick_number(), tick);
+            assert_eq!(
+                asked_beside_commits(&gate),
+                [Asked::Save(ORIGIN), Asked::Checkpoint(tick), Asked::Flush]
+            );
+            assert_eq!(west.pending.len(), 1);
+
+            // The store has the checkpoint. The tick is not known to be confirmed, so
+            // nobody is told of it and the merge is not worked out.
+            step_until_flushed(&mut west);
+            for _ in 0..20 {
+                west.step();
+            }
+            assert_eq!(west.stage(), Some(Stage::Settling));
+            assert_eq!(west.pending.len(), 1);
+            assert_eq!(asked_beside_commits(&gate), []);
+            assert!(outcome.try_recv().is_err());
+            assert_eq!(edge.everything(), []);
+
+            gate.release();
+            let absorbed = Reshaped::Absorbed { absorbed: EAST };
+            assert_eq!(reshaped(&mut west, &outcome), absorbed);
+            assert_eq!(asked_beside_commits(&gate), [Asked::Absorb(tick + 1)]);
+            // The tick was published before the links were closed.
+            let told = edge.everything();
+            assert!(told.iter().any(|told| delta_of(told, tick)), "{told:?}");
+            drop(east.handle);
+
+            // What the next owner finds: the merged state and no commit beside it,
+            // and the block dug.
+            let (handle, restored) = world.open(RegionId(0), 2);
+            assert_eq!(restored.deltas, []);
+            assert_eq!(restored.state.as_ref().unwrap().tick, tick + 1);
+            let chunk = stored_chunk(&handle, ORIGIN);
+            assert_eq!(chunk.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+        }
+    }
+
+    /// A release asks for its last checkpoint as the region stops as well, and ends
+    /// only when the store has it and every tick is confirmed and published.
+    #[tokio::test]
+    async fn a_release_asks_for_its_last_checkpoint_at_the_stop_and_ends_when_its_ticks_are_confirmed()
+     {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        edge.everything();
+
+        gate.hold_flushes();
+        gate.hold();
+        west.begin_release();
+        edge.send(dig(1)).await.unwrap();
+        west.step();
+        let tick = west.region().tick_number();
+        assert_eq!(west.pending.len(), 1);
+        wait_for_kept(&mut west, &gate, 1);
+        gate.asked();
+
+        gate.release_flushes();
+        step_to(&mut west, Stage::Settling);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Save(ORIGIN), Asked::Checkpoint(tick), Asked::Flush]
+        );
+        step_until_flushed(&mut west);
+        for _ in 0..20 {
+            west.step();
+        }
+        assert_eq!((west.stage(), west.ended()), (Some(Stage::Settling), None));
+        assert_eq!(edge.everything(), []);
+
+        gate.release();
+        assert_eq!(released(&mut west), Ended::Released);
+        assert_eq!(asked_beside_commits(&gate), []);
+        let told = edge.everything();
+        assert!(told.iter().any(|told| delta_of(told, tick)), "{told:?}");
+
+        let (handle, restored) = world.open(RegionId(0), 2);
+        assert_eq!(restored.deltas, []);
+        assert_eq!(restored.state.as_ref().unwrap().tick, tick);
+        let chunk = stored_chunk(&handle, ORIGIN);
+        assert_eq!(chunk.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+    }
+
+    /// A region that was told to prepare makes no checkpoint of its own before it
+    /// stops for the merge, if the store has the one it was told to make and few
+    /// chunks have changed since: it stops in the step that follows the order, and
+    /// the one checkpoint it asks for is the one it stands still for. What changed
+    /// since the order to prepare, and was not confirmed when the region stopped, the
+    /// store has all the same when the merge is worked out.
+    #[tokio::test]
+    async fn a_prepared_region_stops_for_a_merge_at_once_and_checkpoints_once() {
+        for on_disk_too in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let world = match on_disk_too {
+                true => Divided::stripes_in(directory.path()),
+                false => Divided::stripes(),
+            };
+            let (edge, worker_end) = in_process(256);
+            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            west.links().attach(worker_end);
+            joined(&edge, &mut west).await;
+            let east = untouched_east(&world);
+
+            west.reshape(Reshape::Prepare, no_outcome());
+            assert_eq!(west.stage(), None);
+            step_until(&mut west, |runner| {
+                runner.flushes_answered == runner.flushes_asked
+            });
+            // A chunk changes after that, by a tick the store has not confirmed
+            // when the merge is taken.
+            gate.hold();
+            edge.send(dig(1)).await.unwrap();
+            west.step();
+            assert_eq!((west.unsaved.len(), west.pending.len()), (1, 1));
+            let tick = west.region().tick_number();
+            gate.asked();
+
+            let (done, outcome) = outcome();
+            west.reshape(east.absorb(), done);
+            assert_eq!(west.stage(), Some(Stage::Preparing));
+            assert_eq!(asked_beside_commits(&gate), []);
+            west.step();
+            assert_eq!(west.stage(), Some(Stage::Settling));
+            assert_eq!(west.region().tick_number(), tick);
+            gate.release();
+            let absorbed = Reshaped::Absorbed { absorbed: EAST };
+            assert_eq!(reshaped(&mut west, &outcome), absorbed);
+            assert_eq!(
+                asked_beside_commits(&gate),
+                [
+                    Asked::Save(ORIGIN),
+                    Asked::Checkpoint(tick),
+                    Asked::Flush,
+                    Asked::Absorb(tick + 1),
+                ]
+            );
+            assert!(west.pending.is_empty() && west.unsaved.is_empty() && west.loads.is_empty());
+            drop(east.handle);
+
+            let (handle, restored) = world.open(RegionId(0), 2);
+            assert_eq!(restored.deltas, []);
+            assert_eq!(restored.state.as_ref().unwrap().tick, tick + 1);
+            let chunk = stored_chunk(&handle, ORIGIN);
+            assert_eq!(chunk.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+        }
+    }
+
+    /// A merge that is taken while the checkpoint of the order to prepare is still
+    /// being made waits for that one as the region ticks, and asks for no other.
+    #[tokio::test]
+    async fn a_merge_waits_for_the_checkpoint_of_the_order_to_prepare_and_asks_for_no_other() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        let east = untouched_east(&world);
+        gate.asked();
+
+        gate.hold_flushes();
+        west.reshape(Reshape::Prepare, no_outcome());
+        let prepared_at = west.region().tick_number();
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Checkpoint(prepared_at), Asked::Flush]
+        );
+        wait_for_kept_flush(&mut west, &gate);
+        for _ in 0..5 {
+            step(&mut west);
+            assert_eq!(west.stage(), Some(Stage::Preparing));
+        }
+        assert_eq!(west.region().tick_number(), prepared_at + 5);
+        assert_eq!(asked_beside_commits(&gate), []);
+
+        gate.release_flushes();
+        west.step();
+        assert_eq!(west.stage(), Some(Stage::Settling));
+        let tick = west.region().tick_number();
+        assert_eq!(tick, prepared_at + 5);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [
+                Asked::Checkpoint(tick),
+                Asked::Flush,
+                Asked::Absorb(tick + 1)
+            ]
+        );
+    }
+
+    /// Where more than a few chunks have changed since the order to prepare, the
+    /// region makes a checkpoint of its own as it ticks before it stops, as one that
+    /// was never told to prepare does; and it makes one, however much changes while
+    /// that one is made.
+    #[tokio::test]
+    async fn a_prepared_region_that_has_changed_much_since_checkpoints_once_more_before_it_stops() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        let east = untouched_east(&world);
+        // One chunk is more than a few.
+        west.few_unsaved = 0;
+
+        west.reshape(Reshape::Prepare, no_outcome());
+        step_until(&mut west, |runner| {
+            runner.flushes_answered == runner.flushes_asked
+        });
+        edge.send(dig(1)).await.unwrap();
+        step(&mut west);
+        assert_eq!(west.unsaved.len(), 1);
+        let first = west.region().tick_number();
+        gate.asked();
+
+        gate.hold_flushes();
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        assert_eq!(asked_beside_commits(&gate), []);
+        // The step that finds the store prepared asks for the checkpoint and ticks.
+        edge.send(dig(2)).await.unwrap();
+        step(&mut west);
+        assert_eq!(west.stage(), Some(Stage::Preparing));
+        assert_eq!(west.region().tick_number(), first + 1);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Save(ORIGIN), Asked::Checkpoint(first), Asked::Flush]
+        );
+        // The chunk has changed again, which is more than a few again.
+        assert_eq!(west.unsaved.len(), 1);
+        wait_for_kept_flush(&mut west, &gate);
+        step(&mut west);
+        assert_eq!(west.stage(), Some(Stage::Preparing));
+
+        gate.release_flushes();
+        west.step();
+        assert_eq!(west.stage(), Some(Stage::Settling));
+        let tick = west.region().tick_number();
+        assert_eq!(tick, first + 2);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [
+                Asked::Save(ORIGIN),
+                Asked::Checkpoint(tick),
+                Asked::Flush,
+                Asked::Absorb(tick + 1),
+            ]
+        );
+    }
+
+    /// An order to prepare that comes again asks the store for nothing while the
+    /// checkpoint of the one before is being made, nor when few chunks have changed
+    /// since; it does when more have. And it is good for one merge or split: the one
+    /// after that makes its own checkpoint before it stops, unless it is told again.
+    #[tokio::test]
+    async fn an_order_to_prepare_is_not_repeated_needlessly_and_is_good_for_one_merge_or_split() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        gate.asked();
+
+        gate.hold_flushes();
+        west.reshape(Reshape::Prepare, no_outcome());
+        let tick = west.region().tick_number();
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Checkpoint(tick), Asked::Flush]
+        );
+        west.reshape(Reshape::Prepare, no_outcome());
+        assert_eq!(asked_beside_commits(&gate), []);
+
+        gate.release_flushes();
+        step_until(&mut west, |runner| {
+            runner.flushes_answered == runner.flushes_asked
+        });
+        edge.send(dig(1)).await.unwrap();
+        step(&mut west);
+        assert_eq!(west.unsaved.len(), 1);
+        gate.asked();
+        west.reshape(Reshape::Prepare, no_outcome());
+        assert_eq!(asked_beside_commits(&gate), []);
+
+        west.few_unsaved = 0;
+        west.reshape(Reshape::Prepare, no_outcome());
+        let tick = west.region().tick_number();
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Save(ORIGIN), Asked::Checkpoint(tick), Asked::Flush]
+        );
+        step_until(&mut west, |runner| {
+            runner.flushes_answered == runner.flushes_asked
+        });
+        gate.asked();
+
+        // A split that finds nobody in the chunks it names: the region stops for it
+        // at once, and ticks on.
+        let nobody = Reshaped::Off { why: Off::Nobody };
+        let (done, outcome) = outcome();
+        west.reshape(split_off(&[FAR_WEST]), done);
+        assert_eq!(asked_beside_commits(&gate), []);
+        west.step();
+        assert_eq!(west.stage(), Some(Stage::Settling));
+        let tick = west.region().tick_number();
+        assert_eq!(reshaped(&mut west, &outcome), nobody);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Checkpoint(tick), Asked::Flush]
+        );
+
+        // The next one was not told to prepare.
+        step(&mut west);
+        gate.asked();
+        let before = west.region().tick_number();
+        let (done, outcome) = self::outcome();
+        west.reshape(split_off(&[FAR_WEST]), done);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Checkpoint(before), Asked::Flush]
+        );
+        assert_eq!(reshaped(&mut west, &outcome), nobody);
+        let tick = west.region().tick_number();
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [Asked::Checkpoint(tick), Asked::Flush]
+        );
+    }
+
+    /// Waits until the region of `status` is at `tick`.
+    fn wait_for_tick(status: &RegionStatus, tick: u64) {
+        for _ in 0..20_000 {
+            if status.tick.load(Ordering::Relaxed) == tick {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the region never came to tick {tick}");
+    }
+
+    /// A region on a thread of its own takes a merge when it is handed in, looks at
+    /// the store's answers as they come and stops when the store has the checkpoint:
+    /// none of it waits for the next tick. Here no tick is due for an hour after the
+    /// first, and the merge is made all the same, as the tick after that one;
+    /// whether the region was told to prepare or makes its own first checkpoint.
+    #[tokio::test]
+    async fn a_worker_takes_a_merge_and_carries_it_through_between_two_ticks() {
+        for prepared in [false, true] {
+            let world = Divided::stripes();
+            let (edge, worker_end) = in_process(256);
+            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            west.links().attach(worker_end);
+            joined(&edge, &mut west).await;
+            let east = untouched_east(&world);
+            west.pace = Duration::from_secs(3600);
+            let status = west.status();
+            // The thread's first tick runs at once.
+            let tick = west.region().tick_number() + 1;
+            let worker = Worker::spawn(west);
+            wait_for_tick(&status, tick);
+            gate.asked();
+
+            if prepared {
+                worker.reshape(Reshape::Prepare, no_outcome());
+            }
+            let (done, outcome) = outcome();
+            worker.reshape(east.absorb(), done);
+            let absorbed = Reshaped::Absorbed { absorbed: EAST };
+            let patience = Duration::from_secs(20);
+            assert_eq!(outcome.recv_timeout(patience), Ok(absorbed), "{prepared}");
+            assert_eq!(status.tick.load(Ordering::Relaxed), tick + 1);
+            // Either way two checkpoints of the region as that one tick left it: the
+            // one it was told to make or made first, and the one it stood still for.
+            assert_eq!(
+                asked_beside_commits(&gate),
+                [
+                    Asked::Checkpoint(tick),
+                    Asked::Flush,
+                    Asked::Checkpoint(tick),
+                    Asked::Flush,
+                    Asked::Absorb(tick + 1),
+                ],
+                "{prepared}"
+            );
+            let list = world.store.regions().unwrap();
+            assert_eq!(list.absorbed, [(EAST, RegionId(0))]);
+
+            // So is a release: the thread is told at once, and no tick runs for it.
+            worker.begin_release();
+            wait_until_finished(&worker);
+            assert_eq!(worker.stop(), Ended::Released);
+            assert_eq!(status.tick.load(Ordering::Relaxed), tick + 1);
+            drop(edge);
+        }
+    }
+
+    /// What a link sent is the next tick's to take, also where a release is taken up
+    /// and carried through between two ticks: nothing is taken from a link for it, as
+    /// nothing is when a release is stepped by hand. A region that is released before
+    /// that tick has not applied it, and the edge sends it again to the next owner.
+    #[tokio::test]
+    async fn a_worker_that_is_released_between_two_ticks_takes_nothing_from_its_links() {
+        let world = Divided::stripes();
+        let (mut edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        edge.everything();
+        let applied = west.region().edge(edge.edge).unwrap().applied;
+        west.pace = Duration::from_secs(3600);
+        let status = west.status();
+        let tick = west.region().tick_number() + 1;
+        let worker = Worker::spawn(west);
+        wait_for_tick(&status, tick);
+        gate.asked();
+
+        edge.send(dig(1)).await.unwrap();
+        worker.begin_release();
+        wait_until_finished(&worker);
+        assert_eq!(worker.stop(), Ended::Released);
+        assert_eq!(status.tick.load(Ordering::Relaxed), tick);
+        assert_eq!(
+            gate.asked(),
+            [
+                Asked::Checkpoint(tick),
+                Asked::Flush,
+                Asked::Checkpoint(tick),
+                Asked::Flush,
+            ]
+        );
+        assert!(closed(&mut edge).await);
+
+        let (handle, restored) = world.open(RegionId(0), 2);
+        assert_eq!(restored.deltas, []);
+        let state = restored_state(restored).unwrap();
+        assert_eq!(state.tick, tick);
+        assert_eq!(state.edges[&edge.edge].applied, applied);
+        let chunk = stored_chunk(&handle, ORIGIN);
+        assert_ne!(chunk.get(1, -61, 0), Some(clustine_data::blocks::AIR));
     }
 
     /// A runner whose store handle is lost in the middle of a merge stops for good, as
