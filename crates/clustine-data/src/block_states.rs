@@ -134,6 +134,12 @@ impl BlockState {
     pub fn is_air(self) -> bool {
         u32::from(self.0) < crate::BLOCK_STATE_COUNT && self.props().is_air()
     }
+
+    /// Whether the state has a fluid in it: water and lava, and a block that is
+    /// waterlogged. Like [`BlockState::is_air`] it takes any number.
+    pub fn has_fluid(self) -> bool {
+        u32::from(self.0) < crate::BLOCK_STATE_COUNT && self.props().fluid().is_some()
+    }
 }
 
 impl StateProps {

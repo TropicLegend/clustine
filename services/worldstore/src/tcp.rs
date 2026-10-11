@@ -1408,7 +1408,8 @@ mod tests {
         for (position, chunk) in &chunks {
             let sections = chunk.sections();
             assert!((1..sections.len()).all(|index| !sections[..index].contains(&sections[index])));
-            // A few hundred kilobytes on the way to the store, and as many on the way back.
+            // The most a chunk's blocks can be, eight kilobytes a section, on the way
+            // to the store, and as much on the way back.
             let request = StoreRequest::Save {
                 position: *position,
                 tick: 5,
@@ -1416,7 +1417,7 @@ mod tests {
             };
             let mut bytes = Vec::new();
             wire::blocking::write(&mut bytes, &request).unwrap();
-            assert!(bytes.len() > 200_000, "{} bytes", bytes.len());
+            assert!(bytes.len() > 24 * 8192, "{} bytes", bytes.len());
         }
 
         for store in stores(directory.path()) {
