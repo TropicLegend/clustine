@@ -276,6 +276,17 @@ impl Section {
         }
     }
 
+    /// Whether a position may hold a state of which `wanted` holds: false only if
+    /// none does. It asks the palette, which can still have a state that no position
+    /// has any more, so true is "look", not "there is one".
+    pub fn may_hold(&self, mut wanted: impl FnMut(BlockState) -> bool) -> bool {
+        match &self.blocks {
+            Blocks::Uniform(state) => wanted(*state),
+            Blocks::Indexed { palette, .. } => palette.iter().any(|state| wanted(*state)),
+            Blocks::Direct(_) => true,
+        }
+    }
+
     /// The block at `x`, `y`, `z`, each in `0..16`.
     pub fn get(&self, x: usize, y: usize, z: usize) -> BlockState {
         // Checked for uniform sections too, so that a wrong coordinate fails everywhere.

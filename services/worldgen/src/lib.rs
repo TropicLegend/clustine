@@ -41,6 +41,11 @@ impl FlatGenerator {
     }
 }
 
+/// The version of the flat generator: what a chunk says it is exactly as made by
+/// (`docs/adr/0022-what-a-chunk-carries.md`, section 1). It is raised when the
+/// generator would make another chunk from the same settings.
+pub const FLAT_VERSION: u16 = 1;
+
 impl ChunkGenerator for FlatGenerator {
     fn generate(&self, _position: ChunkPos) -> Chunk {
         let mut chunk = Chunk::empty(self.dimension, self.biome);
@@ -52,6 +57,9 @@ impl ChunkGenerator for FlatGenerator {
                 }
             }
         }
+        // Exactly as this generator makes it, until something changes it. It is given
+        // no light yet.
+        chunk.mark_generated(FLAT_VERSION, false);
         chunk
     }
 

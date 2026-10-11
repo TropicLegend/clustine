@@ -2401,7 +2401,18 @@ impl Fanout {
             return;
         };
         let shown_before = entry.chunk.is_some();
-        if entry.chunk.as_ref() != Some(&chunk) {
+        // By what a client is shown, and not by everything a chunk carries: one that
+        // differs from the replica's only in what is not shown (whether it is as
+        // generated, its light as carried) is not sent to its viewers again, or every
+        // resume, hand-over, merge and split would send such chunks whole
+        // (`docs/adr/0022-what-a-chunk-carries.md`, section 2).
+        let same = entry
+            .chunk
+            .as_ref()
+            .is_some_and(|known| known.shows_the_same(&chunk));
+        if same {
+            entry.chunk = Some(chunk);
+        } else {
             entry.chunk = Some(chunk);
             entry.packet = None;
             let viewers: Vec<_> = self

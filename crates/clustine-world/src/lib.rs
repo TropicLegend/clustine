@@ -8,12 +8,15 @@ mod light;
 mod position;
 mod section;
 
-pub use chunk::{Chunk, ChunkGenerator};
-pub use light::{LIGHT_ARRAY_LENGTH, SectionLight, sky_light};
+pub use chunk::{
+    BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, MAX_BLOCK_ENTITY_DATA,
+    MAX_CHUNK_ENTITY_DATA, ScheduledTick, Ticked,
+};
+pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{
     BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId, Vec3,
 };
-pub use section::{Biome, Section};
+pub use section::{BIOME_CELLS, Biome, Section};
 
 /// Blocks along each edge of a section.
 pub const SECTION_SIZE: usize = 16;

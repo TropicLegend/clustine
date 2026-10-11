@@ -5,21 +5,104 @@
 //! without overhangs or transparent blocks, and too dark below overhangs, where light
 //! would really spread sideways. Blocks that emit light are not taken into account.
 
+use serde::{Deserialize, Serialize};
+
 use crate::{Chunk, SECTION_SIZE};
 
 /// Bytes in the light array of one section: 4 bits per block.
 pub const LIGHT_ARRAY_LENGTH: usize = 2048;
 
 /// The light of one section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Light that is 0 everywhere is always [`SectionLight::Dark`] and light that is 15
+/// everywhere always [`SectionLight::Full`], so that equal light is equal; reading
+/// one that travelled makes it so.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SectionLightRepr", into = "SectionLightRepr")]
 pub enum SectionLight {
+    /// The client's packet lists it in neither mask. For sky light above everything
+    /// that could cast a shadow, the client assumes full light.
+    Absent,
     /// Level 0 everywhere.
     Dark,
+    /// Level 15 everywhere. Written as an array only in the client's packet.
+    Full,
     /// Levels per block, 4 bits each, indexed by `y << 8 | z << 4 | x`; the block with
     /// the even index is in the low half of its byte.
     Levels(Box<[u8; LIGHT_ARRAY_LENGTH]>),
-    /// Above everything that could cast a shadow; the client assumes full sky light.
-    OpenSky,
+}
+
+impl SectionLight {
+    /// The light of `levels`, in the one form equal light has.
+    pub fn of(levels: Box<[u8; LIGHT_ARRAY_LENGTH]>) -> Self {
+        if levels.iter().all(|byte| *byte == 0) {
+            Self::Dark
+        } else if levels.iter().all(|byte| *byte == 0xff) {
+            Self::Full
+        } else {
+            Self::Levels(levels)
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum SectionLightRepr {
+    Absent,
+    Dark,
+    Full,
+    Levels(Vec<u8>),
+}
+
+impl From<SectionLight> for SectionLightRepr {
+    fn from(light: SectionLight) -> Self {
+        match light {
+            SectionLight::Absent => Self::Absent,
+            SectionLight::Dark => Self::Dark,
+            SectionLight::Full => Self::Full,
+            SectionLight::Levels(levels) => Self::Levels(levels.to_vec()),
+        }
+    }
+}
+
+impl TryFrom<SectionLightRepr> for SectionLight {
+    type Error = String;
+
+    fn try_from(repr: SectionLightRepr) -> Result<Self, Self::Error> {
+        Ok(match repr {
+            SectionLightRepr::Absent => Self::Absent,
+            SectionLightRepr::Dark => Self::Dark,
+            SectionLightRepr::Full => Self::Full,
+            SectionLightRepr::Levels(levels) => {
+                let levels: Box<[u8; LIGHT_ARRAY_LENGTH]> = levels
+                    .into_boxed_slice()
+                    .try_into()
+                    .map_err(|levels: Box<[u8]>| {
+                        format!(
+                            "a section's light is {LIGHT_ARRAY_LENGTH} bytes, not {}",
+                            levels.len()
+                        )
+                    })?;
+                Self::of(levels)
+            }
+        })
+    }
+}
+
+/// The light a chunk carries: what the light rules of the version `made_by` give for
+/// its blocks beside the neighbours it was made beside. `sky` and `block` each have
+/// an entry for the section below the chunk, one for each section and one for the
+/// section above, bottom first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Light {
+    pub made_by: u16,
+    pub sky: Vec<SectionLight>,
+    pub block: Vec<SectionLight>,
+}
+
+impl Light {
+    /// The value of `made_by` for light that the official server made, in a world
+    /// that was brought in from it.
+    pub const IMPORTED: u16 = u16::MAX;
 }
 
 /// The sky light of `chunk`: one entry for the section below the column, one per
@@ -37,7 +120,7 @@ pub fn sky_light(chunk: &Chunk) -> Vec<SectionLight> {
     let mut light = vec![SectionLight::Dark];
     for section in 0..chunk.sections().len() + 1 {
         if section >= lit_sections {
-            light.push(SectionLight::OpenSky);
+            light.push(SectionLight::Absent);
             continue;
         }
         let bottom = section * SECTION_SIZE;
@@ -92,7 +175,7 @@ mod tests {
         assert!(
             light[1..]
                 .iter()
-                .all(|light| *light == SectionLight::OpenSky)
+                .all(|light| *light == SectionLight::Absent)
         );
     }
 
@@ -119,7 +202,7 @@ mod tests {
         assert!(
             light[3..]
                 .iter()
-                .all(|light| *light == SectionLight::OpenSky)
+                .all(|light| *light == SectionLight::Absent)
         );
     }
 
@@ -140,7 +223,7 @@ mod tests {
             light[5],
             SectionLight::Levels(Box::new([0xFF; LIGHT_ARRAY_LENGTH]))
         );
-        assert_eq!(light[6], SectionLight::OpenSky);
+        assert_eq!(light[6], SectionLight::Absent);
     }
 
     #[test]
@@ -157,6 +240,6 @@ mod tests {
         assert_eq!(light[1], SectionLight::Dark);
         assert_eq!(light[2], SectionLight::Dark);
         assert!(matches!(light[3], SectionLight::Levels(_)));
-        assert_eq!(light[4], SectionLight::OpenSky);
+        assert_eq!(light[4], SectionLight::Absent);
     }
 }

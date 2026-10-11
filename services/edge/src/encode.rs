@@ -81,8 +81,16 @@ fn light_data(chunk: &Chunk) -> LightData {
                 sky_mask |= bit;
                 light.sky.push(levels.to_vec());
             }
+            // The approximation by columns makes no section that is full throughout
+            // and stored so; were there one, it is an array of fifteens to a client.
+            SectionLight::Full => {
+                sky_mask |= bit;
+                light
+                    .sky
+                    .push(vec![0xff; clustine_world::LIGHT_ARRAY_LENGTH]);
+            }
             // Listed in neither mask: the client assumes full sky light.
-            SectionLight::OpenSky => continue,
+            SectionLight::Absent => continue,
         }
         // There are no light sources yet, so block light is dark wherever light is stored.
         empty_block_mask |= bit;

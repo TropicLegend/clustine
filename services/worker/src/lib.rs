@@ -2301,7 +2301,8 @@ impl RegionRunner {
                             position,
                             ask,
                             tick: output.tick,
-                            chunk: chunk.clone(),
+                            // Without the ticks and marks, which are not an edge's.
+                            chunk: chunk.for_viewers(),
                             entities,
                         }
                     }
@@ -10165,6 +10166,9 @@ mod tests {
             wait_for_kept(&mut west, &gate, 1);
             gate.asked();
 
+            // Not before the store has answered the flush: a step that does not find
+            // the answer runs another tick.
+            wait_for_kept_flush(&mut west, &gate);
             gate.release_flushes();
             step_to(&mut west, Stage::Settling);
             assert_eq!(west.region().tick_number(), tick);
@@ -10227,6 +10231,9 @@ mod tests {
         wait_for_kept(&mut west, &gate, 1);
         gate.asked();
 
+        // Not before the store has answered the flush: a step that does not find the
+        // answer runs another tick.
+        wait_for_kept_flush(&mut west, &gate);
         gate.release_flushes();
         step_to(&mut west, Stage::Settling);
         assert_eq!(

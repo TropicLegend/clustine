@@ -1481,11 +1481,16 @@ fn a_chunk_that_goes_to_and_fro_is_as_its_last_holder_saved_it() {
         (ticks(&restored), restored.held),
         (vec![1], vec![(FREE, 1)])
     );
-    assert_eq!(load(&second, FREE), built(FREE, &[]));
+    // What was saved is what the generator makes, and the stored form does not keep
+    // that a chunk is as generated: it comes back with the same blocks.
+    assert!(load(&second, FREE).shows_the_same(&built(FREE, &[])));
     second.flush();
     after_every_crash(&disk, &gap(), "to and fro", |store, case| {
         let (second, _) = opened_gap(store, 1, 3);
-        assert_eq!(load(&second, FREE), built(FREE, &[]), "{case}");
+        assert!(
+            load(&second, FREE).shows_the_same(&built(FREE, &[])),
+            "{case}"
+        );
         let (_, restored) = opened_gap(store, 0, 3);
         assert_eq!(
             (ticks(&restored), restored.held),
