@@ -594,6 +594,16 @@ async fn a_split_with_no_player_anywhere_is_told_that_nobody_stands_there() {
         return;
     }
     let mut reshapes = Reshapes::start("split", "3", 2).await;
+    // A region takes up a link at a tick and stops for a split as soon as it is
+    // asked. A link that the edge attached a moment before the split and that no tick
+    // has taken yet is closed like one attached while the region stands still, and
+    // the edge links again; so the links are to be the regions' before anything is
+    // asked.
+    reshapes
+        .until("each region has taken the edge's link", |reshapes| {
+            (0..2).all(|worker| reshapes.cluster.said(worker, "an edge said hello") > 0)
+        })
+        .await;
     let before = reshapes.list().await;
     let routes = reshapes.routes();
     let links = (reshapes.links_to(0), reshapes.links_to(1));
