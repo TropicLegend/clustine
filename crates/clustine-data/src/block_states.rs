@@ -126,6 +126,16 @@ impl BlockState {
     }
 }
 
+impl BlockState {
+    /// The game's `isAir` of this state: air, cave air and void air. Unlike
+    /// [`BlockState::props`] it takes any number, and says of one that is no state's
+    /// that it is not air: a section counts its blocks with this as it is read, before
+    /// anyone has looked at what it holds.
+    pub fn is_air(self) -> bool {
+        u32::from(self.0) < crate::BLOCK_STATE_COUNT && self.props().is_air()
+    }
+}
+
 impl StateProps {
     /// The light the block gives, 0 to 15. Light starts its spread from these.
     pub fn light_emission(self) -> u8 {

@@ -1,6 +1,6 @@
 //! A 16×16×16 cube of blocks.
 
-use clustine_data::{BlockState, blocks};
+use clustine_data::BlockState;
 use serde::{Deserialize, Serialize};
 
 use crate::{BLOCKS_PER_SECTION, SECTION_SIZE};
@@ -27,7 +27,8 @@ enum Blocks {
 #[serde(try_from = "SectionRepr", into = "SectionRepr")]
 pub struct Section {
     blocks: Blocks,
-    /// Number of blocks that are not air.
+    /// Number of blocks that are not air, as the game counts them for a client: air,
+    /// cave air and void air are all air (`BlockState::is_air`).
     non_air: u16,
     biome: Biome,
 }
@@ -53,7 +54,7 @@ impl Section {
         if states.iter().all(|state| *state == first) {
             return Self::filled(first, biome);
         }
-        let non_air = states.iter().filter(|state| **state != blocks::AIR).count();
+        let non_air = states.iter().filter(|state| !state.is_air()).count();
         Self {
             blocks: Blocks::Mixed(states),
             non_air: non_air as u16,
@@ -65,7 +66,7 @@ impl Section {
     pub fn filled(state: BlockState, biome: Biome) -> Self {
         Self {
             blocks: Blocks::Uniform(state),
-            non_air: if state == blocks::AIR {
+            non_air: if state.is_air() {
                 0
             } else {
                 BLOCKS_PER_SECTION as u16
@@ -78,7 +79,8 @@ impl Section {
         self.biome
     }
 
-    /// Number of blocks that are not air.
+    /// Number of blocks that are not air. Cave air and void air are air here, as they
+    /// are to the game where it counts a section's blocks and looks for a surface.
     pub fn non_air_count(&self) -> u16 {
         self.non_air
     }
@@ -118,8 +120,8 @@ impl Section {
             Blocks::Mixed(states) => states,
         };
         let old = std::mem::replace(&mut states[index], state);
-        self.non_air -= u16::from(old != blocks::AIR);
-        self.non_air += u16::from(state != blocks::AIR);
+        self.non_air -= u16::from(!old.is_air());
+        self.non_air += u16::from(!state.is_air());
         old
     }
 
@@ -190,6 +192,8 @@ fn index(x: usize, y: usize, z: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use clustine_data::blocks;
+
     use super::*;
 
     const PLAINS: Biome = Biome(0);
@@ -203,6 +207,34 @@ mod tests {
         let stone = Section::filled(blocks::STONE, PLAINS);
         assert_eq!(stone.non_air_count(), 4096);
         assert_eq!(stone.get(15, 15, 15), blocks::STONE);
+    }
+
+    /// The game counts cave air and void air as air where it counts a section's
+    /// blocks, and so does a section, however the air came into it.
+    #[test]
+    fn cave_air_and_void_air_count_as_air() {
+        for air in [blocks::CAVE_AIR, blocks::VOID_AIR] {
+            assert_eq!(Section::filled(air, PLAINS).non_air_count(), 0);
+            let mut section = Section::filled(blocks::STONE, PLAINS);
+            section.set(1, 2, 3, air);
+            assert_eq!(section.non_air_count(), 4095);
+            section.set(1, 2, 3, blocks::AIR);
+            assert_eq!(section.non_air_count(), 4095);
+            section.set(1, 2, 3, blocks::DIRT);
+            assert_eq!(section.non_air_count(), 4096);
+            let again = Section::from_states(
+                Box::new(std::array::from_fn(|index| {
+                    if index == 0 { air } else { blocks::STONE }
+                })),
+                PLAINS,
+            );
+            assert_eq!(again.non_air_count(), 4095);
+            // Still another block than plain air to whoever asks what is there.
+            assert_ne!(
+                Section::filled(air, PLAINS),
+                Section::filled(blocks::AIR, PLAINS)
+            );
+        }
     }
 
     #[test]

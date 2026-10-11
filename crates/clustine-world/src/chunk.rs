@@ -72,7 +72,7 @@ impl Chunk {
                 for z in 0..SECTION_SIZE {
                     for x in 0..SECTION_SIZE {
                         let height = &mut heights[z << 4 | x];
-                        if *height == 0 && section.get(x, y, z) != blocks::AIR {
+                        if *height == 0 && !section.get(x, y, z).is_air() {
                             *height = (index * SECTION_SIZE + y + 1) as u16;
                             unresolved -= 1;
                         }
@@ -151,6 +151,18 @@ mod tests {
         assert_eq!(chunk.get(0, i32::MIN, 0), None);
         assert_eq!(chunk.set(0, 320, 0, blocks::STONE), None);
         assert_eq!(chunk, empty());
+    }
+
+    /// The surface is the highest block that is not air to the game, and cave air is.
+    #[test]
+    fn surface_heights_pass_over_cave_air() {
+        let mut chunk = empty();
+        chunk.set(3, 10, 5, blocks::STONE);
+        chunk.set(3, 40, 5, blocks::CAVE_AIR);
+        chunk.set(7, 40, 7, blocks::VOID_AIR);
+        let heights = chunk.surface_heights();
+        assert_eq!(heights[5 << 4 | 3], 75);
+        assert_eq!(heights[7 << 4 | 7], 0);
     }
 
     #[test]

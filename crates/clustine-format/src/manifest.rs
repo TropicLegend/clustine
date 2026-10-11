@@ -49,7 +49,16 @@ impl ChunkManifest {
             .sections()
             .iter()
             .map(|section| {
-                if section.non_air_count() == 0 && section.biome() == air_biome {
+                // Only a section of plain air is left out, as that is what a section
+                // without a file is read back as. One of cave air or void air counts
+                // no blocks either, and is stored.
+                let air = clustine_data::blocks::AIR;
+                let plain_air = section.non_air_count() == 0
+                    && match section.uniform_state() {
+                        Some(state) => state == air,
+                        None => section.states().all(|state| state == air),
+                    };
+                if plain_air && section.biome() == air_biome {
                     return None;
                 }
                 let canonical = encode_section(section);
@@ -213,6 +222,26 @@ mod tests {
             (-64, 77, 1)
         );
         assert_eq!(restore(&manifest, &blobs), Ok(empty()));
+    }
+
+    /// Cave air counts no blocks, as plain air does, and a section without a file is
+    /// read back as plain air: so a section of cave air has to have a file.
+    #[test]
+    fn a_section_of_cave_air_is_stored_and_read_back_as_cave_air() {
+        let mut chunk = empty();
+        for z in 0..16 {
+            for y in -64..-48 {
+                for x in 0..16 {
+                    chunk.set(x, y, z, blocks::CAVE_AIR);
+                }
+            }
+        }
+        assert_eq!(chunk.sections()[0].non_air_count(), 0);
+        let mut blobs = BTreeMap::new();
+        let manifest = store(&chunk, &mut blobs);
+        assert!(manifest.sections[0].is_some());
+        assert_eq!(manifest.sections[1..], vec![None; 23]);
+        assert_eq!(restore(&manifest, &blobs), Ok(chunk));
     }
 
     #[test]
