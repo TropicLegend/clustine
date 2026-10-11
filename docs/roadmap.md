@@ -1107,9 +1107,9 @@ the codec and the comparisons with the official server (R1.0c), the store's part
 written from the record by someone who had not seen the code, none of which found a
 fault), the setting turned on (R1.5), end-to-end tests from the record in one process
 and in a cluster with two edges (R1.7: 34 tests, none found a fault) and the notes in
-the earlier records (R1.8). Still to come: the bots and their ledger across a leave
-(R1.6), and taking the setting itself away, which the simulation's and the runner's
-own tests still run both ways. One number from R1.7 is to be measured again on a quiet
+the earlier records (R1.8), and the bots and their ledger across a leave (R1.6, which
+found no fault either). Still to come: taking the setting itself away, which the
+simulation's and the runner's own tests still run both ways. One number from R1.7 is to be measured again on a quiet
 machine: with twenty players joining far apart at once, somebody at the spawn point
 stood still for 3.8 s at worst, where a second is the bound.
 

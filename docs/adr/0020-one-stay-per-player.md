@@ -1499,3 +1499,38 @@ the order (an arrival, then a leave). What the record left unsaid, and how it is
 4. **Path 3 with `to` gone into the region the word comes from**: tested with the
    routing table's word before the `Departed`. Read the other way round, the arrival
    is kept for `to` and follows the rules for what is kept for an absorbed region.
+
+## Found by the end-to-end tests and the bots (steps R1.6 and R1.7)
+
+**R1.7**: 34 end-to-end tests written from this record by someone who had read none of
+the code (`bin/clustine/tests/stays.rs`), in one process, in a world of several
+regions and in a cluster of two workers and two edges, with workers, an edge and the
+store stopped, frozen and killed. None failed. Rows 8a, 21 and 22 of section 10 cannot
+be reached from outside (they need one link lost and nothing else; the edge's tests
+against scripted regions have them), and rows 6, 7, 13 and 14 are reached without the
+test being able to tell that it hit the tick meant.
+
+**One number is above its bound and is to be measured again**: with twenty players
+joining far apart at once, somebody at the spawn point stood still for 3.8 s at worst
+(an unoptimised build, worlds in memory, a machine shared with other work, one run),
+where "What is measured" compares with a second. The remedy this record names is a
+split that names several parts.
+
+**R1.6**: the ledger bots hold the server to a player's place across a leave, a lost
+connection and a second login (`tools/botswarm/src/kept.rs`,
+`bin/clustine/tests/returns.rs`). No fault of the server was found. Two things this
+record implies and did not say as a rule that can be tested:
+
+- **An acknowledgement a client has read means that everything it sent before that
+  action is applied and on disk**, its place among it: what a tick produced is
+  published only when the store has the tick's commit, and the commit carries the
+  place.
+- **A player whose connection was lost, or who was put out by a second login, comes
+  back in one of the states they were in, from the last one the server acknowledged
+  to the last one they sent.** It is a bound in order and not in blocks or ticks:
+  this record gives no distance ("a few steps", "eight ticks at most" describe it).
+  A player who leaves in good order, having read the acknowledgement of what they
+  did last, comes back exactly where they were. For a second login the lower end is
+  what was acknowledged before the login began (section 10, row 10). In the bots'
+  runs 5 of 8 returns after an edge was killed, and 2 of 12 second logins, were
+  behind the last state sent, all within the bound.
