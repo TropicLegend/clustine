@@ -64,7 +64,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use clustine_format::{FormatError, Hash};
+use clustine_format::FormatError;
 use clustine_region::RegionId;
 use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest};
 use clustine_world::{ChunkArea, ChunkGenerator, ChunkPos};
@@ -84,10 +84,22 @@ pub enum StoreError {
     Format(#[from] FormatError),
     #[error("{path}: {error}")]
     Damaged { path: PathBuf, error: FormatError },
-    #[error("a stored chunk names section {0}, which is not there")]
-    MissingSection(Hash),
     #[error("the world's metadata is malformed: {0}")]
     MalformedMeta(String),
+    /// The world is of an earlier format. Worlds are thrown away until the first
+    /// release, so there is nothing that makes one over
+    /// (`docs/adr/0022-what-a-chunk-carries.md`, section 9).
+    #[error(
+        "This world was made by an earlier Clustine (world format {stored}; this server writes \
+         format {current}). Worlds are not carried over before the first release: move \
+         {} away or name another, and a new world is made.",
+        directory.display()
+    )]
+    EarlierFormat {
+        stored: u8,
+        current: u8,
+        directory: PathBuf,
+    },
     #[error("the world was made with {setting} `{stored}`, but this server uses `{current}`")]
     Incompatible {
         setting: &'static str,

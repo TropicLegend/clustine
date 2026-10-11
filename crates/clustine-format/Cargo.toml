@@ -1,6 +1,6 @@
 [package]
 name = "clustine-format"
-description = "The Clustine world format: content-addressed sections, chunk manifests, write-ahead log."
+description = "The Clustine world format: chunk files, write-ahead log, what is kept per region and player."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

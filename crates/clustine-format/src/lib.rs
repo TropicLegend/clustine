@@ -1,10 +1,11 @@
-//! The Clustine world format: content-addressed sections, chunk manifests, write-ahead log,
-//! what is kept per region, the table of the regions and the chunks they hold, and what
-//! is kept of each player.
+//! The Clustine world format: chunk files, the write-ahead log, what is kept per region,
+//! the table of the regions and the chunks they hold, and what is kept of each player.
 //!
-//! A chunk is stored as a [`ChunkManifest`] that lists, for each of its sections, the
-//! [`Hash`] of that section's canonical encoding. The sections themselves are stored
-//! once per distinct content, whichever chunks they appear in.
+//! A chunk is stored as one [`ChunkFile`]: its blocks and biomes, its block entities,
+//! its light, the ticks and marks generation left, and which generator it is exactly
+//! as made by, with a checksum over all of it. Nothing is shared between chunks, so a
+//! file is whole by itself and a chunk that is saved again leaves nothing behind
+//! (`docs/adr/0022-what-a-chunk-carries.md`, section 3).
 //!
 //! Block state and biome ids are those of one Minecraft data version, which a world
 //! records in its metadata. Moving a world to another version means rewriting them.
@@ -15,23 +16,19 @@
 mod bytes;
 mod chunk;
 mod log;
-mod manifest;
 mod region;
-mod section;
 
-use std::fmt;
-
-pub use chunk::{CHUNK_FORMAT, ChunkFile, KIND_CHUNK};
+pub use chunk::{ChunkFile, KIND_CHUNK};
 pub use log::{
     HOTBAR_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, read_log,
     read_log_with_offsets,
 };
-pub use manifest::ChunkManifest;
 pub use region::{PlayerRecord, PlayersFile, RegionFile, StateFile, TableFile, TableRegion};
-pub use section::{decode_section, encode_section, pack, unpack};
 
-/// The version of the encodings in this crate. It is written into everything stored.
-pub const FORMAT_VERSION: u8 = 1;
+/// The version of the encodings in this crate. It is written into everything stored:
+/// the first byte of every file and of every record of the log. A world says in its
+/// `meta` which one it is of, and the store opens no world of another.
+pub const FORMAT_VERSION: u8 = 2;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -46,31 +43,4 @@ pub enum FormatError {
     Corrupt(&'static str),
     #[error("the checksum does not match")]
     ChecksumMismatch,
-}
-
-/// The address of a stored section: the BLAKE3 hash of its canonical encoding.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Hash(pub [u8; 32]);
-
-impl Hash {
-    /// The address of `canonical`, the output of [`encode_section`].
-    pub fn of(canonical: &[u8]) -> Self {
-        Self(*blake3::hash(canonical).as_bytes())
-    }
-}
-
-/// Lower-case hexadecimal, as used for file names.
-impl fmt::Display for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Debug for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Hash({self})")
-    }
 }

@@ -150,7 +150,7 @@ async fn the_world_survives_the_server_being_killed() {
 
     // The chunks were still loaded and no checkpoint was due, so nothing but the log
     // holds the changes.
-    assert!(!world.join("manifests/overworld").exists());
+    assert!(!world.join("chunks/overworld").exists());
     let logged: u64 = std::fs::read_dir(world.join("log"))
         .unwrap()
         .map(|segment| segment.unwrap().metadata().unwrap().len())
@@ -161,7 +161,7 @@ async fn the_world_survives_the_server_being_killed() {
     let visitor = join(&address, "Visitor").await;
     assert_built(&visitor);
     // Opening the region saved the chunks; the log keeps the changes until a checkpoint.
-    assert!(world.join("manifests/overworld").exists());
+    assert!(world.join("chunks/overworld").exists());
 
     server.kill().await.unwrap();
 }

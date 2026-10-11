@@ -8,10 +8,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Barrier, Mutex};
 use std::time::Duration;
 
-use clustine_data::{BlockState, blocks};
+use clustine_data::{BlockState, DATA_VERSION, blocks};
 use clustine_format::{LogRecord, read_log};
 use clustine_rpc::TickState;
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityIds};
+use clustine_world::{
+    BlockPos, Chunk, ChunkPos, EntityIds, InChunk, LIGHT_ARRAY_LENGTH, Light, ScheduledTick,
+    SectionLight, Ticked,
+};
 use clustine_worldgen::FlatGenerator;
 
 use super::*;
@@ -199,10 +202,8 @@ fn a_stored_chunk_that_cannot_be_read_is_answered_as_unreadable() {
     // The flush has the chunk written: until then it is held by the store, which
     // would answer the load from what it holds and not read the file.
     store.flush();
-    let manifest = directory
-        .path()
-        .join("manifests/overworld/0.0/3.4.manifest");
-    std::fs::write(&manifest, b"not a manifest").unwrap();
+    let file = directory.path().join("chunks/overworld/0.0/3.4.chunk");
+    std::fs::write(&file, b"not a chunk").unwrap();
 
     store.request(StoreRequest::Load { position });
     assert_eq!(reply(&store), StoreReply::Unreadable { position });
@@ -237,30 +238,156 @@ fn flush_waits_for_everything_before_it() {
     // The saves are in the files once it returns, and not before: it is the flush
     // that writes them, all together.
     store.flush();
-    let manifests = directory.path().join("manifests/overworld");
-    let stored: usize = fs::read_dir(manifests)
-        .unwrap()
-        .map(|region| fs::read_dir(region.unwrap().path()).unwrap().count())
-        .sum();
-    assert_eq!(stored, 50);
+    assert_eq!(chunk_files(directory.path()).len(), 50);
 }
 
+/// The files under `chunks/` of the world in `directory`, each by its path from there.
+fn chunk_files(directory: &Path) -> Vec<String> {
+    let chunks = directory.join("chunks");
+    let mut found = Vec::new();
+    let mut directories = vec![chunks.clone()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                directories.push(path);
+            } else {
+                let inside = path.strip_prefix(&chunks).unwrap();
+                found.push(inside.to_str().unwrap().to_owned());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A chunk is one file, wherever it is and whatever is in it: chunks that are equal
+/// share nothing, and a chunk that is saved again takes the place of its file and
+/// leaves nothing beside it, neither a file under a temporary name nor anything of
+/// what was stored before.
 #[test]
-fn equal_sections_are_stored_once() {
+fn a_chunk_is_one_file_however_many_are_equal_and_however_often_it_is_saved() {
     let directory = tempfile::tempdir().unwrap();
     let store = spawn_local(directory.path(), generator()).unwrap();
-    for x in 0..20 {
-        save(&store, ChunkPos::new(x, 3), &edited());
+    let positions = [(0, 3), (1, 3), (-1, 3), (40, -70)];
+    for (x, z) in positions {
+        save(&store, ChunkPos::new(x, z), &edited());
     }
-    // Section files are written when the saves are flushed, each once for all the
-    // chunks of the flush that have the section.
+    // None before the flush, which is what writes them.
+    assert!(!directory.path().join("chunks").exists());
     store.flush();
-    // The edited chunk has two sections that are not plain air.
-    let blobs: usize = fs::read_dir(directory.path().join("blobs"))
-        .unwrap()
-        .map(|prefix| fs::read_dir(prefix.unwrap().path()).unwrap().count())
-        .sum();
-    assert_eq!(blobs, 2);
+    let expected = [
+        "overworld/-1.0/-1.3.chunk",
+        "overworld/0.0/0.3.chunk",
+        "overworld/0.0/1.3.chunk",
+        "overworld/1.-3/40.-70.chunk",
+    ];
+    assert_eq!(chunk_files(directory.path()), expected);
+    assert!(!directory.path().join("blobs").exists());
+    assert!(!directory.path().join("manifests").exists());
+
+    let mut again = edited();
+    again.set(1, 1, 1, blocks::GLASS);
+    for _ in 0..3 {
+        save(&store, ChunkPos::new(1, 3), &again);
+        store.flush();
+    }
+    assert_eq!(chunk_files(directory.path()), expected);
+    drop(store);
+    let store = spawn_local(directory.path(), generator()).unwrap();
+    assert_eq!(load(&store, ChunkPos::new(1, 3)), again);
+    assert_eq!(load(&store, ChunkPos::new(0, 3)), edited());
+}
+
+/// The file says who saved the chunk and when: the tick of the save and the epoch the
+/// region was opened with, for whoever looks at what is stored.
+#[test]
+fn a_chunk_file_has_the_tick_of_the_save_and_the_epoch_of_the_region_that_saved_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = local(directory.path());
+    let east = open(&store, hello(1, 7));
+    let position = ChunkPos::new(2, 2);
+    east.request(StoreRequest::Save {
+        position,
+        tick: 31,
+        chunk: edited(),
+    });
+    east.flush();
+    let bytes = fs::read(directory.path().join("chunks/overworld/0.0/2.2.chunk")).unwrap();
+    let (file, unfit) = clustine_format::ChunkFile::decode(&bytes).unwrap();
+    assert_eq!(unfit, 0);
+    assert_eq!((file.position, file.tick, file.epoch), (position, 31, 7));
+    assert_eq!(file.chunk, edited());
+    assert_eq!(bytes[..2], [2, clustine_format::KIND_CHUNK]);
+}
+
+/// A chunk with something of everything a chunk carries, at `position`.
+fn with_everything(position: ChunkPos) -> Chunk {
+    let mut chunk = generator().generate(position);
+    chunk.set(3, -60, 5, blocks::CHEST);
+    chunk.set(4, -60, 5, blocks::WATER);
+    let chest = InChunk::new(3, -60, 5);
+    chunk.set_block_entity_data(chest, vec![1, 2, 3]).unwrap();
+    let entries = chunk.sections().len() + 2;
+    let mut sky = vec![SectionLight::Full; entries];
+    sky[0] = SectionLight::Absent;
+    let mut levels = Box::new([0; LIGHT_ARRAY_LENGTH]);
+    levels[7] = 0x5a;
+    sky[1] = SectionLight::Levels(levels);
+    chunk.set_light(Light {
+        made_by: 1,
+        sky,
+        block: vec![SectionLight::Dark; entries],
+    });
+    chunk.set_ticks(vec![
+        ScheduledTick {
+            at: InChunk::new(4, -60, 5),
+            of: Ticked::Fluid(2),
+            delay: 5,
+            priority: -1,
+        },
+        ScheduledTick {
+            at: InChunk::new(1, -63, 1),
+            of: Ticked::Block(600),
+            delay: 0,
+            priority: 3,
+        },
+    ]);
+    chunk.set_marks(vec![InChunk::new(4, -60, 5), InChunk::new(0, -64, 0)]);
+    chunk.mark_generated(7, true);
+    chunk
+}
+
+/// Everything a chunk carries is stored with it: its block entities with their data,
+/// its light, the ticks and marks generation left, and which generator it is exactly
+/// as made by, with the failure bit. A store that is closed and started again gives
+/// the chunk back with all of them.
+#[test]
+fn a_chunk_is_loaded_with_everything_it_carries_after_the_store_was_closed_and_opened() {
+    let directory = tempfile::tempdir().unwrap();
+    let position = ChunkPos::new(-9, 33);
+    let saved = with_everything(position);
+    {
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        save(&store, position, &saved);
+        assert_eq!(load(&store, position), saved);
+        store.flush();
+    }
+    let store = spawn_local(directory.path(), generator()).unwrap();
+    let loaded = load(&store, position);
+    assert_eq!(loaded, saved);
+    // Said one by one, so that a part that equality came not to look at would show.
+    assert_eq!(loaded.block_entities(), saved.block_entities());
+    assert_eq!(loaded.block_entities().len(), 1);
+    let chest = &loaded.block_entities()[&InChunk::new(3, -60, 5)];
+    assert_eq!(chest.data, [1, 2, 3]);
+    assert!(loaded.light().is_some() && loaded.light() == saved.light());
+    assert_eq!(loaded.ticks(), saved.ticks());
+    assert_eq!(loaded.ticks().len(), 2);
+    assert_eq!(loaded.marks(), saved.marks());
+    assert_eq!(loaded.marks().len(), 2);
+    assert_eq!((loaded.generated(), loaded.with_failure()), (7, true));
+    assert_eq!(loaded.heights(), saved.heights());
 }
 
 #[test]
@@ -465,7 +592,7 @@ fn a_log_cut_off_in_the_middle_of_a_record_is_recovered_up_to_there() {
         fs::write(&segment, &complete[..length]).unwrap();
         // Opening the region from an earlier round has saved the chunk, and put what
         // it was restored with in the log; start from scratch.
-        let _ = fs::remove_dir_all(directory.path().join("manifests"));
+        let _ = fs::remove_dir_all(directory.path().join("chunks"));
         for name in fs::read_dir(directory.path().join("log")).unwrap() {
             let path = name.unwrap().path();
             if path != segment {
@@ -666,53 +793,13 @@ fn regions_are_opened_and_used_from_threads_of_their_own() {
     }
 }
 
-/// A world that was last opened before regions had a state has a log per region,
-/// `logs/<region>.wal`, or, from before there were regions, a single one, `wal`. Both
-/// hold block changes alone.
-#[test]
-fn the_logs_of_a_world_from_before_regions_had_a_state_are_carried_over() {
-    let origin = ChunkPos::new(0, 0);
-    let record = |tick, (x, y, z), state| LogRecord::Changes {
-        tick,
-        epoch: 1,
-        changes: vec![(BlockPos::new(x, y, z), state)],
-    };
-    let mut first = record(1, (3, -61, 4), blocks::AIR).encode();
-    first.extend(record(2, (3, 100, 4), blocks::GLASS).encode());
-    // And a record the server died in the middle of.
-    first.extend(&record(3, (5, 100, 5), blocks::STONE).encode()[..9]);
-    let other = record(1, (-3, -61, 4), blocks::AIR).encode();
-
-    for old in ["wal", "logs/0.wal"] {
-        let directory = tempfile::tempdir().unwrap();
-        drop(spawn_local(directory.path(), generator()).unwrap());
-        fs::create_dir_all(directory.path().join("logs")).unwrap();
-        fs::write(directory.path().join(old), &first).unwrap();
-        fs::write(directory.path().join("logs/1.wal"), &other).unwrap();
-
-        let store = spawn_local(directory.path(), generator()).unwrap();
-        assert_eq!(load(&store, origin), edited());
-        let west = load(&store, ChunkPos::new(-1, 0));
-        assert_eq!(west.get(13, -61, 4), Some(blocks::AIR));
-        assert!(!directory.path().join("wal").exists());
-        assert!(!directory.path().join("logs").exists());
-
-        // The changes are in saved chunks, which are there without any log.
-        drop(store);
-        let store = spawn_local(directory.path(), generator()).unwrap();
-        assert_eq!(load(&store, origin), edited());
-    }
-}
-
 /// An owner can go away without a checkpoint while the store runs on, as when its
 /// process dies. What it committed is then in the log only.
 #[test]
 fn a_region_opened_again_has_what_its_last_owner_committed() {
     let directory = tempfile::tempdir().unwrap();
     let origin = ChunkPos::new(0, 0);
-    let manifest = directory
-        .path()
-        .join("manifests/overworld/0.0/0.0.manifest");
+    let file = directory.path().join("chunks/overworld/0.0/0.0.chunk");
     let store = local(directory.path());
     let first = open(&store, hello(1, 1));
     log(&first, 1, &[(3, -61, 4, blocks::STONE)]);
@@ -723,13 +810,13 @@ fn a_region_opened_again_has_what_its_last_owner_committed() {
     );
     first.flush();
     drop(first);
-    assert!(!manifest.exists());
+    assert!(!file.exists());
 
     // The commits are applied to the stored chunks before the region is handed out,
-    // and an opening writes what it applied: the manifest is there without a flush.
+    // and an opening writes what it applied: the file is there without a flush.
     let (second, restored) = store.open_region(hello(1, 1)).unwrap();
     assert_eq!(deltas(&restored), [(1, delta(1)), (2, delta(2))]);
-    assert!(manifest.exists());
+    assert!(file.exists());
     assert_eq!(load(&second, origin), edited());
 }
 
@@ -1008,22 +1095,188 @@ fn a_damaged_chunk_is_not_replaced_by_a_generated_one() {
     let position = ChunkPos::new(1, 1);
     let store = spawn_local(directory.path(), generator()).unwrap();
     save(&store, position, &edited());
-    // There is a manifest to damage only once the save is flushed, and only from
-    // then on does a load read it.
+    // There is a file to damage only once the save is flushed, and only from then on
+    // does a load read it.
     store.flush();
 
-    let manifest = directory
-        .path()
-        .join("manifests/overworld/0.0/1.1.manifest");
-    let mut bytes = fs::read(&manifest).unwrap();
+    let file = directory.path().join("chunks/overworld/0.0/1.1.chunk");
+    let mut bytes = fs::read(&file).unwrap();
     bytes[10] ^= 0xFF;
-    fs::write(&manifest, bytes).unwrap();
+    fs::write(&file, bytes).unwrap();
 
     store.request(StoreRequest::Load { position });
     assert_eq!(reply(&store), StoreReply::Unreadable { position });
     // The store carries on with other chunks.
     let other = ChunkPos::new(2, 2);
     assert_eq!(load(&store, other), generator().generate(other));
+}
+
+/// A chunk file whose checksum does not fit what is in it is reported as that, and
+/// the chunk is not loaded: the region that asks for it is told that it cannot be
+/// read, and is given neither what the file may still hold nor a generated chunk. So
+/// is a file that is whole and of another chunk.
+#[test]
+fn a_chunk_file_with_a_wrong_checksum_is_reported_and_the_chunk_is_not_loaded() {
+    let directory = tempfile::tempdir().unwrap();
+    let position = ChunkPos::new(1, 1);
+    let other = ChunkPos::new(2, 1);
+    let path = |position: ChunkPos| {
+        let name = format!("chunks/overworld/0.0/{}.{}.chunk", position.x, position.z);
+        directory.path().join(name)
+    };
+    {
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        save(&store, position, &edited());
+        save(&store, other, &edited());
+        store.flush();
+    }
+    let whole = fs::read(path(position)).unwrap();
+    // Each byte of the checksum in turn, and one of what it is of.
+    let length = whole.len();
+    for at in [length - 1, length - 2, length - 3, length - 4, length / 2] {
+        let mut bytes = whole.clone();
+        bytes[at] ^= 1;
+        fs::write(path(position), &bytes).unwrap();
+
+        let disk: Arc<dyn Disk> = Arc::new(crate::disk::OsDisk::default());
+        let mut chunks = chunks::FileChunks::new(disk, directory.path());
+        let error = chunks.load(position).unwrap_err();
+        assert!(
+            matches!(error, StoreError::Format(FormatError::ChecksumMismatch)),
+            "byte {at}: {error}"
+        );
+        let store = spawn_local(directory.path(), generator()).unwrap();
+        store.request(StoreRequest::Load { position });
+        assert_eq!(reply(&store), StoreReply::Unreadable { position });
+        // The chunk beside it is none the worse.
+        assert_eq!(load(&store, other), edited());
+    }
+
+    // The other chunk's file under this chunk's name: its checksum is right.
+    fs::copy(path(other), path(position)).unwrap();
+    let store = spawn_local(directory.path(), generator()).unwrap();
+    store.request(StoreRequest::Load { position });
+    assert_eq!(reply(&store), StoreReply::Unreadable { position });
+}
+
+/// Every file and directory under `directory`, by its path from there, with what is
+/// in each file.
+fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut found = Vec::new();
+    let mut directories = vec![directory.to_owned()];
+    while let Some(inside) = directories.pop() {
+        for entry in fs::read_dir(inside).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.strip_prefix(directory).unwrap().to_str().unwrap();
+            if path.is_dir() {
+                found.push((name.to_owned(), None));
+                directories.push(path);
+            } else {
+                found.push((name.to_owned(), Some(fs::read(&path).unwrap())));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A world of format 1 is not opened, not made over and not touched: worlds are thrown
+/// away until the first release, and whoever kept one is told what to do with the
+/// directory. The store says that before it looks at anything else, so the sentence
+/// is the same whatever else of the world differs, and every file is afterwards what
+/// it was, byte for byte.
+#[test]
+fn a_world_of_format_1_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched() {
+    let settings = generator().settings();
+    let metas = [
+        format!("format=1\ndata-version={DATA_VERSION}\ngenerator={settings}\n"),
+        // One whose other settings are not this server's either.
+        "format=1\ndata-version=1\ngenerator=another\n".to_owned(),
+        // One that says nothing else.
+        "format=1\n".to_owned(),
+    ];
+    for meta in metas {
+        let directory = tempfile::tempdir().unwrap();
+        let world = directory.path().join("world");
+        // What a world of format 1 has, and what the worlds before it had: none of
+        // it is this server's to read.
+        let files: [(&str, &[u8]); 10] = [
+            ("meta", meta.as_bytes()),
+            ("table", &[1, 3, 0, 0]),
+            ("players", &[1, 4, 9]),
+            ("layout", b"regions=2\n"),
+            ("log/0000000000000001.log", &[1, 2, 3, 4, 5]),
+            ("regions/0.region", &[1, 1, 7]),
+            ("regions/0.state", &[1, 2, 8]),
+            ("blobs/ab/abcdef", &[0, 1, 1, 2]),
+            ("manifests/overworld/0.0/0.0.manifest", &[1, 0, 0]),
+            ("logs/0.wal", &[1, 1, 1]),
+        ];
+        for (name, contents) in files {
+            let path = world.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        fs::write(world.join("wal"), [1, 1]).unwrap();
+        fs::create_dir_all(world.join("chunks/overworld")).unwrap();
+        let before = everything_in(&world);
+        // Eleven files and the ten directories they are in.
+        assert_eq!(before.len(), 21);
+
+        let sentence = format!(
+            "This world was made by an earlier Clustine (world format 1; this server writes \
+             format 2). Worlds are not carried over before the first release: move {} away or \
+             name another, and a new world is made.",
+            world.display()
+        );
+        for attempt in 1..=2 {
+            let Err(error) = Store::local_divided(&world, generator(), division()) else {
+                panic!("the world of format 1 was opened at attempt {attempt}: {meta:?}");
+            };
+            assert_eq!(error.to_string(), sentence, "{meta:?}");
+            assert!(
+                matches!(
+                    error,
+                    StoreError::EarlierFormat {
+                        stored: 1,
+                        current: 2,
+                        ..
+                    }
+                ),
+                "{error:?}"
+            );
+            assert_eq!(everything_in(&world), before, "attempt {attempt}: {meta:?}");
+        }
+        assert!(spawn_local(&world, generator()).is_err());
+        assert_eq!(everything_in(&world), before, "{meta:?}");
+    }
+}
+
+/// A world of a format this server does not know yet is refused as before: it is not
+/// an earlier one, and nobody is told to move it away.
+#[test]
+fn a_world_of_a_later_format_is_refused_as_one_this_server_does_not_use() {
+    let directory = tempfile::tempdir().unwrap();
+    let settings = generator().settings();
+    let meta = format!("format=3\ndata-version={DATA_VERSION}\ngenerator={settings}\n");
+    fs::write(directory.path().join("meta"), &meta).unwrap();
+    let Err(error) = spawn_local(directory.path(), generator()) else {
+        panic!("a world of format 3 was opened");
+    };
+    assert!(
+        matches!(
+            error,
+            StoreError::Incompatible {
+                setting: "format",
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("meta")).unwrap(),
+        meta
+    );
 }
 
 /// Keeps chunks in memory, but a save of the chunk at [`HELD`] waits until the test
@@ -1038,13 +1291,19 @@ impl Chunks for HeldSaves {
         self.chunks.load(position)
     }
 
-    fn save(&mut self, position: ChunkPos, tick: u64, chunk: &Chunk) -> Result<(), StoreError> {
+    fn save(
+        &mut self,
+        position: ChunkPos,
+        tick: u64,
+        epoch: u64,
+        chunk: &Chunk,
+    ) -> Result<(), StoreError> {
         if position == HELD {
             // Once to say that the save has started, once to be let go on.
             self.barrier.wait();
             self.barrier.wait();
         }
-        self.chunks.save(position, tick, chunk)
+        self.chunks.save(position, tick, epoch, chunk)
     }
 
     fn sync(&mut self) -> Result<(), StoreError> {

@@ -831,11 +831,13 @@ fn a_store_that_fails_three_times_at_any_point_leaves_its_regions_whole() {
     }
 }
 
-/// What two faults in a row found in the chunk store: a section file whose directory
-/// could not be synced, and which could then not be removed either, was taken for a
-/// stored one by the next save of a chunk that has the section, whose manifest then
-/// named a section that a crash takes away. Whatever fails while a chunk is saved, a
-/// save that succeeds afterwards and is made durable is there after a crash.
+/// What two faults in a row once found in the chunk store, when a chunk was a
+/// manifest that named section files: a section file whose directory could not be
+/// synced, and which could then not be removed either, was taken for a stored one by
+/// the next save, and a crash took it from under the manifest. A chunk is one file
+/// now and names nothing, and what the test holds the store to stands: whatever fails
+/// while a chunk is saved, a save that succeeds afterwards and is made durable is
+/// there after a crash.
 #[test]
 fn a_chunk_saved_after_faults_in_a_row_is_whole_after_a_crash() {
     let root = Path::new("/world");
@@ -844,7 +846,7 @@ fn a_chunk_saved_after_faults_in_a_row_is_whole_after_a_crash() {
     let changes = {
         let disk = Arc::new(MemoryDisk::default());
         let mut chunks = FileChunks::new(disk.clone(), root);
-        chunks.save(WEST, 1, &chunk).unwrap();
+        chunks.save(WEST, 1, 1, &chunk).unwrap();
         chunks.sync().unwrap();
         disk.operations()
     };
@@ -854,7 +856,7 @@ fn a_chunk_saved_after_faults_in_a_row_is_whole_after_a_crash() {
             let mut chunks = FileChunks::new(disk.clone(), root);
             // As a region does that is told its saves may not be durable: again.
             let saved =
-                (0..5).any(|_| chunks.save(WEST, 1, &chunk).is_ok() && chunks.sync().is_ok());
+                (0..5).any(|_| chunks.save(WEST, 1, 1, &chunk).is_ok() && chunks.sync().is_ok());
             assert!(saved, "Fails({n}, {count})");
             for survival in SURVIVALS {
                 let left = Arc::new(disk.crashed(survival));

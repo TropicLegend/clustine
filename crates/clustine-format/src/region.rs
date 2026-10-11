@@ -424,7 +424,7 @@ mod tests {
         };
         let bytes = region.encode();
         let body = [
-            1, 1, // version, kind
+            2, 1, // version, kind
             0, 0, 0, 0, 0, 0, 0, 5, // epoch
             0, 0x10, 0, 0, 0, 0x20, 0, 0, // the block
         ];
@@ -438,7 +438,7 @@ mod tests {
         };
         let bytes = state.encode();
         let body = [
-            1, 2, // version, kind
+            2, 2, // version, kind
             0, 0, 0, 0, 0, 0, 1, 2, // tick
             0, 0, 0, 2, 4, 2, // the state
         ];
@@ -542,7 +542,7 @@ mod tests {
     fn known_answer_of_the_table() {
         let bytes = table().encode();
         let body = [
-            1, 3, // version, kind
+            2, 3, // version, kind
             0, 0, 0, 0, 0, 0, 0, 7, // from
             0, 0, 0, 4, // the next region id
             0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, // the home chunk
@@ -618,7 +618,7 @@ mod tests {
     fn known_answer_of_the_players() {
         let bytes = players().encode();
         let body = [
-            1, 4, // version, kind
+            2, 4, // version, kind
             0, 0, 0, 0, 0, 0, 0, 7, // from
             0, 0, 1, 2, // issued
             0, 0, 0, 2, // two records

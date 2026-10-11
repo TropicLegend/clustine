@@ -44,11 +44,9 @@ use clustine_world::{
     MAX_BLOCK_ENTITY_DATA, ScheduledTick, Section, SectionLight, Ticked,
 };
 
-use crate::FormatError;
 use crate::bytes::Input;
+use crate::{FORMAT_VERSION, FormatError};
 
-/// The format version a chunk file is of.
-pub const CHUNK_FORMAT: u8 = 2;
 /// The kind of a chunk file, beside those of `region.rs`.
 pub const KIND_CHUNK: u8 = 5;
 
@@ -272,7 +270,7 @@ impl ChunkFile {
             Some(compressed) if compressed.len() < body.len() => (CODEC_ZSTD, &compressed[..]),
             _ => (CODEC_RAW, &body[..]),
         };
-        let mut out = vec![CHUNK_FORMAT, KIND_CHUNK];
+        let mut out = vec![FORMAT_VERSION, KIND_CHUNK];
         out.extend_from_slice(&self.position.x.to_be_bytes());
         out.extend_from_slice(&self.position.z.to_be_bytes());
         out.extend_from_slice(&chunk.min_y().to_be_bytes());
@@ -307,7 +305,7 @@ impl ChunkFile {
         }
         let mut input = Input(front);
         let version = input.u8()?;
-        if version != CHUNK_FORMAT {
+        if version != FORMAT_VERSION {
             return Err(FormatError::UnsupportedVersion(version));
         }
         if input.u8()? != KIND_CHUNK {

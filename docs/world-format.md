@@ -1,22 +1,37 @@
 # World format
 
-How Clustine stores a world on disk. This describes format version 1 as implemented in
+How Clustine stores a world on disk. This describes format version 2 as implemented in
 `crates/clustine-format` (encodings) and `services/worldstore` (files); see
 `docs/adr/0008-durable-regions-and-resuming.md` for what the store promises of commits
-and states, and `docs/adr/0011-the-world-store-and-regions.md` for what it promises of
-regions and the chunks they hold.
+and states, `docs/adr/0011-the-world-store-and-regions.md` for what it promises of
+regions and the chunks they hold, and `docs/adr/0022-what-a-chunk-carries.md` for what
+a chunk is and why it is one file.
 
 The format is not stable yet: it may change without a migration path until the first
-release.
+release. **A world of format 1 is not opened and not made over.** A store that finds
+`format=1` in a world's `meta` stops before it reads, changes or removes anything else
+in the directory, and says:
+
+```text
+This world was made by an earlier Clustine (world format 1; this server writes
+format 2). Worlds are not carried over before the first release: move <directory>
+away or name another, and a new world is made.
+```
 
 ## Principles
 
-- **Only changes are stored.** A chunk nobody has modified is not stored; it is
-  generated again when needed. A world therefore records the generator settings it was
-  made with and refuses to open with others.
-- **Sections are content-addressed.** A chunk column is split into 16×16×16 sections,
-  and each distinct section content is stored once, under the hash of its content.
-  Identical sections, within a chunk or across the world, share storage.
+- **What a region was given is stored.** A chunk is stored as the region that holds it
+  has it, so that what a player was shown is what is there after a restart, whatever a
+  later generator would make of the place
+  (`docs/adr/0021-generation-is-a-function.md`). *Not built yet*: until that record's
+  step W5 a region saves the chunks it changed, and a chunk that was never saved is
+  generated again when it is needed.
+- **A world takes a newer generator.** A world records the generator settings it was
+  made with and refuses to open with others; the version of the generator is no part
+  of them, and a chunk says which version it is exactly as made by. *Not built yet*
+  either: there is one version of each generator so far.
+- **A chunk is one file**, checksummed, written whole or not at all. Nothing is shared
+  between chunks, and a chunk that is saved again leaves nothing behind.
 - **Files are never modified in place.** Every file but the log is written under a
   temporary name, made durable and renamed, so a reader sees it whole or not at all.
   The log is only appended to.
@@ -34,13 +49,15 @@ release.
   regions/players
   regions/<region>.region
   regions/<region>.state
-  blobs/<first two hex digits>/<hash in hex>
-  manifests/overworld/<rx>.<rz>/<x>.<z>.manifest
+  chunks/<dimension>/<rx>.<rz>/<x>.<z>.chunk
 ```
 
 - `meta` is a text file of `key=value` lines: `format` (the format version),
   `data-version` (the Minecraft data version whose block state and biome ids the world
-  uses) and `generator` (the generator settings).
+  uses) and `generator` (the generator settings). It will have `generator-version`
+  besides, the highest version of the generator that made a chunk the world stores
+  (`docs/adr/0021-generation-is-a-function.md`, section 8); no store writes or reads
+  that line yet.
 - `log` holds the write-ahead log that all regions share, in segments numbered in the
   order they were begun (twenty decimal digits).
 - `regions/table` holds the regions there are and the chunks each holds, as of a place
@@ -51,67 +68,76 @@ release.
   epoch it was opened with and its entity ids, once it has been opened or was made by a
   split, and `<region>.state`, with its state as of its last checkpoint. `<region>` is
   the number of the region in decimal.
-- `blobs` holds the sections.
-- `manifests` holds one file per stored chunk at chunk coordinates `x`, `z`, grouped
-  into directories of 32×32 chunks (`rx = x >> 5`, `rz = z >> 5`).
+- `chunks` holds one file per stored chunk at chunk coordinates `x`, `z`, grouped into
+  directories of 32×32 chunks (`rx = x >> 5`, `rz = z >> 5`). `<dimension>` is the
+  world's dimension without its namespace (`overworld`, `the_nether`, `the_end`). A
+  world has one dimension, and every world is the overworld so far.
 
-A world from before the store kept a table of regions has a file `layout` instead of
-`regions/table`. What the file says is not read: that it is there makes the store make
-the world over when such a world is started (see "Regions" below), and it is removed
-when the table is durable.
+Chunks are kept the same way whichever region they are in.
 
-A world from before regions had a state has a log per region instead, `logs/<region>.wal`,
-and one from before there were regions a single log, `wal` next to `meta`. Their records
-hold block changes alone (kind 1 below). When such a world is opened, those changes are
-applied to the chunks they are in, the chunks are made durable, and the old logs are
-removed.
+## Chunks
 
-Chunks and sections are kept the same way whichever region they are in.
-
-## Sections
-
-The **canonical encoding** of a section, all integers big-endian:
+A chunk file, all integers big-endian:
 
 | Field | Type |
 |---|---|
-| Format version | u8 |
-| Biome | u16 |
-| Palette length `n` | u16, 1 to 4096 |
-| Palette | `n` × u16 block state ids, strictly ascending, each used at least once |
-| Indices, only if `n` > 1 | u64 words with one palette index of `ceil(log2(n))` bits per block, lowest bits first, none spanning two words |
-
-Blocks are in the order `y << 8 | z << 4 | x`. The rules on the palette make the
-encoding unique: equal sections have equal bytes, whatever edits led to them.
-
-The **address** of a section is the BLAKE3 hash of its canonical encoding.
-
-The **stored file** is one codec byte followed by the payload: `0` for the canonical
-encoding as is, `1` for the canonical encoding compressed with zstd. Because the address
-is that of the uncompressed encoding, the compression can change without invalidating
-any address.
-
-A section has a single biome. Biomes varying within a section are not modelled yet.
-
-## Chunk manifests
-
-All integers big-endian:
-
-| Field | Type |
-|---|---|
-| Format version | u8 |
+| Format version | u8, 2 |
+| Kind | u8, 5 |
 | Chunk x, z | i32, i32 |
 | Y of the lowest block | i32 |
 | Tick at which the chunk was saved | u64 |
 | Epoch of the region that saved it | u64 |
-| Air biome | u16 |
+| **Generated**: the version of the generator the chunk is exactly as made by, or 0 | u16 |
+| Flags | u8: bit 0 "with a failure"; the others 0 |
 | Section count | u16 |
-| Per section, bottom to top | u8 flag: `0`, or `1` followed by the 32-byte address |
+| Codec of the body | u8: 0 as it is, 1 zstd |
+| Length of the body, as it is | u32, at most 8 MiB |
+| Length of the body, as stored | u32 |
+| The body, as stored | bytes |
 | CRC-32 of everything before | u32 |
 
-A section with flag `0` is nothing but air in the air biome and has no file.
+The body, before compression:
 
-The epoch is always 1 for now. It will identify which owner of a region wrote the chunk
-once regions can move between workers.
+| Part | Encoding |
+|---|---|
+| Per section, bottom to top: blocks | palette length `n`, u16, 1 to 4,096; `n` × u16 state ids; if `n` > 1, 4,096 indices of `ceil(log2(n))` bits in u64 words, lowest bits first, none across two words, in the order `y << 8 \| z << 4 \| x` |
+| … biomes | palette length `m`, u8, 1 to 64; `m` × u16 biome ids; if `m` > 1, 64 indices of `ceil(log2(m))` bits, packed the same way, in the order `y << 4 \| z << 2 \| x` of cells of 4×4×4 blocks |
+| Block entities | count u32; then, by y, z, x: `x << 4 \| z` u8, y i16, type u16, length of the data u32 (at most 16 KiB), the data |
+| Light | u8: 0 for none, 1 for present. If present: `made_by` u16; then for sky and then for block, per light section bottom to top: u8 0 absent, 1 dark, 2 full, or 3 followed by 2,048 bytes |
+| Scheduled ticks | count u32; then, in order: kind u8 (0 block, 1 fluid), `x << 4 \| z` u8, y i16, id u16, delay i32, priority i8 |
+| Marks | count u32; then, ascending: `x << 4 \| z` u8, y i16 |
+
+A chunk has one light section more below its sections and one more above. The data of
+a block entity is one NBT compound as the game writes it on the network, without the
+keys `x`, `y`, `z` and `id`; no data stands for an empty compound.
+
+- **The writer writes one form**: palettes ascending with nothing unused, lists in
+  order, light that is all 0 or all 15 as `dark` and `full`. The body is compressed
+  with zstd at level 3 if that makes it smaller.
+- **The reader refuses what it cannot make sense of, and nothing else**: a wrong
+  checksum, version or kind; a length that does not fit; an index beyond its palette; a
+  state id, biome id or type that does not exist; a length over a bound; flags that
+  mean nothing; a file whose position is not the one its name says. A palette that is
+  not sorted or has an unused entry is read.
+- **Block entities are made to fit the blocks on reading**: a position whose block has
+  a block entity type and that has no entity gets one without data, and an entity
+  where the blocks ask for none, or for another type, is dropped. The store logs a
+  warning that names the chunk and how many there were. Counts and heightmaps are not
+  stored; they are made from the blocks.
+- The tick and the epoch are for whoever looks at what is stored; nothing reads them
+  back. The epoch is the one the region was opened with by whoever saved the chunk:
+  for a chunk a region saves, its owner's; for a chunk the store saves when a region
+  is opened and its commits are put into the stored chunks, the epoch it is opened
+  with; and 0 for a chunk the store saves when it makes a world over for another
+  division, which no region does.
+
+Saved chunks are written together when they are made durable, at a checkpoint, a
+return, a flush, the opening of a region, or when 128 of them wait: every file under a
+temporary name (`<x>.<z>.chunk.tmp`), all of those synced at the same time, each renamed
+into place, and their directories synced at the same time
+(`docs/adr/0018-a-checkpoints-chunks-written-together.md`). A file under a temporary
+name that a crash left is never read, and is written over by the next save of its
+chunk.
 
 ## The write-ahead log
 
@@ -122,7 +148,7 @@ the format version (u8) and the kind of record (u8):
 
 | Kind | Record | Then |
 |---|---|---|
-| 1 | Block changes, from before regions had a state; only read | tick u64, epoch u64, changes |
+| 1 | Block changes, of the worlds from before regions had a state, which were of format 1; never written | tick u64, epoch u64, changes |
 | 2 | Commit | region u32, tick u64, epoch u64, changes, state length u32, state |
 | 3 | Opened | region u32, epoch u64, restored u64 |
 | 4 | Granted | region u32, tick u64, chunks |
@@ -292,8 +318,7 @@ store that starts with no segment left numbers its next one from the file's `fro
   a region that a split makes. A region that is in neither list of the table has gone
   for good. The store remembers the latest 4096 regions that were absorbed.
 - When a store starts on a world whose table was made from **another division**, by
-  other areas or with another home chunk, or on a world from before, which has a
-  `layout` file and no table, the world is made over: the block changes of every
+  other areas or with another home chunk, the world is made over: the block changes of every
   region's commits that count are applied to the chunks and made durable, an opened
   record with `restored` 0 is written for every region that had anything, the state
   files are removed, and then the table of the new division is written. Until that
@@ -348,11 +373,14 @@ list of regions.
 
 ## Reading a damaged world
 
-A manifest with a wrong checksum, or a section whose content does not match its address,
-is reported as an error and the chunk is not loaded. It is deliberately not replaced by
-a freshly generated chunk, which would hide the damage and overwrite it at the next save.
+A chunk file with a wrong checksum is reported as an error and the chunk is not loaded;
+so is one the reader refuses for another reason ("Chunks"). The region that asked for
+it is told that it cannot be read, and leaves a hole in the world. It is deliberately
+not replaced by a freshly generated chunk, which would hide the damage and overwrite it
+at the next save. Block changes of commits that would be put into such a chunk when its
+region is opened are not applied, and the file stays as it is.
 
 ## Not stored yet
 
-Entities, players and their inventories, block entities, light, and biomes finer than a
-section. There is no garbage collection of sections that no manifest refers to any more.
+Entities; players' inventories; of a chunk, which structures it belongs to, how long it
+has been inhabited and when it was last updated.

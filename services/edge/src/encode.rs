@@ -54,11 +54,19 @@ fn section_data(section: &Section) -> SectionData {
         Some(state) if !is_fluid(state) => 0,
         _ => section.states().filter(|state| is_fluid(*state)).count(),
     };
+    // The packet still takes a section to have one biome, which is its first cell's
+    // where it has several, until it is made from what the chunk carries
+    // (`docs/adr/0022-what-a-chunk-carries.md`, step C5). No generator makes a
+    // section of two biomes before then.
+    let biome = section
+        .uniform_biome()
+        .or_else(|| section.biomes().next())
+        .expect("a section has 64 cells of biomes");
     SectionData {
         block_count: section.non_air_count() as i16,
         fluid_count: fluid_count as i16,
         blocks,
-        biomes: PalettedContainer::Single(section.biome().0.into()),
+        biomes: PalettedContainer::Single(biome.0.into()),
     }
 }
 

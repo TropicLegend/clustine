@@ -447,9 +447,15 @@ impl<C: Chunks> Chunks for Stopping<C> {
         self.chunks.load(position)
     }
 
-    fn save(&mut self, position: ChunkPos, tick: u64, chunk: &Chunk) -> Result<(), StoreError> {
+    fn save(
+        &mut self,
+        position: ChunkPos,
+        tick: u64,
+        epoch: u64,
+        chunk: &Chunk,
+    ) -> Result<(), StoreError> {
         self.gate.pass(Stop::BeforeSave(position));
-        self.chunks.save(position, tick, chunk)
+        self.chunks.save(position, tick, epoch, chunk)
     }
 
     fn sync(&mut self) -> Result<(), StoreError> {
@@ -4031,8 +4037,8 @@ fn a_return_whose_saves_cannot_be_made_durable_loses_the_handle_and_frees_nothin
     let (second, _) = opened_gap(&store, 1, 1);
     assert_eq!(claim(&first, &[FREE]), (vec![FREE], vec![]));
     save(&first, FREE, &built(FREE, &[GLASS]));
-    // The directory the chunk's manifest is in cannot be synced.
-    disk.fail(Op::SyncDirectory, "manifests/overworld/0.0");
+    // The directory the chunk's file is in cannot be synced.
+    disk.fail(Op::SyncDirectory, "chunks/overworld/0.0");
     give_back(&first, &[FREE]);
     first.request(StoreRequest::Flush);
     assert_eq!(answers_until_lost(&first), []);

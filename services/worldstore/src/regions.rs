@@ -542,7 +542,7 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
     let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
     let mut saved = generator().generate(ORIGIN);
     saved.set(3, -61, 4, blocks::AIR);
-    chunks.save(ORIGIN, 1, &saved).unwrap();
+    chunks.save(ORIGIN, 1, 1, &saved).unwrap();
     chunks.sync().unwrap();
     // What such a store wrote there for stripes divided at x = 0. Nothing reads it.
     put(&disk, "/world/layout", b"9c191507aacacf62\n");
@@ -672,13 +672,19 @@ impl<C: Chunks> Chunks for Gated<C> {
         self.chunks.load(position)
     }
 
-    fn save(&mut self, position: ChunkPos, tick: u64, chunk: &Chunk) -> Result<(), StoreError> {
+    fn save(
+        &mut self,
+        position: ChunkPos,
+        tick: u64,
+        epoch: u64,
+        chunk: &Chunk,
+    ) -> Result<(), StoreError> {
         if self.gated.contains(&position) {
             // Once to say that the save has started, once to be let go on.
             self.barrier.wait();
             self.barrier.wait();
         }
-        self.chunks.save(position, tick, chunk)
+        self.chunks.save(position, tick, epoch, chunk)
     }
 
     fn sync(&mut self) -> Result<(), StoreError> {

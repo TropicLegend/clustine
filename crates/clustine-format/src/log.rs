@@ -636,7 +636,7 @@ mod tests {
         };
         let bytes = record.encode();
         let payload = [
-            1, 2, // version, kind
+            2, 2, // version, kind
             0, 0, 0, 4, // region
             0, 0, 0, 0, 0, 0, 0, 2, // tick
             0, 0, 0, 0, 0, 0, 0, 1, // epoch
@@ -656,7 +656,7 @@ mod tests {
         };
         let bytes = opened.encode();
         let payload = [
-            1, 3, // version, kind
+            2, 3, // version, kind
             0, 0, 0, 4, // region
             0, 0, 0, 0, 0, 0, 0, 9, // epoch
             0, 0, 0, 0, 0, 0, 1, 44, // restored
@@ -665,11 +665,13 @@ mod tests {
         assert_eq!(read_log(&bytes), Ok((vec![opened], bytes.len())));
     }
 
-    /// A log as the world store wrote it before regions had a state is still read.
+    /// A record of block changes alone, as the world store wrote them before regions
+    /// had a state, is still a record of the log. No world this server opens has one:
+    /// those worlds are of format 1.
     #[test]
     fn records_of_block_changes_alone_are_read() {
         let payload = [
-            1, 1, // version, kind
+            2, 1, // version, kind
             0, 0, 0, 0, 0, 0, 0, 2, // tick
             0, 0, 0, 0, 0, 0, 0, 1, // epoch
             0, 0, 0, 1, // one change
@@ -683,6 +685,19 @@ mod tests {
         };
         assert_eq!(expected.encode(), bytes);
         assert_eq!(read_log(&bytes), Ok((vec![expected], bytes.len())));
+    }
+
+    /// A record of format 1 is not one this build reads, whatever its kind: the log of
+    /// a world from before format 2 is not taken for a log with nothing in it.
+    #[test]
+    fn a_record_of_format_1_is_refused() {
+        for kind in 1..=8 {
+            assert_eq!(
+                read_log(&frame(&[1, kind, 0, 0, 0, 4])),
+                Err(FormatError::UnsupportedVersion(1)),
+                "kind {kind}"
+            );
+        }
     }
 
     #[test]
@@ -787,7 +802,7 @@ mod tests {
     fn known_answers_of_the_records_of_regions() {
         let payloads: [&[u8]; 4] = [
             &[
-                1, 4, // version, kind
+                2, 4, // version, kind
                 0, 0, 0, 4, // region
                 0, 0, 0, 0, 0, 0, 0, 2, // tick
                 0, 0, 0, 2, // two chunks
@@ -795,13 +810,13 @@ mod tests {
                 0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 0, 3, // the second
             ],
             &[
-                1, 5, // version, kind
+                2, 5, // version, kind
                 0, 0, 0, 4, // region
                 0, 0, 0, 1, // one chunk
                 0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 0, 3, // the chunk
             ],
             &[
-                1, 6, // version, kind
+                2, 6, // version, kind
                 0, 0, 0, 4, // region
                 0, 0, 0, 0, 0, 0, 0, 9, // epoch
                 0, 0, 0, 5, // absorbed
@@ -809,7 +824,7 @@ mod tests {
                 0, 0, 0, 2, 7, 8, // the state
             ],
             &[
-                1, 7, // version, kind
+                2, 7, // version, kind
                 0, 0, 0, 4, // region
                 0, 0, 0, 0, 0, 0, 0, 9, // epoch
                 0, 0, 0, 0, 0, 0, 1, 45, // tick
@@ -867,7 +882,7 @@ mod tests {
         // became a kind of its own; 9 stands in for it.
         for kind in [0, 9, 255] {
             assert_eq!(
-                read_log(&frame(&[1, kind])),
+                read_log(&frame(&[2, kind])),
                 Err(FormatError::Corrupt("record kind"))
             );
         }
@@ -889,7 +904,7 @@ mod tests {
             assert_eq!(read_log(&frame(&payload[..2])), Err(FormatError::Truncated));
         }
         // More chunks than the payload holds, which must not be reserved either.
-        let mut payload = vec![1, KIND_RETURNED, 0, 0, 0, 4];
+        let mut payload = vec![2, KIND_RETURNED, 0, 0, 0, 4];
         payload.extend_from_slice(&u32::MAX.to_be_bytes());
         payload.extend_from_slice(&[0; 8]);
         assert_eq!(read_log(&frame(&payload)), Err(FormatError::Truncated));
@@ -967,7 +982,7 @@ mod tests {
         let record = commit_with_stays();
         let bytes = record.encode();
         let payload = [
-            1, 8, // version, kind
+            2, 8, // version, kind
             0, 0, 0, 4, // region
             0, 0, 0, 0, 0, 0, 0, 2, // tick
             0, 0, 0, 0, 0, 0, 0, 1, // epoch
@@ -1022,11 +1037,11 @@ mod tests {
             stays: Vec::new(),
         };
         let bytes = without.encode();
-        assert_eq!(bytes[8..10], [1, KIND_COMMIT]);
+        assert_eq!(bytes[8..10], [2, KIND_COMMIT]);
         // Nothing follows the state.
         assert_eq!(bytes[bytes.len() - 6..], [0, 0, 0, 2, 7, 8]);
         assert_eq!(read_log(&bytes), Ok((vec![without], bytes.len())));
-        assert_eq!(commit_with_stays().encode()[8..10], [1, 8]);
+        assert_eq!(commit_with_stays().encode()[8..10], [2, 8]);
     }
 
     /// A commit with stays is cut off and damaged like any other record.

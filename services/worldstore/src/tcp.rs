@@ -852,7 +852,7 @@ mod tests {
 
     /// The number of chunks that are stored in the world in `directory`.
     fn stored(directory: &Path) -> usize {
-        fs::read_dir(directory.join("manifests/overworld"))
+        fs::read_dir(directory.join("chunks/overworld"))
             .unwrap()
             .map(|region| fs::read_dir(region.unwrap().path()).unwrap().count())
             .sum()
@@ -975,7 +975,7 @@ mod tests {
         remote.request(StoreRequest::Flush);
         thread::sleep(Duration::from_millis(50));
         let answered = remote.try_reply();
-        let saved = directory.path().join("manifests/overworld").exists();
+        let saved = directory.path().join("chunks/overworld").exists();
         // Looked at only now: a test that fails while it holds the store never ends.
         held.0.wait();
         assert_eq!(answered, None);

@@ -1,7 +1,13 @@
-//! The rounds a checkpoint's chunks are written in: what
+//! The round a checkpoint's chunks are written in: what
 //! `docs/adr/0018-a-checkpoints-chunks-written-together.md` asks of the store, in the
 //! order of the tests that record lists. They were written from the record and not
 //! from the change, so that they judge it and not the other way round.
+//!
+//! That record has two rounds, of section files and of manifests. Since a chunk is one
+//! file (`docs/adr/0022-what-a-chunk-carries.md`, section 3) there is one, of chunk
+//! files, and these tests hold it to everything the record asks of a round. What they
+//! asked of sections alone is gone with the sections: that a section two chunks share
+//! is written once, and that no manifest names a section a crash can take away.
 //!
 //! Most of them start from a world of three regions in which chunks are stored
 //! already, have two of the regions save those chunks anew, and look at what the files
@@ -15,7 +21,6 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
 use clustine_data::blocks;
-use clustine_format::ChunkManifest;
 use clustine_world::{Chunk, ChunkPos};
 
 use super::*;
@@ -41,8 +46,8 @@ fn three() -> Division {
 }
 
 /// The chunks that two regions save in one go, with the region of each. Two of their
-/// manifests are in one directory and the others in directories of their own, so that
-/// a round of directories has several and one that more than one chunk depends on.
+/// files are in one directory and the others in directories of their own, so that a
+/// round of directories has several and one that more than one chunk depends on.
 const SAVED: [(ChunkPos, u32); 5] = [
     (ChunkPos::new(-1, 0), WEST),
     (ChunkPos::new(-40, 3), WEST),
@@ -76,9 +81,9 @@ fn before(index: usize) -> &'static Chunk {
     &CHUNKS[index]
 }
 
-/// The chunk as it is saved anew: again with a section that all of them share and one
-/// of its own, neither of which is stored before. Like the others it is made once:
-/// what is loaded is compared with it many thousand times.
+/// The chunk as it is saved anew: again with a section that is the same in all of
+/// them and one of its own, neither of which is stored before. Like the others it is
+/// made once: what is loaded is compared with it many thousand times.
 fn after(index: usize) -> &'static Chunk {
     static CHUNKS: LazyLock<Vec<Chunk>> = LazyLock::new(|| {
         let chunk = |index: usize| {
@@ -101,25 +106,20 @@ fn untouched() -> &'static Chunk {
     &CHUNK
 }
 
-/// Where the manifest of the chunk is kept.
-fn manifest_path(position: ChunkPos) -> PathBuf {
-    FileChunks::new(Arc::new(MemoryDisk::default()), root()).manifest_path(position)
-}
+/// The epoch the chunks are saved with where no region saves them.
+const EPOCH: u64 = 1;
 
-/// Where the sections of the chunk are kept, by the layout `docs/world-format.md`
-/// gives, which the record leaves as it is.
-fn section_paths(position: ChunkPos, chunk: &Chunk) -> Vec<PathBuf> {
-    let (_, sections) = ChunkManifest::describe(position, chunk, 0);
-    let path = |(hash, _): &(Hash, Vec<u8>)| {
-        let name = hash.to_string();
-        root().join("blobs").join(&name[..2]).join(&name)
-    };
-    sections.iter().map(path).collect()
+/// Where the file of the chunk is kept, by the layout `docs/world-format.md` gives.
+fn chunk_path(position: ChunkPos) -> PathBuf {
+    root()
+        .join("chunks/overworld")
+        .join(format!("{}.{}", position.x >> 5, position.z >> 5))
+        .join(format!("{}.{}.chunk", position.x, position.z))
 }
 
 /// Whether the file is one that chunks are kept in.
 fn of_chunks(path: &Path) -> bool {
-    path.starts_with(root().join("blobs")) || path.starts_with(root().join("manifests"))
+    path.starts_with(root().join("chunks"))
 }
 
 /// A round of syncs: of files, or of directories.
@@ -146,8 +146,8 @@ enum Refused {
     Writes,
     Syncs,
     Renames,
-    /// Syncs of the directories that manifests are in, and nothing else.
-    ManifestDirectories,
+    /// Syncs of the directories that chunk files are in, and nothing else.
+    Directories,
 }
 
 /// A disk in memory that goes wrong where a test says, in the files of chunks only:
@@ -251,9 +251,7 @@ impl Rigged {
             Some(Refused::Writes) => step == Step::Write,
             Some(Refused::Syncs) => step == Step::Sync,
             Some(Refused::Renames) => step == Step::Rename,
-            Some(Refused::ManifestDirectories) => {
-                step == Step::SyncDirectory && path.starts_with(root().join("manifests"))
-            }
+            Some(Refused::Directories) => step == Step::SyncDirectory,
             None => false,
         };
         if refused || rig.failing == Some(rig.steps) {
@@ -366,7 +364,7 @@ impl Disk for Rigged {
 /// would hold the store to nothing: no store reaches it before the change is built.
 #[test]
 fn the_disk_of_these_tests_syncs_what_its_seed_picks_of_a_round_and_then_stops() {
-    let directory = root().join("blobs/00");
+    let directory = root().join("chunks/overworld/0.0");
     let files = ["a", "b", "c"].map(|name| directory.join(name));
     let disk = Rigged::over(MemoryDisk::default()).stopping(2, 0b101);
     for file in &files {
@@ -437,8 +435,8 @@ fn flushed(handle: &StoreHandle) -> bool {
 }
 
 /// Loads every chunk the two regions save, and says of each whether it is as it was
-/// saved anew. Panics if one cannot be read, which a manifest that names a section
-/// that is not there cannot, or is neither as it was before nor as it was saved.
+/// saved anew. Panics if one cannot be read, which a file that is not whole cannot,
+/// or is neither as it was before nor as it was saved.
 fn as_before_or_as_saved(chunks: &mut dyn Chunks, case: &str) -> [bool; SAVED.len()] {
     let mut saved = [false; SAVED.len()];
     for (index, (position, _)) in SAVED.iter().enumerate() {
@@ -512,9 +510,10 @@ fn a_chunk_that_was_saved_and_not_synced_is_what_is_loaded_and_has_no_file() {
     let disk = Arc::new(MemoryDisk::default());
     let mut chunks = FileChunks::new(disk.clone(), root());
     let position = ChunkPos::new(3, -7);
-    chunks.save(position, 5, &edited()).unwrap();
+    chunks.save(position, 5, EPOCH, &edited()).unwrap();
     assert_eq!(disk.operations(), 0, "the save changed or synced a file");
-    assert!(!disk.exists(&chunks.manifest_path(position)).unwrap());
+    assert!(!disk.exists(&chunks.chunk_path(position)).unwrap());
+    assert_eq!(chunks.chunk_path(position), chunk_path(position));
     assert!(chunks.load(position).unwrap() == Some(edited()));
     // It is nowhere but in the store that noted it.
     let mut other = FileChunks::new(disk.clone(), root());
@@ -536,13 +535,13 @@ fn a_second_save_before_the_sync_is_what_counts_and_what_the_sync_makes_durable(
     let position = ChunkPos::new(3, -7);
     let mut second = edited();
     second.set(1, 1, 1, blocks::GLASS);
-    chunks.save(position, 5, &edited()).unwrap();
-    chunks.save(position, 6, &second).unwrap();
+    chunks.save(position, 5, EPOCH, &edited()).unwrap();
+    chunks.save(position, 6, EPOCH, &second).unwrap();
     assert!(chunks.load(position).unwrap() == Some(second.clone()));
 
     chunks.sync().unwrap();
     assert!(chunks.load(position).unwrap() == Some(second.clone()));
-    assert!(disk.exists(&chunks.manifest_path(position)).unwrap());
+    assert!(disk.exists(&chunks.chunk_path(position)).unwrap());
     for survival in SURVIVALS {
         let mut left = FileChunks::new(Arc::new(disk.crashed(survival)), root());
         assert!(
@@ -552,32 +551,31 @@ fn a_second_save_before_the_sync_is_what_counts_and_what_the_sync_makes_durable(
     }
 }
 
-/// Whether the manifest and every section of the chunk have a file.
-fn files_of(disk: &MemoryDisk, position: ChunkPos, chunk: &Chunk) -> (bool, Vec<bool>) {
-    let there = |path: &PathBuf| disk.exists(path).unwrap();
-    let sections = section_paths(position, chunk);
-    (
-        there(&manifest_path(position)),
-        sections.iter().map(there).collect(),
-    )
+/// Every file under the directory of the chunks, under whatever name.
+fn under_chunks(disk: &MemoryDisk) -> Vec<PathBuf> {
+    let of_chunks = |path: &PathBuf| of_chunks(path);
+    disk.paths().into_iter().filter(of_chunks).collect()
 }
 
-/// Panics unless no file of the chunk is there.
-fn has_no_file(disk: &MemoryDisk, position: ChunkPos, chunk: &Chunk) {
-    let (manifest, sections) = files_of(disk, position, chunk);
+/// Panics unless no file of the chunk is there, under whatever name.
+fn has_no_file(disk: &MemoryDisk, position: ChunkPos) {
+    let name = format!("{}.{}.chunk", position.x, position.z);
+    let of_it = |path: &&PathBuf| {
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        file.starts_with(&name)
+    };
+    let found: Vec<_> = under_chunks(disk).iter().filter(of_it).cloned().collect();
     assert!(
-        !manifest && !sections.contains(&true),
-        "the chunk at {position:?} has files before anything wrote what is pending: \
-         manifest {manifest}, sections {sections:?}"
+        found.is_empty(),
+        "the chunk at {position:?} has files before anything wrote what is pending: {found:?}"
     );
 }
 
-/// Panics unless every file of the chunk is there.
-fn has_its_files(disk: &MemoryDisk, position: ChunkPos, chunk: &Chunk) {
-    let (manifest, sections) = files_of(disk, position, chunk);
+/// Panics unless the file of the chunk is there.
+fn has_its_file(disk: &MemoryDisk, position: ChunkPos) {
     assert!(
-        manifest && !sections.contains(&false),
-        "the chunk at {position:?} is not in the files: manifest {manifest}, sections {sections:?}"
+        disk.exists(&chunk_path(position)).unwrap(),
+        "the chunk at {position:?} is not in the files"
     );
 }
 
@@ -594,12 +592,12 @@ fn a_save_is_in_the_files_after_a_flush_and_not_before() {
     save(&east, position, &edited());
     // The store has done with the save: being at rest writes nothing.
     store.flush().unwrap();
-    has_no_file(&disk, position, &edited());
+    has_no_file(&disk, position);
     assert!(load(&east, position) == edited());
-    has_no_file(&disk, position, &edited());
+    has_no_file(&disk, position);
 
     assert!(flushed(&east));
-    has_its_files(&disk, position, &edited());
+    has_its_file(&disk, position);
     assert!(load(&east, position) == edited());
     // Durably so: a flush is a sync, and nothing of a sync is left to a later one.
     let mut left = FileChunks::new(Arc::new(disk.crashed(Survival::Nothing)), root());
@@ -621,15 +619,15 @@ fn a_save_is_in_the_files_after_an_open_that_applied_commits_and_not_before() {
     log(&west, 1, &[(-5, 150, 5, blocks::GLASS)]);
     committed(&west, 1);
     store.flush().unwrap();
-    has_no_file(&disk, saved, &edited());
-    assert!(!disk.exists(&manifest_path(applied)).unwrap());
+    has_no_file(&disk, saved);
+    has_no_file(&disk, applied);
 
     let (_west, restored) = store.open_region(hello(WEST, 2)).unwrap();
     assert_eq!(restored.deltas.len(), 1);
     let mut changed = generator().generate(applied);
     changed.set(11, 150, 5, blocks::GLASS);
-    has_its_files(&disk, saved, &edited());
-    has_its_files(&disk, applied, &changed);
+    has_its_file(&disk, saved);
+    has_its_file(&disk, applied);
     assert!(!east.is_lost());
     let mut left = FileChunks::new(Arc::new(disk.crashed(Survival::Nothing)), root());
     assert!(left.load(saved).unwrap() == Some(edited()));
@@ -662,7 +660,7 @@ fn the_saves_are_in_the_files_once_128_chunks_are_pending_and_not_before() {
     store.flush().unwrap();
     for position in western.iter().chain(rest) {
         assert!(
-            !disk.exists(&manifest_path(*position)).unwrap(),
+            !disk.exists(&chunk_path(*position)).unwrap(),
             "{position:?} is in the files with 127 chunks pending"
         );
     }
@@ -673,7 +671,7 @@ fn the_saves_are_in_the_files_once_128_chunks_are_pending_and_not_before() {
     let mut left = FileChunks::new(Arc::new(disk.crashed(Survival::Nothing)), root());
     for position in western.iter().chain(&eastern) {
         assert!(
-            disk.exists(&manifest_path(*position)).unwrap(),
+            disk.exists(&chunk_path(*position)).unwrap(),
             "{position:?} is not in the files with 128 chunks pending"
         );
         let expected = if *position == eastern[0] {
@@ -691,7 +689,7 @@ fn the_saves_are_in_the_files_once_128_chunks_are_pending_and_not_before() {
     let later = ChunkPos::new(-100, 0);
     save(&west, later, &chunk);
     store.flush().unwrap();
-    assert!(!disk.exists(&manifest_path(later)).unwrap());
+    assert!(!disk.exists(&chunk_path(later)).unwrap());
     assert!(load(&west, later) == chunk);
 }
 
@@ -732,8 +730,8 @@ fn scenario(store: &Store, trigger: Trigger) -> bool {
 }
 
 /// Holds what a crash left to what the record promises at every moment: a chunk is
-/// whole, as it was before or as it was saved, and a manifest names no section that
-/// is not there; and nobody was told that something is durable that is not.
+/// whole, as it was before or as it was saved; and nobody was told that something is
+/// durable that is not.
 fn left_whole(left: MemoryDisk, trigger: Trigger, flushed: bool, case: &str) {
     let left = Arc::new(left);
     // First of all and from nothing but the files: before a store could save
@@ -799,11 +797,10 @@ fn stopped_at_every_point(trigger: Trigger) {
 }
 
 /// A machine that stops at any change or sync of a checkpoint of several chunks, of
-/// two regions, that share a section and have sections of their own leaves every
-/// chunk whole: as it was before or as it was saved. The rounds write the files of
-/// many chunks before any of them is durable, so this is where an order that is
-/// wrong for one chunk among several would show; and a checkpoint whose state is
-/// kept has cut the log, so its chunks have to be there.
+/// two regions, leaves every chunk whole: as it was before or as it was saved. The
+/// round writes the files of many chunks before any of them is durable, so this is
+/// where an order that is wrong for one chunk among several would show; and a
+/// checkpoint whose state is kept has cut the log, so its chunks have to be there.
 #[test]
 fn a_store_stopped_at_any_point_of_a_checkpoint_leaves_every_chunk_as_before_or_as_saved() {
     stopped_at_every_point(Trigger::Checkpoint);
@@ -818,67 +815,83 @@ fn a_store_stopped_at_any_point_of_a_flush_leaves_every_chunk_as_before_or_as_sa
 
 // 3. Stopped with any part of a round synced.
 
-/// A sync is four rounds: the sections that are not stored yet and then their
-/// directories, the manifests and then theirs. Nothing of a chunk is synced by
-/// itself, which is what made a checkpoint take as long as it had chunks. The tests
-/// that stop a round rest on this: they stop the rounds there are.
+/// A sync is one round of files and one of directories: the chunk files, and then
+/// the directories they are in. Nothing of a chunk is synced by itself, which is what
+/// made a checkpoint take as long as it had chunks. The tests that stop a round rest
+/// on this: they stop the rounds there are.
 #[test]
-fn a_sync_is_a_round_of_sections_and_one_of_manifests_each_with_its_directories() {
+fn a_sync_is_one_round_of_chunk_files_and_one_of_their_directories() {
     let disk = Arc::new(Rigged::over(world()));
     let mut chunks = FileChunks::new(disk.clone(), root());
-    let mut sections = BTreeSet::new();
-    let mut manifests = BTreeSet::new();
+    let files: BTreeSet<PathBuf> = SAVED
+        .iter()
+        .map(|(position, _)| chunk_path(*position))
+        .collect();
     for (index, (position, _)) in SAVED.iter().enumerate() {
-        for section in section_paths(*position, after(index)) {
-            // A section that is stored is not written again.
-            if !disk.exists(&section).unwrap() {
-                sections.insert(section);
-            }
-        }
-        manifests.insert(chunks.manifest_path(*position));
-    }
-    for (index, (position, _)) in SAVED.iter().enumerate() {
-        chunks.save(*position, 2, after(index)).unwrap();
+        chunks.save(*position, 2, EPOCH, after(index)).unwrap();
     }
     chunks.sync().unwrap();
 
-    let directories = |files: &BTreeSet<PathBuf>| -> BTreeSet<PathBuf> {
-        let directory = |file: &PathBuf| file.parent().unwrap().to_owned();
-        files.iter().map(directory).collect()
-    };
+    let directory = |file: &PathBuf| file.parent().unwrap().to_owned();
+    let directories: BTreeSet<PathBuf> = files.iter().map(directory).collect();
     let rounds = disk.rounds();
     let kinds: Vec<Round> = rounds.iter().map(|(round, _)| *round).collect();
-    assert_eq!(
-        kinds,
-        [
-            Round::Files,
-            Round::Directories,
-            Round::Files,
-            Round::Directories
-        ],
-        "{rounds:?}"
-    );
-    let within = |round: usize, directory: &str| {
-        let directory = root().join(directory);
-        rounds[round]
-            .1
-            .iter()
-            .all(|path| path.starts_with(&directory))
-    };
+    assert_eq!(kinds, [Round::Files, Round::Directories], "{rounds:?}");
     let set = |round: usize| -> BTreeSet<PathBuf> { rounds[round].1.iter().cloned().collect() };
     // The files are synced under the names they are written under, which the record
     // does not give: how many there are and where is what can be held to.
-    assert_eq!(rounds[0].1.len(), sections.len(), "{rounds:?}");
-    assert!(within(0, "blobs"), "{rounds:?}");
-    assert_eq!(set(1), directories(&sections));
-    assert_eq!(rounds[1].1.len(), set(1).len(), "{rounds:?}");
-    assert_eq!(rounds[2].1.len(), manifests.len(), "{rounds:?}");
-    assert!(within(2, "manifests"), "{rounds:?}");
-    assert_eq!(set(3), directories(&manifests));
-    assert_eq!(rounds[3].1.len(), set(3).len(), "{rounds:?}");
+    assert_eq!(rounds[0].1.len(), files.len(), "{rounds:?}");
+    assert_eq!(set(0).len(), files.len(), "{rounds:?}");
+    assert_eq!(
+        set(0).iter().map(directory).collect::<BTreeSet<_>>(),
+        directories
+    );
+    assert_eq!(set(1), directories);
+    assert_eq!(rounds[1].1.len(), directories.len(), "{rounds:?}");
     assert_eq!(disk.alone(), Vec::<PathBuf>::new());
-    for file in sections.iter().chain(&manifests) {
-        assert!(disk.exists(file).unwrap(), "{file:?}");
+    // A chunk is one file, and a sync leaves nothing beside it.
+    let left: BTreeSet<PathBuf> = under_chunks(&disk.disk).into_iter().collect();
+    let mut expected = files.clone();
+    expected.insert(chunk_path(UNTOUCHED));
+    assert_eq!(left, expected);
+}
+
+/// The round is one however many chunks there are: when the 128th pending save has
+/// the store write, it makes one call for all the files and one for their
+/// directories, and none for a file or a directory by itself. A hundred and
+/// twenty-eight syncs that wait together cost the disk about what one does.
+#[test]
+fn with_128_chunks_pending_the_store_syncs_their_files_in_one_call_and_their_directories_in_one() {
+    let disk = Arc::new(Rigged::over(MemoryDisk::default()));
+    let store = store_over(&disk).unwrap();
+    let [west, east, _] = owners(&store, 1).unwrap();
+    let chunk = edited();
+    let positions: Vec<ChunkPos> = (-64..64).map(|x| ChunkPos::new(x, 0)).collect();
+    for position in &positions {
+        let owner = if position.x < 0 { &west } else { &east };
+        save(owner, *position, &chunk);
+    }
+    store.flush().unwrap();
+    assert!(!west.is_lost() && !east.is_lost());
+
+    let rounds = disk.rounds();
+    let kinds: Vec<Round> = rounds.iter().map(|(round, _)| *round).collect();
+    assert_eq!(kinds, [Round::Files, Round::Directories], "{rounds:?}");
+    assert_eq!(rounds[0].1.len(), 128);
+    // 128 chunks in a row along x are in four directories of 32.
+    let directories: BTreeSet<PathBuf> = positions
+        .iter()
+        .map(|position| chunk_path(*position).parent().unwrap().to_owned())
+        .collect();
+    assert_eq!(directories.len(), 4);
+    assert_eq!(
+        rounds[1].1.iter().cloned().collect::<BTreeSet<_>>(),
+        directories
+    );
+    assert_eq!(rounds[1].1.len(), 4);
+    assert_eq!(disk.alone(), Vec::<PathBuf>::new());
+    for position in &positions {
+        has_its_file(&disk.disk, *position);
     }
 }
 
@@ -886,8 +899,8 @@ fn a_sync_is_a_round_of_sections_and_one_of_manifests_each_with_its_directories(
 /// part of the round durable, not only the files before a point, and the simulated
 /// disk by itself shows only the latter. So the disk stops in each round with each
 /// part of it synced, and what a crash leaves then is held to the same as in the
-/// tests above. A directory of manifests that is durable while one of sections is
-/// not would show here and nowhere else.
+/// tests above. A directory that is durable while a file in it is not would show
+/// here and nowhere else.
 #[test]
 fn a_store_stopped_with_any_part_of_a_round_synced_leaves_every_chunk_as_before_or_as_saved() {
     let world = world();
@@ -898,7 +911,7 @@ fn a_store_stopped_with_any_part_of_a_round_synced_leaves_every_chunk_as_before_
             disk.rounds().len()
         };
         assert!(
-            rounds >= 4,
+            rounds >= 2,
             "{trigger:?}: the saves of five chunks were synced in {rounds} rounds"
         );
         for round in 1..=rounds {
@@ -924,19 +937,18 @@ fn a_store_stopped_with_any_part_of_a_round_synced_leaves_every_chunk_as_before_
 
 /// A sync that fails, at any of its steps and with any number of the steps after it
 /// failing too, returns the error and leaves every chunk whole, for a load right
-/// after it and for whoever reads the files after a crash: a manifest in place
-/// names sections that are there, also when the sync gave up half way. And the same
-/// chunks saved again and synced by a sync that works are as saved and durably so.
-/// With several steps failing in a row, what a failed sync could not clear away
-/// stays behind: a section file that is in place and not durably so must not be
-/// taken for stored by the sync that works, or a crash takes it from under a
-/// manifest.
+/// after it and for whoever reads the files after a crash: a file in place is the
+/// chunk as it was before or as it was saved, also when the sync gave up half way.
+/// And the same chunks saved again and synced by a sync that works are as saved and
+/// durably so. With several steps failing in a row, what a failed sync could not
+/// clear away stays behind: a temporary file that is left must not be in the way of
+/// the sync that works, nor be read by anyone.
 #[test]
 fn a_sync_that_fails_at_any_step_leaves_every_chunk_whole_and_a_later_one_leaves_them_as_saved() {
     let world = world();
     let save_anew = |chunks: &mut FileChunks| -> Result<(), StoreError> {
         for (index, (position, _)) in SAVED.iter().enumerate() {
-            chunks.save(*position, 2, after(index))?;
+            chunks.save(*position, 2, EPOCH, after(index))?;
         }
         Ok(())
     };
@@ -955,8 +967,8 @@ fn a_sync_that_fails_at_any_step_leaves_every_chunk_whole_and_a_later_one_leaves
     let all = [true; SAVED.len()];
     for n in 1..=steps {
         // One step fails; or the first thing done about it fails too; or half of
-        // what is done about it, or all of it: a sync has six section files to clear
-        // away at most.
+        // what is done about it, or all of it: a sync has five temporary files to
+        // clear away at most.
         for count in [1, 2, 4, 7] {
             let fault = Fault::Fails(n, count);
             let disk = Arc::new(copy(&world).with(fault));
@@ -1209,12 +1221,12 @@ fn a_store_whose_chunk_files_cannot_be_written_does_not_open_a_region_whose_comm
     }
 }
 
-/// Neither is it when the files can be written and their manifests cannot be made
+/// Neither is it when the files can be written and their names cannot be made
 /// durable: what an open applied is synced before the region is handed over, and not
 /// left for a checkpoint to find out about.
 #[test]
-fn a_store_that_cannot_sync_the_directory_of_a_manifest_does_not_open_such_a_region_either() {
-    is_not_opened_while_the_disk_refuses(Refused::ManifestDirectories);
+fn a_store_that_cannot_sync_the_directory_of_a_chunk_file_does_not_open_such_a_region_either() {
+    is_not_opened_while_the_disk_refuses(Refused::Directories);
 }
 
 // 6. The local file system.
@@ -1295,7 +1307,7 @@ fn two_hundred_chunks_are_saved_and_synced_on_the_real_disk() {
 
     let begun = Instant::now();
     for (position, chunk) in &saved {
-        chunks.save(*position, 1, chunk).unwrap();
+        chunks.save(*position, 1, EPOCH, chunk).unwrap();
     }
     let noted = begun.elapsed();
     chunks.sync().unwrap();

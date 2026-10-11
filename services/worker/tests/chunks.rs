@@ -2728,13 +2728,13 @@ fn an_edge_reset_for_a_lost_since_is_held_until_its_hello_is_answered_and_then_t
     assert!(first.closed, "the edge's other link is closed");
 }
 
-/// The path of the manifest of a stored chunk in a world on disk.
-fn manifest_of(world: &World, position: ChunkPos) -> std::path::PathBuf {
+/// The path of the file of a stored chunk in a world on disk.
+fn file_of(world: &World, position: ChunkPos) -> std::path::PathBuf {
     world
         .root()
-        .join("manifests/overworld")
+        .join("chunks/overworld")
         .join(format!("{}.{}", position.x >> 5, position.z >> 5))
-        .join(format!("{}.{}.manifest", position.x, position.z))
+        .join(format!("{}.{}.chunk", position.x, position.z))
 }
 
 /// Section 4.5: the hold is let go of for a chunk when the store says that it cannot
@@ -2751,7 +2751,7 @@ fn a_chunk_of_a_hello_that_the_store_cannot_read_ends_the_hold_and_is_answered_w
         owner.save(OWN, &chunk);
         owner.handle.flush();
     }
-    std::fs::write(manifest_of(&world, OWN), b"not a manifest").expect("the chunk was stored");
+    std::fs::write(file_of(&world, OWN), b"not a chunk").expect("the chunk was stored");
 
     let mut runner = world.open();
     let mut e = Link::attach(&runner);

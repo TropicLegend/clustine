@@ -206,16 +206,6 @@ impl Section {
         section
     }
 
-    /// The biome of the section's first cell, for those that take a section to have
-    /// one biome: the stored form of today and the edge's packet. It goes with them
-    /// (`docs/adr/0022-what-a-chunk-carries.md`, step C3).
-    pub fn biome(&self) -> Biome {
-        match &self.biomes {
-            Biomes::One(biome) => *biome,
-            Biomes::Cells(cells) => cells[0],
-        }
-    }
-
     /// The biome at the block `x`, `y`, `z`, each in `0..16`.
     pub fn biome_at(&self, x: usize, y: usize, z: usize) -> Biome {
         let index = index(x, y, z);
@@ -639,7 +629,6 @@ mod tests {
             Box::new(std::array::from_fn(|cell| Biome(cell as u16)));
         section.set_biomes(cells);
         assert_eq!(section.uniform_biome(), None);
-        assert_eq!(section.biome(), Biome(0));
         // The cell of the block (5, 9, 14): x 1, y 2, z 3.
         assert_eq!(section.biome_at(5, 9, 14), Biome(2 << 4 | 3 << 2 | 1));
         assert!(section.biomes().eq((0..64).map(Biome)));

@@ -837,6 +837,7 @@ impl Lanes {
             } => Job::Save {
                 position,
                 tick,
+                epoch: owner.epoch,
                 chunk,
                 peer,
             },
@@ -1302,6 +1303,7 @@ impl Lanes {
                 let _ = self.jobs.send(Job::Restore {
                     changes,
                     tick,
+                    epoch: hello.epoch,
                     peer,
                     opened,
                     restored,

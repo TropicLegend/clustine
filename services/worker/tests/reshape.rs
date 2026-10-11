@@ -1877,13 +1877,13 @@ fn a_dig_into_a_chunk_its_link_has_no_subscription_to_is_judged_at_once_in(mut w
     assert_eq!(applied(log), Some(e.sent));
 }
 
-/// The path of the manifest of a stored chunk in a world on disk.
-fn manifest_of(world: &World, position: ChunkPos) -> std::path::PathBuf {
+/// The path of the file of a stored chunk in a world on disk.
+fn file_of(world: &World, position: ChunkPos) -> std::path::PathBuf {
     world
         .root()
-        .join("manifests/overworld")
+        .join("chunks/overworld")
         .join(format!("{}.{}", position.x >> 5, position.z >> 5))
-        .join(format!("{}.{}.manifest", position.x, position.z))
+        .join(format!("{}.{}.chunk", position.x, position.z))
 }
 
 /// R27: a chunk the store cannot read is waited for without end, and holds nothing.
@@ -1898,7 +1898,7 @@ fn a_chunk_the_store_cannot_read_does_not_hold_a_dig() {
         owner.save(BACK, &chunk);
         owner.handle.flush();
     }
-    std::fs::write(manifest_of(&world, BACK), b"not a manifest").expect("the chunk was stored");
+    std::fs::write(file_of(&world, BACK), b"not a chunk").expect("the chunk was stored");
 
     let (mut runner, mut e, entity) = at_the_western_end(&mut world);
     e.subscribe(vec![BACK]);

@@ -4800,9 +4800,7 @@ mod tests {
                 .map(|segment| segment.unwrap().metadata().unwrap().len())
                 .sum()
         };
-        let manifest = directory
-            .path()
-            .join("manifests/overworld/0.0/0.0.manifest");
+        let stored = directory.path().join("chunks/overworld/0.0/0.0.chunk");
 
         // Just after a checkpoint, so that the next one is 50 ticks away.
         step_until(&mut runner, |runner| {
@@ -4813,7 +4811,7 @@ mod tests {
         runner.store.flush();
         assert!(log_length() > 0, "the change was not logged");
         assert!(
-            !manifest.exists(),
+            !stored.exists(),
             "the chunk was saved before the checkpoint"
         );
 
@@ -4821,7 +4819,7 @@ mod tests {
             runner.region().tick_number() % 50 == 0
         });
         runner.store.flush();
-        assert!(manifest.exists(), "the checkpoint did not save the chunk");
+        assert!(stored.exists(), "the checkpoint did not save the chunk");
         assert_eq!(log_length(), 0);
     }
 

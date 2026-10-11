@@ -9,6 +9,11 @@
 //! `docs/groundwork/few-syncs-in-turn-draft.md` sets out to lower. A change that
 //! makes the store wait less often changes what they expect, and says so there.
 //!
+//! Those two files count four rounds for the chunks of a checkpoint, of section files
+//! and manifests. Since a chunk is one file there are two, the files and their
+//! directories (`docs/adr/0022-what-a-chunk-carries.md`, section 3), and every count
+//! here that has chunks in it is two lower than theirs.
+//!
 //! The disk of these tests holds every wait back until the test lets it through, one
 //! at a time, and the test looks for the answer each time the store has come to its
 //! next wait: everything the store did before that wait is done then, also sending an
@@ -113,14 +118,14 @@ fn directory(path: &Path) -> &'static str {
 
 /// What a round of syncs that wait together is of.
 fn round(paths: &[PathBuf], files: bool) -> String {
-    let sections = paths
-        .first()
-        .is_some_and(|path| path.starts_with(Path::new(ROOT).join("blobs")));
-    let of = match (sections, files) {
-        (true, true) => "section files",
-        (true, false) => "directories of sections",
-        (false, true) => "manifests",
-        (false, false) => "directories of manifests",
+    let chunks = paths
+        .iter()
+        .all(|path| path.starts_with(Path::new(ROOT).join("chunks")));
+    let of = match (chunks, files) {
+        (true, true) => "chunk files",
+        (true, false) => "directories of chunk files",
+        (false, true) => "other files",
+        (false, false) => "other directories",
     };
     format!("{of} together ({})", paths.len())
 }
@@ -380,7 +385,7 @@ impl World {
     }
 }
 
-/// The chunk at `position` with a section that no other chunk and no earlier tick has.
+/// The chunk at `position`, as no other chunk and no earlier tick has it.
 fn changed(position: ChunkPos, tick: u64, index: usize) -> Chunk {
     let mut chunk = generator().generate(position);
     chunk.set(index % 16, 100, (tick % 16) as usize, blocks::GLASS);
@@ -400,28 +405,15 @@ const REGIONS: &str = "commit thread: regions/";
 const STATE: &str = "chunk thread: a state file's temporary";
 const REGION_FILE: &str = "commit thread: a region file's temporary";
 const TABLE: &str = "commit thread: the table file's temporary";
-const SECTIONS: &str = "chunk thread: section files together";
-const SECTION_DIRECTORIES: &str = "chunk thread: directories of sections together";
-const MANIFESTS: &str = "chunk thread: manifests together";
-const MANIFEST_DIRECTORIES: &str = "chunk thread: directories of manifests together";
-/// The four rounds in which saved chunks are written.
-const ROUNDS: [&str; 4] = [
-    SECTIONS,
-    SECTION_DIRECTORIES,
-    MANIFESTS,
-    MANIFEST_DIRECTORIES,
-];
+const CHUNKS: &str = "chunk thread: chunk files together";
+const CHUNK_DIRECTORIES: &str = "chunk thread: directories of chunk files together";
+/// The two rounds in which saved chunks are written: the files, and then the
+/// directories they are in.
+const ROUNDS: [&str; 2] = [CHUNKS, CHUNK_DIRECTORIES];
 /// A checkpoint of chunks that changed, up to the answer to the flush behind it.
-const CHECKPOINT: [&str; 6] = [
-    SECTIONS,
-    SECTION_DIRECTORIES,
-    MANIFESTS,
-    MANIFEST_DIRECTORIES,
-    STATE,
-    REGIONS,
-];
+const CHECKPOINT: [&str; 4] = [CHUNKS, CHUNK_DIRECTORIES, STATE, REGIONS];
 
-/// Chunks of region 0, in three directories of manifests.
+/// Chunks of region 0, in two directories.
 const WEST: [ChunkPos; 3] = [
     ChunkPos::new(-1, 0),
     ChunkPos::new(-2, 0),
@@ -448,7 +440,7 @@ fn a_commit_waits_for_one_sync_and_the_first_after_a_checkpoint_for_two() {
 }
 
 #[test]
-fn a_checkpoint_waits_for_two_syncs_in_turn_and_for_four_rounds_if_chunks_changed() {
+fn a_checkpoint_waits_for_two_syncs_in_turn_and_for_two_rounds_if_chunks_changed() {
     let world = World::new();
     let west = world.open(0, 1);
     log(&west, 1, &[]);
@@ -459,7 +451,7 @@ fn a_checkpoint_waits_for_two_syncs_in_turn_and_for_four_rounds_if_chunks_change
     log(&west, 2, &[]);
     committed(&west, 2);
     let chunks = world.watch_checkpoint("a checkpoint of three chunks", &west, 2, &WEST);
-    assert_eq!(chunks, seen(&CHECKPOINT, Some(6)));
+    assert_eq!(chunks, seen(&CHECKPOINT, Some(4)));
 }
 
 /// In a world whose regions claim and return chunks, the first segment of the log is
@@ -553,7 +545,7 @@ fn a_release_and_the_open_behind_it_wait_for_the_syncs_of_two_checkpoints_and_a_
     log(&west, 1, &[]);
     committed(&west, 1);
     let first = world.watch_checkpoint("a release: the first checkpoint", &west, 1, &WEST);
-    assert_eq!(first, seen(&CHECKPOINT, Some(6)));
+    assert_eq!(first, seen(&CHECKPOINT, Some(4)));
     // The tick that ran meanwhile: the region stands still from here on.
     let last = world.watch_commit("a release: the last tick's commit", &west, 2);
     assert_eq!(last, seen(&[COMMIT, LOG], Some(2)));
@@ -599,7 +591,7 @@ fn a_merge_waits_for_three_syncs_of_its_own_behind_those_of_its_checkpoints() {
     assert_eq!(opened, seen(&[REGION_FILE, REGIONS, COMMIT, LOG], Some(2)));
 
     let first = world.watch_checkpoint("a merge: the survivor's first checkpoint", &west, 1, &WEST);
-    assert_eq!(first, seen(&CHECKPOINT, Some(6)));
+    assert_eq!(first, seen(&CHECKPOINT, Some(4)));
     let last = world.watch_commit("a merge: the survivor's last tick", &west, 2);
     assert_eq!(last, seen(&[COMMIT, LOG], Some(2)));
     let second = world.watch_checkpoint("a merge: the survivor's second checkpoint", &west, 2, &[]);
@@ -643,7 +635,7 @@ fn a_split_waits_for_four_syncs_of_its_own_behind_those_of_its_checkpoints() {
     log(&west, 1, &[]);
     committed(&west, 1);
     let first = world.watch_checkpoint("a split: the first checkpoint", &west, 1, &WEST);
-    assert_eq!(first, seen(&CHECKPOINT, Some(6)));
+    assert_eq!(first, seen(&CHECKPOINT, Some(4)));
     let last = world.watch_commit("a split: the last tick", &west, 2);
     assert_eq!(last, seen(&[COMMIT, LOG], Some(2)));
     let second = world.watch_checkpoint("a split: the second checkpoint", &west, 2, &[]);
@@ -695,7 +687,7 @@ fn a_take_over_waits_for_a_region_file_and_for_the_rounds_of_the_chunks_it_repla
     assert_eq!(restored.deltas.len(), 1);
     // The epoch first, on the commit thread, before anything else.
     assert_eq!(opened.waits[..2], [REGION_FILE, REGIONS]);
-    // Then the thread for chunks writes the chunks in its four rounds and answers,
+    // Then the thread for chunks writes the chunks in its two rounds and answers,
     // and the commit thread makes the record of the opening durable beside it. The
     // two do not wait for each other, so where the commit thread's sync falls among
     // the rounds is not said; the answer comes behind the last round.
@@ -705,7 +697,7 @@ fn a_take_over_waits_for_a_region_file_and_for_the_rounds_of_the_chunks_it_repla
         .filter(|wait| *wait != COMMIT)
         .collect();
     assert_eq!(rounds, ROUNDS);
-    assert_eq!(opened.waits.len(), 7);
+    assert_eq!(opened.waits.len(), 5);
     let last_round = opened.waits.iter().rposition(|wait| wait != COMMIT);
     let answered = opened.before_the_answer.expect("the hello is answered");
     assert!(last_round.is_some_and(|last| last < answered));

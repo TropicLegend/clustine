@@ -8,7 +8,8 @@
 //! Chunks that were saved are written to their files together, when they are made
 //! durable: syncs that wait at the same time are made durable together by the file
 //! system, and syncs in turn each pay for the disk. See
-//! `docs/adr/0018-a-checkpoints-chunks-written-together.md`.
+//! `docs/adr/0018-a-checkpoints-chunks-written-together.md`, and for the one file a
+//! chunk is, `docs/adr/0022-what-a-chunk-carries.md`, section 3.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,7 +19,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Weak};
 
 use clustine_data::BlockState;
-use clustine_format::{ChunkManifest, Hash, StateFile, pack, unpack};
+use clustine_format::{ChunkFile, FormatError, StateFile};
 use clustine_rpc::{Restored, StoreReply};
 use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos};
 use tracing::{error, warn};
@@ -26,13 +27,30 @@ use tracing::{error, warn};
 use crate::disk::{Disk, parent, temporary};
 use crate::{Message, Opened, Peer, StoreError};
 
+/// The epoch a chunk file has that no region saved: the store wrote it itself, when it
+/// made a world over for another division. No region is ever opened with epoch 0.
+pub(crate) const NO_REGION: u64 = 0;
+
+/// The directory of the world's dimension under `chunks/`: its name without the
+/// namespace. A world has one dimension, and until a generator says which
+/// (`docs/adr/0021-generation-is-a-function.md`, section 8) every world is the
+/// overworld; the store learns the name from the generator's settings then.
+const DIMENSION: &str = "overworld";
+
 /// Where chunks are kept.
 pub(crate) trait Chunks: Send {
     /// The stored chunk, or `None` if it was never stored.
     fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError>;
     /// Stores the chunk, so that it is what is loaded from now on. It need not be
-    /// durable before [`Chunks::sync`].
-    fn save(&mut self, position: ChunkPos, tick: u64, chunk: &Chunk) -> Result<(), StoreError>;
+    /// durable before [`Chunks::sync`]. `tick` and `epoch` are those of the region
+    /// that saves it, for whoever looks at what is stored.
+    fn save(
+        &mut self,
+        position: ChunkPos,
+        tick: u64,
+        epoch: u64,
+        chunk: &Chunk,
+    ) -> Result<(), StoreError>;
     /// Makes every chunk saved so far durable. After an error none of those saved
     /// since the last time may be taken for durable, and they are to be saved again.
     fn sync(&mut self) -> Result<(), StoreError>;
@@ -52,7 +70,13 @@ impl Chunks for MemoryChunks {
         Ok(self.0.get(&position).cloned())
     }
 
-    fn save(&mut self, position: ChunkPos, _tick: u64, chunk: &Chunk) -> Result<(), StoreError> {
+    fn save(
+        &mut self,
+        position: ChunkPos,
+        _tick: u64,
+        _epoch: u64,
+        chunk: &Chunk,
+    ) -> Result<(), StoreError> {
         self.0.insert(position, chunk.clone());
         Ok(())
     }
@@ -62,47 +86,38 @@ impl Chunks for MemoryChunks {
     }
 }
 
-/// Keeps chunks in files of the world:
+/// Keeps chunks in files of the world, one file a chunk:
 ///
 /// ```text
-/// blobs/ab/abcdef…                                sections, by the hash of their content
-/// manifests/overworld/<rx>.<rz>/<x>.<z>.manifest  chunks, grouped by 32×32 chunks
+/// chunks/overworld/<rx>.<rz>/<x>.<z>.chunk   grouped by 32×32 chunks
 /// ```
 ///
 /// A saved chunk is held here and touches no file until [`Chunks::sync`], which writes
-/// all that were saved since the last one in two rounds: the section files that are
-/// not stored yet, then the manifests. The files of a round are written first and
-/// synced at the same time, and so are their directories once the files have their
-/// names. Until then a load is answered with what is held.
+/// all that were saved since the last one in one round: the files are written under
+/// temporary names and synced at the same time, each is renamed into place, and their
+/// directories are synced at the same time. Until then a load is answered with what
+/// is held.
 ///
-/// Section files are never changed once written, and are durable before a manifest
-/// names them: no manifest is put in place before the round of the sections has ended
-/// well. A manifest is put in place by renaming a file that is durable, so a chunk on
-/// disk is whole, as it was before or as it was saved, wherever a round stops. It is
-/// durably as it was saved once the sync has ended well.
+/// A file names nothing but its own chunk and is put in place by renaming a file that
+/// is durable, so a chunk on disk is whole, as it was before or as it was saved,
+/// wherever the round stops and whichever of its files a crash keeps. It is durably
+/// as it was saved once the sync has ended well.
 pub(crate) struct FileChunks {
     disk: Arc<dyn Disk>,
     root: PathBuf,
     /// The chunks saved since the last sync, each as it was last saved.
     pending: BTreeMap<ChunkPos, Saved>,
-    /// Section files that may be there without being durably so: their directory could
-    /// not be synced, and then they could not be removed either. They are written
-    /// again by the next sync of a chunk that has them, instead of being taken for
-    /// stored.
-    unsure: BTreeSet<PathBuf>,
 }
 
 /// A chunk that was saved and is not in the files yet.
 struct Saved {
     /// What a load is answered with.
     chunk: Chunk,
-    /// The encoded manifest.
-    manifest: Vec<u8>,
-    /// The sections the manifest names, each in its canonical encoding.
-    sections: Vec<(Hash, Vec<u8>)>,
+    /// The encoded file.
+    file: Vec<u8>,
 }
 
-/// The files of one round of a sync: all are written under temporary names, those are
+/// The files of a round of a sync: all are written under temporary names, those are
 /// synced together, each is renamed into place, and their directories are synced
 /// together.
 #[derive(Default)]
@@ -110,17 +125,14 @@ struct Round {
     /// The temporary names that were written to, in the order of the files. One that
     /// could not be written in full is among them.
     temporaries: Vec<PathBuf>,
-    /// The files that were put in place: as many of the first as were renamed.
-    placed: Vec<PathBuf>,
+    /// How many of the first files were put in place.
+    placed: usize,
 }
 
 impl Round {
     /// Puts each of the contents in the file it is paired with. They are durably
     /// there only if this returns without an error; `self` says what a failure left.
     fn put(&mut self, disk: &dyn Disk, files: &[(PathBuf, Vec<u8>)]) -> io::Result<()> {
-        if files.is_empty() {
-            return Ok(());
-        }
         let mut directories = BTreeSet::new();
         for (path, contents) in files {
             let directory = parent(path);
@@ -137,16 +149,16 @@ impl Round {
         disk.sync_files(&self.temporaries)?;
         for ((path, _), temporary) in files.iter().zip(&self.temporaries) {
             disk.rename(temporary, path)?;
-            self.placed.push(path.clone());
+            self.placed += 1;
         }
         disk.sync_directories(&Vec::from_iter(directories))
     }
 
     /// After a failure: removes the temporary files that were not put in place, as far
     /// as they can be. One that stays is never read, and is written over by the next
-    /// sync of the same chunk or section.
+    /// sync of the same chunk.
     fn withdraw(&self, disk: &dyn Disk) {
-        for temporary in &self.temporaries[self.placed.len()..] {
+        for temporary in &self.temporaries[self.placed..] {
             let _ = disk.remove(temporary);
         }
     }
@@ -158,41 +170,15 @@ impl FileChunks {
             disk,
             root: root.to_owned(),
             pending: BTreeMap::new(),
-            unsure: BTreeSet::new(),
         }
     }
 
-    fn blob_path(&self, hash: &Hash) -> PathBuf {
-        let name = hash.to_string();
-        self.root.join("blobs").join(&name[..2]).join(name)
-    }
-
-    pub(crate) fn manifest_path(&self, position: ChunkPos) -> PathBuf {
+    pub(crate) fn chunk_path(&self, position: ChunkPos) -> PathBuf {
         self.root
-            .join("manifests/overworld")
+            .join("chunks")
+            .join(DIMENSION)
             .join(format!("{}.{}", position.x >> 5, position.z >> 5))
-            .join(format!("{}.{}.manifest", position.x, position.z))
-    }
-
-    /// The section files that the chunks name and that are not stored yet, each once,
-    /// with what is to be in them.
-    fn sections_to_store(
-        &self,
-        chunks: &BTreeMap<ChunkPos, Saved>,
-    ) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
-        let mut sections = BTreeMap::new();
-        for (hash, canonical) in chunks.values().flat_map(|saved| &saved.sections) {
-            sections.entry(*hash).or_insert(canonical);
-        }
-        let mut files = Vec::new();
-        for (hash, canonical) in sections {
-            let path = self.blob_path(&hash);
-            if self.disk.exists(&path)? && !self.unsure.contains(&path) {
-                continue;
-            }
-            files.push((path, pack(canonical)));
-        }
-        Ok(files)
+            .join(format!("{}.{}.chunk", position.x, position.z))
     }
 }
 
@@ -202,31 +188,48 @@ impl Chunks for FileChunks {
         if let Some(saved) = self.pending.get(&position) {
             return Ok(Some(saved.chunk.clone()));
         }
-        let Some(bytes) = self.disk.read(&self.manifest_path(position))? else {
+        let Some(bytes) = self.disk.read(&self.chunk_path(position))? else {
             return Ok(None);
         };
-        let manifest = ChunkManifest::decode(&bytes)?;
-        let chunk = manifest.restore(|hash| -> Result<Vec<u8>, StoreError> {
-            let path = self.blob_path(hash);
-            let packed = self
-                .disk
-                .read(&path)?
-                .ok_or(StoreError::MissingSection(*hash))?;
-            Ok(unpack(&packed)?)
-        })?;
-        Ok(Some(chunk))
+        let (file, unfit) = ChunkFile::decode(&bytes)?;
+        if file.position != position {
+            // A file that was moved or copied by hand. Its blocks are another chunk's,
+            // however well its checksum fits.
+            return Err(FormatError::Corrupt("the file is of another chunk").into());
+        }
+        if unfit > 0 {
+            // The reader has put them right: an entity without data where the blocks
+            // ask for one, none where they do not. Whoever looks after the world
+            // should know that a file said otherwise.
+            warn!(
+                ?position,
+                block_entities = unfit,
+                "a stored chunk had block entities that did not fit its blocks"
+            );
+        }
+        Ok(Some(file.chunk))
     }
 
-    fn save(&mut self, position: ChunkPos, tick: u64, chunk: &Chunk) -> Result<(), StoreError> {
-        let (manifest, sections) = ChunkManifest::describe(position, chunk, tick);
-        // Only noted. Written by itself a chunk costs three syncs, one after another,
-        // and a checkpoint saves a great many; the next sync writes all of them in
-        // rounds whose syncs wait together. A later save of the chunk takes the place
+    fn save(
+        &mut self,
+        position: ChunkPos,
+        tick: u64,
+        epoch: u64,
+        chunk: &Chunk,
+    ) -> Result<(), StoreError> {
+        let file = ChunkFile {
+            position,
+            tick,
+            epoch,
+            chunk: chunk.clone(),
+        };
+        // Only noted. Written by itself a chunk costs two syncs, one after the other,
+        // and a checkpoint saves a great many; the next sync writes all of them in a
+        // round whose syncs wait together. A later save of the chunk takes the place
         // of this one.
         let saved = Saved {
-            chunk: chunk.clone(),
-            manifest: manifest.encode(),
-            sections,
+            file: file.encode(),
+            chunk: file.chunk,
         };
         self.pending.insert(position, saved);
         Ok(())
@@ -240,40 +243,15 @@ impl Chunks for FileChunks {
         if pending.is_empty() {
             return Ok(());
         }
-        let disk = Arc::clone(&self.disk);
-
-        // Sections first: a manifest must never name a section that is not there.
-        let mut sections = Round::default();
-        let stored = self
-            .sections_to_store(&pending)
-            .and_then(|files| sections.put(disk.as_ref(), &files));
-        if let Err(error) = stored {
-            sections.withdraw(disk.as_ref());
-            // A section file that is there but perhaps not durably so would be taken
-            // for a stored one by the next chunk that has it, whose manifest could then
-            // name a section that a crash takes away. If it cannot be removed, it is
-            // remembered as that. No manifest names any of them yet.
-            for path in sections.placed {
-                if disk.remove(&path).is_err() {
-                    self.unsure.insert(path);
-                }
-            }
-            return Err(error.into());
-        }
-        for path in &sections.placed {
-            self.unsure.remove(path);
-        }
-
         let files: Vec<_> = pending
             .into_iter()
-            .map(|(position, saved)| (self.manifest_path(position), saved.manifest))
+            .map(|(position, saved)| (self.chunk_path(position), saved.file))
             .collect();
-        let mut manifests = Round::default();
-        if let Err(error) = manifests.put(disk.as_ref(), &files) {
-            manifests.withdraw(disk.as_ref());
-            // No section file is removed for it: every one of them is durable, and the
-            // manifests that were put in place before the failure name them. Such a
-            // manifest is whole, whether or not a crash keeps it.
+        let mut round = Round::default();
+        if let Err(error) = round.put(self.disk.as_ref(), &files) {
+            round.withdraw(self.disk.as_ref());
+            // Nothing that was put in place is taken back: such a file is whole and
+            // names nothing else, so it is right whether or not a crash keeps it.
             return Err(error.into());
         }
         Ok(())
@@ -294,6 +272,8 @@ pub(crate) enum Job {
     Save {
         position: ChunkPos,
         tick: u64,
+        /// The epoch the handle opened its region with.
+        epoch: u64,
         chunk: Chunk,
         peer: Arc<Peer>,
     },
@@ -320,6 +300,8 @@ pub(crate) enum Job {
     Restore {
         changes: Vec<(BlockPos, BlockState)>,
         tick: u64,
+        /// The epoch the region is opened with.
+        epoch: u64,
         peer: Arc<Peer>,
         opened: Opened,
         restored: Restored,
@@ -394,6 +376,7 @@ impl ChunkService {
             Job::Save {
                 position,
                 tick,
+                epoch,
                 chunk,
                 peer,
             } => {
@@ -401,7 +384,7 @@ impl ChunkService {
                 // that, and only once the commits before it were durable, so it holds
                 // nothing that a restored region does not know of. And it comes before
                 // whatever the next owner does with the chunk.
-                match self.chunks.save(position, tick, &chunk) {
+                match self.chunks.save(position, tick, epoch, &chunk) {
                     Ok(()) => {
                         self.saved.push(Arc::downgrade(&peer));
                         if self.chunks.pending() >= PENDING_LIMIT {
@@ -490,6 +473,7 @@ impl ChunkService {
             Job::Restore {
                 changes,
                 tick,
+                epoch,
                 peer,
                 opened,
                 restored,
@@ -500,6 +484,7 @@ impl ChunkService {
                     self.generator.as_ref(),
                     &changes,
                     tick,
+                    epoch,
                 )
                 // In the files before the region is handed over: a world whose chunk
                 // files cannot be written is then not opened, instead of being opened
@@ -520,9 +505,16 @@ impl ChunkService {
                 }
             }
             Job::Fold { changes, done } => {
-                // The tick of a saved chunk is only for whoever looks at the files.
-                let folded = apply(self.chunks.as_mut(), self.generator.as_ref(), &changes, 0)
-                    .and_then(|()| self.chunks.sync());
+                // The tick and the epoch of a saved chunk are only for whoever looks at
+                // the files, and no region saves these.
+                let folded = apply(
+                    self.chunks.as_mut(),
+                    self.generator.as_ref(),
+                    &changes,
+                    0,
+                    NO_REGION,
+                )
+                .and_then(|()| self.chunks.sync());
                 let _ = done.send(folded);
             }
             Job::Barrier { reply_to, answer } => {
@@ -551,7 +543,7 @@ impl ChunkService {
 }
 
 /// Applies block changes, in order, to the chunks they are in and saves those chunks as
-/// of `tick`.
+/// of `tick`, for the region opened with `epoch`.
 ///
 /// A chunk may have been saved with some of them in it already, or with all of them;
 /// applying all of them again in order ends in the same state, because each one sets a
@@ -561,6 +553,7 @@ pub(crate) fn apply(
     generator: &dyn ChunkGenerator,
     changes: &[(BlockPos, BlockState)],
     tick: u64,
+    epoch: u64,
 ) -> Result<(), StoreError> {
     let mut changed = BTreeMap::new();
     let mut unreadable = BTreeSet::new();
@@ -588,7 +581,7 @@ pub(crate) fn apply(
         chunk.set(x, position.y, z, *state);
     }
     for (position, chunk) in &changed {
-        chunks.save(*position, tick, chunk)?;
+        chunks.save(*position, tick, epoch, chunk)?;
     }
     Ok(())
 }

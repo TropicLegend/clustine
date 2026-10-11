@@ -118,13 +118,15 @@ simulation capacity. Two measures address this:
 What is implemented so far is specified in [world-format.md](world-format.md); this
 section describes where the format is going.
 
-- **Sections.** The unit of storage is a 16×16×16 section, palette-compressed and
-  compressed with zstd using trained dictionaries.
-- **Content addressing.** Sections are stored by hash and referenced from a per-chunk
-  manifest. Identical sections are stored once; snapshots and branches of a world copy
-  manifests, not data.
+- **Chunks.** The unit of storage is a chunk: one file with its sections in palettes,
+  its block entities, its light and what generation left for later, compressed with
+  zstd and checksummed. Sections are not stored by their hash: in real terrain no two
+  are equal, and a file for each would take six times the disk and run a volume out of
+  inodes (`docs/adr/0022-what-a-chunk-carries.md`, section 3).
+- **Snapshots and branches** of a world are not designed yet. They will have to copy
+  or link chunk files, since there are no manifests to copy in their place.
 - **Write-ahead log.** Each region appends its changes to a log, which is periodically
-  compacted into sections. This gives crash recovery, point-in-time restore and a block
+  compacted into chunks. This gives crash recovery, point-in-time restore and a block
   audit log.
 - **Backends.** Storage sits behind a trait: local filesystem first, then object storage
   with a metadata key-value store.

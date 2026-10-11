@@ -398,6 +398,13 @@ impl MemoryDisk {
         self.memory().operations
     }
 
+    /// The name of every file there is, for tests that hold the store to what it
+    /// leaves in a directory.
+    #[cfg(test)]
+    pub(crate) fn paths(&self) -> Vec<PathBuf> {
+        self.memory().names.keys().cloned().collect()
+    }
+
     /// What a machine that crashed now would find on restarting.
     #[cfg(test)]
     pub(crate) fn crashed(&self, survival: Survival) -> MemoryDisk {

@@ -517,7 +517,7 @@ async fn a_divided_world_survives_the_server_being_killed() {
 
     // The chunks were still loaded and no checkpoint was due, so nothing but the log
     // holds the changes.
-    assert!(!world.join("manifests/overworld").exists());
+    assert!(!world.join("chunks/overworld").exists());
     assert!(logged() > 0);
 
     let mut server = spawn_server(&address, &world, &divided).await;
