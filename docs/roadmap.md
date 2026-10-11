@@ -1098,6 +1098,45 @@ plans):
 The owner also asked for the work to go on without waiting for them: at each stop of M3
 what to try with real clients is written down here, and the next phase begins.
 
+### Where the work after M3 stands (2026-10-11)
+
+**Replicas, phase R1: a player's place is kept by the world store**
+([ADR-0020](adr/0020-one-stay-per-player.md)). Built and on `main`: the types (R1.0b),
+the codec and the comparisons with the official server (R1.0c), the store's part
+(R1.1), the simulation's (R1.2), the runner's (R1.3), the edge's (R1.4, with 39 tests
+written from the record by someone who had not seen the code, none of which found a
+fault), and the setting turned on (R1.5). Still to come: the bots and their ledger
+across a leave (R1.6), end-to-end tests from the record with two edges (R1.7), the
+notes in the earlier records (R1.8), and taking the setting itself away, which the
+simulation's and the runner's own tests still run both ways.
+
+What a player notices from here, and **what to try with a real client**
+(`cargo run --release -p clustine`; a world from an earlier build starts with
+everybody at the spawn point once, as the stored form changed):
+
+1. Walk some way from the spawn point, look at something, and leave. Join again: you
+   are where you left, looking the same way, with the same hotbar and slot.
+2. Double-tap jump to fly, rise a few blocks, leave in the air, join again: you are
+   in the air and still flying, and do not fall.
+3. Stop the server (Ctrl-C) while standing somewhere, start it, join: the same place.
+4. With a second client under the **same name** (offline mode, a second launcher
+   profile or instance with that name): the first client is put out with "You logged
+   in from another location" and the second stands where the first stood. Someone
+   watching with a third client sees one player throughout, never two.
+5. With `--pin 4 --reshape by-hand`, leave on the far side of the boundary at x = 64
+   and join again: you enter there, in the other region, without a visible detour
+   through the spawn point.
+
+**Terrain** ([plan](groundwork/terrain-plan.md)): the trials G0 to G3, the noise crate
+(T1), the emitted routers for all three dimensions (first part of T2), the light crate
+(W1) and the tables made from the jar (G6) are on `main`; nothing of it is in the
+running server yet, which still serves the flat world. Next are the chunk's new form
+(ADR-0022, steps C1 to C5), the biome source (T3) and the noise chunk (T4).
+
+**Pauses on network storage**: measured and written down
+([groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)); the runner's
+changes for fewer waits in turn are being built.
+
 ### Known limits after M3
 
 - One coordinator, nothing on disk; while it is down nothing is taken over, moved, merged
