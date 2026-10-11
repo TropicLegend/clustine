@@ -105,5 +105,9 @@ The tests that start clusters of processes run several at a time
   `/sys/devices/system/memory/hard_offline_page`, until the next boot. A failure that
   does not come again after that is still looked into, but compiler crashes and
   single wrong bits are the machine's. GitHub's machines are the judge then.
+- Run the comparisons with the official server on a quiet machine. Beside a full
+  check, the official server once sent a flat chunk before its lighting was done (a
+  light section of zeros where it otherwise says "empty"), and the flat comparison
+  failed; alone it passed three times in a row.
 - GitHub's job logs cannot be read without being signed in; the annotations of a check
   run can (`/repos/<owner>/<repo>/check-runs/<job id>/annotations`).
