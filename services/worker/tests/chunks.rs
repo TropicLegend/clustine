@@ -119,7 +119,6 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
-        place_by_store: false,
         lowest_y: -64,
     }
 }
@@ -227,8 +226,13 @@ impl World {
 
     fn open_returning_after(&mut self, ticks: u64) -> RegionRunner {
         let (handle, restored) = self.open_raw();
+        // The runner is told which region it runs, as a worker tells it: the store
+        // answers a join of someone who was in the world before with the region that
+        // held their place, and the home region places them itself where that is the
+        // home region (ADR-0020, section 4, step 7).
         RegionRunner::restore(config(ticks), handle, restored)
             .expect("what the store has is readable")
+            .with_id(self.region())
     }
 
     /// The neighbour, played by the test through a handle of its own.
@@ -280,14 +284,41 @@ struct Other {
 impl Other {
     /// Waits for the store's next answer. The store answers on threads of its own,
     /// whatever the runner under test does meanwhile.
+    ///
+    /// A `Dead` is passed over. The store says it to every region that runs when a
+    /// login raises a player's floor (ADR-0020, section 5, (A)), so it comes whenever
+    /// the region under test takes a join, and the region the test plays has no stay
+    /// that it could be about.
     fn reply(&self) -> StoreReply {
         for _ in 0..30_000 {
             match self.handle.try_reply() {
+                Some(StoreReply::Dead { .. }) => {}
                 Some(reply) => return reply,
                 None => thread::sleep(Duration::from_millis(1)),
             }
         }
         panic!("the store did not answer the region the test plays");
+    }
+
+    /// Waits until the store has told the region the test plays that the home region has
+    /// given `id` a new stay. The store says that to every region that runs, behind the
+    /// answers of the group that made the stay's note durable (ADR-0020, section 5, (A)),
+    /// so from then on the home region's handle has the answer its stay enters on, and
+    /// the next tick of the region under test takes it. That is how a test knows the
+    /// tick in which a player who joined enters the world.
+    fn hears_of_the_stay_of(&self, id: PlayerId) {
+        for _ in 0..30_000 {
+            match self.handle.try_reply() {
+                Some(StoreReply::Dead { stays }) => {
+                    if stays.iter().any(|(player, _, _)| *player == id) {
+                        return;
+                    }
+                }
+                Some(other) => panic!("expected word of a new stay, got {other:?}"),
+                None => thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        panic!("the store did not tell the region the test plays of the stay of {id:?}");
     }
 
     /// Claims `chunk`: `Ok` if it is granted, or the region the store says holds it.
@@ -2483,12 +2514,11 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
     let mut runner = world.open();
     let mut e = established(&mut runner, E, 5);
 
-    // Right after joining: the join and the dig are taken by one tick.
-    e.numbered(1, join(player(1)));
-    e.numbered(
-        2,
-        input(player(1), nth_entity(&runner, 1), 1, dig(BEYOND, 1)),
-    );
+    // Right after entering the world, before anything has asked about the chunk. The
+    // player has to be in the world for the dig to be theirs: a join places nobody, the
+    // store's answer to it does (ADR-0020, section 4).
+    let digger = join_and_wait(&mut runner, &mut e, 1, player(1));
+    e.numbered(2, input(player(1), digger, 1, dig(BEYOND, 1)));
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     let told = progress_to(&e.log, 2).expect("waited for it");
     let entries = outbox(&e.log);
@@ -2496,7 +2526,7 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
         matches!(
             entries.as_slice(),
             [(at, 1, Durable::Remote { action, to: None })]
-                if *action == breaking(player(1), nth_entity(&runner, 1), 1, BEYOND) && *at < told
+                if *action == breaking(player(1), digger, 1, BEYOND) && *at < told
         ),
         "{}",
         brief(&e.log)
@@ -2516,10 +2546,7 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
         Answer::Elsewhere(NEIGHBOUR)
     );
     let further = BEYOND.offset(0, 0, 1);
-    e.numbered(
-        3,
-        input(player(1), nth_entity(&runner, 1), 2, dig(further, 2)),
-    );
+    e.numbered(3, input(player(1), digger, 2, dig(further, 2)));
     wait_applied(&mut runner, &mut [&mut e], 0, 3);
     let told = progress_to(&e.log, 3).expect("waited for it");
     let entries = outbox(&e.log);
@@ -2527,7 +2554,7 @@ fn a_dig_in_the_other_stripe_is_passed_on_without_a_region_until_a_viewer_has_as
         matches!(
             entries.as_slice(),
             [_, (at, 2, Durable::Remote { action, to: Some(NEIGHBOUR) })]
-                if *action == breaking(player(1), nth_entity(&runner, 1), 2, further) && *at < told
+                if *action == breaking(player(1), digger, 2, further) && *at < told
         ),
         "{}",
         brief(&e.log)
@@ -2570,10 +2597,14 @@ fn a_hello_with_chunks_and_guests_in_both_stripes_holds_the_link_until_each_is_a
     let log = &e.log;
     let (entered, _) = spawned(log, player(1)).expect("waited for it");
     let shown = entity_spawn(log, player(1)).expect("the home chunk is served");
+    // A join places nobody by itself, so the player enters a few ticks after it was
+    // applied (ADR-0020, section 4). What shows that the join was held is the progress
+    // of the tick that applied it.
+    let join_applied = progress_to(log, 1).expect("the player entered the world");
     for chunk in [HOME, NEXT, OWN, OTHER] {
         let (answered, _) = answer_to(log, chunk, 0).expect("asserted above");
         assert!(
-            answered < shown && answered < entered,
+            answered < join_applied && answered < shown && answered < entered,
             "the join was applied before {chunk:?} was answered: {}",
             brief(log)
         );
@@ -2720,9 +2751,16 @@ fn an_edge_reset_for_a_lost_since_is_held_until_its_hello_is_answered_and_then_t
     assert_eq!(second.answers(OWN), vec![(0, Answer::Snapshot)]);
     assert_eq!(second.answers(OTHER), vec![(0, Answer::NotMine)]);
     let (entered, _) = spawned(log, player(2)).expect("waited for it");
+    // The player enters a few ticks after the join was applied (ADR-0020, section 4),
+    // so it is the progress of the join's tick that shows the join was held.
+    let join_applied = progress_to(log, 1).expect("asserted above");
     for chunk in [HOME, NEXT, OWN, OTHER] {
         let (answered, _) = answer_to(log, chunk, 0).expect("asserted above");
-        assert!(answered < entered, "{}", brief(log));
+        assert!(
+            answered < join_applied && answered < entered,
+            "{}",
+            brief(log)
+        );
     }
     first.drain();
     assert!(first.closed, "the edge's other link is closed");
@@ -2770,9 +2808,16 @@ fn a_chunk_of_a_hello_that_the_store_cannot_read_ends_the_hold_and_is_answered_w
     assert_eq!(e.answers(OTHER), vec![(0, Answer::NotMine)]);
     assert_eq!(e.answers(OWN), Vec::new(), "{}", brief(&e.log));
     let (entered, _) = spawned(&e.log, player(1)).expect("waited for it");
+    // The player enters a few ticks after the join was applied (ADR-0020, section 4),
+    // so it is the progress of the join's tick that shows the join was held.
+    let join_applied = progress_to(&e.log, 1).expect("the player entered the world");
     for chunk in [HOME, NEXT, OTHER] {
         let (answered, _) = answer_to(&e.log, chunk, 0).expect("asserted above");
-        assert!(answered < entered, "{}", brief(&e.log));
+        assert!(
+            answered < join_applied && answered < entered,
+            "{}",
+            brief(&e.log)
+        );
     }
     e.assert_answered(&[OWN]);
 
@@ -2913,6 +2958,9 @@ fn elsewhere_and_not_mine_come_at_their_place_in_their_tick_between_the_ticks_ar
 fn elsewhere_and_not_mine_come_at_their_place_in_their_tick_between_the_ticks_around_it_in(
     mut world: World,
 ) {
+    // The neighbour runs, so that the store tells it of every new stay, and the test
+    // knows by that when the store has answered a join.
+    let neighbour = world.neighbour();
     let mut runner = world.open();
     let mut believer = believing(&mut runner);
     let mut e = established(&mut runner, E, 5);
@@ -2920,14 +2968,19 @@ fn elsewhere_and_not_mine_come_at_their_place_in_their_tick_between_the_ticks_ar
     let walker = join_and_wait(&mut runner, &mut e, 2, player(3));
     wait_applied(&mut runner, &mut [&mut e, &mut believer], 0, 2);
 
-    // The tick before: a step.
+    // The tick before: a step, and the join of the player who enters the world in the
+    // tick in question. A join places nobody: the region names the stay in this tick's
+    // commit, and the tick that has the store's answer places the player (ADR-0020,
+    // section 4, steps 3 to 7). The store has given that answer once the neighbour is
+    // told of the stay.
     e.numbered(3, input(player(1), digger, 1, move_to(13.0)));
+    e.numbered(4, join(player(2)));
     let before = one_tick(&mut runner, &mut [&mut e, &mut believer]);
+    neighbour.hears_of_the_stay_of(player(2));
 
     // The tick in question takes all of this. It has a commit, events, a player who
     // enters the world, an action that is passed on, an acknowledgement, a departure,
     // and an answer to each of two subscriptions.
-    e.numbered(4, join(player(2)));
     e.numbered(5, input(player(1), digger, 2, dig(NEAR, 1)));
     e.numbered(6, input(player(1), digger, 3, dig(BEYOND, 2)));
     e.numbered(7, input(player(3), walker, 1, move_to(16.5)));
@@ -2946,7 +2999,7 @@ fn elsewhere_and_not_mine_come_at_their_place_in_their_tick_between_the_ticks_ar
     let fail = || brief(log);
     let (earlier, earlier_tick) =
         delta_with(log, moved_to(digger, 13.0)).unwrap_or_else(|| panic!("{}", fail()));
-    let earlier_told = progress_to(log, 3).unwrap_or_else(|| panic!("{}", fail()));
+    let earlier_told = progress_to(log, 4).unwrap_or_else(|| panic!("{}", fail()));
     let (delta, delta_tick) = delta_with(
         log,
         |event| matches!(event, RegionEvent::BlockChanged { position, .. } if *position == NEAR),
@@ -3113,12 +3166,20 @@ fn an_elsewhere_of_a_tick_without_a_commit_does_not_overtake_the_tick_before_it(
 fn an_elsewhere_of_a_tick_without_a_commit_does_not_overtake_the_tick_before_it_in(
     mut world: World,
 ) {
+    // The neighbour runs, so that the store tells it of every new stay, and the test
+    // knows by that when the store has answered a join.
+    let neighbour = world.neighbour();
     let mut runner = world.open();
     let mut believer = believing(&mut runner);
     let mut e = established(&mut runner, E, 5);
     settle(&mut runner, &mut [&mut e, &mut believer]);
 
+    // The tick before the one in question is the one in which the player enters the
+    // world, which has a commit: the tick after the store answered the join (ADR-0020,
+    // section 4, step 7).
     e.numbered(1, join(player(1)));
+    one_tick(&mut runner, &mut [&mut e, &mut believer]);
+    neighbour.hears_of_the_stay_of(player(1));
     let joined = one_tick(&mut runner, &mut [&mut e, &mut believer]);
     let elsewhere = e.subscribe(vec![NEXT]);
     let not_mine = e.subscribe_as_guest(vec![OTHER]);
@@ -3143,10 +3204,11 @@ fn an_elsewhere_of_a_tick_without_a_commit_does_not_overtake_the_tick_before_it_
     let (told_not_mine, _) = answer_to(log, OTHER, not_mine).expect("settled");
     let (step, step_tick) = delta_with(log, moved_to(entity, 13.0)).expect("waited for it");
     assert_eq!((shown_tick, step_tick), (joined, moved), "{}", brief(log));
+    // The join was applied in the tick that took it, a tick before the player entered.
     let order = [
+        joined_told,
         shown,
         entity_at,
-        joined_told,
         told_elsewhere,
         told_not_mine,
         step,
@@ -3174,13 +3236,17 @@ fn a_runner_whose_store_was_taken_after_the_tick_ran_sends_neither_its_elsewhere
     let mut e = established(&mut runner, E, 5);
     settle(&mut runner, &mut [&mut e, &mut believer]);
 
-    // The tick has a commit, because a player joins in it.
+    // The tick has a commit, because it takes a join, and the stay the region gives
+    // out for it is named to the store (ADR-0020, section 3). The player does not
+    // enter the world in it, so the progress that says the join is applied is what
+    // the tick has for the link besides the two answers.
     e.numbered(1, join(player(1)));
     let elsewhere = e.subscribe(vec![NEXT]);
     let not_mine = e.subscribe_as_guest(vec![OTHER]);
     one_tick(&mut runner, &mut [&mut e, &mut believer]);
     let nothing_of_the_tick = |link: &Link| {
         spawned(&link.log, player(1)).is_none()
+            && progress_to(&link.log, 1).is_none()
             && answer_to(&link.log, NEXT, elsewhere).is_none()
             && answer_to(&link.log, OTHER, not_mine).is_none()
     };

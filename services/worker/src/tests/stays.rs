@@ -1,7 +1,7 @@
 //! Tests of the runner's part of "one stay per player": step R1.3 of
-//! `docs/adr/0020-one-stay-per-player.md`. The setting `place_by_store` is on in every
-//! region here, and the world store is the real one: in memory, and on disk where a
-//! test says so, with the store stopped and started again where a test kills it.
+//! `docs/adr/0020-one-stay-per-player.md`. The world store is the real one: in memory,
+//! and on disk where a test says so, with the store stopped and started again where a
+//! test kills it.
 //!
 //! A test plays the edges. It steps the runners itself and reads what comes back, so
 //! every wait is a loop that steps until a message or a state is there. A gate before
@@ -35,12 +35,9 @@ const HOME_X: f64 = 9.5;
 /// How long a region of these tests keeps a chunk nothing uses: as the processes set it.
 const KEPT: u64 = DEFAULT_RETURN_AFTER;
 
-/// What a region is made with where the store keeps the players' places.
+/// What a region of these tests is made with.
 fn keeping() -> RegionConfig {
-    RegionConfig {
-        place_by_store: true,
-        ..config(KEPT)
-    }
+    config(KEPT)
 }
 
 /// How a test's world is divided.

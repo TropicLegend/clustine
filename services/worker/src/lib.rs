@@ -990,8 +990,7 @@ impl RegionRunner {
     /// A runner that was not told passes on whichever region the store names. For its
     /// own that means that the stay is let go to this very region without being
     /// placed, and comes back through its edge as an arrival. The store names a
-    /// region so only to the home region, and only where the store keeps the players'
-    /// places (`RegionConfig::place_by_store`). See
+    /// region so only to the home region. See
     /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 7.
     pub fn with_id(mut self, region: RegionId) -> Self {
         self.id = Some(region);
@@ -4043,7 +4042,6 @@ mod tests {
             spawn: SPAWN,
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
-            place_by_store: false,
             lowest_y: -64,
         }
     }
@@ -4066,18 +4064,24 @@ mod tests {
         }
     }
 
-    /// A runner for the region as `store` has it, without links.
+    /// A runner for the region as `store` has it, without links. It is told which
+    /// region it runs, as the runner of a home region has to be: the store names the
+    /// region that held a player's last place when they join again, and a runner that
+    /// does not know that this is its own would let the player go to it.
     fn opened(store: &Store, config: RegionConfig) -> RegionRunner {
         let (handle, restored) = store.open_region(owner()).unwrap();
-        RegionRunner::restore(config, handle, restored).unwrap()
+        let runner = RegionRunner::restore(config, handle, restored).unwrap();
+        runner.with_id(owner().region)
     }
 
     /// A runner as [`opened`] makes it, with a gate before its store.
     fn gated(store: &Store, config: RegionConfig) -> (RegionRunner, Arc<GateControl>) {
-        gated_as(store, owner(), config)
+        let (runner, gate) = gated_as(store, owner(), config);
+        (runner.with_id(owner().region), gate)
     }
 
-    /// A runner for the region that `hello` names, with a gate before its store.
+    /// A runner for the region that `hello` names, with a gate before its store. It is
+    /// not told which region it runs.
     fn gated_as(
         store: &Store,
         hello: RegionHello,
@@ -4295,6 +4299,50 @@ mod tests {
         panic!("the condition never became true");
     }
 
+    /// Waits, without running a tick, until the store has said of every stay the region
+    /// holds as entering that it may enter, or that it is dead: the coming tick places
+    /// each, or removes it. The store answers on a thread of its own, behind the answer
+    /// to the commit that named the stay (ADR-0020, section 4, steps 5 and 6).
+    fn wait_for_the_stays(runner: &mut RegionRunner) {
+        for _ in 0..20_000 {
+            runner.take_replies();
+            runner.publish_committed();
+            let entering = runner.region().state().entering;
+            let answered = entering.iter().all(|(player, stay)| {
+                let entered = runner.inputs.entered.iter();
+                let mut dead = runner.inputs.dead.iter();
+                // The store also names the stays that a join has replaced, the lower
+                // ones of the player, to every region: that is not an answer for the
+                // stay that joined.
+                entered
+                    .filter(|answer| answer.player == *player)
+                    .any(|answer| answer.entity == stay.entity_id)
+                    || dead.any(|(of, above, _)| of == player && stay.entity_id < *above)
+            });
+            if answered {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the store did not answer for a stay that is entering");
+    }
+
+    /// Runs the tick that takes the joins that have arrived, and waits for the store's
+    /// answers to it. A join places nobody: the region holds the stay as entering and
+    /// names it to the store, and the tick after this one places the player. What a
+    /// test sends before that tick is taken in the tick the player enters in.
+    fn take_joins(runner: &mut RegionRunner) {
+        step(runner);
+        wait_for_the_stays(runner);
+    }
+
+    /// Runs the two ticks of a login for the joins that have arrived: the one that
+    /// takes them and the one that places the players, with the store's answer between.
+    fn step_in(runner: &mut RegionRunner) {
+        take_joins(runner);
+        step(runner);
+    }
+
     /// Steps `runner` until `edge` has been sent something, and returns that.
     fn step_for(runner: &mut RegionRunner, edge: &mut TestEdge) -> WorkerToEdge {
         for _ in 0..2000 {
@@ -4434,7 +4482,8 @@ mod tests {
             .await
             .unwrap();
         step_until(&mut runner, |runner| {
-            runner.region().loaded_chunk_count() == 1
+            let region = runner.region();
+            region.player(player()).is_some() && region.loaded_chunk_count() == 1
         });
         step(&mut runner);
         received(&mut edge);
@@ -4481,7 +4530,8 @@ mod tests {
             .await
             .unwrap();
         step_until(&mut runner, |runner| {
-            runner.region().loaded_chunk_count() == 1
+            let region = runner.region();
+            region.player(player()).is_some() && region.loaded_chunk_count() == 1
         });
         step(&mut runner);
         let seen = received(&mut edge);
@@ -4671,13 +4721,17 @@ mod tests {
         }
     }
 
-    /// Joins a player, subscribes to the chunk they stand in and waits until it is loaded.
+    /// Joins a player, subscribes to the chunk they stand in and waits until the player
+    /// has entered the world and the chunk is loaded.
     async fn joined(edge: &TestEdge, runner: &mut RegionRunner) {
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(asking_for(vec![ChunkPos::new(0, 0)]))
             .await
             .unwrap();
-        step_until(runner, |runner| runner.region().loaded_chunk_count() == 1);
+        step_until(runner, |runner| {
+            let region = runner.region();
+            region.player(player()).is_some() && region.loaded_chunk_count() == 1
+        });
     }
 
     /// A changed chunk that nobody needs any more is stored, and comes back changed.
@@ -5039,8 +5093,11 @@ mod tests {
         let mut runner = west(worker_end);
         look_east(&mut runner, &mut edge);
         edge.send(join(player(), "Notch")).await.unwrap();
+        take_joins(&mut runner);
+        // The step is taken in the tick the player enters in.
         edge.send(walk(player(), 14.5)).await.unwrap();
         step(&mut runner);
+        assert_eq!(x_of(&runner, player()), Some(14.5));
         assert_eq!(outbox(&runner, &edge), (0, vec![]));
         received(&mut edge);
 
@@ -5118,10 +5175,12 @@ mod tests {
         edge.try_send(join(player(), "Notch")).unwrap();
         edge.try_send(asking_for(square(1))).unwrap();
 
-        // The tick has run when it turns out that the player cannot be told that they
-        // entered the world. They stay; the chunks are let go with the next tick.
-        step(&mut runner);
+        // The tick that took the join has run when it turns out that the edge cannot
+        // be told of it. The player enters the world all the same, in the tick that has
+        // the store's answer, and stays; the chunks are let go with the next tick.
+        take_joins(&mut runner);
         assert!(runner.links.is_empty());
+        step(&mut runner);
         assert_eq!(runner.region().player_count(), 1);
         step_until(&mut runner, |runner| {
             runner.region().loaded_chunk_count() == 0
@@ -5199,13 +5258,13 @@ mod tests {
         let entity = |runner: &RegionRunner| Some(runner.region().player(player())?.0);
 
         first.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         assert_eq!(entity(&runner), Some(EntityId(1)));
 
         // The new entity does not take the step that came through the first link.
         first.send(walk(player(), 3.0)).await.unwrap();
         second.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         assert_eq!(
             runner.region().player(player()),
             Some((EntityId(2), Pose::at(SPAWN)))
@@ -5242,7 +5301,7 @@ mod tests {
         // the link they belong to ends within the same tick.
         first.send(join(player(), "Notch")).await.unwrap();
         drop(second);
-        step(&mut runner);
+        step_in(&mut runner);
         assert_eq!(runner.links.len(), 1);
         assert_eq!(entity(&runner), Some(EntityId(3)));
     }
@@ -5260,7 +5319,7 @@ mod tests {
         };
 
         owner.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         stranger.send(walk(player(), 5.0)).await.unwrap();
         stranger.send(leave()).await.unwrap();
         step(&mut runner);
@@ -5282,7 +5341,7 @@ mod tests {
         let (edge, worker_end) = in_process(256);
         let mut runner = runner(worker_end);
         edge.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
 
         edge.send(walk_as(player(), 900, 3.0)).await.unwrap();
         edge.send(EdgeToWorker::PlayerLeave {
@@ -5293,7 +5352,7 @@ mod tests {
         .await
         .unwrap();
         edge.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         assert_eq!(
             runner.region().player(player()),
             Some((EntityId(2), Pose::at(SPAWN)))
@@ -5389,7 +5448,8 @@ mod tests {
             edge.send(subscribe()).await.unwrap();
             other.send(subscribe()).await.unwrap();
             step_until(&mut runner, |runner| {
-                runner.region().chunk(origin).is_some()
+                let region = runner.region();
+                region.player(player()).is_some() && region.chunk(origin).is_some()
             });
             edge.send(walk(player(), 14.5)).await.unwrap();
             step_until(&mut runner, |runner| {
@@ -5538,7 +5598,7 @@ mod tests {
         first.send(join(player(), "Notch")).await.unwrap();
         first.send(leave()).await.unwrap();
         first.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         second
             .send(EdgeToWorker::PlayerArrive {
                 player: player(),
@@ -5647,10 +5707,11 @@ mod tests {
         let mut runner = RegionRunner::with_store(region, Box::new(store));
         runner.links().attach(worker_end);
 
+        // The refusal is of the tick that took the joins. The player who was given the
+        // one id enters the world a tick later, when the store has answered.
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(join(other_player(), "Jeb")).await.unwrap();
-        step(&mut runner);
-        let told = received(&mut edge);
+        take_joins(&mut runner);
         let refused = WorkerToEdge::Outbox {
             number: 1,
             entry: Durable::Refused {
@@ -5658,8 +5719,15 @@ mod tests {
                 attempt: attempt_of(other_player()),
             },
         };
+        assert_eq!(received(&mut edge), [refused]);
+        step(&mut runner);
+        let told = received(&mut edge);
         assert!(
-            matches!(&told[..], [WorkerToEdge::ToPlayer { .. }, last] if *last == refused),
+            matches!(
+                &told[..],
+                [WorkerToEdge::ToPlayer { player: entered, event: PlayerEvent::Spawned { .. } }]
+                    if *entered == player()
+            ),
             "{told:?}"
         );
     }
@@ -5758,50 +5826,61 @@ mod tests {
         let (mut edge, worker_end) = in_process(256);
         let (mut runner, gate) = gated(&memory(), config(0));
         runner.links().attach(worker_end);
+
+        // The player has entered the world before the store's answers are held back:
+        // the store's word that they may enter comes behind the answer to the commit
+        // of their join, so no tick places them while that answer is out.
+        edge.send(join(player(), "Notch")).await.unwrap();
+        step_in(&mut runner);
+        let before = runner.region().tick_number();
+        let told = edge.everything();
+        assert_eq!(told[0], UNKNOWN);
+        assert!(
+            told.iter().any(|message| matches!(
+                message,
+                WorkerToEdge::ToPlayer {
+                    event: PlayerEvent::Spawned { .. },
+                    ..
+                }
+            )),
+            "{told:?}"
+        );
         gate.hold();
 
         // Each tick has something of the player's to apply, so each is to be committed.
-        edge.send(join(player(), "Notch")).await.unwrap();
         for tick in 1..=20 {
+            edge.send(walk(player(), tick as f64)).await.unwrap();
             runner.step();
-            let ran = tick.min(MAX_TICKS_AHEAD as u64);
+            let ran = before + tick.min(MAX_TICKS_AHEAD as u64);
             assert_eq!(runner.region().tick_number(), ran);
             assert_eq!(runner.status().tick.load(Ordering::Relaxed), ran);
-            edge.send(walk(player(), tick as f64)).await.unwrap();
         }
         // The store has every one of them on disk, and still nobody is told anything.
         wait_for_kept(&mut runner, &gate, MAX_TICKS_AHEAD);
         runner.step();
-        assert_eq!(gate.commits(), (1..=8).collect::<Vec<_>>());
-        assert_eq!(runner.region().tick_number(), 8);
+        assert_eq!(gate.commits(), (1..=before + 8).collect::<Vec<_>>());
+        assert_eq!(runner.region().tick_number(), before + 8);
         assert_eq!(edge.everything(), []);
-        // Not even the player's position, which is seven steps along.
-        assert_eq!(x_of(&runner, player()), Some(7.0));
+        // Not even the player's position, which is eight steps along.
+        assert_eq!(x_of(&runner, player()), Some(8.0));
 
         // Once the commits are answered, everything arrives in the order it happened,
         // and the region goes on with what has come in meanwhile.
         gate.release();
         step(&mut runner);
-        assert_eq!(runner.region().tick_number(), 9);
+        assert_eq!(runner.region().tick_number(), before + 9);
         assert_eq!(x_of(&runner, player()), Some(20.0));
         let told = but_for_moves(edge.everything());
-        assert_eq!(told[0], UNKNOWN);
-        assert!(matches!(
-            told[1],
-            WorkerToEdge::ToPlayer {
-                event: PlayerEvent::Spawned { .. },
-                ..
-            }
-        ));
-        let applied: Vec<_> = told[2..]
+        let applied: Vec<_> = told
             .iter()
             .map(|message| match message {
                 WorkerToEdge::Progress { applied, .. } => *applied,
                 other => panic!("expected progress, got {other:?}"),
             })
             .collect();
-        // The join and seven steps in a tick each, then the other thirteen in one.
-        assert_eq!(applied, [1, 2, 3, 4, 5, 6, 7, 8, 21]);
+        // The join was the edge's first message. Eight steps in a tick each, then the
+        // other twelve in one.
+        assert_eq!(applied, [2, 3, 4, 5, 6, 7, 8, 9, 21]);
     }
 
     /// A tick in which nothing changed but its number is not worth a commit. It counts
@@ -5821,8 +5900,12 @@ mod tests {
         assert_eq!(gate.commits(), [1]);
 
         // Behind a tick that is not confirmed, ticks that changed nothing wait as well,
-        // and count towards how far ahead the region may be.
+        // and count towards how far ahead the region may be. The tick that takes a join
+        // names the stay to the store, which is a change; the store's word that the
+        // player may enter comes behind the answer to that commit and is held back
+        // with it, so no later tick has anything to do.
         gate.hold();
+        gate.hold_stays();
         edge.send(join(player(), "Notch")).await.unwrap();
         let before = runner.region().tick_number();
         runner.step();
@@ -5835,21 +5918,34 @@ mod tests {
         assert_eq!(gate.commits(), [1, before + 1]);
         assert_eq!(edge.everything(), []);
 
+        // A join tells its edge nothing but that it was applied.
         gate.release();
         step(&mut runner);
         let told = edge.everything();
         assert!(
-            matches!(
-                told[..],
-                [
-                    WorkerToEdge::TickDelta { .. },
-                    WorkerToEdge::ToPlayer { .. },
-                    WorkerToEdge::Progress { applied: 1, .. },
-                ]
-            ),
+            matches!(told[..], [WorkerToEdge::Progress { applied: 1, .. }]),
             "{told:?}"
         );
         assert_eq!(gate.commits(), [1, before + 1]);
+
+        // The tick that places the player changes the region, and is committed.
+        gate.release_stays();
+        step_until(&mut runner, |runner| {
+            runner.region().player(player()).is_some()
+        });
+        let entered = runner.region().tick_number();
+        assert_eq!(gate.commits(), [1, before + 1, entered]);
+        let told = edge.everything();
+        assert!(
+            matches!(
+                told[..],
+                [WorkerToEdge::ToPlayer {
+                    event: PlayerEvent::Spawned { .. },
+                    ..
+                }]
+            ),
+            "{told:?}"
+        );
     }
 
     /// The owner of a region dies after the store has a tick and before any edge has
@@ -5864,7 +5960,7 @@ mod tests {
         look_east(&mut runner, &mut edge);
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(join(other_player(), "Jeb")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         let entity = runner.region().player(other_player()).unwrap().0;
         edge.everything();
 
@@ -5953,6 +6049,8 @@ mod tests {
         first.links().attach(worker_end);
         look_east(&mut first, &mut edge);
         edge.send(join(player(), "Notch")).await.unwrap();
+        take_joins(&mut first);
+        // The step is taken in the tick the player enters in.
         edge.send(walk(player(), 14.5)).await.unwrap();
         step(&mut first);
         // A block beyond the region, which leaves an entry in the outbox.
@@ -6022,15 +6120,17 @@ mod tests {
             later.send(later.hello(0, &[], &[])).await.unwrap();
             later.send(join(player(), "Notch")).await.unwrap();
             if stepped {
-                step(&mut runner);
+                step_in(&mut runner);
             }
 
+            // The later start's player has entered the world by the end, whichever
+            // tick took their join.
             let (edge_end, worker_end) = link::in_process(256);
             let mut earlier = TestEdge::silent(edge_end, id, 3);
             runner.links().attach(worker_end);
             earlier.send(earlier.hello(0, &[], &[])).await.unwrap();
             earlier.send(join(other_player(), "Jeb")).await.unwrap();
-            step(&mut runner);
+            step_in(&mut runner);
 
             let superseded = WorkerToEdge::Welcome(Welcome::Superseded);
             assert_eq!(earlier.everything(), [superseded]);
@@ -6057,6 +6157,8 @@ mod tests {
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(join(third_player(), "Dinnerbone")).await.unwrap();
         stranger.send(join(other_player(), "Jeb")).await.unwrap();
+        take_joins(&mut runner);
+        // The step is taken in the tick the players enter in.
         edge.send(walk(player(), 14.5)).await.unwrap();
         step(&mut runner);
         // Two entries: a block beyond the region, then a step beyond it.
@@ -6145,7 +6247,8 @@ mod tests {
         old.send(join(player(), "Notch")).await.unwrap();
         watcher.send(asking_for(vec![ORIGIN])).await.unwrap();
         step_until(&mut runner, |runner| {
-            runner.region().loaded_chunk_count() == 1
+            let region = runner.region();
+            region.player(player()).is_some() && region.loaded_chunk_count() == 1
         });
         step(&mut runner);
         received(&mut watcher);
@@ -6198,7 +6301,7 @@ mod tests {
 
         // The later start numbers from 1.
         new.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         assert_eq!(runner.region().player_count(), 1);
         assert_eq!(runner.region().edge(id).unwrap().applied, 1);
     }
@@ -6230,7 +6333,7 @@ mod tests {
         );
 
         edge.send_as(1, join(other_player(), "Jeb")).await;
-        step(&mut runner);
+        step_in(&mut runner);
         assert_eq!(runner.region().player_count(), 1);
         assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 1);
         // From here on its numbers have to follow each other again.
@@ -6246,9 +6349,21 @@ mod tests {
         let (edge_end, worker_end) = link::in_process(256);
         let mut edge = TestEdge::silent(edge_end, EdgeId::from_name("holding"), 1);
         let mut runner = runner(worker_end);
+        // A player arrives and digs in the tick they arrive in. One who joins is placed
+        // only when the store has answered, a tick or more after the join is taken.
+        let entity = EntityIds::block(3).unwrap().first;
+        let arriving = PlayerTransfer {
+            pose: Pose::at(SPAWN),
+            ..transfer(entity)
+        };
         edge.send(edge.hello(0, &[], &[ORIGIN])).await.unwrap();
-        edge.send(join(player(), "Notch")).await.unwrap();
-        edge.send(dig(1)).await.unwrap();
+        edge.send(EdgeToWorker::PlayerArrive {
+            player: player(),
+            transfer: arriving,
+        })
+        .await
+        .unwrap();
+        edge.send(of_entity(entity, dig(1))).await.unwrap();
         // An ordinary subscription holds nothing, but it waits its turn behind the rest.
         edge.send(asking_for(vec![ChunkPos::new(0, 1)]))
             .await
@@ -6277,8 +6392,8 @@ mod tests {
         let told = edge.everything();
         let place = |wanted: fn(&WorkerToEdge) -> bool| told.iter().position(wanted).unwrap();
         let shown = place(|message| matches!(message, WorkerToEdge::ChunkSnapshot { .. }));
-        let entered = place(|message| matches!(message, WorkerToEdge::ToPlayer { .. }));
-        assert!(shown < entered, "{told:?}");
+        let acknowledged = place(|message| matches!(message, WorkerToEdge::ToPlayer { .. }));
+        assert!(shown < acknowledged, "{told:?}");
         assert_eq!(told[0], UNKNOWN);
     }
 
@@ -6307,8 +6422,8 @@ mod tests {
         runner.links().attach(worker_end);
         second.send(second.hello(0, &[], &[ORIGIN])).await.unwrap();
         second.send_as(1, join(player(), "Notch")).await;
-        second.send_as(2, walk(player(), 3.0)).await;
         step_until(&mut runner, |runner| runner.region().player_count() == 1);
+        second.send_as(2, walk(player(), 3.0)).await;
         step(&mut runner);
         assert_eq!(x_of(&runner, player()), Some(3.0));
         let state = runner.region().state();
@@ -6331,6 +6446,8 @@ mod tests {
         let beside = ChunkPos::new(0, 1);
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(join(other_player(), "Jeb")).await.unwrap();
+        take_joins(&mut runner);
+        // The step is taken in the tick the players enter in.
         edge.send(walk(player(), 14.5)).await.unwrap();
         edge.send(asking_for(vec![ORIGIN])).await.unwrap();
         // Another edge has the chunk beside loaded, so that this one is shown it in the
@@ -6340,11 +6457,14 @@ mod tests {
             runner.region().loaded_chunk_count() == 2
         });
         step(&mut runner);
+        assert_eq!(x_of(&runner, player()), Some(14.5));
+        // A third player has joined, and the store has said that they may enter.
+        edge.send(join(third_player(), "Dinnerbone")).await.unwrap();
+        take_joins(&mut runner);
         edge.everything();
 
-        // All in one tick: a third player joins; the first breaks a block beyond the
-        // region; the second breaks one of the region's and steps out of it.
-        edge.send(join(third_player(), "Dinnerbone")).await.unwrap();
+        // All in one tick: the third player enters the world; the first breaks a block
+        // beyond the region; the second breaks one of the region's and steps out of it.
         edge.send(dig_by(player(), 16, 5)).await.unwrap();
         edge.send(dig_by(other_player(), 1, 6)).await.unwrap();
         edge.send(walk(other_player(), 20.0)).await.unwrap();
@@ -6401,9 +6521,22 @@ mod tests {
         assert_eq!(other.everything(), [unknown, progress(0, vec![])]);
 
         edge.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        take_joins(&mut runner);
         let told = edge.everything();
         assert_eq!(told.last(), Some(&progress(1, vec![])));
+        // The tick in which the player enters the world took nothing of the edge's.
+        step(&mut runner);
+        let told = edge.everything();
+        assert!(
+            matches!(
+                told[..],
+                [WorkerToEdge::ToPlayer {
+                    event: PlayerEvent::Spawned { .. },
+                    ..
+                }]
+            ),
+            "{told:?}"
+        );
 
         let aside = walk(player(), 3.0);
         let EdgeToWorker::Input { number, .. } = aside else {
@@ -6543,7 +6676,7 @@ mod tests {
         assert_eq!(unread.welcomed, Some(again));
         // What it sends from 1 is taken.
         unread.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         assert!(runner.region().player(player()).is_some());
 
         // One that says since when is resumed, and its player is there.
@@ -6574,7 +6707,7 @@ mod tests {
         let (mut edge, worker_end) = in_process(256);
         let mut runner = runner(worker_end);
         edge.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         edge.everything();
         let Some(Welcome::Unknown { since, .. }) = edge.welcomed else {
             panic!("{:?}", edge.welcomed);
@@ -6620,7 +6753,7 @@ mod tests {
         assert!(removed, "{told:?}");
         // What the edge numbers from 1 is taken.
         lost.send(join(other_player(), "Alex")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         assert!(runner.region().player(other_player()).is_some());
         assert_eq!(runner.region().edge(edge.edge).unwrap().applied, 1);
     }
@@ -6641,19 +6774,14 @@ mod tests {
         // The edge looks at two chunks of the neighbour, and the store says whose they
         // are before anyone does anything about them.
         let neighbours = [BESIDE, ChunkPos::new(2, 0)];
-        let output = region.tick(&TickInputs {
+        let mut inputs = TickInputs {
             edges: vec![EdgeEvent::Started { edge, start: 3 }],
             tickets_added: neighbours.map(|chunk| (chunk, Ticket::Viewer)).to_vec(),
             ..TickInputs::default()
-        });
-        assert_eq!(output.claims, neighbours);
-        let mut inputs = TickInputs {
-            applied: vec![(edge, 2)],
-            foreign: neighbours.map(|chunk| (chunk, EAST)).to_vec(),
-            ..TickInputs::default()
         };
+        // Two join in the first tick, which holds their stays as entering and names
+        // them to the store. The second of them stays, so that the state has a player.
         inputs.change(join);
-        // One who stays, so that the state has a player.
         inputs.change(PlayerChange::Join(
             edge,
             PlayerJoin {
@@ -6662,6 +6790,29 @@ mod tests {
                 attempt: 22,
             },
         ));
+        let output = region.tick(&inputs);
+        assert_eq!(output.claims, neighbours);
+        // The two who joined have the first two ids of the block.
+        let (first, second) = (ids.first, EntityId(ids.first.0 + 1));
+        let entering = |player, entity| clustine_sim::StayNote::Entering { player, entity };
+        assert_eq!(
+            output.stays,
+            [entering(player(), first), entering(other_player(), second)]
+        );
+        // The store has no place for either, and says so before the second tick, which
+        // puts them into the world at the spawn point.
+        let nowhere = |player, entity| Entered {
+            player,
+            entity,
+            place: None,
+            holder: None,
+        };
+        let mut inputs = TickInputs {
+            applied: vec![(edge, 2)],
+            foreign: neighbours.map(|chunk| (chunk, EAST)).to_vec(),
+            entered: vec![nowhere(player(), first), nowhere(other_player(), second)],
+            ..TickInputs::default()
+        };
         // One who arrives for a chunk of the neighbour and is sent on to it, which is
         // an outbox entry: a `NotMine`.
         let beyond = Vec3::new(40.5, -60.0, 0.5);
@@ -6684,8 +6835,6 @@ mod tests {
             rotation: None,
             on_ground: true,
         };
-        // The two who join in this tick get the first two ids of the block.
-        let (first, second) = (ids.first, EntityId(ids.first.0 + 1));
         inputs.input(edge, player(), first, 1, walk(beyond.x));
         // The one who stays walks up to the neighbour and breaks a block of it, which
         // is passed on: a `Remote`.
@@ -6710,8 +6859,8 @@ mod tests {
         // (ADR-0014, section 9): they are put behind the others by hand, into the
         // state's outbox and among what the delta adds, so that the delta still
         // turns the state before the tick into this one. So are the entry for a stay
-        // that the server ended and a stay that is entering, which no tick makes yet
-        // either (ADR-0020, "Building it").
+        // that the server ended and a stay that is entering, neither of which this tick
+        // made (ADR-0020, sections 4 and 6).
         let (mut state, mut delta) = (region.state(), output.delta);
         let entering = clustine_sim::EnteringState {
             entity_id: EntityId(78),
@@ -6766,7 +6915,10 @@ mod tests {
     /// Format 5 has the same bytes as format 4. The number was raised because a state
     /// of format 4 has stays the world store has no record of, which a build that
     /// keeps the players' places with the store cannot take up (ADR-0020, "Building
-    /// it").
+    /// it"). The state written down is the one it was. The delta is of another tick
+    /// than before, in the same shape: a tick that places two players whose joins the
+    /// tick before took gives out no entity id and says that two entering stays are
+    /// no more, where one tick used to take a join and place the player.
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
@@ -6790,16 +6942,17 @@ mod tests {
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00050201060210000000000000000000000000000000010010000000000000000000000000000000",
-                "02010404416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
-                "01000000000000000000000200070000000107010301020600000601040010000000000000000000",
-                "000000000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f00",
-                "00000000000000000000000000000000000005020101170102021000000000000000000000000000",
-                "00000204120020790001010300100000000000000000000000000000000102055374657665000000",
-                "00004044400000000000004ec0000000000000e03f00000000000000000100000000000000000000",
-                "010100000104050104060201030506090110000000000000000000000000000000039a0101170607",
-                "10000000000000000000000000000000039801011801100000000000000000000000000000000301",
-                "9c01034a65620719",
+                "00050200021000000000000000000000000000000001001000000000000000000000000000000002",
+                "010404416c65780000000000002d400000000000004ec0000000000000e03f000000000000000001",
+                "00000000000000000000020007000000010701030102060000060104001000000000000000000000",
+                "0000000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f0000",
+                "00000000000000000000000000000000000502010117010202100000000000000000000000000000",
+                "00020412002079000101030010000000000000000000000000000000010205537465766500000000",
+                "004044400000000000004ec0000000000000e03f0000000000000000010000000000000000000001",
+                "0100000104050104060201030506090110000000000000000000000000000000039a010117060710",
+                "00000000000000000000000000000003980101180310000000000000000000000000000000010010",
+                "00000000000000000000000000000002001000000000000000000000000000000003019c01034a65",
+                "620719",
             )
         );
     }
@@ -6956,6 +7109,7 @@ mod tests {
             look_east(&mut first, &mut edge);
             joined(&edge, &mut first).await;
             edge.send(join(other_player(), "Jeb")).await.unwrap();
+            take_joins(&mut first);
             edge.send(dig(1)).await.unwrap();
             edge.send(walk(player(), 14.5)).await.unwrap();
             step(&mut first);
@@ -7413,8 +7567,15 @@ mod tests {
             links.attach(worker_end);
             edge.send(join(player(), "Notch")).await.unwrap();
             edge.send(asking_for(vec![ORIGIN])).await.unwrap();
-            // A player acts on a chunk they have been shown.
-            while !matches!(next(&mut edge).await, WorkerToEdge::ChunkSnapshot { .. }) {}
+            // A player who has entered the world acts on a chunk they have been shown.
+            let (mut entered, mut shown) = (false, false);
+            while !(entered && shown) {
+                match next(&mut edge).await {
+                    WorkerToEdge::ToPlayer { .. } => entered = true,
+                    WorkerToEdge::ChunkSnapshot { .. } => shown = true,
+                    _ => {}
+                }
+            }
             edge.send(dig_by(player(), 1, 9)).await.unwrap();
             let acknowledged = PlayerEvent::Acknowledged { sequence: 9 };
             loop {
@@ -7585,19 +7746,22 @@ mod tests {
         }
 
         /// A runner for `region` as the store has it, opened with `epoch`, that gives a
-        /// chunk back as soon as nothing uses it.
+        /// chunk back as soon as nothing uses it and is told which region it runs.
         fn runner(&self, region: RegionId, epoch: u64) -> RegionRunner {
             let (handle, restored) = self.open(region, epoch);
-            RegionRunner::restore(config(0), handle, restored).unwrap()
+            let runner = RegionRunner::restore(config(0), handle, restored).unwrap();
+            runner.with_id(region)
         }
 
-        /// A runner for `region` as its first owner, with a gate before its store.
+        /// A runner for `region` as its first owner, with a gate before its store,
+        /// that is told which region it runs.
         fn gated(
             &self,
             region: RegionId,
             config: RegionConfig,
         ) -> (RegionRunner, Arc<GateControl>) {
-            gated_as(&self.store, self.hello(region, 1), config)
+            let (runner, gate) = gated_as(&self.store, self.hello(region, 1), config);
+            (runner.with_id(region), gate)
         }
     }
 
@@ -7613,6 +7777,10 @@ mod tests {
         for _ in 0..20_000 {
             match handle.try_reply() {
                 Some(StoreReply::Claimed { granted, foreign }) => return (granted, foreign),
+                // The store tells every region that is open which stays a join has
+                // replaced (ADR-0020, section 5). A test that plays a region through
+                // its handle has nobody, and passes the word over.
+                Some(StoreReply::Dead { .. }) => {}
                 Some(other) => panic!("the store answered a claim with {other:?}"),
                 None => thread::sleep(Duration::from_millis(1)),
             }
@@ -8273,7 +8441,8 @@ mod tests {
         edge.send(join(other_player(), "Jeb")).await.unwrap();
         edge.send(walk(player(), 16.5)).await.unwrap();
         step_until(&mut runner, |runner| {
-            runner.region().knowledge(BESIDE) == Knowledge::Held
+            let region = runner.region();
+            region.player(other_player()).is_some() && region.knowledge(BESIDE) == Knowledge::Held
         });
         assert_eq!(status.crowds(), [(ORIGIN, 1), (BESIDE, 1)]);
         assert_eq!(status.held.load(Ordering::Relaxed), 2);
@@ -8535,25 +8704,37 @@ mod tests {
             let (mut runner, gate) = world.gated(RegionId(0), config(0));
             runner.links().attach(worker_end);
             step(&mut runner);
+            // Two players join. The first has entered the world. Of the second the
+            // region has the store's answer to the commit of the join, and not yet its
+            // word that they may enter, which comes behind that answer.
+            edge.send(join(player(), "Notch")).await.unwrap();
+            step_in(&mut runner);
+            gate.hold_stays();
+            edge.send(join(other_player(), "Jeb")).await.unwrap();
+            step(&mut runner);
             edge.everything();
 
             // A tick with a commit, in which the region asks about the chunk.
             gate.hold();
-            edge.send(join(player(), "Notch")).await.unwrap();
+            edge.send(walk(player(), 3.0)).await.unwrap();
             edge.send(asking_for(vec![BESIDE])).await.unwrap();
             runner.step();
+            assert_eq!(x_of(&runner, player()), Some(3.0));
             // The store's answer is there, and the tick that takes it has a commit of
-            // its own.
+            // its own: the second player enters the world in it.
+            gate.release_stays();
             for _ in 0..20_000 {
                 assert!(runner.take_replies());
-                if !runner.inputs.foreign.is_empty() {
+                if !runner.inputs.foreign.is_empty() && !runner.inputs.entered.is_empty() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(1));
             }
-            edge.send(join(other_player(), "Jeb")).await.unwrap();
+            // And something of the edge's to apply, so that it has progress to tell.
+            edge.send(walk(player(), 4.0)).await.unwrap();
             runner.step();
             assert_eq!(runner.region().knowledge(BESIDE), Knowledge::Foreign(EAST));
+            assert_eq!(runner.region().player_count(), 2);
             wait_for_kept(&mut runner, &gate, 2);
             let early = edge.everything();
             assert!(early.is_empty(), "{early:?}");
@@ -8562,6 +8743,10 @@ mod tests {
                 log.iter().position(|message| {
                     matches!(message, WorkerToEdge::ToPlayer { player, .. } if *player == who)
                 })
+            };
+            let stepped = |log: &[WorkerToEdge]| {
+                log.iter()
+                    .position(|message| matches!(message, WorkerToEdge::TickDelta { .. }))
             };
             let elsewhere = WorkerToEdge::Elsewhere {
                 chunk: BESIDE,
@@ -8578,12 +8763,7 @@ mod tests {
                     .rposition(|message| matches!(message, WorkerToEdge::Progress { .. }));
                 // Behind everything of the tick before, and in its own tick behind who
                 // entered the world and before the progress.
-                let order = [
-                    entered(&log, player()),
-                    entered(&log, other_player()),
-                    told,
-                    progress,
-                ];
+                let order = [stepped(&log), entered(&log, other_player()), told, progress];
                 assert!(order.iter().all(Option::is_some), "{log:?}");
                 assert!(order.is_sorted(), "{order:?} in {log:?}");
             } else {
@@ -8840,7 +9020,7 @@ mod tests {
         let (other, other_end) = in_process(256);
         runner.links().attach(other_end);
         other.send(join(other_player(), "Jeb")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         edge.send(asking_for(vec![WEST_OF_HOME])).await.unwrap();
         edge.send(walk(player(), 3.0)).await.unwrap();
         other
@@ -8920,8 +9100,9 @@ mod tests {
                 let entity = match answer {
                     Presence::Present { entity, .. } => Some(*entity),
                     Presence::Absent => None,
-                    // Only where the store keeps the players' places, which the tests
-                    // of `stays` are about and have a reading of their own for.
+                    // Only while a stay waits for the store's answer. The tests that
+                    // read presences here say hello when their players have entered;
+                    // those of `stays` have a reading of their own for the rest.
                     Presence::Entering { .. } => panic!("no region here says {answer:?}"),
                 };
                 Some((*player, entity))
@@ -8948,7 +9129,7 @@ mod tests {
             .send(join(third_player(), "Dinnerbone"))
             .await
             .unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         let applied = first.sent.load(Ordering::Relaxed);
 
         // A hello that names neither.
@@ -9031,7 +9212,7 @@ mod tests {
         let (first, first_end) = in_process(256);
         let mut runner = runner(first_end);
         first.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
 
         let (end, worker_end) = link::in_process(256);
         let mut again = first.again(end, &runner);
@@ -9066,7 +9247,7 @@ mod tests {
         let mut runner = runner(worker_end);
         let status = runner.status();
         edge.send(join(player(), "Notch")).await.unwrap();
-        step(&mut runner);
+        step_in(&mut runner);
         assert_eq!(runner.region().player(player()).unwrap().0, EntityId(1));
 
         let arrive = |entity| EdgeToWorker::PlayerArrive {
@@ -9750,13 +9931,19 @@ mod tests {
         step(west);
         assert_eq!(west.region().tick_number(), stalled.tick + 1);
         assert_eq!(x_of(west, player()), Some(20.0));
-        assert_eq!(west.region().player_count(), 2);
+        // The join is taken too: the region holds the stay as entering, and has named
+        // it to the store.
+        assert!(west.region().entering_state(other_player()).is_some());
         assert_eq!(stalled.gate.commits().last(), Some(&(stalled.tick + 1)));
         // What the edges were told is what ticks tell: no entry of a merge.
         let told = stalled.edge.everything();
         assert_eq!(entries(&told), []);
         assert_eq!(moves(&told).last(), Some(&20.0));
         assert!(stalled.second.everything().contains(&UNKNOWN));
+        // The player enters the world in the tick that has the store's answer.
+        wait_for_the_stays(west);
+        step(west);
+        assert!(west.region().player(other_player()).is_some());
     }
 
     /// Two players of one edge in the western stripe: [`player`] where players enter
@@ -9765,6 +9952,8 @@ mod tests {
     async fn two_players_apart(runner: &mut RegionRunner, edge: &mut TestEdge) {
         edge.send(join(player(), "Notch")).await.unwrap();
         edge.send(join(other_player(), "Jeb")).await.unwrap();
+        take_joins(runner);
+        // The step is taken in the tick the players enter in.
         edge.send(asking_for(vec![ORIGIN, WEST_OF_HOME, FAR_WEST]))
             .await
             .unwrap();
@@ -10847,6 +11036,7 @@ mod tests {
         two_players_apart(&mut west, &mut edge).await;
         let further = ChunkPos::new(-4, 0);
         edge.send(join(third_player(), "Dinnerbone")).await.unwrap();
+        take_joins(&mut west);
         edge.send(asking_for(vec![further])).await.unwrap();
         edge.send(walk(third_player(), -60.5)).await.unwrap();
         step_until(&mut west, |runner| {

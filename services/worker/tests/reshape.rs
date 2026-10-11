@@ -150,7 +150,6 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
-        place_by_store: false,
         lowest_y: -64,
     }
 }
@@ -280,8 +279,13 @@ impl World {
 
     fn open_returning_after(&mut self, region: RegionId, ticks: u64) -> RegionRunner {
         let (handle, restored) = self.open_raw(region);
+        // The runner is told which region it runs, as a worker tells it: the store
+        // answers a join of someone who was in the world before with the region that
+        // held their place, and the home region places them itself where that is the
+        // home region (ADR-0020, section 4, step 7).
         RegionRunner::restore(config(ticks), handle, restored)
             .expect("what the store has is readable")
+            .with_id(region)
     }
 
     /// Plays the worker that is told to absorb `region`, which its owner has let go
@@ -307,7 +311,8 @@ impl World {
         let (handle, _) = self
             .open_with(region, as_epoch)
             .expect("the epoch of the split opens the part");
-        RegionRunner::of_part(part, handle)
+        // Told which region it runs, as a worker tells every runner.
+        RegionRunner::of_part(part, handle).with_id(region)
     }
 
     fn list(&self) -> RegionList {
@@ -1270,6 +1275,11 @@ fn entries(log: &[WorkerToEdge]) -> Vec<(u64, Durable)> {
 
 /// The presence answers on a link in the order they came: each player with the
 /// entity of a `Present`, or `None` for an `Absent`.
+///
+/// A region answers `Entering` for a player the hello names whose join it has taken
+/// and whom the store has not yet let enter (ADR-0020, section 4.2). That is neither
+/// of the two, and every list a test here holds these answers to is of stays that have
+/// an entity or are not there, so such an answer fails the test where it is read.
 fn presences(log: &[WorkerToEdge]) -> Vec<(PlayerId, Option<EntityId>)> {
     log.iter()
         .filter_map(|message| match message {
@@ -1278,8 +1288,11 @@ fn presences(log: &[WorkerToEdge]) -> Vec<(PlayerId, Option<EntityId>)> {
                 match answer {
                     Presence::Present { entity, .. } => Some(*entity),
                     Presence::Absent => None,
-                    // The store does not keep the players' places in these tests.
-                    Presence::Entering { .. } => panic!("no region here says {answer:?}"),
+                    Presence::Entering { .. } => panic!(
+                        "{answer:?} of {player:?}, where a test expects a stay with an entity \
+                         or none: {}",
+                        brief(log)
+                    ),
                 },
             )),
             _ => None,
@@ -1821,13 +1834,21 @@ fn a_move_behind_a_subscribe_that_waits_is_applied_at_once_in(mut world: World) 
         Answer::Snapshot
     );
     sync(&mut runner, &mut [&mut e], 0);
+    // The join was applied in the tick that took it, which the progress below shows.
+    // The player enters the world when the store has said where, and that is in no
+    // order with the chunk the subscribe waits for (ADR-0020, section 4).
+    run_until(
+        &mut runner,
+        &mut [&mut e],
+        "the player who joined entering the world",
+        |_, links| spawned(&links[0].log, player(2)).is_some(),
+    );
 
     let log = &e.log;
     let (shot, _, _) = snapshot(log, BACK, ask).expect("waited for it");
     let (stepped, tick) = moved(log, entity, 2.5).expect("the step is applied");
     assert_eq!(tick, before + 1, "not in the tick that took it");
     assert!(stepped < shot, "{}", brief(log));
-    assert!(spawned(log, player(2)).expect("joined").0 < shot);
     assert!(progress_to(log, joined).expect("applied") < shot);
 }
 
@@ -1977,6 +1998,7 @@ fn behind_a_held_dig_everything_of_its_link_waits_and_nothing_of_another_link_do
         assert!(shot < at, "{what} did not wait: {}", brief(log));
     }
     assert!(progress_to(log, dug).expect("applied") > shot);
+    assert!(progress_to(log, joined).expect("applied") > shot);
     // The other link's step was taken by the very next tick, and this link saw it,
     // as it sees the home chunk, before its own chunk came.
     let (others, tick) = moved(log, other, 12.5).expect("the other link's step is seen");
@@ -5810,7 +5832,8 @@ fn a_link_after_a_merge(world: World, crash: bool) -> Run {
     if crash {
         let (handle, restored) = pair.world.open_raw(A);
         pair.a = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
-            .expect("what the store has is readable");
+            .expect("what the store has is readable")
+            .with_id(A);
     }
     let mut again = Link::attach(&pair.a).after(pair.to_a.sent);
     again.hello(hello_to_a(&pair.to_a));
@@ -5853,10 +5876,12 @@ fn links_after_a_split(world: World, crash: bool) -> Run {
         drop(part);
         let (handle, restored) = whole.world.open_raw(A);
         whole.a = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
-            .expect("what the store has is readable");
+            .expect("what the store has is readable")
+            .with_id(A);
         let (handle, restored) = whole.world.open_raw(n);
         RegionRunner::restore(config(RETURN_AFTER), handle, restored)
             .expect("what the store has is readable")
+            .with_id(n)
     } else {
         whole.world.run_part(n, as_epoch, part)
     };
@@ -5984,7 +6009,8 @@ struct Edge {
     players: BTreeMap<PlayerId, Stay>,
     /// The regions that were absorbed, each with the region it stands for (rule 39).
     stands_for: BTreeMap<RegionId, RegionId>,
-    /// The players the edge gave up: a test fails on any.
+    /// The players the edge gave up, and those whose stay it was told the server has
+    /// ended: a test fails on any.
     lost: Vec<PlayerId>,
 }
 
@@ -6179,14 +6205,23 @@ impl Edge {
                     }
                 }
             }
+            // Only the answer to this connection's join enters the player: the view
+            // has no entity and the attempt is its own (ADR-0020, section 4.1). The edge
+            // of these tests has one connection for each player, with the attempt that
+            // `join` names.
             WorkerToEdge::ToPlayer {
                 player,
-                event: PlayerEvent::Spawned { entity_id, .. },
+                event:
+                    PlayerEvent::Spawned {
+                        entity_id,
+                        attempt: of,
+                        ..
+                    },
             } => {
                 let Some(stay) = self.players.get_mut(&player) else {
                     return;
                 };
-                if stay.entity.is_none() && stay.region == region {
+                if stay.entity.is_none() && stay.region == region && of == attempt(player) {
                     stay.entity = Some(entity_id);
                     for (number, step) in stay.inputs.clone() {
                         self.tell(region, input(player, entity_id, number, step));
@@ -6227,18 +6262,21 @@ impl Edge {
 
     fn entry(&mut self, region: RegionId, number: u64, entry: Durable) {
         match entry {
-            // Rule 18.
+            // Rule 18. A stay that was let go before the edge was told its entity is
+            // the edge's as well, if the transfer has the attempt of the view's join and
+            // the view is under the region that says so (ADR-0020, section 4.3, path
+            // 3): the edge notes the entity, and goes on as for any departure.
             Durable::Departed {
                 player,
                 transfer,
                 to,
             } => {
                 let to = self.living(to);
-                let Some(stay) = self
-                    .players
-                    .get_mut(&player)
-                    .filter(|stay| stay.entity == Some(transfer.entity_id))
-                else {
+                let own_join = transfer.attempt == Some(attempt(player));
+                let Some(stay) = self.players.get_mut(&player).filter(|stay| {
+                    stay.entity == Some(transfer.entity_id)
+                        || (stay.entity.is_none() && stay.region == region && own_join)
+                }) else {
                     let position = transfer.pose.position;
                     self.tell(
                         to,
@@ -6249,6 +6287,7 @@ impl Edge {
                     );
                     return;
                 };
+                stay.entity = Some(transfer.entity_id);
                 stay.region = to;
                 stay.inputs
                     .retain(|(number, _)| *number > transfer.last_input);
@@ -6317,13 +6356,21 @@ impl Edge {
                 players,
             } => {
                 let part = self.living(part);
-                for (player, entity, _) in players {
+                for (player, entity, of) in players {
                     let coming_back = self.port(region).kept.iter().any(|(_, body)| {
                         matches!(body, EdgeToWorker::PlayerArrive { player: who, .. } if *who == player)
                     });
                     let Some(stay) = self.players.get_mut(&player) else {
                         continue;
                     };
+                    // A view without an entity whose join began the stay goes under the
+                    // part and nothing else: it sees nothing yet, and the part's
+                    // presence answer enters the player (ADR-0020, section 4.3, path 2).
+                    if stay.entity.is_none() && stay.region == region && of == Some(attempt(player))
+                    {
+                        stay.region = part;
+                        continue;
+                    }
                     if stay.entity != Some(entity) || stay.region != region || coming_back {
                         continue;
                     }
@@ -6335,23 +6382,68 @@ impl Edge {
                     self.look(part, view);
                 }
             }
+            // The server has ended a stay, because a later one of the player took its
+            // place (ADR-0020, section 6, rule 5). If it is the stay of the edge's view,
+            // by its entity or, for a view without one, by the attempt of its join, the
+            // connection is ended, and the leave goes to the view's region as for any
+            // connection that ends. Otherwise it is of a connection the edge has ended
+            // itself.
+            Durable::Ended {
+                player,
+                entity,
+                attempt: of,
+            } => {
+                let Some(stay) = self.players.get(&player) else {
+                    return;
+                };
+                let own = match stay.entity {
+                    Some(has) => has == entity,
+                    None => of == Some(attempt(player)),
+                };
+                if own {
+                    let (under, named) = (stay.region, stay.entity);
+                    self.players.remove(&player);
+                    self.lost.push(player);
+                    self.tell(under, leave(player, named));
+                }
+            }
             _ => {}
         }
     }
 
-    /// Rule 38.
+    /// Rule 38, with what ADR-0020 says of a view that has no entity yet (sections 4.2
+    /// and 4.3, paths 1 and 1a).
     fn presence(&mut self, region: RegionId, player: PlayerId, answer: Presence) {
         match answer {
             Presence::Present {
-                entity, last_input, ..
+                entity,
+                last_input,
+                attempt: of,
+                ..
             } => {
+                // A join the edge still keeps for this region will be answered by
+                // itself: a stay of another attempt, or of none, is then left alone.
+                let joining = self.port(region).kept.iter().any(|(_, body)| {
+                    matches!(body, EdgeToWorker::PlayerJoin(join) if join.player == player)
+                });
                 let Some(stay) = self
                     .players
                     .get_mut(&player)
-                    .filter(|stay| stay.entity.is_none_or(|has| has == entity))
+                    .filter(|stay| match stay.entity {
+                        Some(has) => has == entity,
+                        // A stay with the attempt of the view's join is that join's,
+                        // whatever region says so.
+                        None => of == Some(attempt(player)),
+                    })
                 else {
-                    // A stay the edge does not have: that is the stay to end.
-                    self.tell(region, leave(player, Some(entity)));
+                    let waits = self
+                        .players
+                        .get(&player)
+                        .is_some_and(|stay| stay.entity.is_none() && stay.region == region);
+                    if !(waits && joining) {
+                        // A stay the edge does not have: that is the stay to end.
+                        self.tell(region, leave(player, Some(entity)));
+                    }
                     return;
                 };
                 stay.entity = Some(entity);
@@ -6368,9 +6460,14 @@ impl Edge {
                     self.look(region, view);
                 }
             }
-            // No region here says it: the store does not keep the players' places in
-            // these tests. An edge that hears it of a player who is entering goes on
-            // waiting, and does nothing otherwise (ADR-0020, section 4.2).
+            // The region holds the stay of a join as entering: the store has not yet
+            // answered it. A view without an entity that is under this region and has
+            // that attempt goes on waiting, which for this edge is to do nothing: it
+            // has no patience to lose, and the `Spawned` or the `Departed` that follows
+            // enters the player. In every other case an edge does nothing either
+            // (ADR-0020, section 4.2). Such a view is never among those a welcome
+            // brought, since the home region is never absorbed, so it is not judged
+            // absent when the welcome is through.
             Presence::Entering { .. } => {}
             Presence::Absent => {
                 let here = self
@@ -7487,7 +7584,19 @@ fn after_a_merge_a_join_replaces_the_stay_that_came_with_it_and_what_names_the_o
     );
     let stay = pair.a.region().state().players[&player(2)].clone();
     assert_eq!((stay.entity_id, stay.last_input), (new, 0));
-    assert_eq!(stay.pose.position, SPAWN);
+    // The new stay begins where the store has the player: at the place of the stay it
+    // replaces, which the absorbed region wrote and the survivor named again in its
+    // first tick after the merge (ADR-0020, sections 3 and 4, step 7).
+    assert_eq!(stay.pose.position, Vec3::new(17.5, FEET, 8.5));
+    // The edge of the stay that was there is told that the server ended it (rule 5).
+    assert!(
+        outbox(&again.log).iter().any(|(_, _, entry)| matches!(
+            entry,
+            Durable::Ended { player: who, entity, .. } if *who == player(2) && *entity == pair.two
+        )),
+        "{}",
+        brief(&again.log)
+    );
 
     // What the edge kept of the earlier stay and sends now, and the new stay's first.
     again.next(input(player(2), pair.two, 4, move_to(18.5)));

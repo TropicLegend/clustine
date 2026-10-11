@@ -401,8 +401,8 @@ mod tests {
 
     use super::*;
     use crate::api::{
-        HOTBAR_SLOTS, ItemStack, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin,
-        PlayerTransfer, Pose, RegionEvent, TickInputs, TickOutput, Ticket,
+        HOTBAR_SLOTS, ItemStack, PlayerChange, PlayerInput, PlayerJoin, PlayerTransfer, Pose,
+        RegionEvent, TickInputs, TickOutput, Ticket,
     };
     use crate::region::{Knowledge, RegionConfig};
 
@@ -422,7 +422,6 @@ mod tests {
             spawn: SPAWN,
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
-            place_by_store: false,
             lowest_y: -64,
         }
     }
@@ -644,14 +643,15 @@ mod tests {
                 attempt: 41,
             },
         );
-        let output = merged_region.tick(&TickInputs {
+        merged_region.tick(&TickInputs {
             player_changes: vec![join],
             ..TickInputs::default()
         });
-        assert!(matches!(
-            output.player_events.as_slice(),
-            [(_, PlayerEvent::Spawned { entity_id, .. })] if *entity_id == merged.next_entity_id
-        ));
+        // The stay has its entity from the join, before the store has said where the
+        // player enters.
+        let given = merged_region.entering_state(player(8));
+        let given = given.map(|entering| entering.entity_id);
+        assert_eq!(given, Some(merged.next_entity_id));
     }
 
     #[test]

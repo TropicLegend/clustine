@@ -201,13 +201,10 @@ pub enum PlayerChange {
     /// place of the copy that is there, and nothing is reported removed, as the entity
     /// lives on. See `docs/adr/0020-one-stay-per-player.md`, section 6.
     ///
-    /// Where the world store keeps the players' places
-    /// ([`RegionConfig::place_by_store`]), an arrival is also passed over if the region
-    /// holds a later stay of the player as entering, and whoever loses to a later stay
-    /// has their edge told with [`Durable::Ended`]: the edge of the stay that was
-    /// there, or the edge an arrival that is passed over came through.
-    ///
-    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
+    /// An arrival is also passed over if the region holds a later stay of the player
+    /// as entering, and whoever loses to a later stay has their edge told with
+    /// [`Durable::Ended`]: the edge of the stay that was there, or the edge an arrival
+    /// that is passed over came through.
     ///
     /// A player who arrives in a chunk the region believes another to hold is not taken
     /// in: the arrival goes on to that region with a [`Durable::NotMine`]. Not so in
@@ -417,15 +414,11 @@ pub enum Durable {
     /// server: a later stay of the player took its place. `attempt` is that of the
     /// stay's join, as long as the stay had it.
     ///
-    /// Made only where the world store keeps the players' places
-    /// ([`RegionConfig::place_by_store`]), by every removal of a stay that its own edge
-    /// did not ask for: a join or an arrival over a stay that is there, an arrival
-    /// that is passed over for a later stay, an entering stay that is placed or let go
-    /// over a present one, and the store's word that a stay is dead. Not by a leave,
-    /// nor for an edge that is gone or reset. See
-    /// `docs/adr/0020-one-stay-per-player.md`, section 6.
-    ///
-    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
+    /// Made by every removal of a stay that its own edge did not ask for: a join or
+    /// an arrival over a stay that is there, an arrival that is passed over for a
+    /// later stay, an entering stay that is placed or let go over a present one, and
+    /// the store's word that a stay is dead. Not by a leave, nor for an edge that is
+    /// gone or reset. See `docs/adr/0020-one-stay-per-player.md`, section 6.
     Ended {
         player: PlayerId,
         entity: EntityId,
@@ -545,20 +538,16 @@ pub struct TickInputs {
     ///   without being placed, with a [`Durable::Departed`] whose transfer has one
     ///   hand-over and the attempt of the join.
     ///
-    /// Passed over as a whole where the store does not keep the players' places
-    /// ([`RegionConfig::place_by_store`]). See
-    /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 7.
+    /// See `docs/adr/0020-one-stay-per-player.md`, section 4, step 7.
     ///
     /// [`RegionConfig::lowest_y`]: crate::RegionConfig::lowest_y
-    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
     pub entered: Vec<Entered>,
     /// Of each player named, a stay below `(entity, hops)` is dead: one with a lower
     /// entity id, or that stay with fewer hand-overs. Such a stay that the region has
     /// is removed, and so is one with a lower entity id that it holds as entering;
     /// its entity is reported removed if it had been shown, and its edge is told with
-    /// [`Durable::Ended`]. Nothing of an entry is kept after the tick. Passed over
-    /// where the store does not keep the players' places. See section 5 of the same
-    /// record.
+    /// [`Durable::Ended`]. Nothing of an entry is kept after the tick. See section 5
+    /// of the same record.
     pub dead: Vec<(PlayerId, EntityId, u32)>,
 }
 
@@ -757,12 +746,10 @@ pub struct TickOutput {
     ///   [`Region::restore`], after a merge or after a split: a note for every stay
     ///   the region has, changed or not.
     ///
-    /// None for a player who was removed. None at all where the store does not keep
-    /// the players' places ([`RegionConfig::place_by_store`]). A tick with notes is to
-    /// be committed whatever else it changed. See
-    /// `docs/adr/0020-one-stay-per-player.md`, section 3.
+    /// None for a player who was removed. A tick with notes is to be committed
+    /// whatever else it changed. See `docs/adr/0020-one-stay-per-player.md`,
+    /// section 3.
     ///
     /// [`Region::restore`]: crate::Region::restore
-    /// [`RegionConfig::place_by_store`]: crate::RegionConfig::place_by_store
     pub stays: Vec<StayNote>,
 }

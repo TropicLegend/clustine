@@ -30,9 +30,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use clustine_data::{BlockState, blocks, items};
 use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent};
 use clustine_sim::{
-    Durable, EdgeEvent, EdgeState, Holdings, Knowledge, Misdirected, NoSplit, PlayerChange,
-    PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig, RegionState, Sides,
-    Splitting, TickInputs, TickOutput, Ticket,
+    Durable, EdgeEvent, EdgeState, Entered, Holdings, Knowledge, Misdirected, NoSplit,
+    PlayerChange, PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig,
+    RegionState, Sides, Splitting, StayNote, TickInputs, TickOutput, Ticket,
 };
 use clustine_world::{
     Biome, BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId,
@@ -78,7 +78,6 @@ fn config(return_after: u64) -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after,
-        place_by_store: false,
         lowest_y: -64,
     }
 }
@@ -147,6 +146,23 @@ fn granted(chunks: &[ChunkPos]) -> TickInputs {
         granted: chunks.to_vec(),
         ..TickInputs::default()
     }
+}
+
+/// What the world store answers the entering stays a tick named, for players it has no
+/// place for: each may enter, and so does at the spawn point. The store answers the
+/// commit of the tick, so the answers are inputs of the region's next tick (ADR-0020,
+/// section 4, steps 5 to 7).
+fn store_answers(output: &TickOutput) -> Vec<Entered> {
+    let answer = |note: &StayNote| match note {
+        StayNote::Entering { player, entity } => Some(Entered {
+            player: *player,
+            entity: *entity,
+            place: None,
+            holder: None,
+        }),
+        StayNote::Has { .. } => None,
+    };
+    output.stays.iter().filter_map(answer).collect()
 }
 
 /// Storage delivers the chunks, each a column of stone.
@@ -1523,7 +1539,6 @@ fn run_config() -> RegionConfig {
         spawn: ENTRANCE,
         starting_hotbar: hotbar(),
         return_after: 0,
-        place_by_store: false,
         lowest_y: -64,
     }
 }
@@ -1680,6 +1695,7 @@ impl Site {
             && next.granted.is_empty()
             && next.foreign.is_empty()
             && next.chunks_loaded.is_empty()
+            && next.entered.is_empty()
     }
 }
 
@@ -1969,6 +1985,7 @@ impl Cluster {
         site.next.granted.extend(granted);
         site.next.foreign.extend(foreign);
         site.next.chunks_loaded.extend(deliveries);
+        site.next.entered.extend(store_answers(output));
         for (edge, number, _) in &output.durable {
             site.next.edges.push(EdgeEvent::Confirmed {
                 edge: *edge,
@@ -2312,6 +2329,7 @@ impl One {
         );
         self.next.granted = output.claims.clone();
         self.next.chunks_loaded = delivered(&output.chunk_requests).chunks_loaded;
+        self.next.entered = store_answers(&output);
         for (id, sequence) in acknowledged(&output) {
             let highest = self.dealt_with.entry(id).or_insert(sequence);
             *highest = (*highest).max(sequence);

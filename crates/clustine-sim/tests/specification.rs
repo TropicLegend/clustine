@@ -14,8 +14,9 @@ use clustine_sim::api::{
     Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
 };
 use clustine_sim::{
-    Durable, EdgeEvent, EdgeState, Holdings, Knowledge, Misdirected, PlayerChange, PlayerEvent,
-    PlayerJoin, PlayerTransfer, Region, RegionConfig, RegionState, TickInputs, TickOutput, Ticket,
+    Durable, EdgeEvent, EdgeState, Entered, Holdings, Knowledge, Misdirected, PlayerChange,
+    PlayerEvent, PlayerJoin, PlayerTransfer, Region, RegionConfig, RegionState, TickInputs,
+    TickOutput, Ticket,
 };
 use clustine_world::{
     Biome, BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId,
@@ -58,7 +59,6 @@ fn config_a() -> RegionConfig {
         spawn: Vec3::new(14.5, 64.0, 8.5),
         starting_hotbar: hotbar(),
         return_after: 0,
-        place_by_store: false,
         lowest_y: -64,
     }
 }
@@ -81,7 +81,6 @@ fn config_b() -> RegionConfig {
         spawn: Vec3::new(24.5, 64.0, 8.5),
         starting_hotbar: hotbar(),
         return_after: 0,
-        place_by_store: false,
         lowest_y: -64,
     }
 }
@@ -116,8 +115,33 @@ fn ids() -> EntityIds {
     EntityIds::block(3).expect("block 3 exists")
 }
 
-/// Advances the region by one tick and checks what section 2 says of every tick.
+/// `inputs` with what the world store answers the notes of the stays `region` holds as
+/// entering, for players it has no place for: each may enter, and so does at the spawn
+/// point. The store answers the commit of the tick that took the join, so its answer
+/// is an input of the tick after (ADR-0020, section 4, steps 5 to 7).
+fn with_the_stores_answers(region: &Region, inputs: &TickInputs) -> TickInputs {
+    let mut inputs = inputs.clone();
+    let state = region.state();
+    let answers = state.entering.iter().map(|(player, entering)| Entered {
+        player: *player,
+        entity: entering.entity_id,
+        place: None,
+        holder: None,
+    });
+    inputs.entered.extend(answers);
+    inputs
+}
+
+/// A tick in which nothing comes in but the store's answers: the tick in which those
+/// who joined in the tick before enter the world.
+fn enter(region: &mut Region) -> TickOutput {
+    checked_tick(region, &TickInputs::default())
+}
+
+/// Advances the region by one tick, in which it hears the store's answers to the joins
+/// of the tick before, and checks what section 2 says of every tick.
 fn checked_tick(region: &mut Region, inputs: &TickInputs) -> TickOutput {
+    let inputs = &with_the_stores_answers(region, inputs);
     let before = region.state();
     let output = region.tick(inputs);
     let after = region.state();
@@ -416,6 +440,7 @@ fn handing_over() -> (Region, EntityId) {
             join(F, player(3)),
         ]),
     );
+    enter(&mut region);
     let departing = entity_of(&region, player(2));
     let output = checked_tick(
         &mut region,
@@ -516,6 +541,7 @@ fn entries_after_a_reset_are_numbered_from_one() {
     let (mut region, _) = handing_over();
     checked_tick(&mut region, &edges(vec![started(E, 20)]));
     checked_tick(&mut region, &changes(vec![join(E, player(1))]));
+    enter(&mut region);
     let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
@@ -694,6 +720,7 @@ fn an_edge_started_again_after_it_was_gone_starts_from_nothing() {
         })
     );
     checked_tick(&mut region, &changes(vec![join(E, player(1))]));
+    enter(&mut region);
     let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
@@ -747,6 +774,11 @@ fn one_player() -> Region {
     let mut region = loaded(config_a(), CHUNK_A);
     checked_tick(&mut region, &edges(vec![started(E, 10), started(F, 10)]));
     let output = checked_tick(&mut region, &changes(vec![join(E, player(1))]));
+    assert!(
+        output.player_events.is_empty(),
+        "the store has yet to answer"
+    );
+    let output = enter(&mut region);
     assert!(matches!(
         output.player_events.as_slice(),
         [(p, PlayerEvent::Spawned { .. })] if *p == player(1)
@@ -765,6 +797,8 @@ fn a_join_through_another_edge_replaces_the_player() {
         vec![old],
         "the old entity is reported removed"
     );
+    // The new stay is shown in the tick that hears the store's answer.
+    let output = enter(&mut region);
     let new = entity_of(&region, player(1));
     assert_eq!(
         spawned(&output),
@@ -796,6 +830,8 @@ fn a_join_through_the_same_edge_begins_a_new_stay_too() {
         vec![old],
         "the old entity is reported removed"
     );
+    // The new stay is shown in the tick that hears the store's answer.
+    let output = enter(&mut region);
     let new = entity_of(&region, player(1));
     assert_eq!(new, before.next_entity_id, "with the next id");
     assert_eq!(
@@ -854,6 +890,7 @@ fn a_leave_of_a_player_the_edge_was_never_told_had_spawned_removes_them() {
     let mut region = loaded(config_a(), CHUNK_A);
     checked_tick(&mut region, &edges(vec![started(E, 10)]));
     checked_tick(&mut region, &changes(vec![join(E, player(1))]));
+    enter(&mut region);
     let entity = entity_of(&region, player(1));
     let output = checked_tick(&mut region, &changes(vec![leave(E, player(1))]));
     assert_eq!(removed(&output), vec![entity]);
@@ -869,6 +906,7 @@ fn a_leave_of_the_earlier_connection_after_a_rejoin_in_the_same_tick_is_ignored(
         &mut region,
         &changes(vec![join(F, player(1)), leave(E, player(1))]),
     );
+    let entering = enter(&mut region);
     assert!(
         region.player(player(1)).is_some(),
         "the new connection stays"
@@ -876,6 +914,7 @@ fn a_leave_of_the_earlier_connection_after_a_rejoin_in_the_same_tick_is_ignored(
     assert_eq!(edge_of(&region, player(1)), F);
     let entity = entity_of(&region, player(1));
     assert!(!removed(&output).contains(&entity));
+    assert!(!removed(&entering).contains(&entity));
 }
 
 #[test]
@@ -887,6 +926,7 @@ fn a_leave_and_a_rejoin_through_the_same_edge_in_one_tick_enter_the_player_anew(
         &changes(vec![leave(E, player(1)), join(E, player(1))]),
     );
     assert!(removed(&output).contains(&old));
+    let output = enter(&mut region);
     assert_eq!(edge_of(&region, player(1)), E);
     assert!(
         output
@@ -979,6 +1019,7 @@ fn departed_goes_to_the_outbox_of_the_players_edge() {
     let mut region = loaded(config_a(), CHUNK_A);
     checked_tick(&mut region, &edges(vec![started(E, 10), started(F, 10)]));
     checked_tick(&mut region, &changes(vec![join(F, player(1))]));
+    enter(&mut region);
     let entity = entity_of(&region, player(1));
     let output = checked_tick(
         &mut region,
@@ -1344,6 +1385,7 @@ fn a_player_who_enters_anew_starts_with_nothing_handled() {
     );
     assert_eq!(region.state().players[&player(1)].handled, Some(40));
     checked_tick(&mut region, &changes(vec![join(F, player(1))]));
+    enter(&mut region);
     assert_eq!(region.state().players[&player(1)].handled, None);
     let anew = entity_of(&region, player(1));
     let output = checked_tick(
@@ -1391,7 +1433,17 @@ fn an_arrival_of_an_earlier_stay_of_a_player_the_region_has_leaves_them_as_they_
         "the entity on its way is removed"
     );
     assert_eq!(entity_of(&region, player(1)), entity);
+    // Nothing changes but that the edge the arrival came through is told that the stay
+    // has ended (ADR-0020, section 6, rule 5).
     before.tick += 1;
+    let ended = Durable::Ended {
+        player: player(1),
+        entity: other,
+        attempt: transfer(other, 9).attempt,
+    };
+    let told = before.edges.get_mut(&F).expect("F is known");
+    told.sent += 1;
+    told.outbox.insert(told.sent, ended);
     assert_eq!(region.state(), before);
 }
 
@@ -1436,10 +1488,12 @@ fn a_confirmation_before_a_reset_in_one_tick_leaves_the_new_start_clean() {
         EdgeEvent::Confirmed { edge: E, number: 2 },
         started(E, 20),
     ]);
-    inputs.change(join(E, player(1)));
-    // The join of this tick makes P1 the second player to enter the region.
-    inputs.input(E, player(1), entity(2), 1, dig(BORDER_BLOCK_B, 1));
-    inputs.input(E, player(1), entity(2), 2, dig(BORDER_BLOCK_B, 2));
+    // A player who arrives through the edge after the reset can act in this very tick,
+    // which one who joins cannot: they enter only when the store has answered.
+    let arriving = EntityId(7_000_009);
+    inputs.change(PlayerChange::Arrive(E, player(9), transfer(arriving, 0)));
+    inputs.input(E, player(9), arriving, 1, dig(BORDER_BLOCK_B, 1));
+    inputs.input(E, player(9), arriving, 2, dig(BORDER_BLOCK_B, 2));
     checked_tick(&mut region, &inputs);
     assert_eq!(outbox_numbers(&region, E), vec![1, 2]);
 }
@@ -1610,6 +1664,7 @@ fn a_reset_and_a_join_of_the_same_edge_in_one_tick_enter_the_player_anew() {
     inputs.change(join(E, player(1)));
     let output = checked_tick(&mut region, &inputs);
     assert!(removed(&output).contains(&old));
+    let output = enter(&mut region);
     assert!(region.player(player(1)).is_some());
     assert_eq!(edge_of(&region, player(1)), E);
     assert!(
@@ -1628,6 +1683,7 @@ fn a_join_in_the_tick_its_edge_is_first_started_is_taken() {
     let mut inputs = edges(vec![started(E, 10)]);
     inputs.change(join(E, player(1)));
     checked_tick(&mut region, &inputs);
+    enter(&mut region);
     assert_eq!(edge_of(&region, player(1)), E);
 }
 
@@ -1638,9 +1694,11 @@ fn a_confirmation_in_the_tick_of_a_reset_does_not_drop_the_new_entries() {
         started(E, 20),
         EdgeEvent::Confirmed { edge: E, number: 1 },
     ]);
-    inputs.change(join(E, player(1)));
-    // The join of this tick makes P1 the fourth player to enter the region.
-    inputs.input(E, player(1), entity(4), 1, dig(BORDER_BLOCK_B, 1));
+    // A player who arrives through the edge after the reset can act in this very tick,
+    // which one who joins cannot: they enter only when the store has answered.
+    let arriving = EntityId(7_000_009);
+    inputs.change(PlayerChange::Arrive(E, player(9), transfer(arriving, 0)));
+    inputs.input(E, player(9), arriving, 1, dig(BORDER_BLOCK_B, 1));
     let output = checked_tick(&mut region, &inputs);
     assert!(matches!(
         output.durable.as_slice(),
@@ -1798,12 +1856,18 @@ fn a_restored_region_carries_on_as_the_original_from_every_tick_of_a_scenario() 
                 ..TickInputs::default()
             },
         ];
-        for inputs in &loading {
+        // Nor does it count that the restored region names every stay it has to the
+        // store in its first tick (ADR-0020, section 3).
+        for (index, inputs) in loading.iter().enumerate() {
             let mut expected = checked_tick(&mut original, &TickInputs::default());
             let mut actual = checked_tick(&mut restored, inputs);
             expected.chunk_requests.clear();
             actual.chunk_requests.clear();
             actual.claims.clear();
+            if index == 0 {
+                expected.stays.clear();
+                actual.stays.clear();
+            }
             assert_eq!(actual, expected, "restored after tick {restore_after}");
         }
         assert_eq!(restored.chunk(CHUNK_A), original.chunk(CHUNK_A));

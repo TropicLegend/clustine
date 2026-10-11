@@ -26,8 +26,7 @@ pub struct RegionState {
     /// The edges the region knows.
     pub edges: BTreeMap<EdgeId, EdgeState>,
     /// The stays the region has given out and holds until the world store has said
-    /// where each is to enter: at most one for a player. Only a region for which the
-    /// store keeps the players' places holds any. See
+    /// where each is to enter: at most one for a player. See
     /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 3.
     pub entering: BTreeMap<PlayerId, EnteringState>,
 }

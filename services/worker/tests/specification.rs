@@ -18,7 +18,7 @@ use clustine_data::{BlockState, blocks, items};
 use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
-    EdgeMessage, EdgeToWorker, Presence, RegionHello, Restored, Welcome, WorkerToEdge,
+    EdgeMessage, EdgeToWorker, Presence, RegionHello, Restored, StoreReply, Welcome, WorkerToEdge,
 };
 use clustine_sim::api::{
     EntityKind, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
@@ -104,7 +104,6 @@ fn config() -> RegionConfig {
         spawn: SPAWN,
         starting_hotbar: hotbar(),
         return_after: 0,
-        place_by_store: false,
         lowest_y: -64,
     }
 }
@@ -167,7 +166,60 @@ impl World {
     /// A runner for the region as the store has it now.
     fn open(&mut self) -> RegionRunner {
         let (handle, restored) = self.open_raw();
-        RegionRunner::restore(config(), handle, restored).expect("what the store has is readable")
+        Self::run(handle, restored)
+    }
+
+    /// A runner for the region as `restored` has it. The runner is told which region
+    /// it runs, as a worker tells it: the store answers a join of someone who was in
+    /// the world before with the region that held their place, and the home region
+    /// places them itself where that is the home region (ADR-0020, section 4, step 7).
+    fn run(handle: StoreHandle, restored: Restored) -> RegionRunner {
+        RegionRunner::restore(config(), handle, restored)
+            .expect("what the store has is readable")
+            .with_id(REGION)
+    }
+}
+
+impl World {
+    /// The next region, run by nobody but open at the store, so that the store tells it
+    /// what it tells every region that runs.
+    fn neighbour(&self) -> Neighbour {
+        let (handle, _) = self
+            .store
+            .open_region(RegionHello {
+                region: NEIGHBOUR,
+                epoch: 1,
+            })
+            .expect("nobody has opened the next region");
+        Neighbour { handle }
+    }
+}
+
+/// The next region as the test plays it: a handle at the store and nothing else.
+struct Neighbour {
+    handle: StoreHandle,
+}
+
+impl Neighbour {
+    /// Waits until the store has told the next region that the region under test has
+    /// given `id` a new stay. The store says that to every region that runs, behind the
+    /// answers of the group that made the stay's note durable (ADR-0020, section 5,
+    /// (A)), so from then on the handle of the region under test has the answer its
+    /// stay enters on, and its next tick takes it. That is how a test knows the tick in
+    /// which a player who joined enters the world.
+    fn hears_of_the_stay_of(&self, id: PlayerId) {
+        for _ in 0..30_000 {
+            match self.handle.try_reply() {
+                Some(StoreReply::Dead { stays }) => {
+                    if stays.iter().any(|(player, _, _)| *player == id) {
+                        return;
+                    }
+                }
+                Some(other) => panic!("expected word of a new stay, got {other:?}"),
+                None => thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        panic!("the store did not tell the next region of the stay of {id:?}");
     }
 }
 
@@ -412,6 +464,26 @@ fn run_to_tick(runner: &mut RegionRunner, links: &mut [&mut Link], tick: u64) {
     run_until(runner, links, "the region reaching a tick", |runner, _| {
         runner.region().tick_number() >= tick
     });
+}
+
+/// Has the runner run exactly one more tick and returns its number. A runner that is
+/// as far ahead of the store as it may be does not tick when it is stepped, so this
+/// steps until it has.
+fn one_tick(runner: &mut RegionRunner, links: &mut [&mut Link]) -> u64 {
+    let tick = runner.region().tick_number() + 1;
+    for _ in 0..STEPS {
+        runner.step();
+        for link in links.iter_mut() {
+            link.drain();
+        }
+        let now = runner.region().tick_number();
+        assert!(now <= tick, "a step ran more than one tick");
+        if now == tick {
+            return tick;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    panic!("the region never ran tick {tick}");
 }
 
 /// Waits until everything of the ticks so far has been published: `links[through]`
@@ -688,11 +760,56 @@ fn join_and_wait(
     spawned(&link.log, id).expect("just waited for it").1
 }
 
-/// Waits until the link has been told that its messages up to `number` are applied.
+/// Whether the join of `id` that was sent when the log was `from` long has been
+/// answered: the player was told they entered the world, or the stay was let go to the
+/// region that holds their place without being placed, or it was refused or ended
+/// (ADR-0020, sections 4 and 6). A join is applied in the tick that takes it and
+/// answered in a later one, once the store has said where the player enters.
+fn join_answered(log: &[WorkerToEdge], from: usize, id: PlayerId) -> bool {
+    log.iter().skip(from).any(|message| match message {
+        WorkerToEdge::ToPlayer {
+            player,
+            event: PlayerEvent::Spawned { .. },
+        } => *player == id,
+        WorkerToEdge::Outbox { entry, .. } => match entry {
+            Durable::Departed {
+                player, transfer, ..
+            } => *player == id && transfer.attempt == Some(attempt(id)),
+            Durable::Refused { player, .. } => *player == id,
+            Durable::Ended {
+                player,
+                attempt: of,
+                ..
+            } => *player == id && *of == Some(attempt(id)),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+/// Waits until the link has been told that its messages up to `number` are applied,
+/// and the region holds no stay as entering any more. A join among those messages is
+/// applied in the tick that takes it, but the player enters the world in a later one,
+/// when the store has said where (ADR-0020, section 4); so whoever joined is in the
+/// world when this returns, or their join has been answered otherwise.
 fn wait_applied(runner: &mut RegionRunner, links: &mut [&mut Link], through: usize, number: u64) {
-    run_until(runner, links, "progress up to a number", |_, links| {
-        applied(&links[through].log).is_some_and(|applied| applied >= number)
-    });
+    run_until(
+        runner,
+        links,
+        "progress up to a number, and whoever joined entering",
+        |runner, links| {
+            applied(&links[through].log).is_some_and(|applied| applied >= number)
+                && runner.region().state().entering.is_empty()
+        },
+    );
+}
+
+/// How many stays the region has: its players, and the stays it holds as entering. A
+/// join that is taken makes one of the second kind first (ADR-0020, section 4, step
+/// 3), so a test that says nobody is there, or that a join was not taken, counts both.
+fn stay_count(runner: &RegionRunner) -> usize {
+    let state = runner.region().state();
+    state.players.len() + state.entering.len()
 }
 
 /// Waits until the link has been sent the outbox entry `number`. What a region does by
@@ -779,14 +896,24 @@ impl Witness {
                     return;
                 }
                 self.outbox.insert(*number, entry.clone());
-                if let Durable::Departed {
-                    player, transfer, ..
-                } = entry
-                {
-                    // The entity lives on in the next region, which this edge is not
-                    // linked to here.
-                    self.own.remove(player);
-                    self.entities.remove(&transfer.entity_id);
+                match entry {
+                    Durable::Departed {
+                        player, transfer, ..
+                    } => {
+                        // The entity lives on in the next region, which this edge is
+                        // not linked to here.
+                        self.own.remove(player);
+                        self.entities.remove(&transfer.entity_id);
+                    }
+                    // The server has ended the stay, and with it the connection
+                    // (ADR-0020, section 6, rule 5). That its entity is gone is said
+                    // to whoever sees the chunk, as of any entity.
+                    Durable::Ended { player, entity, .. }
+                        if self.own.get(player) == Some(entity) =>
+                    {
+                        self.own.remove(player);
+                    }
+                    _ => {}
                 }
             }
             WorkerToEdge::Progress { applied, inputs } => {
@@ -883,6 +1010,9 @@ struct Session {
     witness: Witness,
     /// Whom it names in a hello: everyone it ever had in the region.
     players: Vec<PlayerId>,
+    /// The joins it sent and has not seen answered, each with the length of the link's
+    /// log when it was sent.
+    joining: Vec<(PlayerId, usize)>,
 }
 
 impl Session {
@@ -897,10 +1027,14 @@ impl Session {
             absorbed: 0,
             witness: Witness::default(),
             players: Vec::new(),
+            joining: Vec::new(),
         }
     }
 
     fn send(&mut self, body: EdgeToWorker) {
+        if let EdgeToWorker::PlayerJoin(join) = &body {
+            self.joining.push((join.player, self.link.log.len()));
+        }
         self.sent += 1;
         self.link.numbered(self.sent, body);
     }
@@ -913,10 +1047,16 @@ impl Session {
     }
 }
 
-/// Waits until every edge has its home chunk and has been told that everything it sent
-/// is applied, which is when nothing is left for the region to tell.
+/// Waits until every edge has its home chunk, has been told that everything it sent
+/// is applied, and has the answer to every join it sent, which is when nothing is left
+/// for the region to tell: a join is applied in the tick that takes it, and the player
+/// enters the world in a later one, when the store has answered (ADR-0020, section 4).
 fn settle(runner: &mut RegionRunner, sessions: &mut [&mut Session]) {
     let sent: Vec<u64> = sessions.iter().map(|session| session.sent).collect();
+    let joining: Vec<Vec<(PlayerId, usize)>> = sessions
+        .iter_mut()
+        .map(|session| std::mem::take(&mut session.joining))
+        .collect();
     let mut links: Vec<&mut Link> = sessions
         .iter_mut()
         .map(|session| &mut session.link)
@@ -926,9 +1066,16 @@ fn settle(runner: &mut RegionRunner, sessions: &mut [&mut Session]) {
         &mut links,
         "every edge being told all it sent is applied",
         |_, links| {
-            links.iter().zip(&sent).all(|(link, sent)| {
-                snapshot(&link.log, HOME).is_some() && applied(&link.log) == Some(*sent)
-            })
+            links
+                .iter()
+                .zip(sent.iter().zip(&joining))
+                .all(|(link, (sent, joining))| {
+                    snapshot(&link.log, HOME).is_some()
+                        && applied(&link.log) == Some(*sent)
+                        && joining
+                            .iter()
+                            .all(|(player, from)| join_answered(&link.log, *from, *player))
+                })
         },
     );
     for session in sessions.iter_mut() {
@@ -948,8 +1095,7 @@ fn hand_on(
 
     // The old owner is neither stopped nor told: it is simply no longer the owner.
     let (handle, restored) = world.open_raw();
-    let mut next =
-        RegionRunner::restore(config(), handle, restored).expect("what the store has is readable");
+    let mut next = World::run(handle, restored);
     drop(runner);
     let state = next.region().state();
     for session in sessions.iter() {
@@ -1213,7 +1359,7 @@ fn a_numbered_message_before_a_hello_closes_the_link() {
     sync(&mut runner, &mut [&mut watcher], 0);
 
     assert!(hasty.log.is_empty(), "{}", brief(&hasty.log));
-    assert_eq!(runner.region().player_count(), 0);
+    assert_eq!(stay_count(&runner), 0);
     assert!(entity_spawn(&watcher.log, player(1)).is_none());
     assert!(!watcher.closed);
 }
@@ -1365,7 +1511,7 @@ fn what_the_old_start_sent_for_the_coming_tick_is_dropped_by_a_higher_start_in(m
 
     assert_eq!(welcome(&new.log), Some(Said::Unknown));
     assert_eq!(
-        runner.region().player_count(),
+        stay_count(&runner),
         0,
         "the join of the old start was applied after the reset"
     );
@@ -1712,6 +1858,7 @@ fn a_number_that_goes_back_on_its_link_closes_the_link_and_what_came_before_it_c
         assert!(runner.region().player(player(1)).is_some());
         assert!(runner.region().player(player(2)).is_some());
         assert!(runner.region().player(player(3)).is_none());
+        assert!(runner.region().entering_state(player(3)).is_none());
     }
 }
 
@@ -1739,6 +1886,7 @@ fn a_gap_in_the_numbers_closes_the_link_and_what_came_before_it_counts() {
     sync(&mut runner, &mut [&mut watcher], 0);
     assert!(runner.region().player(player(1)).is_some());
     assert!(runner.region().player(player(3)).is_none());
+    assert!(runner.region().entering_state(player(3)).is_none());
     assert!(entity_spawn(&watcher.log, player(3)).is_none());
 
     // The edge carries on from number 2 on its next link.
@@ -1885,7 +2033,7 @@ fn a_number_on_a_message_that_has_none_or_none_on_one_that_has_closes_the_link()
         "the link being closed over a join without a number",
         |_, links| links[0].closed,
     );
-    assert_eq!(runner.region().player_count(), 0);
+    assert_eq!(stay_count(&runner), 0);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2135,19 +2283,17 @@ fn progress_says_how_far_an_edges_messages_are_and_each_players_last_input() {
     let mut e = established(&mut runner, E, 5);
     let mut f = established(&mut runner, F, 5);
 
-    e.numbered(1, join(player(1)));
-    e.numbered(2, join(player(2)));
-    e.numbered(3, input(player(1), nth_entity(1), 1, move_to(12.5)));
+    // The players are in the world before their inputs are sent: an input is of a
+    // stay, and a join gives the player none that an edge knows until the store has
+    // answered it (ADR-0020, section 4).
+    let one = join_and_wait(&mut runner, &mut e, 1, player(1));
+    let two = join_and_wait(&mut runner, &mut e, 2, player(2));
+    e.numbered(3, input(player(1), one, 1, move_to(12.5)));
     e.numbered(
         4,
-        input(
-            player(1),
-            nth_entity(1),
-            2,
-            PlayerInput::SelectSlot { slot: 2 },
-        ),
+        input(player(1), one, 2, PlayerInput::SelectSlot { slot: 2 }),
     );
-    e.numbered(5, input(player(2), nth_entity(2), 1, move_to(11.5)));
+    e.numbered(5, input(player(2), two, 1, move_to(11.5)));
     wait_applied(&mut runner, &mut [&mut e, &mut f], 0, 5);
     sync(&mut runner, &mut [&mut e, &mut f], 0);
 
@@ -2246,16 +2392,27 @@ fn what_a_tick_produced_arrives_in_the_agreed_order() {
 }
 
 fn what_a_tick_produced_arrives_in_the_agreed_order_in(mut world: World) {
+    // The next region is open, so that the store tells it of every new stay, and the
+    // test knows by that when the store has answered a join.
+    let neighbour = world.neighbour();
     let mut runner = world.open();
     let mut e = established(&mut runner, E, 5);
     let one = join_and_wait(&mut runner, &mut e, 1, player(1));
     let three = join_and_wait(&mut runner, &mut e, 2, player(3));
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
-    let start = e.log.len();
     let near = BlockPos::new(12, GROUND, 9);
 
-    // All of these are there when the runner next looks, so one tick takes them in.
+    // The player who enters the world in the tick in question has joined a tick
+    // before: the region names their stay in that tick's commit, and the tick that has
+    // the store's answer places them (ADR-0020, section 4, steps 3 to 7). The store
+    // has given the answer once the next region is told of the stay.
     e.numbered(3, join(player(2)));
+    one_tick(&mut runner, &mut [&mut e]);
+    neighbour.hears_of_the_stay_of(player(2));
+    let start = e.log.len();
+
+    // All of these are there when the runner next looks, so one tick takes them in,
+    // and with them the store's answer.
     e.numbered(4, input(player(1), one, 1, dig(near, 1)));
     e.numbered(5, input(player(1), one, 2, dig(BEYOND, 2)));
     e.numbered(6, input(player(3), three, 1, move_to(16.5)));
@@ -2525,6 +2682,7 @@ fn a_runner_that_lost_its_store_stops_and_shows_nothing_more() {
         );
     }
     assert!(other.region().player(player(2)).is_none());
+    assert!(other.region().entering_state(player(2)).is_none());
     assert_eq!(other.region().state().edges[&E].applied, 1);
 
     // It has stopped for good: no tick, and a new link is closed.
@@ -3046,7 +3204,7 @@ fn what_the_old_start_had_held_behind_its_resume_is_dropped_by_a_higher_start_in
     );
     assert!(old.closed);
     assert_eq!(
-        runner.region().player_count(),
+        stay_count(&runner),
         0,
         "the reset removes the old start's player, and its held join is not applied"
     );
@@ -3268,7 +3426,7 @@ fn a_higher_start_is_told_nothing_of_what_the_old_start_was_owed_in(mut world: W
         entities.iter().all(|state| state.entity != entity),
         "the old start's player is in the new start's snapshot"
     );
-    assert_eq!(runner.region().player_count(), 0);
+    assert_eq!(stay_count(&runner), 0);
 }
 
 #[test]
@@ -3548,6 +3706,7 @@ fn a_release_of_a_region_that_another_owner_has_taken_ends_as_lost_and_shows_not
     }
     // The owner that took it is none the worse for it.
     assert!(other.region().player(player(2)).is_none());
+    assert!(other.region().entering_state(player(2)).is_none());
     assert_eq!(other.region().state().edges[&E].applied, 1);
 }
 
@@ -4174,7 +4333,7 @@ fn a_hello_without_a_since_while_the_first_links_join_is_held_is_told_the_same_s
         Some((made, 0))
     );
     assert_eq!(
-        runner.region().player_count(),
+        stay_count(&runner),
         0,
         "what was held when its link ended was applied"
     );
@@ -4231,7 +4390,7 @@ fn what_an_edge_that_lost_its_since_had_held_behind_its_resume_is_dropped_in(mut
     assert!(old.closed);
     assert!(is_absent(&new.log, player(1)));
     assert_eq!(
-        runner.region().player_count(),
+        stay_count(&runner),
         0,
         "the reset removes the edge's player, and its held join is not applied"
     );
@@ -4286,7 +4445,7 @@ fn what_an_edge_that_lost_its_since_had_sent_for_the_coming_tick_is_forgotten_in
     let since = unknown_since(&new.log);
     assert!(since > first, "{since} after {first}");
     assert_eq!(
-        runner.region().player_count(),
+        stay_count(&runner),
         0,
         "the join the edge had sent before it was reset was applied after it"
     );
@@ -4415,7 +4574,7 @@ fn of_two_hellos_at_once_of_an_edge_that_lost_its_since_the_link_that_stays_is_t
         brief(&other.log)
     );
     assert!(outbox(&other.log).is_empty(), "{}", brief(&other.log));
-    assert_eq!(runner.region().player_count(), 0);
+    assert_eq!(stay_count(&runner), 0);
 
     let entity = join_and_wait(&mut runner, &mut other, 1, player(1));
     wait_applied(&mut runner, &mut [&mut other, &mut watcher], 0, 1);
@@ -4445,14 +4604,17 @@ fn an_edge_that_lost_its_since_is_reset_before_its_join_is_published_in(mut worl
     let mut watcher = established(&mut runner, F, 1);
     let first = told(E);
 
-    // A tick takes the join in; whether the store has confirmed that tick when the
-    // hello comes is open. The join is received either way.
+    // A tick takes the join in: the region gives the stay its entity and holds it as
+    // entering, until the store says where the player enters (ADR-0020, section 4,
+    // step 3). Whether the store has confirmed that tick when the hello comes is open.
+    // The join is received either way.
     old.numbered(1, join(player(1)));
     runner.step();
-    assert!(
-        runner.region().player(player(1)).is_some(),
-        "the step took the join in"
-    );
+    let given = runner
+        .region()
+        .entering_state(player(1))
+        .expect("the step took the join in")
+        .entity_id;
     let mut new = Link::attach(&runner);
     hello_since(&new, E, 5, 0, 0, vec![player(1)], vec![HOME]);
     run_until(
@@ -4472,7 +4634,11 @@ fn an_edge_that_lost_its_since_is_reset_before_its_join_is_published_in(mut worl
     };
     assert!(since > first, "{since} after {first}");
     assert!(is_absent(&new.log, player(1)), "{}", brief(&new.log));
-    assert_eq!(runner.region().player_count(), 0);
+    assert_eq!(
+        stay_count(&runner),
+        0,
+        "the stay that was entering went with the edge's reset"
+    );
     assert_eq!(
         runner
             .region()
@@ -4480,6 +4646,7 @@ fn an_edge_that_lost_its_since_is_reset_before_its_join_is_published_in(mut worl
             .map(|edge| (edge.since, edge.applied)),
         Some((since, 0))
     );
+    // The store's answer to the stay finds it gone and is passed over.
     assert!(
         spawned(&new.log, player(1)).is_none(),
         "the join was of a tick before the hello's: {}",
@@ -4502,6 +4669,10 @@ fn an_edge_that_lost_its_since_is_reset_before_its_join_is_published_in(mut worl
 
     let entity = join_and_wait(&mut runner, &mut new, 1, player(1));
     assert_ne!(Some(entity), shown);
+    assert_ne!(
+        entity, given,
+        "the join after the reset begins a stay of its own"
+    );
     assert!(!new.closed);
 }
 
@@ -4566,7 +4737,7 @@ fn an_edge_that_lost_its_since_is_reset_with_its_outbox_and_its_departures_in(mu
         )),
         Some((since, 0, 0, 0))
     );
-    assert_eq!(runner.region().player_count(), 0);
+    assert_eq!(stay_count(&runner), 0);
 }
 
 #[test]

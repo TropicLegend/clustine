@@ -1366,9 +1366,6 @@ fn hold(orders: &Orders, assignment: Assignment) -> Held {
             spawn: orders.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            // A player's place is the world store's to keep, and a join waits for
-            // its word (`docs/adr/0020-one-stay-per-player.md`).
-            place_by_store: true,
             lowest_y: lowest_y(),
         },
     }

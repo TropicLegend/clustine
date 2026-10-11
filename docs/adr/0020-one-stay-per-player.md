@@ -1196,6 +1196,17 @@ section 12.
 **Why the setting.** Without it R1.2 alone would stop every join: a region would hold
 a player as entering and wait for an answer no runner passes on.
 
+**The setting is gone since R1.5.** That step turned it on in the one place that makes
+a `RegionConfig` outside tests and then took the field away, with every branch on it:
+a region always holds a join as entering, always makes notes, always takes `Enter`
+and `Dead`, and always tells an edge whose stay it ends. Where this record says "while
+the setting is off" (section 3, the row of `RegionConfig` in section 14, the steps
+above) it speaks of the builds between R1.2 and R1.5 only. The tests that ran with it
+off are given the store's answers by their harnesses, an `Enter` without a place for
+each entering stay in the tick after its note, so that a player enters at the spawn
+point a tick later than a join used to place them; the tests that set the two
+behaviours side by side lost their subject and went with the field.
+
 **Why `STATE_FORMAT` is raised twice.** A state written by a build between R1.0b and
 R1.5 has stays the store has no record of. After R1.5 their notes would be dropped as
 "cannot be", with an error for each, and their next join would be at the spawn point.
