@@ -2329,6 +2329,48 @@ is about three times as long; the roadmap has the table.
    presence answer can be for a player the hello did not name, and can move a stay.
    The rest of what the edge does is its own record's.
 
+## Changed by ADR-0020
+
+[ADR-0020](0020-one-stay-per-player.md) (one stay per player, and a player's place kept
+by the world store) changes what this record says in the places below. The text is that
+record's, from its section "Changes to earlier records"; where the two differ, that
+record holds.
+
+**ADR-0014, rule 37** gains:
+
+> A player the hello named whom the region holds as entering for the edge is answered
+> `Entering { attempt }`. An entering stay the hello did not name is not answered
+> (ADR-0020, section 4.2). A `Present` carries the stay's attempt for as long as the
+> stay has one.
+
+**ADR-0014, rule 38**, the first case's second sentence ("For a player who is entering
+the world and has not been told an entity: the answer is their stay if their join is at
+or below the welcome's `applied`, and an earlier stay, which the join will end, if it is
+above") becomes:
+
+> For a player who is entering the world and has not been told an entity: the answer
+> is their stay **if it carries the attempt of their connection, from whichever region
+> it comes**; the view goes under that region. A `Present` with another attempt or
+> none is an earlier stay.
+
+and its reasoning ("A stay is in at most one living region's state (section 2.5)")
+gains:
+
+> **Since ADR-0020 this holds for a stay that lives.** A stay that a later login made
+> dead can be in one region's state while the living stay is in another's, until the
+> region reads the store's `Dead`. Moving a stay on a region's word is still right: the
+> edge has at most one view of a player, and a `Present` for an entity that is not the
+> view's moves nothing. The third case (a leave that names the region's entity) then
+> also ends a dead stay of the same edge, which is what is wanted.
+
+**ADR-0014, section 2.1 and `Region::absorb`** ("Of a player both have, the later stay
+stays, which is the one with the higher entity id") becomes "…the one with the higher
+entity id, and of the same entity the one with more hand-overs".
+
+**ADR-0014, the note of lines 2332-2340** ("An arrival still drops every input of its
+player that waits for the tick … left for the milestone that has several edges") gets:
+"Done by ADR-0020, section 12."
+
 ## Open questions
 
 1. **Whether the loading after a merge shows**, and the wait of everyone on the link

@@ -539,6 +539,50 @@ link's own**, not only with one whole welcome after the other.
 - **Rule 50**: "the order in which it resumes with the regions does not matter" holds
   for whole welcomes and for their messages interleaved, by the three changes above.
 
+## Changed by ADR-0020
+
+[ADR-0020](0020-one-stay-per-player.md) (one stay per player, and a player's place kept
+by the world store) changes what this record says in the places below. The text is that
+record's, from its section "Changes to earlier records"; where the two differ, that
+record holds.
+
+**ADR-0015, section 2.1** gains a fifth answer and a changed case 2:
+
+> 2. **The edge has `P` with no entity yet**, under `R` or under another region, and
+>    the answer's attempt is that of the view's connection: `view.region = R` and they
+>    enter the world as `e`. With another attempt or none: if the view is under `R` and
+>    a `PlayerJoin` of `P` is kept for `R`, nothing is done; otherwise case 4.
+>
+> `Presence::Entering { attempt }` for `P` from `R`: if the edge has `P` under `R` with
+> no entity and that connection, it goes on waiting. Otherwise nothing is done. It is
+> counted like any answer.
+
+**ADR-0015, section 2.1, last line** ("In cases 1 to 3 `P` is taken out of the link's
+`brought`") stays, and gains: "also in case 2 where the view was under another region:
+the changed case is an arm like the others and does not return before this."
+
+**ADR-0015, section 7**, second point ("`remove_player` sends `PlayerLeave { player,
+entity: view.entity }` to `view.region`") becomes:
+
+> `remove_player` sends `PlayerLeave { player, entity: view.entity, attempt }` to
+> `view.region`, with the attempt of the view's connection if the view has no entity
+> and none otherwise. A region takes a leave without an entity only for a stay of that
+> edge with that attempt (ADR-0020, section 4.4).
+
+**ADR-0015, section 6 (`SplitOff`)** gains:
+
+> An entry is `(P, e, attempt)`. If the edge has `P` under `A` with no entity and the
+> connection `attempt` names: `view.region = N` and nothing else; `N`'s presence
+> answer enters them (section 2.1, case 2).
+
+**ADR-0015, section 8, first point** gains:
+
+> ADR-0020 adds one way for a `Departed` to be true of a view the edge could not match
+> by entity: a stay placed, or let go without being placed, whose view has not been
+> told its entity. It is matched by the attempt the transfer carries (ADR-0020,
+> section 4.3). The three premises were gone through for a join placed away from home
+> in ADR-0020, section 9.1.
+
 ## Open questions
 
 1. Whether ending the link in section 5 is worth a rule of its own, or whether the

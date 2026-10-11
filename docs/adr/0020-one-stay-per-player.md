@@ -1474,3 +1474,28 @@ hold and none is rejected.
     removal from `brought` (section 4.3), with its test.
 12. **`Refused` named no attempt.** Holds (`fanout.rs:1084-1094`). It names it
     (section 4.2).
+
+## Found by the tests written from this record (step R1.4)
+
+Thirty-nine tests of the edge against scripted regions, written from the row "Edge"
+of the table above by someone who had not seen the code (`services/edge/src/fanout.rs`,
+the marked block at the end of `mod scenarios`). None failed. Path 3's "the client is
+told afterwards" can only be seen through a client that fails, as links and clients
+are told on separate channels: the tests with a closed and with a full queue hold
+the order (an arrival, then a leave). What the record left unsaid, and how it is:
+
+1. **A `Present` with another attempt or none, for a view without an entity and with
+   no join kept** (section 4.3, second row): the edge sends the leave that names the
+   entity and leaves the view as it is. No region can be in that state: a stay loses
+   its attempt only by an input, and an edge sends inputs only for a view that has
+   the entity. A view left so would be ended like any connection that waits too long
+   to enter.
+2. **`Entering` with an attempt that is not the view's** (section 4.2): nothing is
+   done, whether or not a join is kept.
+3. **The player list** (section 6): the entry is kept by a client that shows another
+   entity of the player at every removal of a view, not only at one by `Ended`. A
+   plain leave removes the view's own entity first, so what is left to show is
+   another stay's.
+4. **Path 3 with `to` gone into the region the word comes from**: tested with the
+   routing table's word before the `Departed`. Read the other way round, the arrival
+   is kept for `to` and follows the rules for what is kept for an absorbed region.

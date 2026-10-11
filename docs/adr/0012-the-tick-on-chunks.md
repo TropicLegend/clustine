@@ -1668,6 +1668,70 @@ Nothing of this changes what a region does.
   wait of seconds, as while a region is taken over. Nothing changes for an edge: it
   took such a move already when the player left what it watched within one tick.
 
+## Changed by ADR-0020
+
+[ADR-0020](0020-one-stay-per-player.md) (one stay per player, and a player's place kept
+by the world store) changes what this record says in the places below. The text is that
+record's, from its section "Changes to earlier records"; where the two differ, that
+record holds.
+
+**ADR-0012, section 2.5 ("What a tick's outbox entries are, and their order")**. Its
+first paragraph ("`TickOutput::durable` has, in this order: the entries of step 4,
+`Refused` and `NotMine` for an arrival, in the order of `player_changes`; the answers
+of step 5, one for one; the `Remote` entries of step 6, in the order of `inputs`; the
+`Departed` entries of step 8. Departures are numbered last…") becomes:
+
+> `TickOutput::durable` has, in this order: the `Ended` entries of the store's `Dead`;
+> the entries of step 4, `Refused`, `Ended` and `NotMine` for an arrival, in the order
+> of `player_changes`; the `Ended` entries of the store's `Enter` answers, in their
+> order; the answers of step 5, one for one; the `Remote` entries of step 6, in the
+> order of `inputs`; the `Departed` entries, **those of stays the home region let go
+> without placing them (ADR-0020, section 4, step 7) and those of step 8 alike**.
+> Departures are numbered last, as today, so that numbers ascend on a link in the
+> order the runner publishes them. A stay let go unplaced is decided where the
+> `Enter` answers are applied and numbered here.
+
+and its second paragraph gains: "`Ended` goes to the outbox of the edge of the stay it
+ends, or, for an arrival that is passed over, of the edge the arrival came through."
+
+**ADR-0012, rule 18**, last sentence ("If the edge no longer has the player with that
+entity, it sends `to` a `Discard`, as today") becomes:
+
+> If the edge has the player with no entity yet, under this region, on the connection
+> whose attempt the transfer carries, the stay is that view's: the edge notes the
+> entity, asks `to` for the view, passes the player on with `PlayerArrive`, and only
+> then puts the client into the world (ADR-0020, section 4.3, path 3). In every other
+> case in which it does not have the player with that entity, it sends `to` a
+> `Discard`, as today.
+
+**ADR-0012, rule 24** ("`ToPlayer` with `Spawned` and `Acknowledged`, `Refused` and
+`Presence`: as today") becomes:
+
+> `ToPlayer` with `Acknowledged`: as today. `Spawned` and `Refused` name the attempt of
+> the join they answer, and the edge takes each only for a view without an entity on
+> that connection (ADR-0020, sections 4.1 and 4.2). `Presence`: ADR-0015, section 2,
+> as changed by ADR-0020.
+
+**ADR-0012, section 5.2 ("The order on a link")**, items 3 to 6 become:
+
+> 3. `ToPlayer` with `Spawned`, for those who entered the world. It names the attempt of
+>    the join it answers (ADR-0020, section 4.1);
+> 4. `Outbox` for the tick's entries other than `Departed`, in ascending order of their
+>    numbers. **`Ended` is among these: a region numbers every `Ended` of a tick below
+>    every `Departed` of that tick**, as an edge remembers only the highest number it
+>    has seen;
+> 5. `ToPlayer` with `Acknowledged`;
+> 6. `Outbox` for the tick's `Departed` entries, which have the tick's highest numbers.
+>    A stay that the home region lets go without having placed it is a `Departed` like
+>    any other (ADR-0020, section 4).
+
+and item 1 gains: "…one `Presence` for each player of the hello, which for a player the
+region holds as entering is `Entering`".
+
+**ADR-0012, section 5.2, first paragraph**: "a tick that changed nothing of the region's
+state and no block has no commit" becomes "a tick that changed nothing of the region's
+state and no block **and has no stay notes** has no commit".
+
 ## Open questions
 
 1. **Whether a region may take in an arrival for a chunk it has nothing to do with.**
