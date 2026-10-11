@@ -13,6 +13,7 @@
 //! world store's business.
 
 mod bytes;
+mod chunk;
 mod log;
 mod manifest;
 mod region;
@@ -20,6 +21,7 @@ mod section;
 
 use std::fmt;
 
+pub use chunk::{CHUNK_FORMAT, ChunkFile, KIND_CHUNK};
 pub use log::{
     HOTBAR_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, read_log,
     read_log_with_offsets,
