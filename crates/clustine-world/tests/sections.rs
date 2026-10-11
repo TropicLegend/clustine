@@ -313,8 +313,6 @@ fn a_section_has_a_biome_for_each_of_its_64_cells_of_four_blocks() {
             }
         }
     }
-    // The one biome of those who still take a section to have one is the first cell's.
-    assert_eq!(section.biome(), cells[0]);
     assert_eq!(section.uniform_biome(), None);
 }
 
@@ -324,7 +322,6 @@ fn a_section_of_one_biome_has_it_in_every_cell() {
     assert_eq!(section.biomes().count(), BIOME_CELLS);
     assert!(section.biomes().all(|biome| biome == Biome(7)));
     assert_eq!(section.biome_at(15, 15, 15), Biome(7));
-    assert_eq!(section.biome(), Biome(7));
     assert_eq!(section.uniform_biome(), Some(Biome(7)));
 
     let made = Section::from_states(Box::new([blocks::STONE; BLOCKS_PER_SECTION]), Biome(7));

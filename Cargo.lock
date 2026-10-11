@@ -307,7 +307,6 @@ dependencies = [
 name = "clustine-format"
 version = "0.0.0"
 dependencies = [
- "blake3",
  "clustine-data",
  "clustine-world",
  "crc32fast",

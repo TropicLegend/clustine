@@ -1025,3 +1025,48 @@ Nothing of the review was rejected outright. One of its proposals was answered
 otherwise than proposed, by the session: where light lives for a changed chunk is
 not decided in this record (finding 1), because that decision and the four
 findings beside it make a set of rules that should be written and reviewed as one.
+
+## Found while building C1 to C3, and by the tests written from this record
+
+Steps C1a, C1b, C2 and C3 are built. Tests 1 to 3 were written from this record by
+someone who had not seen the code (`crates/clustine-world/tests/`,
+`crates/clustine-rpc/tests/chunks_travel.rs`: 97 tests).
+
+**Two findings, both fixed.** Light that is 0 or 15 throughout a section was not
+always in its one form: a chunk kept an array it was given as an array, so it did
+not equal itself after it had travelled, whose reader made it `Full`; and the sky
+light reckoned by columns gave a section lit throughout as an array. `Chunk::set_light`
+and the reckoning now bring light into the one form.
+
+**What the record left unsaid, and how it is:**
+
+- A section without blocks was left out of a stored chunk in format 1 and read back
+  as plain air. With "not air" being `is_air`, a section of cave air counts no blocks
+  either, so between C1a and C3 only a section of plain air was left out.
+- `biome(x, y, z)` is `Section::biome_at(x, y, z)`; beside it are `biomes()`,
+  `uniform_biome()` and `set_biomes()`.
+- The words of a section travel lowest byte first.
+- A message with a state id that is no state's is read: a section counts by a rule
+  that takes any number, and such a state counts for nothing (no height, no block
+  entity, and light is dropped at it). The file's reader refuses it, as section 3
+  says.
+- A message whose marks are not ascending, each once, is refused.
+- A block entity's data does not end "as generated", which is about the blocks. A
+  generator says a chunk is as generated when it is done with it.
+- A block entity that arrives with another type than its block's is replaced by one
+  of the block's type without data.
+- The file's epoch is that of the region that saved the chunk; a file the store
+  writes when it makes a world over for another division has epoch 0, with which no
+  region is opened.
+- The store refuses a chunk file whose position is not the one it was asked for: a
+  file moved or copied by hand has another chunk's blocks behind a right checksum.
+- The store does not know its world's dimension yet (ADR-0021, section 8), so every
+  chunk file is under `chunks/overworld/`.
+- `docs/world-format.md` states ADR-0021's two principles and `generator-version`
+  marked as not built yet, which they are not before W5.
+
+**Counts of syncs.** With one round for chunk files where there were two, a checkpoint
+of changed chunks waits four times in turn where it waited six, and a return of a
+saved chunk three times where it waited five (`services/worldstore/src/syncs.rs`).
+[The measurement](../groundwork/disk-syncs-measured.md) was taken before this and
+counts the two rounds.

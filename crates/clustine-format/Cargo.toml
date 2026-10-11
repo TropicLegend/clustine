@@ -10,7 +10,6 @@ publish.workspace = true
 [dependencies]
 clustine-data.workspace = true
 clustine-world.workspace = true
-blake3.workspace = true
 crc32fast.workspace = true
 thiserror.workspace = true
 zstd.workspace = true
