@@ -1,11 +1,13 @@
 //! Turning world state into packets.
 
-use clustine_data::{BLOCK_STATE_COUNT, BlockState, blocks, synced_registry};
+use clustine_data::{BLOCK_STATE_COUNT, synced_registry};
 use clustine_protocol::chunk::{
     PaletteKind, PalettedContainer, SectionData, bits_for, encode_sections, pack_heightmap,
 };
-use clustine_protocol::packets::play::{Heightmap, LevelChunkWithLight, LightData, heightmap};
-use clustine_world::{Chunk, ChunkPos, Section, SectionLight, sky_light};
+use clustine_protocol::packets::play::{
+    BlockEntity, Heightmap, LevelChunkWithLight, LightData, heightmap,
+};
+use clustine_world::{Chunk, ChunkPos, LIGHT_ARRAY_LENGTH, Section, SectionLight, sky_light};
 
 /// The palette layout for block states.
 pub(crate) const BLOCK_PALETTE: PaletteKind = PaletteKind::blocks(BLOCK_STATE_COUNT as usize);
@@ -16,21 +18,39 @@ pub(crate) fn biome_palette() -> PaletteKind {
     PaletteKind::biomes(biomes.entries.len())
 }
 
-/// The packet that sends `chunk`, located at `position`, to a client.
+/// The packet that sends `chunk`, located at `position`, to a client. It is made from
+/// what the chunk carries (`docs/adr/0022-what-a-chunk-carries.md`, section 5): its
+/// heightmaps, its sections' counts, blocks and biomes, its block entities and its
+/// light.
 pub(crate) fn chunk_packet(position: ChunkPos, chunk: &Chunk) -> LevelChunkWithLight {
-    // All three heightmaps the client uses are approximated by the highest block that is
-    // not air. They differ for fluids, leaves and blocks without collision.
-    let heights = chunk.surface_heights();
-    let data = pack_heightmap(&heights, bits_for(chunk.height() + 1));
+    let heights = chunk.heights();
+    let bits = bits_for(chunk.height() + 1);
     let heightmaps = [
-        heightmap::MOTION_BLOCKING_NO_LEAVES,
-        heightmap::MOTION_BLOCKING,
-        heightmap::WORLD_SURFACE,
+        (
+            heightmap::MOTION_BLOCKING_NO_LEAVES,
+            &heights.motion_blocking_no_leaves,
+        ),
+        (heightmap::MOTION_BLOCKING, &heights.motion_blocking),
+        (heightmap::WORLD_SURFACE, &heights.world_surface),
     ]
-    .map(|kind| Heightmap {
+    .map(|(kind, map)| Heightmap {
         kind,
-        data: data.clone(),
+        data: pack_heightmap(map, bits),
     });
+
+    // Nothing of a block entity's data is sent until its type is known to need
+    // something: a chest shows as a chest without, and what a generated chest carries
+    // (the seed of what is in it) is nobody's to be told. The list of types that are
+    // sent something starts empty.
+    let block_entities = chunk
+        .block_entities()
+        .iter()
+        .map(|(at, entity)| BlockEntity {
+            packed_xz: at.x << 4 | at.z,
+            y: at.y,
+            kind: entity.kind.into(),
+            data: None,
+        });
 
     let sections: Vec<_> = chunk.sections().iter().map(section_data).collect();
     LevelChunkWithLight {
@@ -38,7 +58,7 @@ pub(crate) fn chunk_packet(position: ChunkPos, chunk: &Chunk) -> LevelChunkWithL
         chunk_z: position.z,
         heightmaps: heightmaps.into(),
         sections: encode_sections(&sections, BLOCK_PALETTE, biome_palette()),
-        block_entities: Vec::new(),
+        block_entities: block_entities.collect(),
         light: light_data(chunk),
     }
 }
@@ -50,63 +70,92 @@ fn section_data(section: &Section) -> SectionData {
             PalettedContainer::from_values(section.states().map(|state| state.0.into()).collect())
         }
     };
-    let fluid_count = match section.uniform_state() {
-        Some(state) if !is_fluid(state) => 0,
-        _ => section.states().filter(|state| is_fluid(*state)).count(),
+    let biomes = match section.uniform_biome() {
+        Some(biome) => PalettedContainer::Single(biome.0.into()),
+        None => {
+            PalettedContainer::from_values(section.biomes().map(|biome| biome.0.into()).collect())
+        }
     };
-    // The packet still takes a section to have one biome, which is its first cell's
-    // where it has several, until it is made from what the chunk carries
-    // (`docs/adr/0022-what-a-chunk-carries.md`, step C5). No generator makes a
-    // section of two biomes before then.
-    let biome = section
-        .uniform_biome()
-        .or_else(|| section.biomes().next())
-        .expect("a section has 64 cells of biomes");
     SectionData {
         block_count: section.non_air_count() as i16,
-        fluid_count: fluid_count as i16,
+        fluid_count: section.fluid_count() as i16,
         blocks,
-        biomes: PalettedContainer::Single(biome.0.into()),
+        biomes,
     }
 }
 
-/// Whether `state` is water or lava. Waterlogged blocks are not recognised yet.
-fn is_fluid(state: BlockState) -> bool {
-    [blocks::WATER, blocks::LAVA].into_iter().any(|fluid| {
-        let block = fluid.block().expect("water and lava are blocks");
-        (block.first_state..=block.last_state).contains(&state)
-    })
-}
-
+/// The light of `chunk` for its packet: the light the chunk carries, where it has any,
+/// and otherwise the sky light reckoned by columns, with block light dark wherever
+/// sky light is said. What an edge does once a change has taken a chunk's light is
+/// the record of light at the edge's.
 fn light_data(chunk: &Chunk) -> LightData {
-    let mut light = LightData::default();
-    let (mut sky_mask, mut empty_sky_mask, mut empty_block_mask) = (0u64, 0u64, 0u64);
-    for (index, section) in sky_light(chunk).into_iter().enumerate() {
-        let bit = 1 << index;
-        match section {
-            SectionLight::Dark => empty_sky_mask |= bit,
-            SectionLight::Levels(levels) => {
-                sky_mask |= bit;
-                light.sky.push(levels.to_vec());
-            }
-            // The approximation by columns makes no section that is full throughout
-            // and stored so; were there one, it is an array of fifteens to a client.
-            SectionLight::Full => {
-                sky_mask |= bit;
-                light
-                    .sky
-                    .push(vec![0xff; clustine_world::LIGHT_ARRAY_LENGTH]);
-            }
-            // Listed in neither mask: the client assumes full sky light.
-            SectionLight::Absent => continue,
+    let reckoned;
+    let (sky, block) = match chunk.light() {
+        Some(light) => (&light.sky, Some(&light.block)),
+        None => {
+            reckoned = sky_light(chunk);
+            (&reckoned, None)
         }
-        // There are no light sources yet, so block light is dark wherever light is stored.
-        empty_block_mask |= bit;
+    };
+    let mut light = LightData::default();
+    let (mut sky_mask, mut empty_sky_mask) = (0u64, 0u64);
+    let (mut block_mask, mut empty_block_mask) = (0u64, 0u64);
+    for (index, section) in sky.iter().enumerate() {
+        let bit = 1 << index;
+        list(
+            section,
+            bit,
+            &mut sky_mask,
+            &mut empty_sky_mask,
+            &mut light.sky,
+        );
+        match block {
+            Some(block) => {
+                let arrays = &mut light.block;
+                list(
+                    &block[index],
+                    bit,
+                    &mut block_mask,
+                    &mut empty_block_mask,
+                    arrays,
+                );
+            }
+            // No light sources are reckoned: dark wherever sky light is said.
+            None if *section != SectionLight::Absent => empty_block_mask |= bit,
+            None => {}
+        }
     }
     light.sky_mask = vec![sky_mask];
     light.empty_sky_mask = vec![empty_sky_mask];
+    if block_mask != 0 {
+        light.block_mask = vec![block_mask];
+    }
     light.empty_block_mask = vec![empty_block_mask];
     light
+}
+
+/// Lists one light section in a packet's masks and arrays.
+fn list(
+    section: &SectionLight,
+    bit: u64,
+    mask: &mut u64,
+    empty: &mut u64,
+    arrays: &mut Vec<Vec<u8>>,
+) {
+    match section {
+        // Listed in neither mask: for sky light, the client assumes full light.
+        SectionLight::Absent => {}
+        SectionLight::Dark => *empty |= bit,
+        // Full light is an array of fifteens to a client.
+        SectionLight::Full => {
+            *mask |= bit;
+            arrays.push(vec![0xff; LIGHT_ARRAY_LENGTH]);
+        }
+        SectionLight::Levels(levels) => {
+            *mask |= bit;
+            arrays.push(levels.to_vec());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +163,7 @@ mod tests {
     use std::time::Duration;
 
     use clustine_botswarm::{Bot, Oracle};
+    use clustine_data::{BlockState, blocks};
     use clustine_protocol::chunk::{decode_sections, unpack_heightmap};
     use clustine_protocol::codec::Reader;
     use clustine_protocol::packets::play::ClientboundPlay;
@@ -182,6 +232,120 @@ mod tests {
         let data = section_data(&chunk.sections()[0]);
         assert_eq!(data.block_count, 1026);
         assert_eq!(data.fluid_count, 2);
+    }
+
+    /// A waterlogged block has a fluid, and is counted as one.
+    #[test]
+    fn a_waterlogged_block_counts_as_a_fluid() {
+        let waterlogged = {
+            let slab = blocks::OAK_SLAB.block().unwrap();
+            let mut states = (slab.first_state.0..=slab.last_state.0).map(BlockState);
+            states.find(|state| state.has_fluid()).unwrap()
+        };
+        let mut chunk = flat_chunk();
+        chunk.set(0, -60, 0, waterlogged);
+        let data = section_data(&chunk.sections()[0]);
+        assert_eq!((data.block_count, data.fluid_count), (1025, 1));
+    }
+
+    /// The three heightmaps are the chunk's own: water counts for the two of motion
+    /// and leaves for one of them, and all count for the world's surface.
+    #[test]
+    fn the_packets_heightmaps_are_the_chunks_own() {
+        let mut chunk = flat_chunk();
+        chunk.set(1, -50, 0, blocks::WATER);
+        chunk.set(2, -40, 0, blocks::OAK_LEAVES);
+        chunk.set(3, -30, 0, blocks::SHORT_GRASS);
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk);
+        let heights = |kind| {
+            let map = packet
+                .heightmaps
+                .iter()
+                .find(|map| map.kind == kind)
+                .unwrap();
+            let heights = unpack_heightmap(&map.data, 9).unwrap();
+            [heights[0], heights[1], heights[2], heights[3]]
+        };
+        assert_eq!(heights(heightmap::WORLD_SURFACE), [4, 15, 25, 35]);
+        assert_eq!(heights(heightmap::MOTION_BLOCKING), [4, 15, 25, 4]);
+        assert_eq!(heights(heightmap::MOTION_BLOCKING_NO_LEAVES), [4, 15, 4, 4]);
+    }
+
+    /// A block entity goes out with its place and its type and without its data,
+    /// whatever data it has.
+    #[test]
+    fn a_block_entity_is_sent_without_its_data() {
+        let mut chunk = flat_chunk();
+        chunk.set(5, -60, 9, blocks::CHEST);
+        let at = clustine_world::InChunk::new(5, -60, 9);
+        chunk.set_block_entity_data(at, vec![1, 2, 3]).unwrap();
+        let kind = chunk.block_entities()[&at].kind;
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk);
+        let expected = BlockEntity {
+            packed_xz: 5 << 4 | 9,
+            y: -60,
+            kind: kind.into(),
+            data: None,
+        };
+        assert_eq!(packet.block_entities, [expected]);
+        let bytes = packets::encode(&packet);
+        assert_eq!(
+            ClientboundPlay::decode(&bytes),
+            Ok(ClientboundPlay::LevelChunkWithLight(packet))
+        );
+    }
+
+    /// A section's 64 biomes go out as they are.
+    #[test]
+    fn a_section_of_several_biomes_is_sent_with_each_cells() {
+        let mut sections = flat_chunk().sections().to_vec();
+        let cells = std::array::from_fn(|cell| clustine_world::Biome((cell % 5) as u16));
+        sections[3].set_biomes(Box::new(cells));
+        let chunk = Chunk::from_sections(-64, sections);
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk);
+        let decoded =
+            decode_sections(&packet.sections, 24, BLOCK_PALETTE, biome_palette()).unwrap();
+        for cell in 0..64 {
+            assert_eq!(decoded[3].biomes.get(cell), (cell % 5) as i32);
+        }
+    }
+
+    /// The light is the chunk's where it carries any: full light is an array of
+    /// fifteens, dark is said by the mask, and absent is in neither. A chunk that a
+    /// change has taken the light from is lit by the reckoning of columns, as before.
+    #[test]
+    fn the_packets_light_is_the_chunks_where_it_carries_any() {
+        let mut chunk = flat_chunk();
+        let carried = chunk
+            .light()
+            .cloned()
+            .expect("the flat generator lights its chunks");
+        assert_eq!(carried.sky[2], SectionLight::Full);
+        let with_light = chunk_packet(ChunkPos::new(0, 0), &chunk).light;
+        assert_eq!(with_light.sky_mask, [0b110]);
+        assert_eq!(with_light.empty_sky_mask, [0b001]);
+        assert_eq!(with_light.empty_block_mask, [0b111]);
+        assert!(with_light.block_mask.is_empty() && with_light.block.is_empty());
+        assert_eq!(with_light.sky[1], vec![0xff; LIGHT_ARRAY_LENGTH]);
+
+        // A torch gives light, which the chunk's own light then no longer has.
+        chunk.set(3, -60, 3, blocks::TORCH);
+        assert!(chunk.light().is_none());
+        let reckoned = chunk_packet(ChunkPos::new(0, 0), &chunk).light;
+        assert_eq!(reckoned.sky_mask, [0b110]);
+        assert_eq!(reckoned.empty_block_mask, [0b111]);
+
+        // Block light that is carried is listed like sky light.
+        let mut lit = flat_chunk();
+        let mut light = carried;
+        let mut levels = Box::new([0; LIGHT_ARRAY_LENGTH]);
+        levels[100] = 0x0e;
+        light.block[1] = SectionLight::Levels(levels.clone());
+        lit.set_light(light);
+        let packet = chunk_packet(ChunkPos::new(0, 0), &lit).light;
+        assert_eq!(packet.block_mask, [0b010]);
+        assert_eq!(packet.empty_block_mask, [0b101]);
+        assert_eq!(packet.block, [levels.to_vec()]);
     }
 
     /// The chunk Clustine would send for a classic flat world is what the official
