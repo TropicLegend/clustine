@@ -2137,19 +2137,27 @@ impl Merges {
         }
     }
 
-    /// Fails unless the guest who has joined again is in the world where every player
-    /// enters it, can place and break a block there, and is seen by someone who joins
-    /// now as one entity, the one it was told it is, in that place. `before` is the
-    /// entity it was before it left, and `entered` where players enter the world.
+    /// Fails unless the guest who has joined again is in the world where it stood when
+    /// it left, can place and break a block, and is seen by someone who joins now as
+    /// one entity, the one it was told it is, in that place. `before` is the entity it
+    /// was before it left, and `entered` where it stood then: a player enters the
+    /// world where the store has them (ADR-0020).
     async fn is_back(&mut self, guest: &mut Bot, before: i32, entered: (f64, f64, f64)) {
         let name = guest.info.profile.name.clone();
         let entity = guest.info.login.entity_id;
         let air = Some(i32::from(blocks::AIR.0));
         let acted = async {
-            guest.wait_for_chunks(1, PATIENCE).await?;
-            // Next to where players enter, where none of the bots builds; placed and
-            // broken again, so that the next time finds the spot free.
-            let spot = (2, GROUND, 3);
+            // Two blocks beyond the guest, away from the bots' lanes, where nobody
+            // builds and the guest can reach; placed and broken again, so that the
+            // next time finds the spot free.
+            let (x, _, z) = entered;
+            let spot = (x.floor() as i32, GROUND, z.floor() as i32 + 2);
+            guest
+                .wait_until(PATIENCE, |bot| {
+                    bot.block_at(spot.0, spot.1, spot.2)
+                        .is_ok_and(|block| block.is_some())
+                })
+                .await?;
             let placed = guest
                 .use_item_on(spot.0, spot.1 - 1, spot.2, face::TOP)
                 .await?;
@@ -2241,7 +2249,6 @@ impl Merges {
     async fn leaves_and_joins_again(
         &mut self,
         guest: Bot,
-        entered: (f64, f64, f64),
         what: &str,
         command: Command,
         watched: usize,
@@ -2249,6 +2256,7 @@ impl Merges {
     ) -> (Asked, Bot) {
         let pause = Duration::from_millis(self.random.below(100));
         let address = self.cluster.edge.0.clone();
+        let stood = guest.location;
         let guest = Guest::standing(guest, address, pause);
         let before = self.said(watched, moment);
         let when = self.random.below(3);
@@ -2292,7 +2300,7 @@ impl Merges {
                 "the guest who left and joined again during {what} was not let in: {error:#}"
             )),
         };
-        self.is_back(&mut back, was, entered).await;
+        self.is_back(&mut back, was, stood).await;
         (asked, back)
     }
 }
@@ -2300,8 +2308,8 @@ impl Merges {
 /// E6. A player leaves and joins again under their name while the region they stood
 /// in is merged or split: while it is absorbed, while they are split off it, while it
 /// absorbs another, and while others are split off it. Each time they are in the world
-/// again where players enter it, as one entity, and can build; and the bots, who see
-/// them come and go, never see two of them.
+/// again where they stood when they left, as one entity, and can build; and the bots,
+/// who see them come and go, never see two of them.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_player() {
     if a_repetition() {
@@ -2311,11 +2319,6 @@ async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_pl
     let line = f64::from(LINE);
     let (east, west) = (56.5, 40.5);
     let mut guest = merges.guest_at(None, east).await;
-    // Every player enters the world in the same place, which the guest was put in
-    // and has walked away from.
-    let Some(entered) = guest.position.as_ref().map(|put| (put.x, put.y, put.z)) else {
-        merges.fail("the guest was never put anywhere");
-    };
     // The region beside region 0, east of the line: the eastern stripe at first.
     let mut beside = 1;
     for _ in 0..rounds(1) {
@@ -2327,7 +2330,7 @@ async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_pl
         let command = merges.cluster.merge_command(0, beside);
         let what = format!("region 0 to absorb region {beside}, where the guest stands");
         let (asked, back) = merges
-            .leaves_and_joins_again(guest, entered, &what, command, releasing, moment)
+            .leaves_and_joins_again(guest, &what, command, releasing, moment)
             .await;
         merges.has_absorbed(&asked, 0, beside);
         merges.whole().await;
@@ -2344,7 +2347,7 @@ async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_pl
             let what = "region 0 to be split where the guest stands";
             let moment = "asked to split the region";
             let (asked, back) = merges
-                .leaves_and_joins_again(guest, entered, what, command, survivor, moment)
+                .leaves_and_joins_again(guest, what, command, survivor, moment)
                 .await;
             if let Some(part) = Merges::split_off(&asked, 0) {
                 guest = back;
@@ -2370,7 +2373,7 @@ async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_pl
         let command = merges.cluster.merge_command(0, part);
         let what = format!("region 0 to absorb region {part}, with the guest west of the line");
         let (asked, back) = merges
-            .leaves_and_joins_again(guest, entered, &what, command, owner, moment)
+            .leaves_and_joins_again(guest, &what, command, owner, moment)
             .await;
         merges.has_absorbed(&asked, 0, part);
         merges.whole().await;
@@ -2389,7 +2392,7 @@ async fn a_player_who_leaves_and_joins_again_during_a_merge_or_a_split_is_one_pl
             let what = "region 0 to be split east of where the guest stands";
             let moment = "handing the store a merge or a split";
             let (asked, back) = merges
-                .leaves_and_joins_again(guest, entered, what, command, owner, moment)
+                .leaves_and_joins_again(guest, what, command, owner, moment)
                 .await;
             if let Some(part) = Merges::split_off(&asked, 0) {
                 guest = back;

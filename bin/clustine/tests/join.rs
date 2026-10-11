@@ -13,7 +13,7 @@ use clustine_protocol::codec::Writer;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::handshake::Intent;
 use clustine_protocol::packets::login::{ClientboundLogin, LoginStart};
-use clustine_protocol::packets::play::{ClientboundPlay, game_mode};
+use clustine_protocol::packets::play::{ClientboundPlay, abilities, game_mode};
 use clustine_protocol::text::Text;
 use uuid::Uuid;
 
@@ -136,6 +136,69 @@ async fn a_second_login_of_a_player_puts_the_first_connection_out() {
         .await
         .unwrap();
     assert!(bystander.seen_player("Twin").is_some());
+
+    server.stop().await;
+}
+
+/// A player who left in flight, high in the air and looking somewhere, enters again
+/// there, flying and looking the same way: what the official server sends such a
+/// client (`entering_again_after_leaving_in_flight_on_the_official_server` in
+/// `oracle.rs`) is what Clustine sends it. The abilities with the flying bit come
+/// before the position, and nothing after the position takes either back.
+#[tokio::test]
+async fn a_player_who_left_in_flight_enters_again_where_they_were_flying_and_looking_the_same() {
+    /// Yaw and pitch, in degrees: neither is what a server gives a player by itself.
+    const LOOK: (f32, f32) = (135.0, 30.0);
+    let near = |a: (f64, f64, f64), b: (f64, f64, f64)| {
+        (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01 && (a.2 - b.2).abs() < 0.01
+    };
+    let patience = Duration::from_secs(10);
+    let (server, address) = start().await;
+
+    let mut flyer = Bot::join(&address, "Flyer").await.unwrap();
+    flyer.wait_until(patience, Bot::is_loaded).await.unwrap();
+    // Someone new to the world does not fly.
+    assert!(!flyer.flying, "{:?}", flyer.abilities);
+    let (x, y, z) = flyer.location;
+    let place = (x + 3.0, y + 12.0, z - 2.0);
+    flyer.set_flying(true).await.unwrap();
+    flyer.fly_to(place, LOOK, 1.0).await.unwrap();
+    let mut watcher = Bot::join(&address, "Watcher").await.unwrap();
+    let seen_there = |bot: &Bot| {
+        bot.seen_player("Flyer")
+            .is_some_and(|seen| near(seen.position, place))
+    };
+    watcher.wait_until(patience, seen_there).await.unwrap();
+
+    drop(flyer);
+    watcher
+        .wait_until(patience, |bot| bot.seen_player("Flyer").is_none())
+        .await
+        .unwrap();
+
+    let mut again = Bot::join(&address, "Flyer").await.unwrap();
+    // `join` returns with the first position, so this is what came up to it.
+    let abilities = again.abilities.clone();
+    assert!(
+        abilities
+            .first()
+            .is_some_and(|packet| packet.flags & abilities::FLYING != 0),
+        "{abilities:?}"
+    );
+    let position = again
+        .position
+        .clone()
+        .expect("a bot that joined was sent one");
+    assert!(
+        near((position.x, position.y, position.z), place)
+            && (position.yaw - LOOK.0).abs() < 0.01
+            && (position.pitch - LOOK.1).abs() < 0.01
+            && position.relative_flags == 0,
+        "not the place and the look that were left ({place:?}, {LOOK:?}): {position:?}"
+    );
+    again.wait_until(patience, Bot::is_loaded).await.unwrap();
+    watcher.wait_until(patience, seen_there).await.unwrap();
+    assert!(again.flying && near(again.location, place));
 
     server.stop().await;
 }

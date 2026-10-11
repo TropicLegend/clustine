@@ -989,7 +989,11 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                                     }
                                 },
                             };
-                            let runner = runner.with_checkpoint_interval(checkpoint_interval);
+                            // The home region is told which it is: a stay whose
+                            // place is in another region's land is let go from it.
+                            let runner = runner
+                                .with_id(region)
+                                .with_checkpoint_interval(checkpoint_interval);
                             // Only the runner knows for how long its region did not
                             // tick, and only this loop the region's number: so the
                             // line is written here, on the runner's thread. It is what
@@ -1359,10 +1363,9 @@ fn hold(orders: &Orders, assignment: Assignment) -> Held {
             spawn: orders.spawn,
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
-            // Off until the store, the sim, the runner and the edge have their parts
-            // of it: step R1.5 of `docs/adr/0020-one-stay-per-player.md` turns it on
-            // here and takes the setting away.
-            place_by_store: false,
+            // A player's place is the world store's to keep, and a join waits for
+            // its word (`docs/adr/0020-one-stay-per-player.md`).
+            place_by_store: true,
             lowest_y: lowest_y(),
         },
     }

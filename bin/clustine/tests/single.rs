@@ -194,13 +194,16 @@ async fn settle(bot: &mut Bot, center: (i32, i32)) {
     });
 }
 
-/// Joins and waits for the chunks around the spawn point.
+/// Joins and waits for the chunks around the place the bot is put: the spawn point
+/// for someone new to the world, and otherwise where they were when they left.
 async fn join(address: &str, name: &str) -> Bot {
     let mut bot = match Bot::join(address, name).await {
         Ok(bot) => bot,
         Err(error) => panic!("{name} could not join: {error:#}"),
     };
-    settle(&mut bot, (0, 0)).await;
+    let (x, _, z) = bot.location;
+    let chunk = ChunkPos::containing(x, z);
+    settle(&mut bot, (chunk.x, chunk.z)).await;
     bot
 }
 

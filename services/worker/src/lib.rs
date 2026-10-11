@@ -462,7 +462,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 4;
+pub const STATE_FORMAT: u8 = 5;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -6595,16 +6595,20 @@ mod tests {
     /// their join; a remote action and the entry that says it is done name an entity;
     /// an entry of a split names each stay's attempt; there is an entry for a stay the
     /// server ended; and a state has its entering stays, a delta those that changed.
+    /// Format 5 has the same bytes as format 4. The number was raised because a state
+    /// of format 4 has stays the world store has no record of, which a build that
+    /// keeps the players' places with the store cannot take up (ADR-0020, "Building
+    /// it").
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 4);
+        assert_eq!(STATE_FORMAT, 5);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "0004020280808001060110000000000000000000000000000000020404416c65780000000000002d",
+                "0005020280808001060110000000000000000000000000000000020404416c65780000000000002d",
                 "400000000000004ec0000000000000e03f0000000000000000010000000000000000000002000700",
                 "00000107030102060601040010000000000000000000000000000000039a01054e6f746368000000",
                 "00004044400000000000004ec0000000000000e03f00000000000000000000000000000000000000",
@@ -6618,7 +6622,7 @@ mod tests {
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00040201060210000000000000000000000000000000010010000000000000000000000000000000",
+                "00050201060210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010404416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
                 "01000000000000000000000200070000000107010301020600000601040010000000000000000000",
                 "000000000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f00",
