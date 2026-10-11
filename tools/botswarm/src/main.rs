@@ -305,6 +305,9 @@ async fn main() -> Result<()> {
                 lane_spacing,
                 to_the_lane,
                 pulse,
+                // Who was on a server before, a command cannot know.
+                earlier: None,
+                ..Ledger::default()
             };
             let address = reachable(target(address)).await?;
             let started = std::time::Instant::now();

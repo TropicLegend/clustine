@@ -11,7 +11,12 @@
 //! once the server has acknowledged it, with what the server then said the block is. The
 //! scenario fails unless all of this holds:
 //!
-//! - nobody is disconnected, and nobody is moved by the server after joining;
+//! - nobody is disconnected unless the scenario says a connection may be lost, and
+//!   nobody is moved by the server after entering;
+//! - whoever enters the world is where the server has to put them, looking as it has
+//!   to have them look, flying or not, with the hotbar and the held slot it has to
+//!   give them: the spawn point and the starting hotbar for someone who was never in
+//!   the world, and otherwise what they left with (see below);
 //! - every action is acknowledged within the patience, and has the effect it has on a
 //!   server that nobody disturbs: a placed block is the block of the item the bot
 //!   believes to hold, a broken one is air;
@@ -23,7 +28,34 @@
 //! - no bot ever sees two entities for one player, and the entity of another bot does
 //!   not vanish unless it was far enough away to have walked out of view;
 //! - at the end every bot is seen by the others, and by the auditor, where it stands,
-//!   as the entity it was when it joined.
+//!   as the entity it was when it last joined.
+//!
+//! **Leaving and joining again.** A server that keeps a player's place
+//! (`docs/adr/0020-one-stay-per-player.md`) puts whoever joins again where they left.
+//! Whoever runs a scenario can have its bots end their stay and begin another while
+//! they play, with [`Progress::joins_again`], in each of the ways of [`Again`]; a
+//! scenario can also allow its bots to lose their connections
+//! ([`Ledger::may_lose_connection`]), after which they join again by themselves. Each
+//! time the bot compares what the server says on entering with what it had: exactly
+//! that after a leave in good order, and otherwise any state the bot was in since the
+//! last one the server is known to have kept; [`Left`] has the rule and where the
+//! record says so. For a bot that logs in a second time while connected, the first
+//! connection has to be ended with the game's sentence for that and nothing else. A
+//! later stay has a higher entity id than the one before it. The entity of a stay that
+//! ended may vanish from under the others' eyes, and is the only one that may.
+//!
+//! What a bot had sent and not seen acknowledged when it lost its connection is **in
+//! doubt**: the block is as it was or as the action would have left it, and for as
+//! long as [`Ledger::doubt`] says the old connection's last words may still be on
+//! their way through the server, it may change from the one to the other. The bot
+//! leaves such a block alone meanwhile, and then takes what it is shown as the last
+//! word about it. What was acknowledged is not in doubt, however the connection
+//! ended.
+//!
+//! A scenario hands on what its bots and its auditor left with
+//! ([`LedgerReport::left`]) for a later scenario to hold the server to
+//! ([`Ledger::earlier`]), also after everything that serves the world was stopped and
+//! started.
 //!
 //! The plots the bots build on are disjoint, so what a block should be is always one
 //! bot's word.
@@ -44,7 +76,7 @@
 //! places, if their lanes are apart and their names begin differently.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,11 +84,12 @@ use anyhow::{Context, Result, bail, ensure};
 use clustine_data::{ITEMS, blocks, entity_types, items};
 use clustine_protocol::item::ItemStack;
 use clustine_protocol::packets::play::face;
+use clustine_protocol::text::Text;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::Bot;
+use crate::{Behaviour, Bot, Ending, Entry as Entrance, Kept, Left, SeenEntity, World};
 
 /// The height of the surface of a flat world, which is the height players stand at and
 /// the height the bots build at.
@@ -93,6 +126,14 @@ const MOST_PENDING: usize = 8;
 const ARRIVED: f64 = 1e-6;
 
 const AIR: i32 = blocks::AIR.0 as i32;
+
+/// The key of the game's sentence for a connection that is ended because its player
+/// logged in again: "You logged in from another location".
+const DUPLICATE_LOGIN: &str = "multiplayer.disconnect.duplicate_login";
+
+/// How long the regions remember an edge they no longer hear from, 600 ticks, which is
+/// how long something a lost connection had sent can still take effect.
+const AN_EDGE_IS_FORGOTTEN: Duration = Duration::from_secs(30);
 
 /// The items the bots take into their hotbars. Each is a block.
 const PALETTE: [i32; 7] = [
@@ -153,6 +194,33 @@ pub struct Ledger {
     /// nothing. It is there to be waited for, so that how long the server takes to
     /// answer is known also of a bot that happens to be doing nothing else.
     pub pulse: Option<u32>,
+    /// What the bots of this scenario and its auditor left this world with when they
+    /// were last in it, by name: [`LedgerReport::left`] of the scenario they played in
+    /// then. Whoever is named has to enter as [`Left::fault`] allows, and whoever is
+    /// not, as someone who was never in the world ([`World::newcomer_fault`]). `None`
+    /// where it is not known who was in the world before: what a bot is given when it
+    /// first enters is not judged then.
+    ///
+    /// Bots that were in the world before enter on the lanes they left on. A scenario
+    /// that gives them other lanes has them walk there through the plots of whoever
+    /// plays beside them, where the server then places no block.
+    pub earlier: Option<BTreeMap<String, Left>>,
+    /// What the server does with players it has no place for.
+    pub world: World,
+    /// Whether a bot's connection may end without the server saying why, as it does
+    /// when the edge it went through is killed. Such a bot joins again, trying for as
+    /// long as its patience lasts, and holds the server to what it had ([`Left`]).
+    /// Without this, any end of a connection the scenario did not ask for fails it.
+    /// A connection the server ends with a reason fails it either way.
+    pub may_lose_connection: bool,
+    /// For how long after a bot's connection ended with something sent and not
+    /// acknowledged the block that was about may still change: until the server has
+    /// applied or forgotten the last of what the connection sent. The record's plan
+    /// has such a block "in doubt until the old edge is gone: until every region has
+    /// forgotten it or it was killed" (`docs/groundwork/replicas-plan.md`, section 7),
+    /// and a region forgets an edge after 600 ticks. A bot cannot see that moment, so
+    /// it is told how long to allow.
+    pub doubt: Duration,
 }
 
 impl Default for Ledger {
@@ -172,14 +240,58 @@ impl Default for Ledger {
             lane_spacing: LANE_SPACING,
             to_the_lane: TO_THE_LANE,
             pulse: None,
+            earlier: Some(BTreeMap::new()),
+            world: World::clustine(),
+            may_lose_connection: false,
+            doubt: AN_EDGE_IS_FORGOTTEN,
         }
     }
 }
 
+/// A way for a bot to end its stay in the world and begin another while it plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Again {
+    /// Leaves in good order and joins again: the bot waits until the server has
+    /// answered everything it sent, closes its connection and logs in. It has to find
+    /// itself exactly as it left.
+    Leave,
+    /// Closes its connection in the middle of whatever it is doing, as a client does
+    /// that crashes or loses its network, and logs in at once. It has to find itself
+    /// in one of the states it was in since the last the server acknowledged, and what
+    /// it had sent and not seen acknowledged is in doubt.
+    Vanish,
+    /// Logs in a second time while it is connected, and walks on as the first
+    /// connection meanwhile. The first connection has to be ended with the game's
+    /// sentence for it, and the second has to find itself in one of the states the
+    /// first was in since it began to log in again.
+    SecondLogin,
+}
+
+/// How a stay of a bot ended, for a message: it follows "after it".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parting {
+    Left,
+    Vanished,
+    LoggedInAgain,
+    Lost,
+}
+
+impl std::fmt::Display for Parting {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Left => "left in good order",
+            Self::Vanished => "closed its connection in the middle of playing",
+            Self::LoggedInAgain => "logged in a second time while connected",
+            Self::Lost => "lost its connection",
+        })
+    }
+}
+
 /// What a run of the ledger scenario observed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LedgerReport {
-    /// How many actions on blocks the bots took, all of which were acknowledged.
+    /// How many actions on blocks the bots took, all of which were acknowledged but
+    /// for those of [`LedgerReport::in_doubt`].
     pub actions: u32,
     pub placed: u32,
     pub broken: u32,
@@ -202,6 +314,20 @@ pub struct LedgerReport {
     /// when the scenario is over, for whoever wants to look again later, with
     /// [`audit_blocks`].
     pub blocks: BTreeMap<(i32, i32, i32), i32>,
+    /// How many times a bot ended its stay and began another: because it was asked to
+    /// ([`Progress::joins_again`]) or because it lost its connection. Each time it
+    /// found itself as the server had to have it.
+    pub joins_again: u32,
+    /// In how many of those the bot found itself in another state than the last it
+    /// had sent: behind its own screen, by what the server had not applied or not
+    /// kept when the stay ended.
+    pub behind: u32,
+    /// How many of the actions had not been acknowledged when their bot's connection
+    /// ended, and so were in doubt for a while.
+    pub in_doubt: u32,
+    /// What every bot and the auditor left the world with, by name: for
+    /// [`Ledger::earlier`] of a scenario that has them join the same world again.
+    pub left: BTreeMap<String, Left>,
 }
 
 impl std::fmt::Display for LedgerReport {
@@ -222,7 +348,16 @@ impl std::fmt::Display for LedgerReport {
             self.blocks_audited,
             self.longest_wait.as_secs_f64(),
             self.longest_wait_of,
-        )
+        )?;
+        if self.joins_again > 0 {
+            write!(
+                formatter,
+                "; {} times a bot joined again and was as it had to be, {} of them behind \
+                 what it had last sent, with {} actions in doubt",
+                self.joins_again, self.behind, self.in_doubt
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -283,6 +418,13 @@ pub struct BotProgress {
     /// on a block or a pulse, and up to which the server has acknowledged them.
     pub sent: i32,
     pub acknowledged: i32,
+    /// How many times the bot has entered the world. The sequence numbers begin anew
+    /// with each.
+    pub joins: u32,
+    /// Whether the bot has done what it was last asked with
+    /// [`Progress::joins_again`], and is back in the world; true of a bot that was
+    /// never asked.
+    pub back: bool,
 }
 
 #[derive(Default)]
@@ -296,6 +438,11 @@ struct BotCounters {
     acknowledged: AtomicI32,
     /// Everything the bot sent that is acknowledged, in the order it was sent.
     waits: Mutex<Vec<Wait>>,
+    joins: AtomicU32,
+    /// The how manieth time the bot is asked to end its stay and begin another, and
+    /// how, if it was ever asked; and the number of the last time it did.
+    asked: Mutex<Option<(u64, Again)>>,
+    back: AtomicU64,
 }
 
 /// Something a bot sent that the server acknowledges, an action on a block or a pulse,
@@ -359,6 +506,9 @@ pub struct Progress {
     bots: Vec<BotCounters>,
     crossings: watch::Sender<Option<LineCrossing>>,
     course: Mutex<Course>,
+    /// The entity of every stay of a bot that has ended or is about to: noted by the
+    /// bot before it goes, so that the others know why the entity vanishes.
+    ended: Mutex<BTreeSet<i32>>,
 }
 
 impl Progress {
@@ -372,7 +522,45 @@ impl Progress {
                 number: 1,
                 between: None,
             }),
+            ended: Mutex::new(BTreeSet::new()),
         })
+    }
+
+    /// Asks the bot numbered `bot` to end its stay and begin another in the way `how`,
+    /// which it does before its next step if it is playing; see [`Again`]. Asked
+    /// again before it has, it does the latest once. [`BotProgress::back`] says when
+    /// it is in the world again, having found itself as the server had to have it: a
+    /// bot that does not ends the scenario with what was wrong. A bot that is not on
+    /// its lane yet does it when it is, and one that has stopped playing never does.
+    pub fn joins_again(&self, bot: usize, how: Again) {
+        let mut asked = self.bots[bot].asked.lock().expect("nobody panics with it");
+        let order = asked.map_or(0, |(order, _)| order) + 1;
+        *asked = Some((order, how));
+    }
+
+    /// Asks every bot to end its stay and begin another; see [`Progress::joins_again`].
+    pub fn all_join_again(&self, how: Again) {
+        for bot in 0..self.bots.len() {
+            self.joins_again(bot, how);
+        }
+    }
+
+    /// Whether every bot has done what it was last asked with
+    /// [`Progress::joins_again`].
+    pub fn back(&self) -> bool {
+        self.bots().iter().all(|bot| bot.back)
+    }
+
+    /// Notes that the stay with the entity `entity` ends.
+    fn stay_ends(&self, entity: i32) {
+        let mut ended = self.ended.lock().expect("nobody panics with it");
+        ended.insert(entity);
+    }
+
+    /// Whether `entity` is of a stay of one of the bots that has ended.
+    fn has_ended(&self, entity: i32) -> bool {
+        let ended = self.ended.lock().expect("nobody panics with it");
+        ended.contains(&entity)
     }
 
     /// Sends the bots elsewhere: from now on they walk up and down between the x
@@ -435,7 +623,10 @@ impl Progress {
                 // that is within its coordinates, so one that is said to have arrived
                 // is not then seen where it was a step earlier, outside them.
                 let arrived = bot.within.load(Ordering::SeqCst) == course;
+                let asked = *bot.asked.lock().expect("nobody panics with it");
                 BotProgress {
+                    joins: bot.joins.load(Ordering::SeqCst),
+                    back: asked.is_none_or(|(order, _)| order == bot.back.load(Ordering::SeqCst)),
                     playing: bot.playing.load(Ordering::Relaxed),
                     x: f64::from_bits(bot.x.load(Ordering::SeqCst)),
                     arrived,
@@ -494,6 +685,88 @@ enum Stage {
     Acknowledged(Instant),
     /// Acknowledged and shown.
     Shown,
+    /// The bot's connection ended before it was acknowledged. Whether it was done is
+    /// in doubt for a while, and then what the bot is shown.
+    Lost,
+}
+
+/// A block that an action was sent for and not acknowledged before the bot's
+/// connection ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Doubt {
+    /// What the block was before the action, and what the action would leave.
+    before: i32,
+    after: i32,
+    /// Until when it may still change from the one to the other.
+    until: Instant,
+}
+
+impl Doubt {
+    /// What is wrong with the block being shown as `seen`, if anything: the action
+    /// was done or it was not, and nothing else touches the block.
+    fn fault(&self, seen: i32) -> Option<String> {
+        (seen != self.before && seen != self.after).then(|| {
+            format!(
+                "is shown as {seen}: an action on it was sent and not acknowledged when \
+                 the connection ended, which leaves it as it was, {}, or as the action \
+                 leaves it, {}",
+                self.before, self.after
+            )
+        })
+    }
+}
+
+/// The entity of another bot that vanished from close by, and that no stay that ended
+/// accounts for yet.
+struct Unexplained {
+    entity: SeenEntity,
+    name: String,
+    since: Instant,
+    /// Where the bot that saw it stood, as x and z.
+    from: (f64, f64),
+}
+
+/// What is wrong with how the first connection of a player ended who logged in a
+/// second time, if anything; `None` for `ended` is a connection that was still there
+/// when the patience ran out.
+fn put_out_fault(ended: Option<&Ending>) -> Option<String> {
+    const RULE: &str = "a second login puts the first connection out with the game's \
+                        sentence for it, multiplayer.disconnect.duplicate_login";
+    match ended {
+        Some(Ending::Disconnected(reason))
+            if reason.text == Text::translatable(DUPLICATE_LOGIN) =>
+        {
+            None
+        }
+        Some(ending) => Some(format!(
+            "{RULE}, but the first connection ended with {ending}"
+        )),
+        None => Some(format!("{RULE}, but the first connection was not ended")),
+    }
+}
+
+/// What is wrong with a player being the entity `later` in the stay after the one in
+/// which they were `earlier`, if anything: entity ids never go back for the life of a
+/// world, which is what orders two stays everywhere (the record's section 7).
+fn later_stay_fault(earlier: i32, later: i32) -> Option<String> {
+    (later <= earlier).then(|| {
+        format!(
+            "the server made the player entity {later} in a stay after the one in which \
+             they were entity {earlier}: a later stay has a higher entity id"
+        )
+    })
+}
+
+/// What is wrong with what the server said to `name` when it first entered the world
+/// in this scenario, if anything.
+fn first_fault(ledger: &Ledger, name: &str, told: &Kept) -> Option<String> {
+    let earlier = ledger.earlier.as_ref()?;
+    match earlier.get(name) {
+        Some(left) => left
+            .fault(&ledger.world, told)
+            .map(|fault| format!("{name} was in this world before: {fault}")),
+        None => ledger.world.newcomer_fault(told),
+    }
 }
 
 /// A line of a ledger.
@@ -530,7 +803,7 @@ impl std::fmt::Display for Entry {
 struct Finished {
     bot: usize,
     name: String,
-    /// The entity the bot was told it is when it joined.
+    /// The entity the bot was told it is when it last joined.
     entity_id: i32,
     /// The x and z coordinates the bot stands at.
     location: (f64, f64),
@@ -540,6 +813,11 @@ struct Finished {
     crossings: u32,
     hotbar_changes: u32,
     shown_late: u32,
+    joins_again: u32,
+    behind: u32,
+    in_doubt: u32,
+    /// What the bot leaves the world with.
+    left: Left,
 }
 
 /// What all the bots handed in, for each of them to compare with what it sees.
@@ -559,8 +837,8 @@ struct Standing {
 }
 
 impl Standing {
-    /// What `bot` sees differently, if anything: the player has to be the entity it
-    /// was from the start, in the place where it stands.
+    /// What `bot` sees differently, if anything: the player has to be the entity of
+    /// its present stay, in the place where it stands.
     fn fault(&self, bot: &Bot) -> Option<String> {
         let (x, z) = self.location;
         let seen = bot
@@ -594,6 +872,11 @@ fn lane_block(ledger: &Ledger, number: usize) -> i32 {
 /// The name of the bot numbered `number`.
 fn bot_name(prefix: &str, number: usize) -> String {
     format!("{prefix}Ledger{number}")
+}
+
+/// The name of the scenario's auditor.
+fn auditor_name(ledger: &Ledger) -> String {
+    format!("{}Auditor", ledger.name_prefix)
 }
 
 /// Runs the ledger scenario against the server at `address`. Fails if any of what the
@@ -652,7 +935,10 @@ pub async fn ledger(
     let mut finished: Vec<Finished> = Vec::new();
     while finished.len() < ledger.bots {
         tokio::select! {
-            one = finished_out.recv() => finished.push(one.context("the bots are gone")?),
+            one = finished_out.recv() => match one {
+                Some(one) => finished.push(one),
+                None => return Err(gone(&mut bots).await),
+            },
             Some(ended) = bots.join_next() => {
                 ended??;
                 bail!("a bot left before it was told to");
@@ -685,10 +971,10 @@ pub async fn ledger(
     let mut checked = 0;
     while checked < ledger.bots {
         tokio::select! {
-            one = checked_out.recv() => {
-                one.context("the bots are gone")?;
-                checked += 1;
-            }
+            one = checked_out.recv() => match one {
+                Some(()) => checked += 1,
+                None => return Err(gone(&mut bots).await),
+            },
             Some(ended) = bots.join_next() => {
                 ended??;
                 bail!("a bot left before it was told to");
@@ -700,7 +986,7 @@ pub async fn ledger(
     // have to be heard: one of them failing now is as much a failure as before.
     let auditing = audit(address, ledger, &conclusions);
     tokio::pin!(auditing);
-    let blocks_audited = tokio::select! {
+    let (blocks_audited, auditor_left) = tokio::select! {
         audited = &mut auditing => audited.context("the auditor found fault")?,
         Some(ended) = bots.join_next() => {
             ended??;
@@ -743,7 +1029,30 @@ pub async fn ledger(
             .iter()
             .map(|((x, z), (word, _))| ((*x, GROUND, *z), *word))
             .collect(),
+        joins_again: finished.iter().map(|bot| bot.joins_again).sum(),
+        behind: finished.iter().map(|bot| bot.behind).sum(),
+        in_doubt: finished.iter().map(|bot| bot.in_doubt).sum(),
+        left: finished
+            .iter()
+            .map(|bot| (bot.name.clone(), bot.left.clone()))
+            .chain([(auditor_name(ledger), auditor_left)])
+            .collect(),
     })
+}
+
+/// Why the bots of a scenario are all gone before it was over: what the first of them
+/// that failed found wrong. When all fail at the same moment, as on joining, the
+/// scenario can notice that nobody is left before it has looked at how any of them
+/// ended.
+async fn gone(bots: &mut JoinSet<Result<()>>) -> anyhow::Error {
+    while let Some(ended) = bots.join_next().await {
+        match ended {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return error,
+            Err(error) => return error.into(),
+        }
+    }
+    anyhow::anyhow!("the bots left before they were told to")
 }
 
 /// Whether a boundary lies between someone standing at `from` and the block at `x`.
@@ -842,6 +1151,8 @@ fn surely_in_view(from: (i32, i32), to: (i32, i32), view_distance: i32) -> bool 
 /// One bot of the scenario with what it believes and what it has been told.
 struct Player {
     bot: Bot,
+    /// Where the server listens, for joining again.
+    address: String,
     number: usize,
     name: String,
     ledger: Ledger,
@@ -850,7 +1161,8 @@ struct Player {
     /// The z coordinate of the lane, and of the two rows of the plot beside it.
     lane: f64,
     rows: [i32; 2],
-    /// The x coordinate of the block column the bot entered the world in.
+    /// The x coordinate of the block column in which players who are new to the world
+    /// enter it.
     entered: i32,
     /// The slot and the items the bot believes to hold, and what the server last said
     /// about each, which it says rarely.
@@ -872,6 +1184,17 @@ struct Player {
     /// How many of the waits the bot has noted in the progress are acknowledged, which
     /// are the first so many: acknowledgements cover everything before them.
     answered: usize,
+    /// The blocks that are in doubt since the bot's connection ended.
+    doubts: BTreeMap<Cell, Doubt>,
+    /// Entities of other bots that vanished from close by and that no stay that ended
+    /// accounts for yet.
+    unexplained: Vec<Unexplained>,
+    /// How many times the bot ended its stay and began another, how many of those it
+    /// came back behind the last state it had sent, and how many actions were left in
+    /// doubt.
+    joins_again: u32,
+    behind: u32,
+    in_doubt: u32,
 }
 
 impl Player {
@@ -884,9 +1207,24 @@ impl Player {
         progress: Arc<Progress>,
     ) -> Result<Self> {
         let mut bot = Bot::join(address, &name).await?;
+        // Before the bot sends anything, so that it knows what it had however its
+        // connection ends.
+        bot.remember();
+        let told = bot.entered(ledger.patience).await?;
+        if let Some(fault) = first_fault(ledger, &name, &told) {
+            bail!("{fault}");
+        }
         bot.wait_for_chunks(1, ledger.patience).await?;
+        progress.bots[number].joins.store(1, Ordering::SeqCst);
         let lane_block = lane_block(ledger, number);
+        // Where newcomers enter, which is where this bot entered unless it was in the
+        // world before or nobody knows who was.
+        let entered = match &ledger.earlier {
+            Some(_) => ledger.world.spawn.0,
+            None => bot.location.0,
+        };
         Ok(Self {
+            address: address.to_owned(),
             number,
             name,
             ledger: ledger.clone(),
@@ -897,7 +1235,7 @@ impl Player {
             ),
             lane: f64::from(lane_block) + 0.5,
             rows: [lane_block + 1, lane_block + 2],
-            entered: bot.location.0.floor() as i32,
+            entered: entered.floor() as i32,
             slot: bot.selected_slot as i16,
             hotbar: bot.hotbar,
             told_slot: bot.selected_slot,
@@ -910,6 +1248,11 @@ impl Player {
             shown_late: 0,
             ticks: 0,
             answered: 0,
+            doubts: BTreeMap::new(),
+            unexplained: Vec::new(),
+            joins_again: 0,
+            behind: 0,
+            in_doubt: 0,
             bot,
         })
     }
@@ -933,6 +1276,12 @@ impl Player {
             crossings: self.crossings,
             hotbar_changes: self.hotbar_changes,
             shown_late: self.shown_late,
+            joins_again: self.joins_again,
+            behind: self.behind,
+            in_doubt: self.in_doubt,
+            // One state: the bot has stood still since the server acknowledged the
+            // last thing it sent, and sends nothing more.
+            left: self.bot.left(),
         };
         // Nobody listens any more if the scenario has failed elsewhere.
         let _ = finished.send(handed_in).await;
@@ -1004,28 +1353,21 @@ impl Player {
             if over {
                 break;
             }
-            self.act().await?;
-            if let Some(every) = self.ledger.pulse
-                && self.ticks % u64::from(every) == 0
-            {
-                self.pulse().await?;
+            // Whoever was asked to end their stay and begin another does that before
+            // anything else, and then looks where they are.
+            if let Some((order, how)) = self.asked() {
+                self.goes_and_comes_back(how, speed).await?;
+                // Where it is and what it has been answered is noted before it is
+                // said to be back, so that nobody reads of it what was true of the
+                // connection before.
+                self.settle()?;
+                self.progress.bots[self.number]
+                    .back
+                    .store(order, Ordering::SeqCst);
+                continue;
             }
-            self.ticks += 1;
-            let to = stride(from, end, speed);
-            // On its way to where it was sent a bot may walk further in one direction
-            // than it sees, and an action is only settled once its block is shown as
-            // the action leaves it. So it stands still rather than lose sight of a
-            // block it waits for, as a player would who wants to see what became of
-            // it. Between its coordinates a bot is never held up.
-            let waits_to_see = !within(from, between) && self.loses_sight(to);
-            // Nor does it take a step that leads nowhere, which would take no tick.
-            if waits_to_see || (to - from).abs() <= ARRIVED {
-                self.bot
-                    .idle(TICK)
-                    .await
-                    .with_context(|| format!("disconnected while standing at x = {from:.2}"))?;
-            } else {
-                self.step_to(to, speed).await?;
+            if let Err(error) = self.takes_a_turn(from, end, speed, between).await {
+                self.lost(error).await?;
             }
             self.settle()?;
 
@@ -1050,23 +1392,287 @@ impl Player {
             .playing
             .store(false, Ordering::Relaxed);
 
-        while !self.open.is_empty() || self.unanswered().is_some() {
+        loop {
+            self.settles_down().await?;
+            self.still_as_told()?;
+            // The chunks follow a player; once they have, the server knows where the
+            // bot is.
+            let own_chunk = chunk_of(self.bot.location.0, self.bot.location.2);
+            let followed = self
+                .bot
+                .wait_until(self.ledger.patience, |bot| {
+                    bot.center == Some(own_chunk) && bot.chunks.contains_key(&own_chunk)
+                })
+                .await
+                .context("the chunks around the player did not follow");
+            match followed {
+                Ok(()) => break,
+                // A bot that joined again has to settle down once more.
+                Err(error) => self.lost(error).await?,
+            }
+        }
+        self.settle()
+    }
+
+    /// One client tick of playing: perhaps something a player does, a pulse if one is
+    /// due, and a step along the lane from `from` towards `end`.
+    async fn takes_a_turn(
+        &mut self,
+        from: f64,
+        end: f64,
+        speed: f64,
+        between: (f64, f64),
+    ) -> Result<()> {
+        self.act().await?;
+        if let Some(every) = self.ledger.pulse
+            && self.ticks % u64::from(every) == 0
+        {
+            self.pulse().await?;
+        }
+        self.ticks += 1;
+        let to = stride(from, end, speed);
+        // On its way to where it was sent a bot may walk further in one direction
+        // than it sees, and an action is only settled once its block is shown as
+        // the action leaves it. So it stands still rather than lose sight of a
+        // block it waits for, as a player would who wants to see what became of
+        // it. Between its coordinates a bot is never held up.
+        let waits_to_see = !within(from, between) && self.loses_sight(to);
+        // Nor does it take a step that leads nowhere, which would take no tick.
+        if waits_to_see || (to - from).abs() <= ARRIVED {
             self.bot
                 .idle(TICK)
                 .await
-                .context("disconnected while waiting for acknowledgements")?;
-            self.settle()?;
+                .with_context(|| format!("disconnected while standing at x = {from:.2}"))
+        } else {
+            self.step_to(to, speed).await
         }
-        self.still_as_told()?;
-        // The chunks follow a player; once they have, the server knows where the bot is.
-        let own_chunk = chunk_of(self.bot.location.0, self.bot.location.2);
-        self.bot
-            .wait_until(self.ledger.patience, |bot| {
-                bot.center == Some(own_chunk) && bot.chunks.contains_key(&own_chunk)
-            })
+    }
+
+    /// Stands still until the server has dealt with everything the bot sent, nothing
+    /// is in doubt any more, and the server has kept everything the bot has: the
+    /// acknowledgement of something sent after the bot's last step says so. After
+    /// this, and until the bot sends something, what it would leave with is one state.
+    async fn settles_down(&mut self) -> Result<()> {
+        loop {
+            while !self.open.is_empty() || self.unanswered().is_some() || !self.doubts.is_empty() {
+                if let Err(error) = self.bot.idle(TICK).await {
+                    let error = error.context("disconnected while waiting for acknowledgements");
+                    self.lost(error).await?;
+                }
+                self.settle()?;
+            }
+            if self.bot.left().since.is_empty() {
+                return Ok(());
+            }
+            if let Err(error) = self.pulse().await {
+                self.lost(error).await?;
+            }
+        }
+    }
+
+    /// How the bot was asked to end its stay and begin another, with the number of
+    /// that word, if it was and has not done it yet.
+    fn asked(&self) -> Option<(u64, Again)> {
+        let counters = &self.progress.bots[self.number];
+        let asked = *counters.asked.lock().expect("nobody panics with it");
+        asked.filter(|(order, _)| *order != counters.back.load(Ordering::SeqCst))
+    }
+
+    /// Ends the bot's stay in the way `how` and begins another; see [`Again`]. Fails
+    /// unless the server has the bot as it has to. `speed` is what the bot walks at.
+    async fn goes_and_comes_back(&mut self, how: Again, speed: f64) -> Result<()> {
+        match how {
+            Again::Leave | Again::Vanish => {
+                let parting = if how == Again::Leave {
+                    self.settles_down().await?;
+                    Parting::Left
+                } else {
+                    Parting::Vanished
+                };
+                let left = self.bot.left();
+                self.progress.stay_ends(self.bot.info.login.entity_id);
+                // A connection that is going anyway may refuse to be closed.
+                let _ = self.bot.close().await;
+                let bot = self.connects().await?;
+                self.enters_again(left, bot, parting).await
+            }
+            Again::SecondLogin => {
+                // Nothing is to be in doubt: this is about where the player is put.
+                self.settles_down().await?;
+                // From here on the first connection's acknowledgements say nothing
+                // about what is kept; see `Journal::hold`.
+                self.bot.hold_what_is_sure();
+                self.progress.stay_ends(self.bot.info.login.entity_id);
+                let (_, between) = self.course();
+                let (lane, patience) = (self.lane, self.ledger.patience);
+                let entered = AtomicBool::new(false);
+                let first = &mut self.bot;
+                // Both at once, so that the first connection walks while the second
+                // logs in, and neither waits for the other's packets to be read.
+                let (ended, second) = tokio::join!(
+                    async {
+                        let mut eastwards = true;
+                        while !entered.load(Ordering::Relaxed) {
+                            let from = first.location.0;
+                            eastwards = heading(from, eastwards, between);
+                            let end = if eastwards { between.1 } else { between.0 };
+                            let to = stride(from, end, speed);
+                            // The server ends this connection in the middle of a
+                            // step, sooner or later.
+                            if first.walk_to(to, lane, speed).await.is_err() {
+                                break;
+                            }
+                        }
+                        first.wait_for_end(patience).await
+                    },
+                    async {
+                        let entrance =
+                            Bot::attempt(&self.address, &self.name, Behaviour::default()).await;
+                        entered.store(true, Ordering::Relaxed);
+                        entrance
+                    }
+                );
+                if let Some(fault) = put_out_fault(ended.as_ref()) {
+                    bail!("{} logged in a second time: {fault}", self.name);
+                }
+                let bot = match second.context("the second login failed")? {
+                    Entrance::Entered(bot) => *bot,
+                    Entrance::Refused { state, reason } => bail!(
+                        "{} logged in a second time and was refused {state}: {reason}",
+                        self.name
+                    ),
+                };
+                let left = self.bot.left();
+                self.enters_again(left, bot, Parting::LoggedInAgain).await
+            }
+        }
+    }
+
+    /// What a bot does when something failed on its connection, with what failed. If
+    /// the scenario lets connections be lost and this one ended without a word of the
+    /// server, the bot joins again and holds the server to what it had. Anything else
+    /// fails as it would have.
+    async fn lost(&mut self, error: anyhow::Error) -> Result<()> {
+        if !self.ledger.may_lose_connection {
+            return Err(error);
+        }
+        match self.bot.wait_for_end(self.ledger.patience).await {
+            Some(Ending::Closed(_)) => {}
+            Some(ending) => {
+                return Err(error.context(format!("the connection ended with {ending}")));
+            }
+            // Still connected: whatever failed, the connection was not lost.
+            None => return Err(error),
+        }
+        let left = self.bot.left();
+        // The others may have seen the entity go before this bot knew; they wait for
+        // this word as long as they wait for anything.
+        self.progress.stay_ends(self.bot.info.login.entity_id);
+        let bot = self
+            .connects()
             .await
-            .context("the chunks around the player did not follow")?;
-        self.settle()
+            .context("after the connection was lost")?;
+        self.enters_again(left, bot, Parting::Lost).await
+    }
+
+    /// Logs in again. Where connections may be lost, nothing may be listening for a
+    /// moment, as when an edge that was killed is being started: the bot tries until
+    /// its patience runs out. A server that answers and refuses is not tried again.
+    async fn connects(&self) -> Result<Bot> {
+        let deadline = Instant::now() + self.ledger.patience;
+        loop {
+            match Bot::attempt(&self.address, &self.name, Behaviour::default()).await {
+                Ok(Entrance::Entered(bot)) => return Ok(*bot),
+                Ok(Entrance::Refused { state, reason }) => {
+                    bail!(
+                        "{} was refused {state} when it joined again: {reason}",
+                        self.name
+                    )
+                }
+                Err(_) if self.ledger.may_lose_connection && Instant::now() < deadline => {
+                    tokio::time::sleep(TICK).await;
+                }
+                Err(error) => {
+                    return Err(error.context(format!("{} could not join again", self.name)));
+                }
+            }
+        }
+    }
+
+    /// Takes `bot`, a new connection of this player that has just entered the world,
+    /// for the bot's own. Fails unless the server said on entering what it may say to
+    /// a player who left with `left`; see [`Left::fault`]. What was under way on the
+    /// old connection is in doubt from here on, or lost.
+    async fn enters_again(&mut self, left: Left, mut bot: Bot, parting: Parting) -> Result<()> {
+        let patience = self.ledger.patience;
+        bot.remember();
+        let told = bot.entered(patience).await?;
+        if let Some(fault) = left.fault(&self.ledger.world, &told) {
+            bail!("{} joined again after it {parting}: {fault}", self.name);
+        }
+        if let Some(fault) =
+            later_stay_fault(self.bot.info.login.entity_id, bot.info.login.entity_id)
+        {
+            bail!("{} joined again after it {parting}: {fault}", self.name);
+        }
+        bot.wait_for_chunks(1, patience).await?;
+
+        // What the old connection was still told, before it is forgotten. An action
+        // that waited too long for it is past caring about.
+        let _ = self.note_acknowledgements();
+        let acknowledged = self.bot.acknowledged_sequence;
+        self.bot = bot;
+        self.slot = told.selected_slot as i16;
+        self.hotbar = told.hotbar;
+        self.told_slot = told.selected_slot;
+        self.told_hotbar = told.hotbar;
+
+        let now = Instant::now();
+        let until = now + self.ledger.doubt;
+        let mut still_open = Vec::new();
+        for index in std::mem::take(&mut self.open) {
+            let entry = &mut self.entries[index];
+            if entry.stage == Stage::Sent && acknowledged >= entry.sequence {
+                entry.waited = Some(now - entry.sent);
+                entry.stage = Stage::Acknowledged(now);
+            }
+            match entry.stage {
+                Stage::Sent => {
+                    // A bot acts only on a block it has a word about.
+                    let before = self.words.get(&entry.cell).copied().unwrap_or(AIR);
+                    let doubt = Doubt {
+                        before,
+                        after: entry.expected,
+                        until,
+                    };
+                    self.doubts.insert(entry.cell, doubt);
+                    entry.stage = Stage::Lost;
+                    self.in_doubt += 1;
+                }
+                // Done, and to be shown to the new connection as it was to be shown
+                // to the old: the time for that begins anew with the chunks.
+                Stage::Acknowledged(_) => {
+                    entry.stage = Stage::Acknowledged(now);
+                    still_open.push(index);
+                }
+                Stage::Shown | Stage::Lost => {}
+            }
+        }
+        self.open = still_open;
+        // The sequence numbers begin anew, and what the old connection was never
+        // answered is nobody's wait any more.
+        let counters = &self.progress.bots[self.number];
+        counters
+            .waits
+            .lock()
+            .expect("no bot panics with it")
+            .truncate(self.answered);
+        self.joins_again += 1;
+        if told != self.ledger.world.gives_back(left.last()) {
+            self.behind += 1;
+        }
+        counters.joins.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Where the bot is to walk up and down as of now, and the number of that word.
@@ -1102,9 +1708,12 @@ impl Player {
         let view_distance = self.bot.info.login.view_distance;
         let from = chunk_of(self.bot.location.0, self.lane);
         let to = chunk_of(to, self.lane);
-        self.open
-            .iter()
-            .any(|open| loses_sight_of(self.entries[*open].cell, from, to, view_distance))
+        let waited_for = (self.open.iter())
+            .map(|open| self.entries[*open].cell)
+            .chain(self.doubts.keys().copied());
+        waited_for
+            .into_iter()
+            .any(|cell| loses_sight_of(cell, from, to, view_distance))
     }
 
     /// One step along the lane to `to`, which takes a client tick.
@@ -1169,11 +1778,13 @@ impl Player {
         if x == self.entered {
             return Ok(());
         }
-        // One thing at a time with a block, so that what it should be is never in doubt.
+        // One thing at a time with a block, so that what it should be is never in doubt;
+        // and nothing with a block that is.
         if self
             .open
             .iter()
             .any(|open| self.entries[*open].cell == cell)
+            || self.doubts.contains_key(&cell)
         {
             return Ok(());
         }
@@ -1318,13 +1929,14 @@ impl Player {
                         );
                     }
                 }
-                Stage::Shown => {}
+                Stage::Shown | Stage::Lost => {}
             }
-            if entry.stage != Stage::Shown {
+            if matches!(entry.stage, Stage::Sent | Stage::Acknowledged(_)) {
                 still_open.push(index);
             }
         }
         self.open = still_open;
+        self.settles_doubts()?;
 
         let counters = &self.progress.bots[self.number];
         counters
@@ -1401,14 +2013,75 @@ impl Player {
             }
             let (x, _, z) = gone.position;
             // A bot can have walked out of view only from the rim of what is in view.
-            ensure!(
-                !surely_in_view(own_chunk, chunk_of(x, z), view_distance),
-                "the entity of {name}, who is still playing, vanished at x = {x:.2}, z = {z:.2} \
+            if surely_in_view(own_chunk, chunk_of(x, z), view_distance) {
+                self.unexplained.push(Unexplained {
+                    name: name.clone(),
+                    entity: gone,
+                    since: Instant::now(),
+                    from: (self.bot.location.0, self.bot.location.2),
+                });
+            }
+        }
+
+        // What vanished from close by is the entity of a stay that ended, or a fault.
+        // A bot that leaves says so before it goes. One that loses its connection
+        // says so when it finds out, which can be after the others saw its entity go:
+        // where connections may be lost they wait for that word as for anything.
+        self.unexplained
+            .retain(|vanished| !self.progress.has_ended(vanished.entity.entity_id));
+        let allowed = if self.ledger.may_lose_connection {
+            self.ledger.patience
+        } else {
+            Duration::ZERO
+        };
+        if let Some(vanished) = (self.unexplained.iter()).find(|one| one.since.elapsed() >= allowed)
+        {
+            let (x, _, z) = vanished.entity.position;
+            bail!(
+                "the entity of {}, who is still playing, vanished at x = {x:.2}, z = {z:.2} \
                  while {} stood at x = {:.2}, z = {:.2}",
+                vanished.name,
                 self.name,
-                self.bot.location.0,
-                self.bot.location.2
+                vanished.from.0,
+                vanished.from.1
             );
+        }
+        Ok(())
+    }
+
+    /// Looks at the blocks that are in doubt. Each has to be as it was or as the
+    /// action would have left it, and once nothing of the old connection can still be
+    /// on its way, what it is shown as is the last word about it.
+    fn settles_doubts(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let mut settled = Vec::new();
+        for (cell, doubt) in &self.doubts {
+            let Some(seen) = self.bot.block_at(cell.0, GROUND, cell.1)? else {
+                // The bot does not walk out of sight of it, so its chunk is on its
+                // way to the new connection.
+                ensure!(
+                    now < doubt.until + self.ledger.patience,
+                    "the block at x = {}, z = {}, which is in doubt, never came into view",
+                    cell.0,
+                    cell.1
+                );
+                continue;
+            };
+            if let Some(fault) = doubt.fault(seen) {
+                bail!(
+                    "the block at x = {}, z = {} {fault}; the ledger about it: {}",
+                    cell.0,
+                    cell.1,
+                    self.history(*cell)
+                );
+            }
+            if now >= doubt.until {
+                settled.push((*cell, seen));
+            }
+        }
+        for (cell, seen) in settled {
+            self.doubts.remove(&cell);
+            self.words.insert(cell, seen);
         }
         Ok(())
     }
@@ -1422,7 +2095,8 @@ impl Player {
             .map(|index| self.entries[*index].cell)
             .collect();
         for (cell, word) in &self.words {
-            if open.contains(cell) {
+            // What is in doubt is looked at with every step; see `settles_doubts`.
+            if open.contains(cell) || self.doubts.contains_key(cell) {
                 continue;
             }
             // A chunk that is out of view says nothing.
@@ -1500,9 +2174,10 @@ impl Player {
 
 /// Joins as someone who has seen nothing of what went before, walks along the lanes
 /// and fails unless every block is what the ledgers' last word about it says and every
-/// bot stands where it says it does. Returns how many blocks it compared.
-async fn audit(address: &str, ledger: &Ledger, concluded: &Conclusions) -> Result<u32> {
-    let mut auditor = walk_and_compare(address, ledger, &concluded.words).await?;
+/// bot stands where it says it does. Returns how many blocks it compared and what the
+/// auditor leaves the world with.
+async fn audit(address: &str, ledger: &Ledger, concluded: &Conclusions) -> Result<(u32, Left)> {
+    let mut auditor = walk_and_compare(address, ledger, &concluded.words, true).await?;
 
     // And the bots are where they say they are, as far as they are in view from here.
     let own_chunk = chunk_of(auditor.location.0, auditor.location.2);
@@ -1521,13 +2196,23 @@ async fn audit(address: &str, ledger: &Ledger, concluded: &Conclusions) -> Resul
     {
         bail!("{error:#}: {}", misplaced(&auditor).join("; "));
     }
-    Ok(concluded.words.len() as u32)
+    // The auditor leaves in good order, so that whoever has it join again knows
+    // exactly where it has to be.
+    auditor
+        .stand_until_kept(ledger.patience)
+        .await
+        .context("the auditor could not leave in good order")?;
+    Ok((concluded.words.len() as u32, auditor.left()))
 }
 
 /// Joins a server and fails unless every block of `blocks`, by x, y and z, is the block
 /// state it is given as: what [`LedgerReport::blocks`] holds, looked at again, for
 /// example after everything that served the world has been started anew. `ledger` is
 /// what the scenario was run with.
+///
+/// Whoever looks is called what the scenario's auditor was called, and so enters
+/// where that one left if the server keeps places. Where it enters is not judged
+/// here.
 pub async fn audit_blocks(
     address: &str,
     ledger: &Ledger,
@@ -1541,22 +2226,31 @@ pub async fn audit_blocks(
         .iter()
         .map(|((x, _, z), word)| ((*x, *z), (*word, "a bot".to_owned())))
         .collect();
-    walk_and_compare(address, ledger, &words).await?;
+    walk_and_compare(address, ledger, &words, false).await?;
     Ok(())
 }
 
 /// Joins as the auditor, walks along the lanes and fails unless every block is what
 /// the last word about it says. Returns the auditor, standing where it looked last: in
-/// the middle of the lane it walked last, unless it had to walk on from there.
+/// the middle of the lane it walked last, unless it had to walk on from there. If the
+/// auditor is `judged`, it also fails unless it enters the world as the scenario says
+/// it has to; see [`Ledger::earlier`].
 async fn walk_and_compare(
     address: &str,
     ledger: &Ledger,
     words: &BTreeMap<Cell, (i32, String)>,
+    judged: bool,
 ) -> Result<Bot> {
-    let name = format!("{}Auditor", ledger.name_prefix);
+    let name = auditor_name(ledger);
     let mut auditor = Bot::join(address, &name)
         .await
         .context("the auditor could not join")?;
+    if judged {
+        let told = auditor.entered(ledger.patience).await?;
+        if let Some(fault) = first_fault(ledger, &name, &told) {
+            bail!("{fault}");
+        }
+    }
     auditor.wait_for_chunks(1, ledger.patience).await?;
 
     // Past everything that was built, at a pace that lets the chunks keep up: along
@@ -1577,7 +2271,9 @@ async fn walk_and_compare(
     for lane in &walked {
         let z = f64::from(*lane) + 0.5;
         // To the lane first, without changing x, as the bots went. Nobody of this
-        // scenario builds any more, and nobody of any builds where players enter.
+        // scenario builds any more, and nobody of any builds where newcomers enter.
+        // (An auditor that was in the world before enters where it left, and walks
+        // from there through whatever is on its way.)
         for stop in [None, Some(ledger.west), Some(ledger.east), Some(middle)] {
             let stop = stop.unwrap_or(auditor.location.0);
             look_from(&mut auditor, (stop, z), ledger, words, &mut seen).await?;
@@ -1937,6 +2633,152 @@ mod tests {
         progress.walk_between(-93.5, -82.5).unwrap();
         progress.begin(18.5, 29.5);
         assert_eq!(progress.between(), Some((-93.5, -82.5)));
+    }
+
+    #[test]
+    fn a_first_connection_is_put_out_with_the_games_sentence_and_with_nothing_else() {
+        use clustine_protocol::packets::encode;
+        use clustine_protocol::packets::play::Disconnect;
+
+        let ended_with = |text: Text| {
+            let reason = crate::Reason::from_frame(&encode(&Disconnect::from(text))).unwrap();
+            Ending::Disconnected(reason)
+        };
+        let sentence = ended_with(Text::translatable(DUPLICATE_LOGIN));
+        assert_eq!(put_out_fault(Some(&sentence)), None);
+
+        // The words in English are not the sentence: a client shows it in its own
+        // language only by the key.
+        let literal = ended_with(Text::literal("You logged in from another location"));
+        let fault = put_out_fault(Some(&literal)).unwrap();
+        assert!(
+            fault.contains("multiplayer.disconnect.duplicate_login")
+                && fault.contains("the literal text"),
+            "{fault}"
+        );
+        // Nor is another sentence, a connection that just ends, or one that stays.
+        let another = ended_with(Text::translatable("multiplayer.disconnect.kicked"));
+        assert!(put_out_fault(Some(&another)).is_some());
+        let closed = Ending::Closed("the server closed the connection".to_owned());
+        let fault = put_out_fault(Some(&closed)).unwrap();
+        assert!(fault.contains("no disconnect packet"), "{fault}");
+        let fault = put_out_fault(None).unwrap();
+        assert!(fault.contains("was not ended"), "{fault}");
+    }
+
+    #[test]
+    fn a_later_stay_of_a_player_has_a_higher_entity_id() {
+        assert_eq!(later_stay_fault(4097, 4098), None);
+        assert_eq!(later_stay_fault(3, 70_000), None);
+        let fault = later_stay_fault(4098, 4098).unwrap();
+        assert!(fault.contains("entity 4098 in a stay after"), "{fault}");
+        assert!(later_stay_fault(4098, 4097).is_some());
+    }
+
+    #[test]
+    fn a_block_in_doubt_is_as_it_was_or_as_the_lost_action_would_have_left_it() {
+        let stone = i32::from(blocks::STONE.0);
+        let glass = i32::from(blocks::GLASS.0);
+        let doubt = Doubt {
+            before: AIR,
+            after: stone,
+            until: Instant::now(),
+        };
+        assert_eq!(doubt.fault(AIR), None);
+        assert_eq!(doubt.fault(stone), None);
+        let fault = doubt.fault(glass).unwrap();
+        assert!(
+            fault.contains(&format!("is shown as {glass}"))
+                && fault.contains(&format!("as it was, {AIR}"))
+                && fault.contains(&format!("leaves it, {stone}")),
+            "{fault}"
+        );
+    }
+
+    #[test]
+    fn who_first_enters_is_held_to_what_the_scenario_knows_of_them() {
+        let newcomer = World::clustine().newcomer();
+        let away = Kept {
+            location: (66.5, -60.0, 4.5),
+            selected_slot: 3,
+            ..newcomer
+        };
+        // By default nobody was here before: the spawn point, the starting hotbar.
+        let fresh = Ledger::default();
+        assert_eq!(first_fault(&fresh, "Ledger0", &newcomer), None);
+        let fault = first_fault(&fresh, "Ledger0", &away).unwrap();
+        assert!(
+            fault.contains("someone who was never in the world"),
+            "{fault}"
+        );
+
+        // Whoever an earlier scenario left somewhere is there, and not at the spawn
+        // point; whoever it does not name is still a newcomer.
+        let earlier = BTreeMap::from([("Ledger0".to_owned(), Left::exactly(away))]);
+        let returning = Ledger {
+            earlier: Some(earlier),
+            ..Ledger::default()
+        };
+        assert_eq!(first_fault(&returning, "Ledger0", &away), None);
+        let fault = first_fault(&returning, "Ledger0", &newcomer).unwrap();
+        assert!(
+            fault.starts_with("Ledger0 was in this world before: a player enters as they left"),
+            "{fault}"
+        );
+        assert_eq!(first_fault(&returning, "Ledger1", &newcomer), None);
+        assert!(first_fault(&returning, "Ledger1", &away).is_some());
+
+        // Where nobody knows who was here, nothing is judged.
+        let unknown = Ledger {
+            earlier: None,
+            ..Ledger::default()
+        };
+        assert_eq!(first_fault(&unknown, "Ledger0", &away), None);
+        assert_eq!(first_fault(&unknown, "Ledger0", &newcomer), None);
+    }
+
+    #[test]
+    fn bots_are_back_once_each_has_done_what_it_was_last_asked() {
+        let progress = Progress::new(2);
+        // Nobody was asked anything.
+        assert!(progress.back());
+        progress.joins_again(1, Again::Leave);
+        assert!(!progress.back());
+        assert_eq!(
+            progress
+                .bots()
+                .iter()
+                .map(|bot| bot.back)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
+        // What a bot notes when it is in the world again.
+        let does = |bot: usize, order: u64| {
+            progress.bots[bot].back.store(order, Ordering::SeqCst);
+        };
+        does(1, 1);
+        assert!(progress.back());
+
+        // Asked twice before it got to it, a bot does the latest, once.
+        progress.all_join_again(Again::Vanish);
+        progress.all_join_again(Again::SecondLogin);
+        let asked = |bot: usize| *progress.bots[bot].asked.lock().unwrap();
+        assert_eq!(asked(0), Some((2, Again::SecondLogin)));
+        assert_eq!(asked(1), Some((3, Again::SecondLogin)));
+        does(0, 2);
+        assert!(!progress.back());
+        does(1, 3);
+        assert!(progress.back());
+    }
+
+    #[test]
+    fn only_the_entity_of_a_stay_that_ended_may_vanish_from_close_by() {
+        let progress = Progress::new(1);
+        assert!(!progress.has_ended(4097));
+        progress.stay_ends(4097);
+        assert!(progress.has_ended(4097));
+        // The stay the player began after it is another entity.
+        assert!(!progress.has_ended(4098));
     }
 
     #[test]

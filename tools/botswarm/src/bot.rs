@@ -30,7 +30,8 @@ use clustine_protocol::packets::play::{
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
 
-use crate::{Connection, Ending, Reason, intention};
+use crate::kept::Journal;
+use crate::{Connection, Ending, Kept, Left, Reason, intention};
 
 /// The length of a client tick.
 const TICK: Duration = Duration::from_millis(50);
@@ -154,6 +155,8 @@ impl Default for Behaviour {
 /// An entity as the bot last heard of it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeenEntity {
+    /// The id the server shows it under. A player has another one in every stay.
+    pub entity_id: i32,
     /// For a player, the UUID of their profile.
     pub uuid: Uuid,
     /// Id in the entity type registry.
@@ -203,6 +206,13 @@ pub struct Bot {
     pub hotbar: [Option<ItemStack>; 9],
     /// The hotbar slot the server last selected for the bot.
     pub selected_slot: i32,
+    /// The items and the slot as the bot has them: as the server last said or as the
+    /// bot has changed them since, as a client keeps them.
+    own_hotbar: [Option<ItemStack>; 9],
+    own_slot: i32,
+    /// Every state the bot was in since the server last made sure of one, if the bot
+    /// was asked to remember; see [`Bot::remember`].
+    journal: Option<Journal>,
     /// Blocks the server reported as changed since it sent their chunk, by x, y and z.
     block_changes: BTreeMap<(i32, i32, i32), i32>,
     /// The number of the bot's latest action that changes blocks.
@@ -410,6 +420,9 @@ impl Bot {
             vanished: Vec::new(),
             hotbar: [None; 9],
             selected_slot: 0,
+            own_hotbar: [None; 9],
+            own_slot: 0,
+            journal: None,
             block_changes: BTreeMap::new(),
             sequence: 0,
             acknowledged_sequence: 0,
@@ -466,6 +479,12 @@ impl Bot {
         self.connection
     }
 
+    /// Leaves: ends the connection from the bot's side. What the bot sent before is
+    /// still read by the server; nothing can be sent after.
+    pub async fn close(&mut self) -> Result<()> {
+        self.connection.close().await
+    }
+
     /// Stays connected for `duration`, answering what the server expects answers to.
     pub async fn idle(&mut self, duration: Duration) -> Result<()> {
         let deadline = Instant::now() + duration;
@@ -500,6 +519,7 @@ impl Bot {
                     flags: movement_flags::ON_GROUND,
                 })
                 .await?;
+            self.has_sent();
             // The official server disconnects a client that sends a second position
             // before ending its tick.
             self.connection.write(&ClientTickEnd).await?;
@@ -522,6 +542,7 @@ impl Bot {
                 flags: movement_flags::ON_GROUND,
             })
             .await?;
+        self.has_sent();
         self.connection.write(&ClientTickEnd).await
     }
 
@@ -532,7 +553,9 @@ impl Bot {
         self.flying = flying;
         self.connection
             .write(&ServerboundPlayerAbilities::flying(flying))
-            .await
+            .await?;
+        self.has_sent();
+        Ok(())
     }
 
     /// Moves in a straight line through the air to `to` (x, y and z) while looking
@@ -575,12 +598,132 @@ impl Bot {
                     flags: 0,
                 })
                 .await?;
+            self.has_sent();
             self.connection.write(&ClientTickEnd).await?;
             let next_tick = Instant::now() + TICK;
             while self.step(next_tick).await? {}
             if arrives {
                 return Ok(());
             }
+        }
+    }
+
+    /// What the bot has that a server keeps across a leave, as a client has it: where
+    /// it is and looks, whether it flies, and what it holds, each as the server last
+    /// said or as the bot has changed it since.
+    pub fn kept(&self) -> Kept {
+        Kept {
+            location: self.location,
+            look: self.look,
+            flying: self.flying,
+            hotbar: self.own_hotbar,
+            selected_slot: self.own_slot,
+        }
+    }
+
+    /// From now on the bot remembers every state it was in since the server last made
+    /// sure of one, so that [`Bot::left`] says what the server can be held to however
+    /// the connection ends. To be asked for before the bot sends anything that changes
+    /// what it has. A bot that only walks, and never does anything a server
+    /// acknowledges, remembers every step: this is for bots that act, or that send a
+    /// pulse now and then.
+    pub fn remember(&mut self) {
+        self.journal = Some(Journal::new(self.kept()));
+    }
+
+    /// What the bot would leave with, were its connection to end now: what a server
+    /// that keeps a player's place may give it when it joins again; see
+    /// [`Left::fault`]. A bot that does not remember is taken at its word, which holds
+    /// only after [`Bot::stand_until_kept`].
+    pub fn left(&self) -> Left {
+        match &self.journal {
+            Some(journal) => journal.left(),
+            None => Left::exactly(self.kept()),
+        }
+    }
+
+    /// From now on no acknowledgement makes sure of anything the bot sent. To be said
+    /// before the bot's player logs in a second time: what the first connection is
+    /// acknowledged after the server has the second is no longer kept.
+    pub fn hold_what_is_sure(&mut self) {
+        if let Some(journal) = &mut self.journal {
+            journal.hold();
+        }
+    }
+
+    /// Waits until the server has said everything it says a player has on entering,
+    /// and returns it: the place and the look of the position packet, the flying bit
+    /// of the abilities packet, the hotbar's contents and the held slot.
+    pub async fn entered(&mut self, patience: Duration) -> Result<Kept> {
+        const SAID: [&str; 4] = [
+            "minecraft:player_abilities",
+            "minecraft:player_position",
+            "minecraft:container_set_content",
+            "minecraft:set_held_slot",
+        ];
+        let unsaid = |bot: &Self| -> Vec<&str> {
+            let unsaid = |name: &&str| !bot.stats.received.contains_key(*name);
+            SAID.into_iter().filter(unsaid).collect()
+        };
+        if self
+            .wait_until(patience, |bot| unsaid(bot).is_empty())
+            .await
+            .is_err()
+        {
+            bail!(
+                "the server did not say everything a player has on entering: {} did not come",
+                unsaid(self).join(", ")
+            );
+        }
+        let position = self
+            .position
+            .as_ref()
+            .context("a position packet has come")?;
+        ensure!(
+            position.relative_flags == 0,
+            "the server placed the player relative to where a client that has just \
+             entered is, which is nowhere: {position:?}"
+        );
+        Ok(Kept {
+            location: (position.x, position.y, position.z),
+            look: (position.yaw, position.pitch),
+            flying: self
+                .abilities
+                .last()
+                .is_some_and(PlayerAbilities::is_flying),
+            hotbar: self.hotbar,
+            selected_slot: self.selected_slot,
+        })
+    }
+
+    /// Stands still until the server has kept everything the bot has: sends an action
+    /// that changes nothing, breaking a block far above its head, and waits for the
+    /// acknowledgement, which a region gives once it has applied everything sent
+    /// before the action and committed it. Unless the bot sends something after this,
+    /// [`Bot::left`] is one state then, and a server that keeps places gives exactly
+    /// that back.
+    pub async fn stand_until_kept(&mut self, patience: Duration) -> Result<()> {
+        let (x, y, z) = self.location;
+        let sequence = self
+            .dig(x.floor() as i32, y.floor() as i32 + 64, z.floor() as i32)
+            .await?;
+        self.wait_until(patience, |bot| bot.acknowledged_sequence >= sequence)
+            .await
+            .context("the server did not acknowledge what the bot sent last")
+    }
+
+    /// Notes the state the bot is in after something it has just sent.
+    fn has_sent(&mut self) {
+        let now = self.kept();
+        if let Some(journal) = &mut self.journal {
+            journal.sent(self.sequence, now);
+        }
+    }
+
+    /// Notes what the server said the bot has.
+    fn was_told(&mut self, change: impl Fn(&mut Kept)) {
+        if let Some(journal) = &mut self.journal {
+            journal.told(change);
         }
     }
 
@@ -672,7 +815,10 @@ impl Bot {
 
     /// Selects a hotbar slot, from 0 to 8.
     pub async fn select_slot(&mut self, slot: i16) -> Result<()> {
-        self.connection.write(&SetHeldItem { slot }).await
+        self.connection.write(&SetHeldItem { slot }).await?;
+        self.own_slot = slot.into();
+        self.has_sent();
+        Ok(())
     }
 
     /// Puts one `item` into a hotbar slot, from 0 to 8, the way a creative-mode client
@@ -683,7 +829,15 @@ impl Bot {
                 slot: inventory::HOTBAR_START as i16 + slot,
                 stack: Some(ItemStack { item, count: 1 }),
             })
-            .await
+            .await?;
+        if let Some(held) = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| self.own_hotbar.get_mut(slot))
+        {
+            *held = Some(ItemStack { item, count: 1 });
+        }
+        self.has_sent();
+        Ok(())
     }
 
     /// Uses the held item on a side of the block at `x`, `y`, `z`, which places a held
@@ -782,8 +936,16 @@ impl Bot {
     async fn step(&mut self, deadline: Instant) -> Result<bool> {
         let handled = self.handle_next(deadline).await;
         if let Err(error) = &handled {
-            self.ended
-                .get_or_insert_with(|| Ending::Failed(format!("{error:#}")));
+            // An answer that could not be written says that the connection is going,
+            // not how: the server may have said why before it closed, and that is
+            // still to be read. Reading on finds it, or finds the end.
+            let unwritten = error
+                .chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some());
+            if !unwritten {
+                self.ended
+                    .get_or_insert_with(|| Ending::Failed(format!("{error:#}")));
+            }
         }
         handled
     }
@@ -830,6 +992,8 @@ impl Bot {
                 if packet.relative_flags & RELATIVE_LOOK == 0 {
                     self.look = (packet.yaw, packet.pitch);
                 }
+                let (location, look) = (self.location, self.look);
+                self.was_told(|state| (state.location, state.look) = (location, look));
                 self.position = Some(packet);
             }
             ClientboundPlay::SetCenterChunk(packet) => {
@@ -882,6 +1046,7 @@ impl Bot {
                 self.entities.insert(
                     packet.entity_id,
                     SeenEntity {
+                        entity_id: packet.entity_id,
                         uuid: packet.uuid,
                         kind: packet.kind,
                         position: (packet.x, packet.y, packet.z),
@@ -936,11 +1101,21 @@ impl Bot {
                             .copied()
                             .flatten();
                     }
+                    let hotbar = self.hotbar;
+                    self.own_hotbar = hotbar;
+                    self.was_told(|state| state.hotbar = hotbar);
                 }
             }
-            ClientboundPlay::SetHeldSlot(packet) => self.selected_slot = packet.slot,
+            ClientboundPlay::SetHeldSlot(packet) => {
+                let slot = packet.slot;
+                (self.selected_slot, self.own_slot) = (slot, slot);
+                self.was_told(|state| state.selected_slot = slot);
+            }
             ClientboundPlay::AcknowledgeBlockChange(packet) => {
                 self.acknowledged_sequence = self.acknowledged_sequence.max(packet.sequence);
+                if let Some(journal) = &mut self.journal {
+                    journal.acknowledged(packet.sequence);
+                }
                 self.acknowledgements
                     .push((packet.sequence, Instant::now()));
             }
@@ -951,6 +1126,8 @@ impl Bot {
             ClientboundPlay::PlayerAbilities(packet) => {
                 // A client takes the server's word for whether it flies.
                 self.flying = packet.is_flying();
+                let flying = self.flying;
+                self.was_told(|state| state.flying = flying);
                 self.abilities.push(packet);
             }
             ClientboundPlay::LevelChunkWithLight(packet) => {

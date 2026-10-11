@@ -49,6 +49,13 @@ impl Connection {
         Ok(())
     }
 
+    /// Ends the connection from this side, as a client does that leaves: the server
+    /// reads what was written before this and then the end.
+    pub async fn close(&mut self) -> Result<()> {
+        self.stream.shutdown().await?;
+        Ok(())
+    }
+
     /// Waits for the next packet and returns it unframed: its id followed by its body.
     pub async fn read_frame(&mut self) -> Result<Bytes> {
         loop {

@@ -7,6 +7,7 @@
 pub mod bot;
 pub mod connection;
 pub mod cross;
+pub mod kept;
 pub mod ledger;
 pub mod oracle;
 pub mod reason;
@@ -22,8 +23,9 @@ use clustine_protocol::packets::status::{ClientboundStatus, PingRequest, StatusR
 pub use bot::{Behaviour, Bot, Entry, JoinInfo, PlayStats, SeenEntity};
 pub use connection::Connection;
 pub use cross::{Crossing, CrossingReport, cross};
+pub use kept::{Kept, Left, World};
 pub use ledger::{
-    Ledger, LedgerReport, Progress, Random, Wait, audit_blocks, ledger, longest_wait,
+    Again, Ledger, LedgerReport, Progress, Random, Wait, audit_blocks, ledger, longest_wait,
 };
 pub use oracle::Oracle;
 pub use reason::{Ending, Reason, Wire};
