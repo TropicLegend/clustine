@@ -17,7 +17,7 @@ use clustine_data::{BlockState, Face, blocks};
 use clustine_world::{Chunk, LIGHT_ARRAY_LENGTH, Light, SectionLight};
 
 use crate::faces;
-use crate::{Around, SECTION_EDGE, VERSION};
+use crate::{Around, SECTION_EDGE, Unlisted, UnlistedLevels, VERSION};
 
 /// Cells along a horizontal edge of the grid: three chunks and a wall on either side,
 /// so that no step leaves the grid.
@@ -36,6 +36,23 @@ const SHAPED: u8 = 0x40;
 
 /// A cell nothing enters: a chunk that is not there, and the rim of the grid.
 const WALL: u8 = 15;
+
+/// The highest level there is: the sky's, and what the brightest block gives.
+const BRIGHTEST: u8 = 15;
+
+/// For each column of the grid: how many steps sideways lie between it and the centre
+/// chunk. Light of a level no higher than that never arrives there, since a level falls
+/// by at least one a step; so nothing that is [`BRIGHTEST`] steps away or more has any
+/// part in the centre chunk's light.
+static DISTANCE: [u8; LAYER] = {
+    let mut distance = [0; LAYER];
+    let mut column = 0;
+    while column < LAYER {
+        distance[column] = beyond_centre(column % WIDTH) + beyond_centre(column / WIDTH);
+        column += 1;
+    }
+    distance
+};
 
 /// The six steps, in the order of [`Face::ALL`].
 const STEPS: [isize; 6] = [
@@ -74,10 +91,16 @@ impl Cell {
 
 /// The blocks of the nine chunks as light sees them, with one section of air below and
 /// one above the world, inside a rim of walls.
+///
+/// It is part of a [`Scratch`], and [`Grid::read`] writes every field anew.
+#[derive(Default)]
 struct Grid {
     /// Sections of the world, without the two beyond it.
     sections: usize,
     kind: Vec<u8>,
+    /// The state of each cell of a chunk that is there. The cells of the rim and of a
+    /// chunk that is not there hold whatever they held: a wall is never entered, never
+    /// spread from and never under the sky, so nobody asks what it is.
     state: Vec<u16>,
     /// The cells that give light, with their level, in the order they were read.
     emitters: Vec<(u32, u8)>,
@@ -85,9 +108,31 @@ struct Grid {
     present: [bool; 9],
     /// For each chunk and each of its sections: whether it holds a block that is not air.
     occupied: Vec<bool>,
-    /// For each column of the grid: how many steps sideways lie between it and the
-    /// centre chunk. Light of a level no higher than that never arrives there.
-    distance: Vec<u8>,
+}
+
+/// What a thread keeps between two calls of [`light_with`](crate::light_with), so that
+/// a call allocates nothing large: the grid of the nine chunks as light sees them, the
+/// levels of its cells and the lists of cells the flood has yet to spread from. For a
+/// world of 24 sections that is 4.2 MB once it has been used.
+///
+/// A call assumes nothing of what an earlier call left in it: everything it reads it
+/// has written first. So a scratch may go from a chunk to any other, of any height,
+/// and may be used again after a call that panicked half way. A new one holds nothing
+/// and costs nothing until its first call.
+#[derive(Default)]
+pub struct Scratch {
+    grid: Grid,
+    /// One level for each cell: the sky's while that is made, then the blocks'.
+    levels: Vec<u8>,
+    /// See [`Grid::spread`].
+    waiting: [Vec<u32>; 16],
+}
+
+impl Scratch {
+    /// A scratch that holds nothing yet.
+    pub fn new() -> Scratch {
+        Scratch::default()
+    }
 }
 
 /// The cell of a block: `x` and `z` in the grid, `y` counted from the bottom of the
@@ -97,22 +142,25 @@ fn cell(x: usize, y: usize, z: usize) -> usize {
 }
 
 impl Grid {
-    fn read(around: &Around<'_>) -> Grid {
+    /// Makes the grid that of these nine chunks, whatever it held.
+    fn read(&mut self, around: &Around<'_>) {
+        let grid = self;
         let centre = around.centre;
         let sections = centre.sections().len();
         assert!(sections > 0, "a chunk has a section");
         let cells = ((sections + 2) * SECTION_EDGE + 2) * LAYER;
-        let mut grid = Grid {
-            sections,
-            kind: vec![WALL; cells],
-            state: vec![blocks::AIR.0; cells],
-            emitters: Vec::new(),
-            present: [false; 9],
-            occupied: vec![false; 9 * sections],
-            distance: (0..LAYER)
-                .map(|column| beyond_centre(column % WIDTH) + beyond_centre(column / WIDTH))
-                .collect(),
-        };
+        grid.sections = sections;
+        // Every kind is written here, and again below with its state if a chunk is
+        // there: what an earlier call left, whole or half way, is gone or is behind a
+        // wall. The states are not all written twice: that was a millisecond of the
+        // sixteen a call takes in a build without optimisation.
+        refill(&mut grid.kind, cells, WALL);
+        if grid.state.len() != cells {
+            grid.state = vec![blocks::AIR.0; cells];
+        }
+        refill(&mut grid.occupied, 9 * sections, false);
+        grid.emitters.clear();
+        grid.present = [false; 9];
         let air = Cell::of(blocks::AIR);
         for (slot, chunk) in nine(around).into_iter().enumerate() {
             let Some(chunk) = chunk else {
@@ -167,7 +215,6 @@ impl Grid {
                 }
             }
         }
-        grid
     }
 
     /// Makes a whole section one state. `section` counts from the one below the world.
@@ -204,10 +251,12 @@ impl Grid {
     /// `waiting[level]` holds cells that had that level when they were put there. A
     /// cell that has risen since is passed over: it waits again further up.
     fn spread(&self, levels: &mut [u8], waiting: &mut [Vec<u32>; 16]) {
-        for level in (2..=15u8).rev() {
-            let cells = std::mem::take(&mut waiting[usize::from(level)]);
-            for from in cells {
-                let from = from as usize;
+        for level in (2..=BRIGHTEST).rev() {
+            // A cell is only ever put into a list further down, so this one is
+            // complete. It is handed back empty, to keep what it has allocated.
+            let mut cells = std::mem::take(&mut waiting[usize::from(level)]);
+            for from in &cells {
+                let from = *from as usize;
                 if levels[from] != level {
                     continue;
                 }
@@ -223,7 +272,7 @@ impl Grid {
                         continue;
                     }
                     let arrives = level - takes;
-                    if arrives <= self.distance[to % LAYER] {
+                    if arrives <= DISTANCE[to % LAYER] {
                         continue;
                     }
                     if (kind | self.kind[from]) & SHAPED != 0
@@ -239,24 +288,37 @@ impl Grid {
                     waiting[usize::from(arrives)].push(to as u32);
                 }
             }
+            cells.clear();
+            waiting[usize::from(level)] = cells;
         }
     }
 
-    fn block_light(&self) -> Vec<u8> {
-        let mut levels = vec![0; self.kind.len()];
-        let mut waiting: [Vec<u32>; 16] = Default::default();
+    /// Makes `levels` the block light of every cell that matters to the centre chunk.
+    fn block_light(&self, levels: &mut Vec<u8>, waiting: &mut [Vec<u32>; 16]) {
+        self.begin(levels, waiting);
         for (at, gives) in &self.emitters {
             let column = *at as usize % LAYER;
-            if *gives > self.distance[column] {
+            if *gives > DISTANCE[column] {
                 levels[*at as usize] = *gives;
                 waiting[usize::from(*gives)].push(*at);
             }
         }
-        self.spread(&mut levels, &mut waiting);
-        levels
+        self.spread(levels, waiting);
     }
 
-    fn sky_light(&self) -> Vec<u8> {
+    /// Darkness everywhere and nothing waiting, whatever the two held: the lists of
+    /// the lowest levels are never worked off, and a call that panicked left the others
+    /// as they were.
+    fn begin(&self, levels: &mut Vec<u8>, waiting: &mut [Vec<u32>; 16]) {
+        refill(levels, self.kind.len(), 0);
+        for cells in waiting.iter_mut() {
+            cells.clear();
+        }
+    }
+
+    /// Makes `levels` the sky light of every cell that matters to the centre chunk.
+    fn sky_light(&self, levels: &mut Vec<u8>, waiting: &mut [Vec<u32>; 16]) {
+        self.begin(levels, waiting);
         let height = self.height();
         // Above the highest section of a chunk that holds anything the sky is open,
         // whatever the column.
@@ -272,8 +334,7 @@ impl Grid {
         // For each column of a chunk that is there, the lowest block that the sky
         // reaches straight down.
         const NO_SKY: u16 = u16::MAX;
-        let mut lowest = vec![NO_SKY; LAYER];
-        let mut levels = vec![0; self.kind.len()];
+        let mut lowest = [NO_SKY; LAYER];
         levels[cell(0, open_everywhere, 0)..cell(0, height, 0)].fill(15);
         for (slot, open) in open_from.into_iter().enumerate() {
             if !self.present[slot] {
@@ -316,10 +377,9 @@ impl Grid {
 
         // The sky's light spreads from where a column of it has something beside or
         // below it that the sky does not reach.
-        let mut waiting: [Vec<u32>; 16] = Default::default();
         for column in 0..LAYER {
             let from = lowest[column];
-            if from == NO_SKY || self.distance[column] >= 15 {
+            if from == NO_SKY || DISTANCE[column] >= BRIGHTEST {
                 continue;
             }
             let from = usize::from(from);
@@ -338,8 +398,7 @@ impl Grid {
                 waiting[15].push(cell(column % WIDTH, y, column / WIDTH) as u32);
             }
         }
-        self.spread(&mut levels, &mut waiting);
-        levels
+        self.spread(levels, waiting);
     }
 
     /// Whether a light section of the centre chunk, counted from the one below the
@@ -353,10 +412,21 @@ impl Grid {
     }
 
     /// The cases of the centre chunk's light sections for the levels of the grid.
-    fn sections_of(&self, levels: &[u8]) -> Vec<SectionLight> {
+    ///
+    /// A section without light of its own is left out, as the official server leaves
+    /// it out. If `also` names it, the case of the levels it has all the same is put
+    /// into `unlisted`, with its number.
+    fn sections_of(
+        &self,
+        levels: &[u8],
+        also: u64,
+        unlisted: &mut Vec<(usize, SectionLight)>,
+    ) -> Vec<SectionLight> {
         (0..self.sections + 2)
             .map(|section| {
-                if !self.has_light(section) {
+                let listed = self.has_light(section);
+                let asked = section < Unlisted::SECTIONS && also >> section & 1 == 1;
+                if !listed && !asked {
                     return SectionLight::Absent;
                 }
                 let mut array = Box::new([0; LIGHT_ARRAY_LENGTH]);
@@ -369,16 +439,64 @@ impl Grid {
                         }
                     }
                 }
-                SectionLight::of(array)
+                let light = SectionLight::of(array);
+                if listed {
+                    return light;
+                }
+                unlisted.push((section, light));
+                SectionLight::Absent
             })
             .collect()
     }
 }
 
+/// Makes `cells` hold `length` times `value` and nothing else, in the memory it has if
+/// it is of that length already: a thread lights chunks of one height.
+///
+/// Otherwise the memory is asked for anew, which costs a first call nothing where the
+/// value is zero. `Vec::resize` would do for both, and is an element at a time in a
+/// build without optimisation: it doubled the time of a call there.
+fn refill<T: Copy>(cells: &mut Vec<T>, length: usize, value: T) {
+    if cells.len() == length {
+        cells.fill(value);
+    } else {
+        *cells = vec![value; length];
+    }
+}
+
 /// How far a grid coordinate lies outside the centre chunk.
-fn beyond_centre(at: usize) -> u8 {
+const fn beyond_centre(at: usize) -> u8 {
     let last = CENTRE + SECTION_EDGE - 1;
     (CENTRE.saturating_sub(at) + at.saturating_sub(last)) as u8
+}
+
+/// The offsets in chunks, along x and along z, of the eight neighbours in the order of
+/// [`Around::neighbours`].
+const NEIGHBOURS: [(isize, isize); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+
+pub(crate) fn reach(x: usize, z: usize) -> [bool; 8] {
+    assert!(
+        x < SECTION_EDGE && z < SECTION_EDGE,
+        "a column of a chunk is within it"
+    );
+    NEIGHBOURS.map(|(chunk_x, chunk_z)| {
+        // The column as the neighbour's own flood has it, with the neighbour in the
+        // middle of the grid: this chunk is one chunk the other way from there.
+        let grid_x = (CENTRE + x).wrapping_add_signed(-chunk_x * SECTION_EDGE as isize);
+        let grid_z = (CENTRE + z).wrapping_add_signed(-chunk_z * SECTION_EDGE as isize);
+        // What that flood does with the brightest source there is: it starts from it,
+        // and passes over the column otherwise.
+        BRIGHTEST > DISTANCE[grid_z * WIDTH + grid_x]
+    })
 }
 
 /// The nine chunks by their place in the grid: north-west first, row by row, the centre
@@ -407,20 +525,136 @@ fn nine<'a>(around: &Around<'a>) -> [Option<&'a Chunk>; 9] {
     ]
 }
 
-pub(crate) fn light(around: &Around<'_>) -> Light {
-    let grid = Grid::read(around);
+pub(crate) fn light(
+    around: &Around<'_>,
+    also: Unlisted,
+    scratch: &mut Scratch,
+) -> (Light, UnlistedLevels) {
+    let Scratch {
+        grid,
+        levels,
+        waiting,
+    } = scratch;
+    grid.read(around);
+    let mut unlisted = UnlistedLevels::default();
     let sky = if around.sky {
-        grid.sections_of(&grid.sky_light())
+        grid.sky_light(levels, waiting);
+        grid.sections_of(levels, also.sky, &mut unlisted.sky)
     } else {
         vec![SectionLight::Absent; grid.sections + 2]
     };
-    let block = grid.sections_of(&grid.block_light());
-    Light {
+    grid.block_light(levels, waiting);
+    let block = grid.sections_of(levels, also.block, &mut unlisted.block);
+    let light = Light {
         made_by: VERSION,
         // Whoever lights a chunk it has generated says which generator's chunks
         // these were; the rules do not know.
         beside: 0,
         sky,
         block,
+    };
+    (light, unlisted)
+}
+
+#[cfg(test)]
+mod tests {
+    use clustine_world::{Biome, Section};
+
+    use super::*;
+
+    fn chunk(height: usize, seed: u32) -> Chunk {
+        let sections = vec![Section::filled(blocks::AIR, Biome(0)); height / SECTION_EDGE];
+        let mut chunk = Chunk::from_sections(0, sections);
+        let mut number = seed;
+        for y in 0..height {
+            for z in 0..SECTION_EDGE {
+                for x in 0..SECTION_EDGE {
+                    number = number.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let state = match number >> 24 {
+                        0..120 => blocks::AIR,
+                        120..230 => blocks::STONE,
+                        230..250 => blocks::WATER,
+                        250..254 => blocks::TORCH,
+                        _ => blocks::GLOWSTONE,
+                    };
+                    chunk.set(x, y as i32, z, state);
+                }
+            }
+        }
+        chunk
+    }
+
+    /// The chunk with itself to the north and to the south-east and nothing elsewhere.
+    fn alone(centre: &Chunk) -> Around<'_> {
+        let mut neighbours = [None; 8];
+        neighbours[1] = Some(centre);
+        neighbours[7] = Some(centre);
+        Around {
+            centre,
+            neighbours,
+            sky: true,
+        }
+    }
+
+    fn cells_of(height: usize) -> usize {
+        (height + 2 * SECTION_EDGE + 2) * LAYER
+    }
+
+    #[test]
+    fn a_scratch_full_of_anything_gives_the_light_a_new_one_gives() {
+        let all = Unlisted { sky: !0, block: !0 };
+        for height in [16, 48, 96] {
+            let centre = chunk(height, 5);
+            let expected = light(&alone(&centre), all, &mut Scratch::new());
+            // Every field as wrong as it can be: lengths that fit no chunk and that
+            // fit this one, cells that claim to be clear and shaped and hold a state
+            // that does not exist, so that asking what it is panics; levels that are
+            // full, and every list of waiting cells holding cells that exist.
+            for cells in [7, cells_of(height), 3 * cells_of(height)] {
+                let mut scratch = Scratch {
+                    grid: Grid {
+                        sections: 1000,
+                        kind: vec![CLEAR | SHAPED | 1; cells],
+                        state: vec![u16::MAX; cells],
+                        emitters: (0..cells as u32).map(|at| (at, 15)).collect(),
+                        present: [true; 9],
+                        occupied: vec![true; cells],
+                    },
+                    levels: vec![15; cells],
+                    waiting: std::array::from_fn(|_| (0..cells as u32).collect()),
+                };
+                let made = light(&alone(&centre), all, &mut scratch);
+                assert!(made == expected, "height {height}, {cells} cells");
+            }
+        }
+    }
+
+    #[test]
+    fn a_scratch_keeps_its_memory_from_one_call_to_the_next() {
+        let centre = chunk(48, 9);
+        let mut scratch = Scratch::new();
+        light(&alone(&centre), Unlisted::NONE, &mut scratch);
+        let held = |scratch: &Scratch| {
+            (
+                scratch.grid.kind.as_ptr(),
+                scratch.grid.state.as_ptr(),
+                scratch.levels.as_ptr(),
+                scratch.waiting.each_ref().map(|cells| cells.capacity()),
+            )
+        };
+        let before = held(&scratch);
+        light(&alone(&centre), Unlisted::NONE, &mut scratch);
+        assert!(before == held(&scratch));
+    }
+
+    #[test]
+    fn the_distance_of_a_column_is_its_steps_to_the_centre_chunk() {
+        let column = |x: usize, z: usize| usize::from(DISTANCE[z * WIDTH + x]);
+        assert_eq!(column(CENTRE, CENTRE), 0);
+        assert_eq!(column(CENTRE + 15, CENTRE + 15), 0);
+        assert_eq!(column(CENTRE - 1, CENTRE), 1);
+        assert_eq!(column(CENTRE + 16, CENTRE + 16), 2);
+        assert_eq!(column(1, CENTRE + 3), 16);
+        assert_eq!(column(0, 0), 34);
     }
 }

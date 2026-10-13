@@ -49,3 +49,17 @@ ureq = "3.4.2"
 uuid = { version = "1.27.0", features = ["serde", "v4"] }
 zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
 zstd = "0.14.0"
+
+# A job of light is the flood of `clustine-light` over blocks it reads through
+# `clustine-world` and asks `clustine-data` about, and the tests run it without
+# optimisation otherwise: 15.6 ms a chunk of the sample world, against 2.1 ms in a release
+# build. With the first of these lines it is 5.3 ms, with the second 3.3 ms and with all
+# three 2.5 ms (ADR-0023, section 10). The test profile inherits them.
+[profile.dev.package.clustine-light]
+opt-level = 3
+
+[profile.dev.package.clustine-world]
+opt-level = 3
+
+[profile.dev.package.clustine-data]
+opt-level = 3

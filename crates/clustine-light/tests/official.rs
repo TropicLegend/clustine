@@ -16,7 +16,7 @@ use std::io::Read;
 use std::path::Path;
 
 use clustine_data::BlockState;
-use clustine_light::{Around, VERSION, light};
+use clustine_light::{Around, Scratch, Unlisted, VERSION, light, light_with};
 use clustine_world::{Biome, Chunk, LIGHT_ARRAY_LENGTH, SectionLight};
 
 // --- NBT, as the region files have it --------------------------------------------------
@@ -400,6 +400,10 @@ fn official_chunks_are_lit_as_the_official_server_lit_them() {
     let mut block = Tally::default();
     let mut compared = 0;
     let mut times = Vec::new();
+    // The same chunks lit as a thread of an edge lights them: in one scratch, kept
+    // from chunk to chunk.
+    let mut scratch = Scratch::new();
+    let mut times_in_scratch = Vec::new();
     for (&(chunk_x, chunk_z), centre) in &chunks {
         // North-west first, row by row: north is the lower z.
         let mut nine = Vec::new();
@@ -419,6 +423,14 @@ fn official_chunks_are_lit_as_the_official_server_lit_them() {
         let started = std::time::Instant::now();
         let made = light(&around);
         times.push(started.elapsed());
+        let started = std::time::Instant::now();
+        let (again, unlisted) = light_with(&around, Unlisted::NONE, &mut scratch);
+        times_in_scratch.push(started.elapsed());
+        assert!(
+            again == made,
+            "chunk {chunk_x} {chunk_z} is lit otherwise in a used scratch"
+        );
+        assert!(unlisted.is_empty());
         compared += 1;
         assert_eq!(made.made_by, VERSION);
         assert_eq!(made.sky.len(), section_count + 2);
@@ -500,11 +512,20 @@ fn official_chunks_are_lit_as_the_official_server_lit_them() {
             println!("  {line}");
         }
     }
-    if !times.is_empty() {
+    for (how, mut times) in [
+        ("lighting one chunk", times),
+        (
+            "lighting one chunk in a scratch used before",
+            times_in_scratch,
+        ),
+    ] {
+        if times.is_empty() {
+            continue;
+        }
         times.sort();
         let total: std::time::Duration = times.iter().sum();
         println!(
-            "lighting one chunk: mean {:?}, median {:?}, least {:?}, most {:?}",
+            "{how}: mean {:?}, median {:?}, least {:?}, most {:?}",
             total / times.len() as u32,
             times[times.len() / 2],
             times[0],
