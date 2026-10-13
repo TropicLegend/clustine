@@ -22,7 +22,7 @@ use clustine_protocol::packets::login::{
 };
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
-    Login, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
+    LightUpdate, Login, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
     ServerboundPlayerAbilities, SetCreativeModeSlot, SetHeldItem, SetPlayerPosition,
     SetPlayerPositionAndRotation, SynchronizePlayerPosition, UseItemOn, face, inventory,
     movement_flags, player_action,
@@ -31,6 +31,7 @@ use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
 
 use crate::kept::Journal;
+use crate::light::{ChunkLight, LightAt, LightUpdateSeen, Named};
 use crate::{Connection, Ending, Kept, Left, Reason, intention};
 
 /// The length of a client tick.
@@ -39,6 +40,14 @@ const TICK: Duration = Duration::from_millis(50);
 /// How many runs of packets of one kind a bot remembers the order of: enough for
 /// everything a server sends on entering, without growing for as long as a bot plays.
 const ARRIVALS: usize = 256;
+
+/// How many light updates a bot remembers one by one, of those for chunks it holds and
+/// of the others each: enough for a test that looks at them and takes them away as it
+/// goes, without growing for as long as a bot plays. [`PlayStats`] counts them all.
+const LIGHT_UPDATES: usize = 4096;
+
+/// How many light updates a bot's report spells out.
+const LIGHT_UPDATES_REPORTED: usize = 32;
 
 /// The bits of a position packet that make its yaw or its pitch relative.
 const RELATIVE_LOOK: i32 = 0x08 | 0x10;
@@ -135,6 +144,12 @@ pub struct PlayStats {
     pub entities_removed: u32,
     /// How many packets of each kind arrived, by packet name.
     pub received: BTreeMap<&'static str, u32>,
+    /// How many packets of the play state arrived, the login packet not counted.
+    pub packets: u64,
+    /// How many light updates came for chunks the bot held when they came.
+    pub light_updates: u32,
+    /// How many came for chunks it did not hold, which a server has no reason to send.
+    pub stray_light_updates: u32,
 }
 
 /// How a bot behaves where tests need it to differ from a vanilla client.
@@ -215,6 +230,19 @@ pub struct Bot {
     journal: Option<Journal>,
     /// Blocks the server reported as changed since it sent their chunk, by x, y and z.
     block_changes: BTreeMap<(i32, i32, i32), i32>,
+    /// What the light updates since a chunk's packet have named, laid over each other,
+    /// and how many there were: only for chunks the bot holds and that had an update.
+    /// The light of the chunk's packet is in [`Bot::chunks`]; [`Bot::chunk_light`]
+    /// adds the two up.
+    light_since: BTreeMap<(i32, i32), (ChunkLight, u32)>,
+    /// The light updates that came for chunks the bot held, in the order they came,
+    /// that nobody has taken from here yet; at most [`LIGHT_UPDATES`] are kept.
+    pub light_updates: Vec<LightUpdateSeen>,
+    /// The light updates that came for chunks the bot did not hold, likewise.
+    pub stray_light_updates: Vec<LightUpdateSeen>,
+    /// Whether the arrays of a light update are kept with it; see
+    /// [`Bot::keep_light_arrays`].
+    light_arrays_kept: bool,
     /// The number of the bot's latest action that changes blocks.
     sequence: i32,
     /// Up to which of those actions the server has confirmed handling them.
@@ -424,6 +452,10 @@ impl Bot {
             own_slot: 0,
             journal: None,
             block_changes: BTreeMap::new(),
+            light_since: BTreeMap::new(),
+            light_updates: Vec::new(),
+            stray_light_updates: Vec::new(),
+            light_arrays_kept: false,
             sequence: 0,
             acknowledged_sequence: 0,
             acknowledgements: Vec::new(),
@@ -785,6 +817,19 @@ impl Bot {
         }
         let _ = write!(
             text,
+            "\n  light updates: {} for chunks held, {} for chunks not held",
+            self.stats.light_updates, self.stats.stray_light_updates
+        );
+        let updates = self.light_updates.iter().chain(&self.stray_light_updates);
+        for update in updates.clone().take(LIGHT_UPDATES_REPORTED) {
+            let _ = write!(text, "\n    {update}");
+        }
+        let unsaid = updates.count().saturating_sub(LIGHT_UPDATES_REPORTED);
+        if unsaid > 0 {
+            let _ = write!(text, "\n    (and {unsaid} more that are kept)");
+        }
+        let _ = write!(
+            text,
             "\n  the bot flies: {}\n  last position packet: {:?}\n  positions confirmed: {}\n  \
              the bot is at {:?} looking along {:?}\n  the connection: ",
             self.flying, self.position, self.stats.teleports_confirmed, self.location, self.look
@@ -886,6 +931,132 @@ impl Bot {
             .retain(|(x, _, z), _| (x >> 4, z >> 4) != chunk);
     }
 
+    /// The blocks of `chunk` the server reported as changed since it sent the chunk,
+    /// each as x, y, z and its state: what [`Bot::sections`] does not show.
+    pub fn changed_blocks(&self, chunk: (i32, i32)) -> Vec<((i32, i32, i32), i32)> {
+        self.block_changes
+            .iter()
+            .filter(|((x, _, z), _)| (x >> 4, z >> 4) == chunk)
+            .map(|(position, state)| (*position, *state))
+            .collect()
+    }
+
+    /// From now on the bot keeps the arrays of every light update it remembers
+    /// ([`LightUpdateSeen::light`]), about 2 KB a section named. For a test that
+    /// compares them; a bot that plays for long keeps what was named and no more.
+    pub fn keep_light_arrays(&mut self) {
+        self.light_arrays_kept = true;
+    }
+
+    /// How many light sections a chunk of the bot's dimension has: its sections and
+    /// one below and one above.
+    fn light_sections(&self) -> Result<usize> {
+        Ok(self.info.dimension_type()?.height as usize / 16 + 2)
+    }
+
+    /// The light of the chunk at `position` as this client has it: what its packets
+    /// add up to, the light of the chunk's packet with every light update since laid
+    /// over it (`crate::light` says how, and what of that is a guess). `None` if the
+    /// bot does not hold the chunk.
+    pub fn chunk_light(&self, position: (i32, i32)) -> Result<Option<ChunkLight>> {
+        let Some(chunk) = self.chunks.get(&position) else {
+            return Ok(None);
+        };
+        let light = ChunkLight::of(&chunk.light, self.light_sections()?)
+            .with_context(|| format!("the light of the chunk packet for {position:?}"))?;
+        Ok(Some(match self.light_since.get(&position) {
+            Some((since, _)) => light.with(since),
+            None => light,
+        }))
+    }
+
+    /// The sky and block light at the block `x`, `y`, `z` as this client has it, as
+    /// far as its packets stated them. `None` if the bot does not hold the chunk or
+    /// the height is outside the chunk's light sections, which reach one section
+    /// below the world and one above it.
+    pub fn light_at(&self, x: i32, y: i32, z: i32) -> Result<Option<LightAt>> {
+        let Some(light) = self.chunk_light((x >> 4, z >> 4))? else {
+            return Ok(None);
+        };
+        let above_bottom = y - (self.info.dimension_type()?.min_y - 16);
+        let Some(height) = usize::try_from(above_bottom)
+            .ok()
+            .filter(|height| height / 16 < light.sky.len())
+        else {
+            return Ok(None);
+        };
+        let (x, z) = (x as usize & 15, z as usize & 15);
+        Ok(Some(LightAt {
+            sky: light.sky(x, height, z),
+            block: light.block(x, height, z),
+        }))
+    }
+
+    /// How many light updates have come for the chunk at `position` since the bot was
+    /// last sent the chunk. Nothing for a chunk the bot does not hold.
+    pub fn light_update_count(&self, position: (i32, i32)) -> u32 {
+        self.light_since
+            .get(&position)
+            .map_or(0, |(_, count)| *count)
+    }
+
+    /// The light updates for the chunk at `position` that are still kept in
+    /// [`Bot::light_updates`], in the order they came; each says which sections it
+    /// named.
+    pub fn light_updates_for(
+        &self,
+        position: (i32, i32),
+    ) -> impl Iterator<Item = &LightUpdateSeen> {
+        self.light_updates
+            .iter()
+            .filter(move |update| update.chunk == position)
+    }
+
+    /// Takes a light update: lays it over what the bot holds of its chunk and
+    /// remembers that it came.
+    fn take_light_update(&mut self, packet: LightUpdate) -> Result<()> {
+        let chunk = (packet.chunk_x, packet.chunk_z);
+        let light_sections = self.light_sections()?;
+        let held = self.chunks.contains_key(&chunk);
+        let named = if held {
+            let (since, count) = self
+                .light_since
+                .entry(chunk)
+                .or_insert_with(|| (ChunkLight::unsaid(light_sections), 0));
+            *count += 1;
+            since.lay_over(&packet.light)
+        } else {
+            Named::of(&packet.light, light_sections)
+        }
+        .with_context(|| format!("a light update for the chunk {chunk:?}"))?;
+        let (count, kept) = if held {
+            (&mut self.stats.light_updates, &mut self.light_updates)
+        } else {
+            (
+                &mut self.stats.stray_light_updates,
+                &mut self.stray_light_updates,
+            )
+        };
+        *count += 1;
+        if kept.len() < LIGHT_UPDATES {
+            kept.push(LightUpdateSeen {
+                chunk,
+                held,
+                named,
+                // This packet has been counted already.
+                packets_before: self.stats.packets - 1,
+                block_updates_before: self
+                    .stats
+                    .received
+                    .get("minecraft:block_update")
+                    .copied()
+                    .unwrap_or(0),
+                light: self.light_arrays_kept.then_some(packet.light),
+            });
+        }
+        Ok(())
+    }
+
     /// Stays connected until `done` holds, or fails once `patience` has run out.
     pub async fn wait_until(
         &mut self,
@@ -970,6 +1141,7 @@ impl Bot {
         let packet = ClientboundPlay::decode(&frame)
             .with_context(|| format!("decoding {name} ({} bytes)", frame.len()))?;
         *self.stats.received.entry(name).or_default() += 1;
+        self.stats.packets += 1;
         let room = self.arrivals.len() < ARRIVALS;
         match self.arrivals.last_mut() {
             Some((last, count)) if *last == name => *count += 1,
@@ -1086,7 +1258,9 @@ impl Bot {
             ClientboundPlay::UnloadChunk(packet) => {
                 self.chunks.remove(&(packet.chunk_x, packet.chunk_z));
                 self.forget_block_changes((packet.chunk_x, packet.chunk_z));
+                self.light_since.remove(&(packet.chunk_x, packet.chunk_z));
             }
+            ClientboundPlay::LightUpdate(packet) => self.take_light_update(packet)?,
             ClientboundPlay::BlockUpdate(packet) => {
                 let position = packet.position;
                 self.block_changes
@@ -1133,6 +1307,9 @@ impl Bot {
             ClientboundPlay::LevelChunkWithLight(packet) => {
                 // A chunk that is sent again replaces what was known about it.
                 self.forget_block_changes((packet.chunk_x, packet.chunk_z));
+                // Its light too begins anew: the updates before it were for the chunk
+                // of before.
+                self.light_since.remove(&(packet.chunk_x, packet.chunk_z));
                 self.chunks.insert((packet.chunk_x, packet.chunk_z), packet);
                 // A client leaves the loading screen once the chunk it is in has
                 // arrived, and tells the server.

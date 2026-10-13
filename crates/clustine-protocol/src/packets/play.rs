@@ -580,6 +580,42 @@ impl Decode for LevelChunkWithLight {
     }
 }
 
+/// Light of a chunk column the client holds, without its blocks.
+///
+/// The chunk is named as two VarInts, where [`LevelChunkWithLight`] has two Ints; the
+/// light follows as in that packet. The masks say which sections the packet speaks of:
+/// one in a light mask comes with its array, one in an empty mask is dark. What a client
+/// does with a section in neither mask is not said by the layout; see
+/// `docs/adr/0023-light-at-the-edge.md`, section 8 (G2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LightUpdate {
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+    pub light: LightData,
+}
+
+impl Packet for LightUpdate {
+    const ID: i32 = clientbound::LIGHT_UPDATE;
+}
+
+impl Encode for LightUpdate {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.chunk_x);
+        w.put_var_int(self.chunk_z);
+        self.light.encode(w);
+    }
+}
+
+impl Decode for LightUpdate {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            chunk_x: r.var_int()?,
+            chunk_z: r.var_int()?,
+            light: LightData::decode(r)?,
+        })
+    }
+}
+
 empty_packet!(
     /// Announces a batch of chunk packets, which ends with [`ChunkBatchFinished`].
     ChunkBatchStart,
@@ -1494,6 +1530,7 @@ packet_set! {
         ClientboundKeepAlive,
         Disconnect,
         LevelChunkWithLight,
+        LightUpdate,
         ChunkBatchStart,
         ChunkBatchFinished,
         UnloadChunk,
@@ -1742,6 +1779,99 @@ mod tests {
             },
             ServerboundPlay::decode,
             ServerboundPlay::ChunkBatchReceived,
+        );
+    }
+
+    /// The bytes are written out by hand from `docs/protocol-26.3.md`: the id, the chunk
+    /// as two VarInts, four bit sets (each a count of bytes and the bytes, lowest first,
+    /// without zero bytes at the end), then the sky arrays and the block arrays, each a
+    /// count and each array with its length of 2,048 before it.
+    #[test]
+    fn a_light_update_is_two_var_ints_and_the_light_of_a_chunk_packet() {
+        let packet = LightUpdate {
+            chunk_x: 2,
+            chunk_z: -3,
+            light: LightData {
+                // Sections 1 and 9 of the 26 have sky light, the one below the world is
+                // dark; section 2 has block light and none is dark.
+                sky_mask: vec![0x202],
+                block_mask: vec![0b100],
+                empty_sky_mask: vec![0b1],
+                empty_block_mask: vec![],
+                sky: vec![vec![0xFF; 2048], vec![0xFE; 2048]],
+                block: vec![vec![0x0E; 2048]],
+            },
+        };
+        let mut expected = vec![
+            // Packet 49; x 2; z -3, which as a VarInt is the five bytes of 0xFFFFFFFD.
+            0x31, 0x02, 0xFD, 0xFF, 0xFF, 0xFF, 0x0F,
+            // Sky: two bytes, bits 1 and 9. Block: one byte, bit 2.
+            0x02, 0x02, 0x02, 0x01, 0x04,
+            // Dark for the sky: one byte, bit 0. Dark for blocks: no bytes.
+            0x01, 0x01, 0x00,
+        ];
+        // Two sky arrays, each after its length, 2,048, which is the VarInt 0x80 0x10.
+        expected.push(0x02);
+        for level in [0xFF, 0xFE] {
+            expected.extend([0x80, 0x10]);
+            expected.extend([level; 2048]);
+        }
+        // One block array.
+        expected.extend([0x01, 0x80, 0x10]);
+        expected.extend([0x0E; 2048]);
+
+        assert_eq!(LightUpdate::ID, 49);
+        assert_eq!(crate::packets::encode(&packet), expected);
+        assert_eq!(
+            ClientboundPlay::decode(&expected),
+            Ok(ClientboundPlay::LightUpdate(packet))
+        );
+    }
+
+    /// An update that names nothing is the id, the chunk and six zeros: no mask has a
+    /// byte and neither list an array.
+    #[test]
+    fn a_light_update_that_names_no_section_is_six_zeros_after_the_chunk() {
+        let packet = LightUpdate {
+            chunk_x: -1,
+            chunk_z: 300,
+            light: LightData::default(),
+        };
+        assert_eq!(
+            crate::packets::encode(&packet),
+            [
+                0x31, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0xAC, 0x02, 0, 0, 0, 0, 0, 0
+            ]
+        );
+    }
+
+    #[test]
+    fn light_updates_round_trip() {
+        use ClientboundPlay as Set;
+        assert_round_trip(
+            LightUpdate {
+                chunk_x: i32::MIN,
+                chunk_z: i32::MAX,
+                light: LightData {
+                    sky_mask: vec![0b110],
+                    block_mask: vec![1 << 25],
+                    empty_sky_mask: vec![0b001],
+                    empty_block_mask: vec![0x1FF_FFFE],
+                    sky: vec![vec![0xFF; 2048], vec![0x0F; 2048]],
+                    block: vec![vec![0x5A; 2048]],
+                },
+            },
+            Set::decode,
+            Set::LightUpdate,
+        );
+        assert_round_trip(
+            LightUpdate {
+                chunk_x: 0,
+                chunk_z: 0,
+                light: LightData::default(),
+            },
+            Set::decode,
+            Set::LightUpdate,
         );
     }
 

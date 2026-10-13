@@ -220,6 +220,7 @@ dependencies = [
  "clustine-coordinator",
  "clustine-data",
  "clustine-edge",
+ "clustine-light",
  "clustine-protocol",
  "clustine-region",
  "clustine-rpc",
