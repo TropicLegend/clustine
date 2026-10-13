@@ -264,6 +264,49 @@ impl NormalNoise {
         value
     }
 
+    /// The noise at a block position scaled by `xz_scale` and `y_scale`, **as the game
+    /// computes it when it fills a volume** (`NoiseStack.addToVolume`): there each
+    /// layer multiplies its frequency into the scale first and the block coordinate
+    /// into the product, where [`Self::get`] of the scaled position multiplies the
+    /// coordinate by the scale and then by the frequency. The two products can differ
+    /// in the last bit of a double, and then, now and again, the noise in its last
+    /// bits: of the corners of 3,000 chunks of the overworld, those of four.
+    ///
+    /// A scale that is a power of two gives the same either way, and so does every
+    /// layer whose frequency is one.
+    #[inline]
+    #[must_use]
+    pub fn get_in_volume(
+        &self,
+        block_x: i32,
+        block_y: i32,
+        block_z: i32,
+        xz_scale: f64,
+        y_scale: f64,
+    ) -> f32 {
+        let (x, y, z) = (f64::from(block_x), f64::from(block_y), f64::from(block_z));
+        let mut value = 0.0_f32;
+        for layer in &self.layers {
+            let xz = xz_scale * layer.frequency;
+            let up = y_scale * layer.frequency;
+            value += layer.amplitude * layer.noise.noise(x * xz, y * up, z * xz);
+        }
+        value
+    }
+
+    /// [`Self::get_in_volume`] for a noise that is read flat: its scale of y is zero.
+    #[inline]
+    #[must_use]
+    pub fn get_xz_in_volume(&self, block_x: i32, block_z: i32, xz_scale: f64) -> f32 {
+        let (x, z) = (f64::from(block_x), f64::from(block_z));
+        let mut value = 0.0_f32;
+        for layer in &self.layers {
+            let xz = xz_scale * layer.frequency;
+            value += layer.amplitude * layer.noise.noise_xz(x * xz, z * xz);
+        }
+        value
+    }
+
     /// The noise at `(x, y, 0)`.
     #[inline]
     #[must_use]

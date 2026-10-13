@@ -1,6 +1,6 @@
 [package]
 name = "clustine-terrain"
-description = "Minecraft's terrain as a function of seed and position. So far: which biome is where, in the overworld, the Nether and the End."
+description = "Minecraft's terrain as a function of seed and position. So far: which biome is where, and the ground, air and fluids of the game's fill from noise, in the overworld, the Nether and the End."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 clustine-data.workspace = true
+clustine-noise.workspace = true
 clustine-world.workspace = true
 clustine-worldgen-data.workspace = true
 

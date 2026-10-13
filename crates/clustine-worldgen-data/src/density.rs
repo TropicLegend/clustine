@@ -112,9 +112,13 @@ impl AquiferEntry {
 /// data marks `interpolated` is the interpolation between the corners of its cell.
 pub trait NoiseRouter: Send + Sync + Sized {
     /// What a caller keeps between calls so that a function the data marks `cache` is
-    /// not computed again for the position it was last asked at. It never changes a
-    /// value. One per thread; a fresh one is `Default`.
-    type Memory: Default + Clone + Send;
+    /// not computed again for the position it was last asked at. What it remembers
+    /// never changes a value. One per thread; a fresh one is `Default`.
+    ///
+    /// Through it a caller that fills a volume as the game does says so, and gives
+    /// the values it interpolated ([`Give`]); with a memory nothing was said to, a
+    /// value is the game's at the single position.
+    type Memory: Default + Clone + Send + Give;
 
     /// The router of the world with this seed.
     fn new(seed: i64) -> Self;
@@ -136,10 +140,35 @@ pub trait NoiseRouter: Send + Sync + Sized {
         z: i32,
     ) -> f32;
 
+    /// The functions the data marks `interpolated`, in the order of their numbers.
+    fn interpolated(&self) -> &'static [Interpolated];
+
+    /// The input of the interpolated function with this number at a block position:
+    /// what the game computes at the corners of a cell and interpolates between. Zero
+    /// for a number the router does not have.
+    fn interpolated_input(
+        &self,
+        memory: &mut Self::Memory,
+        number: usize,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> f32;
+
     /// A density function of the game's registry by its name
     /// (`minecraft:overworld/continents`), or `None` for one that the dimension's
     /// settings do not reach. The spawn target names its functions so.
     fn named(&self, memory: &mut Self::Memory, name: &str, x: i32, y: i32, z: i32) -> Option<f32>;
+}
+
+/// A function the data marks `interpolated`: its input is computed at the corners of
+/// cells of this size and interpolated within them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Interpolated {
+    pub cell_size_xz: i32,
+    pub cell_size_y: i32,
+    /// Whether the router's final density reaches it.
+    pub in_final_density: bool,
 }
 
 /// The parameters of a noise, from `worldgen/noise`.
@@ -239,16 +268,28 @@ pub fn spline(spline: &Spline, coordinate: &mut impl FnMut(u16) -> f32) -> f32 {
     )
 }
 
+/// The most functions marked `interpolated` a router may have.
+pub const MAX_INTERPOLATED: usize = 8;
+
 /// The last value of each function the data marks `cache`, with the position it was
-/// computed at.
+/// computed at; and, where a caller interpolates by itself, the values it gives for
+/// the interpolated functions at the position it asks next.
 #[derive(Clone, Debug)]
 pub struct Memory<const N: usize> {
     slots: [Slot; N],
+    /// Bit `n` is set where `given[n]` stands for the interpolated function `n`.
+    given_which: u8,
+    given: [f32; MAX_INTERPOLATED],
+    /// Whether what is asked is part of a volume the game fills: see [`noise3`].
+    in_volume: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Slot {
     filled: bool,
+    /// Whether the value was computed as part of a volume: it is given back only to
+    /// one who asks the same way.
+    in_volume: bool,
     position: [i32; 3],
     value: f32,
 }
@@ -258,9 +299,13 @@ impl<const N: usize> Default for Memory<N> {
         Self {
             slots: [Slot {
                 filled: false,
+                in_volume: false,
                 position: [0; 3],
                 value: 0.0,
             }; N],
+            given_which: 0,
+            given: [0.0; MAX_INTERPOLATED],
+            in_volume: false,
         }
     }
 }
@@ -271,16 +316,64 @@ impl<const N: usize> Memory<N> {
     #[must_use]
     pub fn recall(&self, slot: usize, x: i32, y: i32, z: i32) -> Option<f32> {
         let slot = &self.slots[slot];
-        (slot.filled && slot.position == [x, y, z]).then_some(slot.value)
+        (slot.filled && slot.in_volume == self.in_volume && slot.position == [x, y, z])
+            .then_some(slot.value)
     }
 
     #[inline]
     pub fn remember(&mut self, slot: usize, x: i32, y: i32, z: i32, value: f32) {
         self.slots[slot] = Slot {
             filled: true,
+            in_volume: self.in_volume,
             position: [x, y, z],
             value,
         };
+    }
+
+    /// The value given for the interpolated function `number`, if one was.
+    #[inline]
+    #[must_use]
+    pub fn given(&self, number: usize) -> Option<f32> {
+        (self.given_which >> number & 1 == 1).then(|| self.given[number])
+    }
+}
+
+/// What a router's memory takes from a caller that interpolates by itself, as the
+/// game does when it fills a volume (`clustine-terrain`'s noise chunk).
+pub trait Give {
+    /// Gives the value of the interpolated function `number`: until it is taken back,
+    /// a function asked through this memory has this value in place of the
+    /// interpolation at the position it is asked at. The caller gives the value that
+    /// belongs to the position it asks next. A function marked `cache` never holds an
+    /// interpolated one (the emitter refuses that), so nothing remembered is made
+    /// wrong by it.
+    fn give(&mut self, number: usize, value: f32);
+
+    /// Takes back every value that was given.
+    fn give_nothing(&mut self);
+
+    /// Says whether what is asked from now on is part of a volume the game fills,
+    /// and gives back what was said before. In a volume the game multiplies the
+    /// coordinates of a noise in another order (see [`noise3`]); the corners of an
+    /// interpolated function are always computed so.
+    fn in_volume(&mut self, in_volume: bool) -> bool;
+}
+
+impl<const N: usize> Give for Memory<N> {
+    #[inline]
+    fn give(&mut self, number: usize, value: f32) {
+        self.given_which |= 1 << number;
+        self.given[number] = value;
+    }
+
+    #[inline]
+    fn give_nothing(&mut self) {
+        self.given_which = 0;
+    }
+
+    #[inline]
+    fn in_volume(&mut self, in_volume: bool) -> bool {
+        std::mem::replace(&mut self.in_volume, in_volume)
     }
 }
 
@@ -364,21 +457,50 @@ pub fn blended_noise(
 }
 
 /// A noise at a block position, its coordinates scaled.
+///
+/// The game has two ways to the product of a coordinate, the scale and a layer's
+/// frequency: at a single position the coordinate times the scale, times the
+/// frequency (`NoiseFunction$Sampler.sampleValue`); in a volume the scale times the
+/// frequency first (`NoiseStack.addToVolume`). The memory says which is being
+/// computed. The two differ in a last bit now and again where the scale is no power
+/// of two, and a noise that is shifted has only the first way.
 #[inline]
 #[must_use]
-pub fn noise3(noise: &NormalNoise, x: i32, y: i32, z: i32, xz_scale: f64, y_scale: f64) -> f32 {
-    noise.get(
-        f64::from(x) * xz_scale,
-        f64::from(y) * y_scale,
-        f64::from(z) * xz_scale,
-    )
+pub fn noise3<const N: usize>(
+    memory: &Memory<N>,
+    noise: &NormalNoise,
+    x: i32,
+    y: i32,
+    z: i32,
+    xz_scale: f64,
+    y_scale: f64,
+) -> f32 {
+    if memory.in_volume {
+        noise.get_in_volume(x, y, z, xz_scale, y_scale)
+    } else {
+        noise.get(
+            f64::from(x) * xz_scale,
+            f64::from(y) * y_scale,
+            f64::from(z) * xz_scale,
+        )
+    }
 }
 
-/// A noise whose scale of y is zero: it is read flat.
+/// A noise whose scale of y is zero: it is read flat. See [`noise3`] for the two ways.
 #[inline]
 #[must_use]
-pub fn noise2(noise: &NormalNoise, x: i32, z: i32, xz_scale: f64) -> f32 {
-    noise.get_xz(f64::from(x) * xz_scale, f64::from(z) * xz_scale)
+pub fn noise2<const N: usize>(
+    memory: &Memory<N>,
+    noise: &NormalNoise,
+    x: i32,
+    z: i32,
+    xz_scale: f64,
+) -> f32 {
+    if memory.in_volume {
+        noise.get_xz_in_volume(x, z, xz_scale)
+    } else {
+        noise.get_xz(f64::from(x) * xz_scale, f64::from(z) * xz_scale)
+    }
 }
 
 /// A flat noise whose scaled coordinates are moved by two other functions' values.
@@ -536,7 +658,9 @@ pub fn distance(x: i32, y: i32, z: i32, point: [i32; 3]) -> f32 {
 /// fills a volume it steps through a cell another way, and the bits are not always
 /// these: of the overworld's final density over one chunk, the game's own two ways
 /// differed in the last bit at a third of the blocks. Filling is the noise chunk's own
-/// code, and has its own values to be compared with.
+/// code (`clustine-terrain`, module `noise_chunk`), which gives the values it
+/// interpolated to the memory ([`Give::give`]) and is compared with the game's
+/// volumes.
 #[inline]
 pub fn interpolate(
     cell_size_xz: i32,
@@ -572,6 +696,42 @@ pub fn interpolate(
     let near = lerp(ty, lerp(tx, c000, c100), lerp(tx, c010, c110));
     let far = lerp(ty, lerp(tx, c001, c101), lerp(tx, c011, c111));
     lerp(tz, near, far)
+}
+
+/// The interpolated function `number` where a router computes it: the value the
+/// caller gave for it, or else the interpolation at the single position.
+///
+/// At a single position the game takes the input itself where the position is a
+/// corner of a cell, and otherwise fills a volume of the cell's eight corners with the
+/// input and interpolates between them (`InterpolatedFunction$Sampler.sampleValue`).
+/// So the eight are computed as part of a volume, and the one is not.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn interpolated<const N: usize>(
+    memory: &mut Memory<N>,
+    number: usize,
+    cell_size_xz: i32,
+    cell_size_y: i32,
+    x: i32,
+    y: i32,
+    z: i32,
+    corner: &mut impl FnMut(&mut Memory<N>, i32, i32, i32) -> f32,
+) -> f32 {
+    if let Some(value) = memory.given(number) {
+        return value;
+    }
+    if x.rem_euclid(cell_size_xz) == 0
+        && y.rem_euclid(cell_size_y) == 0
+        && z.rem_euclid(cell_size_xz) == 0
+    {
+        return corner(memory, x, y, z);
+    }
+    let before = memory.in_volume(true);
+    let value = interpolate(cell_size_xz, cell_size_y, x, y, z, &mut |x, y, z| {
+        corner(memory, x, y, z)
+    });
+    memory.in_volume(before);
+    value
 }
 
 /// `find_top_surface`: the highest multiple of `cell_height` at or below
@@ -817,5 +977,37 @@ mod tests {
         assert_eq!(memory.recall(0, 1, 2, 3), None);
         assert_eq!(memory.recall(0, 1, 2, 4), Some(0.75));
         let _ = Memory::<0>::default();
+    }
+
+    #[test]
+    fn an_interpolated_function_has_the_value_that_was_given_for_it_and_no_other() {
+        let mut memory = Memory::<0>::default();
+        let mut asked = 0;
+        let mut corner = |_: &mut Memory<0>, x: i32, _: i32, _: i32| {
+            asked += 1;
+            x as f32
+        };
+        // Nothing given: the interpolation at the position.
+        assert_eq!(
+            interpolated(&mut memory, 3, 4, 8, 2, 0, 0, &mut corner),
+            2.0
+        );
+        memory.give(3, 7.5);
+        assert_eq!(memory.given(3), Some(7.5));
+        assert_eq!(memory.given(2), None);
+        assert_eq!(
+            interpolated(&mut memory, 3, 4, 8, 2, 0, 0, &mut corner),
+            7.5
+        );
+        assert_eq!(
+            interpolated(&mut memory, 2, 4, 8, 2, 0, 0, &mut corner),
+            2.0
+        );
+        memory.give_nothing();
+        assert_eq!(
+            interpolated(&mut memory, 3, 4, 8, 2, 0, 0, &mut corner),
+            2.0
+        );
+        assert_eq!(asked, 24, "eight corners each time nothing was given");
     }
 }

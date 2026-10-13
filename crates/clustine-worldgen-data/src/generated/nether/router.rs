@@ -10,7 +10,9 @@
 
 use clustine_noise::{BlendedNoise, NormalNoise};
 
-use crate::density::{self as d, AquiferEntry, Memory, NoiseRouter, NoiseSettings, RouterEntry};
+use crate::density::{
+    self as d, AquiferEntry, Interpolated, Memory, NoiseRouter, NoiseSettings, RouterEntry,
+};
 use crate::generated::noise_settings;
 
 /// What a caller keeps between calls: the last value of each `cache`.
@@ -56,6 +58,19 @@ impl NoiseRouter for NetherRouter {
         0.0
     }
 
+    fn interpolated(&self) -> &'static [Interpolated] {
+        &[
+            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+        ]
+    }
+
+    fn interpolated_input(&self, m: &mut M, number: usize, x: i32, y: i32, z: i32) -> f32 {
+        match number {
+            0 => self.h_1(m, x, y, z),
+            _ => 0.0,
+        }
+    }
+
     fn named(&self, m: &mut M, name: &str, x: i32, y: i32, z: i32) -> Option<f32> {
         Some(match name {
             "minecraft:nether/base_3d_noise" => {
@@ -74,14 +89,14 @@ impl NetherRouter {
     }
 
     /// The router's `temperature`.
-    fn router_temperature(&self, _m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
-        let v1 = d::noise2(&self.nether_temperature, x, z, 0.25);
+    fn router_temperature(&self, m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
+        let v1 = d::noise2(m, &self.nether_temperature, x, z, 0.25);
         v1
     }
 
     /// The router's `vegetation`.
-    fn router_vegetation(&self, _m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
-        let v1 = d::noise2(&self.nether_vegetation, x, z, 0.25);
+    fn router_vegetation(&self, m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
+        let v1 = d::noise2(m, &self.nether_vegetation, x, z, 0.25);
         v1
     }
 
@@ -137,7 +152,7 @@ impl NetherRouter {
 
     /// The router's `final_density`.
     fn router_final_density(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::interpolate(4, 8, x, y, z, &mut |x, y, z| self.h_1(m, x, y, z));
+        let v1 = d::interpolated(m, 0, 4, 8, x, y, z, &mut |m, x, y, z| self.h_1(m, x, y, z));
         let v2 = d::squeeze(v1);
         let v3 = v2 + d::NO_BEARD;
         v3

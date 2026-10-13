@@ -8,7 +8,21 @@ contributors. Licensed under the GNU Affero General Public License, version 3 or
 (at your option) any later version; see `LICENSE` at the root of this
 repository. The files that were adapted say so at their head.
 
+src/noise_chunk.rs, src/aquifer.rs and src/fill.rs were written from the classes of
+the pinned server jar, method by method, with SteelMC's
+steel-worldgen/src/noise/noise_chunk.rs and steel-worldgen/src/noise/aquifer.rs read
+beside them; each says so at its head.
+
 tests/steelmc_hashes.rs holds hashes of the biomes of a few chunks, copied from
 SteelMC's steel-core/test_assets/biome_hashes.json at the same commit, and reads the
-whole of that file from a clone of SteelMC where one is named. The hashes are of
-values that SteelMC's extractor read out of the game.
+whole of that file from a clone of SteelMC where one is named. tests/steelmc_terrain.rs
+does the same with hashes of the blocks of chunks of the End from
+steel-core/test_assets/chunk_stage_hashes.json, hashed as SteelMC's
+steel-core/src/worldgen/chunk_stage_hashes.rs hashes them. The hashes are of values
+that SteelMC's extractor read out of the game.
+
+tests/fill.rs holds values that the classes of the pinned server jar computed
+(tests/java/GameFill.java asks them without a server): hashes of densities, counts of
+blocks, marked positions and columns of a few chunks. They are Mojang's data and not
+under the licence of the code around them: see NOTICE.md at the root of the
+repository.

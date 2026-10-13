@@ -39,7 +39,9 @@ pub mod density;
 #[allow(clippy::all)]
 mod generated;
 
-pub use density::{AquiferEntry, NoiseParameters, NoiseRouter, NoiseSettings, RouterEntry};
+pub use density::{
+    AquiferEntry, Give, Interpolated, NoiseParameters, NoiseRouter, NoiseSettings, RouterEntry,
+};
 pub use generated::end::router::EndRouter;
 pub use generated::nether::router::NetherRouter;
 pub use generated::overworld::router::OverworldRouter;

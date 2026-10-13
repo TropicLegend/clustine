@@ -11,7 +11,7 @@
 use clustine_noise::{BlendedNoise, NormalNoise};
 
 use crate::density::{
-    self as d, AquiferEntry, Memory, NoiseRouter, NoiseSettings, RouterEntry, Spline,
+    self as d, AquiferEntry, Interpolated, Memory, NoiseRouter, NoiseSettings, RouterEntry, Spline,
 };
 use crate::generated::{noise_settings, noises};
 
@@ -128,6 +128,29 @@ impl NoiseRouter for OverworldRouter {
         }
     }
 
+    fn interpolated(&self) -> &'static [Interpolated] {
+        &[
+            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+            Interpolated { cell_size_xz: 16, cell_size_y: 1, in_final_density: false },
+            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+        ]
+    }
+
+    fn interpolated_input(&self, m: &mut M, number: usize, x: i32, y: i32, z: i32) -> f32 {
+        match number {
+            0 => self.h_10(m, x, y, z),
+            1 => self.h_13(m, x, y, z),
+            2 => self.h_15(m, x, y, z),
+            3 => self.h_17(m, x, y, z),
+            4 => self.f_overworld_preliminary_surface_level(m, x, y, z),
+            5 => self.h_25(m, x, y, z),
+            _ => 0.0,
+        }
+    }
+
     fn named(&self, m: &mut M, name: &str, x: i32, y: i32, z: i32) -> Option<f32> {
         Some(match name {
             "minecraft:overworld/base_3d_noise" => {
@@ -233,31 +256,35 @@ impl OverworldRouter {
         if let Some(value) = m.recall(1, x, y, z) {
             return value;
         }
-        let v1 = d::noise3(&self.spaghetti_3d_rarity, x, y, z, 2.0, 1.0);
+        let v1 = d::noise3(m, &self.spaghetti_3d_rarity, x, y, z, 2.0, 1.0);
         m.remember(1, x, y, z, v1);
         v1
     }
 
-    fn h_2(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_1, x, y, z, 1.3333333333333333, 1.3333333333333333);
+    fn h_2(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(
+            m, &self.spaghetti_3d_1, x, y, z, 1.3333333333333333, 1.3333333333333333,
+        );
         let v2 = v1 * 0.75_f32;
         v2
     }
 
-    fn h_3(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_1, x, y, z, 1.0, 1.0);
+    fn h_3(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_3d_1, x, y, z, 1.0, 1.0);
         let v2 = v1 * 1.0_f32;
         v2
     }
 
-    fn h_4(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_1, x, y, z, 0.6666666666666666, 0.6666666666666666);
+    fn h_4(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(
+            m, &self.spaghetti_3d_1, x, y, z, 0.6666666666666666, 0.6666666666666666,
+        );
         let v2 = v1 * 1.5_f32;
         v2
     }
 
-    fn h_5(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_1, x, y, z, 0.5, 0.5);
+    fn h_5(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_3d_1, x, y, z, 0.5, 0.5);
         let v2 = v1 * 2.0_f32;
         v2
     }
@@ -266,31 +293,35 @@ impl OverworldRouter {
         if let Some(value) = m.recall(2, x, y, z) {
             return value;
         }
-        let v1 = d::noise3(&self.spaghetti_3d_rarity, x, y, z, 2.0, 1.0);
+        let v1 = d::noise3(m, &self.spaghetti_3d_rarity, x, y, z, 2.0, 1.0);
         m.remember(2, x, y, z, v1);
         v1
     }
 
-    fn h_6(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_2, x, y, z, 1.3333333333333333, 1.3333333333333333);
+    fn h_6(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(
+            m, &self.spaghetti_3d_2, x, y, z, 1.3333333333333333, 1.3333333333333333,
+        );
         let v2 = v1 * 0.75_f32;
         v2
     }
 
-    fn h_7(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_2, x, y, z, 1.0, 1.0);
+    fn h_7(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_3d_2, x, y, z, 1.0, 1.0);
         let v2 = v1 * 1.0_f32;
         v2
     }
 
-    fn h_8(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_2, x, y, z, 0.6666666666666666, 0.6666666666666666);
+    fn h_8(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(
+            m, &self.spaghetti_3d_2, x, y, z, 0.6666666666666666, 0.6666666666666666,
+        );
         let v2 = v1 * 1.5_f32;
         v2
     }
 
-    fn h_9(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_3d_2, x, y, z, 0.5, 0.5);
+    fn h_9(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_3d_2, x, y, z, 0.5, 0.5);
         let v2 = v1 * 2.0_f32;
         v2
     }
@@ -319,7 +350,7 @@ impl OverworldRouter {
         };
         let v6 = d::abs(v5);
         let v7 = d::max(v3, v6);
-        let v8 = d::noise3(&self.spaghetti_3d_thickness, x, y, z, 1.0, 1.0);
+        let v8 = d::noise3(m, &self.spaghetti_3d_thickness, x, y, z, 1.0, 1.0);
         let v9 = v8 * -0.011500001_f32;
         let v10 = v9 + -0.0765_f32;
         let v11 = v7 + v10;
@@ -330,7 +361,7 @@ impl OverworldRouter {
         if let Some(value) = m.recall(0, x, y, z) {
             return value;
         }
-        let v1 = d::noise3(&self.cave_entrance, x, y, z, 0.75, 0.5);
+        let v1 = d::noise3(m, &self.cave_entrance, x, y, z, 0.75, 0.5);
         let v2 = v1 + 0.37_f32;
         let v3 = d::gradient(y, -10, 30, 0.3, 0.0);
         let v4 = v2 + v3;
@@ -349,8 +380,8 @@ impl OverworldRouter {
         v1
     }
 
-    fn h_11(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.noodle, x, y, z, 1.0, 1.0);
+    fn h_11(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.noodle, x, y, z, 1.0, 1.0);
         v1
     }
 
@@ -364,8 +395,8 @@ impl OverworldRouter {
         v2
     }
 
-    fn h_14(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.noodle_thickness, x, y, z, 1.0, 1.0);
+    fn h_14(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.noodle_thickness, x, y, z, 1.0, 1.0);
         let v2 = v1 * -0.025_f32;
         let v3 = v2 + -0.075_f32;
         v3
@@ -381,8 +412,10 @@ impl OverworldRouter {
         v2
     }
 
-    fn h_16(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.noodle_ridge_a, x, y, z, 2.6666666666666665, 2.6666666666666665);
+    fn h_16(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(
+            m, &self.noodle_ridge_a, x, y, z, 2.6666666666666665, 2.6666666666666665,
+        );
         v1
     }
 
@@ -396,8 +429,10 @@ impl OverworldRouter {
         v2
     }
 
-    fn h_18(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.noodle_ridge_b, x, y, z, 2.6666666666666665, 2.6666666666666665);
+    fn h_18(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(
+            m, &self.noodle_ridge_b, x, y, z, 2.6666666666666665, 2.6666666666666665,
+        );
         v1
     }
 
@@ -412,10 +447,10 @@ impl OverworldRouter {
     }
 
     fn h_12(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::interpolate(4, 8, x, y, z, &mut |x, y, z| self.h_13(m, x, y, z));
-        let v2 = d::interpolate(4, 8, x, y, z, &mut |x, y, z| self.h_15(m, x, y, z));
+        let v1 = d::interpolated(m, 1, 4, 8, x, y, z, &mut |m, x, y, z| self.h_13(m, x, y, z));
+        let v2 = d::interpolated(m, 2, 4, 8, x, y, z, &mut |m, x, y, z| self.h_15(m, x, y, z));
         let v3 = d::abs(v2);
-        let v4 = d::interpolate(4, 8, x, y, z, &mut |x, y, z| self.h_17(m, x, y, z));
+        let v4 = d::interpolated(m, 3, 4, 8, x, y, z, &mut |m, x, y, z| self.h_17(m, x, y, z));
         let v5 = d::abs(v4);
         let v6 = d::max(v3, v5);
         let v7 = v6 * 1.5_f32;
@@ -425,7 +460,7 @@ impl OverworldRouter {
 
     /// `minecraft:overworld/caves/noodle`
     fn f_overworld_caves_noodle(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::interpolate(4, 8, x, y, z, &mut |x, y, z| self.h_10(m, x, y, z));
+        let v1 = d::interpolated(m, 0, 4, 8, x, y, z, &mut |m, x, y, z| self.h_10(m, x, y, z));
         let v2 = if v1 >= -1000000.0 && v1 < 0.0 {
             64.0_f32
         } else {
@@ -438,13 +473,13 @@ impl OverworldRouter {
         if let Some(value) = m.recall(3, x, y, z) {
             return value;
         }
-        let v1 = d::noise3(&self.pillar, x, y, z, 25.0, 0.3);
+        let v1 = d::noise3(m, &self.pillar, x, y, z, 25.0, 0.3);
         let v2 = v1 * 2.0_f32;
-        let v3 = d::noise3(&self.pillar_rareness, x, y, z, 1.0, 1.0);
+        let v3 = d::noise3(m, &self.pillar_rareness, x, y, z, 1.0, 1.0);
         let v4 = v3 * -1.0_f32;
         let v5 = v4 + -1.0_f32;
         let v6 = v2 + v5;
-        let v7 = d::noise3(&self.pillar_thickness, x, y, z, 1.0, 1.0);
+        let v7 = d::noise3(m, &self.pillar_thickness, x, y, z, 1.0, 1.0);
         let v8 = v7 * 0.55_f32;
         let v9 = v8 + 0.55_f32;
         let v10 = d::cube(v9);
@@ -459,32 +494,32 @@ impl OverworldRouter {
         v1
     }
 
-    fn h_19(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_2d, x, y, z, 2.0, 2.0);
+    fn h_19(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_2d, x, y, z, 2.0, 2.0);
         let v2 = v1 * 0.5_f32;
         v2
     }
 
-    fn h_20(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_2d, x, y, z, 1.3333333333333333, 1.3333333333333333);
+    fn h_20(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_2d, x, y, z, 1.3333333333333333, 1.3333333333333333);
         let v2 = v1 * 0.75_f32;
         v2
     }
 
-    fn h_21(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_2d, x, y, z, 1.0, 1.0);
+    fn h_21(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_2d, x, y, z, 1.0, 1.0);
         let v2 = v1 * 1.0_f32;
         v2
     }
 
-    fn h_22(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_2d, x, y, z, 0.5, 0.5);
+    fn h_22(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_2d, x, y, z, 0.5, 0.5);
         let v2 = v1 * 2.0_f32;
         v2
     }
 
-    fn h_23(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_2d, x, y, z, 0.3333333333333333, 0.3333333333333333);
+    fn h_23(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.spaghetti_2d, x, y, z, 0.3333333333333333, 0.3333333333333333);
         let v2 = v1 * 3.0_f32;
         v2
     }
@@ -493,7 +528,7 @@ impl OverworldRouter {
         if let Some(value) = m.recall(4, x, 0, z) {
             return value;
         }
-        let v1 = d::noise2(&self.spaghetti_2d_elevation, x, z, 1.0);
+        let v1 = d::noise2(m, &self.spaghetti_2d_elevation, x, z, 1.0);
         let v2 = v1 * 8.0_f32;
         m.remember(4, x, 0, z, v2);
         v2
@@ -501,7 +536,7 @@ impl OverworldRouter {
 
     /// `minecraft:overworld/caves/spaghetti_2d`
     fn f_overworld_caves_spaghetti_2d(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.spaghetti_2d_modulator, x, y, z, 2.0, 1.0);
+        let v1 = d::noise3(m, &self.spaghetti_2d_modulator, x, y, z, 2.0, 1.0);
         let v2 = if v1 < -0.75 {
             self.h_19(m, x, y, z)
         } else if v1 < -0.5 {
@@ -533,7 +568,7 @@ impl OverworldRouter {
         if let Some(value) = m.recall(5, x, y, z) {
             return value;
         }
-        let v1 = d::noise3(&self.spaghetti_2d_thickness, x, y, z, 2.0, 1.0);
+        let v1 = d::noise3(m, &self.spaghetti_2d_thickness, x, y, z, 2.0, 1.0);
         let v2 = v1 * -0.34999996_f32;
         let v3 = v2 + -0.95_f32;
         m.remember(5, x, y, z, v3);
@@ -556,10 +591,10 @@ impl OverworldRouter {
         if let Some(value) = m.recall(6, x, y, z) {
             return value;
         }
-        let v1 = d::noise3(&self.spaghetti_roughness_modulator, x, y, z, 1.0, 1.0);
+        let v1 = d::noise3(m, &self.spaghetti_roughness_modulator, x, y, z, 1.0, 1.0);
         let v2 = v1 * -0.05_f32;
         let v3 = v2 + -0.05_f32;
-        let v4 = d::noise3(&self.spaghetti_roughness, x, y, z, 1.0, 1.0);
+        let v4 = d::noise3(m, &self.spaghetti_roughness, x, y, z, 1.0, 1.0);
         let v5 = d::abs(v4);
         let v6 = v5 + -0.4_f32;
         let v7 = v3 * v6;
@@ -581,9 +616,9 @@ impl OverworldRouter {
 
     /// `minecraft:overworld/chunk_surface_level`
     fn f_overworld_chunk_surface_level(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::interpolate(
-            16, 1, x, y, z,
-            &mut |x, y, z| self.f_overworld_preliminary_surface_level(m, x, y, z),
+        let v1 = d::interpolated(
+            m, 4, 16, 1, x, y, z,
+            &mut |m, x, y, z| self.f_overworld_preliminary_surface_level(m, x, y, z),
         );
         v1
     }
@@ -665,10 +700,10 @@ impl OverworldRouter {
     }
 
     fn h_29(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.cave_layer, x, y, z, 1.0, 8.0);
+        let v1 = d::noise3(m, &self.cave_layer, x, y, z, 1.0, 8.0);
         let v2 = d::square(v1);
         let v3 = v2 * 4.0_f32;
-        let v4 = d::noise3(&self.cave_cheese, x, y, z, 1.0, 0.6666666666666666);
+        let v4 = d::noise3(m, &self.cave_cheese, x, y, z, 1.0, 0.6666666666666666);
         let v5 = v4 + 0.27_f32;
         let v6 = d::clamp(v5, -1.0, 1.0);
         let v7 = self.f_overworld_sloped_cheese(m, x, y, z);
@@ -730,7 +765,7 @@ impl OverworldRouter {
 
     /// `minecraft:overworld/final_density`
     fn f_overworld_final_density(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::interpolate(4, 8, x, y, z, &mut |x, y, z| self.h_25(m, x, y, z));
+        let v1 = d::interpolated(m, 5, 4, 8, x, y, z, &mut |m, x, y, z| self.h_25(m, x, y, z));
         let v2 = d::squeeze(v1);
         let v3 = self.f_overworld_caves_noodle(m, x, y, z);
         let v4 = d::min(v2, v3);
@@ -875,7 +910,7 @@ impl OverworldRouter {
             return value;
         }
         let v1 = self.f_overworld_jaggedness(m, x, y, z);
-        let v2 = d::noise2(&self.jagged, x, z, 1500.0);
+        let v2 = d::noise2(m, &self.jagged, x, z, 1500.0);
         let v3 = d::half_negative(v2);
         let v4 = v1 * v3;
         m.remember(14, x, 0, z, v4);
@@ -1006,26 +1041,26 @@ impl OverworldRouter {
     }
 
     /// The aquifers' `barrier`.
-    fn aquifer_barrier(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.aquifer_barrier, x, y, z, 1.0, 0.5);
+    fn aquifer_barrier(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.aquifer_barrier, x, y, z, 1.0, 0.5);
         v1
     }
 
     /// The aquifers' `fluid_level_floodedness`.
-    fn aquifer_fluid_level_floodedness(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.aquifer_fluid_level_floodedness, x, y, z, 1.0, 0.67);
+    fn aquifer_fluid_level_floodedness(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.aquifer_fluid_level_floodedness, x, y, z, 1.0, 0.67);
         v1
     }
 
     /// The aquifers' `fluid_level_spread`.
-    fn aquifer_fluid_level_spread(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.aquifer_fluid_level_spread, x, y, z, 1.0, 0.7142857142857143);
+    fn aquifer_fluid_level_spread(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.aquifer_fluid_level_spread, x, y, z, 1.0, 0.7142857142857143);
         v1
     }
 
     /// The aquifers' `lava`.
-    fn aquifer_lava(&self, _m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::noise3(&self.aquifer_lava, x, y, z, 1.0, 1.0);
+    fn aquifer_lava(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.aquifer_lava, x, y, z, 1.0, 1.0);
         v1
     }
 

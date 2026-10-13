@@ -27,6 +27,15 @@
 //!   the 300 lines ADR-0019 allows.
 //! - A function the data marks `cache` is a method that asks the caller's memory first
 //!   and leaves its value there.
+//! - A function the data marks `interpolated` is numbered. Where it is computed, the
+//!   caller's memory is asked first for a value given for that number: whoever fills a
+//!   volume as the game does (`clustine-terrain`'s noise chunk) interpolates between
+//!   the corners in the game's order and gives the results. Otherwise it is the
+//!   interpolation at the single position. Either way the corners are computed as
+//!   the game computes a volume, which a noise that is not shifted asks the memory
+//!   about. The router says which numbers there are,
+//!   with their cell sizes and whether the final density reaches them, and gives the
+//!   input of each at a position.
 //!
 //! Nothing here depends on a hash map's order or on how a toolchain formats: names are
 //! numbered in the order the trees are walked, and a float is written as the shortest
@@ -84,6 +93,11 @@ pub fn emit(
     let named = reached(registry, &roots)?;
 
     let mut generator = Generator::new(registry);
+    for (entry, density) in ROUTER_ENTRIES.iter().zip(&settings.router) {
+        if *entry == "final_density" {
+            interpolated_within(density, registry, &mut generator.in_final_density);
+        }
+    }
     for root in &roots {
         generator.collect_leaves(root)?;
     }
@@ -350,6 +364,46 @@ struct Generator<'a> {
     /// What the splines' coordinates are, by their number.
     coordinates: Vec<Lazy>,
     coordinate_numbers: Vec<Density>,
+    /// The functions the data marks `interpolated`, in the order they are numbered:
+    /// the method of the input, the two cell sizes, and whether the final density
+    /// reaches it.
+    interpolated: Vec<(String, i32, i32, bool)>,
+    /// What the final density reaches through `interpolated`: each input with its
+    /// cell sizes.
+    in_final_density: Vec<(Density, i32, i32)>,
+}
+
+/// The most functions marked `interpolated` a router may have: what
+/// `clustine_worldgen_data::density::Memory` has room for.
+pub const MAX_INTERPOLATED: usize = 8;
+
+/// The inputs of the functions marked `interpolated` that `density` reaches, through
+/// references too, each with its cell sizes.
+fn interpolated_within(
+    density: &Density,
+    registry: &Registry,
+    found: &mut Vec<(Density, i32, i32)>,
+) {
+    if let Density::Reference(name) = density {
+        if let Some(target) = registry.get(name) {
+            interpolated_within(target, registry, found);
+        }
+        return;
+    }
+    if let Density::Interpolated {
+        input,
+        cell_size_xz,
+        cell_size_y,
+    } = density
+    {
+        let entry = ((**input).clone(), *cell_size_xz, *cell_size_y);
+        if !found.contains(&entry) {
+            found.push(entry);
+        }
+    }
+    for child in density.children() {
+        interpolated_within(child, registry, found);
+    }
 }
 
 impl<'a> Generator<'a> {
@@ -367,6 +421,8 @@ impl<'a> Generator<'a> {
             spline_numbers: BTreeMap::new(),
             coordinates: Vec::new(),
             coordinate_numbers: Vec::new(),
+            interpolated: Vec::new(),
+            in_final_density: Vec::new(),
         }
     }
 
@@ -561,13 +617,18 @@ impl<'a> Generator<'a> {
                             "d::shifted_noise2(&self.{field}, x, z, {xz}, {shift_x}, {shift_z})"
                         ))
                     }
+                    // A noise that is not shifted asks the memory how its coordinates
+                    // are to be multiplied: the game does it in another order where
+                    // it fills a volume.
                     None if *y_scale == 0.0 => {
-                        body.bind(&format!("d::noise2(&self.{field}, x, z, {xz})"))
+                        body.used.memory = true;
+                        body.bind(&format!("d::noise2(m, &self.{field}, x, z, {xz})"))
                     }
                     None => {
+                        body.used.memory = true;
                         body.used.y = true;
                         body.bind(&format!(
-                            "d::noise3(&self.{field}, x, y, z, {xz}, {})",
+                            "d::noise3(m, &self.{field}, x, y, z, {xz}, {})",
                             double(*y_scale)?
                         ))
                     }
@@ -732,10 +793,24 @@ impl<'a> Generator<'a> {
                 // Between equal corners lies the same value, to the bit.
                 Lazy::Literal(text) => text,
                 Lazy::Method(method) => {
+                    let number = self.interpolated.len();
+                    ensure!(
+                        number < MAX_INTERPOLATED,
+                        "more than {MAX_INTERPOLATED} functions are marked interpolated"
+                    );
+                    let in_final_density = self.in_final_density.iter().any(|(other, xz, y)| {
+                        *other == **input && xz == cell_size_xz && y == cell_size_y
+                    });
+                    self.interpolated.push((
+                        method.clone(),
+                        *cell_size_xz,
+                        *cell_size_y,
+                        in_final_density,
+                    ));
                     body.used.add(Used::ALL);
                     body.bind(&format!(
-                        "d::interpolate({cell_size_xz}, {cell_size_y}, x, y, z, \
-                         &mut |x, y, z| self.{method}(m, x, y, z))"
+                        "d::interpolated(m, {number}, {cell_size_xz}, {cell_size_y}, x, y, z, \
+                         &mut |m, x, y, z| self.{method}(m, x, y, z))"
                     ))
                 }
             },
@@ -808,6 +883,15 @@ impl<'a> Generator<'a> {
     /// value, and gives the method's name. A function that does not change with y is
     /// remembered for its column.
     fn cache(&mut self, input: &Density) -> Result<String> {
+        // What a cache remembers would be wrong for the other way of interpolating:
+        // a caller that gives the interpolated values itself gets other bits than
+        // the interpolation at the position alone.
+        let mut within = Vec::new();
+        interpolated_within(input, self.registry, &mut within);
+        ensure!(
+            within.is_empty(),
+            "a function marked cache holds one marked interpolated"
+        );
         let slot = self.memory_slots;
         self.memory_slots += 1;
         let name = format!("c_{slot}");
@@ -1016,6 +1100,7 @@ impl<'a> Generator<'a> {
                 .any(|method| method.lines.iter().any(|line| line.contains("d::")));
         let mut density_names = vec![
             "AquiferEntry",
+            "Interpolated",
             "Memory",
             "NoiseRouter",
             "NoiseSettings",
@@ -1125,6 +1210,46 @@ impl<'a> Generator<'a> {
             writeln!(out, "        0.0")?;
             writeln!(out, "    }}\n")?;
         }
+
+        writeln!(
+            out,
+            "    fn interpolated(&self) -> &'static [Interpolated] {{"
+        )?;
+        if self.interpolated.is_empty() {
+            writeln!(out, "        &[]")?;
+        } else {
+            writeln!(out, "        &[")?;
+            for (_, cell_size_xz, cell_size_y, in_final_density) in &self.interpolated {
+                writeln!(
+                    out,
+                    "            Interpolated {{ cell_size_xz: {cell_size_xz}, cell_size_y: \
+                     {cell_size_y}, in_final_density: {in_final_density} }},"
+                )?;
+            }
+            writeln!(out, "        ]")?;
+        }
+        writeln!(out, "    }}\n")?;
+        if self.interpolated.is_empty() {
+            writeln!(
+                out,
+                "    fn interpolated_input(&self, _m: &mut M, _number: usize, _x: i32, _y: i32, \
+                 _z: i32) -> f32 {{"
+            )?;
+            writeln!(out, "        0.0")?;
+        } else {
+            writeln!(
+                out,
+                "    fn interpolated_input(&self, m: &mut M, number: usize, x: i32, y: i32, z: i32) \
+                 -> f32 {{"
+            )?;
+            writeln!(out, "        match number {{")?;
+            for (number, (method, ..)) in self.interpolated.iter().enumerate() {
+                writeln!(out, "            {number} => self.{method}(m, x, y, z),")?;
+            }
+            writeln!(out, "            _ => 0.0,")?;
+            writeln!(out, "        }}")?;
+        }
+        writeln!(out, "    }}\n")?;
 
         if self.named.is_empty() {
             writeln!(
@@ -1566,7 +1691,9 @@ mod tests {
             "if let Some(value) = m.recall(0, x, 0, z) {",
             "m.remember(0, x, 0, z, v3);",
             "self.spline(m, &splines::SPLINE_1, x, y, z)",
-            "d::interpolate(4, 8, x, y, z, &mut |x, y, z| self.h_1(m, x, y, z));",
+            "d::interpolated(m, 0, 4, 8, x, y, z, &mut |m, x, y, z| self.h_1(m, x, y, z));",
+            "Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },",
+            "0 => self.h_1(m, x, y, z),",
             "if v1 >= -1.5 && v1 < 0.25 {",
             "let v1 = d::gradient(y, -8, 24, 0.0, 1.0);",
             "let v2 = if v1 == 0.0 {",

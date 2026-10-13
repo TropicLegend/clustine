@@ -1,9 +1,18 @@
 //! Minecraft's terrain as a function of a world's seed and a position.
 //!
-//! So far this is the part every other part asks: [`biome`], which biome is where in
-//! the overworld, the Nether and the End. The shape of the ground, its surface and
-//! its caves come with the later steps of phase T of
-//! `docs/groundwork/terrain-plan.md`.
+//! So far this is the part every other part asks, and the first step of a chunk's
+//! blocks, each for the overworld, the Nether and the End:
+//!
+//! - [`biome`]: which biome is where.
+//! - [`fill`]: the game's "fill from noise" step, which gives a chunk its ground, its
+//!   air and its fluids, and the height of the ground at a column without filling a
+//!   chunk. It is made of [`noise_chunk`], the final density of a box of blocks as
+//!   the game fills it, and [`aquifer`], which says what lies where no ground is.
+//!   Every block of 5,600 chunks equals what the game's own classes give when asked
+//!   without a server; the head of [`fill`] says more.
+//!
+//! The surface and the ore veins, the caves, the features and the structures come
+//! with the later steps of phase T of `docs/groundwork/terrain-plan.md`.
 //!
 //! The overworld's biomes equal those of chunks the official server made, but for
 //! exact ties, which the game does not decide by the position. **The Nether's and
@@ -22,10 +31,24 @@
 //! assert_eq!(overworld.biome(0, -16, 0), sections[0][0]);
 //! ```
 //!
+//! ```
+//! use clustine_terrain::biome::Dimension;
+//! use clustine_terrain::fill::Terrain;
+//!
+//! let nether = Terrain::new(13579, Dimension::Nether);
+//! let filled = nether.fill(0, 0);
+//! // Netherrack at the bottom, and a sea of lava below the height 32.
+//! assert_eq!(filled.get(0, 0, 0), clustine_data::BlockState(8667));
+//! assert_eq!(filled.get(0, 25, 0), clustine_data::blocks::LAVA);
+//! ```
+//!
 //! Like the simulation, this is a function of its inputs (ADR-0021): no clock, no
 //! thread, no hash map, no I/O, and nothing remembered from one call to the next that
 //! could change an answer. Parts of the code are adapted from SteelMC; see `NOTICE` in
 //! this crate. The data it computes with is Mojang's, from `clustine-data` and
 //! `clustine-worldgen-data`.
 
+pub mod aquifer;
 pub mod biome;
+pub mod fill;
+pub mod noise_chunk;

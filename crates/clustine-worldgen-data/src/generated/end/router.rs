@@ -10,7 +10,9 @@
 
 use clustine_noise::BlendedNoise;
 
-use crate::density::{self as d, AquiferEntry, Memory, NoiseRouter, NoiseSettings, RouterEntry};
+use crate::density::{
+    self as d, AquiferEntry, Interpolated, Memory, NoiseRouter, NoiseSettings, RouterEntry,
+};
 use crate::generated::noise_settings;
 
 /// What a caller keeps between calls: the last value of each `cache`.
@@ -52,6 +54,19 @@ impl NoiseRouter for EndRouter {
 
     fn aquifer(&self, _m: &mut M, _entry: AquiferEntry, _x: i32, _y: i32, _z: i32) -> f32 {
         0.0
+    }
+
+    fn interpolated(&self) -> &'static [Interpolated] {
+        &[
+            Interpolated { cell_size_xz: 8, cell_size_y: 4, in_final_density: true },
+        ]
+    }
+
+    fn interpolated_input(&self, m: &mut M, number: usize, x: i32, y: i32, z: i32) -> f32 {
+        match number {
+            0 => self.h_2(m, x, y, z),
+            _ => 0.0,
+        }
     }
 
     fn named(&self, m: &mut M, name: &str, x: i32, y: i32, z: i32) -> Option<f32> {
@@ -174,7 +189,7 @@ impl EndRouter {
 
     /// The router's `final_density`.
     fn router_final_density(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = d::interpolate(8, 4, x, y, z, &mut |x, y, z| self.h_2(m, x, y, z));
+        let v1 = d::interpolated(m, 0, 8, 4, x, y, z, &mut |m, x, y, z| self.h_2(m, x, y, z));
         let v2 = d::squeeze(v1);
         let v3 = v2 + d::NO_BEARD;
         v3
