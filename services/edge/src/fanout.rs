@@ -198,6 +198,13 @@ struct PlayerView {
     pending: BTreeSet<ChunkPos>,
     /// Chunks in view the client has been sent.
     sent: BTreeSet<ChunkPos>,
+    /// Chunks in view the client has as they were sent before and is to be sent
+    /// anew: they are among the pending, and the client goes on showing what it has,
+    /// and is told of blocks that change in it, until the new chunk goes out with
+    /// an unload in front of it. So what a client holds of a chunk is always what
+    /// one packet and the updates after it said
+    /// (`docs/adr/0023-light-at-the-edge.md`, section 6).
+    replace: BTreeSet<ChunkPos>,
     /// Entities the client has been shown, with the player each of them is.
     visible: BTreeMap<EntityId, PlayerId>,
     /// Players the client has in its player list. A client only shows the entity of a
@@ -910,6 +917,7 @@ impl Fanout {
                         center: ChunkPos::new(0, 0),
                         pending: BTreeSet::new(),
                         sent: BTreeSet::new(),
+                        replace: BTreeSet::new(),
                         visible: BTreeMap::new(),
                         listed: BTreeSet::new(),
                         batch_outstanding: false,
@@ -2324,7 +2332,9 @@ impl Fanout {
         for position in view.wanted.difference(&wanted) {
             left.push(*position);
             view.pending.remove(position);
-            if view.sent.remove(position) {
+            // What the client has: sent, or sent before and waiting to be replaced.
+            let replaced = view.replace.remove(position);
+            if view.sent.remove(position) || replaced {
                 packets.push(encoded(&UnloadChunk {
                     chunk_x: position.x,
                     chunk_z: position.z,
@@ -2430,8 +2440,12 @@ impl Fanout {
                 .iter_mut()
                 .filter(|(_, view)| view.wanted.contains(&position))
                 .map(|(player, view)| {
-                    // A client takes a chunk it has already as the chunk's new content.
-                    view.sent.remove(&position);
+                    // A client that has the chunk keeps it until the new one goes
+                    // out, behind an unload. One that is waiting to have it replaced
+                    // already waits on.
+                    if view.sent.remove(&position) {
+                        view.replace.insert(position);
+                    }
                     view.pending.insert(position);
                     *player
                 })
@@ -2488,7 +2502,10 @@ impl Fanout {
         let viewers: Vec<_> = self
             .players
             .iter()
-            .filter(|(_, view)| view.sent.contains(&chunk_position))
+            .filter(|(_, view)| {
+                // Also one whose client still shows the chunk of before.
+                view.sent.contains(&chunk_position) || view.replace.contains(&chunk_position)
+            })
             .map(|(player, _)| *player)
             .collect();
         for player in viewers {
@@ -2516,7 +2533,19 @@ impl Fanout {
         });
         batch.truncate(view.batch_size);
 
-        let mut packets = vec![encoded(&ChunkBatchStart)];
+        // A chunk the client has from before is unloaded immediately before the batch
+        // that carries it anew.
+        let mut packets: Vec<_> = batch
+            .iter()
+            .filter(|position| view.replace.remove(position))
+            .map(|position| {
+                encoded(&UnloadChunk {
+                    chunk_x: position.x,
+                    chunk_z: position.z,
+                })
+            })
+            .collect();
+        packets.push(encoded(&ChunkBatchStart));
         for position in &batch {
             view.pending.remove(position);
             view.sent.insert(*position);
@@ -5872,6 +5901,15 @@ mod scenarios {
     }
 
     /// What a player's client has been sent.
+    /// Something a client was told of a chunk.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum OfChunk {
+        Sent(ChunkPos),
+        Unloaded(ChunkPos),
+        /// A block of the chunk has changed.
+        Block(ChunkPos),
+    }
+
     struct Client {
         player: PlayerId,
         session: SessionId,
@@ -5881,6 +5919,9 @@ mod scenarios {
         chunks: BTreeMap<ChunkPos, Option<BlockState>>,
         /// Every chunk the client was sent, in order.
         sent: Vec<ChunkPos>,
+        /// What it was told of chunks, in order: sent, unloaded, and a block of one
+        /// changed.
+        of_chunks: Vec<OfChunk>,
         /// The blocks it was told have changed since their chunk was sent, each as it
         /// was told last.
         blocks: BTreeMap<BlockPos, i32>,
@@ -5918,6 +5959,7 @@ mod scenarios {
                 packets,
                 chunks: BTreeMap::new(),
                 sent: Vec::new(),
+                of_chunks: Vec::new(),
                 blocks: BTreeMap::new(),
                 entities: BTreeSet::new(),
                 acknowledged: Vec::new(),
@@ -5948,16 +5990,20 @@ mod scenarios {
                     let state = STATES.into_iter().find(|state| i32::from(state.0) == told);
                     self.chunks.insert(position, state);
                     self.sent.push(position);
+                    self.of_chunks.push(OfChunk::Sent(position));
                     self.blocks.retain(|block, _| block.chunk() != position);
                 }
                 ClientboundPlay::UnloadChunk(chunk) => {
                     let position = ChunkPos::new(chunk.chunk_x, chunk.chunk_z);
                     self.chunks.remove(&position);
+                    self.of_chunks.push(OfChunk::Unloaded(position));
                     self.blocks.retain(|block, _| block.chunk() != position);
                 }
                 ClientboundPlay::BlockUpdate(update) => {
                     let Position { x, y, z } = update.position;
-                    self.blocks.insert(BlockPos::new(x, y, z), update.state);
+                    let block = BlockPos::new(x, y, z);
+                    self.of_chunks.push(OfChunk::Block(block.chunk()));
+                    self.blocks.insert(block, update.state);
                 }
                 ClientboundPlay::SpawnEntity(entity) => {
                     self.entities.insert(entity.entity_id);
@@ -16516,6 +16562,124 @@ mod scenarios {
         assert_eq!(sent, [(join + 2, left_unentered(1, gone))]);
         is_in_the_world(&mut second);
         assert_eq!(edge.acts(&second).await, (WEST, EntityId(8), 1));
+        edge.end().await;
+    }
+
+    // A chunk that is sent again is unloaded first: ADR-0023, section 6. Written by
+    // whoever built it; the orders of events around light are tested from the record
+    // by someone else (its step L6).
+
+    /// A client that has a chunk and is to be sent it anew, because a snapshot shows
+    /// other blocks than the edge had, is sent an unload immediately before the
+    /// batch that carries the new one. What it holds of a chunk is then always what
+    /// one packet and the updates after it said.
+    #[tokio::test]
+    async fn a_chunk_that_is_sent_again_is_unloaded_immediately_before_it() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        client.of_chunks.clear();
+
+        // The same blocks again: nothing is sent.
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        assert_eq!(client.of_chunks, []);
+
+        let other = snapshot_of(HOME, ask, chunk_with(HOME, STONE), Vec::new());
+        edge.tell(WEST, other);
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        assert_eq!(
+            client.of_chunks,
+            [OfChunk::Unloaded(HOME), OfChunk::Sent(HOME)]
+        );
+        assert_eq!(client.state(HOME), Some(STONE));
+        edge.end().await;
+    }
+
+    /// While the new chunk cannot go out yet, the client goes on showing the one it
+    /// has and is told of blocks that change in it; a second snapshot before then
+    /// leaves one unload to be sent, not two; and the chunk that goes out in the end
+    /// is the last one.
+    #[tokio::test]
+    async fn a_chunk_that_waits_to_be_sent_again_is_shown_as_it_was_with_its_changes_meanwhile() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+
+        // A batch the client does not confirm keeps everything else waiting.
+        let beside = edge.ask(WEST, STEP_EAST);
+        edge.tell(WEST, snapshot(STEP_EAST, beside));
+        edge.settle(WEST).await;
+        client.drain();
+        assert_eq!(client.batches, 1);
+        client.of_chunks.clear();
+
+        edge.tell(
+            WEST,
+            snapshot_of(HOME, ask, chunk_with(HOME, STONE), Vec::new()),
+        );
+        edge.tell(WEST, changed(HOME, GRANITE));
+        edge.tell(
+            WEST,
+            snapshot_of(HOME, ask, chunk_with(HOME, STONE), Vec::new()),
+        );
+        edge.tell(WEST, changed(HOME, AIR));
+        edge.tell(WEST, changed(HOME, GRANITE));
+        edge.settle(WEST).await;
+        client.drain();
+        // The chunk of before is still there, with the three changes said of it.
+        assert_eq!(client.of_chunks, [OfChunk::Block(HOME); 3]);
+        assert!(client.chunks.contains_key(&HOME));
+
+        edge.sync(&mut client).await;
+        assert_eq!(
+            client.of_chunks[3..],
+            [OfChunk::Unloaded(HOME), OfChunk::Sent(HOME)]
+        );
+        assert_eq!(client.state(HOME), Some(GRANITE));
+        edge.end().await;
+    }
+
+    /// A view that moves away from a chunk that waits to be sent again unloads it, as
+    /// it unloads a chunk the client was sent: the client has it. Nothing of the
+    /// chunk follows.
+    #[tokio::test]
+    async fn a_view_that_moves_away_unloads_a_chunk_that_waited_to_be_sent_again() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        let beside = edge.ask(WEST, STEP_EAST);
+        edge.tell(WEST, snapshot(STEP_EAST, beside));
+        edge.settle(WEST).await;
+        client.drain();
+        assert_eq!(client.batches, 1);
+        edge.tell(
+            WEST,
+            snapshot_of(HOME, ask, chunk_with(HOME, STONE), Vec::new()),
+        );
+        edge.settle(WEST).await;
+        client.of_chunks.clear();
+
+        // The region says the player has gone far enough that neither chunk is in
+        // view any more.
+        edge.tell(WEST, walked(EntityId(5), HOME, ChunkPos::new(40, 0)));
+        edge.settle(WEST).await;
+        edge.sync(&mut client).await;
+        let of_home = |told: &&OfChunk| {
+            matches!(
+                told,
+                OfChunk::Unloaded(HOME) | OfChunk::Sent(HOME) | OfChunk::Block(HOME)
+            )
+        };
+        let of_home: Vec<_> = client.of_chunks.iter().filter(of_home).collect();
+        assert_eq!(of_home, [&OfChunk::Unloaded(HOME)]);
+        assert!(!client.chunks.contains_key(&HOME));
         edge.end().await;
     }
 }
