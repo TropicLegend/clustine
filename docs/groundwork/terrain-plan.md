@@ -475,7 +475,7 @@ trees and in caves, chests and signs, digging and building, doors, a second clie
 |---|---|---|---|
 | T1 | `clustine-noise` | 1,508 + 815 + 2,866 + 155 | SteelMC's noise samples; values from the jar's classes (G6); the `Mth.sin` table and the beardifier's kernel against the JVM's |
 | T2 | The emitter in `tools/datagen`; routers, noise data, material rules for three dimensions, following the jar's data where SteelMC departs from it; **build time of the generated crate measured against ADR-0019's budget** | 3,873 + 2,404 + 541 + 426 | `datagen --check`; router values at points equal the jar's |
-| T3 | Biome source and climate | 1,763 | Biomes of every fixture chunk; a differing cell passes only if Clustine finds the two biomes exactly tied there, and is counted. SteelMC's biome hashes |
+| T3 | Biome source and climate | 1,763 | Biomes of every fixture chunk; a differing cell passes only if Clustine finds the two biomes exactly tied there, and is counted. SteelMC's biome hashes. **Built on 2026-10-13** (`crates/clustine-terrain`): equal to the official server's sample but for four exact ties, and to the game's own classes in all three dimensions. SteelMC's hashes hold only with 12 overworld chunks and the far End set aside, where its fixture is not what the pinned jar gives; the jar's search tree has 19 children a node, not SteelMC's 6 |
 | T4 | Noise chunk, aquifers | 499 + 1,085 + part of 3,038 | **Fixture under the pack without rules and carvers** |
 | T5 | Surface rules and ore veins | 926 + 267 | **Fixture under the pack without carvers** |
 | T6 | Carvers | 1,773 | Fixture under the pack without features, structures off |

@@ -1142,8 +1142,23 @@ entities, the four heightmaps, light and what generation leaves for later carrie
 the chunk, and a stored chunk as one file. The flat generator's chunks carry the light crate's
 light, and the client's packet is made from what the chunk carries (C4, C5). What an edge does
 about light once blocks have changed is decided
-([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice) and not built yet. Next are
-its steps, the biome source (T3) and the noise chunk (T4).
+([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice); its first steps are built
+(the shared types, the light crate's additions, the light update in the codec and the
+bots), and the edge's own are next.
+
+**The biome source is built** (T3, `crates/clustine-terrain`): for a seed and a place,
+the biome the game gives, in the overworld, the Nether and the End. Against the hundred
+chunks the official server made on seed 13579, all 155,136 cells are the same biome but
+four, and those four are exact ties, where the game itself answers by what its thread
+looked up before. Against the game's own classes without a server: 4.7 million cells
+of the overworld, 2.8 million of the Nether and 5.3 million of the End, none different
+but for ties. Two things came out of it that the plan did not know: the game's search
+tree has 19 children a node in 26.3 where SteelMC has 6, which decides ties; and
+SteelMC's biome hashes are not what the pinned jar gives for 12 of its 2,500 overworld
+chunks and for the far End, so they are a check only with those set aside. The Nether
+and the End are checked against the game's classes, not against chunks a server made:
+the sample world has none. A chunk's biomes take about a millisecond. Next is the noise
+chunk (T4).
 
 **Pauses on network storage** (22 ms a synced write; first measured in
 [groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)). Since then
