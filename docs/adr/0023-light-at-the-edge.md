@@ -94,7 +94,7 @@ have come in.
 | A section is filled as one state where it is uniform, or where every state it may hold is the same to light and has no faces of its own (stone with its ores); otherwise it is read block by block through `Section::states` | `flood.rs:134-167`; `crates/clustine-world/src/section.rs:352-354` |
 | A section is `Absent` unless it or one of the 26 around it, over the nine chunks, holds a block that is not air; the levels of such a section are reckoned and then left out. Whether a section is `Absent` looks one section up and down; the sky's light in it depends on a roof any height above | `flood.rs:347-375`, `259-315`; `lib.rs:29-35` |
 | "The game … reads a section without any [light of its own] from the one above it"; under something that floats the crate and the game may differ, and no chunk of the sample shows which | `lib.rs:37-45` |
-| Every call makes its grid anew: 1,045,000 cells for a world of 24 sections. Kinds 1.0 MB, states 2.1 MB, and two arrays of levels of 1.0 MB one after the other: **5.2 MB allocated a call, 4.2 MB at the peak** (the sky's levels are dropped before the block light's are made) | `flood.rs:22-26`, `104-108`, `246`, `276`, `412-417` |
+| Every call makes its grid anew: 1,045,000 cells for a world of 24 sections. Kinds 1.0 MB, states 2.1 MB, and two arrays of levels of 1.0 MB one after the other: **4.2 MB allocated a call, 4.2 MB at the peak** (the sky's levels are dropped before the block light's are made) | `flood.rs:22-26`, `104-108`, `246`, `276`, `412-417` |
 | There is no relight from a change | the whole crate |
 | The time of a call is taken by the comparison with the official server's stored light and printed; **the figures are written nowhere in the tree**. The main session reports from step C4: about **2.2 ms** a chunk of the sample in a release build and about **15 ms** in a build without optimisation. Step L0 writes its own figures into this record; section 9 is 2.2 ms times a count | `crates/clustine-light/tests/official.rs:374-421` |
 
@@ -511,7 +511,7 @@ fan-out task, nor on any tokio thread.
   chunks nobody changes: 72 bytes copied, about 200 KB of blocks shared.
 - **A job's work** (`relight`, pure, in `services/edge/src/light.rs`): light of
   the centre by `clustine_light::light_with` over an `Around` of the nine
-  chunks, with a **scratch the thread keeps** in place of 5.2 MB allocated a
+  chunks, with a **scratch the thread keeps** in place of 4.2 MB allocated a
   call; the sections once listed kept listed (section 6); and **one** encoded
   light update: the sections in which the result differs from the old light, or
   every listed section if the job was told so at its dispatch. (The second draft
@@ -978,7 +978,7 @@ recomputed).
   chunk did not bring: 0.3 to 0.6 GB of the second row.
 - What waits in the connections' queues is the same bytes, shared, and bounded
   as today by 2,048 packets a queue.
-- A thread keeps a scratch of 5.2 MB from its first job on. Copies made because
+- A thread keeps a scratch of 4.2 MB from its first job on. Copies made because
   a job held a chunk at a change: at most nine of 23 KB for each job under way.
 - A flat chunk is about 6 KB (`0022:328-329`): a hundred players apart in the
   flat world are 0.2 GB at a view distance of 8.
@@ -1727,7 +1727,7 @@ queues; the packet from the blocks as they are.
     least, a thread written off is replaced, the threads end with the fan-out
     task.
 11. **Cost the table left out.** Accepted, with one precision: a call
-    **allocates** 5.2 MB and holds 4.2 MB at its peak.
+    **allocates** 4.2 MB and holds 4.2 MB at its peak.
 12. **One job a chunk holds only while chunks come faster than `LATEST`.**
     Accepted; a row of section 9 and a measurement of its own.
 13. **Smaller orders.** Accepted: block updates go on to a client whose chunk
@@ -1831,3 +1831,27 @@ the dependency in finding 8.
   an array (`encode.rs:150-153`).
 - The import has no version to put into `beside` yet.
 - The draft for fewer syncs waits for a number too.
+
+## Found while building
+
+**L0a and L0b (2026-10-13).** The time of a job on the sample world, the median of 36
+chunks:
+
+| Build | A job |
+|---|---|
+| Release | 2.15 ms; 2.10 ms in a scratch that is used again |
+| Dev profile, no line | 15.6 ms |
+| Dev profile, `clustine-light` optimised | 5.3 ms |
+| … and `clustine-world` | 3.3 ms |
+| … and `clustine-data` | 2.5 ms |
+
+Each of the three profile lines buys a clear step, so all three are in the
+workspace's `Cargo.toml`; the light crate's own tests take 1 s where they took 16.
+A scratch is 4.2 MB for 24 sections, since the levels of the sky and of blocks are
+never alive together. `reach` is by 14 steps sideways, and the flood's own table of
+distances is what it reads. 7,266 of the 35,723 states differ from air in nothing
+light sees but in being a block, glass among them: `is_air` among what light sees is
+not a corner case. Two helpers the record did not name: `Unlisted::listed_in(&Light)`
+and `UnlistedLevels::put_into(&mut Light)`. `Unlisted` is two words of 64 bits, sky
+and block apart.
+
