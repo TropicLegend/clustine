@@ -37,13 +37,17 @@ use clustine_sim::api::{
     Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerEvent,
     PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, Light, PlayerId, light_tells_apart};
+use clustine_world::{
+    BlockPos, Chunk, ChunkPos, EntityId, Light, PlayerId, SectionLight, light_tells_apart,
+    sky_light,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
 use crate::encode::chunk_packet;
+use crate::light::{FromThread, LightJob, LightOutcome, Lighting};
 use crate::login::Profile;
 use crate::{EdgeIdentity, RegionLink, Relink, Routing, Stopped};
 
@@ -139,10 +143,29 @@ struct ReplicaChunk {
     /// whoever lights a chunk can be handed it and its neighbours without a copy; a
     /// block change copies the chunk only while someone else holds it.
     chunk: Option<Arc<Chunk>>,
-    /// The light a client is sent with the chunk: what the chunk came with, until a
-    /// change that light sees. Without it a client is sent the sky light reckoned by
-    /// columns.
+    /// The light a client is sent with the chunk. One copy: what the chunk came with,
+    /// while the test for carried light passes, and otherwise light the edge made.
     light: Option<Arc<Light>>,
+    /// Where `light` is from.
+    kind: LightKind,
+    /// The generator's version whose blocks, as light sees them, the chunk has; none
+    /// once a block that light sees has changed, or for a chunk no generator vouches
+    /// for. A neighbour's carried light is good beside this chunk only if it was
+    /// made beside this version's.
+    as_made: Option<u16>,
+    /// The moment at which the chunks light is made from last changed: this chunk
+    /// came or was replaced, or a neighbour did.
+    shaped: u64,
+    /// The moment of the last block change that light sees, in the chunk or in a
+    /// neighbour within its reach.
+    changed: u64,
+    /// The moment `light` is as recent as: of the job that made it or failed, or of
+    /// the test that passed.
+    lit: u64,
+    /// The moment of the job under way for the chunk, if any.
+    job: Option<u64>,
+    /// Those who have the chunk were not sent the entry's latest light.
+    owed: bool,
     /// The chunk's packet. It is encoded when first needed, so that many players can
     /// be sent the same bytes, and discarded when the chunk changes and when nobody
     /// waits for the chunk any more: it is as large as the chunk and its light
@@ -157,7 +180,51 @@ struct ReplicaChunk {
     served_by: Option<RegionId>,
 }
 
+/// Where an entry's light is from (`docs/adr/0023-light-at-the-edge.md`, section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LightKind {
+    /// The light the chunk came with, which passed the test beside its neighbours.
+    Carried,
+    /// Made by the edge from the chunk and the neighbours it had.
+    Computed,
+    /// Not right, and counted: the last job for the chunk failed. It is the light the
+    /// entry had, or the sky light reckoned by columns.
+    Fallback,
+}
+
 impl ReplicaChunk {
+    /// An entry for a chunk that has not come.
+    fn awaited() -> Self {
+        Self {
+            viewers: 0,
+            chunk: None,
+            light: None,
+            kind: LightKind::Carried,
+            as_made: None,
+            shaped: 0,
+            changed: 0,
+            lit: 0,
+            job: None,
+            owed: false,
+            packet: None,
+            waiters: BTreeSet::new(),
+            served_by: None,
+        }
+    }
+
+    /// Whether the chunk may be sent: it is there with light that is at least as
+    /// recent as the chunks it was made from. No chunk is ever sent otherwise.
+    fn sendable(&self) -> bool {
+        self.chunk.is_some() && self.light.is_some() && self.lit >= self.shaped
+    }
+
+    /// Whether the light is right for the blocks as they are: sendable, and no block
+    /// that light sees has changed since. An entry that is not is marked, and gets
+    /// a job.
+    fn current(&self) -> bool {
+        self.sendable() && self.lit >= self.changed
+    }
+
     /// The packet that sends the chunk, located at `position`, if the chunk is there.
     fn packet(&mut self, position: ChunkPos) -> Option<Bytes> {
         if self.packet.is_none() {
@@ -436,6 +503,23 @@ pub(crate) struct Fanout {
     /// so the greater entity is the later stay.
     highest: BTreeMap<PlayerId, EntityId>,
     replica: BTreeMap<ChunkPos, ReplicaChunk>,
+    /// A counter for the whole edge, raised by one every time it is read: what came
+    /// later has the greater moment, whatever was removed from the replica and made
+    /// anew in between.
+    moment: u64,
+    /// The entries whose light is not right for the chunks as they are: those that
+    /// cannot be sent, and those that can and are a little old. Each has a job under
+    /// way or gets one when a slot is free.
+    marked: BTreeSet<ChunkPos>,
+    /// The jobs under way, by their moment, with the chunk each is for. One that its
+    /// entry has forgotten stays here until it is answered, which bounds how many
+    /// there are.
+    jobs: BTreeMap<u64, ChunkPos>,
+    /// Where jobs go: threads of the edge's own, or, in the edge's tests, the turn
+    /// that dispatches them.
+    lighting: Lighting,
+    /// What the threads say. Taken by [`Fanout::run`].
+    lit: Option<mpsc::UnboundedReceiver<FromThread>>,
     /// The entities in the chunks of the replica.
     entities: BTreeMap<EntityId, Shown>,
     /// The regions that are no more, each with the region it went into, as far as this
@@ -466,6 +550,7 @@ impl Fanout {
         config: FanoutConfig,
         routing: Routing,
         commands: mpsc::Receiver<Command>,
+        (lighting, lit): (Lighting, mpsc::UnboundedReceiver<FromThread>),
     ) -> Self {
         let spawn_region = routing.home;
         // The messages of all regions are read from one queue, each link's in the order
@@ -491,6 +576,11 @@ impl Fanout {
             entity_owners: BTreeMap::new(),
             highest: BTreeMap::new(),
             replica: BTreeMap::new(),
+            moment: 0,
+            marked: BTreeSet::new(),
+            jobs: BTreeMap::new(),
+            lighting,
+            lit: Some(lit),
             entities: BTreeMap::new(),
             stands_for: BTreeMap::new(),
         }
@@ -501,6 +591,7 @@ impl Fanout {
     /// for: what its players do is kept and sent when there is a link to it again.
     pub(crate) async fn run(mut self) -> Stopped {
         let mut messages = self.messages.take().expect("the fan-out task runs once");
+        let mut lit = self.lit.take().expect("the fan-out task runs once");
         for link in std::mem::take(&mut self.first_links) {
             self.take_link(link).await;
         }
@@ -537,11 +628,17 @@ impl Fanout {
                     Relink::Link(link) => self.take_link(link).await,
                     Relink::Absorbed(pairs) => self.take_pairs(pairs).await,
                 },
+                // The task holds the other end's sender in `lighting`, so this never
+                // ends.
+                Some(said) = lit.recv() => self.take_light(said).await,
                 _ = patience.tick() => {
                     self.drop_the_overdue().await;
                     self.ask_again_where_due().await;
                 }
             }
+            // At the end of the turn, so that all the block changes of one tick, which
+            // come in one message, are in the replica before a job is made from it.
+            self.light_the_marked(&mut lit).await;
             let due = cfg!(test) || self.checked.elapsed() >= Duration::from_millis(100);
             if self.changed && due && cfg!(debug_assertions) {
                 self.changed = false;
@@ -568,6 +665,22 @@ impl Fanout {
             assert!(
                 entry.packet.is_none() || !entry.waiters.is_empty(),
                 "{position:?} keeps a packet nobody waits for"
+            );
+            // An entry whose light is not right is marked, and has a job or is to
+            // get one; and a kept packet is of light that may be sent.
+            if entry.chunk.is_some() && !entry.current() {
+                assert!(self.marked.contains(position), "{position:?} is not marked");
+            }
+            assert!(
+                entry.packet.is_none() || entry.sendable(),
+                "{position:?} keeps a packet of light that may not be sent"
+            );
+        }
+        for position in &self.marked {
+            let entry = self.replica.get(position);
+            assert!(
+                entry.is_some_and(|entry| entry.chunk.is_some()),
+                "{position:?} is marked and has no chunk"
             );
         }
         // V: a subscription's viewers are the players of its region that see the chunk,
@@ -2389,6 +2502,7 @@ impl Fanout {
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
                 self.replica.remove(position);
+                self.marked.remove(position);
             }
         }
         let mut entered = Vec::new();
@@ -2397,14 +2511,7 @@ impl Fanout {
             let chunk = self
                 .replica
                 .entry(*position)
-                .or_insert_with(|| ReplicaChunk {
-                    viewers: 0,
-                    chunk: None,
-                    light: None,
-                    packet: None,
-                    waiters: BTreeSet::new(),
-                    served_by: None,
-                });
+                .or_insert_with(ReplicaChunk::awaited);
             chunk.viewers += 1;
             if chunk.chunk.is_some() {
                 view.pending.insert(*position);
@@ -2470,10 +2577,7 @@ impl Fanout {
             // the entry keeps the chunk and the light it has, whichever region the
             // snapshot is from.
         } else {
-            let mut chunk = chunk;
-            entry.light = chunk.take_light().map(Arc::new);
-            entry.chunk = Some(Arc::new(chunk));
-            entry.packet = None;
+            self.arrive(position, chunk);
             let viewers: Vec<_> = self
                 .players
                 .iter_mut()
@@ -2518,6 +2622,237 @@ impl Fanout {
         }
     }
 
+    /// The eight chunks around `position`: north-west, north, north-east, west, east,
+    /// south-west, south, south-east, which is the order the light rules have them in.
+    fn around(position: ChunkPos) -> [ChunkPos; 8] {
+        let at = |dx, dz| ChunkPos::new(position.x + dx, position.z + dz);
+        [
+            at(-1, -1),
+            at(0, -1),
+            at(1, -1),
+            at(-1, 0),
+            at(1, 0),
+            at(-1, 1),
+            at(0, 1),
+            at(1, 1),
+        ]
+    }
+
+    /// The next moment.
+    fn next_moment(&mut self) -> u64 {
+        self.moment += 1;
+        self.moment
+    }
+
+    /// The test for carried light (`docs/adr/0023-light-at-the-edge.md`, section 7):
+    /// `light`, which the chunk at `position` came with, was made by rules the edge
+    /// takes, beside chunks of one generator's version, and every chunk around it
+    /// that the replica has is still, as light sees it, as that version made it. A
+    /// neighbour that is not there passes: when it comes, this is asked again.
+    fn carried_light_holds(&self, position: ChunkPos, light: &Light) -> bool {
+        let taken = light.made_by == clustine_light::VERSION || light.made_by == Light::IMPORTED;
+        let beside = |around: &ChunkPos| match self.replica.get(around) {
+            Some(entry) if entry.chunk.is_some() => entry.as_made == Some(light.beside),
+            _ => true,
+        };
+        taken && light.beside != 0 && Self::around(position).iter().all(beside)
+    }
+
+    /// A chunk comes into an entry, or takes the place of the one that was there:
+    /// its light is taken out and kept if it passes the test, and the chunks around
+    /// it are asked again whether theirs still holds beside this one. What does not
+    /// hold may not be sent, and is marked for a job.
+    fn arrive(&mut self, position: ChunkPos, mut chunk: Chunk) {
+        let carried = chunk.take_light();
+        // What the chunk is as made by, as light sees it: its light says, whoever's
+        // rules made it, since nothing light sees has changed since; without light,
+        // the chunk says, as long as it is as generated.
+        let as_made = match &carried {
+            Some(light) if light.beside != 0 => Some(light.beside),
+            _ => (chunk.generated() != 0).then_some(chunk.generated()),
+        };
+        let shaped = self.next_moment();
+        let entry = self
+            .replica
+            .get_mut(&position)
+            .expect("the caller found it");
+        entry.chunk = Some(Arc::new(chunk));
+        entry.packet = None;
+        // A job under way was for the chunk of before; its result is dropped.
+        entry.job = None;
+        entry.light = None;
+        entry.owed = false;
+        entry.as_made = as_made;
+        entry.shaped = shaped;
+        let holds = carried
+            .as_ref()
+            .is_some_and(|light| self.carried_light_holds(position, light));
+        if holds {
+            let entry = self.replica.get_mut(&position).expect("found above");
+            entry.light = carried.map(Arc::new);
+            entry.kind = LightKind::Carried;
+            entry.lit = shaped;
+            self.marked.remove(&position);
+        } else {
+            self.marked.insert(position);
+        }
+        for beside in Self::around(position) {
+            let keeps = self.replica.get(&beside).and_then(|entry| {
+                entry.chunk.as_ref()?;
+                // Carried light that was right stays right if the test still passes
+                // beside the new chunk. Light the edge made, or could not make, was
+                // made without this chunk: a new neighbour is a new input.
+                let light = entry.light.as_deref()?;
+                let kept = entry.kind == LightKind::Carried
+                    && entry.current()
+                    && entry.job.is_none()
+                    && self.carried_light_holds(beside, light);
+                Some(kept)
+            });
+            let Some(keeps) = keeps.or_else(|| {
+                let entry = self.replica.get(&beside)?;
+                entry.chunk.as_ref().map(|_| false)
+            }) else {
+                continue;
+            };
+            let moment = self.next_moment();
+            let entry = self.replica.get_mut(&beside).expect("found above");
+            entry.shaped = moment;
+            if keeps {
+                entry.lit = moment;
+            } else {
+                self.marked.insert(beside);
+            }
+        }
+    }
+
+    /// Makes jobs for marked entries while a slot is free, and takes what the threads
+    /// have said meanwhile. Chunks that someone waits for and that cannot be sent go
+    /// first. In the edge's tests a job is done where it is dispatched, so everything
+    /// a turn marks is lit before the turn ends.
+    async fn light_the_marked(&mut self, lit: &mut mpsc::UnboundedReceiver<FromThread>) {
+        loop {
+            let mut moved = false;
+            while self.jobs.len() < self.lighting.in_flight() {
+                let waits = |entry: &ReplicaChunk| !entry.waiters.is_empty() && !entry.sendable();
+                let idle = |want_waited: bool| {
+                    let fits = |position: &&ChunkPos| {
+                        let entry = &self.replica[*position];
+                        entry.job.is_none() && (!want_waited || waits(entry))
+                    };
+                    self.marked.iter().find(fits).copied()
+                };
+                let Some(position) = idle(true).or_else(|| idle(false)) else {
+                    break;
+                };
+                moved = true;
+                self.dispatch(position).await;
+            }
+            while let Ok(said) = lit.try_recv() {
+                moved = true;
+                self.take_light(said).await;
+            }
+            if !moved {
+                return;
+            }
+        }
+    }
+
+    /// Hands the threads a job for the entry at `position`: the chunk and the eight
+    /// around it as they are now, which nobody changes while the job has them.
+    async fn dispatch(&mut self, position: ChunkPos) {
+        let basis = self.next_moment();
+        let chunk_at = |at: ChunkPos| self.replica.get(&at).and_then(|entry| entry.chunk.clone());
+        let [nw, n, ne, w, e, sw, south, se] = Self::around(position).map(chunk_at);
+        let entry = self.replica.get_mut(&position).expect("a marked entry");
+        entry.job = Some(basis);
+        let job = LightJob {
+            basis,
+            position,
+            nine: [nw, n, ne, w, entry.chunk.clone(), e, sw, south, se],
+            // The one dimension an edge serves yet has a sky.
+            sky: true,
+            old: entry.light.clone(),
+            // Nobody is sent a light update yet.
+            whole: false,
+        };
+        self.jobs.insert(basis, position);
+        if self.lighting.send(job).is_err() {
+            // No thread is left to take it: it fails here, in this turn, and the
+            // chunk gets what light there is.
+            let outcome = LightOutcome::Failed {
+                why: "no thread is left to light chunks".to_owned(),
+            };
+            let failed = FromThread::Done {
+                basis,
+                position,
+                outcome,
+            };
+            self.take_light(failed).await;
+        }
+    }
+
+    /// Takes what a thread says. A result is taken if its job is still the entry's:
+    /// one for a chunk that was replaced, has left, or left and came again is dropped.
+    async fn take_light(&mut self, said: FromThread) {
+        let FromThread::Done {
+            basis,
+            position,
+            outcome,
+        } = said
+        else {
+            // That a thread has taken a job matters once jobs are given up.
+            return;
+        };
+        if self.jobs.remove(&basis).is_none() {
+            return;
+        }
+        let Some(entry) = self.replica.get_mut(&position) else {
+            return;
+        };
+        if entry.job != Some(basis) {
+            return;
+        }
+        entry.job = None;
+        entry.lit = basis;
+        entry.packet = None;
+        match outcome {
+            LightOutcome::Lit { light, update: _ } => {
+                entry.light = Some(light);
+                entry.kind = LightKind::Computed;
+            }
+            LightOutcome::Failed { why } => {
+                // Said where an operator reads it; the chunk is shown with the light
+                // it had, or lit by columns as chunks were before the edge made light.
+                warn!(?position, %why, "a chunk's light could not be made");
+                entry.kind = LightKind::Fallback;
+                if entry.light.is_none() {
+                    let chunk = entry.chunk.as_deref().expect("a job is for a chunk");
+                    entry.light = Some(Arc::new(reckoned_light(chunk)));
+                }
+            }
+        }
+        if entry.current() {
+            self.marked.remove(&position);
+        }
+        // Those who have the chunk were not sent this light: nobody is sent a light
+        // update yet.
+        let held = |view: &PlayerView| view.sent.contains(&position);
+        let owed = self.players.values().any(held);
+        let entry = self.replica.get_mut(&position).expect("found above");
+        entry.owed |= owed;
+        // Everything is as it is to be before anyone is sent anything, and whoever is
+        // sent something is looked up again by what sends it: a player whose queue is
+        // full is removed in the middle of this, and the entry with them if they were
+        // its last viewer.
+        if entry.sendable() {
+            let waiters: Vec<_> = entry.waiters.iter().copied().collect();
+            for player in waiters {
+                self.send_chunks(player).await;
+            }
+        }
+    }
+
     /// Applies a block change to the replica and tells everyone who has the chunk.
     async fn change_block(&mut self, position: BlockPos, state: BlockState) {
         let chunk_position = position.chunk();
@@ -2532,12 +2867,34 @@ impl Fanout {
         // A change that puts the state that is there changes nothing: two regions can
         // say the same change. The client is told all the same, as ever.
         let before = chunk.get(x, position.y, z);
-        if before.is_some_and(|before| before != state) {
+        // Whether light sees the change, and if so whether it reaches all around:
+        // by making the first block of a section or taking the last.
+        let mut seen = None;
+        if let Some(before) = before.filter(|before| *before != state) {
+            let section = (position.y - chunk.min_y()) as usize / 16;
+            let was_empty = chunk.sections()[section].non_air_count() == 0;
             Arc::make_mut(chunk).set(x, position.y, z, state);
+            let is_empty = chunk.sections()[section].non_air_count() == 0;
             entry.packet = None;
-            // The light was made for other blocks, if light can tell the two apart.
-            if before.is_some_and(|before| light_tells_apart(before, state)) {
-                entry.light = None;
+            if light_tells_apart(before, state) {
+                entry.as_made = None;
+                seen = Some(was_empty != is_empty);
+            }
+        }
+        if let Some(everywhere) = seen {
+            // The light of the chunk and of those the change reaches was made for
+            // other blocks. It may still be sent, a little old; each gets a job.
+            let moment = self.next_moment();
+            let reached = clustine_light::reach(x, z);
+            let around = Self::around(chunk_position);
+            let reached = (0..8).filter(|index| everywhere || reached[*index]);
+            for at in reached.map(|index| around[index]).chain([chunk_position]) {
+                if let Some(entry) = self.replica.get_mut(&at)
+                    && entry.chunk.is_some()
+                {
+                    entry.changed = moment;
+                    self.marked.insert(at);
+                }
             }
         }
 
@@ -2574,7 +2931,17 @@ impl Fanout {
             return true;
         }
         let center = view.center;
-        let mut batch: Vec<_> = view.pending.iter().copied().collect();
+        // Only chunks that may be sent: those with light as recent as the chunks it
+        // was made from. The others wait for their light, and nothing is sent for a
+        // player who has none to be sent: no start and no end of a batch.
+        let sendable = |position: &&ChunkPos| {
+            let entry = self.replica.get(*position);
+            entry.is_some_and(ReplicaChunk::sendable)
+        };
+        let mut batch: Vec<_> = view.pending.iter().filter(sendable).copied().collect();
+        if batch.is_empty() {
+            return true;
+        }
         batch.sort_by_key(|position| {
             let (dx, dz) = (
                 i64::from(position.x - center.x),
@@ -2995,6 +3362,7 @@ impl Fanout {
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
                 self.replica.remove(position);
+                self.marked.remove(position);
             }
         }
         let replica = &self.replica;
@@ -3230,6 +3598,23 @@ struct Entering {
     inventory: [Bytes; 2],
 }
 
+/// The light a chunk is shown with where none could be made for it: the sky light
+/// reckoned by columns, with block light dark wherever sky light is said, as every
+/// chunk was lit before the edge made light. It says of itself that no rules made it.
+fn reckoned_light(chunk: &Chunk) -> Light {
+    let sky = sky_light(chunk);
+    let block = sky.iter().map(|section| match section {
+        SectionLight::Absent => SectionLight::Absent,
+        _ => SectionLight::Dark,
+    });
+    Light {
+        made_by: 0,
+        beside: 0,
+        block: block.collect(),
+        sky,
+    }
+}
+
 /// Tells a client why it cannot join. Its connection ends when `outbound` is dropped.
 fn refuse(outbound: &mpsc::Sender<Bytes>, reason: &str) {
     let reason = Nbt::String(reason.to_owned());
@@ -3354,7 +3739,9 @@ mod tests {
                 region_patience,
             };
             let (commands, receiver) = mpsc::channel(64);
-            let task = tokio::spawn(Fanout::new(config, routing, receiver).run());
+            // A job is done in the turn that dispatches it, so that everything a turn
+            // marks is lit before the turn ends.
+            let task = tokio::spawn(Fanout::new(config, routing, receiver, Lighting::here()).run());
             let mut harness = Self {
                 commands,
                 relinks,
@@ -5287,7 +5674,7 @@ mod scenarios {
     use std::cell::RefCell;
 
     use clustine_protocol::chunk::decode_sections;
-    use clustine_protocol::packets::play::ClientboundPlay;
+    use clustine_protocol::packets::play::{ClientboundPlay, LightData};
     use clustine_rpc::link::WorkerEnd;
     use clustine_sim::api::{RemoteAction, RemoteStep};
     use clustine_world::Vec3;
@@ -5467,7 +5854,9 @@ mod scenarios {
                 region_patience,
             };
             let (commands, receiver) = mpsc::channel(64);
-            let task = tokio::spawn(Fanout::new(config, routing, receiver).run());
+            // A job is done in the turn that dispatches it, so that everything a turn
+            // marks is lit before the turn ends.
+            let task = tokio::spawn(Fanout::new(config, routing, receiver, Lighting::here()).run());
             let mut harness = Self {
                 commands,
                 relinks,
@@ -5981,6 +6370,8 @@ mod scenarios {
         /// What it was told of chunks, in order: sent, unloaded, and a block of one
         /// changed.
         of_chunks: Vec<OfChunk>,
+        /// The light each chunk it has was sent with.
+        light: BTreeMap<ChunkPos, LightData>,
         /// The blocks it was told have changed since their chunk was sent, each as it
         /// was told last.
         blocks: BTreeMap<BlockPos, i32>,
@@ -6019,6 +6410,7 @@ mod scenarios {
                 chunks: BTreeMap::new(),
                 sent: Vec::new(),
                 of_chunks: Vec::new(),
+                light: BTreeMap::new(),
                 blocks: BTreeMap::new(),
                 entities: BTreeSet::new(),
                 acknowledged: Vec::new(),
@@ -6048,6 +6440,7 @@ mod scenarios {
                     let told = sections[TELLING.0].blocks.get(TELLING.1);
                     let state = STATES.into_iter().find(|state| i32::from(state.0) == told);
                     self.chunks.insert(position, state);
+                    self.light.insert(position, chunk.light);
                     self.sent.push(position);
                     self.of_chunks.push(OfChunk::Sent(position));
                     self.blocks.retain(|block, _| block.chunk() != position);
@@ -16739,6 +17132,123 @@ mod scenarios {
         let of_home: Vec<_> = client.of_chunks.iter().filter(of_home).collect();
         assert_eq!(of_home, [&OfChunk::Unloaded(HOME)]);
         assert!(!client.chunks.contains_key(&HOME));
+        edge.end().await;
+    }
+
+    // Light at the edge: ADR-0023, the part of its step L4 that makes light right.
+    // Written by whoever built it; the orders of events are tested from the record by
+    // someone else (its step L6).
+
+    /// The whole of `light` as a client reads it from a packet: a mask that names
+    /// nothing is read as one without words.
+    fn as_read(light: &Light) -> LightData {
+        let mut data =
+            crate::encode::light_data(&light.sky, &light.block, crate::encode::Named::ALL);
+        let masks = [
+            &mut data.sky_mask,
+            &mut data.block_mask,
+            &mut data.empty_sky_mask,
+            &mut data.empty_block_mask,
+        ];
+        for mask in masks {
+            while mask.last() == Some(&0) {
+                mask.pop();
+            }
+        }
+        data
+    }
+
+    /// What a client is sent as the light of `chunk` when it stands alone in the
+    /// replica and the edge's own rules lit it.
+    fn computed_alone(chunk: &Chunk) -> LightData {
+        as_read(&clustine_light::light(&clustine_light::Around {
+            centre: chunk,
+            neighbours: [None; 8],
+            sky: true,
+        }))
+    }
+
+    /// What a client is sent as the light a chunk carries.
+    fn carried(chunk: &Chunk) -> LightData {
+        as_read(chunk.light().expect("the tests' chunks carry light"))
+    }
+
+    /// A chunk that comes with light made beside chunks as its neighbours here are is
+    /// sent with that light, at once, and no light is made for it.
+    #[tokio::test]
+    async fn a_chunk_as_generated_is_sent_with_the_light_it_came_with() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        for chunk in [HOME, STEP_EAST] {
+            let ask = edge.ask(WEST, chunk);
+            edge.tell(WEST, snapshot(chunk, ask));
+            assert!(edge.shows(&mut client, WEST, chunk).await);
+            assert_eq!(client.light[&chunk], carried(&empty_chunk()));
+        }
+        edge.end().await;
+    }
+
+    /// A block that light sees changes in a chunk: whoever is sent the chunk from
+    /// then on is sent it with light made for the blocks as they are, and not with
+    /// the light the chunk came with.
+    #[tokio::test]
+    async fn a_chunk_that_was_changed_is_sent_with_light_made_for_its_blocks() {
+        let mut edge = Harness::start().await;
+        let mut first = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut first, WEST, HOME).await);
+        edge.tell(WEST, changed(HOME, STONE));
+        edge.settle(WEST).await;
+
+        let mut second = edge.joined(player(2), EntityId(6)).await;
+        assert!(edge.shows(&mut second, WEST, HOME).await);
+        assert_eq!(second.state(HOME), Some(STONE));
+        let with_stone = chunk_with(HOME, STONE);
+        assert_eq!(second.light[&HOME], computed_alone(&with_stone));
+        // The stone casts a shadow, which the light the chunk came with has not.
+        assert_ne!(second.light[&HOME], carried(&empty_chunk()));
+        edge.end().await;
+    }
+
+    /// A chunk that comes beside one a block has changed in: the light it came with
+    /// was made beside that neighbour as generated, which it no longer is, so the
+    /// edge makes its light from the two as they are.
+    #[tokio::test]
+    async fn a_chunk_beside_a_changed_one_is_sent_with_light_made_beside_it() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        edge.tell(WEST, changed(HOME, STONE));
+        edge.settle(WEST).await;
+        let beside = edge.ask(WEST, STEP_EAST);
+        edge.tell(WEST, snapshot(STEP_EAST, beside));
+        assert!(edge.shows(&mut client, WEST, STEP_EAST).await);
+
+        let with_stone = chunk_with(HOME, STONE);
+        let light = clustine_light::light(&clustine_light::Around {
+            centre: &empty_chunk(),
+            // West of it is the chunk with the stone.
+            neighbours: [None, None, None, Some(&with_stone), None, None, None, None],
+            sky: true,
+        });
+        assert_eq!(client.light[&STEP_EAST], as_read(&light));
+        edge.end().await;
+    }
+
+    /// A chunk that comes without light, as one does that was changed and stored, is
+    /// sent with light the edge made.
+    #[tokio::test]
+    async fn a_chunk_that_comes_without_light_is_sent_with_light_the_edge_made() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        let mut bare = chunk_with(HOME, STONE);
+        bare.take_light();
+        edge.tell(WEST, snapshot_of(HOME, ask, bare.clone(), Vec::new()));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        assert_eq!(client.light[&HOME], computed_alone(&bare));
         edge.end().await;
     }
 }

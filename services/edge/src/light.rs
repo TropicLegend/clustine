@@ -237,7 +237,8 @@ pub(crate) struct Lighting {
 enum To {
     /// The queue the threads take from.
     Threads(mpsc::Sender<LightJob>),
-    /// Run where [`Lighting::send`] is called.
+    /// Run where [`Lighting::send`] is called. Only the edge's tests ask for that.
+    #[cfg(test)]
     Here(Box<Worker>),
 }
 
@@ -299,6 +300,7 @@ impl Lighting {
     /// Jobs are run where [`Lighting::send`] is called, and the result is in the
     /// receiver when it returns: for whoever must have sent all it will by the end of
     /// a turn.
+    #[cfg(test)]
     pub(crate) fn here() -> (Lighting, UnboundedReceiver<FromThread>) {
         let (results, from_here) = unbounded_channel();
         let worker = Worker {
@@ -317,6 +319,7 @@ impl Lighting {
     pub(crate) fn send(&mut self, job: LightJob) -> Result<(), LightJob> {
         match &mut self.to {
             To::Threads(jobs) => jobs.send(job).map_err(|refused| refused.0),
+            #[cfg(test)]
             To::Here(worker) => {
                 worker.run(job, &relight);
                 Ok(())

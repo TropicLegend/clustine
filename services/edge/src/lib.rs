@@ -9,9 +9,6 @@ mod configuration;
 mod connection;
 mod encode;
 mod fanout;
-// Compiled for tests alone until the fan-out dispatches jobs
-// (`docs/adr/0023-light-at-the-edge.md`, section 12, step L4).
-#[cfg(test)]
 mod light;
 mod login;
 mod play;
@@ -271,7 +268,12 @@ impl Edge {
                 next_session: AtomicU64::new(1),
                 online,
             }),
-            fanout: Fanout::new(fanout_config, routing, command_receiver),
+            fanout: Fanout::new(
+                fanout_config,
+                routing,
+                command_receiver,
+                light::Lighting::threads(light::default_threads()),
+            ),
         })
     }
 
