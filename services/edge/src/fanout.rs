@@ -143,9 +143,14 @@ struct ReplicaChunk {
     /// change that light sees. Without it a client is sent the sky light reckoned by
     /// columns.
     light: Option<Arc<Light>>,
-    /// The chunk's packet. It is encoded when first needed and discarded when the chunk
-    /// changes, so that many players can be sent the same bytes.
+    /// The chunk's packet. It is encoded when first needed, so that many players can
+    /// be sent the same bytes, and discarded when the chunk changes and when nobody
+    /// waits for the chunk any more: it is as large as the chunk and its light
+    /// together, and for players who are apart it is never read a second time
+    /// (`docs/adr/0023-light-at-the-edge.md`, sections 1 and 9).
     packet: Option<Bytes>,
+    /// The players who have the chunk pending.
+    waiters: BTreeSet<PlayerId>,
     /// The region whose snapshot the replica has. It stays when that region's link
     /// ends, and goes when the edge has no subscription there any more or the region
     /// says that it does not hold the chunk.
@@ -164,6 +169,15 @@ impl ReplicaChunk {
             )));
         }
         self.packet.clone()
+    }
+
+    /// `player` waits for the chunk no more: they were sent it, or their view has
+    /// moved away or gone. The packet goes with the last of them.
+    fn waits_no_more(&mut self, player: PlayerId) {
+        self.waiters.remove(&player);
+        if self.waiters.is_empty() {
+            self.packet = None;
+        }
     }
 }
 
@@ -543,6 +557,19 @@ impl Fanout {
     /// run is.
     fn check_subscriptions(&self) {
         assert!(self.asking.is_empty(), "a turn ended with messages unsent");
+        // Who waits for a chunk is who has it pending, and a packet is kept only for
+        // someone who waits (`docs/adr/0023-light-at-the-edge.md`, sections 1 and 4).
+        for (position, entry) in &self.replica {
+            let pending = |(player, view): (&PlayerId, &PlayerView)| {
+                view.pending.contains(position).then_some(*player)
+            };
+            let waiting: BTreeSet<PlayerId> = self.players.iter().filter_map(pending).collect();
+            assert_eq!(entry.waiters, waiting, "the waiters of {position:?}");
+            assert!(
+                entry.packet.is_none() || !entry.waiters.is_empty(),
+                "{position:?} keeps a packet nobody waits for"
+            );
+        }
         // V: a subscription's viewers are the players of its region that see the chunk,
         // and it is a viewer's exactly while there are any.
         let mut seen: BTreeMap<(RegionId, ChunkPos), u32> = BTreeMap::new();
@@ -2343,7 +2370,7 @@ impl Fanout {
         let mut left = Vec::new();
         for position in view.wanted.difference(&wanted) {
             left.push(*position);
-            view.pending.remove(position);
+            let waited = view.pending.remove(position);
             // What the client has: sent, or sent before and waiting to be replaced.
             let replaced = view.replace.remove(position);
             if view.sent.remove(position) || replaced {
@@ -2356,6 +2383,9 @@ impl Fanout {
                 .replica
                 .get_mut(position)
                 .expect("viewed chunks are in the replica");
+            if waited {
+                chunk.waits_no_more(player);
+            }
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
                 self.replica.remove(position);
@@ -2372,11 +2402,13 @@ impl Fanout {
                     chunk: None,
                     light: None,
                     packet: None,
+                    waiters: BTreeSet::new(),
                     served_by: None,
                 });
             chunk.viewers += 1;
             if chunk.chunk.is_some() {
                 view.pending.insert(*position);
+                chunk.waiters.insert(player);
             }
         }
         view.center = center;
@@ -2457,6 +2489,9 @@ impl Fanout {
                     *player
                 })
                 .collect();
+            if let Some(entry) = self.replica.get_mut(&position) {
+                entry.waiters.extend(viewers.iter().copied());
+            }
             for player in viewers {
                 self.send_chunks(player).await;
             }
@@ -2565,11 +2600,11 @@ impl Fanout {
         for position in &batch {
             view.pending.remove(position);
             view.sent.insert(*position);
-            let packet = self
-                .replica
-                .get_mut(position)
-                .and_then(|chunk| chunk.packet(*position));
-            packets.push(packet.expect("pending chunks are in the replica"));
+            let chunk = self.replica.get_mut(position);
+            let chunk = chunk.expect("pending chunks are in the replica");
+            let packet = chunk.packet(*position);
+            packets.push(packet.expect("a pending chunk has come"));
+            chunk.waits_no_more(player);
         }
         packets.push(encoded(&ChunkBatchFinished {
             batch_size: batch.len() as i32,
@@ -2942,6 +2977,14 @@ impl Fanout {
             // cannot be awaited from itself; its turn comes with its next packet.
             if let Some(other) = self.players.get(&other) {
                 let _ = other.outbound.try_send(packet);
+            }
+        }
+        // Done before anything is awaited: this is entered from inside every send to
+        // a player whose queue is full, in the middle of whatever was being fanned
+        // out (`docs/adr/0023-light-at-the-edge.md`, section 4, rule R1).
+        for position in &view.pending {
+            if let Some(chunk) = self.replica.get_mut(position) {
+                chunk.waits_no_more(player);
             }
         }
         for position in &view.wanted {
