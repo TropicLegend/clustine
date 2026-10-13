@@ -22,6 +22,7 @@ clustine-protocol = { path = "crates/clustine-protocol" }
 clustine-region = { path = "crates/clustine-region" }
 clustine-rpc = { path = "crates/clustine-rpc" }
 clustine-sim = { path = "crates/clustine-sim" }
+clustine-terrain = { path = "crates/clustine-terrain" }
 clustine-worker = { path = "services/worker" }
 clustine-world = { path = "crates/clustine-world" }
 clustine-worldgen-data = { path = "crates/clustine-worldgen-data" }

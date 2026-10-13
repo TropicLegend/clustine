@@ -42,6 +42,7 @@ The files that were adapted say so at their head.
 A crate that holds adapted code has a `NOTICE` of its own. At present that is:
 
 - `crates/clustine-noise`
+- `crates/clustine-terrain`
 
 ## Other projects
 

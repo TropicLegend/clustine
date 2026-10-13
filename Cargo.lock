@@ -389,6 +389,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "clustine-terrain"
+version = "0.0.0"
+dependencies = [
+ "clustine-data",
+ "clustine-world",
+ "clustine-worldgen-data",
+ "flate2",
+ "md-5",
+ "serde_json",
+]
+
+[[package]]
 name = "clustine-worker"
 version = "0.0.0"
 dependencies = [

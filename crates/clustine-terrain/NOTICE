@@ -1,0 +1,14 @@
+clustine-terrain
+
+Parts of this crate are adapted from SteelMC
+(https://github.com/Steel-Foundation/SteelMC), branch `26.3` at commit
+`885c4b3e60ed79862c37311780774f76806cb714`. Steel: A high-performance Minecraft
+server implementation written in Rust. Copyright (C) 2026 Alve Jeansson and
+contributors. Licensed under the GNU Affero General Public License, version 3 or
+(at your option) any later version; see `LICENSE` at the root of this
+repository. The files that were adapted say so at their head.
+
+tests/steelmc_hashes.rs holds hashes of the biomes of a few chunks, copied from
+SteelMC's steel-core/test_assets/biome_hashes.json at the same commit, and reads the
+whole of that file from a clone of SteelMC where one is named. The hashes are of
+values that SteelMC's extractor read out of the game.
