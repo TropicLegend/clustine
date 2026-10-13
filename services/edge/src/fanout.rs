@@ -4139,6 +4139,18 @@ mod tests {
         assert!(connected(&mut packets));
     }
 
+    /// Gives `chunk` the light of its blocks, as a generator's chunk comes with it.
+    fn lit(mut chunk: Chunk) -> Chunk {
+        let mut light = clustine_light::light(&clustine_light::Around {
+            centre: &chunk,
+            neighbours: [None; 8],
+            sky: true,
+        });
+        light.beside = 1;
+        chunk.set_light(light);
+        chunk
+    }
+
     /// An empty chunk, as a region sends it in answer to a subscription numbered `ask`.
     fn snapshot(position: ChunkPos, ask: u64) -> WorkerToEdge {
         let overworld = clustine_data::DIMENSION_TYPES
@@ -4149,7 +4161,7 @@ mod tests {
             position,
             ask,
             tick: 1,
-            chunk: Chunk::empty(overworld, clustine_world::Biome(0)),
+            chunk: lit(Chunk::empty(overworld, clustine_world::Biome(0))),
             entities: Vec::new(),
         }
     }
@@ -5186,6 +5198,7 @@ mod tests {
 mod scenarios {
     use std::cell::RefCell;
 
+    use clustine_protocol::chunk::decode_sections;
     use clustine_protocol::packets::play::ClientboundPlay;
     use clustine_rpc::link::WorkerEnd;
     use clustine_sim::api::{RemoteAction, RemoteStep};
@@ -5921,9 +5934,18 @@ mod scenarios {
             match decoded {
                 ClientboundPlay::LevelChunkWithLight(chunk) => {
                     let position = ChunkPos::new(chunk.chunk_x, chunk.chunk_z);
-                    let state = STATES.into_iter().find(|state| {
-                        packet == encoded(&chunk_packet(position, &chunk_with(position, *state)))
-                    });
+                    // By the block that tells these tests' chunks apart, read as a
+                    // client reads it, and not by the packet's bytes: those have the
+                    // chunk's light in them, which the edge may make itself.
+                    let sections = decode_sections(
+                        &chunk.sections,
+                        SECTIONS,
+                        crate::encode::BLOCK_PALETTE,
+                        crate::encode::biome_palette(),
+                    )
+                    .expect("the edge sends sections a client can read");
+                    let told = sections[TELLING.0].blocks.get(TELLING.1);
+                    let state = STATES.into_iter().find(|state| i32::from(state.0) == told);
                     self.chunks.insert(position, state);
                     self.sent.push(position);
                     self.blocks.retain(|block, _| block.chunk() != position);
@@ -6042,6 +6064,25 @@ mod scenarios {
         BlockPos::new(chunk.x * 16 + 3, -60, chunk.z * 16 + 5)
     }
 
+    /// How many sections a chunk of these tests has, and where [`block_of`] a chunk
+    /// is in a chunk's packet: the section, and the place in it.
+    const SECTIONS: usize = 24;
+    const TELLING: (usize, usize) = (0, 4 << 8 | 5 << 4 | 3);
+
+    /// Gives `chunk` the light of its blocks, as a generator's chunk comes with it:
+    /// made by the light rules beside chunks of one generator. Said after the last
+    /// change to the chunk, which would take it away.
+    fn lit(mut chunk: Chunk) -> Chunk {
+        let mut light = clustine_light::light(&clustine_light::Around {
+            centre: &chunk,
+            neighbours: [None; 8],
+            sky: true,
+        });
+        light.beside = 1;
+        chunk.set_light(light);
+        chunk
+    }
+
     /// The word of a region that it has placed `player` as `entity`, in answer to the
     /// join with `attempt`.
     fn spawned(attempt: u64, player: PlayerId, entity: EntityId) -> WorkerToEdge {
@@ -6110,18 +6151,31 @@ mod scenarios {
             .iter()
             .find(|dimension| dimension.name == OVERWORLD)
             .expect("the overworld is a dimension");
-        Chunk::empty(overworld, clustine_world::Biome(0))
+        // The light of an empty chunk is the same every time, and these tests make
+        // thousands of them.
+        static EMPTY: std::sync::OnceLock<Chunk> = std::sync::OnceLock::new();
+        EMPTY
+            .get_or_init(|| lit(Chunk::empty(overworld, clustine_world::Biome(0))))
+            .clone()
     }
 
     /// A chunk that is empty but for `state` at `block_of` it.
     fn chunk_with(position: ChunkPos, state: BlockState) -> Chunk {
-        let mut chunk = empty_chunk();
-        let block = block_of(position);
-        let (x, z) = (block.x.rem_euclid(16), block.z.rem_euclid(16));
-        chunk
-            .set(x as usize, block.y, z as usize, state)
-            .expect("the block is within the chunk");
-        chunk
+        // Where the block is in its chunk is the same for every chunk, so the light
+        // is one for each state.
+        static WITH: std::sync::Mutex<BTreeMap<BlockState, Chunk>> =
+            std::sync::Mutex::new(BTreeMap::new());
+        let mut made = WITH.lock().expect("no test panics while it holds this");
+        let chunk = made.entry(state).or_insert_with(|| {
+            let mut chunk = empty_chunk();
+            let block = block_of(position);
+            let (x, z) = (block.x.rem_euclid(16), block.z.rem_euclid(16));
+            chunk
+                .set(x as usize, block.y, z as usize, state)
+                .expect("the block is within the chunk");
+            lit(chunk)
+        });
+        chunk.clone()
     }
 
     /// An empty chunk, as a region sends it in answer to a subscription numbered `ask`.
