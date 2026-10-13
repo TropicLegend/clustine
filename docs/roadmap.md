@@ -1157,8 +1157,20 @@ tree has 19 children a node in 26.3 where SteelMC has 6, which decides ties; and
 SteelMC's biome hashes are not what the pinned jar gives for 12 of its 2,500 overworld
 chunks and for the far End, so they are a check only with those set aside. The Nether
 and the End are checked against the game's classes, not against chunks a server made:
-the sample world has none. A chunk's biomes take about a millisecond. Next is the noise
-chunk (T4).
+the sample world has none. A chunk's biomes take about a millisecond.
+
+**The shape of the land is built** (T4, the same crate): for a seed and a chunk, the
+stone, the air and the water and lava the game's "fill from noise" step gives, with its
+aquifers, before the surface, the caves and everything that grows. The judge is the
+game's own generator doing that step alone, without a server: 5,600 chunks on three
+seeds in the three dimensions, among them peaks, shores, oceans, the deep dark, chunks
+ten million blocks out and the world's edge. Every one of 380,108,800 blocks is equal,
+every position the game marks for a fluid to flow, and the density itself to the last
+bit. It found that the game multiplies a noise's coordinates in another order when it
+fills a volume than at a single place, which the routers now do as well. A chunk's fill
+takes 5.7 ms in the overworld on one thread, and 0.6 ms in the Nether and the End. Ore
+veins turned out to be a surface rule in 26.3 and belong to the next step with them
+(T5).
 
 **Pauses on network storage** (22 ms a synced write; first measured in
 [groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)). Since then
