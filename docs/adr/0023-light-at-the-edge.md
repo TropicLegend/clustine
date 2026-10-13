@@ -1855,3 +1855,34 @@ not a corner case. Two helpers the record did not name: `Unlisted::listed_in(&Li
 and `UnlistedLevels::put_into(&mut Light)`. `Unlisted` is two words of 64 bits, sky
 and block apart.
 
+**L1's comparison with the official server (2026-10-13)**, run alone on a quiet
+machine; what it saw is in `docs/protocol-26.3.md` under "Update Light". By section
+8's table of outcomes:
+
+| Guess | Outcome |
+|---|---|
+| G7: an update goes only to a player for whom the chunk is at the rim of the view | **Holds.** 217 updates to the client at the rim, none to the client beside the change, none to the builder |
+| G1: the client lights a block change by itself | **Holds from the server's side**: the game sends a client that has the chunks around a change nothing but the block update |
+| G2: a section in neither mask of an update is left as it is | **Settled**: every one of the 217 updates named fewer sections than its chunk lists |
+| G6: the client's own relight gives what `clustine-light` gives | **Holds for these placements** as far as a server can show it: the levels sent were the crate's in 77 of 77 sections (one section listed by one side alone), and a latecomer's chunk packets had the crate's light in all twelve chunks |
+| G3, under something that floats | **Holds**: the latecomer's packets list the sections under the platform as the crate does |
+
+**What follows, decided here; the owner may turn it** (choice 16 of "Choices the owner
+has not settled"):
+
+- **L5 sends a light update only to a holder for whom the chunk is at the rim of the
+  view**: one who lacks a chunk beside it that the change reaches. Everyone else has
+  the block update and the chunks around it, and lights the change as the official
+  client always has. This is what the official server does, it is far less to send
+  (the hundred in one place of section 9 are sent nothing where every one of them
+  was to be sent every result), and it rests on G1 and G6, which the comparison
+  bears out.
+- **Updates name the differing sections from L5 on.** L8's switch and its wait for a
+  trial are not needed for G2; the switch stays as section 8 has it until the owner
+  has tried trial B, with `differing` as its default.
+- A chunk that is **sent** (to a waiter, or again) carries the edge's light as
+  before: that is the latecomer's case, and there the official server's light was
+  the crate's.
+- What is not shown by a server and still wants a real client: that nothing is seen
+  to be wrong at the rim of a view while a chunk beside it is missing (trial A).
+

@@ -225,6 +225,25 @@ neither mask. Each light array is prefixed with its length, 2048.
 
 Update Light (`light_update`) is VarInt X, VarInt Z and the same light data.
 
+**When the official server sends it, observed on 2026-10-13**
+(`light_after_blocks_change_on_the_official_server` in `bin/clustine/tests/oracle.rs`:
+a torch, stones, a pillar, a roof and a floating platform built beside a chunk border,
+one client two blocks from it, one nine chunks away with the changed chunk at the rim
+of its view, and the builder):
+
+- **Only a client for whom the chunk is at the rim of its view is sent a light
+  update.** The client at the rim was sent 217; the one beside the change and the
+  builder were sent none in the whole run. A client that has the chunks around a
+  change is sent the block update and lights the change by itself.
+- **An update names only the sections that changed**: all 217 named fewer sections
+  than their chunk lists. A section in neither mask of an update is left as it was.
+- No update came for a chunk a client did not hold.
+- The levels the updates carried were `clustine-light`'s in 77 of the 77 sections
+  compared; one section was listed by one side alone.
+- A client that joined afterwards was sent chunk packets whose light, for the twelve
+  chunks around the platform, was `clustine-light`'s in every section, the sections
+  under the floating platform among them.
+
 ## Movement
 
 Serverbound, all ending in a flags byte (0x01 on ground, 0x02 horizontal collision):
