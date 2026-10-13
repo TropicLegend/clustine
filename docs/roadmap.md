@@ -1168,9 +1168,26 @@ ten million blocks out and the world's edge. Every one of 380,108,800 blocks is 
 every position the game marks for a fluid to flow, and the density itself to the last
 bit. It found that the game multiplies a noise's coordinates in another order when it
 fills a volume than at a single place, which the routers now do as well. A chunk's fill
-takes 5.7 ms in the overworld on one thread, and 0.6 ms in the Nether and the End. Ore
-veins turned out to be a surface rule in 26.3 and belong to the next step with them
-(T5).
+takes 5.7 ms in the overworld on one thread, and 0.6 ms in the Nether and the End.
+
+**The surface is built** (T5): grass, dirt, sand and sandstone, snow and ice, the
+badlands' bands and pillars, the frozen oceans' icebergs, bedrock and deepslate, the
+Nether's and the End's ground, and the ore veins, which in 26.3 are one of the
+material rules. The rules are emitted as Rust from the jar's data, as the routers are.
+Judged like the fill, by the game's own generator doing its fill and its surface step
+and nothing after: the same 5,600 chunks on three seeds, every one of 380,108,800
+blocks equal, all forty overworld biomes among them. The surface asks the biome at a
+block, which the game blurs at borders by a hash of the seed; that is built too. Where
+two biomes are exactly tied the game's answer depends on what its thread looked up
+before, and the surface then follows the biome: 923 blocks in 15 of the 3,000 overworld
+chunks differ from the game for that reason alone, and no other. The surface adds
+1.9 ms a chunk in the overworld.
+
+So for a seed the land has the game's shape and the game's skin. Still to come before
+it is seen: caves and ravines (T6), structures (T7), everything that grows and the ores
+placed as features (phase F), and the service that makes chunks on demand and stores
+what it handed out. When terrain is switched on the edge also has to send the client
+the hash of the seed, which is 0 today: the client blurs biome borders with it.
 
 **Pauses on network storage** (22 ms a synced write; first measured in
 [groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)). Since then
