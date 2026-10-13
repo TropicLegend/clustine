@@ -9,6 +9,10 @@ mod configuration;
 mod connection;
 mod encode;
 mod fanout;
+// Compiled for tests alone until the fan-out dispatches jobs
+// (`docs/adr/0023-light-at-the-edge.md`, section 12, step L4).
+#[cfg(test)]
+mod light;
 mod login;
 mod play;
 mod session;

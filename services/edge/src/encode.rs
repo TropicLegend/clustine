@@ -59,7 +59,7 @@ pub(crate) fn chunk_packet(position: ChunkPos, chunk: &Chunk) -> LevelChunkWithL
         heightmaps: heightmaps.into(),
         sections: encode_sections(&sections, BLOCK_PALETTE, biome_palette()),
         block_entities: block_entities.collect(),
-        light: light_data(chunk),
+        light: chunk_light(chunk),
     }
 }
 
@@ -84,45 +84,76 @@ fn section_data(section: &Section) -> SectionData {
     }
 }
 
+/// Which light sections a packet is to name: one bit a light section for the sky and
+/// one for blocks, the lowest bit for the section below the chunk, as
+/// [`clustine_world::Light`] counts them. A chunk's packet names them all; a light
+/// update names those its sender chooses
+/// (`docs/adr/0023-light-at-the-edge.md`, section 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Named {
+    pub sky: u64,
+    pub block: u64,
+}
+
+impl Named {
+    /// Every section a list has.
+    pub(crate) const ALL: Named = Named {
+        sky: u64::MAX,
+        block: u64::MAX,
+    };
+}
+
 /// The light of `chunk` for its packet: the light the chunk carries, where it has any,
 /// and otherwise the sky light reckoned by columns, with block light dark wherever
 /// sky light is said. What an edge does once a change has taken a chunk's light is
 /// the record of light at the edge's.
-fn light_data(chunk: &Chunk) -> LightData {
-    let reckoned;
-    let (sky, block) = match chunk.light() {
-        Some(light) => (&light.sky, Some(&light.block)),
+fn chunk_light(chunk: &Chunk) -> LightData {
+    match chunk.light() {
+        Some(light) => light_data(&light.sky, &light.block, Named::ALL),
         None => {
-            reckoned = sky_light(chunk);
-            (&reckoned, None)
+            let sky = sky_light(chunk);
+            // No light sources are reckoned: dark wherever sky light is said.
+            let block: Vec<_> = sky
+                .iter()
+                .map(|section| match section {
+                    SectionLight::Absent => SectionLight::Absent,
+                    _ => SectionLight::Dark,
+                })
+                .collect();
+            light_data(&sky, &block, Named::ALL)
         }
-    };
+    }
+}
+
+/// The light of a packet, a chunk's or a light update's: of the sections of `sky` and
+/// of `block` that `named` names, each in its mask and, where it has levels, with its
+/// array, lowest first. A section that is absent is in neither mask, named or not:
+/// there is nothing to say it with.
+pub(crate) fn light_data(sky: &[SectionLight], block: &[SectionLight], named: Named) -> LightData {
     let mut light = LightData::default();
     let (mut sky_mask, mut empty_sky_mask) = (0u64, 0u64);
     let (mut block_mask, mut empty_block_mask) = (0u64, 0u64);
-    for (index, section) in sky.iter().enumerate() {
-        let bit = 1 << index;
-        list(
-            section,
-            bit,
+    for (sections, named, mask, empty, arrays) in [
+        (
+            sky,
+            named.sky,
             &mut sky_mask,
             &mut empty_sky_mask,
             &mut light.sky,
-        );
-        match block {
-            Some(block) => {
-                let arrays = &mut light.block;
-                list(
-                    &block[index],
-                    bit,
-                    &mut block_mask,
-                    &mut empty_block_mask,
-                    arrays,
-                );
+        ),
+        (
+            block,
+            named.block,
+            &mut block_mask,
+            &mut empty_block_mask,
+            &mut light.block,
+        ),
+    ] {
+        for (index, section) in sections.iter().enumerate() {
+            let bit = 1 << index;
+            if named & bit != 0 {
+                list(section, bit, mask, empty, arrays);
             }
-            // No light sources are reckoned: dark wherever sky light is said.
-            None if *section != SectionLight::Absent => empty_block_mask |= bit,
-            None => {}
         }
     }
     light.sky_mask = vec![sky_mask];
@@ -346,6 +377,297 @@ mod tests {
         assert_eq!(packet.block_mask, [0b010]);
         assert_eq!(packet.empty_block_mask, [0b101]);
         assert_eq!(packet.block, [levels.to_vec()]);
+    }
+
+    /// What `light_data` was before it became a function of the two lists and of the
+    /// sections to name, kept word for word, so that the tests below can hold a
+    /// chunk's packet to the bytes it had.
+    fn light_data_as_before(chunk: &Chunk) -> LightData {
+        let reckoned;
+        let (sky, block) = match chunk.light() {
+            Some(light) => (&light.sky, Some(&light.block)),
+            None => {
+                reckoned = sky_light(chunk);
+                (&reckoned, None)
+            }
+        };
+        let mut light = LightData::default();
+        let (mut sky_mask, mut empty_sky_mask) = (0u64, 0u64);
+        let (mut block_mask, mut empty_block_mask) = (0u64, 0u64);
+        for (index, section) in sky.iter().enumerate() {
+            let bit = 1 << index;
+            list(
+                section,
+                bit,
+                &mut sky_mask,
+                &mut empty_sky_mask,
+                &mut light.sky,
+            );
+            match block {
+                Some(block) => {
+                    let arrays = &mut light.block;
+                    list(
+                        &block[index],
+                        bit,
+                        &mut block_mask,
+                        &mut empty_block_mask,
+                        arrays,
+                    );
+                }
+                // No light sources are reckoned: dark wherever sky light is said.
+                None if *section != SectionLight::Absent => empty_block_mask |= bit,
+                None => {}
+            }
+        }
+        light.sky_mask = vec![sky_mask];
+        light.empty_sky_mask = vec![empty_sky_mask];
+        if block_mask != 0 {
+            light.block_mask = vec![block_mask];
+        }
+        light.empty_block_mask = vec![empty_block_mask];
+        light
+    }
+
+    /// A section of levels that is neither dark nor full, told apart by `seed`.
+    fn levels(seed: u8) -> SectionLight {
+        let mut levels = Box::new([seed; LIGHT_ARRAY_LENGTH]);
+        levels[7] = 0x5a;
+        SectionLight::Levels(levels)
+    }
+
+    /// Chunks whose light is of every kind a packet can be made from: carried and
+    /// not, with and without block light, with every case of a section, and with
+    /// sections listed for one of the two lights and not for the other.
+    fn chunks_of_every_light() -> Vec<(&'static str, Chunk)> {
+        let flat = flat_chunk();
+        let carried = flat.light().cloned().unwrap();
+
+        // A change light sees takes the light: the packet is lit by columns.
+        let mut torch = flat_chunk();
+        torch.set(3, -60, 3, blocks::TORCH);
+        let mut tower = flat_chunk();
+        for y in -60..40 {
+            tower.set(8, y, 8, blocks::STONE);
+        }
+        tower.set(0, 200, 15, blocks::STONE);
+        assert!(torch.light().is_none() && tower.light().is_none());
+
+        let mut block_light = flat_chunk();
+        let mut light = carried.clone();
+        light.block[1] = levels(0x0e);
+        block_light.set_light(light);
+
+        // The rules' own light for a chunk with a torch and a tower in it, which has
+        // levels of both lights.
+        let mut ruled = tower.clone();
+        ruled.set(3, -60, 3, blocks::TORCH);
+        let light = clustine_light::light(&clustine_light::Around {
+            centre: &ruled,
+            neighbours: [Some(&flat); 8],
+            sky: true,
+        });
+        let has_levels = |sections: &[SectionLight]| {
+            sections
+                .iter()
+                .any(|section| matches!(section, SectionLight::Levels(_)))
+        };
+        assert!(has_levels(&light.sky) && has_levels(&light.block));
+        ruled.set_light(light);
+
+        // Every case in every place, and the two lists listing different sections.
+        let mut mixed = flat_chunk();
+        let mut light = carried.clone();
+        let cases = [
+            SectionLight::Absent,
+            SectionLight::Dark,
+            SectionLight::Full,
+            levels(0x31),
+        ];
+        for index in 0..light.sky.len() {
+            light.sky[index] = cases[index % 4].clone();
+            light.block[index] = cases[(index / 4 + index) % 4].clone();
+        }
+        mixed.set_light(light);
+
+        // No sky at all, and no light at all.
+        let mut skyless = flat_chunk();
+        let mut light = carried.clone();
+        light.sky.fill(SectionLight::Absent);
+        light.block[2] = levels(0x77);
+        skyless.set_light(light);
+        let mut unlit = flat_chunk();
+        let mut light = carried;
+        light.sky.fill(SectionLight::Absent);
+        light.block.fill(SectionLight::Absent);
+        unlit.set_light(light);
+
+        vec![
+            ("the flat chunk", flat),
+            ("a chunk a torch took the light of", torch),
+            ("a chunk a tower took the light of", tower),
+            ("a chunk with carried block light", block_light),
+            ("a chunk with the rules' light", ruled),
+            ("a chunk with every case", mixed),
+            ("a chunk without sky light", skyless),
+            ("a chunk with no light listed", unlit),
+        ]
+    }
+
+    /// The two lists a chunk's packet is made from: the chunk's own light, or the
+    /// reckoning by columns with block light dark wherever that says sky light.
+    fn lists(chunk: &Chunk) -> (Vec<SectionLight>, Vec<SectionLight>) {
+        match chunk.light() {
+            Some(light) => (light.sky.clone(), light.block.clone()),
+            None => {
+                let sky = sky_light(chunk);
+                let block = sky
+                    .iter()
+                    .map(|section| match section {
+                        SectionLight::Absent => SectionLight::Absent,
+                        _ => SectionLight::Dark,
+                    })
+                    .collect();
+                (sky, block)
+            }
+        }
+    }
+
+    /// `chunk_packet` gives the bytes it gave before `light_data` took the lists and
+    /// the sections to name: its light is the old function's, field for field, and the
+    /// packet encodes to the same bytes as one with the old function's light.
+    #[test]
+    fn a_chunks_packet_has_the_light_and_the_bytes_it_had() {
+        for (what, chunk) in chunks_of_every_light() {
+            let position = ChunkPos::new(-7, 12);
+            let packet = chunk_packet(position, &chunk);
+            let before = light_data_as_before(&chunk);
+            assert_eq!(packet.light, before, "{what}");
+            let as_before = LevelChunkWithLight {
+                light: before,
+                ..chunk_packet(position, &chunk)
+            };
+            assert_eq!(
+                packets::encode(&packet),
+                packets::encode(&as_before),
+                "{what}"
+            );
+        }
+    }
+
+    /// With every section named, `light_data` over a chunk's two lists is the light
+    /// its packet had: for the flat chunk, for one with block light, and for one
+    /// without carried light.
+    #[test]
+    fn light_data_with_every_section_named_is_what_a_chunks_packet_gave() {
+        for (what, chunk) in chunks_of_every_light() {
+            let before = light_data_as_before(&chunk);
+            let (sky, block) = lists(&chunk);
+            assert_eq!(light_data(&sky, &block, Named::ALL), before, "{what}");
+            // Naming exactly the sections the lists have is naming all of them.
+            let all = Named {
+                sky: (1 << sky.len()) - 1,
+                block: (1 << block.len()) - 1,
+            };
+            assert_eq!(light_data(&sky, &block, all), before, "{what}");
+        }
+    }
+
+    /// With some sections named, the packet's light has those and no others: each in
+    /// the mask of its case, the arrays in the order of their sections, sky and block
+    /// apart. An absent section that is named is in neither mask.
+    #[test]
+    fn light_data_names_the_sections_it_is_told_to_and_no_others() {
+        let sky = vec![
+            SectionLight::Dark,
+            levels(1),
+            SectionLight::Full,
+            levels(3),
+            SectionLight::Absent,
+            SectionLight::Dark,
+            levels(6),
+        ];
+        let block = vec![
+            levels(10),
+            SectionLight::Dark,
+            SectionLight::Dark,
+            SectionLight::Absent,
+            levels(14),
+            SectionLight::Full,
+            SectionLight::Dark,
+        ];
+        let array = |section: &SectionLight| match section {
+            SectionLight::Levels(levels) => levels.to_vec(),
+            SectionLight::Full => vec![0xff; LIGHT_ARRAY_LENGTH],
+            other => panic!("{other:?} has no array"),
+        };
+
+        let named = Named {
+            sky: 0b111_1100,
+            block: 0b011_1011,
+        };
+        let some = light_data(&sky, &block, named);
+        assert_eq!(some.sky_mask, [0b100_1100]);
+        assert_eq!(some.empty_sky_mask, [0b010_0000]);
+        assert_eq!(some.sky, [array(&sky[2]), array(&sky[3]), array(&sky[6])]);
+        assert_eq!(some.block_mask, [0b011_0001]);
+        assert_eq!(some.empty_block_mask, [0b000_0010]);
+        assert_eq!(
+            some.block,
+            [array(&block[0]), array(&block[4]), array(&block[5])]
+        );
+
+        // One light alone: the other has no bit and no array.
+        let sky_alone = light_data(
+            &sky,
+            &block,
+            Named {
+                sky: 0b10,
+                block: 0,
+            },
+        );
+        assert_eq!(sky_alone.sky_mask, [0b10]);
+        assert_eq!(sky_alone.sky, [array(&sky[1])]);
+        assert_eq!(sky_alone.empty_sky_mask, [0]);
+        assert!(sky_alone.block_mask.is_empty() && sky_alone.block.is_empty());
+        assert_eq!(sky_alone.empty_block_mask, [0]);
+        let block_alone = light_data(
+            &sky,
+            &block,
+            Named {
+                sky: 0,
+                block: 0b100,
+            },
+        );
+        assert_eq!(block_alone.sky_mask, [0]);
+        assert_eq!(block_alone.empty_sky_mask, [0]);
+        assert!(block_alone.sky.is_empty() && block_alone.block.is_empty());
+        assert!(block_alone.block_mask.is_empty());
+        assert_eq!(block_alone.empty_block_mask, [0b100]);
+
+        // Nothing named, and only what is absent named: nothing said.
+        let absent_alone = Named {
+            sky: 0b1_0000,
+            block: 0b1000,
+        };
+        for named in [Named { sky: 0, block: 0 }, absent_alone] {
+            let none = light_data(&sky, &block, named);
+            assert_eq!(none.sky_mask, [0]);
+            assert_eq!(none.empty_sky_mask, [0]);
+            assert!(none.block_mask.is_empty());
+            assert_eq!(none.empty_block_mask, [0]);
+            assert!(none.sky.is_empty() && none.block.is_empty());
+        }
+
+        // What is named survives the codec as a light update.
+        let update = clustine_protocol::packets::play::LightUpdate {
+            chunk_x: 4,
+            chunk_z: -9,
+            light: some,
+        };
+        assert_eq!(
+            ClientboundPlay::decode(&packets::encode(&update)),
+            Ok(ClientboundPlay::LightUpdate(update))
+        );
     }
 
     /// The chunk Clustine would send for a classic flat world is what the official
