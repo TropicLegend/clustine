@@ -1159,11 +1159,22 @@ middle / worst):
 | merge (5) | 0.36 / 0.36 / 0.40 | 0.86 / 1.02 / 1.15 | 0.99 / 1.03 / 1.13 | 0.18 / 0.20 / 0.22 |
 
 When nothing happens a bot of the crowd waits 0.15 s at most. So a crowd is within
-ADR-0017's half a second, and what is left is the second that the players of a region
-that is absorbed wait: their region's own last checkpoint, the store opening it for
-the survivor, and their chunks, which are not at hand there. That is the store's part
-of [the review of what to change](groundwork/few-syncs-in-turn-review.md) and comes
-next. With twenty players joining far apart at once, somebody at the spawn point
+ADR-0017's half a second. The second that the players of an absorbed region waited
+was looked into on 2026-10-13 with the processes' logs: after their region had
+stopped, the survivor made two more checkpoints while it ticked, 130 and 190 ms,
+because a crowd keeps two dozen chunks changed at every moment and "few chunks have
+changed since it prepared" never held. A checkpoint asked for within the last two
+seconds now counts as made a moment ago. Measured again the same way:
+
+| | the crowd waited | the two who walk waited | the coordinator took | the home region stood still |
+|---|---|---|---|---|
+| split (5) | 0.36 / 0.36 / 0.38 | 0.41 / 0.42 / 0.43 | 0.21 / 0.22 / 0.22 | 0.21 / 0.22 / 0.22 |
+| merge (5) | 0.35 / 0.36 / 0.41 | 0.57 / 0.65 / 0.82 | 0.64 / 0.72 / 0.76 | 0.20 / 0.20 / 0.23 |
+
+The store's own waits in turn were counted for a record of their own
+([the draft](groundwork/fewer-waits-in-the-store-draft.md)): changing them would take
+about 0.06 s more off a merge, with a risk to how a damaged log is told from a torn
+one, and is not built for now. With twenty players joining far apart at once, somebody at the spawn point
 waits a quarter of a second at worst.
 
 ### Known limits after M3

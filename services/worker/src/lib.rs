@@ -118,6 +118,16 @@ const WARM_FOR: u64 = DEFAULT_GONE_AFTER;
 /// crowd changes more of them in a second than a few players do in a minute.
 const FEW_UNSAVED: usize = 8;
 
+/// For how many ticks after a region was told to prepare its checkpoint counts as
+/// made a moment ago, however many chunks have changed since. Where a crowd changes
+/// two dozen chunks in every tick, "few chunks have changed" never holds, and a
+/// checkpoint made while ticking leaves as many unsaved as it found: measured with a
+/// hundred players on a disk of 22 ms a sync, a merge then made two such checkpoints
+/// in turn, 130 and 190 ms, with the players of the absorbed region standing still
+/// for both, and stopped with 25 chunks unsaved all the same. What has changed
+/// within these ticks is a round of chunk files in the checkpoint made at the stop.
+const FRESH_FOR: u64 = 40;
+
 /// Counters of a region that others may read while its runner runs.
 #[derive(Debug, Default)]
 pub struct RegionStatus {
@@ -856,6 +866,10 @@ pub struct RegionRunner {
     max_reshape_bytes: usize,
     /// [`FEW_UNSAVED`], unless a test has lowered it.
     few_unsaved: usize,
+    /// The tick at which the checkpoint of the last [`Reshape::Prepare`] was asked for.
+    prepared_at: u64,
+    /// [`FRESH_FOR`], unless a test has lowered it.
+    fresh_for: u64,
     /// [`TICK`], unless a test has set another time between two ticks.
     pace: Duration,
     /// How the runner ended, once it has.
@@ -937,6 +951,8 @@ impl RegionRunner {
             command,
             max_reshape_bytes: MAX_RESHAPE_BYTES,
             few_unsaved: FEW_UNSAVED,
+            prepared_at: 0,
+            fresh_for: FRESH_FOR,
             pace: TICK,
             ended: None,
             flushes_asked: 0,
@@ -1154,7 +1170,7 @@ impl RegionRunner {
         if self.flushes_answered != self.flushes_asked {
             return false;
         }
-        if !self.checkpointed && self.unsaved.len() > self.few_unsaved {
+        if !self.checkpointed && !self.little_since_prepared() {
             info!(
                 tick = self.region.tick_number(),
                 unsaved = self.unsaved.len(),
@@ -1178,6 +1194,15 @@ impl RegionRunner {
         self.ask_for_flush();
         self.phase = Phase::Settling;
         true
+    }
+
+    /// Whether the checkpoint of the last order to prepare has left little for the one
+    /// made at the stop: few chunks have changed since, or it was asked for a moment
+    /// ago, so that what has changed is what changes in that moment whatever is
+    /// saved beforehand.
+    fn little_since_prepared(&self) -> bool {
+        let since = self.region.tick_number().saturating_sub(self.prepared_at);
+        self.unsaved.len() <= self.few_unsaved || since <= self.fresh_for
     }
 
     /// Whether the region has stopped ticking for a release, a merge or a split, and
@@ -1465,13 +1490,14 @@ impl RegionRunner {
                 // is still being made would only keep a second one waiting behind it,
                 // and one that few chunks have changed since has left little to save.
                 let outstanding = self.flushes_answered != self.flushes_asked;
-                if self.prepared && (outstanding || self.unsaved.len() <= self.few_unsaved) {
+                if self.prepared && (outstanding || self.little_since_prepared()) {
                     return;
                 }
                 // What a lost handle does not take, the next step finds out.
                 self.checkpoint();
                 self.ask_for_flush();
                 self.prepared = true;
+                self.prepared_at = self.region.tick_number();
                 return;
             }
             Reshape::Absorb {
@@ -10571,6 +10597,7 @@ mod tests {
         let east = untouched_east(&world);
         // One chunk is more than a few.
         west.few_unsaved = 0;
+        west.fresh_for = 0;
 
         west.reshape(Reshape::Prepare, no_outcome());
         step_until(&mut west, |runner| {
@@ -10619,6 +10646,53 @@ mod tests {
         );
     }
 
+    /// A region whose checkpoint for an order to prepare was made a moment ago stops
+    /// for the merge at once, though more than a few chunks have changed since, and
+    /// an order to prepare that comes again in that moment asks for nothing. A crowd
+    /// changes as many chunks again while any checkpoint is made, and the players of
+    /// the region that is absorbed stand still for every one of them.
+    #[tokio::test]
+    async fn a_region_prepared_a_moment_ago_stops_at_once_however_much_has_changed() {
+        let world = Divided::stripes();
+        let (edge, worker_end) = in_process(256);
+        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        west.links().attach(worker_end);
+        joined(&edge, &mut west).await;
+        let east = untouched_east(&world);
+        // One chunk is more than a few; a moment is as long as it ever is.
+        west.few_unsaved = 0;
+
+        west.reshape(Reshape::Prepare, no_outcome());
+        step_until(&mut west, |runner| {
+            runner.flushes_answered == runner.flushes_asked
+        });
+        edge.send(dig(1)).await.unwrap();
+        step(&mut west);
+        assert_eq!(west.unsaved.len(), 1);
+        gate.asked();
+
+        west.reshape(Reshape::Prepare, no_outcome());
+        assert_eq!(asked_beside_commits(&gate), []);
+        let (done, outcome) = outcome();
+        west.reshape(east.absorb(), done);
+        assert_eq!(asked_beside_commits(&gate), []);
+        // The step that finds the store prepared stops, and ticks no more.
+        let tick = west.region().tick_number();
+        step_to(&mut west, Stage::Settling);
+        assert_eq!(west.region().tick_number(), tick);
+        let absorbed = Reshaped::Absorbed { absorbed: EAST };
+        assert_eq!(reshaped(&mut west, &outcome), absorbed);
+        assert_eq!(
+            asked_beside_commits(&gate),
+            [
+                Asked::Save(ORIGIN),
+                Asked::Checkpoint(tick),
+                Asked::Flush,
+                Asked::Absorb(tick + 1),
+            ]
+        );
+    }
+
     /// An order to prepare that comes again asks the store for nothing while the
     /// checkpoint of the one before is being made, nor when few chunks have changed
     /// since; it does when more have. And it is good for one merge or split: the one
@@ -10654,6 +10728,7 @@ mod tests {
         assert_eq!(asked_beside_commits(&gate), []);
 
         west.few_unsaved = 0;
+        west.fresh_for = 0;
         west.reshape(Reshape::Prepare, no_outcome());
         let tick = west.region().tick_number();
         assert_eq!(

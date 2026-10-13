@@ -550,6 +550,13 @@ phases a test sees are the same four; three things in them moved:
   by then, in which case it makes one more while ticking and stops when the store has
   that. A repeated `Prepare` asks for nothing while the first is being made or little
   has changed since.
+- *A checkpoint asked for a moment ago is good however much has changed* (added
+  on 2026-10-13): within forty ticks of an order to prepare, a repeated order asks
+  for nothing and a merge or a split stops as soon as that checkpoint's flush is
+  answered. A crowd changes two dozen chunks in every tick, so "few chunks have
+  changed" never held for it, and the survivor of a merge made two more checkpoints
+  while it ticked with the absorbed region's players standing still for both: a
+  second at a merge, where it is 0.65 s now.
 - *The runner's thread looks at once*: a command or a release is taken between two
   ticks, and while it prepares it looks every millisecond whether the store has
   answered. What is taken between ticks takes nothing from a link, so a tick is given
