@@ -1,5 +1,5 @@
-//! What the biomes and the fill of a chunk cost: a measurement that reports and asserts nothing
-//! (`docs/groundwork/terrain-plan.md`, section 6).
+//! What the biomes, the fill and the surface of a chunk cost: a measurement that
+//! reports and asserts nothing (`docs/groundwork/terrain-plan.md`, section 6).
 //!
 //! ```text
 //! cargo test --release -p clustine-terrain --test cost -- --ignored --nocapture
@@ -7,7 +7,8 @@
 
 use clustine_terrain::biome::{BiomeSource, Dimension};
 use clustine_terrain::fill::{Heightmap, Terrain};
-use clustine_terrain::noise_chunk::Scratch;
+use clustine_terrain::noise_chunk::{self, Scratch};
+use clustine_terrain::surface::Biomes;
 use clustine_worldgen_data::{EndRouter, Give, NetherRouter, NoiseRouter, OverworldRouter};
 
 #[test]
@@ -167,5 +168,80 @@ fn the_time_a_chunks_fill_takes() {
             started.elapsed().as_secs_f64() * 1e6 / f64::from(columns),
             made.as_secs_f64() * 1e3
         );
+    }
+}
+
+#[test]
+#[ignore = "a measurement, for a release build"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the test, not the crate, takes the time"
+)]
+fn the_time_a_chunks_surface_takes() {
+    let overworld = OverworldRouter::new(13579);
+    let in_rule: Vec<usize> = (0..overworld.interpolated().len())
+        .filter(|number| overworld.interpolated()[*number].in_material_rule)
+        .collect();
+    for dimension in Dimension::ALL {
+        let terrain = Terrain::new(13579, dimension);
+        let source = BiomeSource::new(13579, dimension);
+        // A square at the origin, as a player's view is, and chunks far apart.
+        let near: Vec<(i32, i32)> = (-8..8).flat_map(|x| (-8..8).map(move |z| (x, z))).collect();
+        let far: Vec<(i32, i32)> = (0..256)
+            .map(|index| (index * 7919 - 1_000_000, 750_000 - index * 6007))
+            .collect();
+        for (name, chunks) in [("in a square of 16 by 16", &near), ("far apart", &far)] {
+            let mut scratch = Scratch::default();
+            // The biomes the step reads, the fill it starts from, and the step.
+            let started = std::time::Instant::now();
+            let biomes: Vec<Biomes> = chunks
+                .iter()
+                .map(|(x, z)| Biomes::from_source(&source, *x, *z))
+                .collect();
+            let reading = started.elapsed();
+            let mut filled: Vec<_> = chunks.iter().map(|(x, z)| terrain.fill(*x, *z)).collect();
+            let started = std::time::Instant::now();
+            let mut marks = 0;
+            for (((x, z), filled), biomes) in chunks.iter().zip(&mut filled).zip(&biomes) {
+                terrain.build_surface(filled, *x, *z, biomes, &mut scratch);
+                marks += filled.marks.len();
+            }
+            let surface = started.elapsed();
+            // Of the step: the level of the surface, and at most this for the ore
+            // veins' interpolated functions, which is what they take over the whole
+            // height (the step interpolates them up to the highest section that is
+            // not air). The rest is the rule, asked for every block of ground.
+            let started = std::time::Instant::now();
+            for (x, z) in chunks {
+                std::hint::black_box(terrain.surface_level(*x, *z));
+            }
+            let level = started.elapsed();
+            let started = std::time::Instant::now();
+            if dimension == Dimension::Overworld {
+                for (x, z) in chunks {
+                    noise_chunk::interpolated(
+                        &overworld,
+                        &mut Default::default(),
+                        &in_rule,
+                        &terrain.volume(*x, *z),
+                        &mut scratch,
+                    );
+                }
+            }
+            let veins = started.elapsed();
+            let each = |spent: std::time::Duration| spent.as_secs_f64() * 1e3 / chunks.len() as f64;
+            println!(
+                "{dimension:?}, {} chunks {name}: {:.3} ms a chunk for the surface, after \
+                 {:.3} ms for the biomes it reads; of the surface {:.3} ms the level of the \
+                 surface and at most {:.3} ms the ore veins' interpolated functions; {:.1} \
+                 marks a chunk",
+                chunks.len(),
+                each(surface),
+                each(reading),
+                each(level),
+                each(veins),
+                marks as f64 / chunks.len() as f64,
+            );
+        }
     }
 }

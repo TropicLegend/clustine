@@ -60,7 +60,13 @@ impl NoiseRouter for NetherRouter {
 
     fn interpolated(&self) -> &'static [Interpolated] {
         &[
-            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: true,
+                in_chunk_surface_level: false,
+                in_material_rule: false,
+            },
         ]
     }
 
@@ -78,6 +84,12 @@ impl NoiseRouter for NetherRouter {
             }
             _ => return None,
         })
+    }
+
+    type Material = super::material_rule::NetherMaterial;
+
+    fn material_density(&self, _m: &mut M, _number: usize, _x: i32, _y: i32, _z: i32) -> f32 {
+        0.0
     }
 }
 

@@ -64,6 +64,16 @@ const BODY_INDENT: usize = 8;
 /// its own.
 const INLINE_STATEMENTS: usize = 24;
 
+/// What a router has of its dimension's material rule, which is emitted beside it
+/// (`material.rs`).
+pub struct Material {
+    /// The rule's type from the router's file: `super::material_rule::OverworldMaterial`.
+    pub type_path: String,
+    /// The density functions the rule names, in the order of the numbers the router
+    /// gives them by.
+    pub functions: Vec<String>,
+}
+
 /// The emitted files of one dimension.
 pub struct Emitted {
     /// `router.rs`: the code.
@@ -80,6 +90,7 @@ pub fn emit(
     settings: &NoiseSettings,
     registry: &Registry,
     noises: &BTreeMap<String, NoiseParameters>,
+    material: &Material,
 ) -> Result<Emitted> {
     let mut roots: Vec<&Density> = settings.router.iter().collect();
     roots.extend(settings.aquifers.iter().flatten());
@@ -90,6 +101,12 @@ pub fn emit(
         .map(|(function, _, _)| Density::Reference(function.clone()))
         .collect();
     roots.extend(&targets);
+    let of_material: Vec<Density> = material
+        .functions
+        .iter()
+        .map(|function| Density::Reference(function.clone()))
+        .collect();
+    roots.extend(&of_material);
     let named = reached(registry, &roots)?;
 
     let mut generator = Generator::new(registry);
@@ -97,6 +114,12 @@ pub fn emit(
         if *entry == "final_density" {
             interpolated_within(density, registry, &mut generator.in_final_density);
         }
+        if *entry == "chunk_surface_level" {
+            interpolated_within(density, registry, &mut generator.in_chunk_surface_level);
+        }
+    }
+    for density in &of_material {
+        interpolated_within(density, registry, &mut generator.in_material_rule);
     }
     for root in &roots {
         generator.collect_leaves(root)?;
@@ -134,7 +157,7 @@ pub fn emit(
         generator.function(&format!("aquifer_{entry}"), Some(doc), density)?;
     }
 
-    let router = generator.render(name, settings)?;
+    let router = generator.render(name, settings, material)?;
     let splines = generator.render_splines(name);
     for text in std::iter::once(&router).chain(&splines) {
         check_layout(text)?;
@@ -365,17 +388,21 @@ struct Generator<'a> {
     coordinates: Vec<Lazy>,
     coordinate_numbers: Vec<Density>,
     /// The functions the data marks `interpolated`, in the order they are numbered:
-    /// the method of the input, the two cell sizes, and whether the final density
-    /// reaches it.
-    interpolated: Vec<(String, i32, i32, bool)>,
+    /// the method of the input, the two cell sizes, and whether the final density,
+    /// the router's `chunk_surface_level` and a function of the material rule reach
+    /// it.
+    interpolated: Vec<(String, i32, i32, [bool; 3])>,
     /// What the final density reaches through `interpolated`: each input with its
-    /// cell sizes.
+    /// cell sizes. Likewise the router's `chunk_surface_level` and the functions of
+    /// the material rule.
     in_final_density: Vec<(Density, i32, i32)>,
+    in_chunk_surface_level: Vec<(Density, i32, i32)>,
+    in_material_rule: Vec<(Density, i32, i32)>,
 }
 
 /// The most functions marked `interpolated` a router may have: what
 /// `clustine_worldgen_data::density::Memory` has room for.
-pub const MAX_INTERPOLATED: usize = 8;
+pub const MAX_INTERPOLATED: usize = 16;
 
 /// The inputs of the functions marked `interpolated` that `density` reaches, through
 /// references too, each with its cell sizes.
@@ -423,6 +450,8 @@ impl<'a> Generator<'a> {
             coordinate_numbers: Vec::new(),
             interpolated: Vec::new(),
             in_final_density: Vec::new(),
+            in_chunk_surface_level: Vec::new(),
+            in_material_rule: Vec::new(),
         }
     }
 
@@ -798,15 +827,18 @@ impl<'a> Generator<'a> {
                         number < MAX_INTERPOLATED,
                         "more than {MAX_INTERPOLATED} functions are marked interpolated"
                     );
-                    let in_final_density = self.in_final_density.iter().any(|(other, xz, y)| {
-                        *other == **input && xz == cell_size_xz && y == cell_size_y
-                    });
-                    self.interpolated.push((
-                        method.clone(),
-                        *cell_size_xz,
-                        *cell_size_y,
-                        in_final_density,
-                    ));
+                    let reached = |by: &[(Density, i32, i32)]| {
+                        by.iter().any(|(other, xz, y)| {
+                            *other == **input && xz == cell_size_xz && y == cell_size_y
+                        })
+                    };
+                    let reached = [
+                        reached(&self.in_final_density),
+                        reached(&self.in_chunk_surface_level),
+                        reached(&self.in_material_rule),
+                    ];
+                    self.interpolated
+                        .push((method.clone(), *cell_size_xz, *cell_size_y, reached));
                     body.used.add(Used::ALL);
                     body.bind(&format!(
                         "d::interpolated(m, {number}, {cell_size_xz}, {cell_size_y}, x, y, z, \
@@ -883,15 +915,17 @@ impl<'a> Generator<'a> {
     /// value, and gives the method's name. A function that does not change with y is
     /// remembered for its column.
     fn cache(&mut self, input: &Density) -> Result<String> {
-        // What a cache remembers would be wrong for the other way of interpolating:
-        // a caller that gives the interpolated values itself gets other bits than
-        // the interpolation at the position alone.
+        // What a cache remembers of an interpolated function would be wrong for the
+        // other way of interpolating: a caller that gives the interpolated values
+        // itself gets other bits than the interpolation at the position alone. So
+        // such a cache remembers which functions had a value given.
         let mut within = Vec::new();
         interpolated_within(input, self.registry, &mut within);
-        ensure!(
-            within.is_empty(),
-            "a function marked cache holds one marked interpolated"
-        );
+        let (recall, remember) = if within.is_empty() {
+            ("recall", "remember")
+        } else {
+            ("recall_interpolated", "remember_interpolated")
+        };
         let slot = self.memory_slots;
         self.memory_slots += 1;
         let name = format!("c_{slot}");
@@ -909,13 +943,13 @@ impl<'a> Generator<'a> {
             z: true,
         });
         body.lines.extend([
-            format!("if let Some(value) = m.recall({slot}, x, {y}, z) {{"),
+            format!("if let Some(value) = m.{recall}({slot}, x, {y}, z) {{"),
             "    return value;".to_owned(),
             "}".to_owned(),
         ]);
         let value = self.value(input, &mut body)?;
         body.lines
-            .push(format!("m.remember({slot}, x, {y}, z, {value});"));
+            .push(format!("m.{remember}({slot}, x, {y}, z, {value});"));
         body.lines.push(value);
         self.methods.push(Method {
             name: name.clone(),
@@ -1008,7 +1042,7 @@ impl<'a> Generator<'a> {
         Some(out)
     }
 
-    fn render(&self, name: &str, settings: &NoiseSettings) -> Result<String> {
+    fn render(&self, name: &str, settings: &NoiseSettings, material: &Material) -> Result<String> {
         let router = type_name(name);
         let legacy = settings.legacy_random_source;
         let mut fields: Vec<(String, String, String)> = Vec::new();
@@ -1219,12 +1253,18 @@ impl<'a> Generator<'a> {
             writeln!(out, "        &[]")?;
         } else {
             writeln!(out, "        &[")?;
-            for (_, cell_size_xz, cell_size_y, in_final_density) in &self.interpolated {
+            for (_, cell_size_xz, cell_size_y, reached) in &self.interpolated {
+                let [in_final_density, in_chunk_surface_level, in_material_rule] = reached;
+                writeln!(out, "            Interpolated {{")?;
+                writeln!(out, "                cell_size_xz: {cell_size_xz},")?;
+                writeln!(out, "                cell_size_y: {cell_size_y},")?;
+                writeln!(out, "                in_final_density: {in_final_density},")?;
                 writeln!(
                     out,
-                    "            Interpolated {{ cell_size_xz: {cell_size_xz}, cell_size_y: \
-                     {cell_size_y}, in_final_density: {in_final_density} }},"
+                    "                in_chunk_surface_level: {in_chunk_surface_level},"
                 )?;
+                writeln!(out, "                in_material_rule: {in_material_rule},")?;
+                writeln!(out, "            }},")?;
             }
             writeln!(out, "        ]")?;
         }
@@ -1274,6 +1314,30 @@ impl<'a> Generator<'a> {
             writeln!(out, "        }})")?;
             writeln!(out, "    }}")?;
         }
+
+        writeln!(out, "\n    type Material = {};\n", material.type_path)?;
+        if material.functions.is_empty() {
+            writeln!(
+                out,
+                "    fn material_density(&self, _m: &mut M, _number: usize, _x: i32, _y: i32, \
+                 _z: i32) -> f32 {{"
+            )?;
+            writeln!(out, "        0.0")?;
+        } else {
+            writeln!(
+                out,
+                "    fn material_density(&self, m: &mut M, number: usize, x: i32, y: i32, z: i32) \
+                 -> f32 {{"
+            )?;
+            writeln!(out, "        match number {{")?;
+            for (number, function) in material.functions.iter().enumerate() {
+                let method = self.method_of(function)?;
+                writeln!(out, "            {number} => self.{method}(m, x, y, z),")?;
+            }
+            writeln!(out, "            _ => 0.0,")?;
+            writeln!(out, "        }}")?;
+        }
+        writeln!(out, "    }}")?;
         writeln!(out, "}}")?;
 
         writeln!(out, "\nimpl {router} {{")?;
@@ -1556,6 +1620,23 @@ mod tests {
         Density::parse(&Json::parse(text).unwrap()).unwrap()
     }
 
+    /// A router whose material rule names no density function.
+    fn emit(
+        name: &str,
+        settings: &NoiseSettings,
+        registry: &Registry,
+        noises: &BTreeMap<String, NoiseParameters>,
+    ) -> Result<Emitted> {
+        super::emit(name, settings, registry, noises, &material(&[]))
+    }
+
+    fn material(functions: &[&str]) -> Material {
+        Material {
+            type_path: "super::material_rule::SmallMaterial".to_owned(),
+            functions: functions.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
     /// The noises the tests' functions ask, with parameters that do not matter here.
     fn known_noises() -> BTreeMap<String, NoiseParameters> {
         [
@@ -1692,7 +1773,12 @@ mod tests {
             "m.remember(0, x, 0, z, v3);",
             "self.spline(m, &splines::SPLINE_1, x, y, z)",
             "d::interpolated(m, 0, 4, 8, x, y, z, &mut |m, x, y, z| self.h_1(m, x, y, z));",
-            "Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },",
+            "cell_size_xz: 4,",
+            "cell_size_y: 8,",
+            "in_final_density: true,",
+            "in_chunk_surface_level: false,",
+            "in_material_rule: false,",
+            "type Material = super::material_rule::SmallMaterial;",
             "0 => self.h_1(m, x, y, z),",
             "if v1 >= -1.5 && v1 < 0.25 {",
             "let v1 = d::gradient(y, -8, 24, 0.0, 1.0);",
@@ -1862,6 +1948,48 @@ mod tests {
             all.insert("minecraft:nether/vegetation".to_owned(), changed);
             assert!(check_legacy_noises(&all).is_err());
         }
+    }
+
+    #[test]
+    fn a_function_of_the_material_rule_is_reached_and_numbered() {
+        // A function that only the material rule names: a cache over an interpolated
+        // noise, as the ore veins' are.
+        let mut entries = SMALL.to_vec();
+        entries.push((
+            "minecraft:a/vein",
+            r#"{"type": "minecraft:cache", "input": {"type": "minecraft:interpolated",
+                "cell_size_xz": 4, "cell_size_y": 8, "input": {"type": "minecraft:noise",
+                "noise": "minecraft:erosion", "xz_scale": 1.5, "y_scale": 1.5}}}"#,
+        ));
+        let registry = registry(&entries);
+        let router = super::emit(
+            "small",
+            &settings("1.0", false),
+            &registry,
+            &known_noises(),
+            &material(&["minecraft:a/vein"]),
+        )
+        .unwrap()
+        .router;
+        for expected in [
+            "fn material_density(&self, m: &mut M, number: usize, x: i32, y: i32, z: i32) -> f32 {",
+            "0 => self.f_a_vein(m, x, y, z),",
+            "in_final_density: false,",
+            "in_material_rule: true,",
+            // What holds an interpolated function is remembered for what was given.
+            "if let Some(value) = m.recall_interpolated(0, x, y, z) {",
+        ] {
+            assert!(
+                router.lines().any(|line| line.trim() == expected),
+                "{expected}\n{router}"
+            );
+        }
+        // Without the rule the function is not reached.
+        let without = emit("small", &settings("1.0", false), &registry, &known_noises())
+            .unwrap()
+            .router;
+        assert!(!without.contains("f_a_vein"));
+        assert!(without.contains("fn material_density(&self, _m: &mut M, _number: usize,"));
     }
 
     #[test]

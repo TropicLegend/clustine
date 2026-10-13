@@ -298,10 +298,8 @@ mod tests {
             for path in files_under(&root, directory).unwrap() {
                 let text = fs::read_to_string(root.join(&path)).unwrap_or_default();
                 let second = text.lines().nth(1);
-                if emit::is_emitted_code(&path) {
-                    routers += 1;
-                    assert_eq!(second, Some(emit::EMITTER_LINE), "{path}");
-                } else if path.ends_with("/splines.rs") {
+                if emit::is_from_the_adapted_emitter(&path) {
+                    routers += usize::from(path.ends_with("/router.rs"));
                     assert_eq!(second, Some(emit::EMITTER_LINE), "{path}");
                 } else {
                     assert_ne!(second, Some(emit::EMITTER_LINE), "{path}");

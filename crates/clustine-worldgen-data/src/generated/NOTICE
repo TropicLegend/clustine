@@ -4,13 +4,17 @@ NOTICE.md at the root of the repository.
 
 The files, of which the packed tables (*.bin) can carry no such line themselves:
 
+  biomes.rs
+  end/material_rule.rs
   end/mod.rs
   end/router.rs
   mod.rs
+  nether/material_rule.rs
   nether/mod.rs
   nether/router.rs
   noise_settings.rs
   noises.rs
+  overworld/material_rule.rs
   overworld/mod.rs
   overworld/router.rs
   overworld/splines.rs

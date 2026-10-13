@@ -10,9 +10,9 @@
 //! "quart" positions), so the cell `x`, `y`, `z` holds the blocks from `4x`, `4y`,
 //! `4z`. The 64 cells of a chunk's section are what the game stores and sends for it,
 //! straight from its biome source. (The finer look of a border that a client draws,
-//! and that the game's features ask for at a block, is made from these cells
-//! afterwards, by offsets hashed from the seed; nothing of it is stored, and it is
-//! not here.)
+//! and that the game's surface rules and features ask for at a block, is made from
+//! these cells afterwards, by offsets hashed from the seed; nothing of it is stored.
+//! [`zoom`] says which cell a block takes its biome from.)
 //!
 //! - **The overworld and the Nether** look the biome up by the climate of the cell
 //!   ([`climate`]) in a list of climates ([`search`]).
@@ -48,6 +48,7 @@
 
 pub mod climate;
 pub mod search;
+pub mod zoom;
 
 use clustine_data::biome_parameters::BiomeParameterList;
 use clustine_data::{DIMENSION_TYPES, synced_registry};
@@ -113,6 +114,45 @@ impl<R: NoiseRouter> ByClimate<R> {
         nearest.biome
     }
 
+    /// The nearest entry for every cell of the column of cells at `cell_x`, `cell_z`,
+    /// from the cell at the height `lowest_cell` up, as many as `column` has room
+    /// for. `found` is the entry found for the cell asked before, which is likely to
+    /// be near the next cell's climate too; it only shortens the search (see
+    /// `nearest_guessing`).
+    fn column(
+        &self,
+        memory: &mut R::Memory,
+        found: &mut Option<Nearest>,
+        cell_x: i32,
+        cell_z: i32,
+        lowest_cell: i32,
+        column: &mut [Biome],
+    ) {
+        // Of the six, depth alone changes with the height (a test of `climate` holds
+        // the routers to that), so the others are asked for once a column. Where the
+        // climate is what it was a cell below, so is its biome: the search has no
+        // memory.
+        let mut climate = Climate::sample(&self.router, memory, cell_x, lowest_cell, cell_z);
+        let mut biome = self.search(&climate, found);
+        for (up, cell) in column.iter_mut().enumerate() {
+            if up != 0 {
+                let block_y = (lowest_cell + up as i32) << 2;
+                let depth = quantise(self.router.sample(
+                    memory,
+                    RouterEntry::Depth,
+                    cell_x << 2,
+                    block_y,
+                    cell_z << 2,
+                ));
+                if depth != climate.0[DEPTH] {
+                    climate.0[DEPTH] = depth;
+                    biome = self.search(&climate, found);
+                }
+            }
+            *cell = biome;
+        }
+    }
+
     /// The nearest entry for every cell of the chunk, section by section.
     fn chunk(
         &self,
@@ -123,36 +163,21 @@ impl<R: NoiseRouter> ByClimate<R> {
     ) -> Vec<SectionBiomes> {
         let mut filled = vec![Box::new([Biome(0); BIOME_CELLS]); sections];
         let mut memory = R::Memory::default();
-        let lowest_cell = lowest * 4;
-        // The entry found for the cell before, which is likely to be near the next
-        // cell's climate too. It only shortens the search (see `nearest_guessing`).
         let mut found: Option<Nearest> = None;
+        let mut column = vec![Biome(0); sections * 4];
         for z in 0..4 {
             for x in 0..4 {
                 let (cell_x, cell_z) = (chunk_x * 4 + x as i32, chunk_z * 4 + z as i32);
-                // Of the six, depth alone changes with the height (a test of
-                // `climate` holds the routers to that), so the others are asked for
-                // once a column. Where the climate is what it was a cell below, so
-                // is its biome: the search has no memory.
-                let mut climate =
-                    Climate::sample(&self.router, &mut memory, cell_x, lowest_cell, cell_z);
-                let mut biome = self.search(&climate, &mut found);
-                for up in 0..sections * 4 {
-                    if up != 0 {
-                        let block_y = (lowest_cell + up as i32) << 2;
-                        let depth = quantise(self.router.sample(
-                            &mut memory,
-                            RouterEntry::Depth,
-                            cell_x << 2,
-                            block_y,
-                            cell_z << 2,
-                        ));
-                        if depth != climate.0[DEPTH] {
-                            climate.0[DEPTH] = depth;
-                            biome = self.search(&climate, &mut found);
-                        }
-                    }
-                    filled[up / 4][(up % 4) << 4 | z << 2 | x] = biome;
+                self.column(
+                    &mut memory,
+                    &mut found,
+                    cell_x,
+                    cell_z,
+                    lowest * 4,
+                    &mut column,
+                );
+                for (up, biome) in column.iter().enumerate() {
+                    filled[up / 4][(up % 4) << 4 | z << 2 | x] = *biome;
                 }
             }
         }
@@ -328,6 +353,35 @@ impl BiomeSource {
         }
     }
 
+    /// The biomes of the column of cells at `cell_x`, `cell_z`: every cell of the
+    /// dimension's height from the lowest up, four to a section. Each is what
+    /// [`Self::biome`] gives for it. The surface rules read the columns of a chunk
+    /// and of the ring of cells around it (`crate::surface::Biomes`).
+    pub fn column(&self, cell_x: i32, cell_z: i32) -> Vec<Biome> {
+        let (lowest, sections) = self.dimension.sections();
+        let mut column = vec![Biome(0); sections * 4];
+        match &self.kind {
+            Kind::Overworld(source) => source.column(
+                &mut Default::default(),
+                &mut None,
+                cell_x,
+                cell_z,
+                lowest * 4,
+                &mut column,
+            ),
+            Kind::Nether(source) => source.column(
+                &mut Default::default(),
+                &mut None,
+                cell_x,
+                cell_z,
+                lowest * 4,
+                &mut column,
+            ),
+            Kind::End(source) => column.fill(source.of_chunk(cell_x >> 2, cell_z >> 2)),
+        }
+        column
+    }
+
     /// The biomes of the chunk at the chunk position `chunk_x`, `chunk_z`: for each
     /// of its sections from the lowest up, the 64 cells. Every cell is what
     /// [`Self::biome`] gives for it.
@@ -392,6 +446,22 @@ mod tests {
                             "{dimension:?} {chunk_x} {chunk_z} {cell}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_cell_of_a_column_is_the_biome_asked_for_alone() {
+        for dimension in Dimension::ALL {
+            let source = BiomeSource::new(13579, dimension);
+            let (lowest, count) = dimension.sections();
+            for (cell_x, cell_z) in [(0, 0), (-13, 31), (4000, -4001)] {
+                let column = source.column(cell_x, cell_z);
+                assert_eq!(column.len(), count * 4);
+                for (up, biome) in column.iter().enumerate() {
+                    let alone = source.biome(cell_x, lowest * 4 + up as i32, cell_z);
+                    assert_eq!(*biome, alone, "{dimension:?} {cell_x} {cell_z} {up}");
                 }
             }
         }

@@ -18,7 +18,7 @@ use crate::generated::{noise_settings, noises};
 use super::splines;
 
 /// What a caller keeps between calls: the last value of each `cache`.
-type M = Memory<17>;
+type M = Memory<19>;
 
 /// The noise router of `minecraft:overworld` for one seed, with the noises it reads.
 pub struct OverworldRouter {
@@ -37,6 +37,10 @@ pub struct OverworldRouter {
     noodle_ridge_b: NormalNoise,
     noodle_thickness: NormalNoise,
     offset: NormalNoise,
+    ore_gap: NormalNoise,
+    ore_vein_a: NormalNoise,
+    ore_vein_b: NormalNoise,
+    ore_veininess: NormalNoise,
     pillar: NormalNoise,
     pillar_rareness: NormalNoise,
     pillar_thickness: NormalNoise,
@@ -78,6 +82,10 @@ impl NoiseRouter for OverworldRouter {
             noodle_ridge_b: d::noise(&splitter, &noises::NOODLE_RIDGE_B),
             noodle_thickness: d::noise(&splitter, &noises::NOODLE_THICKNESS),
             offset: d::noise(&splitter, &noises::OFFSET),
+            ore_gap: d::noise(&splitter, &noises::ORE_GAP),
+            ore_vein_a: d::noise(&splitter, &noises::ORE_VEIN_A),
+            ore_vein_b: d::noise(&splitter, &noises::ORE_VEIN_B),
+            ore_veininess: d::noise(&splitter, &noises::ORE_VEININESS),
             pillar: d::noise(&splitter, &noises::PILLAR),
             pillar_rareness: d::noise(&splitter, &noises::PILLAR_RARENESS),
             pillar_thickness: d::noise(&splitter, &noises::PILLAR_THICKNESS),
@@ -130,12 +138,69 @@ impl NoiseRouter for OverworldRouter {
 
     fn interpolated(&self) -> &'static [Interpolated] {
         &[
-            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
-            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
-            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
-            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
-            Interpolated { cell_size_xz: 16, cell_size_y: 1, in_final_density: false },
-            Interpolated { cell_size_xz: 4, cell_size_y: 8, in_final_density: true },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: true,
+                in_chunk_surface_level: false,
+                in_material_rule: false,
+            },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: true,
+                in_chunk_surface_level: false,
+                in_material_rule: false,
+            },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: true,
+                in_chunk_surface_level: false,
+                in_material_rule: false,
+            },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: true,
+                in_chunk_surface_level: false,
+                in_material_rule: false,
+            },
+            Interpolated {
+                cell_size_xz: 16,
+                cell_size_y: 1,
+                in_final_density: false,
+                in_chunk_surface_level: true,
+                in_material_rule: false,
+            },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: true,
+                in_chunk_surface_level: false,
+                in_material_rule: false,
+            },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: false,
+                in_chunk_surface_level: false,
+                in_material_rule: true,
+            },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: false,
+                in_chunk_surface_level: false,
+                in_material_rule: true,
+            },
+            Interpolated {
+                cell_size_xz: 4,
+                cell_size_y: 8,
+                in_final_density: false,
+                in_chunk_surface_level: false,
+                in_material_rule: true,
+            },
         ]
     }
 
@@ -147,6 +212,9 @@ impl NoiseRouter for OverworldRouter {
             3 => self.h_17(m, x, y, z),
             4 => self.f_overworld_preliminary_surface_level(m, x, y, z),
             5 => self.h_25(m, x, y, z),
+            6 => self.h_37(m, x, y, z),
+            7 => self.h_39(m, x, y, z),
+            8 => self.h_41(m, x, y, z),
             _ => 0.0,
         }
     }
@@ -198,6 +266,24 @@ impl NoiseRouter for OverworldRouter {
             "minecraft:overworld/offset" => {
                 self.f_overworld_offset(m, x, y, z)
             }
+            "minecraft:overworld/ore_vein/copper_density" => {
+                self.f_overworld_ore_vein_copper_density(m, x, y, z)
+            }
+            "minecraft:overworld/ore_vein/gap" => {
+                self.f_overworld_ore_vein_gap(m, x, y, z)
+            }
+            "minecraft:overworld/ore_vein/iron_density" => {
+                self.f_overworld_ore_vein_iron_density(m, x, y, z)
+            }
+            "minecraft:overworld/ore_vein/mask" => {
+                self.f_overworld_ore_vein_mask(m, x, y, z)
+            }
+            "minecraft:overworld/ore_vein/richness" => {
+                self.f_overworld_ore_vein_richness(m, x, y, z)
+            }
+            "minecraft:overworld/ore_vein/toggle" => {
+                self.f_overworld_ore_vein_toggle(m, x, y, z)
+            }
             "minecraft:overworld/preliminary_surface_level" => {
                 self.f_overworld_preliminary_surface_level(m, x, y, z)
             }
@@ -227,6 +313,18 @@ impl NoiseRouter for OverworldRouter {
             }
             _ => return None,
         })
+    }
+
+    type Material = super::material_rule::OverworldMaterial;
+
+    fn material_density(&self, m: &mut M, number: usize, x: i32, y: i32, z: i32) -> f32 {
+        match number {
+            0 => self.f_overworld_ore_vein_copper_density(m, x, y, z),
+            1 => self.f_overworld_ore_vein_richness(m, x, y, z),
+            2 => self.f_overworld_ore_vein_gap(m, x, y, z),
+            3 => self.f_overworld_ore_vein_iron_density(m, x, y, z),
+            _ => 0.0,
+        }
     }
 }
 
@@ -826,7 +924,197 @@ impl OverworldRouter {
         v1
     }
 
+    fn h_33(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_overworld_ore_vein_toggle(m, x, y, z);
+        let v2 = v1 - 0.4_f32;
+        let v3 = self.f_y(m, x, y, z);
+        let v4 = 50.0_f32 - v3;
+        let v5 = self.f_y(m, x, y, z);
+        let v6 = v5 - 0.0_f32;
+        let v7 = d::min(v4, v6);
+        let v8 = d::clamp(v7, 0.0, 20.0);
+        let v9 = v8 * 0.01_f32;
+        let v10 = v9 + -0.2_f32;
+        let v11 = v2 + v10;
+        let v12 = if v11 >= 0.0 && v11 < 1000000.0 {
+            0.7_f32
+        } else {
+            -1.0_f32
+        };
+        v12
+    }
+
+    fn h_32(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_overworld_ore_vein_mask(m, x, y, z);
+        let v2 = if v1 >= 0.0 && v1 < 1000000.0 {
+            self.h_33(m, x, y, z)
+        } else {
+            -1.0_f32
+        };
+        v2
+    }
+
+    /// `minecraft:overworld/ore_vein/copper_density`
+    fn f_overworld_ore_vein_copper_density(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_y(m, x, y, z);
+        let v2 = if v1 >= 0.0 && v1 < 50.0 {
+            self.h_32(m, x, y, z)
+        } else {
+            -1.0_f32
+        };
+        v2
+    }
+
+    /// `minecraft:overworld/ore_vein/gap`
+    fn f_overworld_ore_vein_gap(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.ore_gap, x, y, z, 1.0, 1.0);
+        let v2 = -0.3_f32 - v1;
+        v2
+    }
+
+    fn h_35(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_overworld_ore_vein_toggle(m, x, y, z);
+        let v2 = d::negate(v1);
+        let v3 = v2 - 0.4_f32;
+        let v4 = self.f_y(m, x, y, z);
+        let v5 = -8.0_f32 - v4;
+        let v6 = self.f_y(m, x, y, z);
+        let v7 = v6 - -60.0_f32;
+        let v8 = d::min(v5, v7);
+        let v9 = d::clamp(v8, 0.0, 20.0);
+        let v10 = v9 * 0.01_f32;
+        let v11 = v10 + -0.2_f32;
+        let v12 = v3 + v11;
+        let v13 = if v12 >= 0.0 && v12 < 1000000.0 {
+            0.7_f32
+        } else {
+            -1.0_f32
+        };
+        v13
+    }
+
     fn h_34(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_overworld_ore_vein_mask(m, x, y, z);
+        let v2 = if v1 >= 0.0 && v1 < 1000000.0 {
+            self.h_35(m, x, y, z)
+        } else {
+            -1.0_f32
+        };
+        v2
+    }
+
+    /// `minecraft:overworld/ore_vein/iron_density`
+    fn f_overworld_ore_vein_iron_density(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_y(m, x, y, z);
+        let v2 = if v1 >= -60.0 && v1 < -8.0 {
+            self.h_34(m, x, y, z)
+        } else {
+            -1.0_f32
+        };
+        v2
+    }
+
+    fn h_38(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.ore_vein_a, x, y, z, 4.0, 4.0);
+        v1
+    }
+
+    fn h_37(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_y(m, x, y, z);
+        let v2 = if v1 >= -64.0 && v1 < 57.0 {
+            self.h_38(m, x, y, z)
+        } else {
+            1.0_f32
+        };
+        v2
+    }
+
+    fn h_40(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.ore_vein_b, x, y, z, 4.0, 4.0);
+        v1
+    }
+
+    fn h_39(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_y(m, x, y, z);
+        let v2 = if v1 >= -64.0 && v1 < 57.0 {
+            self.h_40(m, x, y, z)
+        } else {
+            1.0_f32
+        };
+        v2
+    }
+
+    fn h_36(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::interpolated(m, 6, 4, 8, x, y, z, &mut |m, x, y, z| self.h_37(m, x, y, z));
+        let v2 = d::abs(v1);
+        let v3 = d::interpolated(m, 7, 4, 8, x, y, z, &mut |m, x, y, z| self.h_39(m, x, y, z));
+        let v4 = d::abs(v3);
+        let v5 = d::max(v2, v4);
+        let v6 = 0.08_f32 - v5;
+        v6
+    }
+
+    fn c_12(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        if let Some(value) = m.recall_interpolated(12, x, y, z) {
+            return value;
+        }
+        let v1 = self.f_overworld_ore_vein_toggle(m, x, y, z);
+        let v2 = if v1 >= -0.4 && v1 < 0.4 {
+            -1.0_f32
+        } else {
+            self.h_36(m, x, y, z)
+        };
+        m.remember_interpolated(12, x, y, z, v2);
+        v2
+    }
+
+    /// `minecraft:overworld/ore_vein/mask`
+    fn f_overworld_ore_vein_mask(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.c_12(m, x, y, z);
+        v1
+    }
+
+    /// `minecraft:overworld/ore_vein/richness`
+    fn f_overworld_ore_vein_richness(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_overworld_ore_vein_toggle(m, x, y, z);
+        let v2 = d::abs(v1);
+        let v3 = d::clamp(v2, 0.4, 0.6);
+        let v4 = v3 * 1.0_f32;
+        let v5 = v4 + -0.3_f32;
+        v5
+    }
+
+    fn h_42(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = d::noise3(m, &self.ore_veininess, x, y, z, 1.5, 1.5);
+        v1
+    }
+
+    fn h_41(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.f_y(m, x, y, z);
+        let v2 = if v1 >= -64.0 && v1 < 57.0 {
+            self.h_42(m, x, y, z)
+        } else {
+            0.0_f32
+        };
+        v2
+    }
+
+    fn c_13(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        if let Some(value) = m.recall_interpolated(13, x, y, z) {
+            return value;
+        }
+        let v1 = d::interpolated(m, 8, 4, 8, x, y, z, &mut |m, x, y, z| self.h_41(m, x, y, z));
+        m.remember_interpolated(13, x, y, z, v1);
+        v1
+    }
+
+    /// `minecraft:overworld/ore_vein/toggle`
+    fn f_overworld_ore_vein_toggle(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        let v1 = self.c_13(m, x, y, z);
+        v1
+    }
+
+    fn h_45(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
         let v1 = d::gradient(y, -64, 320, 1.5, -1.5);
         let v2 = self.f_overworld_offset(m, x, y, z);
         let v3 = v1 + v2;
@@ -839,26 +1127,26 @@ impl OverworldRouter {
         v9
     }
 
-    fn h_33(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+    fn h_44(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
         let v1 = d::gradient(y, 240, 256, 1.0, 0.0);
         let v2 = if v1 == 0.0 {
             -0.078125_f32
         } else if v1 == 1.0 {
-            self.h_34(m, x, y, z)
+            self.h_45(m, x, y, z)
         } else {
-            d::lerp(v1, -0.078125_f32, self.h_34(m, x, y, z))
+            d::lerp(v1, -0.078125_f32, self.h_45(m, x, y, z))
         };
         v2
     }
 
-    fn h_32(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+    fn h_43(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
         let v1 = d::gradient(y, -64, -40, 0.0, 1.0);
         let v2 = if v1 == 0.0 {
             0.1171875_f32
         } else if v1 == 1.0 {
-            self.h_33(m, x, y, z)
+            self.h_44(m, x, y, z)
         } else {
-            d::lerp(v1, 0.1171875_f32, self.h_33(m, x, y, z))
+            d::lerp(v1, 0.1171875_f32, self.h_44(m, x, y, z))
         };
         let v3 = v2 + -0.390625_f32;
         v3
@@ -873,24 +1161,24 @@ impl OverworldRouter {
         let v5 = v4 * -128.0_f32;
         let v6 = v5 + 128.0_f32;
         let v7 = d::clamp(v6, -40.0, 320.0);
-        let v8 = d::find_top_surface(v7, -64, 8, &mut |height| self.h_32(m, x, height, z));
+        let v8 = d::find_top_surface(v7, -64, 8, &mut |height| self.h_43(m, x, height, z));
         v8
     }
 
-    fn c_12(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        if let Some(value) = m.recall(12, x, 0, z) {
+    fn c_14(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        if let Some(value) = m.recall(14, x, 0, z) {
             return value;
         }
         let v1 = self.f_shift_x(m, x, y, z);
         let v2 = self.f_shift_z(m, x, y, z);
         let v3 = d::shifted_noise2(&self.ridge, x, z, 0.25, v1, v2);
-        m.remember(12, x, 0, z, v3);
+        m.remember(14, x, 0, z, v3);
         v3
     }
 
     /// `minecraft:overworld/ridges`
     fn f_overworld_ridges(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = self.c_12(m, x, y, z);
+        let v1 = self.c_14(m, x, y, z);
         v1
     }
 
@@ -905,24 +1193,24 @@ impl OverworldRouter {
         v6
     }
 
-    fn c_14(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        if let Some(value) = m.recall(14, x, 0, z) {
+    fn c_16(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        if let Some(value) = m.recall(16, x, 0, z) {
             return value;
         }
         let v1 = self.f_overworld_jaggedness(m, x, y, z);
         let v2 = d::noise2(m, &self.jagged, x, z, 1500.0);
         let v3 = d::half_negative(v2);
         let v4 = v1 * v3;
-        m.remember(14, x, 0, z, v4);
+        m.remember(16, x, 0, z, v4);
         v4
     }
 
-    fn c_13(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        if let Some(value) = m.recall(13, x, y, z) {
+    fn c_15(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
+        if let Some(value) = m.recall(15, x, y, z) {
             return value;
         }
         let v1 = self.f_overworld_depth(m, x, y, z);
-        let v2 = self.c_14(m, x, y, z);
+        let v2 = self.c_16(m, x, y, z);
         let v3 = v1 + v2;
         let v4 = self.f_overworld_factor(m, x, y, z);
         let v5 = v3 * v4;
@@ -930,13 +1218,13 @@ impl OverworldRouter {
         let v7 = v6 * 4.0_f32;
         let v8 = self.f_overworld_base_3d_noise(m, x, y, z);
         let v9 = v7 + v8;
-        m.remember(13, x, y, z, v9);
+        m.remember(15, x, y, z, v9);
         v9
     }
 
     /// `minecraft:overworld/sloped_cheese`
     fn f_overworld_sloped_cheese(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = self.c_13(m, x, y, z);
+        let v1 = self.c_15(m, x, y, z);
         v1
     }
 
@@ -956,33 +1244,33 @@ impl OverworldRouter {
         v3
     }
 
-    fn c_15(&self, m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
-        if let Some(value) = m.recall(15, x, 0, z) {
+    fn c_17(&self, m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
+        if let Some(value) = m.recall(17, x, 0, z) {
             return value;
         }
         let v1 = d::shift_a(&self.offset, x, z);
-        m.remember(15, x, 0, z, v1);
+        m.remember(17, x, 0, z, v1);
         v1
     }
 
     /// `minecraft:shift_x`
     fn f_shift_x(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = self.c_15(m, x, y, z);
+        let v1 = self.c_17(m, x, y, z);
         v1
     }
 
-    fn c_16(&self, m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
-        if let Some(value) = m.recall(16, x, 0, z) {
+    fn c_18(&self, m: &mut M, x: i32, _y: i32, z: i32) -> f32 {
+        if let Some(value) = m.recall(18, x, 0, z) {
             return value;
         }
         let v1 = d::shift_b(&self.offset, x, z);
-        m.remember(16, x, 0, z, v1);
+        m.remember(18, x, 0, z, v1);
         v1
     }
 
     /// `minecraft:shift_z`
     fn f_shift_z(&self, m: &mut M, x: i32, y: i32, z: i32) -> f32 {
-        let v1 = self.c_16(m, x, y, z);
+        let v1 = self.c_18(m, x, y, z);
         v1
     }
 

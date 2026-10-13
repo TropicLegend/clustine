@@ -16,7 +16,7 @@ use crate::density;
 use crate::jar::SERVER_JAR;
 use crate::model::{GameData, Property};
 use crate::worldgen::{NoiseParameters, NoiseSettings};
-use crate::{packed, router, sums, tables};
+use crate::{material, packed, router, sums, tables};
 
 /// Directories that hold nothing but generated files, relative to the workspace root
 /// (ADR-0019, section 3).
@@ -46,9 +46,20 @@ pub const CODE_BUDGET: usize = 1_000_000;
 pub const EMITTER_LINE: &str = "// The emitter is adapted from SteelMC; see tools/datagen/NOTICE.";
 
 /// Whether the generated file at `path` (from the workspace root, with `/`) has the
-/// form "code": a noise router. Its splines and the other statics beside it do not.
+/// form "code": a noise router or a material rule. The splines and the other statics
+/// beside them do not.
 pub fn is_emitted_code(path: &str) -> bool {
-    path.starts_with(WORLDGEN_DIR) && path.ends_with("/router.rs")
+    path.starts_with(WORLDGEN_DIR)
+        && (path.ends_with("/router.rs") || path.ends_with("/material_rule.rs"))
+}
+
+/// Whether the generated file at `path` is written by the emitter that is adapted from
+/// SteelMC, and says so in its second line: a noise router or its splines. The
+/// material rules' emitter is Clustine's own.
+#[cfg(test)]
+pub fn is_from_the_adapted_emitter(path: &str) -> bool {
+    path.starts_with(WORLDGEN_DIR)
+        && (path.ends_with("/router.rs") || path.ends_with("/splines.rs"))
 }
 
 /// The file in each generated directory that says whose the data in it is. Packed
@@ -196,8 +207,9 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
 }
 
 /// The outputs of the crate of world-generation data: the routers of the three
-/// dimensions with their splines, the noises, the noise settings, and the values the
-/// routers are tested against.
+/// dimensions with their splines, their material rules, the noises, the noise
+/// settings, what the rules read of a biome, and the values the routers are tested
+/// against.
 fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
     let version = data.version.id.as_str();
     let mut add = |name: &str, emitted: bool, body: String| {
@@ -232,10 +244,23 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
 
     router::check_legacy_noises(&noises)?;
 
-    let mut top = vec!["noise_settings", "noises"];
+    let biomes = data
+        .synced_registries
+        .iter()
+        .find(|registry| registry.name == "worldgen/biome")
+        .context("the registry of biomes is not among the synchronised ones")?;
+    let noise_names: Vec<String> = noises.keys().cloned().collect();
+    let rules = material::Registries::load(&data.worldgen, &data.blocks)?;
+
+    let mut top = vec!["biomes", "noise_settings", "noises"];
     top.extend(DIMENSIONS);
     top.sort_unstable();
     add("mod.rs", false, modules(&top));
+    add(
+        "biomes.rs",
+        false,
+        material::biomes(&biomes.entries, &data.worldgen)?,
+    );
     add("noises.rs", false, router::noises(&noises)?);
     let borrowed: Vec<(&str, &NoiseSettings)> = all_settings
         .iter()
@@ -248,13 +273,26 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
     );
 
     for (name, settings) in &all_settings {
-        let emitted = router::emit(name, settings, &registry, &noises)
+        let rule = material::emit(
+            name,
+            &settings.material_rule,
+            &rules,
+            &biomes.entries,
+            &noise_names,
+        )
+        .with_context(|| format!("emitting the material rule of {name}"))?;
+        let of_rule = router::Material {
+            type_path: format!("super::material_rule::{}", rule.type_name),
+            functions: rule.functions,
+        };
+        let emitted = router::emit(name, settings, &registry, &noises, &of_rule)
             .with_context(|| format!("emitting the noise router of {name}"))?;
-        let mut inner = vec!["router"];
+        let mut inner = vec!["material_rule", "router"];
         if emitted.splines.is_some() {
             inner.push("splines");
         }
         add(&format!("{name}/mod.rs"), false, modules(&inner));
+        add(&format!("{name}/material_rule.rs"), false, rule.text);
         add(&format!("{name}/router.rs"), true, emitted.router);
         if let Some(splines) = emitted.splines {
             add(&format!("{name}/splines.rs"), true, splines);

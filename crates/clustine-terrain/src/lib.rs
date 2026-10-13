@@ -1,18 +1,23 @@
 //! Minecraft's terrain as a function of a world's seed and a position.
 //!
-//! So far this is the part every other part asks, and the first step of a chunk's
-//! blocks, each for the overworld, the Nether and the End:
+//! So far this is the part every other part asks, and the first two steps of a
+//! chunk's blocks, each for the overworld, the Nether and the End:
 //!
-//! - [`biome`]: which biome is where.
+//! - [`biome`]: which biome is where, in cells of four blocks, and which cell a block
+//!   takes its biome from ([`biome::zoom`]).
 //! - [`fill`]: the game's "fill from noise" step, which gives a chunk its ground, its
 //!   air and its fluids, and the height of the ground at a column without filling a
 //!   chunk. It is made of [`noise_chunk`], the final density of a box of blocks as
 //!   the game fills it, and [`aquifer`], which says what lies where no ground is.
 //!   Every block of 5,600 chunks equals what the game's own classes give when asked
 //!   without a server; the head of [`fill`] says more.
+//! - [`surface`]: the game's "build surface" step, which makes of the ground what the
+//!   dimension's material rule says: grass, sand, snow, the bands of the badlands,
+//!   bedrock, deepslate, and the ore veins. It was compared the same way; the head of
+//!   [`surface`] says more.
 //!
-//! The surface and the ore veins, the caves, the features and the structures come
-//! with the later steps of phase T of `docs/groundwork/terrain-plan.md`.
+//! The caves, the features and the structures come with the later steps of phase T of
+//! `docs/groundwork/terrain-plan.md`.
 //!
 //! The overworld's biomes equal those of chunks the official server made, but for
 //! exact ties, which the game does not decide by the position. **The Nether's and
@@ -52,3 +57,4 @@ pub mod aquifer;
 pub mod biome;
 pub mod fill;
 pub mod noise_chunk;
+pub mod surface;

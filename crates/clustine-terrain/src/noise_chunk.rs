@@ -104,6 +104,19 @@ impl Volume {
         y + (x + z * self.size_x) * self.size_y
     }
 
+    /// Where the block at the block position `x`, `y`, `z` is in the values of the
+    /// volume, or `None` for a block outside it (the game's `indexOfBlock`).
+    #[inline]
+    #[must_use]
+    pub fn index_of_block(&self, x: i32, y: i32, z: i32) -> Option<usize> {
+        let (x, y, z) = (
+            usize::try_from(x.wrapping_sub(self.min_x)).ok()?,
+            usize::try_from(y.wrapping_sub(self.min_y)).ok()?,
+            usize::try_from(z.wrapping_sub(self.min_z)).ok()?,
+        );
+        (x < self.size_x && y < self.size_y && z < self.size_z).then(|| self.index(x, y, z))
+    }
+
     /// The highest block of each axis: x, y, z.
     #[must_use]
     pub fn max(&self) -> [i32; 3] {
@@ -187,6 +200,14 @@ pub struct Scratch {
 }
 
 impl Scratch {
+    /// The interpolated function with this number at every block of the volume that
+    /// was interpolated last ([`interpolated`]), in the volume's order; empty for a
+    /// function that was not asked for.
+    #[must_use]
+    pub fn interpolated(&self, number: usize) -> &[f32] {
+        self.blocks.get(number).map_or(&[], Vec::as_slice)
+    }
+
     /// The corners that the last fill computed for the interpolated function with
     /// this number, in the order of the game's volume of corners: y fastest, then x,
     /// then z. For a test to compare with the game's.
@@ -222,6 +243,54 @@ pub fn final_density<R: NoiseRouter>(
     out: &mut Vec<f32>,
 ) {
     let interpolated = router.interpolated();
+    let wanted: Vec<usize> = (0..interpolated.len())
+        .filter(|number| interpolated[*number].in_final_density)
+        .collect();
+    self::interpolated(router, memory, &wanted, volume, scratch);
+
+    // What stands above the interpolation, block by block, a column at a time.
+    out.clear();
+    out.reserve(volume.len());
+    for z in 0..volume.size_z {
+        let block_z = volume.min_z + z as i32;
+        for x in 0..volume.size_x {
+            let block_x = volume.min_x + x as i32;
+            let column = volume.index(x, 0, z);
+            for y in 0..volume.size_y {
+                for number in &wanted {
+                    memory.give(*number, scratch.blocks[*number][column + y]);
+                }
+                out.push(router.sample(
+                    memory,
+                    RouterEntry::FinalDensity,
+                    block_x,
+                    volume.min_y + y as i32,
+                    block_z,
+                ));
+            }
+        }
+    }
+    memory.give_nothing();
+}
+
+/// The interpolated functions with the numbers `wanted` at every block of `volume`,
+/// as the game interpolates them when it fills a volume: afterwards
+/// [`Scratch::interpolated`] has each, in the volume's order. What the scratch held
+/// of other functions is gone.
+///
+/// The final density is made of these ([`final_density`]); so are the router's
+/// `chunk_surface_level`, which the surface rules read as a volume one block high,
+/// and the density functions of the ore veins.
+///
+/// `memory` is the caller's for this router; nothing is left given in it.
+pub fn interpolated<R: NoiseRouter>(
+    router: &R,
+    memory: &mut R::Memory,
+    wanted: &[usize],
+    volume: &Volume,
+    scratch: &mut Scratch,
+) {
+    let interpolated = router.interpolated();
     assert!(
         interpolated.len() <= MAX_INTERPOLATED,
         "a router has at most {MAX_INTERPOLATED} interpolated functions"
@@ -233,14 +302,11 @@ pub fn final_density<R: NoiseRouter>(
         blocks.clear();
     }
 
-    // The functions the final density reaches, grouped by their cell sizes: those of
-    // one size are asked together at each corner. (In the game's data all of a
-    // dimension have one size.)
-    let wanted: Vec<usize> = (0..interpolated.len())
-        .filter(|number| interpolated[*number].in_final_density)
-        .collect();
+    // The functions grouped by their cell sizes: those of one size are asked together
+    // at each corner. (In the game's data all that the final density reaches have one
+    // size.)
     let mut sizes: Vec<(i32, i32)> = Vec::new();
-    for number in &wanted {
+    for number in wanted {
         let size = (
             interpolated[*number].cell_size_xz,
             interpolated[*number].cell_size_y,
@@ -343,29 +409,6 @@ pub fn final_density<R: NoiseRouter>(
                         }
                     }
                 }
-            }
-        }
-    }
-
-    // What stands above the interpolation, block by block, a column at a time.
-    out.clear();
-    out.reserve(volume.len());
-    for z in 0..volume.size_z {
-        let block_z = volume.min_z + z as i32;
-        for x in 0..volume.size_x {
-            let block_x = volume.min_x + x as i32;
-            let column = volume.index(x, 0, z);
-            for y in 0..volume.size_y {
-                for number in &wanted {
-                    memory.give(*number, scratch.blocks[*number][column + y]);
-                }
-                out.push(router.sample(
-                    memory,
-                    RouterEntry::FinalDensity,
-                    block_x,
-                    volume.min_y + y as i32,
-                    block_z,
-                ));
             }
         }
     }

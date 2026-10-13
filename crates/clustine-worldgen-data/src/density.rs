@@ -24,6 +24,8 @@ use clustine_noise::{
     SimplexNoise, Xoroshiro,
 };
 
+use crate::material::MaterialRule;
+
 /// The entries of a noise router, in the order of the game's record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RouterEntry {
@@ -159,6 +161,21 @@ pub trait NoiseRouter: Send + Sync + Sized {
     /// (`minecraft:overworld/continents`), or `None` for one that the dimension's
     /// settings do not reach. The spawn target names its functions so.
     fn named(&self, memory: &mut Self::Memory, name: &str, x: i32, y: i32, z: i32) -> Option<f32>;
+
+    /// The material rule of the dimension's settings.
+    type Material: MaterialRule;
+
+    /// A density function that the dimension's material rule names, by its number
+    /// among [`MaterialRule::FUNCTIONS`], at a block position. Zero for a number the
+    /// rule does not have.
+    fn material_density(
+        &self,
+        memory: &mut Self::Memory,
+        number: usize,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> f32;
 }
 
 /// A function the data marks `interpolated`: its input is computed at the corners of
@@ -169,6 +186,10 @@ pub struct Interpolated {
     pub cell_size_y: i32,
     /// Whether the router's final density reaches it.
     pub in_final_density: bool,
+    /// Whether the router's `chunk_surface_level` reaches it.
+    pub in_chunk_surface_level: bool,
+    /// Whether a density function of the dimension's material rule reaches it.
+    pub in_material_rule: bool,
 }
 
 /// The parameters of a noise, from `worldgen/noise`.
@@ -269,7 +290,7 @@ pub fn spline(spline: &Spline, coordinate: &mut impl FnMut(u16) -> f32) -> f32 {
 }
 
 /// The most functions marked `interpolated` a router may have.
-pub const MAX_INTERPOLATED: usize = 8;
+pub const MAX_INTERPOLATED: usize = 16;
 
 /// The last value of each function the data marks `cache`, with the position it was
 /// computed at; and, where a caller interpolates by itself, the values it gives for
@@ -278,7 +299,7 @@ pub const MAX_INTERPOLATED: usize = 8;
 pub struct Memory<const N: usize> {
     slots: [Slot; N],
     /// Bit `n` is set where `given[n]` stands for the interpolated function `n`.
-    given_which: u8,
+    given_which: u16,
     given: [f32; MAX_INTERPOLATED],
     /// Whether what is asked is part of a volume the game fills: see [`noise3`].
     in_volume: bool,
@@ -290,6 +311,10 @@ struct Slot {
     /// Whether the value was computed as part of a volume: it is given back only to
     /// one who asks the same way.
     in_volume: bool,
+    /// For a function that holds an interpolated one: which interpolated functions
+    /// had a value given when this was computed. It is given back only while the
+    /// same ones have.
+    given: u16,
     position: [i32; 3],
     value: f32,
 }
@@ -300,6 +325,7 @@ impl<const N: usize> Default for Memory<N> {
             slots: [Slot {
                 filled: false,
                 in_volume: false,
+                given: 0,
                 position: [0; 3],
                 value: 0.0,
             }; N],
@@ -325,6 +351,37 @@ impl<const N: usize> Memory<N> {
         self.slots[slot] = Slot {
             filled: true,
             in_volume: self.in_volume,
+            given: 0,
+            position: [x, y, z],
+            value,
+        };
+    }
+
+    /// [`Self::recall`] for a function that holds an interpolated one: its value
+    /// depends on whether the caller interpolates by itself, so it is given back only
+    /// to one who asks with values given for the same interpolated functions.
+    ///
+    /// **It does not know the values that were given.** A caller that gives other
+    /// values for a position than it gave before (a volume of another shape, whose
+    /// cells are walked from another block) takes a fresh memory.
+    #[inline]
+    #[must_use]
+    pub fn recall_interpolated(&self, slot: usize, x: i32, y: i32, z: i32) -> Option<f32> {
+        let slot = &self.slots[slot];
+        (slot.filled
+            && slot.in_volume == self.in_volume
+            && slot.given == self.given_which
+            && slot.position == [x, y, z])
+        .then_some(slot.value)
+    }
+
+    /// [`Self::remember`] for a function that holds an interpolated one.
+    #[inline]
+    pub fn remember_interpolated(&mut self, slot: usize, x: i32, y: i32, z: i32, value: f32) {
+        self.slots[slot] = Slot {
+            filled: true,
+            in_volume: self.in_volume,
+            given: self.given_which,
             position: [x, y, z],
             value,
         };
@@ -344,9 +401,10 @@ pub trait Give {
     /// Gives the value of the interpolated function `number`: until it is taken back,
     /// a function asked through this memory has this value in place of the
     /// interpolation at the position it is asked at. The caller gives the value that
-    /// belongs to the position it asks next. A function marked `cache` never holds an
-    /// interpolated one (the emitter refuses that), so nothing remembered is made
-    /// wrong by it.
+    /// belongs to the position it asks next. A function marked `cache` that holds an
+    /// interpolated one (the ore veins have such) remembers which functions had a
+    /// value given, and is not given back when others have
+    /// ([`Memory::recall_interpolated`]).
     fn give(&mut self, number: usize, value: f32);
 
     /// Takes back every value that was given.
@@ -977,6 +1035,21 @@ mod tests {
         assert_eq!(memory.recall(0, 1, 2, 3), None);
         assert_eq!(memory.recall(0, 1, 2, 4), Some(0.75));
         let _ = Memory::<0>::default();
+    }
+
+    #[test]
+    fn what_holds_an_interpolated_function_is_remembered_for_what_was_given() {
+        let mut memory = Memory::<1>::default();
+        memory.remember_interpolated(0, 1, 2, 3, 0.5);
+        assert_eq!(memory.recall_interpolated(0, 1, 2, 3), Some(0.5));
+        // With a value given, what was computed without one is not the answer.
+        memory.give(2, 9.0);
+        assert_eq!(memory.recall_interpolated(0, 1, 2, 3), None);
+        memory.remember_interpolated(0, 1, 2, 3, 0.75);
+        assert_eq!(memory.recall_interpolated(0, 1, 2, 3), Some(0.75));
+        assert_eq!(memory.recall_interpolated(0, 1, 2, 4), None);
+        memory.give_nothing();
+        assert_eq!(memory.recall_interpolated(0, 1, 2, 3), None);
     }
 
     #[test]

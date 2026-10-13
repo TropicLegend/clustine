@@ -31,8 +31,8 @@
 //! makes its heightmaps from the blocks, so none are given here.
 //!
 //! **Ore veins are not part of this step in 26.3.** They are a material rule
-//! (`OreVeinRule`) and come with the surface (step T5 of
-//! `docs/groundwork/terrain-plan.md`). No structure bends the ground here either: the
+//! (`OreVeinRule`) and come with the surface ([`crate::surface`],
+//! [`Terrain::surface`]). No structure bends the ground here either: the
 //! beardifier adds nothing until structures have starts (T7b), and old chunks are not
 //! blended in.
 //!
@@ -50,7 +50,9 @@ use clustine_worldgen_data::{
 
 use crate::aquifer::{self, Aquifer};
 use crate::biome::Dimension;
+use crate::biome::zoom::Zoom;
 use crate::noise_chunk::{self, Scratch, Volume};
+use crate::surface::{self, Biomes, Watched};
 
 /// The two heightmaps the game keeps while it generates, by what counts as ground.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,8 +135,8 @@ impl Filled {
 }
 
 /// The noise chunk of one volume: the router, what it remembers, the volume's final
-/// density and its aquifer. The fill reads the last two; the surface rules and the
-/// ore veins of the next step are computed over the same.
+/// density and its aquifer. The fill reads the last two. (The surface step reads
+/// neither: what it asks of the router it asks anew.)
 pub struct NoiseChunk<'a, R: NoiseRouter> {
     pub router: &'a R,
     pub volume: Volume,
@@ -178,14 +180,17 @@ struct Shape<R: NoiseRouter> {
     router: R,
     /// The factory of the aquifers' positions.
     positions: RandomSplitter,
+    /// What the surface is made with.
+    surface: surface::System<R>,
 }
 
 impl<R: NoiseRouter> Shape<R> {
-    fn new(seed: i64) -> Self {
+    fn new(seed: i64, dimension: Dimension) -> Self {
         let router = R::new(seed);
-        let dimension = density::splitter(seed, router.settings().legacy_random_source);
+        let random = density::splitter(seed, router.settings().legacy_random_source);
         Self {
-            positions: aquifer::positions(&dimension),
+            positions: aquifer::positions(&random),
+            surface: surface::System::new(seed, dimension, &router),
             router,
         }
     }
@@ -316,9 +321,9 @@ impl Terrain {
     #[must_use]
     pub fn new(seed: i64, dimension: Dimension) -> Self {
         let kind = match dimension {
-            Dimension::Overworld => Kind::Overworld(Box::new(Shape::new(seed))),
-            Dimension::Nether => Kind::Nether(Box::new(Shape::new(seed))),
-            Dimension::End => Kind::End(Box::new(Shape::new(seed))),
+            Dimension::Overworld => Kind::Overworld(Box::new(Shape::new(seed, dimension))),
+            Dimension::Nether => Kind::Nether(Box::new(Shape::new(seed, dimension))),
+            Dimension::End => Kind::End(Box::new(Shape::new(seed, dimension))),
         };
         Self { dimension, kind }
     }
@@ -388,6 +393,146 @@ impl Terrain {
     #[must_use]
     pub fn final_density(&self, volume: &Volume, scratch: &mut Scratch) -> Vec<f32> {
         shape!(self, shape => shape.final_density(volume, scratch))
+    }
+
+    /// The chunk after the game's "build surface" step: [`Self::fill`], and then the
+    /// ground made what the dimension's material rule says, with the ore veins, the
+    /// pillars of the eroded badlands and the icebergs ([`crate::surface`]). The
+    /// marks are the fill's and those of the fluids the rule put. `biomes` are the
+    /// biomes around the chunk.
+    #[must_use]
+    pub fn surface(&self, chunk_x: i32, chunk_z: i32, biomes: &Biomes) -> Filled {
+        let mut scratch = Scratch::default();
+        let mut filled = self.fill_with_density(chunk_x, chunk_z, &mut scratch).0;
+        self.build_surface(&mut filled, chunk_x, chunk_z, biomes, &mut scratch);
+        filled
+    }
+
+    /// The game's "build surface" step alone, on a chunk that [`Self::fill`] made.
+    /// Nothing of the fill but its blocks and marks is read: what the step asks of
+    /// the noises it asks anew. `scratch` is kept between calls to save allocations.
+    pub fn build_surface(
+        &self,
+        filled: &mut Filled,
+        chunk_x: i32,
+        chunk_z: i32,
+        biomes: &Biomes,
+        scratch: &mut Scratch,
+    ) {
+        shape!(self, shape => {
+            shape.surface.build(&shape.router, filled, (chunk_x, chunk_z), biomes, scratch, None);
+        });
+    }
+
+    /// [`Self::build_surface`], and what the rule was asked and answered at the block
+    /// `watch` (its x, y and z): for looking into a difference. `None` where the rule
+    /// was not asked there, which is where the block was air or a fluid.
+    pub fn build_surface_watching(
+        &self,
+        filled: &mut Filled,
+        chunk_x: i32,
+        chunk_z: i32,
+        biomes: &Biomes,
+        watch: [i32; 3],
+    ) -> Option<Watched> {
+        let mut scratch = Scratch::default();
+        shape!(self, shape => shape.surface.build(
+            &shape.router,
+            filled,
+            (chunk_x, chunk_z),
+            biomes,
+            &mut scratch,
+            Some(watch),
+        ))
+    }
+
+    /// The game's `MaterialSystem.topMaterial`: what the material rule makes of the
+    /// block at `x`, `y`, `z` of the chunk `filled` if it is taken as the highest
+    /// block of ground of its column, with a fluid right above it (`under_fluid`) or
+    /// none. The carvers ask it for what to put under what they carved.
+    ///
+    /// **Compared with nothing yet** (see [`crate::surface`]).
+    #[must_use]
+    pub fn top_material(
+        &self,
+        filled: &mut Filled,
+        biomes: &Biomes,
+        x: i32,
+        y: i32,
+        z: i32,
+        under_fluid: bool,
+    ) -> Option<BlockState> {
+        let mut scratch = Scratch::default();
+        shape!(self, shape => shape.surface.top_material(
+            &shape.router,
+            filled,
+            biomes,
+            &mut scratch,
+            x,
+            y,
+            z,
+            under_fluid,
+        ))
+    }
+
+    /// Which cell of biomes a block of this world takes its biome from.
+    #[must_use]
+    pub fn zoom(&self) -> Zoom {
+        shape!(self, shape => shape.surface.zoom())
+    }
+
+    /// The bands of terracotta of the world's badlands, from the lowest; they repeat.
+    #[must_use]
+    pub fn bands(&self) -> Vec<BlockState> {
+        shape!(self, shape => shape.surface.bands().to_vec())
+    }
+
+    /// The band of terracotta at a block.
+    #[must_use]
+    pub fn band(&self, x: i32, y: i32, z: i32) -> BlockState {
+        shape!(self, shape => shape.surface.band(x, y, z))
+    }
+
+    /// How many blocks deep the surface is at a column, and the second noise of its
+    /// depth.
+    #[must_use]
+    pub fn surface_depth(&self, x: i32, z: i32) -> (i32, f64) {
+        shape!(self, shape => (
+            shape.surface.surface_depth(x, z),
+            shape.surface.surface_secondary(x, z),
+        ))
+    }
+
+    /// The router's `chunk_surface_level` at the 256 columns of a chunk, in the order
+    /// of `z << 4 | x`, as the surface rules sample it: a volume one block high.
+    #[must_use]
+    pub fn surface_level(&self, chunk_x: i32, chunk_z: i32) -> Vec<f32> {
+        let columns = self.volume(chunk_x, chunk_z);
+        shape!(self, shape => {
+            shape.surface.surface_level(&shape.router, &columns, &mut Scratch::default())
+        })
+    }
+
+    /// Each density function the dimension's material rule names (the ore veins'),
+    /// at every block of `volume`, in the volume's order: its name, its values as the
+    /// game samples the volume at once, and its values at the blocks alone.
+    #[must_use]
+    pub fn material_densities(&self, volume: &Volume) -> Vec<(&'static str, Vec<f32>, Vec<f32>)> {
+        shape!(self, shape => {
+            shape.surface.densities(&shape.router, volume, &mut Scratch::default())
+        })
+    }
+
+    /// Whether it is cold enough to snow at a block of a biome.
+    #[must_use]
+    pub fn cold_enough_to_snow(
+        &self,
+        biome: clustine_world::Biome,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> bool {
+        shape!(self, shape => shape.surface.cold_enough_to_snow(biome, x, y, z))
     }
 
     /// The numbers of the interpolated functions the final density reaches, each with

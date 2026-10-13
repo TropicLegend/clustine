@@ -13,6 +13,7 @@ mod emit;
 mod extract;
 mod jar;
 mod json;
+mod material;
 mod model;
 mod packed;
 mod reference;
@@ -323,6 +324,9 @@ mod tests {
         let error = emit::check_code_budget(&outputs, router - 1).unwrap_err();
         assert!(format!("{error}").contains("emitted code"));
         assert!(emit::is_emitted_code(ROUTER));
+        assert!(emit::is_emitted_code(
+            "crates/clustine-worldgen-data/src/generated/overworld/material_rule.rs"
+        ));
         for other in [
             RUST,
             REFERENCE,

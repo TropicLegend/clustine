@@ -1,12 +1,14 @@
 //! Minecraft's world-generation data, turned into Rust by `cargo datagen`.
 //!
-//! What is here so far is the part that shapes the terrain: for the overworld, the
-//! Nether and the End, the noise router of the dimension's noise settings with every
+//! What is here so far is the part that shapes the terrain and its surface: for the
+//! overworld, the Nether and the End, the noise router of the dimension's noise settings with every
 //! density function it reaches, as emitted Rust ([`OverworldRouter`], [`NetherRouter`],
 //! [`EndRouter`]); the splines of those functions, the parameters of every noise
 //! ([`noises`]) and the rest of the three noise settings ([`noise_settings`]) as
-//! statics. Material rules, biomes, features and structures come with later steps of
-//! `docs/groundwork/terrain-plan.md`.
+//! statics; and what makes the surface: each dimension's material rule as an emitted
+//! function ([`material`], `OverworldRouter`'s `Material` and the like) and what the
+//! rules read of a biome ([`biomes`]). Features and structures come with later steps
+//! of `docs/groundwork/terrain-plan.md`.
 //!
 //! A router is made from a world's seed and gives each of its functions at a block
 //! position, through the noises of `clustine-noise`:
@@ -31,6 +33,7 @@
 //! I/O, and no mathematics of the platform.
 
 pub mod density;
+pub mod material;
 
 // The generated code is laid out by the emitter and never formatted, so that its bytes
 // do not depend on a toolchain (ADR-0019, section 1).
@@ -45,4 +48,5 @@ pub use density::{
 pub use generated::end::router::EndRouter;
 pub use generated::nether::router::NetherRouter;
 pub use generated::overworld::router::OverworldRouter;
-pub use generated::{noise_settings, noises};
+pub use generated::{biomes, noise_settings, noises};
+pub use material::{Anchor, BiomeClimate, Context, MaterialRule, Vein};
