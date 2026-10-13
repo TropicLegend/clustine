@@ -1183,10 +1183,22 @@ before, and the surface then follows the biome: 923 blocks in 15 of the 3,000 ov
 chunks differ from the game for that reason alone, and no other. The surface adds
 1.9 ms a chunk in the overworld.
 
-So for a seed the land has the game's shape and the game's skin. Still to come before
-it is seen: caves and ravines (T6), structures (T7), everything that grows and the ores
-placed as features (phase F), and the service that makes chunks on demand and stores
-what it handed out. When terrain is switched on the edge also has to send the client
+**Caves and ravines are built** (T6). In 26.3 a carver changes no block: it names
+blocks in a mask, and the generator then makes of each what the chunk's aquifer gives
+there, air or water or lava, and puts grass where dirt came to lie open. Judged like
+the two steps before, by the game's own generator doing fill, surface and carving and
+nothing after: 4,780 chunks on three seeds, chosen for canyons, caves under oceans
+and through aquifers, every one of 353,239,040 blocks equal, every mask to the bit,
+every position marked for a fluid to flow. What the game puts on top of a carved
+floor was judged by itself as well: 7,342,080 answers, all equal. Carving adds 1.3 ms
+a chunk in the overworld. Of SteelMC's 2,500 overworld chunks 2,444 now have its hash
+and of the Nether's 2,230; for the others our chunks equal the game's own without
+structures, so what is missing there is what structures do to the ground.
+
+So for a seed the land has the game's shape, the game's skin and the game's caves: a
+chunk takes about 9 ms on one thread. Still to come before it is seen: structures
+(T7), everything that grows and the ores placed as features (phase F), and the service
+that makes chunks on demand and stores what it handed out. When terrain is switched on the edge also has to send the client
 the hash of the seed, which is 0 today: the client blurs biome borders with it.
 
 **Pauses on network storage** (22 ms a synced write; first measured in
