@@ -7,7 +7,9 @@ use clustine_protocol::chunk::{
 use clustine_protocol::packets::play::{
     BlockEntity, Heightmap, LevelChunkWithLight, LightData, heightmap,
 };
-use clustine_world::{Chunk, ChunkPos, LIGHT_ARRAY_LENGTH, Section, SectionLight, sky_light};
+use clustine_world::{
+    Chunk, ChunkPos, LIGHT_ARRAY_LENGTH, Light, Section, SectionLight, sky_light,
+};
 
 /// The palette layout for block states.
 pub(crate) const BLOCK_PALETTE: PaletteKind = PaletteKind::blocks(BLOCK_STATE_COUNT as usize);
@@ -20,9 +22,15 @@ pub(crate) fn biome_palette() -> PaletteKind {
 
 /// The packet that sends `chunk`, located at `position`, to a client. It is made from
 /// what the chunk carries (`docs/adr/0022-what-a-chunk-carries.md`, section 5): its
-/// heightmaps, its sections' counts, blocks and biomes, its block entities and its
-/// light.
-pub(crate) fn chunk_packet(position: ChunkPos, chunk: &Chunk) -> LevelChunkWithLight {
+/// heightmaps, its sections' counts, blocks and biomes and its block entities; and
+/// from `light`, which an edge keeps beside the chunk
+/// (`docs/adr/0023-light-at-the-edge.md`, section 1). The light the chunk itself
+/// carries is not looked at.
+pub(crate) fn chunk_packet(
+    position: ChunkPos,
+    chunk: &Chunk,
+    light: Option<&Light>,
+) -> LevelChunkWithLight {
     let heights = chunk.heights();
     let bits = bits_for(chunk.height() + 1);
     let heightmaps = [
@@ -59,7 +67,7 @@ pub(crate) fn chunk_packet(position: ChunkPos, chunk: &Chunk) -> LevelChunkWithL
         heightmaps: heightmaps.into(),
         sections: encode_sections(&sections, BLOCK_PALETTE, biome_palette()),
         block_entities: block_entities.collect(),
-        light: chunk_light(chunk),
+        light: chunk_light(chunk, light),
     }
 }
 
@@ -103,12 +111,10 @@ impl Named {
     };
 }
 
-/// The light of `chunk` for its packet: the light the chunk carries, where it has any,
-/// and otherwise the sky light reckoned by columns, with block light dark wherever
-/// sky light is said. What an edge does once a change has taken a chunk's light is
-/// the record of light at the edge's.
-fn chunk_light(chunk: &Chunk) -> LightData {
-    match chunk.light() {
+/// The light of `chunk` for its packet: `light`, where there is any, and otherwise the
+/// sky light reckoned by columns, with block light dark wherever sky light is said.
+fn chunk_light(chunk: &Chunk, light: Option<&Light>) -> LightData {
+    match light {
         Some(light) => light_data(&light.sky, &light.block, Named::ALL),
         None => {
             let sky = sky_light(chunk);
@@ -211,7 +217,7 @@ mod tests {
     #[test]
     fn flat_chunk_packet_has_the_expected_shape() {
         let chunk = flat_chunk();
-        let packet = chunk_packet(ChunkPos::new(-3, 8), &chunk);
+        let packet = chunk_packet(ChunkPos::new(-3, 8), &chunk, chunk.light());
         assert_eq!((packet.chunk_x, packet.chunk_z), (-3, 8));
 
         // Nine bits per height, seven heights per word.
@@ -243,7 +249,7 @@ mod tests {
 
     #[test]
     fn chunk_packet_survives_the_codec() {
-        let packet = chunk_packet(ChunkPos::new(1, 2), &flat_chunk());
+        let packet = chunk_packet(ChunkPos::new(1, 2), &flat_chunk(), flat_chunk().light());
         let bytes = packets::encode(&packet);
         assert_eq!(
             ClientboundPlay::decode(&bytes),
@@ -287,7 +293,7 @@ mod tests {
         chunk.set(1, -50, 0, blocks::WATER);
         chunk.set(2, -40, 0, blocks::OAK_LEAVES);
         chunk.set(3, -30, 0, blocks::SHORT_GRASS);
-        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk);
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light());
         let heights = |kind| {
             let map = packet
                 .heightmaps
@@ -311,7 +317,7 @@ mod tests {
         let at = clustine_world::InChunk::new(5, -60, 9);
         chunk.set_block_entity_data(at, vec![1, 2, 3]).unwrap();
         let kind = chunk.block_entities()[&at].kind;
-        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk);
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light());
         let expected = BlockEntity {
             packed_xz: 5 << 4 | 9,
             y: -60,
@@ -333,7 +339,7 @@ mod tests {
         let cells = std::array::from_fn(|cell| clustine_world::Biome((cell % 5) as u16));
         sections[3].set_biomes(Box::new(cells));
         let chunk = Chunk::from_sections(-64, sections);
-        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk);
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light());
         let decoded =
             decode_sections(&packet.sections, 24, BLOCK_PALETTE, biome_palette()).unwrap();
         for cell in 0..64 {
@@ -352,7 +358,7 @@ mod tests {
             .cloned()
             .expect("the flat generator lights its chunks");
         assert_eq!(carried.sky[2], SectionLight::Full);
-        let with_light = chunk_packet(ChunkPos::new(0, 0), &chunk).light;
+        let with_light = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light()).light;
         assert_eq!(with_light.sky_mask, [0b110]);
         assert_eq!(with_light.empty_sky_mask, [0b001]);
         assert_eq!(with_light.empty_block_mask, [0b111]);
@@ -362,7 +368,7 @@ mod tests {
         // A torch gives light, which the chunk's own light then no longer has.
         chunk.set(3, -60, 3, blocks::TORCH);
         assert!(chunk.light().is_none());
-        let reckoned = chunk_packet(ChunkPos::new(0, 0), &chunk).light;
+        let reckoned = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light()).light;
         assert_eq!(reckoned.sky_mask, [0b110]);
         assert_eq!(reckoned.empty_block_mask, [0b111]);
 
@@ -373,7 +379,7 @@ mod tests {
         levels[100] = 0x0e;
         light.block[1] = SectionLight::Levels(levels.clone());
         lit.set_light(light);
-        let packet = chunk_packet(ChunkPos::new(0, 0), &lit).light;
+        let packet = chunk_packet(ChunkPos::new(0, 0), &lit, lit.light()).light;
         assert_eq!(packet.block_mask, [0b010]);
         assert_eq!(packet.empty_block_mask, [0b101]);
         assert_eq!(packet.block, [levels.to_vec()]);
@@ -539,12 +545,12 @@ mod tests {
     fn a_chunks_packet_has_the_light_and_the_bytes_it_had() {
         for (what, chunk) in chunks_of_every_light() {
             let position = ChunkPos::new(-7, 12);
-            let packet = chunk_packet(position, &chunk);
+            let packet = chunk_packet(position, &chunk, chunk.light());
             let before = light_data_as_before(&chunk);
             assert_eq!(packet.light, before, "{what}");
             let as_before = LevelChunkWithLight {
                 light: before,
-                ..chunk_packet(position, &chunk)
+                ..chunk_packet(position, &chunk, chunk.light())
             };
             assert_eq!(
                 packets::encode(&packet),
@@ -682,7 +688,11 @@ mod tests {
             .unwrap();
 
         for (key, theirs) in &bot.chunks {
-            let ours = chunk_packet(ChunkPos::new(key.0, key.1), &flat_chunk());
+            let ours = chunk_packet(
+                ChunkPos::new(key.0, key.1),
+                &flat_chunk(),
+                flat_chunk().light(),
+            );
 
             let heights = |packet: &LevelChunkWithLight, kind| {
                 let heightmap = packet.heightmaps.iter().find(|map| map.kind == kind)?;

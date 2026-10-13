@@ -37,7 +37,7 @@ use clustine_sim::api::{
     Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerEvent,
     PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, PlayerId};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, Light, PlayerId, light_tells_apart};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -133,8 +133,16 @@ pub(crate) struct FanoutConfig {
 struct ReplicaChunk {
     /// How many players have the chunk in view.
     viewers: u32,
-    /// The chunk, once the worker has sent it, kept up to date with later changes.
-    chunk: Option<Chunk>,
+    /// The chunk, once the worker has sent it, kept up to date with later changes. It
+    /// is without light: the edge takes the light out when the chunk comes and keeps
+    /// it beside (`docs/adr/0023-light-at-the-edge.md`, section 1). Shared, so that
+    /// whoever lights a chunk can be handed it and its neighbours without a copy; a
+    /// block change copies the chunk only while someone else holds it.
+    chunk: Option<Arc<Chunk>>,
+    /// The light a client is sent with the chunk: what the chunk came with, until a
+    /// change that light sees. Without it a client is sent the sky light reckoned by
+    /// columns.
+    light: Option<Arc<Light>>,
     /// The chunk's packet. It is encoded when first needed and discarded when the chunk
     /// changes, so that many players can be sent the same bytes.
     packet: Option<Bytes>,
@@ -149,7 +157,11 @@ impl ReplicaChunk {
     fn packet(&mut self, position: ChunkPos) -> Option<Bytes> {
         if self.packet.is_none() {
             let chunk = self.chunk.as_ref()?;
-            self.packet = Some(encoded(&chunk_packet(position, chunk)));
+            self.packet = Some(encoded(&chunk_packet(
+                position,
+                chunk,
+                self.light.as_deref(),
+            )));
         }
         self.packet.clone()
     }
@@ -2358,6 +2370,7 @@ impl Fanout {
                 .or_insert_with(|| ReplicaChunk {
                     viewers: 0,
                     chunk: None,
+                    light: None,
                     packet: None,
                     served_by: None,
                 });
@@ -2421,19 +2434,13 @@ impl Fanout {
             .as_ref()
             .is_some_and(|known| known.shows_the_same(&chunk));
         if same {
-            // Its viewers have it. The packet kept for those who come to view it later
-            // is made from the chunk's light too, which is not among what is shown: it
-            // is made anew if the light differs.
-            let lit_alike = entry
-                .chunk
-                .as_ref()
-                .is_some_and(|known| known.light() == chunk.light());
-            if !lit_alike {
-                entry.packet = None;
-            }
-            entry.chunk = Some(chunk);
+            // Its viewers have it, and light follows from blocks, which are the same:
+            // the entry keeps the chunk and the light it has, whichever region the
+            // snapshot is from.
         } else {
-            entry.chunk = Some(chunk);
+            let mut chunk = chunk;
+            entry.light = chunk.take_light().map(Arc::new);
+            entry.chunk = Some(Arc::new(chunk));
             entry.packet = None;
             let viewers: Vec<_> = self
                 .players
@@ -2487,8 +2494,17 @@ impl Fanout {
             return;
         };
         let (x, z) = position.in_chunk();
-        chunk.set(x, position.y, z, state);
-        entry.packet = None;
+        // A change that puts the state that is there changes nothing: two regions can
+        // say the same change. The client is told all the same, as ever.
+        let before = chunk.get(x, position.y, z);
+        if before.is_some_and(|before| before != state) {
+            Arc::make_mut(chunk).set(x, position.y, z, state);
+            entry.packet = None;
+            // The light was made for other blocks, if light can tell the two apart.
+            if before.is_some_and(|before| light_tells_apart(before, state)) {
+                entry.light = None;
+            }
+        }
 
         let packet = encoded(&BlockUpdate {
             position: Position {
