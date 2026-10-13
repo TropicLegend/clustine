@@ -7,6 +7,7 @@
 //! `clustine-data`, `clustine-protocol` and `clustine-worldgen-data`. See `docs/adr/0004-game-data.md` and
 //! `docs/adr/0019-data-made-from-mojangs-jar.md`.
 
+mod carver;
 mod density;
 mod dump;
 mod emit;

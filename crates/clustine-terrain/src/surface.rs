@@ -72,15 +72,21 @@
 //! seeds are equal. The head of that test has the rest. Of SteelMC's hashes of chunks
 //! at the game's `terrain` status, which are of chunks after the carvers too, 210 of
 //! the overworld's 2,500 and 393 of the Nether's are this step's
-//! (`tests/steelmc_terrain.rs`). [`Terrain::top_material`], which
-//! the carvers will ask, is written from the jar and **was compared with nothing**:
-//! nothing calls it before the carvers do (step T6).
+//! (`tests/steelmc_terrain.rs`).
+//!
+//! **The carvers' half that is here.** A carver only names blocks ([`crate::carver`]);
+//! what becomes of them is decided here ([`System::apply_carving_mask`]), because
+//! dirt left under carved grass is given the top of the ground by this module's
+//! rule ([`Terrain::top_material`]). Both were compared with the game's in
+//! `tests/game_carvers.rs`: the carved chunks block by block, and the top material
+//! also by itself at 7,342,080 blocks, on slopes, under the sea and below the
+//! surface in every biome.
 //!
 //! [`Terrain::top_material`]: crate::fill::Terrain::top_material
 
 use std::marker::PhantomData;
 
-use clustine_data::{BlockState, DIMENSION_TYPES, blocks, synced_registry};
+use clustine_data::{BLOCKS, BlockState, DIMENSION_TYPES, TAGS, blocks, synced_registry};
 use clustine_noise::math::map;
 use clustine_noise::{
     LegacyRandom, NameHash, NormalNoise, PositionalRandom, Random, RandomSplitter, SimplexNoise,
@@ -91,8 +97,10 @@ use clustine_worldgen_data::{
     NoiseSettings, RouterEntry, Vein, biomes, density, noises,
 };
 
+use crate::aquifer::Aquifer;
 use crate::biome::zoom::Zoom;
 use crate::biome::{BiomeSource, Dimension};
+use crate::carver::Mask;
 use crate::fill::Filled;
 use crate::noise_chunk::{self, Scratch, Volume};
 
@@ -214,6 +222,33 @@ impl Biomes {
         );
         let up = (y - self.min_y).clamp(0, self.cells_high as i32 - 1) as usize;
         self.cells[(across_x * CELLS_ACROSS + across_z) * self.cells_high + up]
+    }
+
+    /// Makes the cell `x`, `y`, `z` another biome, for whoever knows a cell better
+    /// than the columns that were given: a test that was told what the game
+    /// answered at a tie. `false`, and nothing changed, where the cell is not of
+    /// the chunk or the ring around it or not within the dimension's heights.
+    pub fn set_cell(&mut self, x: i32, y: i32, z: i32, biome: Biome) -> bool {
+        let (across_x, across_z, up) = (x - self.min_x, z - self.min_z, y - self.min_y);
+        let across = 0..CELLS_ACROSS as i32;
+        if !across.contains(&across_x)
+            || !across.contains(&across_z)
+            || !(0..self.cells_high as i32).contains(&up)
+        {
+            return false;
+        }
+        let index =
+            (across_x as usize * CELLS_ACROSS + across_z as usize) * self.cells_high + up as usize;
+        self.cells[index] = biome;
+        let word = usize::from(biome.0) / 64;
+        if self.possible.len() <= word {
+            self.possible.resize(word + 1, 0);
+        }
+        // A biome that no cell has any more stays possible, which costs a rule a
+        // question and changes no answer.
+        self.possible[word] |= 1 << (biome.0 % 64);
+        self.only = self.only.filter(|only| *only == biome);
+        true
     }
 
     /// The biome at a block of the chunk, as the game's `BiomeManager.getBiome` gives
@@ -348,7 +383,28 @@ pub struct System<R: NoiseRouter> {
     /// `chunk_surface_level` reaches, and of those the rule's density functions reach.
     in_surface_level: Vec<usize>,
     in_rule: Vec<usize>,
+    /// For each block by its number: whether it is `#minecraft:uncarvable`.
+    uncarvable: Vec<bool>,
     router: PhantomData<fn() -> R>,
+}
+
+/// For each block by its number: whether the carvers leave it
+/// (`#minecraft:uncarvable`, which is bedrock alone in the game's data).
+fn uncarvable() -> Vec<bool> {
+    let tag = TAGS
+        .iter()
+        .find(|tags| tags.registry == "minecraft:block")
+        .and_then(|tags| {
+            tags.tags
+                .iter()
+                .find(|tag| tag.name == "minecraft:uncarvable")
+        })
+        .expect("the game's data has the tag of what carvers leave");
+    let mut uncarvable = vec![false; BLOCKS.len()];
+    for block in tag.entries {
+        uncarvable[*block as usize] = true;
+    }
+    uncarvable
 }
 
 /// The bands of terracotta of a world (`MaterialSystem.generateBands`).
@@ -476,6 +532,7 @@ impl<R: NoiseRouter> System<R> {
             temperature: Temperature::new(),
             in_surface_level: numbers(|function| function.in_chunk_surface_level),
             in_rule: numbers(|function| function.in_material_rule),
+            uncarvable: uncarvable(),
             random,
             router: PhantomData,
         }
@@ -644,7 +701,7 @@ impl<R: NoiseRouter> System<R> {
     /// in its column, with a fluid right above it or none. The carvers ask it for
     /// what to put under what they carved.
     ///
-    /// **Compared with nothing yet**: nothing calls it before the carvers do.
+    /// Compared with the game's through the carvers ([`Self::apply_carving_mask`]).
     #[allow(clippy::too_many_arguments)]
     pub fn top_material(
         &self,
@@ -658,22 +715,108 @@ impl<R: NoiseRouter> System<R> {
         under_fluid: bool,
     ) -> Option<BlockState> {
         let heights = heights(filled);
-        let expected = Volume {
-            min_x: x,
-            min_y: y,
-            min_z: z,
-            size_x: 1,
-            size_y: 1,
-            size_z: 1,
-        };
-        let mut builder = Builder::new(self, router, filled, heights, expected, biomes, scratch);
-        let (in_x, in_z) = ((x & 15) as usize, (z & 15) as usize);
-        let (slope_x, slope_z) = builder.slope(in_x, in_z);
-        builder.update_xz(x, z, slope_x, slope_z);
-        builder.update_y(1, 1, if under_fluid { y + 1 } else { i32::MIN }, y);
-        R::Material::apply(&mut builder).map(BlockState)
+        let mut builder = Builder::new(self, router, filled, heights, ONE_BLOCK, biomes, scratch);
+        builder.top_material(x, y, z, under_fluid)
+    }
+
+    /// [`Self::top_material`] at several blocks of one chunk, each its x, y and z and
+    /// whether a fluid is right above it: the answers in that order. The chunk's
+    /// heights are read once for all.
+    pub fn top_materials(
+        &self,
+        router: &R,
+        filled: &mut Filled,
+        biomes: &Biomes,
+        scratch: &mut Scratch,
+        asked: &[(i32, i32, i32, bool)],
+    ) -> Vec<Option<BlockState>> {
+        let heights = heights(filled);
+        let mut builder = Builder::new(self, router, filled, heights, ONE_BLOCK, biomes, scratch);
+        asked
+            .iter()
+            .map(|(x, y, z, under_fluid)| builder.top_material(*x, *y, *z, *under_fluid))
+            .collect()
+    }
+
+    /// The second half of the game's carving (`applyCarvingMask`): makes of each
+    /// block of the chunk `filled` that `mask` names what the chunk's aquifer says is
+    /// there when nothing is in the way, which is air, water or lava, or leaves it
+    /// where the aquifer says ground, and leaves what is `#minecraft:uncarvable`.
+    /// Where grass or mycelium was carved away and dirt is left below what was
+    /// carved, the dirt becomes what the material rule makes of the top of the
+    /// ground there. A fluid the aquifer wants looked at again is marked, and a
+    /// fluid the rule gives.
+    ///
+    /// The blocks are gone through in the game's order ([`Mask::columns`], each
+    /// from its top down), because the rule reads the heights of the columns
+    /// beside a block as they are at that moment. `aquifer` is the aquifer of the
+    /// chunk's volume; `biomes` are those around the chunk. Gives the number of
+    /// blocks the rule was asked for.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_carving_mask(
+        &self,
+        router: &R,
+        aquifer: &mut Aquifer<'_, R>,
+        filled: &mut Filled,
+        (chunk_x, chunk_z): (i32, i32),
+        mask: &Mask,
+        biomes: &Biomes,
+        scratch: &mut Scratch,
+    ) -> usize {
+        if mask.is_empty() {
+            return 0;
+        }
+        let heights = heights(filled);
+        let mut builder = Builder::new(self, router, filled, heights, ONE_BLOCK, biomes, scratch);
+        let (grass, mycelium, dirt) = (
+            blocks::GRASS_BLOCK.block_id(),
+            blocks::MYCELIUM.block_id(),
+            blocks::DIRT.block_id(),
+        );
+        let mut asked = 0;
+        for (x, z, lowest, highest) in mask.columns() {
+            let (block_x, block_z) = ((chunk_x << 4) + x as i32, (chunk_z << 4) + z as i32);
+            // Whether grass was met in this run of the column, carved or not.
+            let mut grass_above = false;
+            for y in (lowest..=highest).rev() {
+                let state = builder.block(x, y, z);
+                let block = state.block_id();
+                if block.is_some_and(|block| self.uncarvable[block]) {
+                    continue;
+                }
+                grass_above |= block == grass || block == mycelium;
+                let Some(carved) = aquifer.compute_substance(block_x, y, block_z, 0.0) else {
+                    continue;
+                };
+                builder.put(x, y, z, carved);
+                if aquifer.should_schedule_fluid_update() && carved.has_fluid() {
+                    builder.filled.marks.push(InChunk::new(x, y, z));
+                }
+                if grass_above && builder.block(x, y - 1, z).block_id() == dirt {
+                    asked += 1;
+                    let top = builder.top_material(block_x, y - 1, block_z, carved.has_fluid());
+                    if let Some(top) = top {
+                        // A fluid is marked, as `set` does.
+                        builder.set(x, y - 1, z, top);
+                    }
+                }
+            }
+        }
+        filled.marks.sort_unstable();
+        asked
     }
 }
+
+/// The volume of a rule that is asked for one block; where it is, is set when it is
+/// asked.
+const ONE_BLOCK: Volume = Volume {
+    min_x: 0,
+    min_y: 0,
+    min_z: 0,
+    size_x: 1,
+    size_y: 1,
+    size_z: 1,
+};
 
 /// For each column of a chunk, in the order of `z << 4 | x`: one more than the height
 /// of its highest block that is not air, or the bottom of the terrain. The game's
@@ -868,6 +1011,24 @@ impl<'a, R: NoiseRouter> Builder<'a, R> {
         }
     }
 
+    /// The game's `topMaterial` on the chunk as it is now: a context of its own for
+    /// the one block, which remembers nothing of an earlier one, and the slope from
+    /// the live heights.
+    fn top_material(&mut self, x: i32, y: i32, z: i32, under_fluid: bool) -> Option<BlockState> {
+        self.expected = Volume {
+            min_x: x,
+            min_y: y,
+            min_z: z,
+            ..ONE_BLOCK
+        };
+        self.surface_level = None;
+        self.veins = None;
+        let (slope_x, slope_z) = self.slope((x & 15) as usize, (z & 15) as usize);
+        self.update_xz(x, z, slope_x, slope_z);
+        self.update_y(1, 1, if under_fluid { y + 1 } else { i32::MIN }, y);
+        R::Material::apply(self).map(BlockState)
+    }
+
     /// Sets a block as the game's column does: nothing outside the chunk's heights,
     /// a fluid is marked, and the heightmap follows.
     fn set(&mut self, x: usize, y: i32, z: usize, state: BlockState) {
@@ -882,10 +1043,16 @@ impl<'a, R: NoiseRouter> Builder<'a, R> {
         if above < 0 || above as usize >= self.filled.height {
             return;
         }
-        self.filled.blocks[(above as usize) << 8 | z << 4 | x] = state;
         if state.has_fluid() {
             self.filled.marks.push(InChunk::new(x, y, z));
         }
+        self.put(x, y, z, state);
+    }
+
+    /// Sets a block of the terrain and has the heightmap follow; nothing is marked.
+    fn put(&mut self, x: usize, y: i32, z: usize, state: BlockState) {
+        let above = y - self.filled.min_y;
+        self.filled.blocks[(above as usize) << 8 | z << 4 | x] = state;
         let height = &mut self.heights[z << 4 | x];
         if state.is_air() {
             if *height == y + 1 {

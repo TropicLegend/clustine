@@ -1,4 +1,4 @@
-//! What the biomes, the fill and the surface of a chunk cost: a measurement that
+//! What the biomes, the fill, the surface and the carving of a chunk cost: a measurement that
 //! reports and asserts nothing (`docs/groundwork/terrain-plan.md`, section 6).
 //!
 //! ```text
@@ -6,6 +6,7 @@
 //! ```
 
 use clustine_terrain::biome::{BiomeSource, Dimension};
+use clustine_terrain::carver::{REACH, SOURCES};
 use clustine_terrain::fill::{Heightmap, Terrain};
 use clustine_terrain::noise_chunk::{self, Scratch};
 use clustine_terrain::surface::Biomes;
@@ -241,6 +242,132 @@ fn the_time_a_chunks_surface_takes() {
                 each(level),
                 each(veins),
                 marks as f64 / chunks.len() as f64,
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "a measurement, for a release build"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the test, not the crate, takes the time"
+)]
+fn the_time_a_chunks_carving_takes() {
+    for dimension in [Dimension::Overworld, Dimension::Nether] {
+        let terrain = Terrain::new(13579, dimension);
+        let source = BiomeSource::new(13579, dimension);
+        // A square at the origin, as a player's view is, and chunks far apart.
+        let near: Vec<(i32, i32)> = (-8..8).flat_map(|x| (-8..8).map(move |z| (x, z))).collect();
+        let far: Vec<(i32, i32)> = (0..256)
+            .map(|index| (index * 7919 - 1_000_000, 750_000 - index * 6007))
+            .collect();
+        for (name, chunks) in [("in a square of 16 by 16", &near), ("far apart", &far)] {
+            let mut scratch = Scratch::default();
+            let biomes: Vec<Biomes> = chunks
+                .iter()
+                .map(|(x, z)| Biomes::from_source(&source, *x, *z))
+                .collect();
+            let mut surfaced: Vec<_> = chunks
+                .iter()
+                .zip(&biomes)
+                .map(|((x, z), biomes)| terrain.surface(*x, *z, biomes))
+                .collect();
+
+            // The biome of each source chunk, which the mask asks first.
+            let started = std::time::Instant::now();
+            let of_sources: Vec<Vec<_>> = chunks
+                .iter()
+                .map(|(x, z)| {
+                    (-REACH..=REACH)
+                        .flat_map(|across_x| {
+                            (-REACH..=REACH).map(move |across_z| (across_x, across_z))
+                        })
+                        .map(|(across_x, across_z)| {
+                            source.biome((x + across_x) * 4, 0, (z + across_z) * 4)
+                        })
+                        .collect()
+                })
+                .collect();
+            let asking = started.elapsed();
+            // The mask with those biomes given: the walks of every carver that
+            // starts around the chunk.
+            let across = 2 * REACH + 1;
+            let started = std::time::Instant::now();
+            let masks: Vec<_> = chunks
+                .iter()
+                .zip(&of_sources)
+                .map(|((x, z), of_sources)| {
+                    terrain.carving_mask_with(*x, *z, |source_x, source_z| {
+                        of_sources
+                            [((source_x - x + REACH) * across + (source_z - z + REACH)) as usize]
+                    })
+                })
+                .collect();
+            let walking = started.elapsed();
+            // The mask applied: the aquifer's answer for each block it names, and
+            // the top of the ground under carved grass.
+            let started = std::time::Instant::now();
+            let mut asked = 0;
+            for ((((x, z), surfaced), mask), biomes) in
+                chunks.iter().zip(&mut surfaced).zip(&masks).zip(&biomes)
+            {
+                asked += terrain.apply_carving_mask(surfaced, *x, *z, mask, biomes, &mut scratch);
+            }
+            let applying = started.elapsed();
+            // Making the chunk's aquifer again, which is part of applying.
+            let started = std::time::Instant::now();
+            for ((x, z), mask) in chunks.iter().zip(&masks) {
+                if !mask.is_empty() {
+                    std::hint::black_box(terrain.aquifer_ceiling(*x, *z));
+                }
+            }
+            let aquifer = started.elapsed();
+            // The whole chunk, and the chunk without its carving.
+            let started = std::time::Instant::now();
+            for ((x, z), biomes) in chunks.iter().zip(&biomes) {
+                std::hint::black_box(terrain.carved(*x, *z, biomes, &source));
+            }
+            let carved = started.elapsed();
+            let started = std::time::Instant::now();
+            for ((x, z), biomes) in chunks.iter().zip(&biomes) {
+                std::hint::black_box(terrain.surface(*x, *z, biomes));
+            }
+            let surface = started.elapsed();
+
+            let mut started_carvers = 0;
+            let mut reaching = 0;
+            for ((x, z), of_sources) in chunks.iter().zip(&of_sources) {
+                for (_, blocks) in terrain.carvers_started(*x, *z, |source_x, source_z| {
+                    of_sources[((source_x - x + REACH) * across + (source_z - z + REACH)) as usize]
+                }) {
+                    started_carvers += 1;
+                    reaching += usize::from(blocks != 0);
+                }
+            }
+            let reached: usize = masks.iter().map(|mask| mask.count()).sum();
+            let each = |spent: std::time::Duration| spent.as_secs_f64() * 1e3 / chunks.len() as f64;
+            let count = chunks.len() as f64;
+            println!(
+                "{dimension:?}, {} chunks {name}: {:.3} ms a chunk for the carving \
+                 ({:.3} ms with fill and surface, {:.3} ms without the carving); of \
+                 which {:.3} ms the biomes of the {SOURCES} source chunks, {:.3} ms the \
+                 carvers' walks and {:.3} ms applying the mask ({:.3} ms of it making \
+                 the aquifer again); {:.1} carvers start around a chunk and {:.2} reach \
+                 it; a mask names {:.0} blocks; the top material is asked {:.2} times a \
+                 chunk",
+                chunks.len(),
+                each(asking + walking + applying),
+                each(carved),
+                each(surface),
+                each(asking),
+                each(walking),
+                each(applying),
+                each(aquifer),
+                started_carvers as f64 / count,
+                reaching as f64 / count,
+                reached as f64 / count,
+                asked as f64 / count,
             );
         }
     }

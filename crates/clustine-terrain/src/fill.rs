@@ -41,7 +41,7 @@
 //! every block, every mark, the bits of the density and base heights to it. The head
 //! of that test has the numbers.
 
-use clustine_data::{BlockState, DimensionType, blocks};
+use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks};
 use clustine_noise::RandomSplitter;
 use clustine_world::{BLOCKS_PER_SECTION, Biome, Chunk, InChunk, SECTION_SIZE, Section};
 use clustine_worldgen_data::{
@@ -49,8 +49,9 @@ use clustine_worldgen_data::{
 };
 
 use crate::aquifer::{self, Aquifer};
-use crate::biome::Dimension;
 use crate::biome::zoom::Zoom;
+use crate::biome::{BiomeSource, Dimension};
+use crate::carver::{self, Heights, Mask, Origin};
 use crate::noise_chunk::{self, Scratch, Volume};
 use crate::surface::{self, Biomes, Watched};
 
@@ -84,7 +85,9 @@ pub struct Filled {
     /// section from the bottom, each in the order `clustine_world::Section` takes.
     pub blocks: Vec<BlockState>,
     /// The fluids the game marks for post-processing at this step: when the chunk is
-    /// first ticked, each is to flow a step. Ascending.
+    /// first ticked, each is to flow a step. Ascending. A position stands as often
+    /// as the game marked it: the carvers mark a fluid of the fill again where they
+    /// reach it (`clustine_world::Chunk` keeps each once).
     pub marks: Vec<InChunk>,
 }
 
@@ -132,6 +135,16 @@ impl Filled {
         chunk.set_marks(self.marks);
         chunk
     }
+}
+
+/// A chunk after the fill, the surface and the carvers, which is what the
+/// game's `buildTerrain` makes where no structure bends the ground.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Carved {
+    pub chunk: Filled,
+    /// Which blocks the carvers reached, whatever became of them. The game keeps
+    /// none after the step; it is here for looking into what was carved.
+    pub mask: Mask,
 }
 
 /// The noise chunk of one volume: the router, what it remembers, the volume's final
@@ -269,6 +282,31 @@ impl<R: NoiseRouter> Shape<R> {
         column
     }
 
+    /// The second half of the carving, with an aquifer made for it: the game uses
+    /// the one of the fill, which answers the same, because what an aquifer
+    /// remembers changes no answer.
+    fn apply_carving_mask(
+        &self,
+        filled: &mut Filled,
+        chunk: (i32, i32),
+        mask: &Mask,
+        biomes: &Biomes,
+        scratch: &mut Scratch,
+    ) -> usize {
+        let settings = self.settings();
+        let volume = Volume::of_chunk(chunk.0, chunk.1, settings.min_y, settings.height);
+        let mut aquifer = Aquifer::new(&self.router, &self.positions, &volume);
+        self.surface.apply_carving_mask(
+            &self.router,
+            &mut aquifer,
+            filled,
+            chunk,
+            mask,
+            biomes,
+            scratch,
+        )
+    }
+
     fn base_height(&self, x: i32, z: i32, heightmap: Heightmap) -> i32 {
         let min_y = self.settings().min_y;
         self.base_column(x, z)
@@ -313,6 +351,7 @@ macro_rules! shape {
 /// later: a function of the seed and the position. Making one seeds the dimension's
 /// noises; keep it for as long as terrain of the world is asked for.
 pub struct Terrain {
+    seed: i64,
     dimension: Dimension,
     kind: Kind,
 }
@@ -325,7 +364,11 @@ impl Terrain {
             Dimension::Nether => Kind::Nether(Box::new(Shape::new(seed, dimension))),
             Dimension::End => Kind::End(Box::new(Shape::new(seed, dimension))),
         };
-        Self { dimension, kind }
+        Self {
+            seed,
+            dimension,
+            kind,
+        }
     }
 
     #[must_use]
@@ -446,12 +489,135 @@ impl Terrain {
         ))
     }
 
+    /// The heights the carvers read (the game's `WorldGenerationContext`): the
+    /// terrain's, held within the dimension's.
+    #[must_use]
+    pub fn carver_heights(&self) -> Heights {
+        let settings = self.settings();
+        let kind = DIMENSION_TYPES
+            .iter()
+            .find(|kind| kind.name == self.dimension.type_name())
+            .expect("the three dimension types are in the game's registry");
+        Heights {
+            min_y: settings.min_y.max(kind.min_y),
+            depth: settings.height.min(kind.height as i32),
+        }
+    }
+
+    /// The first half of the game's carving: which blocks of the chunk the caves
+    /// and ravines of the chunks up to eight away reach ([`crate::carver`]). A
+    /// function of the seed and the chunk's position: `biomes` is asked only for
+    /// what a source chunk's carvers are.
+    #[must_use]
+    pub fn carving_mask(&self, chunk_x: i32, chunk_z: i32, biomes: &BiomeSource) -> Mask {
+        self.carving_mask_with(chunk_x, chunk_z, |x, z| biomes.biome(x * 4, 0, z * 4))
+    }
+
+    /// [`Self::carving_mask`] with the biome of each source chunk from whoever has
+    /// it: `biome_of_source` gives, for a chunk, the biome of the cell at its lowest
+    /// corner and the height 0, as the dimension's source of biomes gives it.
+    #[must_use]
+    pub fn carving_mask_with(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        biome_of_source: impl FnMut(i32, i32) -> Biome,
+    ) -> Mask {
+        carver::mask(
+            self.seed,
+            self.carver_heights(),
+            (chunk_x, chunk_z),
+            biome_of_source,
+        )
+    }
+
+    /// Which carvers of which source chunks reached a block of the chunk (`x` and
+    /// `z` in `0..16`): for looking into a difference.
+    #[must_use]
+    pub fn carved_by(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        biome_of_source: impl FnMut(i32, i32) -> Biome,
+        block: (usize, i32, usize),
+    ) -> Vec<Origin> {
+        carver::origins(
+            self.seed,
+            self.carver_heights(),
+            (chunk_x, chunk_z),
+            biome_of_source,
+            block,
+        )
+    }
+
+    /// Every carver that starts in a chunk up to eight away, with the number of the
+    /// chunk's blocks it reaches ([`carver::started`]).
+    #[must_use]
+    pub fn carvers_started(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        biome_of_source: impl FnMut(i32, i32) -> Biome,
+    ) -> Vec<(Origin, usize)> {
+        carver::started(
+            self.seed,
+            self.carver_heights(),
+            (chunk_x, chunk_z),
+            biome_of_source,
+        )
+    }
+
+    /// The second half of the game's carving (`applyCarvingMask`), on a chunk that
+    /// [`Self::surface`] made: each block `mask` names becomes what the chunk's
+    /// aquifer says is there when nothing is in the way (air, water or lava) or
+    /// stays where that is ground, bedrock stays, and dirt left under carved grass
+    /// becomes the top of the ground. `biomes` are those around the chunk, as for
+    /// the surface. Gives how often the material rule was asked. `scratch` is kept
+    /// between calls to save allocations.
+    ///
+    /// The game asks the rule for the biome at a block through its source of
+    /// biomes, not through the chunks' stored cells as the surface does. The two
+    /// are the same cells but for the lowest two blocks of a dimension, where a
+    /// chunk holds the height within its own; no dirt lies under grass there.
+    pub fn apply_carving_mask(
+        &self,
+        filled: &mut Filled,
+        chunk_x: i32,
+        chunk_z: i32,
+        mask: &Mask,
+        biomes: &Biomes,
+        scratch: &mut Scratch,
+    ) -> usize {
+        shape!(self, shape => {
+            shape.apply_carving_mask(filled, (chunk_x, chunk_z), mask, biomes, scratch)
+        })
+    }
+
+    /// The chunk after the game's fill, surface and carvers: its `buildTerrain`
+    /// where no structure bends the ground. [`Self::surface`], then
+    /// [`Self::carving_mask`] applied ([`Self::apply_carving_mask`]). `biomes` are
+    /// the biomes around the chunk and `source` the dimension's source of biomes.
+    #[must_use]
+    pub fn carved(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        biomes: &Biomes,
+        source: &BiomeSource,
+    ) -> Carved {
+        let mut scratch = Scratch::default();
+        let mut chunk = self.fill_with_density(chunk_x, chunk_z, &mut scratch).0;
+        self.build_surface(&mut chunk, chunk_x, chunk_z, biomes, &mut scratch);
+        let mask = self.carving_mask(chunk_x, chunk_z, source);
+        self.apply_carving_mask(&mut chunk, chunk_x, chunk_z, &mask, biomes, &mut scratch);
+        Carved { chunk, mask }
+    }
+
     /// The game's `MaterialSystem.topMaterial`: what the material rule makes of the
     /// block at `x`, `y`, `z` of the chunk `filled` if it is taken as the highest
     /// block of ground of its column, with a fluid right above it (`under_fluid`) or
-    /// none. The carvers ask it for what to put under what they carved.
-    ///
-    /// **Compared with nothing yet** (see [`crate::surface`]).
+    /// none. The carvers ask it for what to put under what they carved, and it was
+    /// compared with the game's through them ([`Self::apply_carving_mask`]).
     #[must_use]
     pub fn top_material(
         &self,
@@ -473,6 +639,21 @@ impl Terrain {
             z,
             under_fluid,
         ))
+    }
+
+    /// [`Self::top_material`] at several blocks of one chunk, each its x, y and z and
+    /// whether a fluid is right above it: the answers in that order.
+    #[must_use]
+    pub fn top_materials(
+        &self,
+        filled: &mut Filled,
+        biomes: &Biomes,
+        asked: &[(i32, i32, i32, bool)],
+    ) -> Vec<Option<BlockState>> {
+        let mut scratch = Scratch::default();
+        shape!(self, shape => {
+            shape.surface.top_materials(&shape.router, filled, biomes, &mut scratch, asked)
+        })
     }
 
     /// Which cell of biomes a block of this world takes its biome from.

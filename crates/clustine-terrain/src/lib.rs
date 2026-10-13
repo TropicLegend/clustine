@@ -1,6 +1,6 @@
 //! Minecraft's terrain as a function of a world's seed and a position.
 //!
-//! So far this is the part every other part asks, and the first two steps of a
+//! So far this is the part every other part asks, and the first three steps of a
 //! chunk's blocks, each for the overworld, the Nether and the End:
 //!
 //! - [`biome`]: which biome is where, in cells of four blocks, and which cell a block
@@ -15,9 +15,15 @@
 //!   dimension's material rule says: grass, sand, snow, the bands of the badlands,
 //!   bedrock, deepslate, and the ore veins. It was compared the same way; the head of
 //!   [`surface`] says more.
+//! - [`carver`]: the game's "generate carvers" step, which cuts caves and ravines
+//!   into the ground: which blocks the carvers of the chunks up to eight away reach
+//!   ([`carver::Mask`]), and what becomes of them (air, or the water or lava the
+//!   chunk's aquifer has there; grass again on dirt that was laid bare). Compared the
+//!   same way: every block of 4,780 chunks. The head of [`carver`] says more.
 //!
-//! The caves, the features and the structures come with the later steps of phase T of
-//! `docs/groundwork/terrain-plan.md`.
+//! [`fill::Terrain::carved`] is the three together: the chunk as the game's
+//! `buildTerrain` leaves it where no structure bends the ground. The structures and
+//! the features come with the later steps of `docs/groundwork/terrain-plan.md`.
 //!
 //! The overworld's biomes equal those of chunks the official server made, but for
 //! exact ties, which the game does not decide by the position. **The Nether's and
@@ -55,6 +61,7 @@
 
 pub mod aquifer;
 pub mod biome;
+pub mod carver;
 pub mod fill;
 pub mod noise_chunk;
 pub mod surface;

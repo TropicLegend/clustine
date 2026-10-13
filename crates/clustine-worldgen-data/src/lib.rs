@@ -7,8 +7,9 @@
 //! ([`noises`]) and the rest of the three noise settings ([`noise_settings`]) as
 //! statics; and what makes the surface: each dimension's material rule as an emitted
 //! function ([`material`], `OverworldRouter`'s `Material` and the like) and what the
-//! rules read of a biome ([`biomes`]). Features and structures come with later steps
-//! of `docs/groundwork/terrain-plan.md`.
+//! rules read of a biome ([`biomes`]); and the carvers of caves and ravines with the
+//! biomes that have them ([`carver`], [`carvers`]). Features and structures come with
+//! later steps of `docs/groundwork/terrain-plan.md`.
 //!
 //! A router is made from a world's seed and gives each of its functions at a block
 //! position, through the noises of `clustine-noise`:
@@ -32,6 +33,7 @@
 //! Like the simulation, this is a function of its inputs: no clock, no hash map, no
 //! I/O, and no mathematics of the platform.
 
+pub mod carver;
 pub mod density;
 pub mod material;
 
@@ -48,5 +50,5 @@ pub use density::{
 pub use generated::end::router::EndRouter;
 pub use generated::nether::router::NetherRouter;
 pub use generated::overworld::router::OverworldRouter;
-pub use generated::{biomes, noise_settings, noises};
+pub use generated::{biomes, carvers, noise_settings, noises};
 pub use material::{Anchor, BiomeClimate, Context, MaterialRule, Vein};

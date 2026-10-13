@@ -189,8 +189,8 @@ fn the_biome_at_a_block_is_that_of_a_cell_beside_it() {
 
 #[test]
 fn the_top_material_of_a_block_under_the_sky_is_what_the_surface_put_there() {
-    // Compared with nothing of the game's (the carvers will ask it); this holds it
-    // to the step itself where the two must agree: a block of grass under the sky.
+    // The game's own judges it in `tests/game_carvers.rs`; this holds it to the
+    // step itself where the two must agree: a block of grass under the sky.
     // (They need not agree everywhere: the game asks for the top material as if the
     // block had air right below it too, so that sand comes out as sandstone.)
     let terrain = Terrain::new(SEED, Dimension::Overworld);

@@ -16,7 +16,7 @@ use crate::density;
 use crate::jar::SERVER_JAR;
 use crate::model::{GameData, Property};
 use crate::worldgen::{NoiseParameters, NoiseSettings};
-use crate::{material, packed, router, sums, tables};
+use crate::{carver, material, packed, router, sums, tables};
 
 /// Directories that hold nothing but generated files, relative to the workspace root
 /// (ADR-0019, section 3).
@@ -208,8 +208,8 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
 
 /// The outputs of the crate of world-generation data: the routers of the three
 /// dimensions with their splines, their material rules, the noises, the noise
-/// settings, what the rules read of a biome, and the values the routers are tested
-/// against.
+/// settings, what the rules read of a biome, the carvers and which biome has which,
+/// and the values the routers are tested against.
 fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
     let version = data.version.id.as_str();
     let mut add = |name: &str, emitted: bool, body: String| {
@@ -252,7 +252,7 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
     let noise_names: Vec<String> = noises.keys().cloned().collect();
     let rules = material::Registries::load(&data.worldgen, &data.blocks)?;
 
-    let mut top = vec!["biomes", "noise_settings", "noises"];
+    let mut top = vec!["biomes", "carvers", "noise_settings", "noises"];
     top.extend(DIMENSIONS);
     top.sort_unstable();
     add("mod.rs", false, modules(&top));
@@ -260,6 +260,11 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
         "biomes.rs",
         false,
         material::biomes(&biomes.entries, &data.worldgen)?,
+    );
+    add(
+        "carvers.rs",
+        false,
+        carver::emit(&biomes.entries, &data.worldgen)?,
     );
     add("noises.rs", false, router::noises(&noises)?);
     let borrowed: Vec<(&str, &NoiseSettings)> = all_settings
