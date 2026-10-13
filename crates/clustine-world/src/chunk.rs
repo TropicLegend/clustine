@@ -146,14 +146,20 @@ fn block_entity_type(state: BlockState) -> Option<u8> {
 }
 
 /// Whether light could tell the two states apart: by the light they give or take, by
-/// whether and with which faces they stop it, or by whether the sky passes down
-/// through them. A state that is not the game's is taken to differ from every other.
-fn light_tells_apart(old: BlockState, new: BlockState) -> bool {
+/// whether and with which faces they stop it, by whether the sky passes down through
+/// them, or by whether they are air. A state that is not the game's is taken to
+/// differ from every other.
+///
+/// Whether a state is air is among it because which light sections a chunk and its
+/// neighbours list turns on which sections hold a block that is not air. A chunk
+/// drops its light by this at a change, and an edge asks it too.
+pub fn light_tells_apart(old: BlockState, new: BlockState) -> bool {
     if !known(old) || !known(new) {
         return true;
     }
     let (old, new) = (old.props(), new.props());
-    old.light_emission() != new.light_emission()
+    old.is_air() != new.is_air()
+        || old.light_emission() != new.light_emission()
         || old.light_dampening() != new.light_dampening()
         || old.occludes() != new.occludes()
         || old.occludes_by_shape() != new.occludes_by_shape()
@@ -461,9 +467,17 @@ impl Chunk {
         };
         self.light = Some(Light {
             made_by: light.made_by,
+            beside: light.beside,
             sky: one_form(light.sky),
             block: one_form(light.block),
         });
+    }
+
+    /// Takes the light out of the chunk and leaves the chunk without. An edge keeps
+    /// the light of a chunk beside it (`docs/adr/0023-light-at-the-edge.md`,
+    /// section 1); nothing else has a use for this.
+    pub fn take_light(&mut self) -> Option<Light> {
+        self.light.take()
     }
 
     /// The ticks generation scheduled, in its order.
@@ -617,6 +631,55 @@ mod tests {
 
     fn empty() -> Chunk {
         Chunk::empty(overworld(), Biome(0))
+    }
+
+    /// An edge keeps a chunk's light beside the chunk: it can take it out, with what
+    /// the light was made beside, and the chunk is then without.
+    #[test]
+    fn light_is_taken_out_of_a_chunk_with_what_it_was_made_beside() {
+        let mut chunk = empty();
+        chunk.set(1, 0, 1, blocks::STONE);
+        let entries = chunk.sections().len() + 2;
+        let light = Light {
+            made_by: 2,
+            beside: 7,
+            sky: vec![SectionLight::Full; entries],
+            block: vec![SectionLight::Dark; entries],
+        };
+        chunk.set_light(light.clone());
+        // A change light cannot see keeps the light, and what it was made beside.
+        chunk.set(1, 0, 1, blocks::DEEPSLATE);
+        assert_eq!(chunk.light().map(|light| light.beside), Some(7));
+        assert_eq!(chunk.take_light(), Some(light));
+        assert_eq!(chunk.light(), None);
+        assert_eq!(chunk.take_light(), None);
+    }
+
+    /// Whether a state is air is among what light sees: which light sections are
+    /// listed turns on which sections hold a block that is not air.
+    #[test]
+    fn light_tells_air_from_what_differs_from_it_in_nothing_else() {
+        assert!(!light_tells_apart(blocks::AIR, blocks::CAVE_AIR));
+        assert!(!light_tells_apart(blocks::STONE, blocks::DEEPSLATE));
+        assert!(light_tells_apart(blocks::AIR, blocks::STONE));
+        assert!(light_tells_apart(blocks::AIR, blocks::TORCH));
+        let unlike_air_only_in_being_a_block = (0..BLOCK_STATE_COUNT as u16)
+            .map(BlockState)
+            .find(|state| {
+                let (state, air) = (state.props(), blocks::AIR.props());
+                !state.is_air()
+                    && state.light_emission() == air.light_emission()
+                    && state.light_dampening() == air.light_dampening()
+                    && state.occludes() == air.occludes()
+                    && state.occludes_by_shape() == air.occludes_by_shape()
+                    && state.occlusion_face_set() == air.occlusion_face_set()
+                    && state.propagates_skylight_down() == air.propagates_skylight_down()
+            })
+            .expect("a block that light passes as it passes air");
+        assert!(light_tells_apart(
+            blocks::AIR,
+            unlike_air_only_in_being_a_block
+        ));
     }
 
     #[test]

@@ -612,6 +612,7 @@ fn some_light(sections: usize) -> Light {
     block[2] = SectionLight::Levels(levels);
     Light {
         made_by: 1,
+        beside: 3,
         sky,
         block,
     }

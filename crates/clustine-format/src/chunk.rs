@@ -27,7 +27,7 @@
 //! | Per section, bottom to top: blocks | palette length `n`, u16, 1 to 4,096; `n` × u16 state ids; if `n` > 1, 4,096 indices of `ceil(log2(n))` bits in u64 words, lowest bits first, none across two words, in the order `y << 8 \| z << 4 \| x` |
 //! | … biomes | palette length `m`, u8, 1 to 64; `m` × u16 biome ids; if `m` > 1, 64 indices of `ceil(log2(m))` bits, packed the same way, in the order `y << 4 \| z << 2 \| x` |
 //! | Block entities | count u32; then, by y, z, x: `x << 4 \| z` u8, y i16, type u16, length of the data u32 (at most 16 KiB), the data |
-//! | Light | u8: 0 for none, 1 for present. If present: `made_by` u16; then for sky and then for block, per light section bottom to top: u8 0 absent, 1 dark, 2 full, or 3 followed by 2,048 bytes |
+//! | Light | u8: 0 for none, 1 for present without `beside`, 2 for present with it. If present: `made_by` u16; for 2, `beside` u16; then for sky and then for block, per light section bottom to top: u8 0 absent, 1 dark, 2 full, or 3 followed by 2,048 bytes |
 //! | Scheduled ticks | count u32; then, in order: kind u8 (0 block, 1 fluid), `x << 4 \| z` u8, y i16, id u16, delay i32, priority i8 |
 //! | Marks | count u32; then, ascending: `x << 4 \| z` u8, y i16 |
 //!
@@ -57,6 +57,11 @@ const ZSTD_LEVEL: i32 = 3;
 /// below it; a file that claims more is not read into memory.
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const WITH_FAILURE: u8 = 1;
+/// The byte that says how a chunk's light is there: not at all, or with the version
+/// of the generator whose chunks it was made beside. The value between them, 1, is
+/// light without that version, which only a file from before it was kept has.
+const LIGHT_NONE: u8 = 0;
+const LIGHT_WITH_BESIDE: u8 = 2;
 
 /// A chunk as it is stored, with what the file says beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,10 +244,13 @@ impl ChunkFile {
             body.extend_from_slice(&entity.data);
         }
         match chunk.light() {
-            None => body.push(0),
+            None => body.push(LIGHT_NONE),
+            // With what the light was made beside. A file from before that was kept
+            // says 1 here and has no such number; none is written so any more.
             Some(light) => {
-                body.push(1);
+                body.push(LIGHT_WITH_BESIDE);
                 body.extend_from_slice(&light.made_by.to_be_bytes());
+                body.extend_from_slice(&light.beside.to_be_bytes());
                 put_light(&mut body, &light.sky);
                 put_light(&mut body, &light.block);
             }
@@ -400,12 +408,22 @@ impl ChunkFile {
             }
         }
         let missing = chunk.block_entities().len() - fitted;
-        if input.u8()? == 1 {
+        let lit = input.u8()?;
+        if lit > LIGHT_WITH_BESIDE {
+            return Err(FormatError::Corrupt("how a chunk's light is there"));
+        }
+        if lit != LIGHT_NONE {
             let made_by = input.u16()?;
+            // Light written before it said what it was made beside did not say.
+            let beside = match lit {
+                LIGHT_WITH_BESIDE => input.u16()?,
+                _ => 0,
+            };
             let sky = light(&mut input, section_count + 2)?;
             let block = light(&mut input, section_count + 2)?;
             chunk.set_light(Light {
                 made_by,
+                beside,
                 sky,
                 block,
             });
@@ -496,6 +514,7 @@ mod tests {
         sky[1] = SectionLight::Levels(levels);
         chunk.set_light(Light {
             made_by: 1,
+            beside: 4,
             sky,
             block: vec![SectionLight::Dark; entries],
         });
@@ -616,6 +635,36 @@ mod tests {
         });
         let (read, unfit) = ChunkFile::decode(&bytes).unwrap();
         assert_eq!((read.chunk, unfit), (chunk, 0));
+    }
+
+    /// Light written before it said what it was made beside is read as light that
+    /// does not say; a value that is no case is refused.
+    #[test]
+    fn light_without_what_it_was_made_beside_is_read_and_says_nothing_of_it() {
+        let entries = 26;
+        let mut rest = vec![0, 0, 0, 0];
+        // Light of the rules' version 3: every sky section full, every block
+        // section dark.
+        rest.extend_from_slice(&[1, 0, 3]);
+        rest.extend_from_slice(&[2; 26]);
+        rest.extend_from_slice(&[1; 26]);
+        rest.extend_from_slice(&[0; 8]);
+        let air = [0, 1, 0, 0, 1, 0, 41];
+        let (read, _) = ChunkFile::decode(&assembled(&air, &rest)).unwrap();
+        let expected = Light {
+            made_by: 3,
+            beside: 0,
+            sky: vec![SectionLight::Full; entries],
+            block: vec![SectionLight::Dark; entries],
+        };
+        assert_eq!(read.chunk.light(), Some(&expected));
+        // Written again it says what it has, which is nothing: the case with it.
+        let written = read.encode();
+        let (again, _) = ChunkFile::decode(&written).unwrap();
+        assert_eq!(again.chunk.light(), Some(&expected));
+
+        rest[4] = 3;
+        assert!(ChunkFile::decode(&assembled(&air, &rest)).is_err());
     }
 
     /// A file of an overworld chunk whose lowest section is `lowest` and whose other

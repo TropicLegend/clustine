@@ -336,6 +336,7 @@ fn with_everything(position: ChunkPos) -> Chunk {
     sky[1] = SectionLight::Levels(levels);
     chunk.set_light(Light {
         made_by: 1,
+        beside: 2,
         sky,
         block: vec![SectionLight::Dark; entries],
     });

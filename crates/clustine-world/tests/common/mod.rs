@@ -100,12 +100,14 @@ pub fn entity_type(state: BlockState) -> Option<u8> {
     BLOCK_INFO[state.block_id().expect("a state of the game")].block_entity_type
 }
 
-/// Whether the two states differ in anything light sees, by the record's list: the
-/// light they give, the light they take, whether and with which faces they stop
-/// light, whether the sky passes down through them.
+/// Whether the two states differ in anything light sees, by the record's list as
+/// ADR-0023 changed it: the light they give, the light they take, whether and with
+/// which faces they stop light, whether the sky passes down through them, and
+/// whether they are air.
 pub fn light_sees(old: BlockState, new: BlockState) -> bool {
     let (old, new) = (old.props(), new.props());
-    old.light_emission() != new.light_emission()
+    old.is_air() != new.is_air()
+        || old.light_emission() != new.light_emission()
         || old.light_dampening() != new.light_dampening()
         || old.occludes() != new.occludes()
         || old.occludes_by_shape() != new.occludes_by_shape()
@@ -247,6 +249,7 @@ pub fn some_light(chunk: &Chunk, made_by: u16) -> Light {
     block[1] = SectionLight::Levels(levels);
     Light {
         made_by,
+        beside: 0,
         sky,
         block,
     }

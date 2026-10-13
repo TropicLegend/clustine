@@ -65,13 +65,16 @@ fn made(dimension: &DimensionType, biome: Biome, layers: &[BlockState]) -> Chunk
             }
         }
     }
-    let light = clustine_light::light(&Around {
+    let mut light = clustine_light::light(&Around {
         centre: &chunk,
         neighbours: [Some(&chunk); 8],
         // The flat world is the overworld, which has a sky; a dimension type does not
         // say yet whether it has one.
         sky: true,
     });
+    // The eight beside it are this generator's as well, which an edge goes by when
+    // it asks whether the light still holds beside the chunks it has.
+    light.beside = FLAT_VERSION;
     chunk.set_light(light);
     // Exactly as this generator makes it, until something changes it. Said last: the
     // blocks were put there by changes, each of which takes it back.
@@ -150,11 +153,14 @@ mod tests {
         // Made again from the chunk's blocks alone, without its light or its mark.
         let bare = Chunk::from_sections(chunk.min_y(), chunk.sections().to_vec());
         assert_eq!(bare.light(), None);
-        let again = clustine_light::light(&Around {
+        let mut again = clustine_light::light(&Around {
             centre: &bare,
             neighbours: [Some(&bare); 8],
             sky: true,
         });
+        // The rules do not say whose chunks they lit; the generator does.
+        assert_eq!(again.beside, 0);
+        again.beside = FLAT_VERSION;
         assert_eq!(*light, again);
     }
 

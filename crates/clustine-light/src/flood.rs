@@ -417,6 +417,9 @@ pub(crate) fn light(around: &Around<'_>) -> Light {
     let block = grid.sections_of(&grid.block_light());
     Light {
         made_by: VERSION,
+        // Whoever lights a chunk it has generated says which generator's chunks
+        // these were; the rules do not know.
+        beside: 0,
         sky,
         block,
     }

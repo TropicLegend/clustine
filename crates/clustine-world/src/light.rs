@@ -95,6 +95,14 @@ impl TryFrom<SectionLightRepr> for SectionLight {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Light {
     pub made_by: u16,
+    /// The version of the generator that made the nine chunks the light was made
+    /// from, or 0 where whoever made the light did not say. Whoever lights a chunk
+    /// it has generated says so before it gives the chunk the light. It stays with
+    /// the light through every change that keeps the light, also when the chunk is
+    /// no longer as generated: an edge reads it to tell whether the chunks beside
+    /// this one are still what the light was made beside
+    /// (`docs/adr/0023-light-at-the-edge.md`, section 7).
+    pub beside: u16,
     pub sky: Vec<SectionLight>,
     pub block: Vec<SectionLight>,
 }

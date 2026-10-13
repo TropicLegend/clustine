@@ -10,7 +10,7 @@ mod section;
 
 pub use chunk::{
     BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, MAX_BLOCK_ENTITY_DATA,
-    MAX_CHUNK_ENTITY_DATA, ScheduledTick, Ticked,
+    MAX_CHUNK_ENTITY_DATA, ScheduledTick, Ticked, light_tells_apart,
 };
 pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{

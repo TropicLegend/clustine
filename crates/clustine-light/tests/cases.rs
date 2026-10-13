@@ -1088,6 +1088,7 @@ fn the_same_blocks_give_the_same_light_however_they_are_handed_over() {
     let mut centre = world.chunk(0, 0, Built::FromStates);
     centre.set_light(Light {
         made_by: 7,
+        beside: 9,
         sky: vec![SectionLight::Full; 6],
         block: vec![SectionLight::Full; 6],
     });

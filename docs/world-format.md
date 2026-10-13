@@ -103,7 +103,7 @@ The body, before compression:
 | Per section, bottom to top: blocks | palette length `n`, u16, 1 to 4,096; `n` × u16 state ids; if `n` > 1, 4,096 indices of `ceil(log2(n))` bits in u64 words, lowest bits first, none across two words, in the order `y << 8 \| z << 4 \| x` |
 | … biomes | palette length `m`, u8, 1 to 64; `m` × u16 biome ids; if `m` > 1, 64 indices of `ceil(log2(m))` bits, packed the same way, in the order `y << 4 \| z << 2 \| x` of cells of 4×4×4 blocks |
 | Block entities | count u32; then, by y, z, x: `x << 4 \| z` u8, y i16, type u16, length of the data u32 (at most 16 KiB), the data |
-| Light | u8: 0 for none, 1 for present. If present: `made_by` u16; then for sky and then for block, per light section bottom to top: u8 0 absent, 1 dark, 2 full, or 3 followed by 2,048 bytes |
+| Light | u8: 0 for none, 1 for present without `beside`, 2 for present with it (the writer writes 0 or 2; 1 is read from files written before `beside` was kept, as light that does not say). If present: `made_by` u16; for 2, `beside` u16, the version of the generator whose chunks the light was made beside, or 0; then for sky and then for block, per light section bottom to top: u8 0 absent, 1 dark, 2 full, or 3 followed by 2,048 bytes |
 | Scheduled ticks | count u32; then, in order: kind u8 (0 block, 1 fluid), `x << 4 \| z` u8, y i16, id u16, delay i32, priority i8 |
 | Marks | count u32; then, ascending: `x << 4 \| z` u8, y i16 |
 
