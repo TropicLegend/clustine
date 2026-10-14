@@ -1142,9 +1142,19 @@ entities, the four heightmaps, light and what generation leaves for later carrie
 the chunk, and a stored chunk as one file. The flat generator's chunks carry the light crate's
 light, and the client's packet is made from what the chunk carries (C4, C5). What an edge does
 about light once blocks have changed is decided
-([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice); its first steps are built
-(the shared types, the light crate's additions, the light update in the codec and the
-bots), and the edge's own are next.
+([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice) and built but for its
+measurements: where the light a chunk came with no longer holds, because a block
+changed in it or beside it, the edge makes it on threads of its own, sends a chunk
+only with light of the right shape, and tells those who have the chunk what a
+client cannot work out by itself. A chunk waits up to a second for wanted
+neighbours so that it is lit once, a place where blocks keep changing costs four
+jobs a second a chunk, and the chunks someone waits for go first, nearest first.
+Tests written from the record by someone who had not read the code found three
+defects, one of which a player would have seen (a torch placed a moment before
+they came stayed dark for them); all three are mended. **Still owed**: the
+measurements on the real machine (a crowd entering changed terrain, a player
+joining beside others), and a real client's eye on it, which is step 4 below
+under "the land beside the game's".
 
 **The biome source is built** (T3, `crates/clustine-terrain`): for a seed and a place,
 the biome the game gives, in the overworld, the Nether and the End. Against the hundred
@@ -1195,10 +1205,32 @@ a chunk in the overworld. Of SteelMC's 2,500 overworld chunks 2,444 now have its
 and of the Nether's 2,230; for the others our chunks equal the game's own without
 structures, so what is missing there is what structures do to the ground.
 
-So for a seed the land has the game's shape, the game's skin and the game's caves: a
-chunk takes about 9 ms on one thread. Still to come: structures
-(T7), everything that grows and the ores placed as features (phase F), and the service
-that makes chunks on demand and stores what it handed out.
+**Structures have their places, and the ground bends under them** (T7, a crate of its
+own, `clustine-structures`). For a seed and a chunk: which structures start there and
+every piece each is assembled of, with its place and its turn (all 52 structures of
+the game, the villages and the other jigsaw-built ones from the jar's template pools,
+fifteen kinds built from code, the strongholds on their rings); which chunks a
+structure reaches into; and what its pieces add to the density of the fill, so that
+a village stands on ground made level for it. **No block of a structure is placed
+yet**: that is the features' stage. The judge is again the game's own classes without
+a server, this time with the game loading its own data: on three seeds in the three
+dimensions, 58,864 chunks with 4,006 starts, every piece of every one equal, and all
+18,802 references; and of 9,875 chunks whose ground structures bend, every one of
+928,088,064 blocks equal but two that lie beside an exact tie of biomes. Of the
+chunks of SteelMC's that did not have its hash without structures, 321 of 326 have
+it now. What the judge does not compare: what a piece built from code remembers
+beyond its box (which doors a stronghold has, where a mineshaft has rails), which
+falls to the step that places blocks. Four things the pinned jar does otherwise than
+SteelMC were found on the way; the crate's head names them. Starts cost 38 µs a
+chunk on average; a bent chunk's fill takes twice an unbent one's, for the 7% that
+are bent. **The `--seed` preview does not bend the ground yet**: it needs a bounded
+store of starts around a chunk, which is the next small step.
+
+So for a seed the land has the game's shape, the game's skin, the game's caves and
+the game's building sites: a chunk takes about 9 ms on one thread. Still to come:
+everything that grows, the ores placed as features and the structures' blocks
+(phase F), and the service that makes chunks on demand and stores what it handed
+out.
 
 **The land can be walked: `--seed`** (2026-10-14). A server that is given a seed
 serves that seed's bare overworld, and one that is given none is flat as before.
