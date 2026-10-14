@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use clustine_data::{BLOCK_INFO, BLOCK_STATE_COUNT, BlockState, DimensionType, blocks};
 use serde::{Deserialize, Serialize};
 
-use crate::generation::{Done, Failed, Wanted};
+use crate::generation::{Done, Failed, GeneratorSettings, Wanted};
 use crate::light::{Light, SectionLight};
 use crate::{Biome, COLUMNS_PER_CHUNK, ChunkPos, SECTION_SIZE, Section};
 
@@ -612,9 +612,11 @@ impl TryFrom<ChunkRepr> for Chunk {
 pub trait ChunkGenerator: Send + Sync {
     fn generate(&self, position: ChunkPos) -> Chunk;
 
-    /// Names the generator and everything that decides what it produces. A stored world
-    /// records this and refuses to continue with a generator that says something else.
-    fn settings(&self) -> String;
+    /// Names the generator and everything that decides what it produces, and its
+    /// version. A stored world records both: it refuses to continue with a generator
+    /// whose identity is another, or whose version is below the highest that made a
+    /// chunk it stores (`docs/adr/0021-generation-is-a-function.md`, section 8).
+    fn settings(&self) -> GeneratorSettings;
 
     /// Has `done` called once with the chunk, on any thread, perhaps before this
     /// returns. After the [`Wanted`] is dropped, `done` may never be called.

@@ -20,16 +20,19 @@ away or name another, and a new world is made.
 
 ## Principles
 
-- **What a region was given is stored.** A chunk is stored as the region that holds it
-  has it, so that what a player was shown is what is there after a restart, whatever a
-  later generator would make of the place
-  (`docs/adr/0021-generation-is-a-function.md`). *Not built yet*: until that record's
-  step W5 a region saves the chunks it changed, and a chunk that was never saved is
-  generated again when it is needed.
-- **A world takes a newer generator.** A world records the generator settings it was
-  made with and refuses to open with others; the version of the generator is no part
-  of them, and a chunk says which version it is exactly as made by. *Not built yet*
-  either: there is one version of each generator so far.
+- **What a region was given is stored.** A chunk that is generated for a region is
+  noted behind the answer and becomes durable with the next sync the store makes, at
+  the latest when the store is stopped in order. Until then it is made again when
+  needed, and is the same. A chunk that was never handed to a region is not stored.
+  Every stored chunk says whether it is exactly as a generator made it, which version
+  of the generator, and whether something failed while it was made
+  (`docs/adr/0021-generation-is-a-function.md`, section 6).
+- **A world is tied to the generator it was made with, and takes a newer version of
+  it.** `meta` records the generator's settings and the highest version that made a
+  chunk the world stores. A server with other settings, or with an older version, is
+  refused. One with a newer version opens the world: what is stored stays as it is,
+  what is made from then on is the newer generator's, and a chunk that was stored with
+  a failure and never changed is made again.
 - **A chunk is one file**, checksummed, written whole or not at all. Nothing is shared
   between chunks, and a chunk that is saved again leaves nothing behind.
 - **Files are never modified in place.** Every file but the log is written under a
@@ -54,10 +57,20 @@ away or name another, and a new world is made.
 
 - `meta` is a text file of `key=value` lines: `format` (the format version),
   `data-version` (the Minecraft data version whose block state and biome ids the world
-  uses) and `generator` (the generator settings). It will have `generator-version`
-  besides, the highest version of the generator that made a chunk the world stores
-  (`docs/adr/0021-generation-is-a-function.md`, section 8); no store writes or reads
-  that line yet.
+  uses), `generator` (the generator's settings, but its version) and
+  `generator-version`, the highest version of the generator that made a chunk the world
+  stores (`docs/adr/0021-generation-is-a-function.md`, section 8). That line is written
+  when the world is made, with the version of the generator that made it. A store with
+  a newer generator opens the world and changes nothing, until the sync that would
+  first put in place a file that holds a chunk the newer version made, or a chunk
+  changed from one: that sync first replaces `meta` with the newer version and syncs it
+  and its directory, and only then puts the chunk files in place. A store with an older
+  generator than the line names stops and says:
+
+  ```text
+  This world holds chunks made by generator version 7, and this server has version 5.
+  Start it with a server that is at least as new.
+  ```
 - `log` holds the write-ahead log that all regions share, in segments numbered in the
   order they were begun (twenty decimal digits).
 - `regions/table` holds the regions there are and the chunks each holds, as of a place
@@ -356,6 +369,9 @@ store that starts with no segment left numbers its next one from the file's `fro
   the owner is answered.
 - A chunk a region gives back is free once the saves the region asked for before are
   durable; only then is the `Returned` record written.
+- A chunk that was generated for a region is noted for writing when the region is
+  answered, and is written with the next checkpoint, return, flush or opening of any
+  region, when 512 such chunks wait, or when the store is stopped.
 - When the store starts it leaves the log as it is, unless the world was divided
   otherwise (see "Regions").
 

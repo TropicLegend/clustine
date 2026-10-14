@@ -176,17 +176,19 @@ fn a_chunk_carries_the_light_of_its_blocks_beside_its_eight_neighbours() {
 }
 
 #[test]
-fn the_settings_name_the_seed_and_the_version() {
+fn the_settings_name_the_seed_and_the_version_apart() {
     let settings = TerrainGenerator::new(SEED).settings();
     assert_eq!(
-        settings,
-        format!("terrain;preview {TERRAIN_VERSION};minecraft:overworld;seed 13579")
+        settings.identity,
+        "terrain;preview;minecraft:overworld;seed 13579"
     );
+    assert_eq!(settings.version, TERRAIN_VERSION);
     assert_ne!(settings, TerrainGenerator::new(-SEED).settings());
     assert_ne!(settings, FlatGenerator::classic().settings());
     assert!(
         TerrainGenerator::new(-SEED)
             .settings()
+            .identity
             .ends_with("seed -13579")
     );
 }

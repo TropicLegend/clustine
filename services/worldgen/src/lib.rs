@@ -10,6 +10,7 @@ pub mod terrain;
 
 use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks, synced_registry};
 use clustine_light::Around;
+use clustine_world::generation::GeneratorSettings;
 use clustine_world::{Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE};
 
 pub use crate::terrain::{TERRAIN_VERSION, TerrainGenerator};
@@ -97,18 +98,22 @@ impl ChunkGenerator for FlatGenerator {
         self.made.clone()
     }
 
-    fn settings(&self) -> String {
+    fn settings(&self) -> GeneratorSettings {
         let layers: Vec<_> = self
             .layers
             .iter()
             .map(|state| state.block().map_or("unknown", |block| block.name))
             .collect();
-        format!(
+        let identity = format!(
             "flat;{};from {};biome {}",
             layers.join(","),
             self.dimension.min_y,
             self.biome.0
-        )
+        );
+        GeneratorSettings {
+            identity,
+            version: FLAT_VERSION,
+        }
     }
 }
 
@@ -143,6 +148,8 @@ mod tests {
     #[test]
     fn settings_describe_the_layers() {
         let settings = FlatGenerator::classic().settings();
+        assert_eq!(settings.version, FLAT_VERSION);
+        let settings = settings.identity;
         assert!(
             settings.starts_with(
                 "flat;minecraft:bedrock,minecraft:dirt,minecraft:dirt,minecraft:grass_block;from -64;"

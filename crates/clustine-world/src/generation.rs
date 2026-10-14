@@ -177,8 +177,11 @@ mod tests {
             panic!("this generator always fails");
         }
 
-        fn settings(&self) -> String {
-            "panics".into()
+        fn settings(&self) -> GeneratorSettings {
+            GeneratorSettings {
+                identity: "panics".into(),
+                version: 1,
+            }
         }
     }
 

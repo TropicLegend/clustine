@@ -17,6 +17,7 @@ use std::time::Duration;
 use clustine_data::blocks;
 use clustine_format::RegionFile;
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList, SplitPart};
+use clustine_world::generation::GeneratorSettings;
 use clustine_world::{Chunk, ChunkPos};
 
 use super::*;
@@ -48,7 +49,7 @@ impl ChunkGenerator for Watched {
         generator().generate(position)
     }
 
-    fn settings(&self) -> String {
+    fn settings(&self) -> GeneratorSettings {
         generator().settings()
     }
 }

@@ -165,11 +165,11 @@ impl<S: Stages> ChunkGenerator for Scheduler<S> {
         }
     }
 
-    fn settings(&self) -> String {
-        format!(
-            "{} version {}",
-            self.shared.context.identity, self.shared.context.version
-        )
+    fn settings(&self) -> clustine_world::generation::GeneratorSettings {
+        clustine_world::generation::GeneratorSettings {
+            identity: self.shared.context.identity.clone(),
+            version: self.shared.context.version,
+        }
     }
 
     fn request(&self, position: ChunkPos, done: Done) -> Wanted {

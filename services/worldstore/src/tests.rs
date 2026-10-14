@@ -11,6 +11,7 @@ use std::time::Duration;
 use clustine_data::{BlockState, DATA_VERSION, blocks};
 use clustine_format::{LogRecord, read_log};
 use clustine_rpc::TickState;
+use clustine_world::generation::GeneratorSettings;
 use clustine_world::{
     BlockPos, Chunk, ChunkPos, EntityIds, InChunk, LIGHT_ARRAY_LENGTH, Light, ScheduledTick,
     SectionLight, Ticked,
@@ -877,7 +878,7 @@ impl ChunkGenerator for Held {
         generator().generate(position)
     }
 
-    fn settings(&self) -> String {
+    fn settings(&self) -> GeneratorSettings {
         generator().settings()
     }
 }
@@ -1068,8 +1069,11 @@ fn a_world_is_tied_to_its_generator() {
         fn generate(&self, position: ChunkPos) -> Chunk {
             FlatGenerator::classic().generate(position)
         }
-        fn settings(&self) -> String {
-            "something else".to_owned()
+        fn settings(&self) -> GeneratorSettings {
+            GeneratorSettings {
+                identity: "something else".to_owned(),
+                version: 1,
+            }
         }
     }
 
@@ -1099,7 +1103,7 @@ fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with
 
     let of_seed = |seed: i64| -> Arc<dyn ChunkGenerator> { Arc::new(TerrainGenerator::new(seed)) };
     let refused = |directory: &std::path::Path, generator: Arc<dyn ChunkGenerator>| {
-        let current = generator.settings();
+        let current = generator.settings().identity;
         let Err(error) = spawn_local(directory, generator) else {
             panic!("the world was opened as {current}");
         };
@@ -1119,7 +1123,7 @@ fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with
     drop(spawn_local(seeded.path(), of_seed(13579)).unwrap());
     // Again with the same seed is fine, by a generator that was made anew.
     drop(spawn_local(seeded.path(), of_seed(13579)).unwrap());
-    let stored = of_seed(13579).settings();
+    let stored = of_seed(13579).settings().identity;
     assert_eq!(refused(seeded.path(), of_seed(13580)), stored);
     assert_eq!(refused(seeded.path(), of_seed(-13579)), stored);
     assert_eq!(refused(seeded.path(), generator()), stored);
@@ -1128,7 +1132,10 @@ fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with
 
     let flat = tempfile::tempdir().unwrap();
     drop(spawn_local(flat.path(), generator()).unwrap());
-    assert_eq!(refused(flat.path(), of_seed(13579)), generator().settings());
+    assert_eq!(
+        refused(flat.path(), of_seed(13579)),
+        generator().settings().identity
+    );
     drop(spawn_local(flat.path(), generator()).unwrap());
 }
 
@@ -1230,7 +1237,7 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
 /// it was, byte for byte.
 #[test]
 fn a_world_of_format_1_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched() {
-    let settings = generator().settings();
+    let settings = generator().settings().identity;
     let metas = [
         format!("format=1\ndata-version={DATA_VERSION}\ngenerator={settings}\n"),
         // One whose other settings are not this server's either.
@@ -1300,7 +1307,7 @@ fn a_world_of_format_1_is_refused_with_the_records_sentence_and_nothing_in_it_is
 #[test]
 fn a_world_of_a_later_format_is_refused_as_one_this_server_does_not_use() {
     let directory = tempfile::tempdir().unwrap();
-    let settings = generator().settings();
+    let settings = generator().settings().identity;
     let meta = format!("format=3\ndata-version={DATA_VERSION}\ngenerator={settings}\n");
     fs::write(directory.path().join("meta"), &meta).unwrap();
     let Err(error) = spawn_local(directory.path(), generator()) else {

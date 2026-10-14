@@ -28,6 +28,7 @@ use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos};
 use tracing::{error, warn};
 
 use crate::disk::{Disk, parent, temporary};
+use crate::local::Meta;
 use crate::{Message, Opened, Peer, StoreError};
 
 /// The epoch a chunk file has that no region saved: the store wrote it itself, when it
@@ -77,6 +78,10 @@ pub(crate) trait Chunks: Send {
     fn noted(&self) -> usize {
         0
     }
+    /// A chunk that the generator of `version` made has been handed to a region, as it
+    /// was made or to be changed: a file that holds it, or what was made of it, may be
+    /// put in place by the next [`Chunks::sync`] (ADR-0021, section 6).
+    fn handed(&mut self, _version: u16) {}
 }
 
 /// Keeps chunks in memory: they last as long as the store.
@@ -130,6 +135,10 @@ pub(crate) struct FileChunks {
     root: PathBuf,
     /// The chunks saved or noted since the last sync, each as it was last saved.
     pending: BTreeMap<ChunkPos, Saved>,
+    /// The world's `meta`, where there is one to keep up.
+    meta: Option<Meta>,
+    /// The highest version of the generator that made a chunk handed to a region.
+    handed: u16,
 }
 
 /// A chunk that was saved or noted and is not in the files yet.
@@ -195,7 +204,15 @@ impl FileChunks {
             disk,
             root: root.to_owned(),
             pending: BTreeMap::new(),
+            meta: None,
+            handed: 0,
         }
+    }
+
+    /// Keeps the `generator-version` of the world's `meta` up with what is stored.
+    pub(crate) fn with_meta(mut self, meta: Meta) -> Self {
+        self.meta = Some(meta);
+        self
     }
 
     pub(crate) fn chunk_path(&self, position: ChunkPos) -> PathBuf {
@@ -284,6 +301,20 @@ impl Chunks for FileChunks {
         if self.pending.is_empty() {
             return Ok(());
         }
+        if let Some(meta) = &mut self.meta
+            && meta.version < self.handed
+        {
+            // Before any file that may hold a chunk of the newer version is put in
+            // place, so that no file of the world holds a chunk of a version above
+            // the one `meta` names (ADR-0021, section 6). Until then an older server
+            // can still open the world.
+            if let Err(error) = meta.raise(self.disk.as_ref(), self.handed) {
+                // As a round that failed: the saves are made again by whoever saved
+                // them, and the notes by the next sync.
+                self.pending.retain(|_, saved| saved.noted);
+                return Err(error.into());
+            }
+        }
         let files: Vec<_> = self
             .pending
             .iter()
@@ -312,6 +343,10 @@ impl Chunks for FileChunks {
 
     fn noted(&self) -> usize {
         self.pending.values().filter(|saved| saved.noted).count()
+    }
+
+    fn handed(&mut self, version: u16) {
+        self.handed = self.handed.max(version);
     }
 }
 
@@ -595,6 +630,9 @@ pub(crate) struct ChunkService {
     arrivals: Arrivals,
     /// For the generator's answers to wake the thread with.
     wake: Sender<Job>,
+    /// The generator's version: a stored chunk that an older one made with a failure
+    /// is made again (ADR-0021, section 6, S8).
+    version: u16,
     /// Last, so that it is dropped last: a test that holds a generator learns from
     /// that that the thread has ended.
     generator: Arc<dyn ChunkGenerator>,
@@ -618,6 +656,7 @@ impl ChunkService {
             requests: 0,
             arrivals: Arrivals::default(),
             wake,
+            version: generator.settings().version,
             generator,
         }
     }
@@ -803,10 +842,10 @@ impl ChunkService {
         self.queue.insert(index, Entry::Loading(loading));
     }
 
-    /// Whether a stored chunk is made again by this generator: never, until the
-    /// generator says which version it is.
-    fn remakes(&self, _stored: &Chunk) -> bool {
-        false
+    /// Whether a stored chunk counts as not stored: an older generator failed in it,
+    /// and nobody changed it since, which would have taken the mark (S8).
+    fn remakes(&self, stored: &Chunk) -> bool {
+        stored.with_failure() && stored.generated() < self.version
     }
 
     /// Asks the generator for the chunk at `position`. Its answer comes among the
@@ -843,6 +882,7 @@ impl ChunkService {
                         .expect("the restore waits for this request");
                     match made {
                         Some(Ok(chunk)) => {
+                            self.chunks.handed(chunk.generated());
                             restoring.bases.insert(position, chunk);
                         }
                         Some(Err(Failed)) => {
@@ -887,6 +927,8 @@ impl ChunkService {
                     position,
                     chunk: chunk.clone(),
                 });
+                self.chunks.handed(chunk.generated());
+                // Under S8 in the old chunk's place.
                 self.note(position, &chunk);
             }
             made => {
@@ -992,6 +1034,7 @@ impl ChunkService {
             wanted.remove(&position);
             match chunk {
                 Ok(chunk) => {
+                    self.chunks.handed(chunk.generated());
                     bases.insert(position, chunk);
                 }
                 Err(Failed) => lost(position, touched[&position], &"it failed"),
@@ -1202,7 +1245,7 @@ mod tests {
 
     use clustine_data::blocks;
     use clustine_rpc::{RegionHello, StoreRequest};
-    use clustine_world::generation::Done;
+    use clustine_world::generation::{Done, GeneratorSettings};
     use clustine_worldgen::FlatGenerator;
 
     use super::*;
@@ -1308,7 +1351,7 @@ mod tests {
             made(position)
         }
 
-        fn settings(&self) -> String {
+        fn settings(&self) -> GeneratorSettings {
             generator().settings()
         }
 

@@ -35,6 +35,7 @@ use clustine_terrain::biome::zoom::obfuscate_seed;
 use clustine_terrain::biome::{BiomeSource, Dimension};
 use clustine_terrain::fill::Terrain;
 use clustine_terrain::surface::Biomes;
+use clustine_world::generation::GeneratorSettings;
 use clustine_world::{BIOME_CELLS, Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE, Vec3};
 
 /// The version of the terrain generator: what a chunk says it is exactly as made by
@@ -301,10 +302,13 @@ impl ChunkGenerator for TerrainGenerator {
         chunk
     }
 
-    fn settings(&self) -> String {
-        format!(
-            "terrain;preview {TERRAIN_VERSION};{};seed {}",
-            self.dimension.name, self.seed
-        )
+    fn settings(&self) -> GeneratorSettings {
+        // The version is a line of its own in a world's `meta`: a newer one opens the
+        // world (ADR-0021, section 6).
+        let identity = format!("terrain;preview;{};seed {}", self.dimension.name, self.seed);
+        GeneratorSettings {
+            identity,
+            version: TERRAIN_VERSION,
+        }
     }
 }

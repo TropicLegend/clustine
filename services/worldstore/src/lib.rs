@@ -103,6 +103,13 @@ pub enum StoreError {
         current: u8,
         directory: PathBuf,
     },
+    /// A chunk the world stores was made by a newer version of the generator than this
+    /// server has (`docs/adr/0021-generation-is-a-function.md`, section 6).
+    #[error(
+        "This world holds chunks made by generator version {world}, and this server has \
+         version {server}. Start it with a server that is at least as new."
+    )]
+    OlderGenerator { world: u16, server: u16 },
     #[error("the world was made with {setting} `{stored}`, but this server uses `{current}`")]
     Incompatible {
         setting: &'static str,
@@ -335,8 +342,8 @@ impl Store {
         division: Division,
     ) -> Result<Store, StoreError> {
         let disk: Arc<dyn Disk> = Arc::new(OsDisk::default());
-        local::prepare(&disk, root, generator.as_ref())?;
-        let chunks = FileChunks::new(Arc::clone(&disk), root);
+        let meta = local::prepare(&disk, root, generator.as_ref())?;
+        let chunks = FileChunks::new(Arc::clone(&disk), root).with_meta(meta);
         start(disk, root, Box::new(chunks), generator, &division)
     }
 
