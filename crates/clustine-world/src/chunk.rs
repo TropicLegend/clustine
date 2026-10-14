@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use clustine_data::{BLOCK_INFO, BLOCK_STATE_COUNT, BlockState, DimensionType, blocks};
 use serde::{Deserialize, Serialize};
 
+use crate::generation::{Done, Failed, Wanted};
 use crate::light::{Light, SectionLight};
 use crate::{Biome, COLUMNS_PER_CHUNK, ChunkPos, SECTION_SIZE, Section};
 
@@ -614,6 +615,18 @@ pub trait ChunkGenerator: Send + Sync {
     /// Names the generator and everything that decides what it produces. A stored world
     /// records this and refuses to continue with a generator that says something else.
     fn settings(&self) -> String;
+
+    /// Has `done` called once with the chunk, on any thread, perhaps before this
+    /// returns. After the [`Wanted`] is dropped, `done` may never be called.
+    ///
+    /// Unless a generator says otherwise, the chunk is generated here and now, and a
+    /// panic in [`generate`](Self::generate) is answered as [`Failed`].
+    fn request(&self, position: ChunkPos, done: Done) -> Wanted {
+        let made =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.generate(position)));
+        done(made.map_err(|_| Failed));
+        Wanted::nothing()
+    }
 }
 
 #[cfg(test)]

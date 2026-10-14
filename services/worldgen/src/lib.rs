@@ -4,6 +4,7 @@
 //! [`TerrainGenerator`], a preview of the game's bare land for a seed (see
 //! [`terrain`]).
 
+pub mod stages;
 pub mod terrain;
 
 use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks, synced_registry};

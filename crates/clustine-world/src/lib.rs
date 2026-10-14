@@ -4,6 +4,7 @@
 //! and to these types.
 
 mod chunk;
+pub mod generation;
 mod light;
 mod position;
 mod section;
