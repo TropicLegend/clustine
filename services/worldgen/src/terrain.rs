@@ -122,6 +122,11 @@ impl TerrainGenerator {
         }
     }
 
+    /// The dimension type of what this makes.
+    pub fn dimension(&self) -> &'static DimensionType {
+        self.dimension
+    }
+
     /// The seed of the world.
     pub fn seed(&self) -> i64 {
         self.seed

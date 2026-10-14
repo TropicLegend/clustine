@@ -32,7 +32,7 @@ pub(crate) fn around(centre: ChunkPos, radius: i32) -> impl Iterator<Item = Chun
 pub(crate) fn sees(order: Order, d: ChunkPos, seer: ChunkPos) -> bool {
     match order {
         Order::Nine => rank(d) < rank(seer) && distance(d, seer) <= 2,
-        Order::Alone => false,
+        Order::Alone | Order::Bare => false,
     }
 }
 
@@ -60,6 +60,15 @@ impl Key {
     /// starts are not among them: the terrain of its centre keeps the starts it
     /// references.
     pub(crate) fn needs(self, order: Order) -> Vec<Key> {
+        if order == Order::Bare {
+            // Nothing starts and nothing is placed, so a chunk is finished as its
+            // terrain is, and terrain needs no starts.
+            return match self {
+                Key::Starts(_) | Key::Terrain(_) | Key::Run(_) => Vec::new(),
+                Key::Finished(e) => vec![Key::Terrain(e)],
+                Key::Lit(p) => around(p, 1).map(Key::Finished).collect(),
+            };
+        }
         match self {
             Key::Starts(_) => Vec::new(),
             Key::Terrain(p) => around(p, 8).map(Key::Starts).collect(),

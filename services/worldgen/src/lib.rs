@@ -4,6 +4,7 @@
 //! [`TerrainGenerator`], a preview of the game's bare land for a seed (see
 //! [`terrain`]).
 
+pub mod preview;
 pub mod scheduler;
 pub mod stages;
 pub mod terrain;
@@ -13,6 +14,7 @@ use clustine_light::Around;
 use clustine_world::generation::GeneratorSettings;
 use clustine_world::{Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE};
 
+pub use crate::preview::PreviewStages;
 pub use crate::terrain::{TERRAIN_VERSION, TerrainGenerator};
 
 /// Generates a flat world: the same layers of blocks in every chunk.

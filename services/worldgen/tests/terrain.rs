@@ -239,3 +239,37 @@ fn players_enter_on_the_ground_of_the_column_at_the_origin_or_on_its_water() {
     // The sea of that seed is 63 high, and the player's feet are over it.
     assert_eq!(TerrainGenerator::new(SEED).spawn_point().y, 63.0);
 }
+
+/// The preview made on the scheduler's pool is the preview: the same chunk, lit the
+/// same, marked the same, whichever chunk is asked for first and on any number of
+/// threads.
+#[test]
+fn the_preview_on_the_scheduler_makes_the_chunks_the_preview_makes() {
+    use std::sync::Arc;
+
+    use clustine_worldgen::PreviewStages;
+    use clustine_worldgen::scheduler::{Options, Order, Scheduler};
+
+    let terrain = Arc::new(TerrainGenerator::new(SEED));
+    let positions = [
+        ChunkPos::new(0, 0),
+        ChunkPos::new(1, 0),
+        ChunkPos::new(-7, 12),
+    ];
+    for threads in [1, 4] {
+        let scheduler = Scheduler::new(
+            PreviewStages::new(Arc::clone(&terrain)),
+            Options {
+                threads,
+                order: Order::Bare,
+                ..Options::for_processors(threads)
+            },
+        );
+        assert_eq!(scheduler.settings(), terrain.settings());
+        for position in positions.iter().rev() {
+            assert_eq!(scheduler.generate(*position), terrain.generate(*position));
+        }
+        let figures = scheduler.figures();
+        assert_eq!((figures.starts, figures.runs), (0, 0));
+    }
+}

@@ -1227,6 +1227,8 @@ impl Model {
                         self.toy.decorate(&mut view, centre);
                         apply(&mut world, log);
                     }
+                    // Bare runs nothing: it is for stages that place nothing.
+                    Order::Bare => {}
                 }
             }
         }

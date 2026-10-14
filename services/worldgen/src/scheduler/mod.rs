@@ -24,6 +24,10 @@ pub enum Order {
     Nine,
     /// None: every run sees terrain alone (shape B, for measuring).
     Alone,
+    /// No runs at all, and no starts: a finished chunk is its terrain. Only for stages
+    /// that start and place nothing, such as the preview of bare land, which would
+    /// otherwise make the terrain of 289 chunks to light one.
+    Bare,
 }
 
 /// Which ready task a free thread takes.

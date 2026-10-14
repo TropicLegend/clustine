@@ -25,7 +25,8 @@ use clustine_region::RegionId;
 use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_world::{ChunkGenerator, ChunkPos, Vec3};
-use clustine_worldgen::{FlatGenerator, TerrainGenerator};
+use clustine_worldgen::scheduler::{Options, Order, Scheduler};
+use clustine_worldgen::{FlatGenerator, PreviewStages, TerrainGenerator};
 use clustine_worldstore::{Division, Store, StoreError};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -92,14 +93,15 @@ impl Land {
         }
     }
 
-    /// The bare land of the overworld with this seed: a preview, see
+    /// The bare land of the overworld with this seed, made on the generation
+    /// scheduler's pool: a preview, see
     /// `clustine_worldgen::terrain`. Players enter above the block at the origin as
     /// in the flat world, on the ground of that column or on the water over it.
     ///
     /// This seeds the world's noises and makes the chunk at the origin, which takes
     /// some tens of milliseconds.
     pub fn of_seed(seed: i64) -> Self {
-        let terrain = TerrainGenerator::new(seed);
+        let terrain = Arc::new(TerrainGenerator::new(seed));
         let login = LoginWorld {
             hashed_seed: terrain.hashed_seed(),
             flat: false,
@@ -108,7 +110,15 @@ impl Land {
         Self {
             spawn: terrain.spawn_point(),
             login,
-            generator: Arc::new(terrain),
+            // Made on a pool of its own, off the store's thread for chunks, nearest a
+            // joining player first (ADR-0021, section 5).
+            generator: Arc::new(Scheduler::new(
+                PreviewStages::new(terrain),
+                Options {
+                    order: Order::Bare,
+                    ..Options::for_processors(processors())
+                },
+            )),
         }
     }
 
@@ -507,4 +517,9 @@ impl Server {
         };
         let _ = tokio::task::spawn_blocking(rest).await;
     }
+}
+
+/// The processors of this machine, which the generation pool takes two thirds of.
+fn processors() -> usize {
+    std::thread::available_parallelism().map_or(1, usize::from)
 }
