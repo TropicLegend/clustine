@@ -2920,11 +2920,23 @@ async fn a_served_coordinator_whose_store_is_away_says_so_in_its_log() {
     let _listening = tracing::subscriber::set_default(lines.clone());
     tracing::callsite::rebuild_interest_cache();
     let mut served = Served::as_a_process(config(SHORT_LEASE, None), None).await;
-    for _ in 0..3 {
+    let message = "the world store's list of regions cannot be read";
+    // A reading is begun when the one before has come back and failed, so by the
+    // third the line has been written once. Whether this thread's listener is asked
+    // is remembered for each place a line is written from, for the whole process:
+    // a test on another thread, which listens to nothing, can have that place noted
+    // as one nobody listens to between the moment this test says otherwise and the
+    // moment the line is written. So it is said again before each reading, and
+    // looked for over more readings than the two that would do.
+    let mut said = Vec::new();
+    for _ in 0..20 {
+        tracing::callsite::rebuild_interest_cache();
         served.reading().await;
+        said = lines.of(message);
+        if said.len() >= 2 {
+            break;
+        }
     }
-    // The third reading was begun when the second had come back and failed.
-    let said = lines.of("the world store's list of regions cannot be read");
     assert!(!said.is_empty(), "nothing was said of the store");
 }
 
