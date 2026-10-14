@@ -410,6 +410,17 @@ pub enum StoreReply {
     Unreadable {
         position: ChunkPos,
     },
+    /// The chunk is not stored and is being made; [`StoreReply::Loaded`] or
+    /// [`StoreReply::Unreadable`] follows for this load. See ADR-0021, section 7.
+    Generating {
+        position: ChunkPos,
+    },
+    /// A load of `position` that is not answered otherwise, because the region gave
+    /// the chunk back while the chunk was being made. It answers that load: the
+    /// worker counts answers by position. See ADR-0021, section 7, rule 5.
+    Withdrawn {
+        position: ChunkPos,
+    },
     /// The commit of `tick` is on disk, and so is every one before it.
     Committed {
         tick: u64,

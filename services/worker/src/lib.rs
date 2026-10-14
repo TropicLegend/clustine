@@ -1237,6 +1237,15 @@ impl RegionRunner {
                         self.release_held();
                     }
                 }
+                // Nothing waits for word that a chunk is being made but the hold
+                // of a link, which ADR-0021's step W5h gives it.
+                StoreReply::Generating { .. } => {}
+                // A load the region no longer wants, since it gave the chunk back: it
+                // is counted as that load's answer, so that the answer to a later
+                // load of the chunk is not taken for this one's.
+                StoreReply::Withdrawn { position } => {
+                    self.answers_the_latest_load(position);
+                }
                 // The store's answers to the claims of earlier ticks, in the order of
                 // those claims. They go into the coming tick whenever that runs: a chunk
                 // the region has asked for is asked until it is answered, so an answer
