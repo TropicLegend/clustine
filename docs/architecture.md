@@ -11,7 +11,8 @@ process or as processes of their own, on Kubernetes or without. Since the first 
 milestone M3 a region is durable: its worker shows players nothing that the world store
 does not have on disk, another worker can carry on with it from there, and the edge
 keeps its players meanwhile and resumes with whoever runs the region then; see
-[ADR-0008](adr/0008-durable-regions-and-resuming.md). World generation is a flat world
+[ADR-0008](adr/0008-durable-regions-and-resuming.md). World generation is a flat world,
+or with `--seed` a preview of that seed's bare land, made
 inside the world store; `playerdata` and the operator do not exist yet.
 
 Where the implementation is simpler than the design below:

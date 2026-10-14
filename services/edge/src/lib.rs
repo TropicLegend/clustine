@@ -61,6 +61,33 @@ pub struct EdgeConfig {
     /// anything made durable. A player kept waiting longer is disconnected. It has to
     /// stay below the time after which a region forgets an edge it has not heard from.
     pub region_patience: Duration,
+    /// What a client is told of the world when it logs in.
+    pub login: LoginWorld,
+}
+
+/// What a client is told of the world when it logs in, which follows from what
+/// generates the world and which an edge cannot know by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginWorld {
+    /// The game's `BiomeManager.obfuscateSeed` of the world's seed. A client blurs the
+    /// borders between biomes with it, as the server does where it asks for the biome
+    /// of a block, so the two have to agree for grass and water to be coloured where
+    /// the land says.
+    pub hashed_seed: i64,
+    /// Whether the world is a flat one, in which a client puts the horizon at the
+    /// bottom of the world and shows no fog of the void.
+    pub flat: bool,
+    /// The height of the sea.
+    pub sea_level: i32,
+}
+
+impl LoginWorld {
+    /// The flat world, as a client has been told of it so far.
+    pub const FLAT: LoginWorld = LoginWorld {
+        hashed_seed: 0,
+        flat: true,
+        sea_level: -63,
+    };
 }
 
 impl EdgeConfig {

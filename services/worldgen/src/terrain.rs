@@ -1,0 +1,255 @@
+//! A preview of the game's land: the bare terrain of a seed, chunk by chunk.
+//!
+//! **This is a preview, and the generation service of
+//! `docs/adr/0021-generation-is-a-function.md` replaces it.** It exists so that the
+//! land `clustine-terrain` makes can be walked with a real client before that
+//! service is built. What it is not:
+//!
+//! - It makes a chunk in one call on the thread of whoever asks, which is the world
+//!   store's one chunk thread: there is no pool, no order of runs, and the store does
+//!   not keep what it handed out, so a chunk nobody changed is made again every time
+//!   it is loaded.
+//! - It stops after the game's carvers. Nothing that is a structure or a feature is
+//!   there: no trees, no plants, no ores but the veins, no lakes, springs, snow on
+//!   the ground or ice on water, no villages.
+//! - The marks of the fill (fluids that are to flow a step when the chunk is first
+//!   ticked) are carried, and nothing acts on them yet: water stands where the game
+//!   would let it run.
+//!
+//! What it does as the service will: a chunk is a function of the seed and the
+//! position, and its light is made beside its eight neighbours' blocks, each of which
+//! is this generator's as well, which the light says (`Light::beside`,
+//! `docs/adr/0023-light-at-the-edge.md`, section 7). A chunk's light therefore needs
+//! nine chunks' blocks. The generator keeps the unlit chunks it made last, so that
+//! requests for neighbouring chunks share them; what it keeps changes what a chunk
+//! costs and never what it is.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use clustine_data::{DIMENSION_TYPES, DimensionType};
+use clustine_light::Around;
+use clustine_terrain::biome::zoom::obfuscate_seed;
+use clustine_terrain::biome::{BiomeSource, Dimension};
+use clustine_terrain::fill::Terrain;
+use clustine_terrain::surface::Biomes;
+use clustine_world::{BIOME_CELLS, Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE, Vec3};
+
+/// The version of the terrain generator: what a chunk says it is exactly as made by
+/// (`docs/adr/0022-what-a-chunk-carries.md`, section 1), and what its light says its
+/// neighbours were made by. It is raised when the generator would make another chunk
+/// from the same seed, and the settings name it, so that a world of an earlier version
+/// is refused and not continued with land that does not fit.
+pub const TERRAIN_VERSION: u16 = 1;
+
+/// How many unlit chunks the generator keeps. A join at the view distance 8 asks for
+/// 329 chunks, whose light reads the ring around them as well: within 23 by 23
+/// chunks, which this holds with room for whoever walks meanwhile.
+const KEPT: usize = 1024;
+
+/// A cell of four blocks along each axis, as biomes are kept.
+const CELL: usize = 4;
+
+/// The unlit chunks made last, each with when it was last asked for.
+#[derive(Default)]
+struct Kept {
+    /// A number that grows with every question, which is what "last" goes by.
+    asked: u64,
+    /// By position. The order of the map decides nothing: which chunk is let go
+    /// follows from `asked`, and a chunk that was let go is made again the same.
+    chunks: BTreeMap<ChunkPos, (u64, Arc<Chunk>)>,
+}
+
+/// Generates the overworld of a seed as the game's fill, surface and carvers leave
+/// it, with the game's biomes, lit. See the head of this module for what that leaves
+/// out and for what replaces it.
+pub struct TerrainGenerator {
+    seed: i64,
+    dimension: &'static DimensionType,
+    terrain: Terrain,
+    biomes: BiomeSource,
+    /// Changes what a chunk costs, never what it is.
+    kept: Mutex<Kept>,
+    /// What the light is worked out in, kept to save its allocations. Whoever finds
+    /// it taken works in one of their own.
+    scratch: Mutex<clustine_light::Scratch>,
+}
+
+impl std::fmt::Debug for TerrainGenerator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerrainGenerator")
+            .field("seed", &self.seed)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TerrainGenerator {
+    /// The generator of the overworld of the world with this seed. Making one seeds
+    /// the dimension's noises, which takes a moment; make it once.
+    pub fn new(seed: i64) -> Self {
+        let dimension = DIMENSION_TYPES
+            .iter()
+            .find(|dimension| dimension.name == Dimension::Overworld.type_name())
+            .expect("the overworld is a vanilla dimension type");
+        Self {
+            seed,
+            dimension,
+            terrain: Terrain::new(seed, Dimension::Overworld),
+            biomes: BiomeSource::new(seed, Dimension::Overworld),
+            kept: Mutex::new(Kept::default()),
+            scratch: Mutex::new(clustine_light::Scratch::new()),
+        }
+    }
+
+    /// The seed of the world.
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// What a client is sent in place of the seed, and blurs the borders of biomes
+    /// with: the game's `BiomeManager.obfuscateSeed`.
+    pub fn hashed_seed(&self) -> i64 {
+        obfuscate_seed(self.seed)
+    }
+
+    /// The height of the dimension's sea, which a client is told when it logs in.
+    pub fn sea_level(&self) -> i32 {
+        self.terrain.settings().sea_level
+    }
+
+    /// The chunk's blocks, biomes and marks as the game's fill, surface and carvers
+    /// leave them, without light and not yet marked as generated. This is what the
+    /// light of the chunk and of the eight around it is made from.
+    pub fn unlit(&self, position: ChunkPos) -> Chunk {
+        let around = Biomes::from_source(&self.biomes, position.x, position.z);
+        let carved = self
+            .terrain
+            .carved(position.x, position.z, &around, &self.biomes)
+            .chunk;
+        let marks = carved.marks.clone();
+        let mut sections = carved.sections(self.dimension, Biome(0));
+        // The chunk's own cells are among those the surface was given, so they are
+        // not asked of the source a second time.
+        let (cell_x, cell_z) = (position.x << 2, position.z << 2);
+        let lowest_cell = self.dimension.min_y >> 2;
+        let cells_a_section = SECTION_SIZE / CELL;
+        for (index, section) in sections.iter_mut().enumerate() {
+            let mut cells = Box::new([Biome(0); BIOME_CELLS]);
+            for (cell, biome) in cells.iter_mut().enumerate() {
+                let (x, z, y) = (cell & 3, cell >> 2 & 3, cell >> 4);
+                *biome = around.cell(
+                    cell_x + x as i32,
+                    lowest_cell + (index * cells_a_section + y) as i32,
+                    cell_z + z as i32,
+                );
+            }
+            section.set_biomes(cells);
+        }
+        let mut chunk = Chunk::from_sections(self.dimension.min_y, sections);
+        chunk.set_marks(marks);
+        chunk
+    }
+
+    /// [`Self::unlit`], from what is kept where it is there.
+    fn shared(&self, position: ChunkPos) -> Arc<Chunk> {
+        {
+            let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+            kept.asked += 1;
+            let asked = kept.asked;
+            if let Some((last, chunk)) = kept.chunks.get_mut(&position) {
+                *last = asked;
+                return Arc::clone(chunk);
+            }
+        }
+        // Made without the lock held: two who ask for the same chunk at once both
+        // make it, and it is the same chunk.
+        let chunk = Arc::new(self.unlit(position));
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        let asked = kept.asked;
+        kept.chunks.insert(position, (asked, Arc::clone(&chunk)));
+        while kept.chunks.len() > KEPT {
+            let longest = kept.chunks.iter().min_by_key(|(_, (last, _))| *last);
+            let Some(longest) = longest.map(|(position, _)| *position) else {
+                break;
+            };
+            kept.chunks.remove(&longest);
+        }
+        chunk
+    }
+
+    /// How many unlit chunks are kept at the moment.
+    pub fn kept(&self) -> usize {
+        let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        kept.chunks.len()
+    }
+
+    /// Lets go of every unlit chunk that is kept, as if nothing had been asked yet.
+    pub fn forget(&self) {
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        kept.chunks.clear();
+    }
+
+    /// Where players enter the world: above the middle of the block at the origin,
+    /// as in the flat world, standing on the ground of that column. (Where the game
+    /// itself would put them is step T8 of `docs/groundwork/terrain-plan.md`.)
+    ///
+    /// The ground is the highest block of the column that blocks motion, in the
+    /// chunk as it is generated: a cave that opens there counts. Where that is under
+    /// water or lava the player is put on the fluid's surface and not on the bed.
+    pub fn spawn_point(&self) -> Vec3 {
+        let chunk = self.shared(ChunkPos::new(0, 0));
+        let top = chunk.min_y() + chunk.height() as i32;
+        let state = |y: i32| chunk.get(0, y, 0);
+        let ground = (chunk.min_y()..top)
+            .rev()
+            .find(|y| state(*y).is_some_and(|state| state.props().in_motion_heightmap()));
+        let mut feet = ground.map_or(chunk.min_y(), |ground| ground + 1);
+        while state(feet).is_some_and(|state| state.has_fluid()) {
+            feet += 1;
+        }
+        Vec3::new(0.5, f64::from(feet), 0.5)
+    }
+}
+
+impl ChunkGenerator for TerrainGenerator {
+    fn generate(&self, position: ChunkPos) -> Chunk {
+        let centre = self.shared(position);
+        // North-west first, row by row from the north, without the centre: the order
+        // `Around` takes them in.
+        let beside: Vec<Arc<Chunk>> = (-1..=1)
+            .flat_map(|z| (-1..=1).map(move |x| (x, z)))
+            .filter(|offset| *offset != (0, 0))
+            .map(|(x, z)| self.shared(ChunkPos::new(position.x + x, position.z + z)))
+            .collect();
+        let neighbours: [Option<&Chunk>; 8] = std::array::from_fn(|index| Some(&*beside[index]));
+        let around = Around {
+            centre: &centre,
+            neighbours,
+            // The overworld has a sky; a dimension type does not say yet whether it
+            // has one.
+            sky: true,
+        };
+        let mut light = match self.scratch.try_lock() {
+            Ok(mut scratch) => {
+                clustine_light::light_with(&around, clustine_light::Unlisted::NONE, &mut scratch).0
+            }
+            Err(_) => clustine_light::light(&around),
+        };
+        // The eight beside it are this generator's as well, which an edge goes by
+        // when it asks whether the light still holds beside the chunks it has.
+        light.beside = TERRAIN_VERSION;
+        let mut chunk = (*centre).clone();
+        chunk.set_light(light);
+        // Said last: nothing changes the chunk after this.
+        chunk.mark_generated(TERRAIN_VERSION, false);
+        chunk
+    }
+
+    fn settings(&self) -> String {
+        format!(
+            "terrain;preview {TERRAIN_VERSION};{};seed {}",
+            self.dimension.name, self.seed
+        )
+    }
+}

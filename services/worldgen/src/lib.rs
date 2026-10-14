@@ -1,8 +1,16 @@
 //! World generation service: stateless chunk generation.
+//!
+//! Two generators: the flat world, which a server has unless it is given a seed, and
+//! [`TerrainGenerator`], a preview of the game's bare land for a seed (see
+//! [`terrain`]).
+
+pub mod terrain;
 
 use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks, synced_registry};
 use clustine_light::Around;
 use clustine_world::{Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE};
+
+pub use crate::terrain::{TERRAIN_VERSION, TerrainGenerator};
 
 /// Generates a flat world: the same layers of blocks in every chunk.
 #[derive(Debug, Clone)]

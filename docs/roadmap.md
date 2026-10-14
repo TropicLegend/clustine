@@ -1196,10 +1196,93 @@ and of the Nether's 2,230; for the others our chunks equal the game's own withou
 structures, so what is missing there is what structures do to the ground.
 
 So for a seed the land has the game's shape, the game's skin and the game's caves: a
-chunk takes about 9 ms on one thread. Still to come before it is seen: structures
+chunk takes about 9 ms on one thread. Still to come: structures
 (T7), everything that grows and the ores placed as features (phase F), and the service
-that makes chunks on demand and stores what it handed out. When terrain is switched on the edge also has to send the client
-the hash of the seed, which is 0 today: the client blurs biome borders with it.
+that makes chunks on demand and stores what it handed out.
+
+**The land can be walked: `--seed`** (2026-10-14). A server that is given a seed
+serves that seed's bare overworld, and one that is given none is flat as before.
+What makes the chunks is a second generator beside the flat one
+(`services/worldgen/src/terrain.rs`): the biomes, the carved blocks and the marks of
+`clustine-terrain`, lit by `clustine-light` beside the chunk's eight neighbours.
+**It is a preview, which the generation service of
+[ADR-0021](adr/0021-generation-is-a-function.md) replaces** (W5 and W6 of the plan): a
+chunk is made in one call on the world store's one chunk thread, in no fixed order of
+runs, and the store keeps nothing of what it handed out, so a chunk nobody changed is
+made again whenever it is loaded. The generator keeps the last 1,024 chunks' blocks
+without their light, so that neighbours share them; that changes what a chunk costs
+and not what it is.
+
+- Players enter above the block at the origin, as in the flat world, on the highest
+  block of that column that blocks motion, or on the water where that is under water
+  (the game's own choice of a place is T8). On seed 13579 that is the sea at a coast:
+  one sinks unless one flies.
+- A world records what made it (`terrain;preview 1;minecraft:overworld;seed 13579`),
+  and is refused with another seed or without one, as a flat world is with a seed.
+- In a cluster the seed is told to the world store, the coordinator and every edge
+  (`--seed` on each); nothing checks that they agree, and the manifests under
+  `deploy/` are as they were, which is flat.
+- A client is to be told the hash of the seed, that the world is not flat and that
+  the sea is at 63. The edge is configured with them (`EdgeConfig::login`); its login
+  packet still says 0, flat and -63 until `login_packet` reads them.
+- The bots' scenarios that judge a world (`cross`, `ledger`, `World::clustine()`)
+  know the flat world's ground and are for the flat world only.
+
+What it costs, in an optimised build on one thread of this machine (`cargo run
+--release -p clustine-worldgen --example terrain_speed`): a chunk's blocks and
+biomes 12 ms, its light beside eight 2 ms; a chunk alone, with nothing kept, 110 ms
+(nine chunks' blocks); in a run of neighbours 57 to 70 chunks a second. Through the
+running server with its world in memory (`cargo test --release -p clustine --test
+terrain -- --ignored --nocapture`): **the first join takes 6.3 s** for the 329
+chunks of a view of 8, the player's own chunk coming first, after a third of a
+second; a second player joining beside the first has them all in 0.3 s. Walking
+or flying a chunk further brings 19 new chunks, a third of a second of the one
+thread: one player is kept up with at a sprint (5.6 blocks a second), flying (10.8),
+flying at a sprint (21.6) and at 34 blocks a second, the newest row of chunks coming
+a third of a second behind; at 60 blocks a second, which is gliding with rockets,
+the land comes 1.5 s late. The one thread is shared: three players exploring in
+three directions at a flying sprint take all of it, and a join meanwhile waits. That
+is what ADR-0021's pool is for, and its store what makes a second visit free.
+
+**What to try with a real client: the land beside the game's.** With `--release`,
+and a directory of its own for the world:
+
+```bash
+cargo run --release -p clustine -- --seed 13579 --world world-13579
+```
+
+and, to compare, the official server on the same seed with structures off
+(`level-seed=13579` and `generate-structures=false` in `server.properties`, a new
+world), both in creative mode. Press F3 for the coordinates and fly:
+
+1. You enter at 0, 63, 0 on the sea beside a coast, within half a second, and
+   the land fills in around you for about six seconds, nearest first. Double-tap
+   jump to fly.
+2. **The same land at the same coordinates**: the coast at the origin, the
+   mountains, rivers, oceans and beaches around it, the same biome in F3 at the same
+   place. Fly a few hundred blocks in any direction and compare peaks and shores.
+3. **Underground**: the same caves and ravines at the same places (spectator mode
+   in the official server; here dig down or find a cave mouth), deepslate below 0,
+   bedrock at the bottom, the large ore veins (copper with granite, iron with tuff),
+   lava below -54 in the caves.
+4. **Light**: under overhangs and in cave mouths it fades as in the game, caves are
+   dark, lava glows. Break and place blocks: the light should follow, which is the
+   edge's doing ([ADR-0023](adr/0023-light-at-the-edge.md)).
+5. Leave and join again, and restart the server: the land and what you built are
+   the same.
+
+**What is expected to be missing**, since nothing after the carvers is built: trees,
+grass, flowers and every other plant, kelp and seagrass; the ores but for the large
+veins; lakes, springs and the lava and water that run from them; snow lying on the
+ground and ice on frozen water (snow and ice that are the surface itself, as on
+peaks and icebergs, are there); villages and every other structure, also the
+strongholds' and mineshafts' cuts through caves; animals and monsters. **What will
+look wrong**: water and lava do not flow, so where a cave or a ravine cuts an
+aquifer or the sea, the water stands as a wall, and stays so when a block beside it
+is broken; sand and gravel over a cave stay up when touched; grass and water are
+coloured for their biome a few blocks off at biome borders until the edge sends the
+seed's hash, and far below the sea's height the sky stays light as in a flat world.
+Flying faster than about 35 blocks a second outruns the land.
 
 **Pauses on network storage** (22 ms a synced write; first measured in
 [groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)). Since then

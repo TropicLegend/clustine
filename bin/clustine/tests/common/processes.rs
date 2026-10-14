@@ -38,6 +38,10 @@ pub struct Cluster {
     pub coordinator_arguments: Vec<String>,
     /// What every worker is started with besides what it needs to find the others.
     pub worker_arguments: Vec<String>,
+    /// What the world store and the edge are started with besides: a seed, for a
+    /// world that is not flat, which the coordinator is then given as well.
+    pub store_arguments: Vec<String>,
+    pub edge_arguments: Vec<String>,
     /// The largest view distance the edge grants, in chunks.
     pub view_distance: i32,
     /// The coordinator's lease in seconds, or `None` for the one it has when it is not
@@ -74,6 +78,8 @@ impl Cluster {
             pins: pins.to_owned(),
             coordinator_arguments: Vec::new(),
             worker_arguments: Vec::new(),
+            store_arguments: Vec::new(),
+            edge_arguments: Vec::new(),
             view_distance: VIEW_DISTANCE,
             // The shortest there is. It is also how long a new coordinator waits before
             // it gives regions away.
@@ -104,18 +110,18 @@ impl Cluster {
     /// Starts every process, the ones that depend on others first, so that each has to
     /// wait for what it needs. Returns once players can join.
     pub async fn start(&mut self) {
-        let edge = self.spawn(
+        let view_distance = self.view_distance.to_string();
+        let mut arguments = vec![
             "edge",
-            &[
-                "edge",
-                "--coordinator",
-                &self.coordinator.0,
-                "--bind",
-                &self.edge.0,
-                "--view-distance",
-                &self.view_distance.to_string(),
-            ],
-        );
+            "--coordinator",
+            &self.coordinator.0,
+            "--bind",
+            &self.edge.0,
+            "--view-distance",
+            &view_distance,
+        ];
+        arguments.extend(self.edge_arguments.iter().map(String::as_str));
+        let edge = self.spawn("edge", &arguments);
         self.edge.1 = Some(edge);
         for number in 0..self.workers.len() {
             self.start_worker(number);
@@ -194,6 +200,7 @@ impl Cluster {
         if !self.pins.is_empty() {
             arguments.push(&pins);
         }
+        arguments.extend(self.store_arguments.iter().map(String::as_str));
         let store = self.spawn("worldstore", &arguments);
         self.store.1 = Some(store);
     }

@@ -1090,6 +1090,46 @@ fn a_world_is_tied_to_its_generator() {
     );
 }
 
+/// A world is made one way for good: of a seed, or flat.
+#[test]
+fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with_a_seed() {
+    use clustine_worldgen::TerrainGenerator;
+
+    let of_seed = |seed: i64| -> Arc<dyn ChunkGenerator> { Arc::new(TerrainGenerator::new(seed)) };
+    let refused = |directory: &std::path::Path, generator: Arc<dyn ChunkGenerator>| {
+        let current = generator.settings();
+        let Err(error) = spawn_local(directory, generator) else {
+            panic!("the world was opened as {current}");
+        };
+        let StoreError::Incompatible {
+            setting: "generator",
+            stored,
+            current: said,
+        } = error
+        else {
+            panic!("{error}");
+        };
+        assert_eq!(said, current);
+        stored
+    };
+
+    let seeded = tempfile::tempdir().unwrap();
+    drop(spawn_local(seeded.path(), of_seed(13579)).unwrap());
+    // Again with the same seed is fine, by a generator that was made anew.
+    drop(spawn_local(seeded.path(), of_seed(13579)).unwrap());
+    let stored = of_seed(13579).settings();
+    assert_eq!(refused(seeded.path(), of_seed(13580)), stored);
+    assert_eq!(refused(seeded.path(), of_seed(-13579)), stored);
+    assert_eq!(refused(seeded.path(), generator()), stored);
+    // A refusal changed nothing.
+    drop(spawn_local(seeded.path(), of_seed(13579)).unwrap());
+
+    let flat = tempfile::tempdir().unwrap();
+    drop(spawn_local(flat.path(), generator()).unwrap());
+    assert_eq!(refused(flat.path(), of_seed(13579)), generator().settings());
+    drop(spawn_local(flat.path(), generator()).unwrap());
+}
+
 #[test]
 fn a_damaged_chunk_is_not_replaced_by_a_generated_one() {
     let directory = tempfile::tempdir().unwrap();

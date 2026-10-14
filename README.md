@@ -87,6 +87,19 @@ x = 64:
 cargo run -p clustine -- --pin 4 --reshape by-hand
 ```
 
+With a seed the world is not flat but the bare land of the game's overworld for that
+seed: its mountains, coasts, oceans, rivers, caves and ravines, with the game's
+biomes, block for block what the game makes before it adds structures and anything
+that grows. There are no trees, plants, ores (but the large veins), villages or other
+structures yet. This is a preview: chunks are made on one thread as they are asked
+for, so the land around someone who joins first takes about six seconds to appear
+at the usual view distance, and it needs `--release`. A world is made one way for good, so give it a directory of its
+own; one that holds a flat world, or a world of another seed, is refused.
+
+```bash
+cargo run --release -p clustine -- --seed 13579 --world world-13579
+```
+
 ### Running a cluster
 
 The same binary is each service of a cluster when given a subcommand. This starts a
@@ -118,7 +131,10 @@ Players connect to the edge on `127.0.0.1:25565` once a worker runs the region p
 enter the world in, which takes a moment: a coordinator gives nothing away for the
 first ten seconds. With `coordinator --reshape by-hand` and `worldstore --pin 4` the
 world is two pinned regions, one for each worker, and nothing merges or splits unless
-it is asked for (`clustine merge`, `clustine split`, `clustine move`). The services do
+it is asked for (`clustine merge`, `clustine split`, `clustine move`). For a world with
+a seed, give the same `--seed` to the world store (which makes the chunks), the
+coordinator (which says where players enter the world) and every edge (which tells
+clients of the world); nothing checks that they agree. The services do
 not authenticate each other, so their ports are for a private network only.
 
 [deploy/](deploy/README.md) has the same as Kubernetes manifests, and a test that runs

@@ -19,13 +19,13 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clustine_coordinator::{CoordinatorConfig, Policy, Reach, WorkerClient, serve_local};
 use clustine_data::items;
-pub use clustine_edge::EdgeConfig;
 use clustine_edge::{Edge, EdgeIdentity, Routing};
+pub use clustine_edge::{EdgeConfig, LoginWorld};
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_world::{ChunkGenerator, ChunkPos, Vec3};
-use clustine_worldgen::FlatGenerator;
+use clustine_worldgen::{FlatGenerator, TerrainGenerator};
 use clustine_worldstore::{Division, Store, StoreError};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -59,15 +59,73 @@ pub(crate) fn starting_hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 }))
 }
 
-/// What makes the chunks nobody has changed. Every service that needs it has to use the
-/// same, or the world would not fit together.
+/// What makes the chunks nobody has changed in the flat world.
 pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
 }
 
-/// Where players enter the world: above the middle of the block at the origin.
+/// Where players enter the flat world: above the middle of the block at the origin.
 pub(crate) fn spawn_point() -> Vec3 {
     Vec3::new(0.5, f64::from(FlatGenerator::classic().surface_y()), 0.5)
+}
+
+/// What a world is made of, and what follows from that for the services: what makes
+/// the chunks nobody has changed (the world store's), where players enter (the
+/// coordinator's) and what a client is told of the world (an edge's). Every service
+/// has to go by the same, or the world would not fit together; in a cluster that
+/// means the same `--seed`, or none, for the world store, the coordinator and every
+/// edge.
+#[derive(Clone)]
+pub struct Land {
+    pub(crate) generator: Arc<dyn ChunkGenerator>,
+    pub(crate) spawn: Vec3,
+    pub(crate) login: LoginWorld,
+}
+
+impl Land {
+    /// The flat world, which a server has unless it is told a seed.
+    pub fn flat() -> Self {
+        Self {
+            generator: generator(),
+            spawn: spawn_point(),
+            login: LoginWorld::FLAT,
+        }
+    }
+
+    /// The bare land of the overworld with this seed: a preview, see
+    /// `clustine_worldgen::terrain`. Players enter above the block at the origin as
+    /// in the flat world, on the ground of that column or on the water over it.
+    ///
+    /// This seeds the world's noises and makes the chunk at the origin, which takes
+    /// some tens of milliseconds.
+    pub fn of_seed(seed: i64) -> Self {
+        let terrain = TerrainGenerator::new(seed);
+        let login = LoginWorld {
+            hashed_seed: terrain.hashed_seed(),
+            flat: false,
+            sea_level: terrain.sea_level(),
+        };
+        Self {
+            spawn: terrain.spawn_point(),
+            login,
+            generator: Arc::new(terrain),
+        }
+    }
+
+    /// The land of a seed, or the flat world where there is none.
+    pub fn of(seed: Option<i64>) -> Self {
+        seed.map_or_else(Self::flat, Self::of_seed)
+    }
+
+    /// Where players enter the world.
+    pub fn spawn(&self) -> Vec3 {
+        self.spawn
+    }
+
+    /// What a client is told of the world when it logs in.
+    pub fn login(&self) -> LoginWorld {
+        self.login
+    }
 }
 
 /// Resolves when the process is asked to stop: by an interrupt from the terminal or,
@@ -185,9 +243,15 @@ pub struct Server {
 impl Server {
     /// Starts all services and returns once the server accepts connections. Every
     /// region of the world runs by then: a world that cannot be restored does not
-    /// start, and the error says why.
+    /// start, and the error says why. The world is the flat one.
     pub async fn start(config: Config) -> Result<Self> {
-        let spawn = spawn_point();
+        Self::start_in(config, Land::flat()).await
+    }
+
+    /// [`Self::start`] for a world of the given land.
+    pub async fn start_in(config: Config, land: Land) -> Result<Self> {
+        let spawn = land.spawn;
+        let generator = || Arc::clone(&land.generator);
         let home = ChunkPos::containing(spawn.x, spawn.z);
         let division = if config.pins.is_empty() {
             Division::open(home)
@@ -312,6 +376,7 @@ impl Server {
             client_timeout: config.client_timeout,
             compression_threshold: config.compression_threshold,
             region_patience: config.region_patience,
+            login: land.login,
         };
         let identity = EdgeIdentity::starting_now("edge");
         let (routing, relinks) = Routing::new(home, table.spawn, identity, Vec::new());

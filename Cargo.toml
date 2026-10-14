@@ -64,3 +64,16 @@ opt-level = 3
 
 [profile.dev.package.clustine-data]
 opt-level = 3
+
+# A chunk of a world with a seed is the noise of `clustine-noise`, by the tables of
+# `clustine-worldgen-data`, through `clustine-terrain`, and the end-to-end test of such
+# a world makes some hundreds of them: about a third of a second each without
+# optimisation, against 12 ms in a release build.
+[profile.dev.package.clustine-terrain]
+opt-level = 3
+
+[profile.dev.package.clustine-noise]
+opt-level = 3
+
+[profile.dev.package.clustine-worldgen-data]
+opt-level = 3

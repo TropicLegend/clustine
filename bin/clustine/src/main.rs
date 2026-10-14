@@ -12,7 +12,7 @@ use clustine::cluster::{
     self, COORDINATOR_PORT, CoordinatorArgs, EdgeArgs, MergeArgs, MoveArgs, SplitArgs, WORKER_PORT,
     WORLDSTORE_PORT, WorkerArgs,
 };
-use clustine::{Config, EdgeConfig, Server, stop_signal};
+use clustine::{Config, EdgeConfig, Land, LoginWorld, Server, stop_signal};
 use clustine_coordinator::Policy;
 use clustine_region::RegionId;
 use clustine_world::ChunkPos;
@@ -70,8 +70,22 @@ struct Players {
     view_distance: i32,
 }
 
+/// What the world is made of.
+#[derive(Args)]
+struct Made {
+    /// The seed of the world, as a number (what the game's /seed command shows).
+    /// With one the world is the bare land of the game's overworld for that seed:
+    /// its mountains, coasts, oceans, rivers, caves and ravines, with their biomes,
+    /// and nothing that grows or was built. Without one the world is flat. A world
+    /// is made one way for good: a directory that holds a world of another seed, or
+    /// a flat one, is refused. In a cluster the world store, the coordinator and
+    /// every edge have to be given the same seed; nothing checks that they agree.
+    #[arg(long, allow_negative_numbers = true, value_name = "NUMBER")]
+    seed: Option<i64>,
+}
+
 impl Players {
-    fn edge_config(self) -> EdgeConfig {
+    fn edge_config(self, login: LoginWorld) -> EdgeConfig {
         EdgeConfig {
             description: self.description,
             max_players: self.max_players,
@@ -80,6 +94,7 @@ impl Players {
             client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
             region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
             compression_threshold: usize::try_from(self.compression_threshold).ok(),
+            login,
         }
     }
 }
@@ -169,6 +184,9 @@ struct Standalone {
     #[arg(long, default_value = "world")]
     world: PathBuf,
 
+    #[command(flatten)]
+    made: Made,
+
     /// Seconds between two saves of all changed chunks that are still loaded.
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
     checkpoint_interval: u64,
@@ -234,6 +252,11 @@ enum Service {
         #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE as u32, value_parser = clap::value_parser!(u32).range(2..=32))]
         view_distance: u32,
 
+        /// Where players enter the world follows from it, which the coordinator tells
+        /// the workers and the edges.
+        #[command(flatten)]
+        made: Made,
+
         #[command(flatten)]
         reshaping: Reshaping,
     },
@@ -264,6 +287,10 @@ enum Service {
         /// start anew, and what was built in it stays.
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         pin: Vec<i32>,
+
+        /// The store makes the chunks nobody has changed.
+        #[command(flatten)]
+        made: Made,
     },
     /// Simulates the region the coordinator gives it.
     Worker {
@@ -369,6 +396,11 @@ enum Service {
 
         #[command(flatten)]
         players: Players,
+
+        /// A client is told a hash of the seed, with which it blurs the borders of
+        /// biomes, and the height of the sea.
+        #[command(flatten)]
+        made: Made,
     },
 }
 
@@ -406,6 +438,7 @@ async fn main() -> Result<()> {
             lease_seconds,
             store,
             view_distance,
+            made,
             reshaping,
         }) => {
             // Refused as the parser refuses what it finds wrong itself, with how the
@@ -429,6 +462,7 @@ async fn main() -> Result<()> {
                 store,
                 follow,
                 view_distance,
+                spawn: Land::of(made.seed).spawn(),
             })
             .await
         }
@@ -437,6 +471,7 @@ async fn main() -> Result<()> {
             world,
             boundaries,
             pin,
+            made,
         }) => {
             let refuse = |why: String| -> ! {
                 let mut command = Cli::command();
@@ -449,7 +484,7 @@ async fn main() -> Result<()> {
                 refuse(NO_BOUNDARIES_FOR_THE_STORE.to_owned());
             }
             let pins = pins(&pin).unwrap_or_else(|why| refuse(why));
-            cluster::worldstore(listen, world, pins).await
+            cluster::worldstore(listen, world, pins, Land::of(made.seed)).await
         }
         Some(Service::Worker {
             coordinator,
@@ -510,12 +545,13 @@ async fn main() -> Result<()> {
             coordinator,
             bind,
             players,
+            made,
         }) => {
             cluster::edge(EdgeArgs {
                 name,
                 coordinator,
                 bind,
-                edge: players.edge_config(),
+                edge: players.edge_config(Land::of(made.seed).login()),
             })
             .await
         }
@@ -549,8 +585,9 @@ fn pins(pins: &[i32]) -> Result<Vec<i32>, String> {
 
 /// Runs every service in this process until it is asked to stop.
 async fn run_standalone(args: Standalone, pins: Vec<i32>, follow: Option<Policy>) -> Result<()> {
-    let edge = args.players.edge_config();
-    let mut server = Server::start(Config {
+    let land = Land::of(args.made.seed);
+    let edge = args.players.edge_config(land.login());
+    let config = Config {
         bind: args.bind,
         description: edge.description,
         max_players: edge.max_players,
@@ -564,9 +601,12 @@ async fn run_standalone(args: Standalone, pins: Vec<i32>, follow: Option<Policy>
         serialise_link: false,
         pins,
         follow,
-    })
-    .await?;
-    info!(address = %server.address(), "listening");
+    };
+    let mut server = Server::start_in(config, land).await?;
+    match args.made.seed {
+        Some(seed) => info!(address = %server.address(), seed, "listening"),
+        None => info!(address = %server.address(), "listening"),
+    }
 
     tokio::select! {
         _ = stop_signal() => {}

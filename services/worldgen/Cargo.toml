@@ -10,4 +10,5 @@ publish.workspace = true
 [dependencies]
 clustine-data.workspace = true
 clustine-light.workspace = true
+clustine-terrain.workspace = true
 clustine-world.workspace = true

@@ -1813,6 +1813,7 @@ mod tests {
             client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
             compression_threshold: None,
             region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
+            login: clustine_edge::LoginWorld::FLAT,
         };
         let anywhere = SocketAddr::from(([127, 0, 0, 1], 0));
         let edge = Edge::bind(anywhere, config, routing)
@@ -2472,6 +2473,7 @@ mod tests {
             client_timeout: EdgeConfig::DEFAULT_CLIENT_TIMEOUT,
             compression_threshold: None,
             region_patience: EdgeConfig::DEFAULT_REGION_PATIENCE,
+            login: clustine_edge::LoginWorld::FLAT,
         };
         let anywhere = SocketAddr::from(([127, 0, 0, 1], 0));
         let edge = Edge::bind(anywhere, config, routing)
