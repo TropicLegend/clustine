@@ -1324,6 +1324,15 @@ impl Player {
         let speed = self.ledger.speed * (1.0 + self.number as f64 * 0.17);
         let x = self.bot.location.0;
         let to_the_lane = self.ledger.to_the_lane;
+        // Down to the height it builds at, where a world of a seed lets players in
+        // above it: within reach of nothing it builds on otherwise.
+        let (_, y, z) = self.bot.location;
+        if y != f64::from(GROUND) {
+            let look = self.bot.look;
+            self.bot
+                .fly_to((x, f64::from(GROUND), z), look, to_the_lane)
+                .await?;
+        }
         self.bot.walk_to(x, self.lane, to_the_lane).await?;
         // To where the bots are to walk by now, should they have been sent elsewhere
         // already.

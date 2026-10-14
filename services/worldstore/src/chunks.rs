@@ -1721,4 +1721,58 @@ mod tests {
             assert_eq!(disk.operations(), done);
         }
     }
+
+    /// What a sync of 512 notes of real terrain costs, the most notes one sync writes
+    /// (S2), against ADR-0021's limit of 250 ms. The files go under `TMPDIR`, which is
+    /// to be the disk the server runs on:
+    ///
+    /// ```text
+    /// cargo test --release -p clustine-worldstore --lib -- --ignored --nocapture sync_of_512
+    /// ```
+    #[test]
+    #[ignore = "a measurement, for a release build on the disk the server runs on"]
+    fn what_a_sync_of_512_notes_of_real_terrain_costs() {
+        use std::time::Instant;
+
+        use clustine_world::ChunkGenerator;
+        use clustine_worldgen::TerrainGenerator;
+
+        use crate::disk::OsDisk;
+
+        // A view's worth of land at the spawn point and beyond, as a region asks for it.
+        let generator = TerrainGenerator::new(13579);
+        let made: Vec<_> = (0..512)
+            .map(|i| {
+                let position = ChunkPos::new(i % 32 - 16, i / 32 - 8);
+                (position, generator.generate(position))
+            })
+            .collect();
+        fn size(path: &Path) -> u64 {
+            match std::fs::read_dir(path) {
+                Ok(entries) => entries
+                    .filter_map(Result::ok)
+                    .map(|entry| size(&entry.path()))
+                    .sum(),
+                Err(_) => std::fs::metadata(path).map_or(0, |metadata| metadata.len()),
+            }
+        }
+        for round in 1..=5 {
+            let directory = tempfile::tempdir().unwrap();
+            let mut files = FileChunks::new(Arc::new(OsDisk::default()), directory.path());
+            let noting = Instant::now();
+            for (position, chunk) in &made {
+                files.note(*position, chunk).unwrap();
+            }
+            let noted = noting.elapsed();
+            let syncing = Instant::now();
+            files.sync().unwrap();
+            let synced = syncing.elapsed();
+            let bytes = size(&directory.path().join("chunks"));
+            println!(
+                "round {round}: 512 notes made ready in {noted:?} (on the store's thread for \
+                 chunks), written and synced in {synced:?}; {} KB in the chunks' directory",
+                bytes / 1024
+            );
+        }
+    }
 }

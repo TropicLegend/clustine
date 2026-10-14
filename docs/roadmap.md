@@ -1296,7 +1296,8 @@ the preview's chunks unchanged. Where this departs from the record is in the rec
 written it.
 
 Measured on 2026-10-14 in an optimised build on this machine (12 processors, the
-world on its own disk, which is the network storage), three runs of
+world on its own disk, which since a reboot that day syncs a file in 0.2 ms where it
+took 22 ms; a join waits for the generator and hardly for the disk), three runs of
 `cargo test --release -p clustine --test terrain -- --ignored --nocapture`: **a first
 join has its own chunk after a quarter of a second and all 329 chunks of a view of 8
 after 1.0 to 1.06 s**, where it took 6.3 s; a second player beside the first has them

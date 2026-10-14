@@ -40,16 +40,25 @@
 //! what a split or a release waits for then is the store and not the region.
 //! `CLUSTINE_CROWD_SEED` runs a seed again, and `CLUSTINE_CROWD_KEEP` keeps the world
 //! and the logs of a run that passes.
+//!
+//! `CLUSTINE_CROWD_LAND` serves the land of that seed rather than the flat world
+//! (ADR-0021's measurements, W5m), and `CLUSTINE_CROWD_FAR=1` sends one bot far from
+//! the crowd before the rounds and then on east through land nobody has been in, at
+//! a flying sprint, for as long as the rounds last: a third region whose view is made
+//! from nothing while the crowd's region is split and merged. One bot, because the
+//! bots of a ledger walk at paces of their own: two drift apart, and their region is
+//! split, which takes the id the crowd's part was to have.
 
 mod common;
 
 use std::time::{Duration, Instant};
 
 use clustine_botswarm::Ledger;
+use clustine_rpc::RegionList;
 
 use common::wandering::{
-    Begun, PATIENCE, Setup, TICK, WRITING, Wanders, a_repetition, absorbed_by, living, number_from,
-    seconds, spread, within,
+    Begun, PATIENCE, Region, Setup, TICK, WRITING, Wanders, a_repetition, absorbed_by, living,
+    number_from, seconds, spread, within,
 };
 
 /// How many bots a ledger of the crowd has.
@@ -61,6 +70,14 @@ const REST: Duration = Duration::from_secs(5);
 /// Blocks a tick of the two who go: ten blocks a second, so that a round is walked
 /// in a minute or two.
 const BRISK: f64 = 0.5;
+
+/// Blocks a tick of those who go far: a flying sprint, so that their region asks for
+/// land nobody has been in all the time.
+const FAR_SPEED: f64 = 1.08;
+
+/// The row the lane of those who go far is on: sixty chunks north of the crowd, well
+/// beyond the split distance of any view distance a bot asks for.
+const FAR_LANE: i32 = -60 * 16;
 
 /// What was recorded of the splits, or of the merges, of a run.
 #[derive(Default)]
@@ -124,7 +141,10 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
         // It measures, so it runs with no other cluster beside it.
         alone: true,
         checkpoint: number_from("CLUSTINE_CROWD_CHECKPOINT"),
+        land: number_from("CLUSTINE_CROWD_LAND"),
     };
+    let far = number_from("CLUSTINE_CROWD_FAR").unwrap_or(0) > 0;
+    let world_land = world.land;
     let mut wanders = Wanders::cluster("the crowd", world).await;
 
     // Each ledger on rows of its own, with one left free before the next: a ledger
@@ -160,6 +180,32 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
         ));
     }
 
+    // Those who go far are split off by themselves before anything is counted, and
+    // their region is left out of what the rounds look for.
+    let mut far_region = None;
+    if far {
+        let scenario = Ledger {
+            speed: FAR_SPEED,
+            to_the_lane: 3.0,
+            ..wanders.scenario("Far", 1, FAR_LANE, within(0))
+        };
+        wanders.joins_with("Far", scenario);
+        wanders.arrives("Far").await;
+        let list = wanders
+            .until_the_list_within(PATIENCE, "those who go far are split off", |list| {
+                living(list).len() == 2
+            })
+            .await;
+        far_region = living(&list).into_iter().find(|region| *region != 0);
+    }
+    let ours = |list: &RegionList| -> Vec<Region> {
+        let living = living(list);
+        living
+            .into_iter()
+            .filter(|region| Some(*region) != far_region)
+            .collect()
+    };
+
     // What a bot of the crowd waits when nothing happens, and how long the store
     // takes to make its list while the crowd stands and nothing else happens.
     wanders.served().await;
@@ -187,12 +233,16 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
     // and the patience on top. It only ever runs out when something hangs.
     let way = f64::from(16 * (split_distance + 3));
     let walk = PATIENCE + 3 * TICK.mul_f64(way / BRISK);
+    if far {
+        // Further than the rounds can take them.
+        wanders.walks_to("Far", 100_000);
+    }
     for round in 1..=rounds {
         let part = wanders.list().await.next.0;
         wanders.walks_to("Two", split_distance + 2);
         wanders
             .until_the_list_within(walk, "the two are split off", |list| {
-                living(list) == [0, part]
+                ours(list) == [0, part]
             })
             .await;
         wanders.whole().await;
@@ -201,7 +251,7 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
         let merged = "the two are merged into region 0 again";
         wanders
             .until_the_list_within(walk, merged, |list| {
-                absorbed_by(list, part) == Some(0) && living(list) == [0]
+                absorbed_by(list, part) == Some(0) && ours(list) == [0]
             })
             .await;
         wanders.whole().await;
@@ -250,8 +300,13 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
     println!(
         "X1: a crowd of {crowd} on lanes {spacing} blocks apart, a view distance of {view} \
          (merged at {merge_distance} chunks, split beyond {split_distance}), {rounds} rounds, \
-         seed {}; seconds as least / middle / worst",
-        wanders.seed
+         seed {}, {}{}; seconds as least / middle / worst",
+        wanders.seed,
+        match world_land {
+            Some(land) => format!("the land of seed {land}"),
+            None => "the flat world".to_owned(),
+        },
+        if far { ", one going far" } else { "" }
     );
     println!(
         "X1: what (how many) | the crowd waited | the two waited | the coordinator took | \

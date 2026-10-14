@@ -115,6 +115,7 @@ fn world(lease: Option<u64>) -> Setup {
         rest: REST,
         alone: false,
         checkpoint: None,
+        land: None,
     }
 }
 

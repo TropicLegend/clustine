@@ -1534,3 +1534,31 @@ section 9 (27 tests), the new text of T10 with S1 to S8 (32 tests) and item 11
   by two runs of one rank, and definition D allows either order, so the result is
   not defined there. Such a piece is recorded (a far piece); G5 says whether any
   exists.
+
+## Measured (W5m, 2026-10-14, in part)
+
+On the owner's machine, twelve processors, optimised builds. **The disk is not the
+one the limits were set for**: after a reboot that day this machine's disk syncs a
+file in 0.2 ms, where it took 22 ms before (`docs/groundwork/disk-syncs-bench.py`).
+What waits for syncs is to be measured again on such a disk; what is below holds
+for the logic and the processors.
+
+| Measured | Limit | Found |
+|---|---|---|
+| A join far from anything stored: the first chunk (`terrain.rs`, `lights.rs` rows 1 and 2) | 2 s | 0.25 s; the nine 0.24 s, the view of 8 1.0 s, three runs |
+| The crowd's wait at a split / a merge while a third region's first view is made from nothing (`crowds.rs`, 100 bots, view 8, 5 rounds, test seed 1000, land of seed 13579, `CLUSTINE_CROWD_FAR=1`) | 1 s, or 0.2 s more than without | split 0.41 / 0.43 / 0.57, merge 0.57 / 0.61 / 0.62 s; without the third region 0.40 / 0.42 / 0.48 and 0.41 / 0.57 / 0.57 s |
+| A sync of 512 notes of real terrain (`chunks.rs`, `what_a_sync_of_512_notes…`) | 250 ms | 20 to 24 ms for 1,042 KB; making the notes ready took another 254 to 266 ms on the store's thread for chunks, half a millisecond a chunk |
+
+**Not explained yet**: on the land of a seed the crowd waits about twice what it
+waits on the flat world at the same splits and merges (0.25 s at both on the flat
+world, same test seed), although region 0 stands still 7 to 43 ms in both, the
+coordinator takes 20 to 30 ms and the edge's longest turn is 11 to 13 ms in both.
+On the land the ledgers build at y = -60 underground, so every change needs light
+worked out: the edge's light threads did 60 s of work where they did 22 s, and
+compressing chunks took 22 s where it took 2. Nothing logs a region's tick time, so
+where the half second goes is not seen.
+
+Still to be measured: the same on a disk of 22 ms a sync; a restore after a kill
+with nothing cached, on the imported world (7 s); the first chunk walked beyond the
+rim after a start; the store's end with requests under way (test 7j); the
+two-regions-walking-outward case.

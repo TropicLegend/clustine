@@ -24,9 +24,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clustine::{Config, Server};
-use clustine_botswarm::{Bot, Ledger, LedgerReport, Progress, Random, audit_blocks, ledger};
+use clustine_botswarm::{Bot, Ledger, LedgerReport, Progress, Random, World, audit_blocks, ledger};
 use clustine_coordinator::Policy;
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList};
+use clustine_worldgen::TerrainGenerator;
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -633,6 +634,11 @@ pub struct Setup {
     /// How often the workers write a checkpoint, in seconds, or `None` for what
     /// follows from the seed: every second or two, or practically never.
     pub checkpoint: Option<u64>,
+    /// The seed of the land a cluster serves, which its world store, coordinator and
+    /// edge are told, or `None` for the flat world. The ledgers build at the flat
+    /// world's height whatever the land: below the lava, where the block under one
+    /// is never air, so that a place always has something to be placed against.
+    pub land: Option<u64>,
 }
 
 /// What serves the world.
@@ -762,6 +768,12 @@ impl Wanders {
             ]
             .map(str::to_owned)
             .to_vec();
+            if let Some(land) = setup.land {
+                let seed = format!("--seed={land}");
+                cluster.store_arguments.push(seed.clone());
+                cluster.coordinator_arguments.push(seed.clone());
+                cluster.edge_arguments.push(seed);
+            }
             cluster.lease_seconds = setup.lease;
             cluster.view_distance = setup.view;
             cluster.start().await;
@@ -1238,7 +1250,24 @@ impl Wanders {
             name_prefix: name.to_owned(),
             first_lane,
             pulse: Some(PULSE),
+            world: self.world(),
             ..Ledger::default()
+        }
+    }
+
+    /// What the bots are to find of the world: the flat world's, but for where a
+    /// newcomer enters on land of a seed, which is the generator's to say.
+    fn world(&self) -> World {
+        let flat = World::clustine();
+        match self.setup.land {
+            None => flat,
+            Some(land) => {
+                let spawn = TerrainGenerator::new(land as i64).spawn_point();
+                World {
+                    spawn: (spawn.x, spawn.y, spawn.z),
+                    ..flat
+                }
+            }
         }
     }
 
