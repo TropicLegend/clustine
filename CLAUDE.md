@@ -105,6 +105,10 @@ The tests that start clusters of processes run several at a time
   `/sys/devices/system/memory/hard_offline_page`, until the next boot. A failure that
   does not come again after that is still looked into, but compiler crashes and
   single wrong bits are the machine's. GitHub's machines are the judge then.
+- Subagents' worktrees fill the disk: each builds into a target directory of its own,
+  one to seventeen gigabytes. Fifteen of them filled 249 GB, and a build then failed
+  with "No space left on device" and a linker that crashed. Remove a worktree's
+  `target` when its work is merged, and tell an agent to remove it when it is done.
 - Run the comparisons with the official server on a quiet machine. Beside a full
   check, the official server once sent a flat chunk before its lighting was done (a
   light section of zeros where it otherwise says "empty"), and the flat comparison
