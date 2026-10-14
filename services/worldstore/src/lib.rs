@@ -34,6 +34,8 @@ mod table;
 mod tcp;
 
 #[cfg(test)]
+mod generation_tests;
+#[cfg(test)]
 mod kill;
 #[cfg(test)]
 mod kill_regions;
