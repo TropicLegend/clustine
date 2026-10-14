@@ -131,6 +131,9 @@ pub(crate) struct FanoutConfig {
     pub(crate) online: Arc<AtomicU32>,
     /// See [`crate::EdgeConfig::region_patience`].
     pub(crate) region_patience: Duration,
+    /// What a client is told of the world when it enters: see
+    /// [`crate::EdgeConfig::login`].
+    pub(crate) login: crate::LoginWorld,
 }
 
 /// A chunk at least one player of this edge can see.
@@ -3704,14 +3707,15 @@ fn login_packet(entity_id: EntityId, config: &FanoutConfig) -> Login {
         limited_crafting: false,
         dimension_type,
         dimension_name: OVERWORLD.to_owned(),
-        hashed_seed: 0,
+        // The client blurs the borders of biomes with it, as the server's surface did.
+        hashed_seed: config.login.hashed_seed,
         game_mode: game_mode::CREATIVE,
         previous_game_mode: None,
         is_debug: false,
-        is_flat: true,
+        is_flat: config.login.flat,
         death_location: None,
         portal_cooldown: 0,
-        sea_level: -63,
+        sea_level: config.login.sea_level,
         online_mode: false,
         enforces_secure_chat: false,
     }
@@ -3782,6 +3786,7 @@ mod tests {
                 view_distance: 2,
                 online: Arc::default(),
                 region_patience,
+                login: crate::LoginWorld::FLAT,
             };
             let (commands, receiver) = mpsc::channel(64);
             // A job is done in the turn that dispatches it, so that everything a turn
@@ -5897,6 +5902,7 @@ mod scenarios {
                 view_distance: VIEW,
                 online: Arc::default(),
                 region_patience,
+                login: crate::LoginWorld::FLAT,
             };
             let (commands, receiver) = mpsc::channel(64);
             // A job is done in the turn that dispatches it, so that everything a turn

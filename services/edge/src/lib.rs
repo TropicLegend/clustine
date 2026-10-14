@@ -282,6 +282,7 @@ impl Edge {
             view_distance: config.view_distance,
             online: Arc::clone(&online),
             region_patience: config.region_patience,
+            login: config.login,
         };
         Ok(Self {
             listener: TcpListener::bind(address).await?,

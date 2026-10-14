@@ -1222,9 +1222,9 @@ and not what it is.
 - In a cluster the seed is told to the world store, the coordinator and every edge
   (`--seed` on each); nothing checks that they agree, and the manifests under
   `deploy/` are as they were, which is flat.
-- A client is to be told the hash of the seed, that the world is not flat and that
-  the sea is at 63. The edge is configured with them (`EdgeConfig::login`); its login
-  packet still says 0, flat and -63 until `login_packet` reads them.
+- A client is told the hash of the seed, with which it blurs the borders of biomes as
+  the server's surface did, that the world is not flat, and that the sea is at 63
+  (`EdgeConfig::login`).
 - The bots' scenarios that judge a world (`cross`, `ledger`, `World::clustine()`)
   know the flat world's ground and are for the flat world only.
 
