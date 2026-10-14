@@ -1995,3 +1995,12 @@ Its tests are mine (`services/edge/src/light_policy.rs`: the hold and its end by
 chunk coming and by time, the rest, the exemption, the overdue, the patience and
 a late answer; `light.rs`: a thread written off, replaced, and none left), beside
 the one of L6 that waited for it (nearest first as the view stands, then oldest).
+
+**Found by the tests of the times written from this record** (`light_times.rs`,
+fifty tests by someone who had not read the code): a chunk replaced while it was held
+began its hold again, so one replaced more often than once a `LATEST` while a
+neighbour stayed away was never lit. A chunk that takes the place of one that could
+not be sent either now keeps the start of its hold, as arrive's step 4 says. What the
+record left unclear to them: that the age of a chunk in `waiting` is when it was put
+in, which for a held chunk is when its hold ended; and the order among chunks of
+equal rank and age entered in one turn, which is by position.

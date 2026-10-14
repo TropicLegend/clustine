@@ -2123,7 +2123,7 @@ async fn the_same_chunk_again_does_not_prolong_its_hold() {
 /// unsendable. A chunk that is replaced (E3) while it is held for its neighbours stays
 /// unsendable through it, so its hold ends when it would have.
 ///
-/// **Finding.** The record: section 2, L4, says a chunk someone waits for is
+/// **A finding, mended.** The record: section 2, L4, says a chunk someone waits for is
 /// dispatched "as soon as it is not held (at most `LATEST` after it became
 /// unsendable)", and section 3, arrive, step 4, that `unsendable_since` is "not set
 /// anew while an entry stays unsendable ..., so a hold ends". Seen: the hold begins
@@ -2136,7 +2136,6 @@ async fn the_same_chunk_again_does_not_prolong_its_hold() {
 /// start the hold anew for the replaced chunk itself, L4's bound is what is wrong; the
 /// record does not say so.
 #[tokio::test(start_paused = true)]
-#[ignore = "finding: a chunk replaced (E3) while it is held starts its hold anew, beyond L4's bound of LATEST"]
 async fn a_held_chunk_replaced_while_it_is_held_keeps_the_end_of_its_hold() {
     let mut run = Run::start(LightSettings::SERVER).await;
     let mut client = run.script.join(1).await;

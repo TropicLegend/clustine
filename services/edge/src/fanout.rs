@@ -2949,6 +2949,7 @@ impl Fanout {
             .replica
             .get_mut(&position)
             .expect("the caller found it");
+        let could_be_sent = entry.sendable();
         entry.chunk = Some(Arc::new(chunk));
         entry.packet = None;
         // A job under way was for the chunk of before; its result is dropped.
@@ -2972,10 +2973,15 @@ impl Fanout {
             entry.unsendable_since = None;
             self.marked.remove(&position);
         } else {
-            // A chunk that took another's place is a new chunk to wait for.
+            // A chunk that takes the place of one that could not be sent either does
+            // not begin its hold again: replaced as often as that, it would never
+            // end while a neighbour stays away.
             let entry = self.replica.get_mut(&position).expect("found above");
-            entry.marked_since = Some(now);
-            entry.unsendable_since = Some(now);
+            entry.marked_since.get_or_insert(now);
+            if could_be_sent {
+                entry.unsendable_since = Some(now);
+            }
+            entry.unsendable_since.get_or_insert(now);
             self.marked.insert(position);
         }
         for beside in Self::around(position) {
