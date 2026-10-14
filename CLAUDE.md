@@ -115,6 +115,10 @@ The tests that start clusters of processes run several at a time
   one to seventeen gigabytes. Fifteen of them filled 249 GB, and a build then failed
   with "No space left on device" and a linker that crashed. Remove a worktree's
   `target` when its work is merged, and tell an agent to remove it when it is done.
+- The clean checkout's own build directory (`CARGO_TARGET_DIR` of the full check) grew
+  to 171 GB by 2026-10-14, 77 GB of it the compiler's incremental caches, and the disk
+  was down to 8 GB. Its `debug/incremental` can be removed between checks; cargo makes
+  it again as it needs it.
 - Run the comparisons with the official server on a quiet machine. Beside a full
   check, the official server once sent a flat chunk before its lighting was done (a
   light section of zeros where it otherwise says "empty"), and the flat comparison

@@ -1326,6 +1326,53 @@ snapshots, which on land was checked block by block. Compared and read by palett
 instead, the crowd on land waits at most 0.20 s at a split and 0.25 s at a merge, as
 on the flat world.
 
+**Placing, using and where a new player stands: W6** (2026-10-14;
+[plan](groundwork/w6-plan.md), reviewed twice before it was built). A click with the
+use button is now the official server's, in its order: a door, trapdoor or fence gate
+is opened and closed, a flower goes into a pot, and other used blocks take the click
+and do nothing; sneaking with something in hand places instead. A placed block takes
+the state vanilla gives it: logs along the clicked face, stairs and slabs by the
+cursor, furnaces and chests facing the player, torches, signs, banners, buttons and
+ladders on the wall clicked, doors and beds of two blocks, double slabs, snow on
+snow, fences, panes, walls, stairs and redstone shaped by their neighbours as placed,
+blocks that hold water waterlogged, plants only where they can grow. Placing into
+grass, water or snow replaces it. Buckets place and take water and lava (which do not
+flow yet), and lily pads go on water. A click on a block of another region goes there
+whole, and a placement into a third region's chunk carries the clicked block with it.
+A new player stands on the spawn column as it is now, also on a tower or a fence
+someone built there; the home region keeps that chunk loaded for it. The rules are
+SteelMC's port of vanilla (`crates/clustine-sim/src/placement/`), checked by 119 tests
+and 37 tests written from the plan alone by others, and by 205 cases compared with
+the official server (`bin/clustine/tests/placing_oracle.rs`), each of which matched
+in at least one of two runs (the official server left one or two clicks of the test
+undone in each run, a different one each time).
+
+**What to try with a real client: placing and using.** `cargo run --release -p
+clustine` (the flat world), or with `--seed 13579`, in creative mode:
+
+1. Place logs on each face of a block: they lie along the face. Stairs against the
+   upper half of a block's side are upside down; slabs go to the half you click, and
+   a slab on a slab makes a double one. Furnaces, chests and pumpkins face you.
+2. A door: two blocks, the hinge by what is beside it; right-click opens and closes
+   it, also from across a region's border. Sneak and right-click with a block: it is
+   placed against the door. The same for trapdoors and fence gates (a gate opened
+   from behind turns to you).
+3. Torches, signs, banners, buttons, levers and ladders on the side of a block, and
+   on top; a lantern under a block hangs. A bed is two blocks.
+4. Fences, panes and walls beside stone and each other: the one you place joins what
+   is there. The one already there does not join back yet, which phase B brings.
+5. A water bucket on the ground and on a slab (the slab is waterlogged); an empty
+   bucket on the water takes it back. A lily pad on water. A poppy into a flower pot.
+6. Build a tower at 0, 0 and join with a new player name: they stand on top of it.
+
+**What is expected to be missing after W6**, named in the plan's section 7: a block
+beside one you place does not change in turn (fences and panes join one way, chests
+stay single, rails do not curve) until B1; breaking one half of a door or bed leaves
+the other (B2); a sign does not open its editor; chests, crafting tables, furnaces,
+buttons and levers do nothing when clicked; flint and steel, axes, hoes, bone meal and
+spawn eggs do nothing; a few plants with their own rules (vines, cocoa, kelp, coral
+plants, cave vines) place nothing yet.
+
 **What to try with a real client: the land beside the game's.** With `--release`,
 and a directory of its own for the world:
 
@@ -1411,3 +1458,17 @@ waits a quarter of a second at worst.
   about a tenth of a second, having walked into its chunk meanwhile, can find the block
   there afterwards: the dig is applied at once and the placement, which travels between
   regions, arrives after it. Found by the simulation's tests for step C3.
+- Placing (W6, [plan](groundwork/w6-plan.md), section 7): a neighbour does not change
+  when a block is placed or broken beside it, until B1; breaking one half of a door,
+  bed or tall plant leaves the other (B2); the blocks of a chunk a region has not
+  loaded count as air for a hinge, a connection or a bed's head, which at a pinned
+  border can differ from the official server; a block clicked across a border may
+  have changed before the placement reaches the region beside it; a bucket does
+  nothing beyond a region's border; a player of another region does not stop a
+  placement; redstone does not open a door placed beside it; crops and mushrooms are
+  placed whatever the light; the classes with a survival rule not yet ported place
+  nothing; a placed sign does not open its editor; scaffolding does not extend
+  sideways; a ray ignores a plant's offset; a bucket does not fill a cauldron; a new
+  player can enter at the generator's height in the first ticks after the home
+  region was started, taken over, merged or split; during a rolling update an old
+  worker cannot read a click passed on by a new one.

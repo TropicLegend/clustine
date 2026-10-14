@@ -29,6 +29,17 @@
 //! Where Clustine differs on purpose (section 7 of the plan: a neighbour does not
 //! change in turn until B1, chests stay single, rails do not curve), only the block
 //! clicked or placed into is compared, and its other half where it has one.
+//!
+//! Run on 2026-10-14, twice: every case matched the official server in at least one
+//! run. In each run the official server left one or two clicks of the test undone, a
+//! different one each time: a setup step it never showed the builder, or a judged
+//! click after which its block stayed air, with the builder not put back and every
+//! click acknowledged. A case that differs while "went wrong on the way" names a step
+//! of it on the official server, or whose official block is air, is run again before
+//! it is believed. One case did so in two runs of three: "a trapdoor against the
+//! upper half of a stone's side", whose spot is beside where the builder hovers; that
+//! the official server holds the builder's body somewhere else for a moment is the
+//! guess, not yet looked into.
 
 mod common;
 
@@ -1411,7 +1422,9 @@ fn using_cases() -> Vec<Case> {
         case(
             "stone clicked on a fence is placed against it",
             click(STONE, O, SOUTH),
-            &[O, (0, 0, 1)],
+            // Not the fence, which the official server joins to the stone by a
+            // neighbour update and Clustine does not until phase B (B1).
+            &[(0, 0, 1)],
         )
         .setup([put(OAK_FENCE, O)]),
         case(
@@ -1739,6 +1752,14 @@ async fn run(address: &str, cases: &[Case]) -> Ran {
         .await
         .unwrap_or_else(|error| panic!("the builder did not load on {address}: {error:#}"));
     let feet = builder.location.1.floor() as i32;
+    // Clustine gives a new player a hotbar of blocks and the official server gives
+    // nothing: the slot of the empty hand is emptied on both.
+    builder
+        .empty_hotbar_slot(EMPTY_SLOT)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("the builder's hand was not emptied on {address}: {error:#}")
+        });
 
     for (index, case) in cases.iter().enumerate() {
         let place = Place::of(case, index, feet);

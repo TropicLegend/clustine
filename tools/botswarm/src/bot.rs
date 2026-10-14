@@ -910,6 +910,26 @@ impl Bot {
         Ok(())
     }
 
+    /// Empties a hotbar slot, from 0 to 8, the way a creative-mode client does when the
+    /// player puts its stack back into the creative inventory. Each server fills a new
+    /// player's hotbar its own way, so a test that wants an empty hand empties a slot.
+    pub async fn empty_hotbar_slot(&mut self, slot: i16) -> Result<()> {
+        self.connection
+            .write(&SetCreativeModeSlot {
+                slot: inventory::HOTBAR_START as i16 + slot,
+                stack: None,
+            })
+            .await?;
+        if let Some(held) = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| self.own_hotbar.get_mut(slot))
+        {
+            *held = None;
+        }
+        self.has_sent();
+        Ok(())
+    }
+
     /// Uses the held item on a side of the block at `x`, `y`, `z`, which places a held
     /// block against it. `side` is one of the `face` values of the protocol. Returns the
     /// sequence number the server will acknowledge.
