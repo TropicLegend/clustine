@@ -1,0 +1,9 @@
+clustine-sim
+
+Parts of this crate, in the module `placement` (src/placement.rs and the files under
+src/placement/), are adapted from SteelMC
+(https://github.com/Steel-Foundation/SteelMC), branch 26.3 at commit
+885c4b3e60ed79862c37311780774f76806cb714, which is licensed under the GNU Affero
+General Public License, version 3. Each adapted file says in its first comment which
+files of SteelMC it is adapted from. The adaptations are licensed as the rest of
+Clustine is, AGPL-3.0-or-later.
