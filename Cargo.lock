@@ -453,6 +453,7 @@ dependencies = [
  "clustine-structures",
  "clustine-terrain",
  "clustine-world",
+ "tracing",
 ]
 
 [[package]]

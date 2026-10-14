@@ -5,10 +5,16 @@
 //! What is public here is fixed for W5a: the scheduler's tests are written against it
 //! by someone who does not write the scheduler.
 
-use clustine_world::generation::{Done, Failed, Wanted};
-use clustine_world::{Chunk, ChunkGenerator, ChunkPos};
+mod graph;
+mod lattice;
+mod output;
+mod pool;
+mod view;
 
-use crate::stages::Stages;
+#[cfg(test)]
+mod tests;
+
+pub use self::pool::Scheduler;
 
 /// Which earlier runs a run sees (ADR-0021, section 2, "B as a switch").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,54 +103,4 @@ pub struct Figures {
     pub running: u64,
     /// What the cache holds now, in bytes as its entries reckon them.
     pub cache_bytes: u64,
-}
-
-/// Makes chunks from `S` on a pool of its own. Dropping it ends its threads and waits
-/// for them.
-pub struct Scheduler<S: Stages> {
-    stages: S,
-}
-
-impl<S: Stages> Scheduler<S> {
-    pub fn new(stages: S, options: Options) -> Self {
-        let _ = (stages, options);
-        todo!("W5a")
-    }
-
-    /// The finished chunk at `position` (definition D, before light), waited for.
-    /// For tests and measurements: the store asks through [`ChunkGenerator`].
-    pub fn finished(&self, position: ChunkPos) -> Result<Chunk, Failed> {
-        let _ = position;
-        todo!("W5a")
-    }
-
-    pub fn figures(&self) -> Figures {
-        todo!("W5a")
-    }
-
-    /// Waits until no task is queued or running.
-    pub fn wait_idle(&self) {
-        todo!("W5a")
-    }
-
-    pub fn stages(&self) -> &S {
-        &self.stages
-    }
-}
-
-impl<S: Stages> ChunkGenerator for Scheduler<S> {
-    /// The lit chunk, waited for; panics if generation failed.
-    fn generate(&self, position: ChunkPos) -> Chunk {
-        let _ = position;
-        todo!("W5a")
-    }
-
-    fn settings(&self) -> String {
-        todo!("W5a")
-    }
-
-    fn request(&self, position: ChunkPos, done: Done) -> Wanted {
-        let _ = (position, done);
-        todo!("W5a")
-    }
 }
