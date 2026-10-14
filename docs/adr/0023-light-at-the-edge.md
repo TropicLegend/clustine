@@ -2004,3 +2004,42 @@ not be sent either now keeps the start of its hold, as arrive's step 4 says. Wha
 record left unclear to them: that the age of a chunk in `waiting` is when it was put
 in, which for a held chunk is when its hold ended; and the order among chunks of
 equal rank and age entered in one turn, which is by position.
+
+**L7 as measured (2026-10-14).** `bin/clustine/tests/lights.rs`, written from
+section 9 by someone who had not built the edge, runs the six rows on a fresh
+`clustine --seed 12345` each, its world in memory, in an optimised build on a
+quiet machine of twelve processors (three light threads). The edge counts what
+it does (`services/edge/src/figures.rs`). Two settings exist for this and
+nothing else, both read from the environment: `CLUSTINE_LIGHT_AS_CHANGED`
+takes chunks in so many tenths of the world, by a fixed hash of their place, as
+changed chunks come from the store, without light and not as generated; and
+`CLUSTINE_LIGHT_THREADS`. Seeded terrain is made by the preview generator on the
+store's one thread, again whenever a chunk is loaded: 17 ms a chunk, 5.6 s for
+a view of 329, and **every time below includes it**.
+
+| Row | Measured | By the limits of section 9 |
+|---|---|---|
+| One join, seven in ten changed | 330 jobs for 329 chunks, 819 ms of thread time (2.5 ms a job); one light update; the nine in 3.3 s, the view in 5.2 s | over: one job and one update. A chunk was made more than the second of the hold after its neighbours had been sent, was lit again with them, and its neighbour's light changed. With stored chunks, which come together, it would not be |
+| One join where nothing was made, all changed | 1.00 jobs and no update a chunk; the chunks came at 66 a second | holds; the case of chunks that come slower than 20 a second was not reached |
+| A hundred in one place, forty chunks changing four times a second | within everyone's view: 15,982 jobs, 39 s of thread time in 61 s, no update, longest turn 4.0 ms. At the rim of their view: 36,280 jobs, 87 s of thread time, 986,506 updates (3.4 GB before compression), compressing them 64 % of one processor, longest turn 2.8 ms | holds |
+| A hundred entering at once in one place, seven in ten changed | 330 jobs; the nine in 3.4 s, the view in 5.4 s; compressing 32,900 chunk packets 11.5 s, 210 % of one processor; 329 packets made in 85 ms | holds at 4.2 ms in one run; over in six others, at 7 to 14 ms (below) |
+| A hundred entering at once, apart, seven in ten changed | the last view whole after 623 s on two threads and 631 s on three; the longest any chunk waited at the edge 1.06 s | holds (3 s). The time is the generator's: 32,900 chunks at 18.5 ms on its one thread is 610 s |
+| A join beside a hundred | 329 packets made in 75 ms, the view in 0.28 s, longest turn 5.0 ms | holds, barely |
+
+- **The turn of 7 to 14 ms when a hundred enter together is not light's.**
+  Timed part by part, it is the snapshot of the chunk they enter in: its chunk
+  took 95 µs and showing the hundred players to each other 12.2 ms, about 9,900
+  packets in one turn. The 5 ms of section 9 was a guess for light's work, which
+  stays under it. Entities are ADR-0012's, and that turn is once a crowd.
+- **Making packets is not what costs** (row 6): 0.23 ms a chunk packet. The
+  copying C5 owes (`encode.rs:66-85`) is not needed for this record's steps.
+- **Section 11, item 7: compressing once is not needed yet.** At its worst, forty
+  chunks at the rim of a hundred players changing four times a second, compressing
+  updates takes two thirds of a processor, and within everyone's view nothing,
+  since nobody who has a chunk's neighbours is sent its light. Most of the bytes
+  are whole updates (every section named until L8); L8 makes them smaller.
+- **What a player notices is the generator**, not light: 3.3 s to the nine
+  chunks at a first join and 5.2 s to the view, and ten minutes for a hundred
+  entering apart, where light at the edge waited at most a second for any chunk.
+  More light threads change nothing there. The generation service of ADR-0021
+  (W5) is what shortens it; until then the preview makes chunks on one thread.

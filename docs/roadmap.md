@@ -1142,8 +1142,7 @@ entities, the four heightmaps, light and what generation leaves for later carrie
 the chunk, and a stored chunk as one file. The flat generator's chunks carry the light crate's
 light, and the client's packet is made from what the chunk carries (C4, C5). What an edge does
 about light once blocks have changed is decided
-([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice) and built but for its
-measurements: where the light a chunk came with no longer holds, because a block
+([ADR-0023](adr/0023-light-at-the-edge.md), reviewed twice), built and measured: where the light a chunk came with no longer holds, because a block
 changed in it or beside it, the edge makes it on threads of its own, sends a chunk
 only with light of the right shape, and tells those who have the chunk what a
 client cannot work out by itself. A chunk waits up to a second for wanted
@@ -1151,10 +1150,15 @@ neighbours so that it is lit once, a place where blocks keep changing costs four
 jobs a second a chunk, and the chunks someone waits for go first, nearest first.
 Tests written from the record by someone who had not read the code found three
 defects, one of which a player would have seen (a torch placed a moment before
-they came stayed dark for them); all three are mended. **Still owed**: the
-measurements on the real machine (a crowd entering changed terrain, a player
-joining beside others), and a real client's eye on it, which is step 4 below
-under "the land beside the game's".
+they came stayed dark for them); all three are mended. Measured with a hundred bots
+(L7, `bin/clustine/tests/lights.rs`): a join into changed terrain costs one job a
+chunk, about 2.5 ms of a thread each, and no chunk waited at the edge longer than
+the second of its hold; compressing light updates costs at most two thirds of a
+processor where forty chunks at the rim of a hundred players change four times a
+second. What a joining player waits for is the generator (3.3 s to the nine
+chunks around them, 5.2 s to the view, all of it the store's one thread), not
+light. **Still owed**: a real client's eye on it, which is step 4 below under "the
+land beside the game's", and L8 (smaller updates).
 
 **The biome source is built** (T3, `crates/clustine-terrain`): for a seed and a place,
 the biome the game gives, in the overworld, the Nether and the End. Against the hundred

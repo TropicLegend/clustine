@@ -46,6 +46,7 @@
 //! `CLUSTINE_LIGHTS` is the number of bots of the crowds, `CLUSTINE_LIGHTS_VIEW` the
 //! view distance (8 at most: a bot asks for no more), and `CLUSTINE_LIGHTS_SECONDS`
 //! how long the forty chunks of row 3 change, 60 in a measurement and 3 otherwise.
+//! `CLUSTINE_LIGHTS_ROWS=4,6` runs those rows only.
 
 mod common;
 
@@ -1244,15 +1245,32 @@ async fn what_light_costs_the_edge_stays_within_what_the_record_allows() {
     );
     println!("L7: {}", generation_of_a_view(spawn_chunk(), asked.view));
     let began = Instant::now();
-    let rows = [
-        one_join(&asked).await,
-        a_join_into_new_terrain(&asked).await,
-        a_hundred_where_forty_chunks_change(&asked, false).await,
-        a_hundred_where_forty_chunks_change(&asked, true).await,
-        a_hundred_entering_in_one_place(&asked).await,
-        a_hundred_entering_apart(&asked).await,
-        a_join_beside_a_hundred(&asked).await,
-    ];
+    // A measurement may be of some rows only: row 5 alone takes ten minutes.
+    let only: Option<Vec<u32>> = std::env::var("CLUSTINE_LIGHTS_ROWS").ok().map(|rows| {
+        let row = |row: &str| row.trim().parse().expect("CLUSTINE_LIGHTS_ROWS is numbers");
+        rows.split(',').map(row).collect()
+    });
+    let wanted = |row: u32| only.as_ref().is_none_or(|only| only.contains(&row));
+    let mut rows = Vec::new();
+    if wanted(1) {
+        rows.push(one_join(&asked).await);
+    }
+    if wanted(2) {
+        rows.push(a_join_into_new_terrain(&asked).await);
+    }
+    if wanted(3) {
+        rows.push(a_hundred_where_forty_chunks_change(&asked, false).await);
+        rows.push(a_hundred_where_forty_chunks_change(&asked, true).await);
+    }
+    if wanted(4) {
+        rows.push(a_hundred_entering_in_one_place(&asked).await);
+    }
+    if wanted(5) {
+        rows.push(a_hundred_entering_apart(&asked).await);
+    }
+    if wanted(6) {
+        rows.push(a_join_beside_a_hundred(&asked).await);
+    }
     println!("L7: the rows took {:.0} s", began.elapsed().as_secs_f64());
     let failures: Vec<String> = rows
         .iter()
