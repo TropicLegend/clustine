@@ -1223,8 +1223,9 @@ beyond its box (which doors a stronghold has, where a mineshaft has rails), whic
 falls to the step that places blocks. Four things the pinned jar does otherwise than
 SteelMC were found on the way; the crate's head names them. Starts cost 38 µs a
 chunk on average; a bent chunk's fill takes twice an unbent one's, for the 7% that
-are bent. **The `--seed` preview does not bend the ground yet**: it needs a bounded
-store of starts around a chunk, which is the next small step.
+are bent. The `--seed` preview bends its ground as well (version 2 of its chunks,
+so a world made by version 1 is refused), keeping the starts of the last 4,096
+chunks: a join at view distance 8 still takes about 6 s.
 
 So for a seed the land has the game's shape, the game's skin, the game's caves and
 the game's building sites: a chunk takes about 9 ms on one thread. Still to come:
@@ -1249,7 +1250,7 @@ and not what it is.
   block of that column that blocks motion, or on the water where that is under water
   (the game's own choice of a place is T8). On seed 13579 that is the sea at a coast:
   one sinks unless one flies.
-- A world records what made it (`terrain;preview 1;minecraft:overworld;seed 13579`),
+- A world records what made it (`terrain;preview 2;minecraft:overworld;seed 13579`),
   and is refused with another seed or without one, as a flat world is with a seed.
 - In a cluster the seed is told to the world store, the coordinator and every edge
   (`--seed` on each); nothing checks that they agree, and the manifests under
@@ -1308,7 +1309,9 @@ grass, flowers and every other plant, kelp and seagrass; the ores but for the la
 veins; lakes, springs and the lava and water that run from them; snow lying on the
 ground and ice on frozen water (snow and ice that are the surface itself, as on
 peaks and icebergs, are there); villages and every other structure, also the
-strongholds' and mineshafts' cuts through caves; animals and monsters. **What will
+strongholds' and mineshafts' cuts through caves, though the ground where a village
+or an outpost is to stand is levelled as the game levels it, and an ancient city's
+cavern is cut out; animals and monsters. **What will
 look wrong**: water and lava do not flow, so where a cave or a ravine cuts an
 aquifer or the sea, the water stands as a wall, and stays so when a block beside it
 is broken; sand and gravel over a cave stay up when touched; grass and water are

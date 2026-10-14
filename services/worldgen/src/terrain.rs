@@ -9,9 +9,10 @@
 //!   store's one chunk thread: there is no pool, no order of runs, and the store does
 //!   not keep what it handed out, so a chunk nobody changed is made again every time
 //!   it is loaded.
-//! - It stops after the game's carvers. Nothing that is a structure or a feature is
-//!   there: no trees, no plants, no ores but the veins, no lakes, springs, snow on
-//!   the ground or ice on water, no villages.
+//! - It stops after the game's carvers. The ground is bent where structures are to
+//!   stand, as the game bends it before it places them, but no block of a structure
+//!   or a feature is there: no trees, no plants, no ores but the veins, no lakes,
+//!   springs, snow on the ground or ice on water, no villages.
 //! - The marks of the fill (fluids that are to flow a step when the chunk is first
 //!   ticked) are carried, and nothing acts on them yet: water stands where the game
 //!   would let it run.
@@ -29,6 +30,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use clustine_data::{DIMENSION_TYPES, DimensionType};
 use clustine_light::Around;
+use clustine_structures::{Start, Structures};
 use clustine_terrain::biome::zoom::obfuscate_seed;
 use clustine_terrain::biome::{BiomeSource, Dimension};
 use clustine_terrain::fill::Terrain;
@@ -40,12 +42,19 @@ use clustine_world::{BIOME_CELLS, Biome, Chunk, ChunkGenerator, ChunkPos, SECTIO
 /// neighbours were made by. It is raised when the generator would make another chunk
 /// from the same seed, and the settings name it, so that a world of an earlier version
 /// is refused and not continued with land that does not fit.
-pub const TERRAIN_VERSION: u16 = 1;
+///
+/// 2: the ground is bent where structures stand.
+pub const TERRAIN_VERSION: u16 = 2;
 
 /// How many unlit chunks the generator keeps. A join at the view distance 8 asks for
 /// 329 chunks, whose light reads the ring around them as well: within 23 by 23
 /// chunks, which this holds with room for whoever walks meanwhile.
 const KEPT: usize = 1024;
+
+/// How many chunks' structure starts the generator keeps. A chunk's ground asks for
+/// the starts of the 17 by 17 chunks around it, which for a join at the view
+/// distance 8 is within 39 by 39 chunks.
+const STARTS_KEPT: usize = 4096;
 
 /// A cell of four blocks along each axis, as biomes are kept.
 const CELL: usize = 4;
@@ -60,16 +69,26 @@ struct Kept {
     chunks: BTreeMap<ChunkPos, (u64, Arc<Chunk>)>,
 }
 
+/// The structures that start in the chunks asked for last, kept as [`Kept`] keeps
+/// chunks. Most chunks have none, and a start is the same whoever asks.
+#[derive(Default)]
+struct KeptStarts {
+    asked: u64,
+    starts: BTreeMap<ChunkPos, (u64, Arc<[Start]>)>,
+}
+
 /// Generates the overworld of a seed as the game's fill, surface and carvers leave
 /// it, with the game's biomes, lit. See the head of this module for what that leaves
 /// out and for what replaces it.
 pub struct TerrainGenerator {
     seed: i64,
     dimension: &'static DimensionType,
-    terrain: Terrain,
-    biomes: BiomeSource,
-    /// Changes what a chunk costs, never what it is.
+    /// Where structures start, and the ground and biomes they and the chunks are
+    /// made of.
+    structures: Structures,
+    /// Change what a chunk costs, never what it is.
     kept: Mutex<Kept>,
+    starts: Mutex<KeptStarts>,
     /// What the light is worked out in, kept to save its allocations. Whoever finds
     /// it taken works in one of their own.
     scratch: Mutex<clustine_light::Scratch>,
@@ -95,9 +114,9 @@ impl TerrainGenerator {
         Self {
             seed,
             dimension,
-            terrain: Terrain::new(seed, Dimension::Overworld),
-            biomes: BiomeSource::new(seed, Dimension::Overworld),
+            structures: Structures::new(seed, Dimension::Overworld),
             kept: Mutex::new(Kept::default()),
+            starts: Mutex::new(KeptStarts::default()),
             scratch: Mutex::new(clustine_light::Scratch::new()),
         }
     }
@@ -115,17 +134,53 @@ impl TerrainGenerator {
 
     /// The height of the dimension's sea, which a client is told when it logs in.
     pub fn sea_level(&self) -> i32 {
-        self.terrain.settings().sea_level
+        self.terrain().settings().sea_level
+    }
+
+    fn terrain(&self) -> &Terrain {
+        self.structures.terrain()
+    }
+
+    fn biomes(&self) -> &BiomeSource {
+        self.structures.biomes()
+    }
+
+    /// The structures that start in the chunk, from what is kept where it is there.
+    fn starts(&self, position: ChunkPos) -> Arc<[Start]> {
+        {
+            let mut kept = self.starts.lock().unwrap_or_else(PoisonError::into_inner);
+            kept.asked += 1;
+            let asked = kept.asked;
+            if let Some((last, starts)) = kept.starts.get_mut(&position) {
+                *last = asked;
+                return Arc::clone(starts);
+            }
+        }
+        let starts: Arc<[Start]> = self.structures.starts(position.x, position.z).into();
+        let mut kept = self.starts.lock().unwrap_or_else(PoisonError::into_inner);
+        let asked = kept.asked;
+        kept.starts.insert(position, (asked, Arc::clone(&starts)));
+        while kept.starts.len() > STARTS_KEPT {
+            let longest = kept.starts.iter().min_by_key(|(_, (last, _))| *last);
+            let Some(longest) = longest.map(|(position, _)| *position) else {
+                break;
+            };
+            kept.starts.remove(&longest);
+        }
+        starts
     }
 
     /// The chunk's blocks, biomes and marks as the game's fill, surface and carvers
-    /// leave them, without light and not yet marked as generated. This is what the
-    /// light of the chunk and of the eight around it is made from.
+    /// leave them, with the ground bent where structures stand, without light and
+    /// not yet marked as generated. This is what the light of the chunk and of the
+    /// eight around it is made from.
     pub fn unlit(&self, position: ChunkPos) -> Chunk {
-        let around = Biomes::from_source(&self.biomes, position.x, position.z);
+        let around = Biomes::from_source(self.biomes(), position.x, position.z);
+        let starts_of = |x, z| self.starts(ChunkPos::new(x, z));
+        let beard = Structures::beardifier(position.x, position.z, starts_of);
         let carved = self
-            .terrain
-            .carved(position.x, position.z, &around, &self.biomes)
+            .terrain()
+            .carved_bent(position.x, position.z, &beard, &around, self.biomes())
             .chunk;
         let marks = carved.marks.clone();
         let mut sections = carved.sections(self.dimension, Biome(0));

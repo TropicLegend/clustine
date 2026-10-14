@@ -3,6 +3,7 @@
 
 use clustine_data::{DIMENSION_TYPES, DimensionType};
 use clustine_light::Around;
+use clustine_structures::Structures;
 use clustine_terrain::biome::zoom::obfuscate_seed;
 use clustine_terrain::biome::{BiomeSource, Dimension};
 use clustine_terrain::fill::Terrain;
@@ -65,19 +66,35 @@ fn a_chunk_is_the_same_whatever_was_asked_before_and_whatever_is_kept() {
     assert_ne!(other.generate(positions[1]), forwards[1]);
 }
 
+/// A chunk of the seed whose ground a structure bends, 943 blocks of it: near the
+/// origin, among the chunks the game's classes were asked for when the bending was
+/// judged.
+const BENT: ChunkPos = ChunkPos::new(-14, 15);
+
 #[test]
-fn a_chunk_has_the_blocks_of_the_carved_terrain_and_the_biomes_of_the_source() {
-    let terrain = Terrain::new(SEED, Dimension::Overworld);
-    let source = BiomeSource::new(SEED, Dimension::Overworld);
+fn a_chunk_has_the_blocks_of_the_terrain_bent_by_structures_and_the_biomes_of_the_source() {
+    let structures = Structures::new(SEED, Dimension::Overworld);
+    let (terrain, source) = (structures.terrain(), structures.biomes());
     let generator = TerrainGenerator::new(SEED);
     let mut states = std::collections::BTreeSet::new();
     let mut biomes = std::collections::BTreeSet::new();
-    for position in [ChunkPos::new(0, 0), ChunkPos::new(-21, 9)] {
+    let mut bent = 0;
+    for position in [ChunkPos::new(0, 0), ChunkPos::new(-21, 9), BENT] {
         let chunk = generator.generate(position);
-        let around = Biomes::from_source(&source, position.x, position.z);
+        let around = Biomes::from_source(source, position.x, position.z);
+        let starts_of = |x, z| structures.starts(x, z);
+        let beard = Structures::beardifier(position.x, position.z, starts_of);
         let expected = terrain
-            .carved(position.x, position.z, &around, &source)
+            .carved_bent(position.x, position.z, &beard, &around, source)
             .chunk;
+        let unbent = terrain
+            .carved(position.x, position.z, &around, source)
+            .chunk;
+        let differs = |(x, y, z)| expected.get(x, y, z) != unbent.get(x, y, z);
+        let blocks = (chunk.min_y()..chunk.min_y() + chunk.height() as i32).flat_map(|y| {
+            (0..SECTION_SIZE).flat_map(move |z| (0..SECTION_SIZE).map(move |x| (x, y, z)))
+        });
+        bent += blocks.filter(|block| differs(*block)).count();
 
         assert_eq!(chunk.min_y(), overworld().min_y);
         assert_eq!(chunk.height(), overworld().height as usize);
@@ -104,6 +121,8 @@ fn a_chunk_has_the_blocks_of_the_carved_terrain_and_the_biomes_of_the_source() {
     }
     // Land, and not one block throughout: stone, water, air and more.
     assert!(states.len() > 5, "{states:?}");
+    // The village's chunk is not as the land would be without it.
+    assert!(bent > 0);
     assert!(!biomes.is_empty());
 }
 
