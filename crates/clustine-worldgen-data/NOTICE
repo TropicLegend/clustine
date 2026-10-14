@@ -12,3 +12,8 @@ The files under src/generated/ are written by `cargo datagen`, whose emitter is 
 adapted from SteelMC's (see tools/datagen/NOTICE). The data in them, and in the files
 under reference/, is Mojang's and not under that licence: see the NOTICE in each of the
 two directories and NOTICE.md at the root of the repository.
+
+src/structure.rs holds the records the emitted structures, structure sets and template
+pools are written with; their shapes follow SteelMC's data model
+(steel-registry/src/structure/), and the file says so at its head. The packed table of
+templates and its reader are Clustine's own.

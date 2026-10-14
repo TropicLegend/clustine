@@ -296,6 +296,11 @@ impl ParameterTree {
         self.list
     }
 
+    /// The biome of every entry, in the list's order.
+    pub fn biomes(&self) -> &[Biome] {
+        &self.biomes
+    }
+
     /// The biome of the entry with this number.
     pub fn biome_of(&self, entry: usize) -> Biome {
         self.biomes[entry]

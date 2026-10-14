@@ -276,6 +276,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "flate2",
  "serde_json",
  "sha1",
  "tempfile",
@@ -386,6 +387,19 @@ dependencies = [
  "postcard",
  "serde",
  "uuid",
+]
+
+[[package]]
+name = "clustine-structures"
+version = "0.0.0"
+dependencies = [
+ "clustine-data",
+ "clustine-noise",
+ "clustine-terrain",
+ "clustine-world",
+ "clustine-worldgen-data",
+ "md-5",
+ "serde_json",
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ use crate::density;
 use crate::jar::SERVER_JAR;
 use crate::model::{GameData, Property};
 use crate::worldgen::{NoiseParameters, NoiseSettings};
-use crate::{carver, material, packed, router, sums, tables};
+use crate::{carver, material, packed, router, structure, sums, tables};
 
 /// Directories that hold nothing but generated files, relative to the workspace root
 /// (ADR-0019, section 3).
@@ -252,7 +252,14 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
     let noise_names: Vec<String> = noises.keys().cloned().collect();
     let rules = material::Registries::load(&data.worldgen, &data.blocks)?;
 
-    let mut top = vec!["biomes", "carvers", "noise_settings", "noises"];
+    let mut top = vec![
+        "biomes",
+        "carvers",
+        "noise_settings",
+        "noises",
+        "structures",
+        "template_pools",
+    ];
     top.extend(DIMENSIONS);
     top.sort_unstable();
     add("mod.rs", false, modules(&top));
@@ -267,6 +274,19 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
         carver::emit(&biomes.entries, &data.worldgen)?,
     );
     add("noises.rs", false, router::noises(&noises)?);
+    let templates = structure::templates(&data.worldgen)?;
+    add(
+        "structures.rs",
+        false,
+        structure::structures(&data.worldgen, &biomes.entries, &data.tags)?,
+    );
+    add(
+        "template_pools.rs",
+        false,
+        structure::template_pools(&data.worldgen, &templates)?,
+    );
+    let table =
+        structure::templates_table(&templates, SERVER_JAR.sha1).context("packing templates.bin")?;
     let borrowed: Vec<(&str, &NoiseSettings)> = all_settings
         .iter()
         .map(|(name, settings)| (*name, settings))
@@ -303,6 +323,11 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
             add(&format!("{name}/splines.rs"), true, splines);
         }
     }
+
+    outputs.push(Output {
+        path: PathBuf::from(WORLDGEN_DIR).join("tables/templates.bin"),
+        content: table,
+    });
 
     // The values the game's own routers give: one file for each dimension and seed.
     let mut found = Vec::new();

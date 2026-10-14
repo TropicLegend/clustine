@@ -16,10 +16,12 @@ mod jar;
 mod json;
 mod material;
 mod model;
+mod nbt;
 mod packed;
 mod reference;
 mod router;
 mod sha256;
+mod structure;
 mod sums;
 mod tables;
 mod worldgen;
@@ -42,7 +44,7 @@ Usage: cargo datagen [--check] [--fresh] [--jar <path>]
                   using what an earlier run left in target/datagen.
   --jar <path>    Use this copy of the pinned server jar instead of downloading it.
   --dump <table>  Print a committed packed table, or a file of reference values, as
-                  text, one row a line. <table> is block_states, biome_parameters, the
+                  text, one row a line. <table> is block_states, biome_parameters, templates, the
                   name of a file of reference values (router_overworld_13579) or the
                   path of a file. Needs no jar.
 

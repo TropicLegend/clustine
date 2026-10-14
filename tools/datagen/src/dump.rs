@@ -20,6 +20,7 @@ use crate::tables::{FLAGS, PARAMETER_LISTS, PUSH_REACTIONS};
 
 const DATA_DIR: &str = "crates/clustine-data/src/generated";
 const REFERENCE_DIR: &str = "crates/clustine-worldgen-data/reference";
+const WORLDGEN_TABLES: &str = "crates/clustine-worldgen-data/src/generated/tables";
 
 /// The text of the table `table`: the name of a committed table (`block_states`,
 /// `biome_parameters`), the name of a file of reference values
@@ -27,6 +28,7 @@ const REFERENCE_DIR: &str = "crates/clustine-worldgen-data/reference";
 pub fn run(root: &Path, table: &str) -> Result<String> {
     let path = match table {
         "block_states" | "biome_parameters" => root.join(DATA_DIR).join(format!("{table}.bin")),
+        "templates" => root.join(WORLDGEN_TABLES).join("templates.bin"),
         name if name.starts_with("router_") && !name.contains(['/', '\\', '.']) => {
             root.join(REFERENCE_DIR).join(format!("{name}.txt"))
         }
@@ -67,6 +69,7 @@ pub fn render(bytes: &[u8], blocks: &[(String, u32, u32)], biomes: &[String]) ->
     match table.kind {
         packed::KIND_BLOCK_STATES => block_states(&table, blocks, &mut out)?,
         packed::KIND_BIOME_PARAMETERS => biome_parameters(&table, biomes, &mut out)?,
+        packed::KIND_TEMPLATES => crate::structure::dump(&table, &mut out)?,
         other => bail!("this datagen does not know tables of kind {other}"),
     }
     Ok(out)

@@ -21,9 +21,17 @@
 //!   chunk's aquifer has there; grass again on dirt that was laid bare). Compared the
 //!   same way: every block of 4,780 chunks. The head of [`carver`] says more.
 //!
-//! [`fill::Terrain::carved`] is the three together: the chunk as the game's
-//! `buildTerrain` leaves it where no structure bends the ground. The structures and
-//! the features come with the later steps of `docs/groundwork/terrain-plan.md`.
+//! - [`beard`]: what structures do to the ground, as a number the fill adds to the
+//!   density near their pieces (the game's `Beardifier`). Which pieces are near a
+//!   chunk is `clustine-structures`' to say.
+//!
+//! [`fill::Terrain::carved`] is the three steps together: the chunk as the game's
+//! `buildTerrain` leaves it where no structure bends the ground, and
+//! [`fill::Terrain::carved_bent`] where structures do: every block of 9,875 chunks
+//! under villages, camps, outposts, ancient cities, trail ruins, trial chambers,
+//! strongholds and nether fossils equals the game's (`clustine-structures`,
+//! `tests/game_bent.rs`). The features come with the later steps of
+//! `docs/groundwork/terrain-plan.md`.
 //!
 //! The overworld's biomes equal those of chunks the official server made, but for
 //! exact ties, which the game does not decide by the position. **The Nether's and
@@ -60,6 +68,7 @@
 //! `clustine-worldgen-data`.
 
 pub mod aquifer;
+pub mod beard;
 pub mod biome;
 pub mod carver;
 pub mod fill;

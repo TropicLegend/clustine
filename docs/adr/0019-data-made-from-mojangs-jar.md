@@ -211,7 +211,9 @@ The layouts, to build and to test from:
   for the offset, one `u8` for the biome's id in Clustine's sorted biome registry.
   The numbers are the game's integers of ten thousandths. The emitter fails if one
   does not fit an `i16` (every value in SteelMC's extract does).
-- `templates.bin`: a section of strings; a section of templates, 9 bytes each (name
+- `templates.bin`: a section of strings (**as built in T7a, two sections**: the
+  length of each string as a `u16`, and the strings' bytes one after another, for a
+  packed section has rows of one width); a section of templates, 9 bytes each (name
   as `u16`, three `u8` of size, the index of its first jigsaw as `u16`, their number
   as `u8`, flags as `u8`: bit 0 "the jar does not have it"); a section of jigsaws, 15
   bytes each (three `u8` of position, orientation, joint, three strings as `u16`, two

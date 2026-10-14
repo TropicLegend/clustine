@@ -19,6 +19,9 @@ use crate::model::Block;
 /// Where the registries are in the game's jar.
 const PREFIX: &str = "data/minecraft/worldgen/";
 
+/// Where the jar keeps its structure templates.
+const TEMPLATES: &str = "data/minecraft/structure/";
+
 /// The registries whose every file the data generator has to have written with the
 /// same bytes as the jar holds: the reference values of the routers are computed from
 /// the game's built-in registries, which the generator writes out, while the emitter
@@ -28,6 +31,10 @@ const CHECKED_AGAINST_THE_GENERATOR: [&str; 3] = ["density_function", "noise", "
 pub struct Worldgen {
     /// By registry (`density_function`), then by entry (`minecraft:overworld/depth`).
     registries: BTreeMap<String, BTreeMap<String, Json>>,
+    /// The structure templates of the jar as their files' bytes, by their path below
+    /// `structure/`. They are read for their sizes and jigsaw blocks and nothing of
+    /// them is written out as it is (ADR-0019, section 2).
+    pub templates: BTreeMap<String, Vec<u8>>,
 }
 
 impl Worldgen {
@@ -55,7 +62,13 @@ impl Worldgen {
                 ),
             }
         }
-        Self::from_files(&files)
+        let mut worldgen = Self::from_files(&files)?;
+        worldgen.templates = jar::files_below(&game_jar, TEMPLATES)?;
+        ensure!(
+            !worldgen.templates.is_empty(),
+            "the game's jar has nothing below {TEMPLATES}"
+        );
+        Ok(worldgen)
     }
 
     /// The registries from files by their path below `worldgen/`.
@@ -76,7 +89,10 @@ impl Worldgen {
                 .or_default()
                 .insert(format!("minecraft:{name}"), json);
         }
-        Ok(Self { registries })
+        Ok(Self {
+            registries,
+            templates: BTreeMap::new(),
+        })
     }
 
     /// The entries of a registry by name, sorted.

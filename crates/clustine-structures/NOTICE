@@ -1,0 +1,32 @@
+clustine-structures
+
+Most of this crate is adapted from SteelMC
+(https://github.com/Steel-Foundation/SteelMC), branch `26.3` at commit
+`885c4b3e60ed79862c37311780774f76806cb714`. Steel: A high-performance Minecraft
+server implementation written in Rust. Copyright (C) 2026 Alve Jeansson and
+contributors. Licensed under the GNU Affero General Public License, version 3 or
+(at your option) any later version; see `LICENSE` at the root of this
+repository. The files that were adapted say so at their head.
+
+Adapted from SteelMC's steel-worldgen/src/structure/, each from the file of the same
+name, with its imports changed, its tests left out (they rest on SteelMC's
+registries) and what the pinned 26.3 jar does otherwise put right where the judge
+found it: src/piece.rs, src/utils.rs, src/single_piece.rs, src/desert_pyramid.rs,
+src/end_city.rs, src/fortress.rs, src/igloo.rs, src/jungle_temple.rs,
+src/mineshaft.rs, src/nether_fossil.rs, src/ocean_monument.rs, src/ocean_ruin.rs,
+src/ruined_portal.rs, src/shipwreck.rs, src/stronghold.rs, src/swamp_hut.rs and
+src/mansion/. Their comments are SteelMC's.
+
+src/geometry.rs is adapted from SteelMC's steel-utils (rotation.rs, direction.rs,
+geometry.rs, types/), without the crate `glam` those are built on. src/compat.rs and
+src/context.rs keep the names and shapes of SteelMC's registry of structures and of
+its `StructureGenerationContext`, over Clustine's data and terrain, so that the
+adapted files read as they did.
+
+src/placement.rs, src/jigsaw.rs and src/lib.rs were written from the classes of the
+pinned server jar, with SteelMC's placement.rs, jigsaw.rs, generator.rs and start.rs
+read beside them; each says so at its head.
+
+The data the crate computes with is Mojang's, from `clustine-worldgen-data`; see
+NOTICE.md at the root of the repository. No block of a structure template is in
+this repository (ADR-0019).

@@ -22,6 +22,7 @@ clustine-protocol = { path = "crates/clustine-protocol" }
 clustine-region = { path = "crates/clustine-region" }
 clustine-rpc = { path = "crates/clustine-rpc" }
 clustine-sim = { path = "crates/clustine-sim" }
+clustine-structures = { path = "crates/clustine-structures" }
 clustine-terrain = { path = "crates/clustine-terrain" }
 clustine-worker = { path = "services/worker" }
 clustine-world = { path = "crates/clustine-world" }
@@ -76,4 +77,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.clustine-worldgen-data]
+opt-level = 3
+
+# A structure asks the terrain for the ground at many columns before it starts, and
+# assembles a village from hundreds of tried templates.
+[profile.dev.package.clustine-structures]
 opt-level = 3

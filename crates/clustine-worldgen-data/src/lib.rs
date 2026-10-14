@@ -8,8 +8,11 @@
 //! statics; and what makes the surface: each dimension's material rule as an emitted
 //! function ([`material`], `OverworldRouter`'s `Material` and the like) and what the
 //! rules read of a biome ([`biomes`]); and the carvers of caves and ravines with the
-//! biomes that have them ([`carver`], [`carvers`]). Features and structures come with
-//! later steps of `docs/groundwork/terrain-plan.md`.
+//! biomes that have them ([`carver`], [`carvers`]); and the structures, the structure
+//! sets and the template pools as statics ([`structure`], [`structures`],
+//! [`template_pools`]) with, of every structure template, its size and its jigsaw
+//! blocks as a packed table ([`templates`]): no block of a template is here
+//! (ADR-0019). Features come with later steps of `docs/groundwork/terrain-plan.md`.
 //!
 //! A router is made from a world's seed and gives each of its functions at a block
 //! position, through the noises of `clustine-noise`:
@@ -36,6 +39,7 @@
 pub mod carver;
 pub mod density;
 pub mod material;
+pub mod structure;
 
 // The generated code is laid out by the emitter and never formatted, so that its bytes
 // do not depend on a toolchain (ADR-0019, section 1).
@@ -50,5 +54,13 @@ pub use density::{
 pub use generated::end::router::EndRouter;
 pub use generated::nether::router::NetherRouter;
 pub use generated::overworld::router::OverworldRouter;
-pub use generated::{biomes, carvers, noise_settings, noises};
+pub use generated::{biomes, carvers, noise_settings, noises, structures, template_pools};
+
+/// The table of structure templates: of each its size and its jigsaw blocks.
+pub fn templates() -> &'static structure::Templates {
+    static TEMPLATES: std::sync::LazyLock<structure::Templates> = std::sync::LazyLock::new(|| {
+        structure::Templates::parse(include_bytes!("generated/tables/templates.bin"))
+    });
+    &TEMPLATES
+}
 pub use material::{Anchor, BiomeClimate, Context, MaterialRule, Vein};

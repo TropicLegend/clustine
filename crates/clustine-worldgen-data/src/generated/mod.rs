@@ -7,3 +7,5 @@ pub mod nether;
 pub mod noise_settings;
 pub mod noises;
 pub mod overworld;
+pub mod structures;
+pub mod template_pools;

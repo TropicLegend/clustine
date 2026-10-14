@@ -32,8 +32,9 @@
 //!
 //! **Ore veins are not part of this step in 26.3.** They are a material rule
 //! (`OreVeinRule`) and come with the surface ([`crate::surface`],
-//! [`Terrain::surface`]). No structure bends the ground here either: the
-//! beardifier adds nothing until structures have starts (T7b), and old chunks are not
+//! [`Terrain::surface`]). [`Terrain::fill`] is the fill where no structure bends the
+//! ground; [`Terrain::fill_bent`] adds what the structures near a chunk add to the
+//! density ([`crate::beard`]), which `clustine-structures` says. Old chunks are not
 //! blended in.
 //!
 //! **What it was compared with**, in October 2026: `tests/java/GameFill.java` has the
@@ -49,6 +50,7 @@ use clustine_worldgen_data::{
 };
 
 use crate::aquifer::{self, Aquifer};
+use crate::beard::Beardifier;
 use crate::biome::zoom::Zoom;
 use crate::biome::{BiomeSource, Dimension};
 use crate::carver::{self, Heights, Mask, Origin};
@@ -220,11 +222,33 @@ impl<R: NoiseRouter> Shape<R> {
         NoiseChunk::new(&self.router, &self.positions, volume, scratch)
     }
 
-    fn fill(&self, chunk_x: i32, chunk_z: i32, scratch: &mut Scratch) -> (Filled, Vec<f32>) {
+    fn fill(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        beard: &Beardifier,
+        scratch: &mut Scratch,
+    ) -> (Filled, Vec<f32>) {
         let settings = self.settings();
         let volume = Volume::of_chunk(chunk_x, chunk_z, settings.min_y, settings.height);
         let mut noise_chunk = self.noise_chunk(volume, scratch);
         let default_block = self.default_block();
+        // The beardifier is the last term of every dimension's final density, and
+        // the routers add nothing in its place (`NO_BEARD`): it is added here, block
+        // by block, as the game adds it.
+        if !beard.is_empty() {
+            for z in 0..volume.size_z {
+                for x in 0..volume.size_x {
+                    for y in 0..volume.size_y {
+                        noise_chunk.density[volume.index(x, y, z)] += beard.sample(
+                            volume.min_x + x as i32,
+                            volume.min_y + y as i32,
+                            volume.min_z + z as i32,
+                        );
+                    }
+                }
+            }
+        }
 
         let mut blocks = vec![blocks::AIR; volume.len()];
         let mut marks = Vec::new();
@@ -402,7 +426,20 @@ impl Terrain {
         chunk_z: i32,
         scratch: &mut Scratch,
     ) -> (Filled, Vec<f32>) {
-        shape!(self, shape => shape.fill(chunk_x, chunk_z, scratch))
+        shape!(self, shape => shape.fill(chunk_x, chunk_z, &Beardifier::default(), scratch))
+    }
+
+    /// [`Self::fill_with_density`] with what the structures near the chunk add to the
+    /// density ([`crate::beard`]): the game's fill where structures are on.
+    #[must_use]
+    pub fn fill_bent(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        beard: &Beardifier,
+        scratch: &mut Scratch,
+    ) -> (Filled, Vec<f32>) {
+        shape!(self, shape => shape.fill(chunk_x, chunk_z, beard, scratch))
     }
 
     /// The blocks of a chunk's terrain as a volume: what the game fills at once.
@@ -607,6 +644,26 @@ impl Terrain {
     ) -> Carved {
         let mut scratch = Scratch::default();
         let mut chunk = self.fill_with_density(chunk_x, chunk_z, &mut scratch).0;
+        self.build_surface(&mut chunk, chunk_x, chunk_z, biomes, &mut scratch);
+        let mask = self.carving_mask(chunk_x, chunk_z, source);
+        self.apply_carving_mask(&mut chunk, chunk_x, chunk_z, &mask, biomes, &mut scratch);
+        Carved { chunk, mask }
+    }
+
+    /// [`Self::carved`] with what the structures near the chunk add to the fill's
+    /// density: the game's `buildTerrain` with structures on. The surface and the
+    /// carvers do not ask the beardifier; they work on what the bent fill left.
+    #[must_use]
+    pub fn carved_bent(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        beard: &Beardifier,
+        biomes: &Biomes,
+        source: &BiomeSource,
+    ) -> Carved {
+        let mut scratch = Scratch::default();
+        let mut chunk = self.fill_bent(chunk_x, chunk_z, beard, &mut scratch).0;
         self.build_surface(&mut chunk, chunk_x, chunk_z, biomes, &mut scratch);
         let mask = self.carving_mask(chunk_x, chunk_z, source);
         self.apply_carving_mask(&mut chunk, chunk_x, chunk_z, &mask, biomes, &mut scratch);

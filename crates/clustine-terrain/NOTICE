@@ -32,3 +32,9 @@ of the blocks of a few chunks that equal what those classes gave
 (tests/java/GameSurface.java), and tests/carvers.rs hashes and counts of a few carved
 chunks that those classes wrote (tests/java/GameCarvers.java). They are Mojang's data and not under the licence of
 the code around them: see NOTICE.md at the root of the repository.
+
+src/beard.rs was written from the bytecode of the jar's `Beardifier` and of
+`Mth.fastInvSqrt`, with SteelMC's steel-worldgen/src/noise/beardifier.rs read beside
+them; it says so at its head. tests/java/GameStructures.java asks the jar's own
+classes for structure starts, references and bent terrain for the tests of
+`clustine-structures`; it is Clustine's own, and what it writes is Mojang's data.

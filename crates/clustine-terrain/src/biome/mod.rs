@@ -304,6 +304,26 @@ impl BiomeSource {
         }
     }
 
+    /// Every biome the source can give (the game's `BiomeSource.possibleBiomes`),
+    /// ascending and each once. A structure set none of whose structures has one of
+    /// them is not looked at in the dimension.
+    pub fn possible_biomes(&self) -> Vec<Biome> {
+        let mut biomes = match &self.kind {
+            Kind::Overworld(source) => source.tree.biomes().to_vec(),
+            Kind::Nether(source) => source.tree.biomes().to_vec(),
+            Kind::End(source) => vec![
+                source.the_end,
+                source.highlands,
+                source.midlands,
+                source.small_islands,
+                source.barrens,
+            ],
+        };
+        biomes.sort_unstable();
+        biomes.dedup();
+        biomes
+    }
+
     /// The climate at the biome cell `x`, `y`, `z`.
     pub fn climate(&self, x: i32, y: i32, z: i32) -> Climate {
         match &self.kind {
@@ -321,6 +341,23 @@ impl BiomeSource {
             // A cell is four blocks and a chunk sixteen.
             Kind::End(source) => source.of_chunk(x >> 2, z >> 2),
         }
+    }
+
+    /// The biome of a cell as the game's own search gives it to a thread that looked
+    /// `before` up last: an entry found before stays if none is strictly nearer, so
+    /// where two entries are exactly tied the answer is not a function of the
+    /// position ([`search`]). `before` is the entry found here, afterwards. For the
+    /// few things the game decides by a walk over cells in a known order, as the
+    /// places of the strongholds; everything else asks [`Self::biome`].
+    pub fn biome_after(&self, x: i32, y: i32, z: i32, before: &mut Option<usize>) -> Biome {
+        let (tree, climate) = match &self.kind {
+            Kind::Overworld(source) => (source.tree, source.climate(x, y, z)),
+            Kind::Nether(source) => (source.tree, source.climate(x, y, z)),
+            Kind::End(source) => return source.of_chunk(x >> 2, z >> 2),
+        };
+        let nearest = tree.nearest_after(&climate, *before);
+        *before = Some(nearest.entry);
+        nearest.biome
     }
 
     /// The biome of a cell with the climate it was found by and the biomes it was
