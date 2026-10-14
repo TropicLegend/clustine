@@ -1313,6 +1313,16 @@ s at 34 blocks a second, and 0.14 to 0.24 s at 60 (gliding with rockets), where 
 CLUSTINE_LIGHTS_ROWS=1,2`): the nine around a joining bot in 0.24 s and its view in
 1.0 s, where they took 3.3 and 5.2 s, one light job a chunk as before.
 
+The rest of ADR-0021's measurements (its section "Measured (W5m)", same machine and
+disk) are within their limits: a crowd of a hundred waits at most 0.57 s at a split
+and 0.62 s at a merge while a third region's first view is made from nothing (0.48
+and 0.57 s without it); players stand still 0.4 to 1.1 s after their dead worker's
+region is given to another, about 6 s from the kill with the lease of 5 s; two
+regions whose players both walk into new land are merged in 0.02 s; the first step
+beyond stored land after a start takes 0.7 s to its first chunk, later steps 0.02 s.
+On the land of a seed the crowd waits about twice what it waits on the flat world,
+which is not explained yet.
+
 **What to try with a real client: the land beside the game's.** With `--release`,
 and a directory of its own for the world:
 

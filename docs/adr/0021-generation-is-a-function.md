@@ -1198,7 +1198,6 @@ tests do not wait on a clock.
 | The crowd's wait at a merge and at a split while a third region's first view is generated from nothing | W5, `crowds.rs` | 1 s at worst (ADR-0017, 9.7), or 0.2 s more than without the third region |
 | The same for two regions whose players both walk outward | W5 | 1 s at worst |
 | A sync of 512 notes of real terrain | W5 | 250 ms |
-| A restore after a kill with nothing cached (`chaos.rs`, `measured_how_long_players_stand_still…`: land of seed 13579, two pinned regions, four ledger bots, the store killed and started again before each kill so that its cache is empty; ten kills, checkpoints every second or practically never) | 7 s (M3's promise, with a lease of 5) | the heir runs the region 0.02 s after it is given it, and every bot has an answer again 0.43 to 1.07 s after it is given it; the test's lease is 3 s and the kill fell 2.3 to 3.6 s before the hand-over, so with the lease of 5 at most about 6.1 s |
 | A restore after a kill with nothing cached, on the imported world | W5 | 7 s (M3's promise) |
 | A join far from anything stored: the first chunk | W5, T8 | 2 s |
 | A region's tick while a first view is generated in the same process | T8 | 50 ms |
@@ -1536,21 +1535,24 @@ section 9 (27 tests), the new text of T10 with S1 to S8 (32 tests) and item 11
   not defined there. Such a piece is recorded (a far piece); G5 says whether any
   exists.
 
-## Measured (W5m, 2026-10-14, in part)
+## Measured (W5m, 2026-10-14)
 
 On the owner's machine, twelve processors, optimised builds. **The disk is not the
 one the limits were set for**: that day the owner put a cache in local memory in
 front of the network storage, one that writes back later and is not safe, and a
-file now syncs in 0.2 ms, where it took 22 ms
-before (`docs/groundwork/disk-syncs-bench.py`). What waits for syncs is to be
-measured again without the cache; what is below holds for the logic and the
-processors.
+file now syncs in 0.2 ms, where it took 22 ms before
+(`docs/groundwork/disk-syncs-bench.py`). What waits for syncs is to be measured
+again without the cache; what is below holds for the logic and the processors.
 
 | Measured | Limit | Found |
 |---|---|---|
 | A join far from anything stored: the first chunk (`terrain.rs`, `lights.rs` rows 1 and 2) | 2 s | 0.25 s; the nine 0.24 s, the view of 8 1.0 s, three runs |
 | The crowd's wait at a split / a merge while a third region's first view is made from nothing (`crowds.rs`, 100 bots, view 8, 5 rounds, test seed 1000, land of seed 13579, `CLUSTINE_CROWD_FAR=1`) | 1 s, or 0.2 s more than without | split 0.41 / 0.43 / 0.57, merge 0.57 / 0.61 / 0.62 s; without the third region 0.40 / 0.42 / 0.48 and 0.41 / 0.57 / 0.57 s |
 | A sync of 512 notes of real terrain (`chunks.rs`, `what_a_sync_of_512_notes…`) | 250 ms | 20 to 24 ms for 1,042 KB; making the notes ready took another 254 to 266 ms on the store's thread for chunks, half a millisecond a chunk |
+| A restore after a kill with nothing cached (`chaos.rs`, `measured_how_long_players_stand_still…`: land of seed 13579, two pinned regions, four ledger bots, the store killed and started again before each kill so that its cache is empty; ten kills, checkpoints every second or practically never) | 7 s (M3's promise, with a lease of 5) | the heir runs the region 0.02 s after it is given it, and every bot has an answer again 0.43 to 1.07 s after it is given it; the test's lease is 3 s and the kill fell 2.3 to 3.6 s before the hand-over, so with the lease of 5 at most about 6.1 s |
+| The first step beyond the rim of what is stored after a start (`generation_tests.rs`, `what_the_first_step_beyond_the_rim…`: a stored view of 17 by 17 chunks, a new store on its files, a player walking out one row of 17 chunks a step; five runs) | reported | the first chunk 0.68 to 0.70 s, the row 0.77 to 0.79 s; the next steps, which find what the look-ahead made, 0.016 to 0.020 s and 0.048 to 0.054 s |
+| The store's end with requests under way (`generation_tests.rs`, `what_the_end_with_requests…`: 64 chunks nobody had made asked for, the store dropped at once; five runs) | reported | 0.81 to 0.84 s until the generator's threads have ended, which is the time the 64 take to be made: the end waits for them rather than dropping them. With nothing under way 0.011 to 0.014 s |
+| A merge of two regions whose players both walk outward (`crowds.rs`, `measured_two_regions_whose_players_walk_outward…`: two wanderers at a flying sprint on the land of seed 13579, view 8, walking apart until split and together until merged, every walk 30 chunks further north into land nobody had been in; five rounds) | 1 s at worst | the merges began 20.4 to 20.7 s into walks of 26.7 s, the coordinator took 0.013 to 0.021 s and the region stood still 0.002 to 0.049 s with 934 to 1,190 chunks; the splits 0.005 to 0.011 s and 0.009 to 0.010 s |
 
 **Not explained yet**: on the land of a seed the crowd waits about twice what it
 waits on the flat world at the same splits and merges (0.25 s at both on the flat
@@ -1562,6 +1564,4 @@ compressing chunks took 22 s where it took 2. Nothing logs a region's tick time,
 where the half second goes is not seen.
 
 Still to be measured: the same on a disk of 22 ms a sync (without the cache); the
-restore on a world imported from Anvil, once there is an importer; the first chunk
-walked beyond the rim after a start; the store's end with requests under way (test
-7j); the two-regions-walking-outward case.
+restore on a world imported from Anvil, once there is an importer.

@@ -57,8 +57,8 @@ use clustine_botswarm::Ledger;
 use clustine_rpc::RegionList;
 
 use common::wandering::{
-    Begun, PATIENCE, Region, Setup, TICK, WRITING, Wanders, a_repetition, absorbed_by, living,
-    number_from, seconds, spread, within,
+    Begun, PATIENCE, Region, Setup, TICK, WRITING, Wandering, Wanders, a_repetition, absorbed_by,
+    bounds, chunk_of, has_chunk, living, number_from, seconds, spread, within,
 };
 
 /// How many bots a ledger of the crowd has.
@@ -339,5 +339,160 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
         ));
     }
     wanders.nobody_waited_too_long(counting);
+    wanders.finish().await;
+}
+
+/// What is measured (ADR-0021, W5m): the merge of two regions whose players both walk
+/// outward, into land nobody has been in, against the record's second at worst. Two
+/// wanderers on the land of seed 13579 (`CLUSTINE_CROWD_LAND` for another), with a
+/// view distance of 8, walk apart until their regions are split and then towards each
+/// other until they are merged on the way, at a flying sprint, round after round
+/// (`CLUSTINE_CROWD_ROUNDS`, 5 unless said). Every walk takes them 30 chunks further
+/// north than the last, so that whatever comes into their view is made from nothing.
+/// Printed for each merge and split: how long the coordinator took, and how long the
+/// region stood still by its worker's line, with how many chunks.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "a measurement that takes minutes; run it by name with --ignored --nocapture"]
+async fn measured_two_regions_whose_players_walk_outward_are_merged_on_the_way() {
+    if a_repetition() {
+        return;
+    }
+    const VIEW: i32 = 8;
+    // Half the distance between the two when apart and when together, and how far
+    // north each walk takes them, in chunks: the rule merges at 22 and splits
+    // beyond 30 for a view of 8.
+    const APART: i32 = 25;
+    const TOGETHER: i32 = 5;
+    const NORTH: i32 = 30;
+    let rounds = number_from("CLUSTINE_CROWD_ROUNDS").unwrap_or(5) as i32;
+    let land = number_from("CLUSTINE_CROWD_LAND").unwrap_or(13579);
+    let world = Setup {
+        family: "outward",
+        workers: 3,
+        view: VIEW,
+        lease: None,
+        rest: REST,
+        alone: true,
+        checkpoint: number_from("CLUSTINE_CROWD_CHECKPOINT"),
+        land: Some(land),
+    };
+    let mut wanders = Wanders::cluster("outward", world).await;
+    let west = wanders.wanders("West").await;
+    let east = wanders.wanders("East").await;
+    let start = wanders.wanderers[west].noted();
+    let (x, z) = (start.x, start.z);
+    let block = |chunks: i32| f64::from(16 * chunks);
+    // The region with the chunk a wanderer is in, if the list has one.
+    let region_of = |list: &RegionList, noted: &Wandering| {
+        let (cx, cz) = (chunk_of(noted.x), chunk_of(noted.z));
+        living(list)
+            .into_iter()
+            .find(|region| has_chunk(bounds(list, *region), cx, cz))
+    };
+    let from = wanders.now_at();
+    // When each walk began on the test's clock, and how long it takes at its pace.
+    let mut walks: Vec<(Instant, Duration, bool)> = Vec::new();
+    let mut walked = 0;
+    // First together far enough north that their region is split off from the one
+    // with the chunk players enter in, which would otherwise hold both.
+    let legs = std::iter::once((TOGETHER, true, 2))
+        .chain((0..rounds).flat_map(|_| [(APART, false, 1), (TOGETHER, true, 1)]));
+    for (leg, (half, together, steps)) in legs.enumerate() {
+        walked += steps;
+        let north = z - block(NORTH * walked);
+        let (west_at, east_at) = (x - block(half), x + block(half));
+        let here = wanders.wanderers[west].noted();
+        let way = (west_at - here.x).hypot(north - here.z);
+        walks.push((Instant::now(), TICK.mul_f64(way / FAR_SPEED), together));
+        wanders.wanderers[west].walks_to(west_at, north, FAR_SPEED);
+        wanders.wanderers[east].walks_to(east_at, north, FAR_SPEED);
+        wanders.wanderer_arrives(west, way, FAR_SPEED).await;
+        wanders.wanderer_arrives(east, way, FAR_SPEED).await;
+        let (w, e) = (
+            wanders.wanderers[west].noted(),
+            wanders.wanderers[east].noted(),
+        );
+        let what = if together {
+            "the two are in one region"
+        } else {
+            "the two are in regions of their own"
+        };
+        wanders
+            .until_the_list_within(PATIENCE, what, |list| {
+                let (w, e) = (region_of(list, &w), region_of(list, &e));
+                let home = Some(list.home.0 as Region);
+                w.is_some() && e.is_some() && (w == e) == together && w != home && e != home
+            })
+            .await;
+        wanders.whole().await;
+        if leg > 0 && !together {
+            wanders.note(format!(
+                "round {} of {rounds} has split them",
+                leg.div_ceil(2)
+            ));
+        }
+    }
+
+    println!(
+        "OUTWARD: two wanderers on the land of seed {land}, a view distance of {VIEW}, \
+         {rounds} rounds, seed {}; each merge and split: when it was begun in its walk, \
+         how long the coordinator took, how long the region stood still and with how \
+         many chunks",
+        wanders.seed
+    );
+    let stood = wanders.stood();
+    // How many of each ended well.
+    let (mut merges, mut splits) = (0, 0);
+    for (at, begun) in wanders.reshapes_at().iter().filter(|(at, _)| *at >= from) {
+        let (region, of) = match begun {
+            Begun::Merge { survivor, .. } => (*survivor, &mut merges),
+            Begun::Split { region, .. } => (*region, &mut splits),
+            _ => continue,
+        };
+        let Some((ended_at, ended)) = wanders.end_of(*at, begun) else {
+            continue;
+        };
+        let when = wanders.instant_of(*at);
+        let walk = walks.iter().rev().find(|(began, _, _)| *began <= when);
+        let into = walk.map_or("before the walks".to_owned(), |(began, takes, _)| {
+            format!(
+                "{:.1} s into a walk of {:.1} s",
+                (when - *began).as_secs_f64(),
+                takes.as_secs_f64()
+            )
+        });
+        let line = stood.iter().find(|stood| {
+            stood.region == region && stood.at >= at - WRITING && stood.at <= ended_at + 2.0
+        });
+        let still = line.map_or("no line".to_owned(), |line| {
+            format!(
+                "{:.3} s with {} chunks",
+                line.milliseconds as f64 / 1000.0,
+                line.held
+            )
+        });
+        println!(
+            "OUTWARD: {} of region {region}{}: {into}, took {:.3} s, stood still {still}",
+            if matches!(begun, Begun::Merge { .. }) {
+                "merge"
+            } else {
+                "split"
+            },
+            if ended.well() {
+                ""
+            } else {
+                " (did not end well)"
+            },
+            ended_at - at
+        );
+        if ended.well() {
+            *of += 1;
+        }
+    }
+    if merges < rounds || splits < rounds {
+        wanders.fail(&format!(
+            "the two were to be merged and split {rounds} times; {merges} merges and {splits} splits ended well"
+        ));
+    }
     wanders.finish().await;
 }

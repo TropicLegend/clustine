@@ -909,6 +909,172 @@ fn the_threads_end_once_everything_is_dropped_with_nothing_under_way() {
     assert!(!written(&disk, A));
 }
 
+/// The server's generator for the land of seed 13579, made on the scheduler's pool as
+/// the server makes it, which says when it has been dropped and its threads have
+/// ended. For the measurements below.
+struct Ending {
+    scheduler: Option<clustine_worldgen::scheduler::Scheduler<clustine_worldgen::PreviewStages>>,
+    ended: std::sync::mpsc::Sender<Instant>,
+}
+
+impl ChunkGenerator for Ending {
+    fn generate(&self, position: ChunkPos) -> Chunk {
+        self.scheduler.as_ref().unwrap().generate(position)
+    }
+
+    fn settings(&self) -> Settings {
+        self.scheduler.as_ref().unwrap().settings()
+    }
+
+    fn request(&self, position: ChunkPos, done: Done) -> Wanted {
+        self.scheduler.as_ref().unwrap().request(position, done)
+    }
+}
+
+impl Drop for Ending {
+    fn drop(&mut self) {
+        drop(self.scheduler.take());
+        let _ = self.ended.send(Instant::now());
+    }
+}
+
+/// A store of the world `gap()` in `directory` on the real disk, with the server's
+/// generator and an empty cache, and what says when its generator is dropped.
+fn the_servers_store(directory: &Path) -> (Store, std::sync::mpsc::Receiver<Instant>) {
+    use clustine_worldgen::scheduler::{Options, Order, Scheduler};
+    use clustine_worldgen::{PreviewStages, TerrainGenerator};
+
+    use crate::disk::OsDisk;
+
+    let processors = std::thread::available_parallelism().map_or(1, usize::from);
+    let (ended, end) = std::sync::mpsc::channel();
+    let generator = Arc::new(Ending {
+        scheduler: Some(Scheduler::new(
+            PreviewStages::new(Arc::new(TerrainGenerator::new(13579))),
+            Options {
+                order: Order::Bare,
+                ..Options::for_processors(processors)
+            },
+        )),
+        ended,
+    });
+    let disk = Arc::new(OsDisk::default());
+    let chunks = FileChunks::new(disk.clone(), directory);
+    let store = start(disk, directory, Box::new(chunks), generator, &gap()).unwrap();
+    (store, end)
+}
+
+/// What test 7j's end costs with the real generator (ADR-0021, W5m, "reported"): a
+/// region asks for 64 chunks nobody has made, and the store is dropped while they are
+/// being made; against the same end once they are made. The time is until the
+/// generator is dropped and its threads have ended. The files go under `TMPDIR`:
+///
+/// ```text
+/// cargo test --release -p clustine-worldstore --lib -- --ignored --nocapture end_with_requests
+/// ```
+#[test]
+#[ignore = "a measurement, for a release build on the disk the server runs on"]
+fn what_the_end_with_requests_under_way_costs() {
+    let wanted: Vec<ChunkPos> = (0..64)
+        .map(|i| ChunkPos::new(20 + i % 8, i / 8 - 4))
+        .collect();
+    for under_way in [true, false] {
+        for _ in 0..5 {
+            let directory = tempfile::tempdir().unwrap();
+            let (store, end) = the_servers_store(directory.path());
+            let x = open(&store, hello(EAST, 1));
+            let asked = Instant::now();
+            if under_way {
+                // Every load is in the thread's hands once each has said it is being
+                // made; some may be made by then.
+                let mut asked_for = 0;
+                for position in &wanted {
+                    load(&x, *position);
+                }
+                while asked_for < wanted.len() {
+                    if let StoreReply::Generating { .. } = answer(&x) {
+                        asked_for += 1;
+                    }
+                }
+            } else {
+                load_all(&x, &wanted);
+            }
+            let dropped = Instant::now();
+            drop((x, store));
+            let ended = end
+                .recv_timeout(PATIENCE)
+                .expect("the generator is dropped");
+            println!(
+                "MEASURED: {} the store's end took {:.3} s ({:.3} s after the loads were asked for)",
+                if under_way {
+                    "with 64 chunks being made,"
+                } else {
+                    "with nothing under way,"
+                },
+                (ended - dropped).as_secs_f64(),
+                (dropped - asked).as_secs_f64()
+            );
+        }
+    }
+}
+
+/// What the first step beyond the rim of what is stored costs after a start, when the
+/// generator's cache is empty (ADR-0021, W5m, "reported, with the time of a step that
+/// finds its neighbours cached beside it"). A view of 17 by 17 chunks is made and
+/// stored; a new store on the same files then has a player walk east out of it, one
+/// row of 17 chunks at a step, three steps. Printed for each step: when its first
+/// chunk came and when the whole row had. The files go under `TMPDIR`:
+///
+/// ```text
+/// cargo test --release -p clustine-worldstore --lib -- --ignored --nocapture beyond_the_rim
+/// ```
+#[test]
+#[ignore = "a measurement, for a release build on the disk the server runs on"]
+fn what_the_first_step_beyond_the_rim_costs_after_a_start() {
+    let row = |x: i32| -> Vec<ChunkPos> { (-8..=8).map(|z| ChunkPos::new(x, z)).collect() };
+    for _ in 0..5 {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let (store, end) = the_servers_store(directory.path());
+            let x = open(&store, hello(EAST, 1));
+            let view: Vec<ChunkPos> = (20..=36).flat_map(row).collect();
+            load_all(&x, &view);
+            // The notes are written at the next sync of any handle.
+            flushed(&x);
+            drop((x, store));
+            end.recv_timeout(PATIENCE)
+                .expect("the generator is dropped");
+        }
+        let (store, _end) = the_servers_store(directory.path());
+        let x = open(&store, hello(EAST, 1));
+        let mut steps = Vec::new();
+        for column in 37..=39 {
+            let wanted = row(column);
+            let asked = Instant::now();
+            for position in &wanted {
+                load(&x, *position);
+            }
+            let (mut first, mut chunks) = (None, 0);
+            while chunks < wanted.len() {
+                if let StoreReply::Loaded { .. } = answer(&x) {
+                    first.get_or_insert_with(|| asked.elapsed());
+                    chunks += 1;
+                }
+            }
+            steps.push(format!(
+                "{:.3} / {:.3}",
+                first.expect("a chunk came").as_secs_f64(),
+                asked.elapsed().as_secs_f64()
+            ));
+        }
+        println!(
+            "MEASURED: steps east beyond the rim after a start, the first chunk / the row \
+             of 17, in seconds: {}",
+            steps.join(", then ")
+        );
+    }
+}
+
 // S1 to S8.
 
 /// S1 and S2: what a region was handed is what a later load is answered with, from
