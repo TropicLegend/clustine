@@ -164,8 +164,14 @@ struct ReplicaChunk {
     lit: u64,
     /// The moment of the job under way for the chunk, if any.
     job: Option<u64>,
-    /// Those who have the chunk were not sent the entry's latest light.
+    /// Those who have the chunk and are owed its light were not sent the entry's
+    /// latest: a result was withheld, or a job failed. The next result that goes to
+    /// them names every section.
     owed: bool,
+    /// A chunk has come or been replaced beside this one since those who have it
+    /// were last sent its light. A client cannot know of that by itself, so the next
+    /// result goes to everyone who has the chunk, wherever in their view it is.
+    reshaped: bool,
     /// The chunk's packet. It is encoded when first needed, so that many players can
     /// be sent the same bytes, and discarded when the chunk changes and when nobody
     /// waits for the chunk any more: it is as large as the chunk and its light
@@ -206,6 +212,7 @@ impl ReplicaChunk {
             lit: 0,
             job: None,
             owed: false,
+            reshaped: false,
             packet: None,
             waiters: BTreeSet::new(),
             served_by: None,
@@ -2681,7 +2688,9 @@ impl Fanout {
         // A job under way was for the chunk of before; its result is dropped.
         entry.job = None;
         entry.light = None;
+        // Whoever had the chunk is sent the new one whole.
         entry.owed = false;
+        entry.reshaped = false;
         entry.as_made = as_made;
         entry.shaped = shaped;
         let holds = carried
@@ -2721,6 +2730,7 @@ impl Fanout {
             if keeps {
                 entry.lit = moment;
             } else {
+                entry.reshaped = true;
                 self.marked.insert(beside);
             }
         }
@@ -2773,8 +2783,9 @@ impl Fanout {
             // The one dimension an edge serves yet has a sky.
             sky: true,
             old: entry.light.clone(),
-            // Nobody is sent a light update yet.
-            whole: false,
+            // Those who are owed the light hold one from before the entry's last:
+            // the sections that differ from the entry's would not be all of theirs.
+            whole: entry.owed,
         };
         self.jobs.insert(basis, position);
         if self.lighting.send(job).is_err() {
@@ -2816,10 +2827,16 @@ impl Fanout {
         entry.job = None;
         entry.lit = basis;
         entry.packet = None;
-        match outcome {
-            LightOutcome::Lit { light, update: _ } => {
+        // A block that light sees changed under the job, in the chunk or within reach
+        // of it: the block update went at once and the client lit the change itself.
+        // This light, made from the blocks of before, would put that out again, so
+        // those who have the chunk are not sent it and get the next job's, whole.
+        let withheld = entry.changed > basis;
+        let update = match outcome {
+            LightOutcome::Lit { light, update } => {
                 entry.light = Some(light);
                 entry.kind = LightKind::Computed;
+                update.filter(|_| !withheld)
             }
             LightOutcome::Failed { why } => {
                 // Said where an operator reads it; the chunk is shown with the light
@@ -2830,26 +2847,54 @@ impl Fanout {
                     let chunk = entry.chunk.as_deref().expect("a job is for a chunk");
                     entry.light = Some(Arc::new(reckoned_light(chunk)));
                 }
+                None
             }
-        }
+        };
         if entry.current() {
             self.marked.remove(&position);
         }
-        // Those who have the chunk were not sent this light: nobody is sent a light
-        // update yet.
-        let held = |view: &PlayerView| view.sent.contains(&position);
-        let owed = self.players.values().any(held);
+        // To whom the light goes, of those who have the chunk
+        // (`docs/adr/0023-light-at-the-edge.md`, "Found while building"): to everyone,
+        // if a chunk came or was replaced beside it, which no client knows of by
+        // itself; otherwise to those at the rim of whose view the chunk is, who lack
+        // a chunk beside it. Whoever has all the chunks around a change lights it as
+        // the official client always has, and the official server sends them nothing.
+        let everyone = entry.reshaped;
+        let lacks_one_beside = |view: &PlayerView| {
+            let has = |at: &ChunkPos| view.sent.contains(at) || view.replace.contains(at);
+            !Self::around(position).iter().all(has)
+        };
+        let owed_it = |(player, view): (&PlayerId, &PlayerView)| {
+            let has = view.sent.contains(&position);
+            (has && (everyone || lacks_one_beside(view))).then_some(*player)
+        };
+        let holders: Vec<PlayerId> = self.players.iter().filter_map(owed_it).collect();
         let entry = self.replica.get_mut(&position).expect("found above");
-        entry.owed |= owed;
+        let sent = entry.kind == LightKind::Computed && !withheld;
+        if sent {
+            entry.owed = false;
+            // Unless a chunk came beside it under the job as well: the next job's
+            // result goes to everyone too.
+            entry.reshaped = entry.shaped > basis;
+        } else if !holders.is_empty() {
+            entry.owed = true;
+        }
+        let waiters: Vec<PlayerId> = if entry.sendable() {
+            entry.waiters.iter().copied().collect()
+        } else {
+            Vec::new()
+        };
         // Everything is as it is to be before anyone is sent anything, and whoever is
         // sent something is looked up again by what sends it: a player whose queue is
         // full is removed in the middle of this, and the entry with them if they were
         // its last viewer.
-        if entry.sendable() {
-            let waiters: Vec<_> = entry.waiters.iter().copied().collect();
-            for player in waiters {
-                self.send_chunks(player).await;
+        if let Some(update) = update {
+            for player in holders {
+                self.send_to_player(player, [update.clone()]).await;
             }
+        }
+        for player in waiters {
+            self.send_chunks(player).await;
         }
     }
 
@@ -6356,6 +6401,8 @@ mod scenarios {
         Unloaded(ChunkPos),
         /// A block of the chunk has changed.
         Block(ChunkPos),
+        /// A light update for the chunk.
+        Light(ChunkPos),
     }
 
     struct Client {
@@ -6372,6 +6419,8 @@ mod scenarios {
         of_chunks: Vec<OfChunk>,
         /// The light each chunk it has was sent with.
         light: BTreeMap<ChunkPos, LightData>,
+        /// Every light update it was sent, in order.
+        light_updates: Vec<(ChunkPos, LightData)>,
         /// The blocks it was told have changed since their chunk was sent, each as it
         /// was told last.
         blocks: BTreeMap<BlockPos, i32>,
@@ -6411,6 +6460,7 @@ mod scenarios {
                 sent: Vec::new(),
                 of_chunks: Vec::new(),
                 light: BTreeMap::new(),
+                light_updates: Vec::new(),
                 blocks: BTreeMap::new(),
                 entities: BTreeSet::new(),
                 acknowledged: Vec::new(),
@@ -6456,6 +6506,11 @@ mod scenarios {
                     let block = BlockPos::new(x, y, z);
                     self.of_chunks.push(OfChunk::Block(block.chunk()));
                     self.blocks.insert(block, update.state);
+                }
+                ClientboundPlay::LightUpdate(update) => {
+                    let position = ChunkPos::new(update.chunk_x, update.chunk_z);
+                    self.of_chunks.push(OfChunk::Light(position));
+                    self.light_updates.push((position, update.light));
                 }
                 ClientboundPlay::SpawnEntity(entity) => {
                     self.entities.insert(entity.entity_id);
@@ -17083,7 +17138,12 @@ mod scenarios {
         edge.tell(WEST, changed(HOME, GRANITE));
         edge.settle(WEST).await;
         client.drain();
-        // The chunk of before is still there, with the three changes said of it.
+        // The chunk of before is still there, with the three changes said of it. (The
+        // chunk beside it, which the client has and of which it is at the rim, has
+        // its light sent as well.)
+        client
+            .of_chunks
+            .retain(|told| !matches!(told, OfChunk::Light(_)));
         assert_eq!(client.of_chunks, [OfChunk::Block(HOME); 3]);
         assert!(client.chunks.contains_key(&HOME));
 
@@ -17249,6 +17309,168 @@ mod scenarios {
         edge.tell(WEST, snapshot_of(HOME, ask, bare.clone(), Vec::new()));
         assert!(edge.shows(&mut client, WEST, HOME).await);
         assert_eq!(client.light[&HOME], computed_alone(&bare));
+        edge.end().await;
+    }
+
+    // Light updates: ADR-0023, step L5, as decided after the comparison with the
+    // official server. Written by whoever built it.
+
+    /// The light sections a packet names: for the sky and for blocks, by the number
+    /// of the section, its levels, or nothing for one that is dark.
+    type Named = BTreeMap<(bool, usize), Option<Vec<u8>>>;
+
+    fn named(light: &LightData) -> Named {
+        let mut named = Named::new();
+        let lists = [
+            (true, &light.sky_mask, &light.empty_sky_mask, &light.sky),
+            (
+                false,
+                &light.block_mask,
+                &light.empty_block_mask,
+                &light.block,
+            ),
+        ];
+        for (sky, mask, empty, arrays) in lists {
+            let bit = |mask: &Vec<u64>, index: usize| {
+                mask.first().is_some_and(|word| word >> index & 1 == 1)
+            };
+            let mut arrays = arrays.iter();
+            for index in 0..SECTIONS + 2 {
+                if bit(mask, index) {
+                    named.insert((sky, index), arrays.next().cloned());
+                } else if bit(empty, index) {
+                    named.insert((sky, index), None);
+                }
+            }
+        }
+        named
+    }
+
+    /// The chunks beside `chunk`, sent to the client as empty ones.
+    async fn sent_around(edge: &mut Harness, client: &mut Client, chunk: ChunkPos) {
+        for beside in Fanout::around(chunk) {
+            let ask = edge.ask(WEST, beside);
+            edge.tell(WEST, snapshot(beside, ask));
+            assert!(edge.shows(client, WEST, beside).await);
+        }
+    }
+
+    /// A player at the rim of whose view a chunk is, who lacks a chunk beside it, is
+    /// sent the light a block change makes, behind the block update: the sections that
+    /// differ, which laid over what they had give the light of the blocks as they are.
+    #[tokio::test]
+    async fn a_block_change_sends_its_light_to_a_player_who_lacks_a_chunk_beside_it() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        client.of_chunks.clear();
+
+        edge.tell(WEST, changed(HOME, STONE));
+        edge.settle(WEST).await;
+        edge.sync(&mut client).await;
+        assert_eq!(
+            client.of_chunks,
+            [OfChunk::Block(HOME), OfChunk::Light(HOME)]
+        );
+        let (_, update) = &client.light_updates[0];
+        let before = named(&client.light[&HOME]);
+        let update = named(update);
+        // Only what differs is named.
+        assert!(
+            update
+                .iter()
+                .all(|(section, levels)| before.get(section) != Some(levels))
+        );
+        let mut now = before;
+        now.extend(update);
+        assert_eq!(now, named(&computed_alone(&chunk_with(HOME, STONE))));
+        edge.end().await;
+    }
+
+    /// A player who has every chunk beside a change is sent the block update and no
+    /// light for that chunk: their client lights the change by itself, as the official
+    /// server relies on for every player but those at the rim. The chunks around it
+    /// are at the rim of this player's view, and the change, which puts the first
+    /// block into a section, reaches them all: of those the player is sent the light.
+    #[tokio::test]
+    async fn a_block_change_sends_no_light_to_a_player_who_has_the_chunks_around_it() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        sent_around(&mut edge, &mut client, HOME).await;
+        client.of_chunks.clear();
+
+        edge.tell(WEST, changed(HOME, STONE));
+        edge.settle(WEST).await;
+        edge.sync(&mut client).await;
+        assert_eq!(client.of_chunks[0], OfChunk::Block(HOME));
+        let lit: BTreeSet<ChunkPos> = client.of_chunks[1..]
+            .iter()
+            .map(|told| match told {
+                OfChunk::Light(chunk) => *chunk,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(lit, BTreeSet::from(Fanout::around(HOME)));
+        edge.end().await;
+    }
+
+    /// A chunk beside one a player has is replaced by one that gives light across the
+    /// border. No client knows of that by itself, so the player is sent the light of
+    /// the chunk they have, although they have every chunk around it.
+    #[tokio::test]
+    async fn a_chunk_replaced_beside_one_a_player_has_sends_them_its_new_light() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+        sent_around(&mut edge, &mut client, HOME).await;
+        client.of_chunks.clear();
+
+        // The chunk to the east, as a stored chunk comes: changed, and without light.
+        // A lamp stands at its western edge.
+        let mut lamp = empty_chunk();
+        lamp.take_light();
+        lamp.set(0, -60, 5, clustine_data::blocks::GLOWSTONE);
+        let east = edge.ask(WEST, STEP_EAST);
+        edge.tell(WEST, snapshot_of(STEP_EAST, east, lamp, Vec::new()));
+        edge.settle(WEST).await;
+        edge.sync(&mut client).await;
+        let of = |chunk: ChunkPos| {
+            let about = |told: &&OfChunk| matches!(told, OfChunk::Sent(at) | OfChunk::Unloaded(at) | OfChunk::Light(at) if *at == chunk);
+            client
+                .of_chunks
+                .iter()
+                .filter(about)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            of(STEP_EAST),
+            [OfChunk::Unloaded(STEP_EAST), OfChunk::Sent(STEP_EAST)]
+        );
+        assert_eq!(of(HOME), [OfChunk::Light(HOME)]);
+        // The lamp's light, in the section of the block beside it.
+        let of_home = |(chunk, _): &&(ChunkPos, LightData)| *chunk == HOME;
+        let (_, update) = client
+            .light_updates
+            .iter()
+            .find(of_home)
+            .expect("just counted");
+        let block_light = named(update);
+        let lit = block_light.get(&(false, 1)).cloned().flatten();
+        let levels = lit.expect("block light with levels in the lowest section");
+        let at = |x: usize, y: usize, z: usize| {
+            let index = y << 8 | z << 4 | x;
+            levels[index / 2] >> (index % 2 * 4) & 15
+        };
+        // One step west of the lamp, across the border, and then one less a step.
+        assert_eq!((at(15, 4, 5), at(14, 4, 5), at(15, 5, 5)), (14, 13, 13));
         edge.end().await;
     }
 }
