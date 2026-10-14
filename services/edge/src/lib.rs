@@ -14,6 +14,8 @@ mod light;
 mod light_orders;
 #[cfg(test)]
 mod light_policy;
+#[cfg(test)]
+mod light_times;
 mod login;
 mod play;
 #[cfg(test)]
