@@ -626,6 +626,21 @@ struct Subscription {
 type Taken = BTreeMap<RegionId, (usize, usize)>;
 
 /// Counts a chunk that [`RegionRunner::subscribe`] took for a part's.
+/// How far `position` is from the nearest of the chunks `players` stand in, as the
+/// square of the distance in chunks; 0 if there is nobody, so that the loads then go
+/// out in the order of their positions.
+fn nearest(players: &[ChunkPos], position: ChunkPos) -> i64 {
+    players
+        .iter()
+        .map(|player| {
+            let dx = i64::from(player.x) - i64::from(position.x);
+            let dz = i64::from(player.z) - i64::from(position.z);
+            dx * dx + dz * dz
+        })
+        .min()
+        .unwrap_or(0)
+}
+
 fn note_taken(taken: &mut Taken, for_part: Option<(RegionId, bool)>) {
     if let Some((part, free)) = for_part {
         let (chunks, of_them_free) = taken.entry(part).or_default();
@@ -812,6 +827,12 @@ pub struct RegionRunner {
     committed: u64,
     /// Chunks the store could not read. Nothing waits for a snapshot of them.
     unreadable: BTreeSet<ChunkPos>,
+    /// Chunks the store said it is making, until it answers their load. They hold no
+    /// link: a chunk that is being made was never on anyone's screen, so nothing an
+    /// edge sends again acts on it but by `waits_for_its_chunk`, which still waits.
+    /// See `docs/adr/0021-generation-is-a-function.md`, section 7, "The hold of a
+    /// link".
+    generating: BTreeSet<ChunkPos>,
     /// The splits this runner made of which some edge has not heard yet, by the part's
     /// id. A runner that is made anew has none: its region is restored from the
     /// store's record, which does not have where a split's line was.
@@ -934,6 +955,7 @@ impl RegionRunner {
             pending: VecDeque::new(),
             committed: state.tick,
             unreadable: BTreeSet::new(),
+            generating: BTreeSet::new(),
             parted: BTreeMap::new(),
             loads: BTreeMap::new(),
             crowds: Crowds::new(),
@@ -1220,6 +1242,7 @@ impl RegionRunner {
         while let Some(reply) = self.store.try_reply() {
             match reply {
                 StoreReply::Loaded { position, chunk } => {
+                    self.generating.remove(&position);
                     if self.answers_the_latest_load(position) {
                         self.inputs.chunks_loaded.push((position, chunk));
                     }
@@ -1229,6 +1252,7 @@ impl RegionRunner {
                 // Nothing else waits for it.
                 StoreReply::Unreadable { position } => {
                     error!(?position, "a chunk cannot be read from the world store");
+                    self.generating.remove(&position);
                     if self.answers_the_latest_load(position) {
                         self.unreadable.insert(position);
                         for link in self.links.values_mut() {
@@ -1237,13 +1261,21 @@ impl RegionRunner {
                         self.release_held();
                     }
                 }
-                // Nothing waits for word that a chunk is being made but the hold
-                // of a link, which ADR-0021's step W5h gives it.
-                StoreReply::Generating { .. } => {}
+                // A chunk that is being made holds no link from here until its
+                // load is answered: the links it held are let go of, and a later
+                // hello does not hold on it.
+                StoreReply::Generating { position } => {
+                    self.generating.insert(position);
+                    for link in self.links.values_mut() {
+                        link.hold.remove(&position);
+                    }
+                    self.release_held();
+                }
                 // A load the region no longer wants, since it gave the chunk back: it
                 // is counted as that load's answer, so that the answer to a later
                 // load of the chunk is not taken for this one's.
                 StoreReply::Withdrawn { position } => {
+                    self.generating.remove(&position);
                     self.answers_the_latest_load(position);
                 }
                 // The store's answers to the claims of earlier ticks, in the order of
@@ -2157,7 +2189,18 @@ impl RegionRunner {
         // What the store is asked after a tick, in this order: the loads, the commit,
         // what the region gives back, what it claims, and the checkpoint if it is time.
         // See `docs/adr/0012-the-tick-on-chunks.md`, section 4.2.
-        for position in output.chunk_requests {
+        // Nearest the region's players first, so that the store, which makes chunks
+        // for the oldest request first, makes the chunk a joining player stands in
+        // and its neighbours before the rim of the view. The simulation's own order
+        // is not touched.
+        let players: Vec<ChunkPos> = self
+            .region
+            .entities()
+            .map(|player| player.chunk())
+            .collect();
+        let mut requests = output.chunk_requests;
+        requests.sort_by_key(|position| (nearest(&players, *position), *position));
+        for position in requests {
             // A chunk that is warm is what the store has, and is handed to the next
             // tick as the store's delivery would be, a tick sooner.
             if let Some(warm) = self.warm.remove(&position) {
@@ -2169,8 +2212,11 @@ impl RegionRunner {
         }
         // Another region can hold and change a chunk that is given back, and one that
         // nobody has asked for in all this time is not about to be shown.
+        // A chunk that could not be read is asked for again when it is granted anew:
+        // the file, or the generator, may have changed by then.
         for position in &output.returns {
             self.warm.remove(position);
+            self.unreadable.remove(position);
         }
         let tick = output.tick;
         self.warm
@@ -3050,7 +3096,7 @@ impl RegionRunner {
                 // loaded, or with the word that the region does not hold it. So nothing
                 // an edge sends again reaches a tick before the region knows, of every
                 // chunk its players can reach, who holds it.
-                if !self.unreadable.contains(&position) {
+                if !self.unreadable.contains(&position) && !self.generating.contains(&position) {
                     link.hold.insert(position);
                 }
             }
