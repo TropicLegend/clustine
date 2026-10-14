@@ -227,3 +227,39 @@ async fn a_job_a_thread_has_had_for_too_long_is_given_up_and_its_chunk_sent_as_i
     assert!(client.light(HOME).is_some());
     script.end().await;
 }
+
+#[test]
+fn seven_tenths_taken_as_changed_are_about_seven_chunks_in_ten_and_ten_tenths_all() {
+    let area = || (-50..50).flat_map(|x| (-50..50).map(move |z| ChunkPos::new(x, z)));
+    let taken = |tenths: u8| {
+        let light = LightSettings {
+            as_changed: tenths,
+            ..LightSettings::AT_ONCE
+        };
+        area()
+            .filter(|&place| light.takes_as_changed(place))
+            .count()
+    };
+    assert_eq!(taken(0), 0);
+    assert!((6_800..=7_200).contains(&taken(7)), "{}", taken(7));
+    assert_eq!(taken(10), 10_000);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_chunk_taken_as_changed_gets_a_job_though_it_came_with_light() {
+    let all = LightSettings {
+        as_changed: 10,
+        ..LightSettings::AT_ONCE
+    };
+    let mut script = started_with(all).await;
+    let mut client = script.join(1).await;
+    script.snapshot(WEST, HOME, ground());
+    script.quiet().await;
+    let job = script.held().next().await;
+    assert_eq!(job.position, HOME);
+    script.held().answer(job.basis);
+    script.quiet().await;
+    script.sync(&mut client).await;
+    assert!(client.has(HOME));
+    script.end().await;
+}

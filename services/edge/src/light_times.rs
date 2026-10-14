@@ -46,6 +46,7 @@ const NO_WAITS: LightSettings = LightSettings {
     rest: Duration::ZERO,
     overdue: Duration::from_secs(5),
     job_patience: FOREVER,
+    as_changed: 0,
 };
 
 /// Nothing is held and nothing rests, and a thread has five seconds for a job.

@@ -23,6 +23,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::error;
 
 use crate::encode::{Named, light_data};
+use crate::figures::{self, FIGURES};
 
 /// One chunk to light, with all that the light is made from.
 #[derive(Debug, Clone)]
@@ -193,6 +194,7 @@ impl Worker {
             return false;
         }
         let scratch = self.scratch.get_or_insert_with(Scratch::new);
+        let began = std::time::Instant::now();
         // The job is shared chunks nobody changes and the scratch is thrown away
         // below, so nothing a panic left half done is looked at again.
         let outcome = match catch_unwind(AssertUnwindSafe(|| work(&job, scratch))) {
@@ -202,6 +204,7 @@ impl Worker {
                 LightOutcome::Failed { why: said(&*panic) }
             }
         };
+        figures::add_time(&FIGURES.thread_nanos, began);
         // The nine chunks are let go before the result is told: a block change that
         // follows the result then finds the chunk its own and copies nothing.
         drop(job);

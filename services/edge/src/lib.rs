@@ -9,6 +9,7 @@ mod configuration;
 mod connection;
 mod encode;
 mod fanout;
+mod figures;
 mod light;
 #[cfg(test)]
 mod light_orders;
@@ -276,6 +277,52 @@ pub struct Edge {
     fanout: Fanout,
 }
 
+/// What `CLUSTINE_LIGHT_AS_CHANGED` asks of the edge, for measuring light
+/// (`docs/adr/0023-light-at-the-edge.md`, step L7): in how many tenths of the world
+/// chunks are taken as changed. Not a command-line option, since no server is to be
+/// run with it.
+fn as_changed() -> u8 {
+    let Ok(asked) = std::env::var("CLUSTINE_LIGHT_AS_CHANGED") else {
+        return 0;
+    };
+    match asked.parse::<u8>() {
+        Ok(tenths @ 0..=10) => {
+            if tenths > 0 {
+                warn!(
+                    tenths,
+                    "Chunks are taken as changed for a measurement of light"
+                );
+            }
+            tenths
+        }
+        _ => {
+            warn!(%asked, "CLUSTINE_LIGHT_AS_CHANGED is not a number of tenths, and is ignored");
+            0
+        }
+    }
+}
+
+/// How many threads light chunks: [`light::default_threads`], or for measuring
+/// light (step L7) what `CLUSTINE_LIGHT_THREADS` says.
+fn light_threads() -> usize {
+    let Ok(asked) = std::env::var("CLUSTINE_LIGHT_THREADS") else {
+        return light::default_threads();
+    };
+    match asked.parse::<usize>() {
+        Ok(threads @ 1..=256) => {
+            warn!(
+                threads,
+                "The threads that light chunks are as many as a measurement asks"
+            );
+            threads
+        }
+        _ => {
+            warn!(%asked, "CLUSTINE_LIGHT_THREADS is not a number of threads, and is ignored");
+            light::default_threads()
+        }
+    }
+}
+
 impl Edge {
     /// Starts listening on `address`. Port 0 picks a free port; see [`Edge::local_addr`].
     pub async fn bind(
@@ -291,7 +338,10 @@ impl Edge {
             online: Arc::clone(&online),
             region_patience: config.region_patience,
             login: config.login,
-            light: fanout::LightSettings::SERVER,
+            light: fanout::LightSettings {
+                as_changed: as_changed(),
+                ..fanout::LightSettings::SERVER
+            },
         };
         Ok(Self {
             listener: TcpListener::bind(address).await?,
@@ -309,7 +359,7 @@ impl Edge {
                 fanout_config,
                 routing,
                 command_receiver,
-                light::Lighting::threads(light::default_threads()),
+                light::Lighting::threads(light_threads()),
             ),
         })
     }
@@ -329,6 +379,7 @@ impl Edge {
         connections.spawn(async move {
             let _ = fanout_running.send(fanout.run().await);
         });
+        connections.spawn(figures::log_them());
         loop {
             // Reap finished connections so the set does not grow without bound.
             while connections.try_join_next().is_some() {}

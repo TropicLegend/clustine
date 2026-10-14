@@ -9,10 +9,11 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use bytes::Bytes;
 use clustine_protocol::nbt::Nbt;
+use clustine_protocol::packets::Packet;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, Disconnect, PlayerAction, ServerboundPlay, UseItemOn, face, inventory,
-    movement_flags, player_action,
+    ClientboundKeepAlive, Disconnect, LevelChunkWithLight, LightUpdate, PlayerAction,
+    ServerboundPlay, UseItemOn, face, inventory, movement_flags, player_action,
 };
 use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput};
 use clustine_world::{BlockPos, PlayerId, Vec3};
@@ -22,6 +23,7 @@ use tokio::time::{Instant, MissedTickBehavior, interval_at};
 use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
 use crate::fanout::{Command, NO_TELEPORT, SessionId};
+use crate::figures::{self, FIGURES};
 use crate::login::Profile;
 
 /// The value of the hand field for the hand that holds the selected hotbar item.
@@ -180,10 +182,10 @@ async fn pump(
                     connection.close_gracefully().await;
                     return Ok(());
                 };
-                connection.queue_encoded(&packet)?;
+                queue_counted(connection, &packet)?;
                 // Write everything that is ready in one go.
                 while let Ok(packet) = packets.try_recv() {
-                    connection.queue_encoded(&packet)?;
+                    queue_counted(connection, &packet)?;
                 }
                 connection.flush().await?;
                 in_world = true;
@@ -201,6 +203,28 @@ async fn pump(
             }
         }
     }
+}
+
+/// Queues an encoded packet and counts what it costs if it carries light
+/// (`crate::figures`).
+fn queue_counted(connection: &mut Connection, packet: &[u8]) -> Result<(), ConnectionError> {
+    // Both ids are below 128, so a packet's first byte is its id.
+    const _: () = assert!(LevelChunkWithLight::ID < 128 && LightUpdate::ID < 128);
+    let (counter, time) = match packet.first().map(|&id| i32::from(id)) {
+        Some(LevelChunkWithLight::ID) => (&FIGURES.chunks, &FIGURES.compress_chunk_nanos),
+        Some(LightUpdate::ID) => {
+            FIGURES
+                .update_bytes
+                .fetch_add(packet.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            (&FIGURES.updates, &FIGURES.compress_update_nanos)
+        }
+        _ => return connection.queue_encoded(packet),
+    };
+    let began = std::time::Instant::now();
+    connection.queue_encoded(packet)?;
+    figures::add_time(time, began);
+    figures::count(counter);
+    Ok(())
 }
 
 /// Passes a movement of the player on to the region they are in.

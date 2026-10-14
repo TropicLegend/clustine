@@ -47,6 +47,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
 use crate::encode::chunk_packet;
+use crate::figures::{self, FIGURES};
 use crate::light::{FromThread, LightJob, LightOutcome, Lighting};
 use crate::login::Profile;
 use crate::{EdgeIdentity, RegionLink, Relink, Routing, Stopped};
@@ -158,6 +159,11 @@ pub(crate) struct LightSettings {
     /// For how long a thread may have a job before the job is given up as failed
     /// and the thread written off.
     pub(crate) job_patience: Duration,
+    /// For measuring only (`docs/adr/0023-light-at-the-edge.md`, step L7): in how
+    /// many tenths of the world a chunk is taken as a changed one comes from the
+    /// store, without light and not as generated, so that its light, and its
+    /// neighbours', is the edge's to make. Nothing but 0 outside a measurement.
+    pub(crate) as_changed: u8,
 }
 
 impl LightSettings {
@@ -167,6 +173,7 @@ impl LightSettings {
         rest: Duration::from_millis(250),
         overdue: Duration::from_secs(5),
         job_patience: Duration::from_secs(5),
+        as_changed: 0,
     };
 
     /// Nothing is held and nothing rests, for whoever must have sent all it will
@@ -177,7 +184,20 @@ impl LightSettings {
         rest: Duration::ZERO,
         overdue: Duration::from_secs(5),
         job_patience: Duration::from_secs(1_000_000),
+        as_changed: 0,
     };
+
+    /// Whether the chunk at `position` is one [`LightSettings::as_changed`] takes as
+    /// changed: the same chunks at every edge and in every run, spread over the
+    /// world without a pattern a view would line up with.
+    pub(crate) fn takes_as_changed(&self, position: ChunkPos) -> bool {
+        let mut mixed = (position.x as u32).wrapping_mul(0x9E37_79B1)
+            ^ (position.z as u32).wrapping_mul(0x85EB_CA77);
+        mixed ^= mixed >> 15;
+        mixed = mixed.wrapping_mul(0x2C1B_3C6D);
+        mixed ^= mixed >> 13;
+        mixed % 10 < u32::from(self.as_changed)
+    }
 }
 
 /// How often at most the fan-out task wakes for light alone: to move the chunks
@@ -356,6 +376,9 @@ struct ReplicaChunk {
     /// ends, and goes when the edge has no subscription there any more or the region
     /// says that it does not hold the chunk.
     served_by: Option<RegionId>,
+    /// When the chunk came, until it is first sent: how long that took is one of
+    /// the edge's figures (`crate::figures`).
+    came: Option<std::time::Instant>,
 }
 
 /// Where an entry's light is from (`docs/adr/0023-light-at-the-edge.md`, section 2).
@@ -394,6 +417,7 @@ impl ReplicaChunk {
             packet: None,
             waiters: BTreeSet::new(),
             served_by: None,
+            came: None,
         }
     }
 
@@ -414,11 +438,13 @@ impl ReplicaChunk {
     fn packet(&mut self, position: ChunkPos) -> Option<Bytes> {
         if self.packet.is_none() {
             let chunk = self.chunk.as_ref()?;
+            let began = std::time::Instant::now();
             self.packet = Some(encoded(&chunk_packet(
                 position,
                 chunk,
                 self.light.as_deref(),
             )));
+            figures::made_packet(began);
         }
         self.packet.clone()
     }
@@ -806,12 +832,19 @@ impl Fanout {
             // Only while something is held, rests or is with a thread: an edge
             // where light is at rest has no timer for it.
             let wake = self.light_wake();
+            // A turn is timed from when what it is for came, not from when the task
+            // began to wait for it.
+            let began;
             tokio::select! {
-                command = self.commands.recv() => match command {
-                    Some(command) => self.handle_command(command).await,
-                    None => return Stopped::Abandoned,
+                command = self.commands.recv() => {
+                    began = std::time::Instant::now();
+                    match command {
+                        Some(command) => self.handle_command(command).await,
+                        None => return Stopped::Abandoned,
+                    }
                 },
                 message = messages.recv() => {
+                    began = std::time::Instant::now();
                     // The task holds a sender itself, so the queue never ends.
                     let Some((region, link, message)) = message else {
                         return Stopped::Abandoned;
@@ -831,17 +864,25 @@ impl Fanout {
                     }
                 },
                 // Whoever gives the edge links may go away; the links it has stay.
-                Some(relink) = self.relinks.recv() => match relink {
-                    Relink::Link(link) => self.take_link(link).await,
-                    Relink::Absorbed(pairs) => self.take_pairs(pairs).await,
+                Some(relink) = self.relinks.recv() => {
+                    began = std::time::Instant::now();
+                    match relink {
+                        Relink::Link(link) => self.take_link(link).await,
+                        Relink::Absorbed(pairs) => self.take_pairs(pairs).await,
+                    }
                 },
                 // The task holds the other end's sender in `lighting`, so this never
                 // ends.
-                Some(said) = lit.recv() => self.take_light(said).await,
+                Some(said) = lit.recv() => {
+                    began = std::time::Instant::now();
+                    self.take_light(said).await;
+                }
                 _ = tokio::time::sleep_until(wake.unwrap_or_else(Instant::now)), if wake.is_some() => {
+                    began = std::time::Instant::now();
                     self.light_tick().await;
                 }
                 _ = patience.tick() => {
+                    began = std::time::Instant::now();
                     self.drop_the_overdue().await;
                     self.ask_again_where_due().await;
                 }
@@ -849,6 +890,7 @@ impl Fanout {
             // At the end of the turn, so that all the block changes of one tick, which
             // come in one message, are in the replica before a job is made from it.
             self.light_the_marked(&mut lit).await;
+            figures::turn(began);
             let due = cfg!(test) || self.checked.elapsed() >= Duration::from_millis(100);
             if self.changed && due && cfg!(debug_assertions) {
                 self.changed = false;
@@ -2935,7 +2977,11 @@ impl Fanout {
     /// it are asked again whether theirs still holds beside this one. What does not
     /// hold may not be sent, and is marked for a job.
     fn arrive(&mut self, position: ChunkPos, mut chunk: Chunk) {
-        let carried = chunk.take_light();
+        let mut carried = chunk.take_light();
+        if self.config.light.takes_as_changed(position) {
+            carried = None;
+            chunk.mark_generated(0, false);
+        }
         let now = Instant::now();
         // What the chunk is as made by, as light sees it: its light says, whoever's
         // rules made it, since nothing light sees has changed since; without light,
@@ -2952,6 +2998,7 @@ impl Fanout {
         let could_be_sent = entry.sendable();
         entry.chunk = Some(Arc::new(chunk));
         entry.packet = None;
+        entry.came = Some(std::time::Instant::now());
         // A job under way was for the chunk of before; its result is dropped.
         entry.job = None;
         entry.light = None;
@@ -3269,6 +3316,7 @@ impl Fanout {
             whole: entry.owed,
         };
         self.jobs.insert(basis, position);
+        figures::count(&FIGURES.jobs);
         if self.lighting.send(job).is_err() {
             // No thread is left to take it: it fails here, in this turn, and the
             // chunk gets what light there is.
@@ -3314,6 +3362,7 @@ impl Fanout {
         entry.job = None;
         entry.lit = basis;
         entry.packet = None;
+        figures::count(&FIGURES.taken);
         // A block that light sees changed under the job, in the chunk or within reach
         // of it: the block update went at once and the client lit the change itself.
         // This light, made from the blocks of before, would put that out again, so
@@ -3329,6 +3378,7 @@ impl Fanout {
             LightOutcome::Failed { why } => {
                 // The chunk is shown with the light it had, or lit by columns as
                 // chunks were before the edge made light.
+                figures::count(&FIGURES.failed);
                 failed = Some(why);
                 entry.kind = LightKind::Fallback;
                 if entry.light.is_none() {
@@ -3530,6 +3580,9 @@ impl Fanout {
             let chunk = chunk.expect("pending chunks are in the replica");
             let packet = chunk.packet(*position);
             packets.push(packet.expect("a pending chunk has come"));
+            if let Some(came) = chunk.came.take() {
+                figures::sent_after(came);
+            }
             chunk.waits_no_more(player);
             // Sent with light that is older than its blocks: this client was not told
             // of the block that changed, and so has not lit it. The light of the job
@@ -3561,6 +3614,7 @@ impl Fanout {
                 // Said where an operator reads it: the player is disconnected for it,
                 // and "player left" alone looks like their own doing.
                 warn!(name = %view.name, %error, "dropping a player that does not keep up");
+                figures::count(&FIGURES.dropped);
                 self.remove_player(player).await;
                 return false;
             }
