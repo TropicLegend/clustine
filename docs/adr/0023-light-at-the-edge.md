@@ -1886,3 +1886,40 @@ has not settled"):
 - What is not shown by a server and still wants a real client: that nothing is seen
   to be wrong at the rim of a view while a chunk beside it is missing (trial A).
 
+**L3 to L5 as built (2026-10-14).** The steps were cut smaller than the table of
+section 12 has them, each green:
+
+- *L3*, in two parts: the chunk behind a shared pointer with its light beside it,
+  and E2 keeping the entry's chunk; then `waiters`, with the packet kept only while
+  someone waits and the check at the end of a turn holding both.
+- *L4, the part that makes light right*: the moments, `kind`, `as_made`, the test T
+  at arrive, change with `reach` and with the first or last block of a section, the
+  entries that are not current in one set (`marked`), dispatch at the end of a turn
+  with the chunks someone waits for first, a result taken only if its job is still
+  the entry's, a failed job leaving `Fallback`, chunks sent only from sendable
+  entries and no empty batch. **Still to build**, as its second part: the settings
+  of section 4 (`LATEST`, `REST`, `OVERDUE`, `JOB_PATIENCE`), the three sets with
+  their ranks in place of the one, `Started` and threads written off, the tick,
+  `view.ready`, and the counts published. Until then a chunk is never held for a
+  neighbour, so a chunk that comes before changed neighbours costs a job for each
+  of them that comes, and a job that never answered would leave its chunk unsent;
+  the rules cannot hang and a panic is caught, so that is a thread dying some
+  other way.
+- *L5*, by the comparison's outcome above, with one rule more than it names: **a
+  chunk that came or was replaced beside one a player has sends that player the
+  light of the chunk they have, wherever in their view it is** (`reshaped`). No
+  client knows of such a neighbour by itself: a lamp in a chunk that comes later
+  lights the chunk beside it. After a block change the update goes only to a holder
+  who lacks a chunk beside the one it is for. A result withheld, or a job that
+  failed, sets `owed` if anyone was to be sent it, and the next job's update then
+  names every section.
+- `script.rs` came after L5 and not in L2t: the scripted regions, a client that keeps
+  blocks and the light its packets add up to, a model of the replica, and an end of
+  `Lighting` that holds jobs for the test to answer.
+
+**One thing the rule for rims shows in the tests**: a block that is the first in its
+section reaches all eight chunks around it (which light sections are listed turns on
+it), and a player who has the changed chunk and all eight is at the rim for each of
+those eight, so they are sent eight small updates for them and none for the chunk
+itself.
+
