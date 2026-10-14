@@ -12,6 +12,8 @@ mod fanout;
 mod light;
 #[cfg(test)]
 mod light_orders;
+#[cfg(test)]
+mod light_policy;
 mod login;
 mod play;
 #[cfg(test)]
@@ -287,6 +289,7 @@ impl Edge {
             online: Arc::clone(&online),
             region_patience: config.region_patience,
             login: config.login,
+            light: fanout::LightSettings::SERVER,
         };
         Ok(Self {
             listener: TcpListener::bind(address).await?,

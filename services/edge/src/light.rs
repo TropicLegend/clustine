@@ -8,7 +8,9 @@
 //! does is [`relight`], a function of the job alone.
 
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 
@@ -236,13 +238,82 @@ pub(crate) struct Lighting {
 
 enum To {
     /// The queue the threads take from.
-    Threads(mpsc::Sender<LightJob>),
+    Threads(Threads),
     /// Run where [`Lighting::send`] is called. Only the edge's tests ask for that.
     #[cfg(test)]
     Here(Box<Worker>),
     /// Handed to a test, which answers when and how it likes: see [`Held`].
     #[cfg(test)]
     Held(held::Door),
+}
+
+/// The threads' queue, and what it takes to start one more in place of one that
+/// was written off.
+struct Threads {
+    jobs: mpsc::Sender<LightJob>,
+    queue: Arc<Mutex<mpsc::Receiver<LightJob>>>,
+    work: Arc<Work>,
+    results: UnboundedSender<FromThread>,
+    /// The threads that are counted on, each with the word that tells it to end
+    /// after the job it is in.
+    running: BTreeMap<usize, Arc<AtomicBool>>,
+    /// The number the next thread gets. No two threads share one, so that what a
+    /// thread written off says later is never taken for its successor's.
+    next: usize,
+    /// How many threads were started in place of one written off.
+    replaced: usize,
+}
+
+/// How many threads are started in place of threads written off, over the life of
+/// an edge. A thread that hangs was not meant to be possible; one that hangs again
+/// and again is not mended by a fifth.
+const REPLACEMENTS: usize = 4;
+
+impl Threads {
+    /// Starts one more thread. False if the machine gave none.
+    fn start(&mut self) -> bool {
+        let thread = self.next;
+        self.next += 1;
+        let queue = self.queue.clone();
+        let work = self.work.clone();
+        let retired = Arc::new(AtomicBool::new(false));
+        let told = retired.clone();
+        let mut worker = Worker {
+            thread,
+            scratch: None,
+            results: self.results.clone(),
+        };
+        let run = move || {
+            loop {
+                // The lock is held while waiting: the others wait for the lock in
+                // place of the queue, and the first to have it has the next job.
+                // No thread panics with it, since a job's panic is caught.
+                let job = queue.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                let Ok(job) = job else {
+                    // The `Lighting` is gone.
+                    break;
+                };
+                // A thread that was written off and came back all the same has
+                // been replaced: it ends, and what it said of the job was dropped.
+                if !worker.run(job, &*work) || told.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+        };
+        match thread::Builder::new()
+            .name(format!("light-{thread}"))
+            .spawn(run)
+        {
+            Ok(_) => {
+                self.running.insert(thread, retired);
+                true
+            }
+            Err(why) => {
+                error!(thread, %why, "A thread for light could not be started");
+                false
+            }
+        }
+    }
 }
 
 impl Lighting {
@@ -259,45 +330,41 @@ impl Lighting {
         work: Arc<Work>,
     ) -> (Lighting, UnboundedReceiver<FromThread>) {
         let (jobs, queue) = mpsc::channel::<LightJob>();
-        let queue = Arc::new(Mutex::new(queue));
         let (results, from_threads) = unbounded_channel();
-        let mut threads = 0;
-        for thread in 0..count {
-            let queue = queue.clone();
-            let work = work.clone();
-            let mut worker = Worker {
-                thread,
-                scratch: None,
-                results: results.clone(),
-            };
-            let run = move || {
-                loop {
-                    // The lock is held while waiting: the others wait for the lock in
-                    // place of the queue, and the first to have it has the next job.
-                    // No thread panics with it, since a job's panic is caught.
-                    let job = queue.lock().unwrap_or_else(PoisonError::into_inner).recv();
-                    let Ok(job) = job else {
-                        // The `Lighting` is gone.
-                        break;
-                    };
-                    if !worker.run(job, &*work) {
-                        break;
-                    }
-                }
-            };
-            match thread::Builder::new()
-                .name(format!("light-{thread}"))
-                .spawn(run)
-            {
-                Ok(_) => threads += 1,
-                Err(why) => error!(thread, %why, "A thread for light could not be started"),
-            }
+        let mut threads = Threads {
+            jobs,
+            queue: Arc::new(Mutex::new(queue)),
+            work,
+            results,
+            running: BTreeMap::new(),
+            next: 0,
+            replaced: 0,
+        };
+        for _ in 0..count {
+            threads.start();
         }
         let lighting = Lighting {
-            to: To::Threads(jobs),
-            threads,
+            threads: threads.running.len(),
+            to: To::Threads(threads),
         };
         (lighting, from_threads)
+    }
+
+    /// The thread numbered `thread` is counted on no longer: it has had a job for
+    /// longer than a job may take. It cannot be stopped; it ends if it ever comes
+    /// back. One is started in its place, unless [`REPLACEMENTS`] were already.
+    /// Returns how many threads are left to take jobs.
+    pub(crate) fn write_off(&mut self, thread: usize) -> usize {
+        if let To::Threads(threads) = &mut self.to
+            && let Some(retired) = threads.running.remove(&thread)
+        {
+            retired.store(true, Ordering::Relaxed);
+            if threads.replaced < REPLACEMENTS && threads.start() {
+                threads.replaced += 1;
+            }
+            self.threads = threads.running.len();
+        }
+        self.threads
     }
 
     /// Jobs are run where [`Lighting::send`] is called, and the result is in the
@@ -321,7 +388,10 @@ impl Lighting {
     /// Hands a job over. It is given back if no thread is left to take it.
     pub(crate) fn send(&mut self, job: LightJob) -> Result<(), LightJob> {
         match &mut self.to {
-            To::Threads(jobs) => jobs.send(job).map_err(|refused| refused.0),
+            // With every thread written off the queue would still take the job,
+            // and nobody would ever take it out.
+            To::Threads(threads) if threads.running.is_empty() => Err(job),
+            To::Threads(threads) => threads.jobs.send(job).map_err(|refused| refused.0),
             #[cfg(test)]
             To::Here(worker) => {
                 worker.run(job, &relight);
@@ -339,7 +409,9 @@ impl Lighting {
         if let To::Held(door) = &self.to {
             return door.in_flight();
         }
-        2 * self.threads
+        // At least one, also with no thread left: such a job fails where it is
+        // dispatched and holds its slot for no longer than that.
+        (2 * self.threads).max(1)
     }
 }
 
@@ -1455,18 +1527,94 @@ mod tests {
         assert_eq!(here.in_flight(), 2);
     }
 
-    /// A job handed to threads that are not there is given back and not queued.
+    /// A job handed to threads that are not there is given back and not queued. One
+    /// job may still be out, so that whoever dispatches finds that out for each.
     #[test]
     fn a_job_is_given_back_when_no_thread_is_left() {
         let (mut lighting, mut results) = Lighting::threads(0);
-        assert_eq!(lighting.in_flight(), 0);
+        assert_eq!(lighting.in_flight(), 1);
         let job = LightJob {
             basis: 77,
             ..job(among_flat(flat()), None, false)
         };
         let back = lighting.send(job).expect_err("nobody takes the job");
         assert_eq!(back.basis, 77);
-        assert_eq!(results.blocking_recv(), None);
+        assert!(results.try_recv().is_err());
+    }
+
+    /// Work that never ends for the job with the basis 1 until `release` is dropped,
+    /// and is the rules' for every other.
+    fn hangs_on_the_first(release: mpsc::Receiver<()>) -> Arc<Work> {
+        let release = Mutex::new(release);
+        Arc::new(move |job: &LightJob, scratch: &mut Scratch| {
+            if job.basis == 1 {
+                let _ = release.lock().unwrap().recv();
+            }
+            relight(job, scratch)
+        })
+    }
+
+    fn numbered(basis: u64) -> LightJob {
+        LightJob {
+            basis,
+            ..job(among_flat(flat()), None, false)
+        }
+    }
+
+    #[test]
+    fn a_thread_written_off_is_replaced_and_ends_when_it_comes_back() {
+        let (release, held) = mpsc::channel();
+        let (mut lighting, mut results) = Lighting::threads_running(1, hangs_on_the_first(held));
+        lighting.send(numbered(1)).unwrap();
+        let started = FromThread::Started {
+            basis: 1,
+            thread: 0,
+        };
+        assert_eq!(next(&mut results), started);
+        // The one thread hangs. Written off, another takes the next job.
+        assert_eq!(lighting.write_off(0), 1);
+        assert_eq!(lighting.in_flight(), 2);
+        lighting.send(numbered(2)).unwrap();
+        let started = FromThread::Started {
+            basis: 2,
+            thread: 1,
+        };
+        assert_eq!(next(&mut results), started);
+        assert!(matches!(
+            next(&mut results),
+            FromThread::Done { basis: 2, .. }
+        ));
+        // The first comes back after all: it says so, and takes no job after.
+        drop(release);
+        assert!(matches!(
+            next(&mut results),
+            FromThread::Done { basis: 1, .. }
+        ));
+        for basis in 3..20 {
+            lighting.send(numbered(basis)).unwrap();
+            let started = FromThread::Started { basis, thread: 1 };
+            assert_eq!(next(&mut results), started);
+            assert!(matches!(next(&mut results), FromThread::Done { .. }));
+        }
+        // Writing off a thread that is not counted on changes nothing.
+        assert_eq!(lighting.write_off(0), 1);
+    }
+
+    #[test]
+    fn after_four_replacements_a_thread_written_off_leaves_one_fewer_and_then_none() {
+        let (mut lighting, _results) = Lighting::threads(2);
+        // Threads 0 and 1, and four more as they are written off: 2, 3, 4, 5.
+        for thread in 0..4 {
+            assert_eq!(lighting.write_off(thread), 2);
+        }
+        assert_eq!(lighting.write_off(4), 1);
+        assert_eq!(lighting.in_flight(), 2);
+        assert_eq!(lighting.write_off(5), 0);
+        assert_eq!(lighting.in_flight(), 1);
+        let back = lighting
+            .send(numbered(9))
+            .expect_err("nobody takes the job");
+        assert_eq!(back.basis, 9);
     }
 
     #[test]

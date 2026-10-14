@@ -2209,7 +2209,6 @@ async fn chunks_someone_waits_for_are_dispatched_before_any_of_forty_that_keep_c
 /// dispatched before one farther, and of two equally near the older. Section 4, rank
 /// (the second review's finding 3).
 #[tokio::test]
-#[ignore = "not built: the settings of section 4 (step L4's second part)"]
 async fn waited_for_chunks_are_dispatched_nearest_first_as_the_view_stands_and_then_oldest_first() {
     for towards in [-1, 1] {
         let mut play = Play::start().await;

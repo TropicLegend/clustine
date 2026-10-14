@@ -134,6 +134,156 @@ pub(crate) struct FanoutConfig {
     /// What a client is told of the world when it enters: see
     /// [`crate::EdgeConfig::login`].
     pub(crate) login: crate::LoginWorld,
+    /// When a chunk whose light is not right gets its job.
+    pub(crate) light: LightSettings,
+}
+
+/// When a chunk whose light is not right gets its job
+/// (`docs/adr/0023-light-at-the-edge.md`, section 4). Settings and not constants:
+/// the edge's tests set the hold and the rest to nothing, so that everything a turn
+/// marks is lit before the turn ends.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LightSettings {
+    /// For how long a chunk that cannot be sent is held for a chunk beside it that
+    /// is wanted and has not come: lit with all its neighbours it costs one job,
+    /// lit before them one for each that comes.
+    pub(crate) latest: Duration,
+    /// For how long after a job a chunk that can be sent, a little old, gets no
+    /// other: a place where blocks never stop changing costs so many jobs a second
+    /// and no more.
+    pub(crate) rest: Duration,
+    /// After how long a chunk nobody waits for goes before the nearer ones nobody
+    /// waits for.
+    pub(crate) overdue: Duration,
+    /// For how long a thread may have a job before the job is given up as failed
+    /// and the thread written off.
+    pub(crate) job_patience: Duration,
+}
+
+impl LightSettings {
+    /// What the server runs with.
+    pub(crate) const SERVER: Self = Self {
+        latest: Duration::from_secs(1),
+        rest: Duration::from_millis(250),
+        overdue: Duration::from_secs(5),
+        job_patience: Duration::from_secs(5),
+    };
+
+    /// Nothing is held and nothing rests, for whoever must have sent all it will
+    /// by the end of a turn.
+    #[cfg(test)]
+    pub(crate) const AT_ONCE: Self = Self {
+        latest: Duration::ZERO,
+        rest: Duration::ZERO,
+        overdue: Duration::from_secs(5),
+        job_patience: Duration::from_secs(1_000_000),
+    };
+}
+
+/// How often at most the fan-out task wakes for light alone: to move the chunks
+/// whose hold or rest has ended, and to give up jobs.
+const LIGHT_TICK: Duration = Duration::from_millis(50);
+
+/// Which of the sets a marked entry is in, and under what key, so that it is taken
+/// out or moved in a logarithm's time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Queued {
+    /// It cannot be sent and someone waits for it. `rank` is the squared distance
+    /// to the centre of the nearest waiter, `by`; `since` the moment it was put in,
+    /// which a new rank keeps, so that of two equally near the older goes first.
+    Waiting { rank: i64, since: u64, by: PlayerId },
+    /// It can be sent, a little old, or nobody waits for it. The rank is of when
+    /// it was put in and is not kept up; `marked` is since when its light is not
+    /// right, by which the overdue are found.
+    Unawaited {
+        rank: i64,
+        since: u64,
+        marked: Instant,
+    },
+    /// Held or resting until then.
+    Later { until: Instant },
+}
+
+/// The marked entries that have no job under way, each in one of three sets
+/// (`docs/adr/0023-light-at-the-edge.md`, section 4). Nothing is scanned to find
+/// the next job: a turn costs what it touched.
+#[derive(Default)]
+struct LightQueues {
+    waiting: BTreeSet<(i64, u64, ChunkPos)>,
+    unawaited: BTreeSet<(i64, u64, ChunkPos)>,
+    /// The entries of `unawaited` again, by since when their light is not right.
+    oldest: BTreeSet<(Instant, u64, ChunkPos)>,
+    later: BTreeSet<(Instant, ChunkPos)>,
+}
+
+impl LightQueues {
+    /// Takes the entry at `position` out of the set it is in.
+    fn take_out(&mut self, position: ChunkPos, entry: &mut ReplicaChunk) {
+        match entry.queued.take() {
+            Some(Queued::Waiting { rank, since, .. }) => {
+                self.waiting.remove(&(rank, since, position));
+            }
+            Some(Queued::Unawaited {
+                rank,
+                since,
+                marked,
+            }) => {
+                self.unawaited.remove(&(rank, since, position));
+                self.oldest.remove(&(marked, since, position));
+            }
+            Some(Queued::Later { until }) => {
+                self.later.remove(&(until, position));
+            }
+            None => {}
+        }
+    }
+
+    /// Puts the entry at `position`, which is in no set, into the one `queued` says.
+    fn put_in(&mut self, position: ChunkPos, entry: &mut ReplicaChunk, queued: Queued) {
+        match queued {
+            Queued::Waiting { rank, since, .. } => {
+                self.waiting.insert((rank, since, position));
+            }
+            Queued::Unawaited {
+                rank,
+                since,
+                marked,
+            } => {
+                self.unawaited.insert((rank, since, position));
+                self.oldest.insert((marked, since, position));
+            }
+            Queued::Later { until } => {
+                self.later.insert((until, position));
+            }
+        }
+        entry.queued = Some(queued);
+    }
+
+    /// The entry that gets the next job: the first of those someone waits for,
+    /// always; otherwise the oldest of the others if it is overdue; otherwise the
+    /// nearest of them. Nothing nobody waits for ever comes before a chunk
+    /// someone does.
+    fn next(&self, now: Instant, overdue: Duration) -> Option<ChunkPos> {
+        if let Some((_, _, position)) = self.waiting.first() {
+            return Some(*position);
+        }
+        if let Some((marked, _, position)) = self.oldest.first()
+            && now.saturating_duration_since(*marked) > overdue
+        {
+            return Some(*position);
+        }
+        self.unawaited.first().map(|(_, _, position)| *position)
+    }
+
+    fn len(&self) -> usize {
+        self.waiting.len() + self.unawaited.len() + self.later.len()
+    }
+}
+
+/// The squared distance between two chunks, in chunks.
+fn apart(one: ChunkPos, other: ChunkPos) -> i64 {
+    let (dx, dz) = (i64::from(one.x - other.x), i64::from(one.z - other.z));
+    dx * dx + dz * dz
 }
 
 /// A chunk at least one player of this edge can see.
@@ -177,6 +327,23 @@ struct ReplicaChunk {
     /// was sent the chunk with light older than its blocks, whose client never saw
     /// the block change and so never lit it.
     reshaped: bool,
+    /// Since when the light is not right for the chunks and blocks as they are, if
+    /// it is not and no job has been made for that yet. A block change in an entry
+    /// that is marked already does not set it anew.
+    marked_since: Option<Instant>,
+    /// Since when the chunk cannot be sent, if it cannot: the hold is counted from
+    /// here.
+    unsendable_since: Option<Instant>,
+    /// When the last job for the chunk was dispatched: the rest is counted from
+    /// here.
+    dispatched: Option<Instant>,
+    /// The next job does not wait for the rest: a result was withheld from those
+    /// who have the chunk, and they are owed the next. Once in a rest, so `exempted`
+    /// is when that was last granted.
+    exempt: bool,
+    exempted: Option<Instant>,
+    /// Which set of [`LightQueues`] the entry is in.
+    queued: Option<Queued>,
     /// The chunk's packet. It is encoded when first needed, so that many players can
     /// be sent the same bytes, and discarded when the chunk changes and when nobody
     /// waits for the chunk any more: it is as large as the chunk and its light
@@ -218,6 +385,12 @@ impl ReplicaChunk {
             job: None,
             owed: false,
             reshaped: false,
+            marked_since: None,
+            unsendable_since: None,
+            dispatched: None,
+            exempt: false,
+            exempted: None,
+            queued: None,
             packet: None,
             waiters: BTreeSet::new(),
             served_by: None,
@@ -523,6 +696,19 @@ pub(crate) struct Fanout {
     /// cannot be sent, and those that can and are a little old. Each has a job under
     /// way or gets one when a slot is free.
     marked: BTreeSet<ChunkPos>,
+    /// Those of them that have no job under way, in the order they get one.
+    queues: LightQueues,
+    /// The jobs a thread has said it took, with the thread and when: a job is
+    /// given up so long after that, and not after its dispatch, so that one that
+    /// waits behind others is never given up.
+    started: BTreeMap<u64, (usize, Instant)>,
+    /// When the task last woke for light alone.
+    light_ticked: Instant,
+    /// How many jobs have failed, how many of them since that was last said in
+    /// the log, and when that was: an error line a second at most.
+    failed_jobs: u64,
+    failed_unsaid: u64,
+    failures_said: Option<Instant>,
     /// The jobs under way, by their moment, with the chunk each is for. One that its
     /// entry has forgotten stays here until it is answered, which bounds how many
     /// there are.
@@ -590,6 +776,12 @@ impl Fanout {
             replica: BTreeMap::new(),
             moment: 0,
             marked: BTreeSet::new(),
+            queues: LightQueues::default(),
+            started: BTreeMap::new(),
+            light_ticked: Instant::now(),
+            failed_jobs: 0,
+            failed_unsaid: 0,
+            failures_said: None,
             jobs: BTreeMap::new(),
             lighting,
             lit: Some(lit),
@@ -611,6 +803,9 @@ impl Fanout {
         patience.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
+            // Only while something is held, rests or is with a thread: an edge
+            // where light is at rest has no timer for it.
+            let wake = self.light_wake();
             tokio::select! {
                 command = self.commands.recv() => match command {
                     Some(command) => self.handle_command(command).await,
@@ -643,6 +838,9 @@ impl Fanout {
                 // The task holds the other end's sender in `lighting`, so this never
                 // ends.
                 Some(said) = lit.recv() => self.take_light(said).await,
+                _ = tokio::time::sleep_until(wake.unwrap_or_else(Instant::now)), if wake.is_some() => {
+                    self.light_tick().await;
+                }
                 _ = patience.tick() => {
                     self.drop_the_overdue().await;
                     self.ask_again_where_due().await;
@@ -693,6 +891,57 @@ impl Fanout {
             assert!(
                 entry.is_some_and(|entry| entry.chunk.is_some()),
                 "{position:?} is marked and has no chunk"
+            );
+        }
+        // A marked entry has a job under way or is in one of the three sets, in the
+        // one it belongs in, and nothing else is in any.
+        let mut queued = 0;
+        for (position, entry) in &self.replica {
+            let idle = self.marked.contains(position) && entry.job.is_none();
+            assert_eq!(
+                entry.queued.is_some(),
+                idle,
+                "{position:?} {:?}",
+                entry.queued
+            );
+            let Some(place) = entry.queued else {
+                continue;
+            };
+            queued += 1;
+            let waited_for = !entry.sendable() && !entry.waiters.is_empty();
+            match place {
+                Queued::Waiting { rank, since, by } => {
+                    assert!(waited_for, "{position:?} is among the waited-for");
+                    assert!(self.queues.waiting.contains(&(rank, since, *position)));
+                    let near = |waiter: &PlayerId| apart(*position, self.players[waiter].center);
+                    let nearest = entry.waiters.iter().map(near).min();
+                    assert_eq!(Some(rank), nearest, "the rank of {position:?}");
+                    assert_eq!(near(&by), rank, "{position:?} is ranked by {by:?}");
+                }
+                Queued::Unawaited {
+                    rank,
+                    since,
+                    marked,
+                } => {
+                    assert!(!waited_for, "{position:?} is waited for");
+                    assert!(self.queues.unawaited.contains(&(rank, since, *position)));
+                    assert!(self.queues.oldest.contains(&(marked, since, *position)));
+                }
+                Queued::Later { until } => {
+                    assert!(self.queues.later.contains(&(until, *position)));
+                }
+            }
+        }
+        assert_eq!(
+            self.queues.len(),
+            queued,
+            "the sets of light hold what is queued"
+        );
+        assert_eq!(self.queues.oldest.len(), self.queues.unawaited.len());
+        for basis in self.started.keys() {
+            assert!(
+                self.jobs.contains_key(basis),
+                "job {basis} is no longer under way"
             );
         }
         // V: a subscription's viewers are the players of its region that see the chunk,
@@ -2513,6 +2762,7 @@ impl Fanout {
             }
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
+                self.queues.take_out(*position, chunk);
                 self.replica.remove(position);
                 self.marked.remove(position);
             }
@@ -2535,6 +2785,15 @@ impl Fanout {
         // Entities in chunks that came into view appear, those left behind disappear.
         for shown in self.entities.values() {
             packets.extend(view.update_visibility(player, &shown.state, false));
+        }
+        // Who waits for what has changed, and how near they are: that moves entries
+        // between the sets of light and sends or dispatches nothing.
+        let pending: Vec<ChunkPos> = view.pending.iter().copied().collect();
+        for position in &left {
+            self.requeue(*position);
+        }
+        for position in pending {
+            self.rerank(position, player);
         }
         let replica = &self.replica;
         self.entities
@@ -2608,6 +2867,7 @@ impl Fanout {
             if let Some(entry) = self.replica.get_mut(&position) {
                 entry.waiters.extend(viewers.iter().copied());
             }
+            self.requeue(position);
             for player in viewers {
                 self.send_chunks(player).await;
             }
@@ -2676,6 +2936,7 @@ impl Fanout {
     /// hold may not be sent, and is marked for a job.
     fn arrive(&mut self, position: ChunkPos, mut chunk: Chunk) {
         let carried = chunk.take_light();
+        let now = Instant::now();
         // What the chunk is as made by, as light sees it: its light says, whoever's
         // rules made it, since nothing light sees has changed since; without light,
         // the chunk says, as long as it is as generated.
@@ -2696,6 +2957,7 @@ impl Fanout {
         // Whoever had the chunk is sent the new one whole.
         entry.owed = false;
         entry.reshaped = false;
+        entry.exempt = false;
         entry.as_made = as_made;
         entry.shaped = shaped;
         let holds = carried
@@ -2706,8 +2968,14 @@ impl Fanout {
             entry.light = carried.map(Arc::new);
             entry.kind = LightKind::Carried;
             entry.lit = shaped;
+            entry.marked_since = None;
+            entry.unsendable_since = None;
             self.marked.remove(&position);
         } else {
+            // A chunk that took another's place is a new chunk to wait for.
+            let entry = self.replica.get_mut(&position).expect("found above");
+            entry.marked_since = Some(now);
+            entry.unsendable_since = Some(now);
             self.marked.insert(position);
         }
         for beside in Self::around(position) {
@@ -2731,6 +2999,7 @@ impl Fanout {
             };
             let moment = self.next_moment();
             let entry = self.replica.get_mut(&beside).expect("found above");
+            let could_be_sent = entry.sendable();
             entry.shaped = moment;
             if keeps {
                 entry.lit = moment;
@@ -2738,28 +3007,221 @@ impl Fanout {
                 entry.reshaped = true;
                 // Its light may not be sent as it is, and so not a packet made of it.
                 entry.packet = None;
+                if could_be_sent {
+                    entry.unsendable_since = Some(now);
+                }
+                entry.unsendable_since.get_or_insert(now);
+                entry.marked_since.get_or_insert(now);
                 self.marked.insert(beside);
             }
         }
+        // The chunk goes where it now belongs, and so do those around it: one that
+        // was held for this chunk is held for it no longer.
+        self.requeue(position);
+        for beside in Self::around(position) {
+            self.requeue(beside);
+        }
     }
 
-    /// Makes jobs for marked entries while a slot is free, and takes what the threads
-    /// have said meanwhile. Chunks that someone waits for and that cannot be sent go
-    /// first. In the edge's tests a job is done where it is dispatched, so everything
-    /// a turn marks is lit before the turn ends.
+    /// Where the marked entry at `position`, which has no job under way, belongs
+    /// now (`docs/adr/0023-light-at-the-edge.md`, section 4). The moment it is
+    /// put in is left for [`Fanout::requeue`] to say.
+    fn place_of(&self, position: ChunkPos, entry: &ReplicaChunk, now: Instant) -> Queued {
+        let settings = self.config.light;
+        if !entry.sendable() {
+            // Held while a chunk beside it is wanted and has not come, for as long
+            // as the hold allows: lit now, it would be lit again when that comes.
+            let until = entry
+                .unsendable_since
+                .map_or(now, |since| since + settings.latest);
+            let awaited = |at: &ChunkPos| {
+                self.replica
+                    .get(at)
+                    .is_some_and(|beside| beside.chunk.is_none())
+            };
+            if until > now && Self::around(position).iter().any(awaited) {
+                return Queued::Later { until };
+            }
+            let nearest = |waiter: &PlayerId| {
+                let view = self.players.get(waiter)?;
+                Some((apart(position, view.center), *waiter))
+            };
+            if let Some((rank, by)) = entry.waiters.iter().filter_map(nearest).min() {
+                return Queued::Waiting { rank, since: 0, by };
+            }
+        } else if !entry.exempt
+            && let Some(until) = entry.dispatched.map(|at| at + settings.rest)
+            && until > now
+        {
+            // It can be sent, a little old, and had a job a moment ago. A place
+            // where water flows is never still, and is never held for anything.
+            return Queued::Later { until };
+        }
+        let viewers = self.players.values();
+        let viewers = viewers.filter(|view| view.wanted.contains(&position));
+        let nearest = viewers.map(|view| apart(position, view.center)).min();
+        Queued::Unawaited {
+            rank: nearest.unwrap_or(0),
+            since: 0,
+            marked: entry.marked_since.unwrap_or(now),
+        }
+    }
+
+    /// Puts the entry at `position` into the set it belongs in now, or takes it out
+    /// of them if it is not marked or has a job under way. Called wherever what
+    /// that turns on has changed; it changes nothing where nothing has.
+    fn requeue(&mut self, position: ChunkPos) {
+        let now = Instant::now();
+        let Some(entry) = self.replica.get(&position) else {
+            return;
+        };
+        let was = entry.queued;
+        let idle = self.marked.contains(&position) && entry.job.is_none();
+        let place = idle.then(|| self.place_of(position, entry, now));
+        let place = match (place, was) {
+            // Among equally near chunks the one that has waited longer goes first,
+            // so a new rank keeps the moment.
+            (Some(Queued::Waiting { rank, by, .. }), Some(Queued::Waiting { since, .. })) => {
+                Some(Queued::Waiting { rank, since, by })
+            }
+            (Some(Queued::Waiting { rank, by, .. }), _) => {
+                let since = self.next_moment();
+                Some(Queued::Waiting { rank, since, by })
+            }
+            // The rank of one nobody waits for is not kept up.
+            (Some(Queued::Unawaited { .. }), Some(Queued::Unawaited { .. })) => was,
+            (Some(Queued::Unawaited { rank, marked, .. }), _) => {
+                let since = self.next_moment();
+                Some(Queued::Unawaited {
+                    rank,
+                    since,
+                    marked,
+                })
+            }
+            (place, _) => place,
+        };
+        if place == was {
+            return;
+        }
+        let entry = self.replica.get_mut(&position).expect("found above");
+        self.queues.take_out(position, entry);
+        if let Some(place) = place {
+            self.queues.put_in(position, entry, place);
+        }
+    }
+
+    /// `mover`'s view has a new centre: the rank of a chunk they wait for is the
+    /// distance to its nearest waiter as the views now stand. It is found anew over
+    /// all who wait only if the mover was the one it was ranked by; otherwise it is
+    /// the lesser of what it was and the mover's distance now.
+    fn rerank(&mut self, position: ChunkPos, mover: PlayerId) {
+        let Some(view) = self.players.get(&mover) else {
+            return;
+        };
+        let mine = apart(position, view.center);
+        let Some(entry) = self.replica.get_mut(&position) else {
+            return;
+        };
+        match entry.queued {
+            Some(Queued::Waiting { rank, since, by }) if by != mover => {
+                if mine < rank {
+                    self.queues.take_out(position, entry);
+                    let nearer = Queued::Waiting {
+                        rank: mine,
+                        since,
+                        by: mover,
+                    };
+                    self.queues.put_in(position, entry, nearer);
+                }
+            }
+            _ => self.requeue(position),
+        }
+    }
+
+    /// When the task is next to wake for light alone, if at all: when the first
+    /// hold or rest ends, or the first job is to be given up, and never sooner
+    /// than a tick after it last did.
+    fn light_wake(&self) -> Option<Instant> {
+        let later = self.queues.later.first().map(|(until, _)| *until);
+        let patience = self.config.light.job_patience;
+        let given_up = self.started.values().map(|(_, at)| *at + patience).min();
+        let due = [later, given_up].into_iter().flatten().min()?;
+        Some(due.max(self.light_ticked + LIGHT_TICK))
+    }
+
+    /// Moves the entries whose hold or rest has ended, and gives up the jobs a
+    /// thread has had for too long: such a job has failed, and its thread is
+    /// counted on no longer.
+    async fn light_tick(&mut self) {
+        let now = Instant::now();
+        self.light_ticked = now;
+        let ended = self.queues.later.iter();
+        let ended = ended.take_while(|(until, _)| *until <= now);
+        let ended: Vec<ChunkPos> = ended.map(|(_, position)| *position).collect();
+        for position in ended {
+            self.requeue(position);
+        }
+        let patience = self.config.light.job_patience;
+        let late = |(basis, (thread, at)): (&u64, &(usize, Instant))| {
+            (now.saturating_duration_since(*at) >= patience).then_some((*basis, *thread))
+        };
+        let late: Vec<(u64, usize)> = self.started.iter().filter_map(late).collect();
+        for (basis, thread) in late {
+            self.started.remove(&basis);
+            let left = self.lighting.write_off(thread);
+            error!(
+                thread,
+                left, "A thread that lights chunks has not answered and is counted on no longer"
+            );
+            let Some(position) = self.jobs.get(&basis).copied() else {
+                continue;
+            };
+            let outcome = LightOutcome::Failed {
+                why: "the job was not answered".to_owned(),
+            };
+            let failed = FromThread::Done {
+                basis,
+                position,
+                outcome,
+            };
+            self.take_light(failed).await;
+        }
+    }
+
+    /// Counts a failed job, and says so where an operator reads it, with how many
+    /// have failed and how many chunks have light that is not right for it now: a
+    /// line a second at most, whatever fails how often.
+    fn say_failure(&mut self, position: ChunkPos, why: &str) {
+        self.failed_jobs += 1;
+        self.failed_unsaid += 1;
+        let now = Instant::now();
+        let said = |at: Instant| now.saturating_duration_since(at) < Duration::from_secs(1);
+        if self.failures_said.is_some_and(said) {
+            return;
+        }
+        let fallback = |entry: &&ReplicaChunk| entry.kind == LightKind::Fallback;
+        error!(
+            ?position,
+            why,
+            since_last_said = self.failed_unsaid,
+            failed = self.failed_jobs,
+            chunks_with_fallback_light = self.replica.values().filter(fallback).count(),
+            "A chunk's light could not be made"
+        );
+        self.failed_unsaid = 0;
+        self.failures_said = Some(now);
+    }
+
+    /// Makes jobs for marked entries while a slot is free, in the order
+    /// [`LightQueues::next`] gives, and takes what the threads have said meanwhile.
+    /// In the edge's tests a job is done where it is dispatched and nothing is held
+    /// or rests, so everything a turn marks is lit before the turn ends.
     async fn light_the_marked(&mut self, lit: &mut mpsc::UnboundedReceiver<FromThread>) {
         loop {
             let mut moved = false;
             while self.jobs.len() < self.lighting.in_flight() {
-                let waits = |entry: &ReplicaChunk| !entry.waiters.is_empty() && !entry.sendable();
-                let idle = |want_waited: bool| {
-                    let fits = |position: &&ChunkPos| {
-                        let entry = &self.replica[*position];
-                        entry.job.is_none() && (!want_waited || waits(entry))
-                    };
-                    self.marked.iter().find(fits).copied()
-                };
-                let Some(position) = idle(true).or_else(|| idle(false)) else {
+                let overdue = self.config.light.overdue;
+                let Some(position) = self.queues.next(Instant::now(), overdue) else {
                     break;
                 };
                 moved = true;
@@ -2783,6 +3245,12 @@ impl Fanout {
         let [nw, n, ne, w, e, sw, south, se] = Self::around(position).map(chunk_at);
         let entry = self.replica.get_mut(&position).expect("a marked entry");
         entry.job = Some(basis);
+        entry.dispatched = Some(Instant::now());
+        // The job answers for everything up to here. What marks the entry under it
+        // is new, and waits for the rest again.
+        entry.marked_since = None;
+        entry.exempt = false;
+        self.queues.take_out(position, entry);
         let job = LightJob {
             basis,
             position,
@@ -2819,9 +3287,15 @@ impl Fanout {
             outcome,
         } = said
         else {
-            // That a thread has taken a job matters once jobs are given up.
+            // From here the job's time runs: a thread has it.
+            if let FromThread::Started { basis, thread } = said
+                && self.jobs.contains_key(&basis)
+            {
+                self.started.insert(basis, (thread, Instant::now()));
+            }
             return;
         };
+        self.started.remove(&basis);
         if self.jobs.remove(&basis).is_none() {
             return;
         }
@@ -2839,6 +3313,7 @@ impl Fanout {
         // This light, made from the blocks of before, would put that out again, so
         // those who have the chunk are not sent it and get the next job's, whole.
         let withheld = entry.changed > basis;
+        let mut failed = None;
         let update = match outcome {
             LightOutcome::Lit { light, update } => {
                 entry.light = Some(light);
@@ -2846,9 +3321,9 @@ impl Fanout {
                 update.filter(|_| !withheld)
             }
             LightOutcome::Failed { why } => {
-                // Said where an operator reads it; the chunk is shown with the light
-                // it had, or lit by columns as chunks were before the edge made light.
-                warn!(?position, %why, "a chunk's light could not be made");
+                // The chunk is shown with the light it had, or lit by columns as
+                // chunks were before the edge made light.
+                failed = Some(why);
                 entry.kind = LightKind::Fallback;
                 if entry.light.is_none() {
                     let chunk = entry.chunk.as_deref().expect("a job is for a chunk");
@@ -2857,8 +3332,27 @@ impl Fanout {
                 None
             }
         };
+        let now = Instant::now();
+        if entry.sendable() {
+            entry.unsendable_since = None;
+        }
         if entry.current() {
+            entry.marked_since = None;
             self.marked.remove(&position);
+        } else {
+            entry.marked_since.get_or_insert(now);
+            // Those who have the chunk were kept waiting for this light and get
+            // the next: that job does not rest first, once in a rest.
+            let rest = self.config.light.rest;
+            let lately = |at: Instant| now.saturating_duration_since(at) < rest;
+            if withheld && !entry.exempted.is_some_and(lately) {
+                entry.exempt = true;
+                entry.exempted = Some(now);
+            }
+        }
+        self.requeue(position);
+        if let Some(why) = failed {
+            self.say_failure(position, &why);
         }
         // To whom the light goes, of those who have the chunk
         // (`docs/adr/0023-light-at-the-edge.md`, "Found while building"): to everyone,
@@ -2866,6 +3360,7 @@ impl Fanout {
         // itself; otherwise to those at the rim of whose view the chunk is, who lack
         // a chunk beside it. Whoever has all the chunks around a change lights it as
         // the official client always has, and the official server sends them nothing.
+        let entry = &self.replica[&position];
         let everyone = entry.reshaped;
         let lacks_one_beside = |view: &PlayerView| {
             let has = |at: &ChunkPos| view.sent.contains(at) || view.replace.contains(at);
@@ -2940,6 +3435,7 @@ impl Fanout {
             // The light of the chunk and of those the change reaches was made for
             // other blocks. It may still be sent, a little old; each gets a job.
             let moment = self.next_moment();
+            let now = Instant::now();
             let reached = clustine_light::reach(x, z);
             let around = Self::around(chunk_position);
             let reached = (0..8).filter(|index| everywhere || reached[*index]);
@@ -2948,7 +3444,9 @@ impl Fanout {
                     && entry.chunk.is_some()
                 {
                     entry.changed = moment;
+                    entry.marked_since.get_or_insert(now);
                     self.marked.insert(at);
+                    self.requeue(at);
                 }
             }
         }
@@ -3423,9 +3921,14 @@ impl Fanout {
                 .expect("viewed chunks are in the replica");
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
+                self.queues.take_out(*position, chunk);
                 self.replica.remove(position);
                 self.marked.remove(position);
             }
+        }
+        // Those that keep viewers and have lost a waiter may belong in another set.
+        for position in &view.pending {
+            self.requeue(*position);
         }
         let replica = &self.replica;
         self.entities
@@ -3801,6 +4304,7 @@ mod tests {
                 online: Arc::default(),
                 region_patience,
                 login: crate::LoginWorld::FLAT,
+                light: LightSettings::AT_ONCE,
             };
             let (commands, receiver) = mpsc::channel(64);
             // A job is done in the turn that dispatches it, so that everything a turn
@@ -5917,6 +6421,7 @@ mod scenarios {
                 online: Arc::default(),
                 region_patience,
                 login: crate::LoginWorld::FLAT,
+                light: LightSettings::AT_ONCE,
             };
             let (commands, receiver) = mpsc::channel(64);
             // A job is done in the turn that dispatches it, so that everything a turn

@@ -1897,14 +1897,8 @@ section 12 has them, each green:
   entries that are not current in one set (`marked`), dispatch at the end of a turn
   with the chunks someone waits for first, a result taken only if its job is still
   the entry's, a failed job leaving `Fallback`, chunks sent only from sendable
-  entries and no empty batch. **Still to build**, as its second part: the settings
-  of section 4 (`LATEST`, `REST`, `OVERDUE`, `JOB_PATIENCE`), the three sets with
-  their ranks in place of the one, `Started` and threads written off, the tick,
-  `view.ready`, and the counts published. Until then a chunk is never held for a
-  neighbour, so a chunk that comes before changed neighbours costs a job for each
-  of them that comes, and a job that never answered would leave its chunk unsent;
-  the rules cannot hang and a panic is caught, so that is a thread dying some
-  other way.
+  entries and no empty batch. Its second part, the settings of section 4 and
+  what they order, came after the tests of L6 and is described below.
 - *L5*, by the comparison's outcome above, with one rule more than it names: **a
   chunk that came or was replaced beside one a player has sends that player the
   light of the chunk they have, wherever in their view it is** (`reshaped`). No
@@ -1961,3 +1955,43 @@ of them failed for what the code did, and all three are mended:
   touch the versions of an entry whose light does not hold.
 - The scripted model's light is of the chunks the replica has; a neighbour that
   left is not in it, as it is not in a job.
+
+**L4's second part as built (2026-10-14).** `LightSettings { latest, rest, overdue,
+job_patience }` in `FanoutConfig`: 1 s, 250 ms, 5 s and 5 s in the server; nothing
+held, nothing resting and a patience without end in both old harnesses and in a
+script, unless a test says otherwise. The three sets are `LightQueues`, with
+`unawaited` twice, by rank and by age; an entry says which it is in (`queued`), and
+one function, `requeue`, puts an entry where it belongs now and is called wherever
+what that turns on changed. The check at the end of a turn holds every entry to its
+set, and the rank of a waited-for entry to the nearest of its waiters as the views
+stand. Where it differs from sections 4 and 5:
+
+- **No tick of 50 ms.** The task sleeps until the first hold or rest ends or the
+  first job is to be given up, and never wakes for light sooner than 50 ms after it
+  last did. While nothing is held, rests or is with a thread there is no timer.
+- **Held is judged when an entry is put into a set**, and again when a chunk comes
+  beside it or its time ends. A wanted chunk beside it that stops being wanted
+  (its last viewer walked off) does not end the hold; the time does, at most
+  `LATEST` later. A chunk that begins to be wanted beside an entry already in
+  `waiting` does not hold it.
+- **`view.ready` is not built.** An offer is made to the waiters of an entry that
+  has just become sendable, so there is something to send them, and the batch is
+  made of the sendable among the pending before anything is sorted. The counter
+  would save the walk over the pending of a player who has a batch outstanding or
+  nothing sendable, which the first two lines of the offer already leave out.
+- **A thread written off ends by itself if it ever comes back**: it is told so, and
+  takes no further job. Threads are numbered without reuse, so what a thread said
+  late is never taken for the word of the one started in its place.
+- **With no thread left one job may be out**, and fails where it is dispatched. The
+  line for it is the line of every failed job: an error a second at most, with how
+  many failed since the last, how many in all, and how many entries have fallback
+  light now. **Nothing is published beside the count of players**: the edge has
+  nowhere to publish numbers yet, and the log is where an operator reads this until
+  it has.
+- **Exempt from the rest, once in a rest**, is counted from when the exemption was
+  last granted.
+
+Its tests are mine (`services/edge/src/light_policy.rs`: the hold and its end by a
+chunk coming and by time, the rest, the exemption, the overdue, the patience and
+a late answer; `light.rs`: a thread written off, replaced, and none left), beside
+the one of L6 that waited for it (nearest first as the view stands, then oldest).
