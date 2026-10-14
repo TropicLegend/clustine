@@ -14,3 +14,7 @@ clustine-structures.workspace = true
 clustine-terrain.workspace = true
 clustine-world.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# The failure tests read what the scheduler logs.
+tracing-subscriber.workspace = true

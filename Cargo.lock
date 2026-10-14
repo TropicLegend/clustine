@@ -454,6 +454,7 @@ dependencies = [
  "clustine-terrain",
  "clustine-world",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
