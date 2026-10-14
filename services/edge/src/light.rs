@@ -240,6 +240,9 @@ enum To {
     /// Run where [`Lighting::send`] is called. Only the edge's tests ask for that.
     #[cfg(test)]
     Here(Box<Worker>),
+    /// Handed to a test, which answers when and how it likes: see [`Held`].
+    #[cfg(test)]
+    Held(held::Door),
 }
 
 impl Lighting {
@@ -324,13 +327,253 @@ impl Lighting {
                 worker.run(job, &relight);
                 Ok(())
             }
+            #[cfg(test)]
+            To::Held(door) => door.take(job),
         }
     }
 
     /// How many jobs may be out at a time: two a thread, one that is worked on and
     /// one that waits, so that a thread that finishes finds its next job there.
     pub(crate) fn in_flight(&self) -> usize {
+        #[cfg(test)]
+        if let To::Held(door) = &self.to {
+            return door.in_flight();
+        }
         2 * self.threads
+    }
+}
+
+#[cfg(test)]
+pub(crate) use held::Held;
+
+/// The end of [`Lighting`] that hands its jobs to a test.
+#[cfg(test)]
+mod held {
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+
+    /// How long [`Held::next`] waits for a job that has to come.
+    const SOON: Duration = Duration::from_secs(10);
+
+    /// The dispatching side: where [`Lighting::send`] puts a job.
+    pub(super) struct Door {
+        jobs: UnboundedSender<LightJob>,
+        slots: Arc<AtomicUsize>,
+        shut: Arc<AtomicBool>,
+    }
+
+    impl Door {
+        /// Hands the job to the test, or gives it back as an end without a thread
+        /// does.
+        pub(super) fn take(&self, job: LightJob) -> Result<(), LightJob> {
+            if self.shut.load(Ordering::Relaxed) {
+                return Err(job);
+            }
+            self.jobs.send(job).map_err(|refused| refused.0)
+        }
+
+        pub(super) fn in_flight(&self) -> usize {
+            self.slots.load(Ordering::Relaxed)
+        }
+    }
+
+    /// A test's handle on the jobs of a [`Lighting::held`]: it sees each job as it is
+    /// dispatched and answers it when and how it likes, or never, in any order.
+    ///
+    /// A job is named by its `basis`, which no two jobs share. A job that was
+    /// dispatched and not answered is **out**; it holds its nine chunks for as long
+    /// as it is.
+    pub(crate) struct Held {
+        dispatched: UnboundedReceiver<LightJob>,
+        /// The jobs that are out, by basis: in the order they were dispatched, since
+        /// a later job has the greater basis.
+        out: BTreeMap<u64, LightJob>,
+        /// Those of them that neither [`Held::next`] nor [`Held::fresh`] has given
+        /// yet.
+        fresh: VecDeque<u64>,
+        results: UnboundedSender<FromThread>,
+        slots: Arc<AtomicUsize>,
+        shut: Arc<AtomicBool>,
+        /// Made at the first real answer: megabytes, which most tests never need.
+        scratch: Option<Scratch>,
+    }
+
+    impl Lighting {
+        /// Jobs are handed to the [`Held`] and nothing is said of them but what the
+        /// test has it say. Four jobs may be out at a time, as with the two threads
+        /// the server has at least, until [`Held::set_in_flight`] says otherwise.
+        pub(crate) fn held() -> (Lighting, Held, UnboundedReceiver<FromThread>) {
+            let (jobs, dispatched) = unbounded_channel();
+            let (results, from_held) = unbounded_channel();
+            let slots = Arc::new(AtomicUsize::new(4));
+            let shut = Arc::new(AtomicBool::new(false));
+            let door = Door {
+                jobs,
+                slots: slots.clone(),
+                shut: shut.clone(),
+            };
+            let lighting = Lighting {
+                to: To::Held(door),
+                threads: 0,
+            };
+            let held = Held {
+                dispatched,
+                out: BTreeMap::new(),
+                fresh: VecDeque::new(),
+                results,
+                slots,
+                shut,
+                scratch: None,
+            };
+            (lighting, held, from_held)
+        }
+    }
+
+    impl Held {
+        /// How many jobs may be out at a time from now on
+        /// ([`Lighting::in_flight`]). Jobs that are out already stay out.
+        pub(crate) fn set_in_flight(&self, jobs: usize) {
+            self.slots.store(jobs, Ordering::Relaxed);
+        }
+
+        /// While `shut`, a job is given back at its dispatch, as when no thread is
+        /// left to take it.
+        pub(crate) fn shut(&self, shut: bool) {
+            self.shut.store(shut, Ordering::Relaxed);
+        }
+
+        /// Takes in what was dispatched since this was last asked.
+        fn look(&mut self) {
+            while let Ok(job) = self.dispatched.try_recv() {
+                self.fresh.push_back(job.basis);
+                self.out.insert(job.basis, job);
+            }
+        }
+
+        /// The next job that was dispatched and that neither this nor
+        /// [`Held::fresh`] has given yet, in the order of dispatch. Waits for one;
+        /// panics if none comes.
+        pub(crate) async fn next(&mut self) -> LightJob {
+            self.look();
+            if self.fresh.is_empty() {
+                let job = tokio::time::timeout(SOON, self.dispatched.recv())
+                    .await
+                    .expect("no job was dispatched")
+                    .expect("whoever dispatches jobs is gone");
+                self.fresh.push_back(job.basis);
+                self.out.insert(job.basis, job);
+            }
+            let basis = self.fresh.pop_front().expect("put there above");
+            self.out[&basis].clone()
+        }
+
+        /// The jobs dispatched so far that neither this nor [`Held::next`] has given
+        /// yet, in the order of dispatch. Waits for nothing.
+        pub(crate) fn fresh(&mut self) -> Vec<LightJob> {
+            self.look();
+            let fresh: Vec<u64> = self.fresh.drain(..).collect();
+            fresh.iter().map(|basis| self.out[basis].clone()).collect()
+        }
+
+        /// Every job that is out, in the order of dispatch. Waits for nothing.
+        pub(crate) fn out(&mut self) -> Vec<LightJob> {
+            self.look();
+            self.out.values().cloned().collect()
+        }
+
+        /// The job that is out for the chunk at `position`: the last dispatched, if
+        /// there are several.
+        pub(crate) fn job_for(&mut self, position: ChunkPos) -> Option<LightJob> {
+            self.look();
+            let mut jobs = self.out.values().rev();
+            jobs.find(|job| job.position == position).cloned()
+        }
+
+        /// Says that thread 0 has begun the job, as a thread does before it works.
+        pub(crate) fn started(&self, basis: u64) {
+            self.say(FromThread::Started { basis, thread: 0 });
+        }
+
+        /// Answers the job with what [`relight`] gives for it, or with a failure if
+        /// the rules panic, as a thread does. Returns what was said.
+        pub(crate) fn answer(&mut self, basis: u64) -> LightOutcome {
+            let job = self.taken_out(basis);
+            let scratch = self.scratch.get_or_insert_with(Scratch::new);
+            let outcome = match catch_unwind(AssertUnwindSafe(|| relight(&job, scratch))) {
+                Ok(outcome) => outcome,
+                Err(panic) => {
+                    // It may be half written.
+                    self.scratch = None;
+                    LightOutcome::Failed { why: said(&*panic) }
+                }
+            };
+            self.done(job, outcome)
+        }
+
+        /// Answers the job with `light`, whatever the rules would give, and with the
+        /// update that says it: the sections in which it differs from the job's old
+        /// light, or every listed one if the job is `whole`. Returns what was said.
+        pub(crate) fn answer_with(&mut self, basis: u64, light: Light) -> LightOutcome {
+            let job = self.taken_out(basis);
+            let named = if job.whole {
+                Named::ALL
+            } else {
+                differing(job.old.as_deref(), &light)
+            };
+            let data = light_data(&light.sky, &light.block, named);
+            let update = names_any(&data).then(|| {
+                let packet = LightUpdate {
+                    chunk_x: job.position.x,
+                    chunk_z: job.position.z,
+                    light: data,
+                };
+                Bytes::from(packets::encode(&packet))
+            });
+            let light = Arc::new(light);
+            self.done(job, LightOutcome::Lit { light, update })
+        }
+
+        /// Answers the job with a failure.
+        pub(crate) fn fail(&mut self, basis: u64, why: &str) {
+            let job = self.taken_out(basis);
+            let why = why.to_owned();
+            self.done(job, LightOutcome::Failed { why });
+        }
+
+        /// The job is never answered: it is out no longer and its chunks are let go,
+        /// and whoever dispatched it goes on counting it. Returns the job.
+        pub(crate) fn never(&mut self, basis: u64) -> LightJob {
+            self.taken_out(basis)
+        }
+
+        /// Says anything at all as a thread: a result for a job that was answered
+        /// before, or for one that never was.
+        pub(crate) fn say(&self, said: FromThread) {
+            // Whoever dispatches may be gone; then nobody is there to mind.
+            let _ = self.results.send(said);
+        }
+
+        fn taken_out(&mut self, basis: u64) -> LightJob {
+            self.look();
+            self.fresh.retain(|fresh| *fresh != basis);
+            let job = self.out.remove(&basis);
+            job.unwrap_or_else(|| panic!("no job with the basis {basis} is out"))
+        }
+
+        /// Says the outcome of `job`, which is let go first, as a thread does.
+        fn done(&self, job: LightJob, outcome: LightOutcome) -> LightOutcome {
+            let (basis, position) = (job.basis, job.position);
+            drop(job);
+            self.say(FromThread::Done {
+                basis,
+                position,
+                outcome: outcome.clone(),
+            });
+            outcome
+        }
     }
 }
 

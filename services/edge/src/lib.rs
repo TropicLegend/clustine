@@ -12,6 +12,8 @@ mod fanout;
 mod light;
 mod login;
 mod play;
+#[cfg(test)]
+mod script;
 mod session;
 mod status;
 
