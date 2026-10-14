@@ -13,7 +13,8 @@ use clustine_protocol::packets::Packet;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
     ClientboundKeepAlive, Disconnect, LevelChunkWithLight, LightUpdate, PlayerAction,
-    ServerboundPlay, UseItemOn, face, inventory, movement_flags, player_action,
+    ServerboundPlay, ServerboundUseItem, UseItemOn, face, inventory, movement_flags, player_action,
+    player_input,
 };
 use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput};
 use clustine_world::{BlockPos, PlayerId, Vec3};
@@ -87,6 +88,10 @@ async fn pump(
     keep_alive.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut next_keep_alive_id = 0;
     let mut awaiting_keep_alive = None;
+    // Whether the client last said the sneak key is down. A click carries it to the
+    // region: sneaking with a block in hand places it against a door rather than
+    // opening the door.
+    let mut sneaking = false;
     // The client only understands keep-alives once it has been put into the world.
     let mut in_world = false;
 
@@ -141,8 +146,14 @@ async fn pump(
                     ServerboundPlay::PlayerAction(action) => {
                         acted(shared, client, action).await?;
                     }
+                    ServerboundPlay::ServerboundPlayerInput(packet) => {
+                        sneaking = packet.flags & player_input::SHIFT != 0;
+                    }
                     ServerboundPlay::UseItemOn(packet) => {
-                        used_item_on(shared, client, packet).await?;
+                        used_item_on(shared, client, packet, sneaking).await?;
+                    }
+                    ServerboundPlay::ServerboundUseItem(packet) => {
+                        used_item(shared, client, packet, sneaking).await?;
                     }
                     ServerboundPlay::SetHeldItem(packet) => {
                         let Some(slot) = hotbar_slot(i32::from(packet.slot)) else {
@@ -171,7 +182,6 @@ async fn pump(
                         send_input(shared, client, PlayerInput::SetFlying { flying }).await?;
                     }
                     ServerboundPlay::ClientTickEnd(_)
-                    | ServerboundPlay::ServerboundPlayerInput(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}
                 }
@@ -323,6 +333,7 @@ async fn used_item_on(
     shared: &Shared,
     client: &Client,
     packet: UseItemOn,
+    sneaking: bool,
 ) -> Result<(), ConnectionError> {
     let face = match u8::try_from(packet.face) {
         Ok(face::BOTTOM) => Some(Face::Bottom),
@@ -340,6 +351,8 @@ async fn used_item_on(
             let input = PlayerInput::UseItemOn {
                 position: BlockPos::new(position.x, position.y, position.z),
                 face,
+                cursor: packet.cursor.map(within_block),
+                sneaking,
                 sequence: packet.sequence,
             };
             send_input(shared, client, input).await
@@ -349,9 +362,61 @@ async fn used_item_on(
     }
 }
 
+/// Where on a block a click landed, from 0 to 1 as the region takes it: a client
+/// that says something else is put on the block, and one that says no number at all
+/// in its middle.
+fn within_block(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.5
+    }
+}
+
+/// Handles the player using the item in their hand without a block it uses on.
+async fn used_item(
+    shared: &Shared,
+    client: &Client,
+    packet: ServerboundUseItem,
+    sneaking: bool,
+) -> Result<(), ConnectionError> {
+    // Only the main hand holds anything.
+    if packet.hand != MAIN_HAND {
+        return handled(shared, client, packet.sequence).await;
+    }
+    // A rotation that is no number aims at nothing: only the guess is handled.
+    let rotation = if packet.yaw.is_finite() && packet.pitch.is_finite() {
+        (packet.yaw, packet.pitch.clamp(-90.0, 90.0))
+    } else {
+        return handled(shared, client, packet.sequence).await;
+    };
+    let input = PlayerInput::UseItem {
+        rotation,
+        sneaking,
+        sequence: packet.sequence,
+    };
+    send_input(shared, client, input).await
+}
+
 /// `slot` as a hotbar slot, if it is one.
 fn hotbar_slot(slot: i32) -> Option<u8> {
     u8::try_from(slot)
         .ok()
         .filter(|slot| usize::from(*slot) < HOTBAR_SLOTS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_click_lands_on_the_block_whatever_the_client_says() {
+        assert_eq!(within_block(0.25), 0.25);
+        assert_eq!(within_block(0.0), 0.0);
+        assert_eq!(within_block(1.0), 1.0);
+        assert_eq!(within_block(-3.0), 0.0);
+        assert_eq!(within_block(1.5), 1.0);
+        assert_eq!(within_block(f32::NAN), 0.5);
+        assert_eq!(within_block(f32::INFINITY), 0.5);
+    }
 }

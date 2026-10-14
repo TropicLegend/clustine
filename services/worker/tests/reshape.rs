@@ -2031,6 +2031,8 @@ fn a_use_of_an_item_waits_for_the_chunk_of_the_spot_beside_the_clicked_face() {
         PlayerInput::UseItemOn {
             position: base,
             face: Face::Top,
+            cursor: [0.5; 3],
+            sneaking: false,
             sequence: 1,
         },
     ));
@@ -2047,6 +2049,8 @@ fn a_use_of_an_item_waits_for_the_chunk_of_the_spot_beside_the_clicked_face() {
         PlayerInput::UseItemOn {
             position: stone,
             face: Face::West,
+            cursor: [0.5; 3],
+            sneaking: false,
             sequence: 2,
         },
     ));

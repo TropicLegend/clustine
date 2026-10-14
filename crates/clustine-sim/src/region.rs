@@ -1169,6 +1169,9 @@ impl Region {
                 }
             }
             PlayerInput::SetFlying { flying } => player.flying = *flying,
+            // Buckets and lily pads come with step W6e; until then the client is told
+            // its guess was handled, so that it stops guessing.
+            PlayerInput::UseItem { sequence, .. } => player.acknowledge(*sequence),
             PlayerInput::Dig { position, sequence } => {
                 let (position, sequence) = (*position, *sequence);
                 let knowledge = self.land.knowledge(position.chunk());
@@ -1197,6 +1200,7 @@ impl Region {
                 position,
                 face,
                 sequence,
+                ..
             } => {
                 let (against, sequence) = (*position, *sequence);
                 let target = face.neighbour(against);
@@ -2924,6 +2928,8 @@ mod tests {
         let input = PlayerInput::UseItemOn {
             position: BlockPos::new(x, y, z),
             face,
+            cursor: [0.5; 3],
+            sneaking: false,
             sequence: 1,
         };
         numbered(number, input)
@@ -6332,6 +6338,8 @@ mod tests {
                     PlayerInput::UseItemOn {
                         position,
                         face: across_more_often(random(8)),
+                        cursor: [0.5; 3],
+                        sneaking: false,
                         sequence,
                     }
                 }
@@ -6481,6 +6489,8 @@ mod tests {
                         PlayerInput::UseItemOn {
                             position,
                             face: across_more_often(random(8)),
+                            cursor: [0.5; 3],
+                            sneaking: false,
                             sequence: sequences[index],
                         }
                     }
@@ -6603,6 +6613,8 @@ mod tests {
                     _ => PlayerInput::UseItemOn {
                         position,
                         face: across_more_often(random(8)),
+                        cursor: [0.5; 3],
+                        sneaking: false,
                         sequence,
                     },
                 };

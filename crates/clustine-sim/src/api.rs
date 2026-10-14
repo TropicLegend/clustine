@@ -254,16 +254,31 @@ pub enum PlayerInput {
     /// already shown on its own; see [`PlayerEvent::Acknowledged`].
     Dig { position: BlockPos, sequence: i32 },
     /// The player used the item in their hand on `face` of the block at `position`,
-    /// which for a block item places it against that face. `sequence` is as for `Dig`.
+    /// which uses the block (a door) or places the item's block against that face.
+    /// `cursor` is where on the block the click landed, each from 0 to 1; `sneaking`
+    /// whether the player held the sneak key, which places a block in hand against a
+    /// door rather than opening it. `sequence` is as for `Dig`. See
+    /// `docs/groundwork/w6-plan.md`, section 3.
     UseItemOn {
         position: BlockPos,
         face: Face,
+        cursor: [f32; 3],
+        sneaking: bool,
         sequence: i32,
     },
     /// The player selected another hotbar slot, from 0 to 8.
     SelectSlot { slot: u8 },
     /// A creative-mode player put a stack into a hotbar slot, or emptied it.
     SetHotbarSlot { slot: u8, stack: Option<ItemStack> },
+    /// The player used the item in their hand without a block it uses on: a bucket or
+    /// a lily pad, which find what they reach by a ray along `rotation` (yaw, pitch),
+    /// the player's rotation from then on. `sneaking` and `sequence` are as for
+    /// `UseItemOn`. See `docs/groundwork/w6-plan.md`, section 5.
+    UseItem {
+        rotation: (f32, f32),
+        sneaking: bool,
+        sequence: i32,
+    },
     /// The player began or stopped flying. The region keeps it, hands it on with the
     /// player and tells the world store with their place; nobody else is shown it. See
     /// `docs/adr/0020-one-stay-per-player.md`, section 13.

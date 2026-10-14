@@ -322,6 +322,8 @@ mod tests {
                 input: PlayerInput::UseItemOn {
                     position: BlockPos::new(1, -61, 2),
                     face: Face::Top,
+                    cursor: [0.5; 3],
+                    sneaking: false,
                     sequence: 12,
                 },
             },

@@ -1321,6 +1321,8 @@ fn handled_covers_only_the_players_own_actions_on_blocks_of_this_region() {
             PlayerInput::UseItemOn {
                 position: BORDER_BLOCK_A,
                 face: Face::East,
+                cursor: [0.5; 3],
+                sneaking: false,
                 sequence: 7,
             },
         ),
@@ -1792,6 +1794,8 @@ fn scenario() -> Vec<TickInputs> {
         PlayerInput::UseItemOn {
             position: BORDER_BLOCK_A,
             face: Face::East,
+            cursor: [0.5; 3],
+            sneaking: false,
             sequence: 2,
         },
     );

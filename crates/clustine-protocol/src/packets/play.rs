@@ -807,6 +807,43 @@ impl Decode for SetPlayerMovementFlags {
     }
 }
 
+/// The player used the item in a hand without aiming at a block the item uses: a
+/// bucket, a lily pad. The server finds what it hits by its own ray along `yaw` and
+/// `pitch`, which become the player's rotation first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerboundUseItem {
+    /// 0 for the main hand, 1 for the off hand.
+    pub hand: i32,
+    /// Numbers the client's predicted block changes; see [`AcknowledgeBlockChange`].
+    pub sequence: i32,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Packet for ServerboundUseItem {
+    const ID: i32 = serverbound::USE_ITEM;
+}
+
+impl Encode for ServerboundUseItem {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.hand);
+        w.put_var_int(self.sequence);
+        w.put_f32(self.yaw);
+        w.put_f32(self.pitch);
+    }
+}
+
+impl Decode for ServerboundUseItem {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            hand: r.var_int()?,
+            sequence: r.var_int()?,
+            yaw: r.f32()?,
+            pitch: r.f32()?,
+        })
+    }
+}
+
 /// The movement keys a player holds, sent when one of them changes. The server reads
 /// the sneak key from it: a sneaking player who clicks a door with a block in hand
 /// places the block instead of opening the door.
@@ -1551,6 +1588,7 @@ packet_set! {
         PlayerLoaded,
         PlayerAction,
         UseItemOn,
+        ServerboundUseItem,
         SetHeldItem,
         SetCreativeModeSlot,
         ServerboundPlayerAbilities,
@@ -1957,6 +1995,17 @@ mod tests {
         let packet = ServerboundPlayerInput { flags: keys };
         assert_eq!(crate::packets::encode(&packet), [43, 0x21]);
         assert_round_trip(packet, Set::decode, Set::ServerboundPlayerInput);
+        let packet = ServerboundUseItem {
+            hand: 0,
+            sequence: 300,
+            yaw: -90.0,
+            pitch: 45.0,
+        };
+        // The id, the hand, the sequence as two bytes, then two floats.
+        let bytes = crate::packets::encode(&packet);
+        assert_eq!(bytes[..4], [67, 0, 0xac, 0x02]);
+        assert_eq!(bytes[4..], [0xc2, 0xb4, 0, 0, 0x42, 0x34, 0, 0]);
+        assert_round_trip(packet, Set::decode, Set::ServerboundUseItem);
     }
 
     #[test]

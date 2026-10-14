@@ -1088,6 +1088,8 @@ impl Scenario {
                 4 => PlayerInput::UseItemOn {
                     position: block,
                     face: random.pick(&FACES),
+                    cursor: [0.5; 3],
+                    sneaking: false,
                     sequence: random.below(100) as i32,
                 },
                 5 => PlayerInput::SelectSlot {

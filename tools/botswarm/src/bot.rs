@@ -23,9 +23,9 @@ use clustine_protocol::packets::login::{
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
     LightUpdate, Login, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
-    ServerboundPlayerAbilities, SetCreativeModeSlot, SetHeldItem, SetPlayerPosition,
-    SetPlayerPositionAndRotation, SynchronizePlayerPosition, UseItemOn, face, inventory,
-    movement_flags, player_action,
+    ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
+    SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation, SynchronizePlayerPosition,
+    UseItemOn, face, inventory, movement_flags, player_action, player_input,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -914,19 +914,58 @@ impl Bot {
     /// block against it. `side` is one of the `face` values of the protocol. Returns the
     /// sequence number the server will acknowledge.
     pub async fn use_item_on(&mut self, x: i32, y: i32, z: i32, side: u8) -> Result<i32> {
+        self.click(x, y, z, side, [0.5, 0.5, 0.5]).await
+    }
+
+    /// As [`Bot::use_item_on`], with where on the block the click lands, each from 0
+    /// to 1: a slab or a trapdoor goes to the half the cursor is in.
+    pub async fn click(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        side: u8,
+        cursor: [f32; 3],
+    ) -> Result<i32> {
         self.sequence += 1;
         self.connection
             .write(&UseItemOn {
                 hand: 0,
                 position: Position { x, y, z },
                 face: side.into(),
-                cursor: [0.5, 0.5, 0.5],
+                cursor,
                 inside_block: false,
                 world_border_hit: false,
                 sequence: self.sequence,
             })
             .await?;
         Ok(self.sequence)
+    }
+
+    /// Uses the held item without aiming at a block for it, looking along `yaw` and
+    /// `pitch`: what a client sends for a bucket. Returns the sequence number the
+    /// server will acknowledge.
+    pub async fn use_item(&mut self, yaw: f32, pitch: f32) -> Result<i32> {
+        self.sequence += 1;
+        self.connection
+            .write(&ServerboundUseItem {
+                hand: 0,
+                sequence: self.sequence,
+                yaw,
+                pitch,
+            })
+            .await?;
+        Ok(self.sequence)
+    }
+
+    /// Holds down or lets go of the sneak key, and no other.
+    pub async fn sneak(&mut self, sneaking: bool) -> Result<()> {
+        let flags = if sneaking { player_input::SHIFT } else { 0 };
+        self.connection
+            .write(&ServerboundPlayerInput { flags })
+            .await?;
+        self.has_sent();
+        Ok(())
     }
 
     /// The block state at `x`, `y`, `z` as far as the server has told the bot: from the

@@ -2765,7 +2765,10 @@ impl RegionRunner {
                 PlayerInput::UseItemOn { position, face, .. } => {
                     vec![chunk(*position), chunk(face.neighbour(*position))]
                 }
+                // Until step W6e a bucket only has the client's guess handled, which
+                // needs no chunk.
                 PlayerInput::Move { .. }
+                | PlayerInput::UseItem { .. }
                 | PlayerInput::SelectSlot { .. }
                 | PlayerInput::SetHotbarSlot { .. }
                 | PlayerInput::SetFlying { .. } => return false,

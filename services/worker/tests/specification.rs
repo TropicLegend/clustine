@@ -1954,6 +1954,8 @@ fn after_a_restore_what_is_sent_again_is_not_applied_twice() {
             PlayerInput::UseItemOn {
                 position: near.offset(0, -1, 0),
                 face: clustine_sim::api::Face::Top,
+                cursor: [0.5; 3],
+                sneaking: false,
                 sequence: 2,
             },
         ),

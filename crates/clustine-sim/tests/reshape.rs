@@ -305,6 +305,8 @@ fn use_on(position: BlockPos, face: Face, sequence: i32) -> PlayerInput {
     PlayerInput::UseItemOn {
         position,
         face,
+        cursor: [0.5; 3],
+        sneaking: false,
         sequence,
     }
 }
