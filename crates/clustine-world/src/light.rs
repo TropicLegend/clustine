@@ -50,7 +50,7 @@ enum SectionLightRepr {
     Absent,
     Dark,
     Full,
-    Levels(Vec<u8>),
+    Levels(#[serde(with = "crate::bytes")] Vec<u8>),
 }
 
 impl From<SectionLight> for SectionLightRepr {

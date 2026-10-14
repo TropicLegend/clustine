@@ -330,11 +330,12 @@ impl Chunk {
             if section.non_air_count() == 0 {
                 continue;
             }
+            let counts = section.by_state(counts_for);
             for y in (0..SECTION_SIZE).rev() {
                 let above = (index * SECTION_SIZE + y + 1) as u16;
                 for z in 0..SECTION_SIZE {
                     for x in 0..SECTION_SIZE {
-                        let counts = counts_for(section.get(x, y, z));
+                        let counts = counts.at(x, y, z);
                         for (map, heights) in heights.maps().into_iter().enumerate() {
                             let height = &mut heights[z << 4 | x];
                             if *height == 0 && counts[map] {

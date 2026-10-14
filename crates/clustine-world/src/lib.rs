@@ -3,6 +3,7 @@
 //! Nothing here knows about the network protocol or about storage; those convert from
 //! and to these types.
 
+mod bytes;
 mod chunk;
 pub mod generation;
 mod light;

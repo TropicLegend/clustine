@@ -1554,21 +1554,30 @@ again without the cache; what is below holds for the logic and the processors.
 | The store's end with requests under way (`generation_tests.rs`, `what_the_end_with_requests…`: 64 chunks nobody had made asked for, the store dropped at once; five runs) | reported | 0.81 to 0.84 s until the generator's threads have ended, which is the time the 64 take to be made: the end waits for them rather than dropping them. With nothing under way 0.011 to 0.014 s |
 | A merge of two regions whose players both walk outward (`crowds.rs`, `measured_two_regions_whose_players_walk_outward…`: two wanderers at a flying sprint on the land of seed 13579, view 8, walking apart until split and together until merged, every walk 30 chunks further north into land nobody had been in; five rounds) | 1 s at worst | the merges began 20.4 to 20.7 s into walks of 26.7 s, the coordinator took 0.013 to 0.021 s and the region stood still 0.002 to 0.049 s with 934 to 1,190 chunks; the splits 0.005 to 0.011 s and 0.009 to 0.010 s |
 
-**Explained in part**: on the land of a seed the crowd waited about twice what it
-waits on the flat world at the same splits and merges (0.25 s at both on the flat
-world, same test seed), although region 0 stands still 7 to 43 ms in both and the
-worker's ticks are neither slow nor held for commits then. Probes in the edge
-found why: after a merge or a split the surviving region's link is said hello to
-anew, and the region sends the edge a snapshot of every chunk its players see,
-about 1,150, all unchanged. The edge compared each with its own copy on its one
-fan-out task, block by block, which took 226 to 259 ms on land and next to nothing
-on the flat world's uniform sections, and acknowledgements waited behind it.
-Sections stored alike are now compared as stored: the crowd's worst wait at a split
-went from 0.45-0.46 s to 0.37-0.39 s and at a merge from 0.61-0.62 s to 0.41 s
-(three rounds, test seed 1000, land of seed 13579, workers checkpointing every
-2 s). What is left is very likely that the snapshots are made, sent and read at
-all; a hello that says which chunks the edge holds unchanged would spare them, and
-is a change to the resume to be designed and reviewed first.
+**Explained**: on the land of a seed the crowd waited about twice what it waits on
+the flat world at the same splits and merges (0.25 s at both on the flat world, same
+test seed), although region 0 stands still 7 to 43 ms in both and the worker's ticks
+are neither slow nor held for commits then. Probes in the edge found why: after a
+merge or a split the surviving region's link is said hello to anew, and the region
+sends the edge a snapshot of every chunk its players see, about 1,150, all
+unchanged, each of which holds the link until it is answered. Two costs of land
+were behind it, and neither was in the resume:
+
+- The edge compared each snapshot with its own copy on its one fan-out task, block
+  by block, which took 226 to 259 ms on land and next to nothing on the flat
+  world's uniform sections, and acknowledgements waited behind it. Sections stored
+  alike are now compared as stored: the worst wait at a split went from 0.45-0.46 s
+  to 0.37-0.39 s and at a merge from 0.61-0.62 s to 0.41 s.
+- Reading a chunk from a message checked and counted every block of every section
+  once or more, and postcard read their bytes one number at a time: 1,156 chunks of
+  land took 315 ms to read and 36 ms to write in one thread. Counted by palette
+  entry, checked by the highest index, and read as bytes (the same bytes on the
+  wire and in the store), they take 73 and 11 ms. The worst wait is now 0.20 s at a
+  split and 0.25 s at a merge, as on the flat world.
+
+(Three rounds, test seed 1000, land of seed 13579, workers checkpointing every
+2 s.) A hello that tells the region which chunks the edge holds unchanged, which
+would spare the snapshots, is no longer needed for this.
 
 Still to be measured: the same on a disk of 22 ms a sync (without the cache); the
 restore on a world imported from Anvil, once there is an importer.

@@ -64,6 +64,68 @@ fn write(words: &mut [u64], bits: u8, index: usize, value: u16) {
     *word = *word & !(((1 << bits) - 1) << shift) | u64::from(value) << shift;
 }
 
+/// Calls `each` with every word of `words` that holds positions and the number of
+/// positions it holds, `per_word` but in a last word that is not full.
+fn words_with_values(words: &[u64], per_word: usize, mut each: impl FnMut(u64, usize)) {
+    let full = BLOCKS_PER_SECTION / per_word;
+    for word in &words[..full] {
+        each(*word, per_word);
+    }
+    let rest = BLOCKS_PER_SECTION % per_word;
+    if rest > 0 {
+        each(words[full], rest);
+    }
+}
+
+/// How many positions hold each index of `bits` bits, by index.
+///
+/// A section of land holds the same index for long runs, and counting into one table
+/// makes every count wait for the one before it to the same place: four tables, taken
+/// in turn, wait a quarter as often. With the width known when it is compiled, the
+/// loop over a word is unrolled.
+fn histogram(words: &[u64], bits: u8) -> [u16; 1 << WIDEST] {
+    fn of<const BITS: usize>(words: &[u64]) -> [u16; 1 << WIDEST] {
+        let mut tables = [[0u16; 1 << WIDEST]; 4];
+        let mask = (1 << BITS) - 1;
+        words_with_values(words, 64 / BITS, |word, values| {
+            for at in 0..values {
+                tables[at % 4][(word >> (at * BITS) & mask) as usize] += 1;
+            }
+        });
+        std::array::from_fn(|index| tables.iter().map(|table| table[index]).sum())
+    }
+    match bits {
+        4 => of::<4>(words),
+        5 => of::<5>(words),
+        6 => of::<6>(words),
+        7 => of::<7>(words),
+        8 => of::<8>(words),
+        _ => unreachable!("a palette is indexed by four to eight bits, not {bits}"),
+    }
+}
+
+/// The highest index of `bits` bits that a position holds.
+fn highest(words: &[u64], bits: u8) -> u16 {
+    fn of<const BITS: usize>(words: &[u64]) -> u16 {
+        let mask = (1 << BITS) - 1;
+        let mut highest = 0;
+        words_with_values(words, 64 / BITS, |word, values| {
+            for at in 0..values {
+                highest = highest.max(word >> (at * BITS) & mask);
+            }
+        });
+        highest as u16
+    }
+    match bits {
+        4 => of::<4>(words),
+        5 => of::<5>(words),
+        6 => of::<6>(words),
+        7 => of::<7>(words),
+        8 => of::<8>(words),
+        _ => unreachable!("a palette is indexed by four to eight bits, not {bits}"),
+    }
+}
+
 /// Words that hold `values` at `bits` bits each.
 fn packed(bits: u8, values: impl Iterator<Item = u16>) -> Box<[u64]> {
     let mut words = vec![0; words_for(bits)].into_boxed_slice();
@@ -214,7 +276,23 @@ impl Section {
                     if state.has_fluid() { all } else { 0 },
                 )
             }
-            _ => section.states().fold((0, 0), |(non_air, fluids), state| {
+            // A decoded section is counted here, and a region sends an edge a
+            // thousand chunks again after a merge or a split: by palette entry, not by
+            // block.
+            Blocks::Indexed {
+                bits,
+                palette,
+                words,
+            } => histogram(words, *bits).iter().zip(palette).fold(
+                (0, 0),
+                |(non_air, fluids), (count, state)| {
+                    (
+                        non_air + if state.is_air() { 0 } else { *count },
+                        fluids + if state.has_fluid() { *count } else { 0 },
+                    )
+                },
+            ),
+            Blocks::Direct(_) => section.states().fold((0, 0), |(non_air, fluids), state| {
                 (
                     non_air + u16::from(!state.is_air()),
                     fluids + u16::from(state.has_fluid()),
@@ -368,6 +446,21 @@ impl Section {
         old
     }
 
+    /// What `of` says of each position's state, asking it once for each state of the
+    /// palette rather than once for each position.
+    pub(crate) fn by_state<T: Copy, F: Fn(BlockState) -> T>(&self, of: F) -> ByState<'_, T, F> {
+        let known = match &self.blocks {
+            Blocks::Uniform(state) => vec![of(*state)],
+            Blocks::Indexed { palette, .. } => palette.iter().map(|state| of(*state)).collect(),
+            Blocks::Direct(_) => Vec::new(),
+        };
+        ByState {
+            blocks: &self.blocks,
+            known,
+            of,
+        }
+    }
+
     /// All blocks in the order of `y << 8 | z << 4 | x`.
     pub fn states(&self) -> impl Iterator<Item = BlockState> + '_ {
         (0..BLOCKS_PER_SECTION).map(move |index| self.blocks.get(index))
@@ -389,9 +482,10 @@ enum BlocksRepr {
     Indexed {
         bits: u8,
         palette: Vec<BlockState>,
+        #[serde(with = "crate::bytes")]
         words: Vec<u8>,
     },
-    Direct(Vec<u8>),
+    Direct(#[serde(with = "crate::bytes")] Vec<u8>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -467,9 +561,10 @@ impl TryFrom<SectionRepr> for Section {
                     ));
                 }
                 let words = words_of(&words, bits)?;
-                let beyond = (0..BLOCKS_PER_SECTION)
-                    .find(|index| usize::from(read(&words, bits, *index)) >= palette.len());
-                if let Some(index) = beyond {
+                if usize::from(highest(&words, bits)) >= palette.len() {
+                    let index = (0..BLOCKS_PER_SECTION)
+                        .find(|index| usize::from(read(&words, bits, *index)) >= palette.len())
+                        .expect("a position holds the highest index");
                     return Err(format!(
                         "position {index} of a section names a state beyond its palette"
                     ));
@@ -495,6 +590,29 @@ impl TryFrom<SectionRepr> for Section {
             }
         };
         Ok(Self::counted(blocks, biomes))
+    }
+}
+
+/// What a function says of the state at each position of a section; see
+/// [`Section::by_state`].
+pub(crate) struct ByState<'a, T, F> {
+    blocks: &'a Blocks,
+    /// What the function says of each state of the palette, in its order.
+    known: Vec<T>,
+    of: F,
+}
+
+impl<T: Copy, F: Fn(BlockState) -> T> ByState<'_, T, F> {
+    /// What the function says of the state at `x`, `y`, `z`, each in `0..16`.
+    pub(crate) fn at(&self, x: usize, y: usize, z: usize) -> T {
+        let index = index(x, y, z);
+        match self.blocks {
+            Blocks::Uniform(_) => self.known[0],
+            Blocks::Indexed { bits, words, .. } => {
+                self.known[usize::from(read(words, *bits, index))]
+            }
+            Blocks::Direct(words) => (self.of)(BlockState(read(words, DIRECT_BITS, index))),
+        }
     }
 }
 
@@ -567,6 +685,66 @@ mod tests {
             let read = Section::try_from(SectionRepr::from(section.clone())).unwrap();
             holds(&read, &plain);
             assert_eq!(read, section);
+        }
+    }
+
+    /// A section of every width read from its serialised form counts its blocks as a
+    /// recount does, and refuses an index beyond its palette at the last position too,
+    /// which at five, six and seven bits is in a word that is not full. What a
+    /// function says of each position is what it says of the state there.
+    #[test]
+    fn a_section_of_every_width_is_read_with_its_counts_and_checked_to_its_last_position() {
+        for bits in NARROWEST..=WIDEST {
+            // One state more than the width below holds: air, water, lava and stone
+            // among them, in runs as on land.
+            let kinds = (1usize << (bits - 1)) + 1;
+            let mut numbers = numbers(u64::from(bits));
+            let mut plain = Box::new([blocks::AIR; BLOCKS_PER_SECTION]);
+            let mut at = 0;
+            while at < BLOCKS_PER_SECTION {
+                let state = BlockState((numbers.next().unwrap() % kinds * 7) as u16);
+                let run = 1 + numbers.next().unwrap() % 40;
+                for index in at..(at + run).min(BLOCKS_PER_SECTION) {
+                    plain[index] = state;
+                }
+                at += run;
+            }
+            for (index, state) in (0..kinds)
+                .map(|kind| BlockState((kind * 7) as u16))
+                .enumerate()
+            {
+                plain[index] = state;
+            }
+            let section = Section::from_states(plain.clone(), PLAINS);
+            let repr = SectionRepr::from(section.clone());
+            let BlocksRepr::Indexed { bits: width, .. } = repr.blocks else {
+                unreachable!("{kinds} states are a palette");
+            };
+            assert_eq!(width, bits);
+            let read = Section::try_from(repr).unwrap();
+            holds(&read, &plain);
+
+            let fluid = read.by_state(|state| state.has_fluid());
+            for index in 0..BLOCKS_PER_SECTION {
+                let (x, y, z) = (index & 15, index >> 8, index >> 4 & 15);
+                assert_eq!(fluid.at(x, y, z), plain[index].has_fluid());
+            }
+
+            // The last position names one state beyond the palette.
+            let mut repr = SectionRepr::from(section.clone());
+            let BlocksRepr::Indexed { palette, words, .. } = &mut repr.blocks else {
+                unreachable!("{kinds} states are a palette");
+            };
+            let mut packed = words_of(words, bits).unwrap();
+            write(
+                &mut packed,
+                bits,
+                BLOCKS_PER_SECTION - 1,
+                palette.len() as u16,
+            );
+            *words = bytes_of(&packed);
+            let refused = Section::try_from(repr).err().unwrap();
+            assert!(refused.contains("position 4095"), "{refused}");
         }
     }
 

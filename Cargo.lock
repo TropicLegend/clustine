@@ -440,6 +440,7 @@ name = "clustine-world"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "postcard",
  "serde",
  "uuid",
 ]

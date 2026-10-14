@@ -1320,8 +1320,11 @@ and 0.57 s without it); players stand still 0.4 to 1.1 s after their dead worker
 region is given to another, about 6 s from the kill with the lease of 5 s; two
 regions whose players both walk into new land are merged in 0.02 s; the first step
 beyond stored land after a start takes 0.7 s to its first chunk, later steps 0.02 s.
-On the land of a seed the crowd waits about twice what it waits on the flat world,
-which is not explained yet.
+On the land of a seed the crowd waited about twice what it waits on the flat world:
+after a split or a merge the edge reads and compares about 1,150 unchanged
+snapshots, which on land was checked block by block. Compared and read by palette
+instead, the crowd on land waits at most 0.20 s at a split and 0.25 s at a merge, as
+on the flat world.
 
 **What to try with a real client: the land beside the game's.** With `--release`,
 and a directory of its own for the world:

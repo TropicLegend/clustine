@@ -12,3 +12,6 @@ publish.workspace = true
 clustine-data.workspace = true
 serde.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+postcard.workspace = true
