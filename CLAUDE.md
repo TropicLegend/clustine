@@ -67,8 +67,14 @@ The tests that start clusters of processes run several at a time
 - Verify a commit as it will be pushed: in a clean checkout (a detached worktree with its
   own `CARGO_TARGET_DIR`), not in a tree with other work in progress.
 - **The disk Clustine runs on is network storage**: about 22 ms for a synced write on
-  the owner's nodes (2026-10-10), where a local disk takes well under one. The server
-  has to do well on that. Run the checks with the tests' worlds in memory
+  the owner's nodes (2026-10-10), where a local disk takes well under one. Since
+  2026-10-14 the owner's machine has a cache in local memory in front of it, and a
+  synced write returns in about 0.2 ms (`docs/groundwork/disk-syncs-bench.py`). The
+  cache writes back later and is not safe: a synced write lives only in that
+  machine's memory until then, so it survives a process's crash but not the
+  machine's, and another machine reading the storage does not see it. The server has
+  to do well without that cache too, and a take-over on another machine cannot count
+  on a sync having reached the storage. Run the checks with the tests' worlds in memory
   (`TMPDIR=/dev/shm/...`), so that they judge the logic and not the disk; measure
   pauses (a merge, a split, a move, a take-over, a crowd) on the real disk, and say
   which of the two a number is from.

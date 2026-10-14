@@ -1538,10 +1538,12 @@ section 9 (27 tests), the new text of T10 with S1 to S8 (32 tests) and item 11
 ## Measured (W5m, 2026-10-14, in part)
 
 On the owner's machine, twelve processors, optimised builds. **The disk is not the
-one the limits were set for**: after a reboot that day this machine's disk syncs a
-file in 0.2 ms, where it took 22 ms before (`docs/groundwork/disk-syncs-bench.py`).
-What waits for syncs is to be measured again on such a disk; what is below holds
-for the logic and the processors.
+one the limits were set for**: that day the owner put a cache in local memory in
+front of the network storage, one that writes back later and is not safe, and a
+file now syncs in 0.2 ms, where it took 22 ms
+before (`docs/groundwork/disk-syncs-bench.py`). What waits for syncs is to be
+measured again without the cache; what is below holds for the logic and the
+processors.
 
 | Measured | Limit | Found |
 |---|---|---|
@@ -1558,7 +1560,7 @@ worked out: the edge's light threads did 60 s of work where they did 22 s, and
 compressing chunks took 22 s where it took 2. Nothing logs a region's tick time, so
 where the half second goes is not seen.
 
-Still to be measured: the same on a disk of 22 ms a sync; a restore after a kill
+Still to be measured: the same on a disk of 22 ms a sync (without the cache); a restore after a kill
 with nothing cached, on the imported world (7 s); the first chunk walked beyond the
 rim after a start; the store's end with requests under way (test 7j); the
 two-regions-walking-outward case.

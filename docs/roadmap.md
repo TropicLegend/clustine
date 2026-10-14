@@ -1003,7 +1003,11 @@ review first:
   whoever runs the cluster provides (recommended: its own, built last); a shared
   secret between services; the test cluster growing to three nodes; and whether a
   group that walks away stays on the worker it was split off on while the workers
-  are nearly even, which would spare it the second pause.
+  are nearly even, which would spare it the second pause. Since 2026-10-14 the owner's
+  storage has an unsafe cache in local memory that writes back later, so a sync
+  says nothing about surviving the loss of the machine it ran on; that leaves a
+  store surviving a node to a standby store of Clustine's own, which then has to
+  hold a write before it is called safe.
 - **Terrain generation**, reusing what SteelMC or Pumpkin have, which ADR-0002 chose
   the AGPL for. **A plan is proposed and waits for the owner:**
   [groundwork/terrain-plan.md](groundwork/terrain-plan.md). It rests on the groundwork
@@ -1296,8 +1300,9 @@ the preview's chunks unchanged. Where this departs from the record is in the rec
 written it.
 
 Measured on 2026-10-14 in an optimised build on this machine (12 processors, the
-world on its own disk, which since a reboot that day syncs a file in 0.2 ms where it
-took 22 ms; a join waits for the generator and hardly for the disk), three runs of
+world on network storage, which since that day has a cache in local memory in front
+of it (writing back later, not safe) and syncs a file in 0.2 ms where it took 22 ms;
+a join waits for the generator and hardly for the disk), three runs of
 `cargo test --release -p clustine --test terrain -- --ignored --nocapture`: **a first
 join has its own chunk after a quarter of a second and all 329 chunks of a view of 8
 after 1.0 to 1.06 s**, where it took 6.3 s; a second player beside the first has them
