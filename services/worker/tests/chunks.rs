@@ -352,7 +352,12 @@ impl Other {
     /// Loads `position`, which the region the test plays has to hold.
     fn load(&self, position: ChunkPos) -> Chunk {
         self.handle.request(StoreRequest::Load { position });
-        match self.reply() {
+        // A chunk that is not stored is said to be being made before it comes.
+        let mut reply = self.reply();
+        if reply == (StoreReply::Generating { position }) {
+            reply = self.reply();
+        }
+        match reply {
             StoreReply::Loaded {
                 position: loaded,
                 chunk,
@@ -5172,6 +5177,10 @@ impl Flood {
     /// the thread for chunks is still busy with what was asked before anything else.
     fn running(&mut self) -> bool {
         while let Some(reply) = self.western.handle.try_reply() {
+            // Word that a chunk is being made is no answer: its chunk follows.
+            if matches!(reply, StoreReply::Generating { .. }) {
+                continue;
+            }
             assert!(matches!(reply, StoreReply::Loaded { .. }), "{reply:?}");
             self.answered += 1;
         }

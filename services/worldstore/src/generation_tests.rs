@@ -7,18 +7,6 @@
 //! chunk can be "being generated" while the test looks at what the thread for chunks
 //! does meanwhile. It remembers nothing between requests, and the test holds the only
 //! handle to it besides the store's.
-//!
-//! What these need that is not there yet:
-//!
-//! - `Store::close` (S7): `close_waits_for_a_chunk_being_generated_and_then_writes_it`,
-//!   `close_writes_what_is_pending_and_flush_does_not`,
-//!   `close_writes_what_is_pending_in_a_world_on_disk`, and the S8 tests through
-//!   `marked_world`. The module does not compile without it.
-//! - `ChunkGenerator::settings` returning `GeneratorSettings`: [`Settings`] and
-//!   [`settings`] change, one line each. Until then the version is not part of the
-//!   settings a store compares, which only the S8 tests rest on.
-//! - Everything else needs the thread for chunks of ADR-0021, section 7: `request`,
-//!   `Generating`, `Withdrawn`, notes and their limit, and what a failed sync keeps.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -68,15 +56,14 @@ const VERSION: u16 = 1;
 /// not. Nothing here waits for time to pass: this only bounds a wait for a state.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-// The generator's settings. ADR-0021, section 4, makes them `GeneratorSettings`; then
-// these two lines become `type Settings = GeneratorSettings;` and
-// `GeneratorSettings { identity: IDENTITY.to_owned(), version }`.
-type Settings = String;
+// The generator's settings: one identity for both versions of S8.
+type Settings = clustine_world::generation::GeneratorSettings;
 
 fn settings(version: u16) -> Settings {
-    // One string today, which has to be the same for both versions of S8.
-    let _ = version;
-    IDENTITY.to_owned()
+    Settings {
+        identity: IDENTITY.to_owned(),
+        version,
+    }
 }
 
 const IDENTITY: &str = "a generator that a test holds";
@@ -651,7 +638,8 @@ fn a_lost_handles_load_being_generated_is_dropped_unanswered_and_not_noted() {
     control.wait_dropped(A, 1);
     control.let_go(A);
     flushed(&new);
-    assert!(matches!(x.replies.try_recv(), Err(TryRecvError::Empty)));
+    // Nothing more is answered; the store may have closed the lost handle's way back.
+    assert!(x.replies.try_recv().is_err());
     assert!(!written(&disk, A));
 }
 
@@ -831,7 +819,8 @@ fn a_restore_over_a_request_under_way_asks_the_generator_again() {
     assert_eq!(chunk.generated(), 0);
     flushed(&new);
     assert!(x.is_lost());
-    assert!(matches!(x.replies.try_recv(), Err(TryRecvError::Empty)));
+    // Nothing more is answered; the store may have closed the lost handle's way back.
+    assert!(x.replies.try_recv().is_err());
 }
 
 /// T10, item 1i, and S6: a return of a chunk whose load is being generated withdraws

@@ -392,7 +392,12 @@ impl Other {
     /// Loads `position`, which the region the test plays has to hold.
     fn load(&self, position: ChunkPos) -> Chunk {
         self.handle.request(StoreRequest::Load { position });
-        match self.reply() {
+        // A chunk that is not stored is said to be being made before it comes.
+        let mut reply = self.reply();
+        if reply == (StoreReply::Generating { position }) {
+            reply = self.reply();
+        }
+        match reply {
             StoreReply::Loaded {
                 position: loaded,
                 chunk,
@@ -2518,11 +2523,12 @@ fn a_welcome_says_how_far_the_region_had_applied_when_the_next_message_waits_beh
         })
         .expect("a progress comes with the tick of every hello");
     assert_eq!(first, had, "{}", brief(log));
-    // The step waited for the chunks of the hello, as ever.
+    // The step waited for the chunk of the hello that the region had been handed. The
+    // other was never handed to anyone, so the store is making it, and a chunk being
+    // made holds no link (ADR-0021, section 7, "The hold of a link").
     let (stepped, _) = moved(log, one, 12.5).expect("the step is applied");
-    for chunk in [HOME, BACK] {
-        assert!(answer_to(log, chunk, 0).expect("answered").0 < stepped);
-    }
+    assert!(answer_to(log, HOME, 0).expect("answered").0 < stepped);
+    assert!(answer_to(log, BACK, 0).is_some(), "{}", brief(log));
 }
 
 /// R29, second half, where the next message came too late: it was sent on the edge's

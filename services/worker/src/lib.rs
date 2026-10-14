@@ -4132,6 +4132,23 @@ mod tests {
         Store::memory(Arc::new(FlatGenerator::classic()))
     }
 
+    /// Has `store` hand `chunks` to the owner of its one region, opened as [`owner`].
+    fn handed_out(store: &Store, chunks: &[ChunkPos]) {
+        let (handle, _) = store.open_region(owner()).unwrap();
+        for &position in chunks {
+            handle.request(StoreRequest::Load { position });
+        }
+        let mut waiting = chunks.len();
+        while waiting > 0 {
+            match handle.try_reply() {
+                Some(StoreReply::Loaded { .. }) => waiting -= 1,
+                Some(StoreReply::Generating { .. } | StoreReply::Dead { .. }) => {}
+                Some(other) => panic!("expected a chunk, got {other:?}"),
+                None => std::thread::yield_now(),
+            }
+        }
+    }
+
     /// A store of a flat world that is one region, kept in `directory`.
     fn on_disk(directory: &std::path::Path) -> Store {
         Store::local(directory, Arc::new(FlatGenerator::classic())).unwrap()
@@ -4945,16 +4962,18 @@ mod tests {
         step(&mut runner);
         runner.store.flush();
         assert!(log_length() > 0, "the change was not logged");
-        assert!(
-            !stored.exists(),
-            "the chunk was saved before the checkpoint"
-        );
+        // The chunk as generated may be stored already, since the store writes what
+        // it handed out with the next sync of any region (ADR-0021, S2); the dug one
+        // is not.
+        let before = std::fs::read(&stored).ok();
 
         step_until(&mut runner, |runner| {
             runner.region().tick_number() % 50 == 0
         });
         runner.store.flush();
-        assert!(stored.exists(), "the checkpoint did not save the chunk");
+        let after = std::fs::read(&stored).ok();
+        assert!(after.is_some(), "the checkpoint did not save the chunk");
+        assert_ne!(after, before, "the checkpoint did not save the change");
         assert_eq!(log_length(), 0);
     }
 
@@ -6429,7 +6448,20 @@ mod tests {
     async fn what_follows_a_hello_with_chunks_waits_for_their_snapshots() {
         let (edge_end, worker_end) = link::in_process(256);
         let mut edge = TestEdge::silent(edge_end, EdgeId::from_name("holding"), 1);
-        let mut runner = runner(worker_end);
+        // The chunk was handed out before, as what a hello names was shown to its
+        // players: a chunk that is still being made holds no link (ADR-0021, section 7).
+        let store = memory();
+        handed_out(&store, &[ORIGIN]);
+        let (handle, restored) = store
+            .open_region(RegionHello {
+                region: owner().region,
+                epoch: owner().epoch + 1,
+            })
+            .unwrap();
+        let mut runner = RegionRunner::restore(config(0), handle, restored)
+            .unwrap()
+            .with_id(owner().region);
+        runner.links().attach(worker_end);
         // A player arrives and digs in the tick they arrive in. One who joins is placed
         // only when the store has answered, a tick or more after the join is taken.
         let entity = EntityIds::block(3).unwrap().first;

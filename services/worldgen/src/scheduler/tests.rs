@@ -663,7 +663,11 @@ fn a_lit_chunk_is_its_finished_chunk_lit_beside_its_neighbours() {
     finished.set_light(light);
     finished.mark_generated(3, false);
     assert_eq!(lit, finished);
-    assert_eq!(scheduler.settings(), "toy;seed 7 version 3");
+    let settings = scheduler.settings();
+    assert_eq!(
+        (settings.identity.as_str(), settings.version),
+        ("toy;seed 7", 3)
+    );
 }
 
 /// Section 2's table: one finished chunk from nothing makes 94 runs, 289 terrain and

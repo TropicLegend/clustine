@@ -79,6 +79,11 @@ impl MakerState {
     /// Takes an answer of the real store and puts what the runner is to be told of it
     /// where it belongs.
     fn take(&mut self, reply: StoreReply) {
+        // The double says itself which chunks are being made; the store behind it
+        // says so of every chunk it has not stored, which here would be all of them.
+        if matches!(reply, StoreReply::Generating { .. }) {
+            return;
+        }
         let StoreReply::Loaded { position, .. } = &reply else {
             self.ready.push_back(reply);
             return;

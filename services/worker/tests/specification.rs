@@ -18,7 +18,8 @@ use clustine_data::{BlockState, blocks, items};
 use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
-    EdgeMessage, EdgeToWorker, Presence, RegionHello, Restored, StoreReply, Welcome, WorkerToEdge,
+    EdgeMessage, EdgeToWorker, Presence, RegionHello, Restored, StoreReply, StoreRequest, Welcome,
+    WorkerToEdge,
 };
 use clustine_sim::api::{
     EntityKind, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
@@ -161,6 +162,29 @@ impl World {
                 epoch: self.epoch,
             })
             .expect("a higher epoch opens the region")
+    }
+
+    /// Has the store hand `chunks` to an owner of the region, as it hands out what a
+    /// player is shown. A chunk that was never handed out is being made when a region
+    /// asks for it, and holds no link (ADR-0021, section 7); one that was, does.
+    fn hand_out(&mut self, chunks: &[ChunkPos]) {
+        let (handle, _) = self.open_raw();
+        for &position in chunks {
+            handle.request(StoreRequest::Load { position });
+        }
+        let mut waiting = chunks.len();
+        for _ in 0..30_000 {
+            match handle.try_reply() {
+                Some(StoreReply::Loaded { .. }) => waiting -= 1,
+                Some(StoreReply::Generating { .. } | StoreReply::Dead { .. }) => {}
+                Some(other) => panic!("expected a chunk, got {other:?}"),
+                None => thread::sleep(Duration::from_millis(1)),
+            }
+            if waiting == 0 {
+                return;
+            }
+        }
+        panic!("the store did not hand out {chunks:?}");
     }
 
     /// A runner for the region as the store has it now.
@@ -2058,9 +2082,11 @@ fn a_resume_holds_what_follows_until_the_hellos_chunks_are_out() {
 }
 
 fn a_resume_holds_what_follows_until_the_hellos_chunks_are_out_in(mut world: World) {
+    let chunks = vec![HOME, ChunkPos::new(-1, 0), ChunkPos::new(-2, 0)];
+    // What a hello names is what its players were shown, which the store has handed out.
+    world.hand_out(&chunks);
     let mut runner = restored_with_a_player(&mut world);
     let near = BlockPos::new(12, GROUND, 9);
-    let chunks = vec![HOME, ChunkPos::new(-1, 0), ChunkPos::new(-2, 0)];
 
     // The dig is there together with the hello, long before any chunk is. Applied to a
     // chunk that is not loaded it would change nothing.
