@@ -171,9 +171,11 @@ struct ReplicaChunk {
     /// latest: a result was withheld, or a job failed. The next result that goes to
     /// them names every section.
     owed: bool,
-    /// A chunk has come or been replaced beside this one since those who have it
-    /// were last sent its light. A client cannot know of that by itself, so the next
-    /// result goes to everyone who has the chunk, wherever in their view it is.
+    /// The next result goes to everyone who has the chunk, wherever in their view it
+    /// is, because one of them cannot have its light by themselves: a chunk has come
+    /// or been replaced beside this one since they were sent its light, or someone
+    /// was sent the chunk with light older than its blocks, whose client never saw
+    /// the block change and so never lit it.
     reshaped: bool,
     /// The chunk's packet. It is encoded when first needed, so that many players can
     /// be sent the same bytes, and discarded when the chunk changes and when nobody
@@ -2734,6 +2736,8 @@ impl Fanout {
                 entry.lit = moment;
             } else {
                 entry.reshaped = true;
+                // Its light may not be sent as it is, and so not a packet made of it.
+                entry.packet = None;
                 self.marked.insert(beside);
             }
         }
@@ -2879,7 +2883,10 @@ impl Fanout {
             // Unless a chunk came beside it under the job as well: the next job's
             // result goes to everyone too.
             entry.reshaped = entry.shaped > basis;
-        } else if !holders.is_empty() {
+        } else if !holders.is_empty() || entry.kind == LightKind::Fallback {
+            // Also after a job that failed while nobody had the chunk: whoever is
+            // sent it with the light of its heights is to have every section of the
+            // next.
             entry.owed = true;
         }
         let waiters: Vec<PlayerId> = if entry.sendable() {
@@ -3020,6 +3027,13 @@ impl Fanout {
             let packet = chunk.packet(*position);
             packets.push(packet.expect("a pending chunk has come"));
             chunk.waits_no_more(player);
+            // Sent with light that is older than its blocks: this client was not told
+            // of the block that changed, and so has not lit it. The light of the job
+            // that is owed to the entry goes to them wherever the chunk is in their
+            // view.
+            if !chunk.current() {
+                chunk.reshaped = true;
+            }
         }
         packets.push(encoded(&ChunkBatchFinished {
             batch_size: batch.len() as i32,

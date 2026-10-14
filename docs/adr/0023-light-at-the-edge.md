@@ -1910,9 +1910,9 @@ section 12 has them, each green:
   light of the chunk they have, wherever in their view it is** (`reshaped`). No
   client knows of such a neighbour by itself: a lamp in a chunk that comes later
   lights the chunk beside it. After a block change the update goes only to a holder
-  who lacks a chunk beside the one it is for. A result withheld, or a job that
-  failed, sets `owed` if anyone was to be sent it, and the next job's update then
-  names every section.
+  who lacks a chunk beside the one it is for. A result withheld sets `owed` if
+  anyone was to be sent it, a job that failed sets it always, and the next job's
+  update then names every section.
 - `script.rs` came after L5 and not in L2t: the scripted regions, a client that keeps
   blocks and the light its packets add up to, a model of the replica, and an end of
   `Lighting` that holds jobs for the test to answer.
@@ -1923,3 +1923,41 @@ it), and a player who has the changed chunk and all eight is at the rim for each
 those eight, so they are sent eight small updates for them and none for the chunk
 itself.
 
+
+**Found by the tests written from this record (L6, 2026-10-14).** Forty-four tests
+of the orders of events (`services/edge/src/light_orders.rs`), by someone who had
+this record and the scripted regions and clients and had not read the fan-out. Three
+of them failed for what the code did, and all three are mended:
+
+- *A player was left with a block unlit.* A waiter may be sent a chunk whose light is
+  older than its blocks (section 6: light of the right shape is sendable). Their
+  client was never told of the block that changed, so it has not lit it by itself,
+  and the rule for rims then kept the job's result from them unless they lacked a
+  chunk beside it. A torch placed a moment before they came stayed dark for them
+  until something else changed there. **A chunk sent while it is not current now
+  sets `reshaped`**, so that the result that is on its way goes to everyone who has
+  the chunk. This is the one a player would have seen.
+- *A packet outlived the light it was made of.* When a chunk came beside an entry
+  whose light then no longer held, the entry was marked and its packet kept; the
+  check at the end of a turn has "a packet only if sendable". The packet is dropped
+  there.
+- *After a job failed while nobody had the chunk, the next update named only the
+  sections that differ from the light of the heights*, which whoever was sent the
+  chunk in between has, but which was never the light the difference is to be taken
+  from. `owed` is set after every failed job.
+
+**What the record left unclear to its reader**, each settled here as the code has it:
+
+- Section 6 and the tests of section "Tests" still say an update goes to every
+  holder; the comparison above changed that. Where the two differ, "Found while
+  building" holds.
+- *"Lacks a chunk beside it" is judged when the result is taken*, not when the block
+  changed: a neighbour that came in between makes the holder one who has all eight,
+  and its coming has set `reshaped` in any case.
+- *`owed` is of the entry, not of a player.* Someone sent the chunk whole after it
+  was set is sent every section once more with the next result. That costs bytes
+  and nothing else.
+- *`beside` of a changed chunk* is written only by a job's result. Arrive does not
+  touch the versions of an entry whose light does not hold.
+- The scripted model's light is of the chunks the replica has; a neighbour that
+  left is not in it, as it is not in a job.

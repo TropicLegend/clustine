@@ -1368,8 +1368,6 @@ async fn a_block_change_under_a_job_sends_the_waiter_the_chunk_and_then_the_next
 /// with light older than its blocks" beside the holder at the rim. "Found while
 /// building" names only the holder at the rim.
 #[tokio::test]
-#[ignore = "finding: a waiter with every chunk around it that is sent a chunk whose block \
-            changed under its job is never sent the light of that block"]
 async fn a_waiter_inside_its_view_sent_light_older_than_the_blocks_is_sent_the_next_light() {
     let mut play = Play::start().await;
     let client = play.join(1).await;
@@ -1912,8 +1910,6 @@ async fn a_failed_job_for_a_chunk_without_light_sends_it_lit_by_heights_until_a_
 /// light is right either way (the test above), since it holds exactly the light the
 /// update differs from.
 #[tokio::test]
-#[ignore = "finding: after a failed job for a chunk nobody had yet, the next job's update \
-            names the differing sections, where test 4 and section 5 say every section"]
 async fn the_job_after_a_failed_one_for_a_chunk_without_light_names_every_section() {
     let (play, client, light) = failed_without_light_and_then_a_neighbour().await;
     let lights = play.lights(client, HOME);
@@ -2489,9 +2485,6 @@ async fn a_batch_confirmed_while_all_that_is_pending_waits_for_light_is_followed
 /// chunk with the light of the next job (section 5: the result's light is put in and
 /// the packet dropped). Without the walk this order passes.
 #[tokio::test]
-#[ignore = "finding: the edge's own check ends its task (\"keeps a packet of light that may \
-            not be sent\") when a view moves while a chunk a slow client waits for has \
-            become unsendable"]
 async fn a_chunk_that_comes_beside_one_a_slow_client_still_waits_for_leaves_the_edge_running() {
     let mut play = Play::start().await;
     let (quick, slow) = (play.join(1).await, play.join(2).await);
@@ -2794,9 +2787,6 @@ async fn random_orders_of_events_keep_the_standing_rule() {
 
 /// The same with clients that stop confirming their batches for a while.
 #[tokio::test]
-#[ignore = "finding: the edge's own check ends its task (\"keeps a packet of light that may \
-            not be sent\") when a view moves while a chunk a slow client waits for has \
-            become unsendable"]
 async fn random_orders_of_events_with_slow_clients_keep_the_standing_rule() {
     for seed in 1..=16 {
         random_orders(seed, STEPS_A_SEED, Slow::Sometimes).await;
