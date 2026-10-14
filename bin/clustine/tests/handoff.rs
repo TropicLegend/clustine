@@ -239,13 +239,12 @@ async fn blocks_across_the_boundary_are_changed_like_any_other() {
         sees_block(&mut bystander, (16, -59, 1), GLASS).await;
 
         // What does not work on one's own side does not work across either, and is
-        // acknowledged all the same: breaking air, placing against air, placing where
-        // there is a block already, and placing where someone stands.
+        // acknowledged all the same: breaking air, placing where there is a block
+        // already, and placing where someone stands.
         bystander.walk_to(17.5, 4.5, 0.5).await.unwrap();
         sees_at(&mut builder, "Bystander", 17.5, 4.5).await;
         for sequence in [
             builder.dig(16, -60, 3).await.unwrap(),
-            builder.use_item_on(16, -60, 3, face::TOP).await.unwrap(),
             builder.use_item_on(16, -62, 3, face::TOP).await.unwrap(),
             builder.use_item_on(17, -61, 4, face::TOP).await.unwrap(),
         ] {
@@ -262,6 +261,11 @@ async fn blocks_across_the_boundary_are_changed_like_any_other() {
             assert_eq!(bot.block_at(17, -60, 4).unwrap(), AIR);
             assert_eq!(bot.block_at(16, -60, 6).unwrap(), AIR);
         }
+        // A click on air places into that air, as vanilla does: air can be replaced, so
+        // the clicked block itself is where the block goes, here across the line.
+        let sequence = builder.use_item_on(16, -60, 3, face::TOP).await.unwrap();
+        settled(&mut builder, sequence, (16, -60, 3), GLASS).await;
+        sees_block(&mut bystander, (16, -60, 3), GLASS).await;
 
         // The same from the other side: the builder crosses over and works westwards.
         builder.walk_to(17.5, 9.5, 0.5).await.unwrap();
