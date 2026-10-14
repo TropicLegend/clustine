@@ -972,7 +972,7 @@ impl Region {
         // what they held.
         let lowest = f64::from(self.config.lowest_y);
         let kept = (answer.place.as_ref()).map(|place| (place, place.pose.position.y < lowest));
-        let at_spawn = Pose::at(self.config.spawn);
+        let at_spawn = self.spawn_pose();
         let (pose, flying, hotbar, selected_slot) = match kept {
             None => (at_spawn, false, self.config.starting_hotbar, 0),
             Some((place, true)) => (at_spawn, false, place.hotbar, place.selected_slot),
@@ -1017,6 +1017,36 @@ impl Region {
             attempt: Some(attempt),
         };
         self.enter(id, player, attempt, output);
+    }
+
+    /// Where a player who enters without a place stands: on the spawn column as the
+    /// home chunk has it now, on top of what the highest block that stops movement or
+    /// holds a fluid reaches (a fence's post, a bottom slab's half), and at the
+    /// configured spawn if the region has not loaded the home chunk or the column is
+    /// empty. See `docs/groundwork/w6-plan.md`, section 2.
+    fn spawn_pose(&self) -> Pose {
+        let spawn = self.config.spawn;
+        let mut pose = Pose::at(spawn);
+        let Some(chunk) = self.chunks.get(&self.land.home) else {
+            return pose;
+        };
+        let (x, z) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
+        let (x, z) = ((x & 15) as usize, (z & 15) as usize);
+        let height = chunk.heights().motion_blocking[z << 4 | x];
+        if height == 0 {
+            return pose;
+        }
+        let top = chunk.min_y() + i32::from(height);
+        let reach = chunk.get(x, top - 1, z).and_then(|state| {
+            let boxes = state.props().collision_shape().boxes();
+            boxes.map(|shape_box| shape_box[4]).reduce(f64::max)
+        });
+        pose.position.y = match reach {
+            Some(reach) => f64::from(top - 1) + reach,
+            // A fluid, which nothing collides with: on its surface.
+            None => f64::from(top),
+        };
+        pose
     }
 
     /// What the tick says to the world store of stays: see [`TickOutput::stays`].
@@ -1440,27 +1470,35 @@ impl Region {
             *count = count.saturating_sub(1);
             if tickets.is_empty() {
                 self.tickets.remove(position);
-                self.chunks.remove(position);
-                self.requested.remove(position);
+                // The home chunk stays loaded without a ticket: a new player is put
+                // on its spawn column as it is now.
+                if *position != self.land.home {
+                    self.chunks.remove(position);
+                    self.requested.remove(position);
+                }
             }
         }
+        let home = self.land.home;
         for (position, chunk) in &inputs.chunks_loaded {
             // A chunk can arrive after everyone stopped needing it.
             if self.requested.remove(position)
-                && self.tickets.contains_key(position)
+                && (self.tickets.contains_key(position) || *position == home)
                 && self.land.holds(*position)
             {
                 self.chunks.insert(*position, chunk.clone());
             }
         }
         // A chunk is loaded only when held: a ticket on any other loads nothing, and
-        // when the chunk is granted it is asked of storage in that same tick.
-        for position in self.tickets.keys() {
-            if self.land.holds(*position)
-                && !self.chunks.contains_key(position)
-                && self.requested.insert(*position)
+        // when the chunk is granted it is asked of storage in that same tick. The home
+        // chunk is loaded whenever it is held, ticket or none (see
+        // `docs/groundwork/w6-plan.md`, section 2).
+        let wanted: BTreeSet<ChunkPos> = self.tickets.keys().copied().chain([home]).collect();
+        for position in wanted {
+            if self.land.holds(position)
+                && !self.chunks.contains_key(&position)
+                && self.requested.insert(position)
             {
-                output.chunk_requests.push(*position);
+                output.chunk_requests.push(position);
             }
         }
     }
@@ -1996,10 +2034,14 @@ mod tests {
                 "tick {tick}: {position:?} is believed another's and not wanted"
             );
         }
-        // A loaded chunk is held and has a ticket, and so has one asked of storage.
+        // A loaded chunk is held and has a ticket or is the home chunk, and so has one
+        // asked of storage.
         for position in region.chunks.keys().chain(&region.requested) {
             assert_eq!(region.knowledge(*position), Knowledge::Held, "tick {tick}");
-            assert!(region.tickets.contains_key(position), "tick {tick}");
+            assert!(
+                region.tickets.contains_key(position) || *position == region.land.home,
+                "tick {tick}"
+            );
         }
         assert!(region.tickets.values().all(|tickets| !tickets.is_empty()));
         // What was given back nothing uses, and it is not loaded; what was claimed is
@@ -2635,8 +2677,10 @@ mod tests {
         let mut region = region();
         let position = ChunkPos::new(2, -3);
 
+        // The region holds the home chunk, which it asks for whether or not it has a
+        // ticket.
         let output = region.tick(&tickets(vec![position], vec![]));
-        assert_eq!(output.chunk_requests, [position]);
+        assert_eq!(output.chunk_requests, [ChunkPos::new(0, 0), position]);
         assert!(region.chunk(position).is_none());
 
         // Not requested again while the answer is outstanding.
@@ -2652,7 +2696,8 @@ mod tests {
     #[test]
     fn a_chunk_stays_loaded_until_its_last_ticket_is_released() {
         let mut region = region();
-        let position = ChunkPos::new(0, 0);
+        // Not the home chunk, which stays loaded without a ticket.
+        let position = ChunkPos::new(1, 0);
         region.tick(&tickets(vec![position, position], vec![]));
         region.tick(&loaded(position));
 
@@ -2677,7 +2722,8 @@ mod tests {
     #[test]
     fn a_chunk_that_arrives_after_its_ticket_was_released_is_dropped() {
         let mut region = region();
-        let position = ChunkPos::new(0, 0);
+        // Not the home chunk, which is kept without a ticket.
+        let position = ChunkPos::new(1, 0);
         region.tick(&tickets(vec![position], vec![]));
         region.tick(&tickets(vec![], vec![position]));
         region.tick(&loaded(position));
@@ -2819,6 +2865,79 @@ mod tests {
             }
         }
         chunk
+    }
+
+    /// The stone floor with `column` from y = -61 up at the spawn column, (0, 0).
+    fn floor_with(column: &[BlockState]) -> Chunk {
+        let mut home = floor();
+        for (above, state) in column.iter().enumerate() {
+            home.set(0, -61 + above as i32, 0, *state);
+        }
+        home
+    }
+
+    /// The y of the feet of a new player who enters in a region that has loaded `home`
+    /// as its home chunk.
+    fn entering_on(home: Chunk) -> f64 {
+        let mut region = region();
+        // The region holds the home chunk and asks for it with no ticket on it.
+        let output = region.tick(&TickInputs::default());
+        assert_eq!(output.chunk_requests, [ChunkPos::new(0, 0)]);
+        region.tick(&TickInputs {
+            chunks_loaded: vec![(ChunkPos::new(0, 0), home)],
+            ..changes(vec![join(1)])
+        });
+        let output = enter(&mut region);
+        let [(_, PlayerEvent::Spawned { pose, .. })] = &told(&output)[..] else {
+            panic!("one player spawned: {:?}", told(&output));
+        };
+        assert_eq!((pose.position.x, pose.position.z), (SPAWN.x, SPAWN.z));
+        pose.position.y
+    }
+
+    /// A new player stands on what is at the spawn column as the home chunk has it
+    /// when they enter, not at the configured height: on a tower someone built, in a
+    /// hole someone dug, on a fence's post, on a bottom slab's half, on water
+    /// (docs/groundwork/w6-plan.md, section 2).
+    #[test]
+    fn a_new_player_stands_on_what_is_at_the_spawn_column_now() {
+        let state = |name| BlockState::parse(name).unwrap();
+        let slab = state("minecraft:stone_slab[type=bottom]");
+        let fence = state("minecraft:oak_fence");
+        let carpet = state("minecraft:white_carpet");
+        // The floor: the stone at -61, which reaches to -60, the configured height.
+        assert_eq!(entering_on(floor_with(&[])), -60.0);
+        assert_eq!(entering_on(floor_with(&[blocks::STONE; 4])), -57.0);
+        let mut dug = floor_with(&[blocks::AIR]);
+        dug.set(0, -62, 0, blocks::STONE);
+        assert_eq!(entering_on(dug), -61.0);
+        assert_eq!(entering_on(floor_with(&[blocks::STONE, fence])), -58.5);
+        assert_eq!(entering_on(floor_with(&[blocks::STONE, slab])), -59.5);
+        // A carpet does not stop movement as the game's heightmap counts it: the
+        // player stands on the stone, a sixteenth into the carpet, as the official
+        // server's heightmap would put them.
+        assert_eq!(entering_on(floor_with(&[blocks::STONE, carpet])), -60.0);
+        // Water, which nothing collides with: on its surface.
+        let water = [blocks::STONE, blocks::WATER, blocks::WATER];
+        assert_eq!(entering_on(floor_with(&water)), -58.0);
+        // A column with nothing in it: at the configured height.
+        assert_eq!(entering_on(chunk()), SPAWN.y);
+    }
+
+    /// Until the home chunk is loaded, a new player enters at the configured spawn
+    /// point, and is not moved when it comes; that is the first ticks after a region
+    /// starts or is restored (docs/groundwork/w6-plan.md, section 2).
+    #[test]
+    fn a_new_player_enters_at_the_configured_spawn_before_the_home_chunk_is_loaded() {
+        let mut region = region();
+        region.tick(&changes(vec![join(1)]));
+        let output = enter(&mut region);
+        let [(_, PlayerEvent::Spawned { pose, .. })] = &told(&output)[..] else {
+            panic!("one player spawned: {:?}", told(&output));
+        };
+        assert_eq!(pose.position, SPAWN);
+        region.tick(&loaded(ChunkPos::new(0, 0)));
+        assert_eq!(region.player(player(1)).unwrap().1.position, SPAWN);
     }
 
     /// A region with the given players standing on a stone floor in chunk (0, 0).

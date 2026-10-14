@@ -477,6 +477,13 @@ impl Model {
         self.is_pinned(chunk) || chunk == self.home
     }
 
+    /// Whether a held chunk is to be loaded: a ticket of either kind, or the home
+    /// chunk, which is loaded whenever it is held so that a new player stands on what
+    /// is there now (`docs/groundwork/w6-plan.md`, section 2).
+    fn loads(&self, chunk: ChunkPos) -> bool {
+        self.tickets(chunk) > 0 || chunk == self.home
+    }
+
     /// Step 2 of a tick. Returns what the tick asks of storage.
     fn start(&mut self, inputs: &TickInputs) -> Vec<ChunkPos> {
         for chunk in &inputs.granted {
@@ -516,15 +523,15 @@ impl Model {
             if *count == 0 {
                 counts.remove(chunk);
             }
-            if self.tickets(*chunk) == 0 {
+            if !self.loads(*chunk) {
                 self.loaded.remove(chunk);
                 self.requested.remove(chunk);
             }
         }
         for (chunk, _) in &inputs.chunks_loaded {
-            // What was asked of storage is held and has a ticket: it stops being asked
-            // of storage with its last ticket, and a chunk with a ticket is not given
-            // back.
+            // What was asked of storage is held and has a ticket or is the home chunk:
+            // it stops being asked of storage with its last ticket, and neither a chunk
+            // with a ticket nor the home chunk is given back.
             if self.requested.remove(chunk) {
                 self.loaded.insert(*chunk);
             }
@@ -533,7 +540,7 @@ impl Model {
             .held
             .keys()
             .filter(|chunk| {
-                self.tickets(**chunk) > 0
+                self.loads(**chunk)
                     && !self.loaded.contains(chunk)
                     && !self.requested.contains(chunk)
             })
@@ -963,14 +970,14 @@ impl World {
                     "tick {tick}: {chunk:?} is loaded"
                 );
                 assert!(
-                    self.model.tickets(*chunk) > 0,
+                    self.model.loads(*chunk),
                     "tick {tick}: {chunk:?} is loaded without a ticket"
                 );
             }
         }
         for chunk in &output.chunk_requests {
             assert_eq!(self.region.knowledge(*chunk), Knowledge::Held);
-            assert!(self.model.tickets(*chunk) > 0);
+            assert!(self.model.loads(*chunk));
         }
         for chunk in &output.returns {
             assert_eq!(self.model.tickets(*chunk), 0, "tick {tick}: {chunk:?}");
@@ -2129,10 +2136,9 @@ fn a_player_who_joins_the_home_region_before_it_has_asked_for_its_spawn_chunk_st
     assert_eq!(output.claims, [HOME]);
     let output = world.tick(&granted(&[HOME]));
     assert!(output.durable.is_empty());
-    assert!(
-        output.chunk_requests.is_empty(),
-        "a player loads no chunk by standing in it"
-    );
+    // A player loads no chunk by standing in it; the home chunk is loaded because it
+    // is the home chunk (docs/groundwork/w6-plan.md, section 2).
+    assert_eq!(output.chunk_requests, [HOME]);
     assert_eq!(world.knowledge(HOME), Knowledge::Held);
     world.tick(&single_input(E, player(1), entity(1), 1, move_to(13.5)));
     assert_eq!(world.state_of(player(1)).pose.position.x, 13.5);
@@ -3777,7 +3783,9 @@ fn the_chunk_of_the_spawn_point_is_never_given_back() {
             assert!(world.idle().returns.is_empty());
         }
         assert_eq!(world.knowledge(HOME), Knowledge::Held);
-        assert!(world.region.chunk(HOME).is_none(), "but it is not loaded");
+        // And it stays loaded, though nothing has a ticket for it, so that a new
+        // player stands on it as it is (docs/groundwork/w6-plan.md, section 2).
+        assert!(world.region.chunk(HOME).is_some(), "and it is loaded");
     }
 }
 
@@ -4103,14 +4111,15 @@ fn a_restored_region_knows_what_the_store_says_it_holds_and_nothing_else() {
     assert_eq!(world.region.held_chunk_count(), 2);
     assert_eq!(world.region.loaded_chunk_count(), 0);
 
-    // Nothing is asked until the edges are back with their tickets; then everything
-    // that was believed or asked before is asked again, and what is held is loaded.
+    // Nothing is asked until the edges are back with their tickets, but the home
+    // chunk, which is loaded whenever it is held; then everything that was believed
+    // or asked before is asked again, and what is held is loaded.
     let output = world.idle();
     assert!(output.claims.is_empty() && output.returns.is_empty());
-    assert!(output.chunk_requests.is_empty());
+    assert_eq!(output.chunk_requests, [HOME]);
     let output = world.tick(&add(&[viewer(HOME), viewer(EAST), viewer(SOUTH)]));
     assert_eq!(output.claims, [SOUTH, EAST]);
-    assert_eq!(output.chunk_requests, [HOME]);
+    assert!(output.chunk_requests.is_empty());
 }
 
 #[test]
@@ -4689,6 +4698,30 @@ fn dropped(
     }
 }
 
+/// Where a player who enters without a place stands in a tick with `inputs`, when the
+/// region had `home` loaded before it: at `SPAWN`'s column, on the highest block of
+/// the home chunk there as it is when the tick has taken in what storage delivered,
+/// which comes before anyone enters. The run's ground is stone, which reaches the top
+/// of its block. At `SPAWN` itself while the chunk is not loaded
+/// (`docs/groundwork/w6-plan.md`, section 2).
+fn spawn_on(home: Option<&Chunk>, inputs: &TickInputs) -> Vec3 {
+    let delivered = inputs
+        .chunks_loaded
+        .iter()
+        .find(|(chunk, _)| *chunk == HOME);
+    let Some(chunk) = home.or(delivered.map(|(_, chunk)| chunk)) else {
+        return SPAWN;
+    };
+    let (x, z) = (SPAWN.x.floor() as i32, SPAWN.z.floor() as i32);
+    let top = (chunk.min_y()..chunk.min_y() + chunk.height() as i32)
+        .rev()
+        .find(|y| chunk.get((x & 15) as usize, *y, (z & 15) as usize) != Some(blocks::AIR));
+    match top {
+        Some(y) => Vec3::new(SPAWN.x, f64::from(y + 1), SPAWN.z),
+        None => SPAWN,
+    }
+}
+
 /// Sections 2.2 to 2.5 for a tick of a made-up run, whose players only join, arrive,
 /// walk and dig, and whose remote actions only break: who is removed with an edge, who
 /// is taken in, who enters with the store's answer to their join (ADR-0020, section 4,
@@ -4703,6 +4736,7 @@ fn check_made_up_tick(
     during: &Model,
     output: &TickOutput,
     after: &RegionState,
+    spawn: Vec3,
 ) {
     let believed = |position: Vec3| during.foreign.get(&chunk_of(position)).copied();
     let mut here: BTreeMap<PlayerId, Walker> = before
@@ -4806,7 +4840,7 @@ fn check_made_up_tick(
     }
 
     // The store's answers: a stay that is still entering is placed at the spawn point,
-    // with the attempt of its join.
+    // on its column as the home chunk has it, with the attempt of its join.
     for answer in &inputs.entered {
         assert!(answer.place.is_none() && answer.holder.is_none());
         let held = |(entity, _, _): &(EntityId, EdgeId, u64)| *entity == answer.entity;
@@ -4815,7 +4849,7 @@ fn check_made_up_tick(
         }
         let (entity, edge, attempt) = entering.remove(&answer.player).expect("it is there");
         let walker = Walker {
-            position: SPAWN,
+            position: spawn,
             last_input: 0,
             edge,
             entity,
@@ -5057,9 +5091,10 @@ fn a_made_up_run_keeps_to_the_record_in_every_tick() {
                 }
                 let inputs = wander.inputs(&world);
                 let before = world.region.state();
+                let spawn = spawn_on(world.region.chunk(HOME), &inputs);
                 let output = world.tick(&inputs);
                 let after = world.region.state();
-                check_made_up_tick(&before, &inputs, &world.during, &output, &after);
+                check_made_up_tick(&before, &inputs, &world.during, &output, &after, spawn);
                 wander.note(&output);
                 tally.note(&before, &inputs, &output);
             }

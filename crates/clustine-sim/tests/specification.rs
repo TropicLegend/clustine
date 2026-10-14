@@ -141,7 +141,13 @@ fn enter(region: &mut Region) -> TickOutput {
 /// Advances the region by one tick, in which it hears the store's answers to the joins
 /// of the tick before, and checks what section 2 says of every tick.
 fn checked_tick(region: &mut Region, inputs: &TickInputs) -> TickOutput {
-    let inputs = &with_the_stores_answers(region, inputs);
+    let inputs = with_the_stores_answers(region, inputs);
+    checked_tick_without_answers(region, &inputs)
+}
+
+/// Advances the region by one tick with `inputs` as they are, without the store's
+/// answers, and checks what section 2 says of every tick.
+fn checked_tick_without_answers(region: &mut Region, inputs: &TickInputs) -> TickOutput {
     let before = region.state();
     let output = region.tick(inputs);
     let after = region.state();
@@ -1861,10 +1867,23 @@ fn a_restored_region_carries_on_as_the_original_from_every_tick_of_a_scenario() 
             },
         ];
         // Nor does it count that the restored region names every stay it has to the
-        // store in its first tick (ADR-0020, section 3).
+        // store in its first tick (ADR-0020, section 3). The store answers those
+        // notes after that tick, so neither region hears an answer in it: a new
+        // player enters in the tick after, when the restored region has its home
+        // chunk too and puts them where the original does (docs/groundwork/
+        // w6-plan.md, section 2).
         for (index, inputs) in loading.iter().enumerate() {
-            let mut expected = checked_tick(&mut original, &TickInputs::default());
-            let mut actual = checked_tick(&mut restored, inputs);
+            let (mut expected, mut actual) = if index == 0 {
+                (
+                    checked_tick_without_answers(&mut original, &TickInputs::default()),
+                    checked_tick_without_answers(&mut restored, inputs),
+                )
+            } else {
+                (
+                    checked_tick(&mut original, &TickInputs::default()),
+                    checked_tick(&mut restored, inputs),
+                )
+            };
             expected.chunk_requests.clear();
             actual.chunk_requests.clear();
             actual.claims.clear();

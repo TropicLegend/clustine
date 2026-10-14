@@ -1383,6 +1383,16 @@ fn ticks(runner: &mut RegionRunner, links: &mut [&mut Link], count: u64) {
 // R1. A viewer's subscription: a snapshot, or `Elsewhere` and nothing more
 // ---------------------------------------------------------------------------------------
 
+/// Whether nothing is loaded but the home chunk, which a region loads whenever it holds
+/// it, whoever needs it (`docs/groundwork/w6-plan.md`, section 2): no other chunk is
+/// loaded, and the home chunk is exactly when the region holds it.
+fn nothing_loaded_but_home(runner: &RegionRunner) -> bool {
+    let region = runner.region();
+    let home = region.knowledge(HOME) == Knowledge::Held;
+    let others = region.loaded_chunk_count() - usize::from(region.chunk(HOME).is_some());
+    others == 0 && region.chunk(HOME).is_some() == home
+}
+
 #[test]
 fn a_viewers_subscription_to_an_own_chunk_is_answered_with_a_snapshot_that_has_its_ask() {
     on_stripes_in_memory_and_on_disk(
@@ -1443,7 +1453,7 @@ fn a_viewers_subscription_to_a_chunk_of_the_other_stripe_is_told_elsewhere_with_
         runner.region().knowledge(NEXT),
         Knowledge::Foreign(NEIGHBOUR)
     );
-    assert_eq!(runner.region().loaded_chunk_count(), 0);
+    assert!(nothing_loaded_but_home(&runner));
     assert!(events(&e.log).is_empty(), "{}", brief(&e.log));
     e.assert_answered(&[]);
 }
@@ -4171,7 +4181,7 @@ fn a_link_that_ends_while_it_is_held_behind_its_hello_leaves_no_ticket_behind() 
             // Whether the join was applied is up to how far the store had come; what
             // is not up to it is that the chunks were let go of.
             ticks(&mut runner, &mut [], 3);
-            assert_eq!(runner.region().loaded_chunk_count(), 0);
+            assert!(nothing_loaded_but_home(&runner));
         }
     }
 }
@@ -4402,7 +4412,7 @@ fn an_asking_that_is_ended_before_the_stores_answer_is_not_answered() {
     // chunk of the own stripe is the region's and not loaded; the other is forgotten.
     assert_eq!(runner.region().knowledge(OWN), Knowledge::Held);
     assert_eq!(runner.region().knowledge(NEXT), Knowledge::Unknown);
-    assert_eq!(runner.region().loaded_chunk_count(), 0);
+    assert!(nothing_loaded_but_home(&runner));
 }
 
 /// A player of the link who takes a step with every tick, so that every tick has a
@@ -6056,9 +6066,11 @@ fn a_generated_run(shape: Shape, on_disk: bool, seed: u64, beside_a_neighbour: b
             Whose::Another(_) => Knowledge::Unknown,
         };
         assert_eq!(knowledge, expected, "of {chunk:?}");
+        // The home chunk is loaded whenever it is held, subscribed or not
+        // (docs/groundwork/w6-plan.md, section 2).
         assert_eq!(
             loaded,
-            subscribed && expected == Knowledge::Held,
+            (subscribed || chunk == HOME) && expected == Knowledge::Held,
             "whether {chunk:?} is loaded"
         );
     }
@@ -6079,7 +6091,7 @@ fn a_generated_run(shape: Shape, on_disk: bool, seed: u64, beside_a_neighbour: b
     links[0].unsubscribe(chunks.to_vec());
     let mut all: Vec<&mut Link> = links.iter_mut().collect();
     ticks(&mut runner, &mut all, return_after + 3);
-    assert_eq!(runner.region().loaded_chunk_count(), 0);
+    assert!(nothing_loaded_but_home(&runner));
     for chunk in chunks {
         let knowledge = runner.region().knowledge(chunk);
         match whose(shape, chunk) {

@@ -220,6 +220,13 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     server.stop().await;
 }
 
+/// The height above the highest block of the column at `x`, `z` that stops movement or
+/// holds a fluid: the chunk's `motion_blocking` heightmap, counted from its bottom.
+fn column_top(chunk: &Chunk, x: i32, z: i32) -> i32 {
+    let column = ((z & 15) << 4 | (x & 15)) as usize;
+    chunk.min_y() + i32::from(chunk.heights().motion_blocking[column])
+}
+
 /// The services as processes of their own, each of which has to be told the seed that
 /// its part follows from: the store makes the chunks, the coordinator says where
 /// players enter, and the edge tells clients of the world.
@@ -239,6 +246,12 @@ async fn a_cluster_whose_processes_are_told_the_seed_serves_its_land() {
 
     let mut walker = join(&cluster.edge.0, "Walker", (0, 0)).await;
     let entered = walker.entered(PATIENCE).await.unwrap();
+    // On the spawn column as the home chunk has it, which nobody has changed: its
+    // top as the generator made it, whether the region had loaded the chunk when the
+    // player entered or not (docs/groundwork/w6-plan.md, section 2).
+    let home = generator.generate(ChunkPos::containing(spawn.x, spawn.z));
+    let top = column_top(&home, spawn.x.floor() as i32, spawn.z.floor() as i32);
+    assert_eq!(f64::from(top), spawn.y);
     assert_eq!(entered.location, (spawn.x, spawn.y, spawn.z));
     for position in [(0, 0), (-3, 2)] {
         let made = generator.generate(ChunkPos::new(position.0, position.1));

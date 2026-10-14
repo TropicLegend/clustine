@@ -187,9 +187,15 @@ impl Maker {
         self.state().handed.contains(&handed)
     }
 
-    /// What the runner was handed of loads so far.
+    /// What the runner was handed of loads so far, but for the home chunk's, which a
+    /// region that holds it loads whoever needs it (docs/groundwork/w6-plan.md,
+    /// section 2), and which these tests do not look at.
     fn all_handed(&self) -> Vec<Handed> {
-        self.state().handed.clone()
+        let handed = self.state().handed.clone();
+        handed
+            .into_iter()
+            .filter(|handed| handed.chunk() != ChunkPos::containing(SPAWN.x, SPAWN.z))
+            .collect()
     }
 
     /// What the runner asked for since this was last called, in that order.

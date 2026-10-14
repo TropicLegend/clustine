@@ -3197,7 +3197,7 @@ fn made_up_answers(random: &mut Random, output: &TickOutput) -> Vec<Entered> {
 
 /// A region restored from the state after any tick does what the region that is run on
 /// does, input for input, but for the notes of its first tick, which names every stay
-/// (section 3 of the record).
+/// (section 3 of the record), and for asking storage again for the home chunk in it.
 #[test]
 fn a_region_restored_after_any_tick_does_what_the_region_run_on_does_but_for_its_first_notes() {
     let mut compared = 0;
@@ -3262,6 +3262,17 @@ fn a_region_restored_after_any_tick_does_what_the_region_run_on_does_but_for_its
                 }
                 named += theirs.stays.len() - output.stays.len();
                 theirs.stays = output.stays.clone();
+                // It asks storage again for the home chunk, which a region loads
+                // whenever it holds it (docs/groundwork/w6-plan.md, section 2); the
+                // region run on asked once, and nothing here delivers it.
+                let home = ChunkPos::containing(SPAWN.x, SPAWN.z);
+                let mut asked = output.chunk_requests.clone();
+                if !asked.contains(&home) {
+                    asked.push(home);
+                    asked.sort();
+                }
+                assert_eq!(theirs.chunk_requests, asked, "{context}");
+                theirs.chunk_requests = output.chunk_requests.clone();
             }
             assert_eq!(theirs, output, "{context}");
             *ticks += 1;

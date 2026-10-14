@@ -57,6 +57,8 @@ const PART: RegionId = RegionId(12);
 
 /// Where players enter the world: on the stone of `HOME`, two blocks from `EAST`.
 const SPAWN: Vec3 = Vec3::new(14.5, 64.0, 8.5);
+/// Where a new player stands once `OWN_BLOCK`, the top of the spawn column, is dug.
+const IN_THE_DUG_SPAWN: Vec3 = Vec3::new(14.5, 63.0, 8.5);
 
 /// A block at the top of the stone near the spawn point.
 const OWN_BLOCK: BlockPos = BlockPos::new(14, 63, 8);
@@ -749,7 +751,9 @@ fn a_join_of_a_player_the_region_has_under_the_same_edge_begins_a_new_stay() {
     // The entity they had is removed where it stood, in the tick of the join, and its
     // edge is told that the stay has ended (ADR-0020, section 6, rule 5). They enter
     // the world anew in the tick that hears the store's answer: with the next id, at
-    // the spawn point, with nothing applied and nothing handled.
+    // the spawn point, with nothing applied and nothing handled. The spawn point is
+    // on its column as the home chunk has it now, and the first stay dug the top
+    // block there: they stand a block lower (docs/groundwork/w6-plan.md, section 2).
     assert_eq!(removed(&output), [(entity(1), NORTH)]);
     assert!(spawned(&output).is_empty() && output.player_events.is_empty());
     assert_eq!(output.durable, vec![(E, 1, ended(1, entity(1), None))]);
@@ -762,7 +766,7 @@ fn a_join_of_a_player_the_region_has_under_the_same_edge_begins_a_new_stay() {
             PlayerEvent::Spawned {
                 attempt: attempt(player(1)),
                 entity_id: entity(2),
-                pose: Pose::at(SPAWN),
+                pose: Pose::at(IN_THE_DUG_SPAWN),
                 flying: false,
                 hotbar: hotbar(),
                 selected_slot: 0,
@@ -772,6 +776,7 @@ fn a_join_of_a_player_the_region_has_under_the_same_edge_begins_a_new_stay() {
     assert!(output.durable.is_empty());
     let expected = PlayerState {
         entity_id: entity(2),
+        pose: Pose::at(IN_THE_DUG_SPAWN),
         ..fresh
     };
     assert_eq!((expected.last_input, expected.handled), (0, None));
@@ -795,6 +800,7 @@ fn a_join_of_a_player_the_region_has_under_another_edge_begins_a_new_stay_under_
     let expected = PlayerState {
         entity_id: entity(2),
         edge: F,
+        pose: Pose::at(IN_THE_DUG_SPAWN),
         ..fresh
     };
     assert_eq!(state_of(&region, player(1)), expected);
@@ -3375,29 +3381,28 @@ fn after_a_merge_the_region_has_no_ticket() {
     // A ticket shows in what a tick asks: a held chunk with one is asked of storage, an
     // unknown one with a viewer's is claimed. Before the merge `HOME`, `WEST` and `FAR`
     // had tickets, and so had `EAST`, `THIRD` and `SOUTH`.
+    // The home chunk is asked for all the same: it is loaded whenever it is held
+    // (docs/groundwork/w6-plan.md, section 2).
     let (mut region, _, _) = merged(0);
     let output = idle(&mut region);
-    assert!(
-        output.chunk_requests.is_empty(),
-        "{:?}",
-        output.chunk_requests
-    );
+    assert_eq!(output.chunk_requests, [HOME]);
     // The players that came in stand in chunks of the new area, which are claimed for
     // them, and no other chunk is.
     assert_eq!(output.claims, [EAST, ChunkPos::new(2, 1)]);
     assert!(silent(&output));
 
     // Releasing the tickets it had releases nothing, and one new ticket is one ticket.
+    // `WEST` shows it, as the home chunk is loaded with a ticket or without.
     let had = [viewer(HOME), viewer(WEST), guest(FAR), viewer(THIRD)];
     let output = tick(&mut region, &remove(&had));
     assert!(output.chunk_requests.is_empty() && output.claims.is_empty());
-    let output = tick(&mut region, &add(&[viewer(HOME), viewer(THIRD)]));
-    assert_eq!(output.chunk_requests, [HOME]);
+    let output = tick(&mut region, &add(&[viewer(WEST), viewer(THIRD)]));
+    assert_eq!(output.chunk_requests, [WEST]);
     assert_eq!(output.claims, [THIRD]);
-    let output = tick(&mut region, &remove(&[viewer(HOME)]));
+    let output = tick(&mut region, &remove(&[viewer(WEST)]));
     assert!(output.chunk_requests.is_empty());
-    let output = tick(&mut region, &delivered(&[HOME]));
-    assert!(region.chunk(HOME).is_none(), "its one ticket had gone");
+    let output = tick(&mut region, &delivered(&[WEST]));
+    assert!(region.chunk(WEST).is_none(), "its one ticket had gone");
     assert!(output.chunk_requests.is_empty());
 }
 
@@ -4425,10 +4430,11 @@ fn after_a_split_the_region_knows_nothing_of_the_parts_chunks_and_the_part_holds
             assert_eq!(part.region.knowledge(chunk), Knowledge::Unknown);
         }
 
-        // Neither has a ticket: nothing is asked of storage, and nothing is claimed but
-        // for a player.
+        // Neither has a ticket: nothing is asked of storage but the home chunk, which
+        // the region keeps loaded, and nothing is claimed but for a player.
         let output = idle(&mut region);
-        assert!(output.chunk_requests.is_empty() && output.claims.is_empty());
+        assert_eq!(output.chunk_requests, [HOME]);
+        assert!(output.claims.is_empty());
         assert!(silent(&output) && output.returns.is_empty());
         let output = idle(&mut part.region);
         assert!(output.chunk_requests.is_empty() && output.claims.is_empty());
@@ -4577,7 +4583,8 @@ fn a_ticket_for_a_chunk_of_the_part_claims_it_as_one_for_any_chunk_the_region_do
         let (mut region, _, _, _) = taken(pinned);
         let output = tick(&mut region, &add(&[viewer(THIRD)]));
         assert_eq!(output.claims, [THIRD]);
-        assert!(output.chunk_requests.is_empty());
+        // Only the home chunk is asked of storage, as it is whenever it is held.
+        assert_eq!(output.chunk_requests, [HOME]);
         tick(&mut region, &foreign(&[(THIRD, PART)]));
         assert_eq!(region.knowledge(THIRD), Knowledge::Foreign(PART));
 

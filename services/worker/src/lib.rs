@@ -4836,31 +4836,33 @@ mod tests {
     }
 
     /// A changed chunk that nobody needs any more is stored, and comes back changed.
+    /// The chunk west of the home chunk, which stays loaded whoever needs it.
     #[tokio::test]
     async fn changes_survive_a_chunk_being_unloaded() {
         let (edge, worker_end) = in_process(256);
         let mut runner = runner(worker_end);
-        let origin = ChunkPos::new(0, 0);
+        let west = ChunkPos::new(-1, 0);
         joined(&edge, &mut runner).await;
+        edge.send(asking_for(vec![west])).await.unwrap();
+        step_until(&mut runner, |runner| runner.region().chunk(west).is_some());
 
-        edge.send(dig(1)).await.unwrap();
+        edge.send(dig(-1)).await.unwrap();
         step(&mut runner);
-        let changed = runner.region().chunk(origin).unwrap().clone();
-        assert_eq!(changed.get(1, -61, 0), Some(clustine_data::blocks::AIR));
+        let changed = runner.region().chunk(west).unwrap().clone();
+        assert_eq!(changed.get(15, -61, 0), Some(clustine_data::blocks::AIR));
 
-        edge.send(done_with(vec![origin])).await.unwrap();
+        edge.send(done_with(vec![west])).await.unwrap();
         step(&mut runner);
-        assert_eq!(runner.region().loaded_chunk_count(), 0);
+        assert!(runner.region().chunk(west).is_none());
 
-        edge.send(asking_for(vec![origin])).await.unwrap();
-        step_until(&mut runner, |runner| {
-            runner.region().loaded_chunk_count() == 1
-        });
-        assert_eq!(runner.region().chunk(origin), Some(&changed));
+        edge.send(asking_for(vec![west])).await.unwrap();
+        step_until(&mut runner, |runner| runner.region().chunk(west).is_some());
+        assert_eq!(runner.region().chunk(west), Some(&changed));
     }
 
     /// A chunk that two edges watch is needed until both have let go of it. Only then is
-    /// it stored, with everything that has happened to it by then.
+    /// it stored, with everything that has happened to it by then. The chunk west of
+    /// the home chunk, which stays loaded whoever needs it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_chunk_is_kept_until_its_last_subscriber_lets_go_and_is_saved_then() {
         for connect in KINDS {
@@ -4868,39 +4870,38 @@ mod tests {
             let (mut second, second_end) = connect(256);
             let mut runner = runner(first_end);
             runner.links().attach(second_end);
-            let origin = ChunkPos::new(0, 0);
-            let subscribe = || asking_for(vec![origin]);
-            let unsubscribe = || done_with(vec![origin]);
-            let dug = |runner: &RegionRunner, x: usize| {
-                let chunk = runner.region().chunk(origin);
-                chunk.and_then(|chunk| chunk.get(x, -61, 0)) == Some(clustine_data::blocks::AIR)
+            let west = ChunkPos::new(-1, 0);
+            let subscribe = || asking_for(vec![west]);
+            let unsubscribe = || done_with(vec![west]);
+            let dug = |runner: &RegionRunner, x: i32| {
+                let chunk = runner.region().chunk(west);
+                let block = chunk.and_then(|chunk| chunk.get((x & 15) as usize, -61, 0));
+                block == Some(clustine_data::blocks::AIR)
             };
 
             joined(&first, &mut runner).await;
+            first.send(subscribe()).await.unwrap();
+            step_until(&mut runner, |runner| runner.region().chunk(west).is_some());
             second.send(subscribe()).await.unwrap();
-            assert_eq!(snapshot(step_for(&mut runner, &mut second)).0, origin);
+            assert_eq!(snapshot(step_for(&mut runner, &mut second)).0, west);
 
-            first.send(dig(1)).await.unwrap();
-            step_until(&mut runner, |runner| dug(runner, 1));
+            first.send(dig(-1)).await.unwrap();
+            step_until(&mut runner, |runner| dug(runner, -1));
             first.send(unsubscribe()).await.unwrap();
             step_until(&mut runner, |runner| {
-                runner.links[&LinkId(0)].subscriptions.is_empty()
+                !runner.links[&LinkId(0)].subscriptions.contains_key(&west)
             });
-            assert_eq!(runner.region().loaded_chunk_count(), 1);
+            assert!(runner.region().chunk(west).is_some());
 
             // The player is still there and changes the chunk once more.
-            first.send(dig(2)).await.unwrap();
-            step_until(&mut runner, |runner| dug(runner, 2));
+            first.send(dig(-2)).await.unwrap();
+            step_until(&mut runner, |runner| dug(runner, -2));
             second.send(unsubscribe()).await.unwrap();
-            step_until(&mut runner, |runner| {
-                runner.region().loaded_chunk_count() == 0
-            });
+            step_until(&mut runner, |runner| runner.region().chunk(west).is_none());
 
             second.send(subscribe()).await.unwrap();
-            step_until(&mut runner, |runner| {
-                runner.region().loaded_chunk_count() == 1
-            });
-            assert!(dug(&runner, 1) && dug(&runner, 2));
+            step_until(&mut runner, |runner| runner.region().chunk(west).is_some());
+            assert!(dug(&runner, -1) && dug(&runner, -2));
         }
     }
 
@@ -4992,11 +4993,17 @@ mod tests {
 
         let mut kept = square(1);
         let dropped = kept.split_off(4);
-        edge.send(done_with(dropped)).await.unwrap();
+        edge.send(done_with(dropped.clone())).await.unwrap();
         step(&mut runner);
-        assert_eq!(runner.region().loaded_chunk_count(), 4);
+        // The four kept, and the home chunk among those let go of, which stays loaded
+        // whoever needs it.
+        assert_eq!(runner.region().loaded_chunk_count(), 5);
         for position in kept {
             assert!(runner.region().chunk(position).is_some());
+        }
+        for position in dropped {
+            let loaded = runner.region().chunk(position).is_some();
+            assert_eq!(loaded, position == ORIGIN, "{position:?}");
         }
     }
 
@@ -5004,13 +5011,14 @@ mod tests {
     async fn subscribing_twice_sends_one_snapshot() {
         let (mut edge, worker_end) = in_process(256);
         let mut runner = runner(worker_end);
-        let position = ChunkPos::new(0, 0);
+        // Not the home chunk, which stays loaded whoever needs it.
+        let position = ChunkPos::new(-1, 0);
 
         for _ in 0..2 {
             edge.send(asking_for(vec![position])).await.unwrap();
         }
         step_until(&mut runner, |runner| {
-            runner.region().loaded_chunk_count() == 1
+            runner.region().chunk(position).is_some()
         });
         step(&mut runner);
 
@@ -5023,7 +5031,7 @@ mod tests {
         // One unsubscribe ends the subscription, whatever the number of subscribes.
         edge.send(done_with(vec![position])).await.unwrap();
         step(&mut runner);
-        assert_eq!(runner.region().loaded_chunk_count(), 0);
+        assert!(runner.region().chunk(position).is_none());
     }
 
     /// A region shows the chunks it holds. Of a chunk another region holds it says who
@@ -5254,11 +5262,13 @@ mod tests {
             let known = edge.edge;
 
             // Found out before the tick, so the tick is already one without the link:
-            // its chunk is no longer needed.
+            // its chunk is no longer needed. That chunk is the home chunk, which stays
+            // loaded whoever needs it, and the only one.
             drop(edge);
             step_until(&mut runner, |runner| runner.links.is_empty());
             assert_eq!(runner.region().player_count(), 1);
-            assert_eq!(runner.region().loaded_chunk_count(), 0);
+            assert_eq!(runner.region().loaded_chunk_count(), 1);
+            assert!(runner.region().chunk(ORIGIN).is_some());
             assert_eq!(runner.edges[&known].link, None);
 
             let ticks = runner.region().tick_number();
@@ -5280,13 +5290,15 @@ mod tests {
 
         // The tick that took the join has run when it turns out that the edge cannot
         // be told of it. The player enters the world all the same, in the tick that has
-        // the store's answer, and stays; the chunks are let go with the next tick.
+        // the store's answer, and stays; the chunks are let go with the next tick, all
+        // but the home chunk, which stays loaded whoever needs it.
         take_joins(&mut runner);
         assert!(runner.links.is_empty());
         step(&mut runner);
         assert_eq!(runner.region().player_count(), 1);
         step_until(&mut runner, |runner| {
-            runner.region().loaded_chunk_count() == 0
+            let region = runner.region();
+            region.loaded_chunk_count() == 1 && region.chunk(ORIGIN).is_some()
         });
         let ticks = runner.region().tick_number();
         step(&mut runner);
@@ -5885,7 +5897,8 @@ mod tests {
             .await
             .unwrap();
         step(&mut runner);
-        assert_eq!((population(), traffic()), ((1, 0), (2, 2)));
+        // The chunk let go of is the home chunk, which stays loaded whoever needs it.
+        assert_eq!((population(), traffic()), ((1, 1), (2, 2)));
         assert_eq!(read(&status.tick), runner.region().tick_number());
         // The store has granted the region the one chunk its players stood in and its
         // edge looked at. It is of the region's stripe, so it stays the region's when
@@ -11021,6 +11034,11 @@ mod tests {
         let (mut west, _) = world.gated(RegionId(0), config(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
+        // A chunk besides the home chunk, which the region asks for again at once
+        // after the merge, as it loads it whoever needs it.
+        let beyond = ChunkPos::new(-1, 0);
+        edge.send(asking_for(vec![beyond])).await.unwrap();
+        step_until(&mut west, |runner| runner.region().chunk(beyond).is_some());
         let east = untouched_east(&world);
         let (done, outcome) = outcome();
         west.reshape(east.absorb(), done);
@@ -11033,12 +11051,12 @@ mod tests {
             runner.region().tick_number() == tick + WARM_FOR - 1
         });
         let warm: Vec<_> = west.warm.keys().copied().collect();
-        assert_eq!(warm, [ORIGIN]);
+        assert_eq!(warm, [beyond]);
         step(&mut west);
         assert_eq!(west.region().tick_number(), tick + WARM_FOR);
         assert!(west.warm.is_empty());
         // The chunk is still the region's, and comes from the store when it is asked for.
-        assert_eq!(west.region().knowledge(ORIGIN), Knowledge::Held);
+        assert_eq!(west.region().knowledge(beyond), Knowledge::Held);
     }
 
     /// A worker takes a merge on the thread of its region and calls with the outcome

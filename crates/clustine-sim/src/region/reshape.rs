@@ -849,13 +849,14 @@ mod tests {
         }
         assert!(survivor.pins(at(4, -3)) && !survivor.pins(at(6, 0)));
 
-        // No ticket is left: a chunk it holds is not asked of storage, and a guest's
-        // ticket on a chunk of the area that came makes it ask the store.
+        // No ticket is left: a chunk it holds is not asked of storage but the home
+        // chunk, which is loaded whenever it is held, and a guest's ticket on a chunk
+        // of the area that came makes it ask the store.
         let output = survivor.tick(&TickInputs {
             tickets_added: vec![(at(4, 0), Ticket::Guest)],
             ..TickInputs::default()
         });
-        assert!(output.chunk_requests.is_empty());
+        assert_eq!(output.chunk_requests, [home]);
         assert_eq!(output.claims, [at(4, 0)]);
         // The time before a return starts with the merge: the one chunk that nothing
         // uses and no area keeps goes with the fourth tick, and not before.
