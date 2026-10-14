@@ -139,6 +139,12 @@ like any other, since it may open a door.
      (which places `bamboo_sapling`) into `potted_bamboo`. A potted pot clicked with
      anything does nothing (taking the plant out gives an item, and there is no
      inventory beyond the hotbar);
+   - **fences** (`FenceBlock`) and an **empty jukebox** (`JukeboxBlock` with
+     `has_record` false): vanilla uses them only to tie a lead or to take a disc, and
+     otherwise passes the click on to placing; Clustine has no leads, so a click on a
+     fence with something in hand places against it, and so does a click on an
+     empty jukebox with anything but a music disc in hand (a disc does nothing,
+     named). With an empty hand nothing happens;
    - **every other used block** does nothing, named: chests, crafting tables,
      furnaces, beds, buttons, levers, note blocks, cakes and the rest, and the blocks
      that vanilla uses only in some states and places against in others (redstone
@@ -258,9 +264,10 @@ As vanilla's `BlockPlaceContext`:
   centre), `WallHangingSignBlock`, `BannerBlock`, `WallBannerBlock`,
   `FaceAttachedHorizontalDirectionalBlock` (buttons and levers; the grindstone's is
   always true), `LadderBlock`, `LanternBlock`, `RedStoneWireBlock`, `TripWireBlock`,
-  `WaterlilyBlock`, `CandleBlock`, `SeaPickleBlock`, `TurtleEggBlock`,
+  `WaterlilyBlock`, `CandleBlock`, `SeaPickleBlock`,
   `MultifaceBlock`, `FlowerBedBlock`, `LeafLitterBlock`, `SmallDripleafBlock`,
-  `BigDripleafBlock`, `ScaffoldingBlock`, the coral fans (`BaseCoralFanBlock` and its
+  `BigDripleafBlock`, `ScaffoldingBlock`, `BambooSaplingBlock` and `BambooStalkBlock`
+  (`#supports_bamboo` below), the coral fans (`BaseCoralFanBlock` and its
   wall form). W6c checks this list against `survival_rule`: **a block whose class has
   a `canSurvive` and is not in the list places nothing**, named, rather than placing
   where vanilla would refuse.
@@ -474,6 +481,12 @@ An independent review on 2026-10-14 answered the plan's questions and found:
   ladder against a ladder; snow's survival; a door's other half only if it matches.
 - The reference is SteelMC's branch `26.3` at `885c4b3`, which `NOTICE.md` cites, now
   checked out beside its `master`.
+
+The independent tests of W6d found three points the plan had to decide, decided
+on 2026-10-14: fences and an empty jukebox let a click through to placing (3.2), as
+vanilla does with no lead and no disc; bamboo's survival is ported (4.3), without
+which bamboo would place nothing; turtle eggs have no survival rule in 26.3 and
+are out of that list.
 
 A second review of the revision found, and the plan now has: classes matched with
 their ancestry, since 26.3 names most blocks by classes made from the ones the rules
