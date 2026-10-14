@@ -383,6 +383,7 @@ name = "clustine-sim"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "clustine-noise",
  "clustine-world",
  "postcard",
  "serde",

@@ -22,6 +22,7 @@
 //! crate enforces part of that.
 
 pub mod api;
+pub mod placement;
 mod region;
 mod state;
 
