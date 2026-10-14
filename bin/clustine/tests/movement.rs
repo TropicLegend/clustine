@@ -91,6 +91,7 @@ async fn movement_is_ignored_until_the_teleport_is_confirmed() {
 
     let behaviour = Behaviour {
         confirm_teleports: false,
+        ..Behaviour::default()
     };
     let mut bot = Bot::join_with(&address, "Dreamer", behaviour)
         .await

@@ -157,12 +157,16 @@ pub struct PlayStats {
 pub struct Behaviour {
     /// Whether the bot confirms being moved by the server, as every client does.
     pub confirm_teleports: bool,
+    /// The view distance the bot asks for, in chunks. A server grants the smaller of
+    /// this and its own.
+    pub view_distance: u8,
 }
 
 impl Default for Behaviour {
     fn default() -> Self {
         Self {
             confirm_teleports: true,
+            view_distance: 8,
         }
     }
 }
@@ -209,6 +213,9 @@ pub struct Bot {
     /// The chunks the client currently holds, by chunk x and z: those the server sent
     /// and has not told the client to forget.
     pub chunks: BTreeMap<(i32, i32), LevelChunkWithLight>,
+    /// When each chunk in [`Bot::chunks`] came, for a test that measures how long a
+    /// view takes to fill: the latest sending of it.
+    pub chunks_came: BTreeMap<(i32, i32), Instant>,
     /// The server's player list as the client knows it: names by profile UUID.
     pub player_list: BTreeMap<Uuid, String>,
     /// The entities the server has shown the bot and not removed again, by entity id.
@@ -334,7 +341,7 @@ impl Bot {
         connection
             .write(&ClientInformation {
                 locale: "en_us".to_owned(),
-                view_distance: 8,
+                view_distance: behaviour.view_distance as i8,
                 chat_mode: 0,
                 chat_colors: true,
                 displayed_skin_parts: 0x7F,
@@ -443,6 +450,7 @@ impl Bot {
             stats: PlayStats::default(),
             position: None,
             chunks: BTreeMap::new(),
+            chunks_came: BTreeMap::new(),
             player_list: BTreeMap::new(),
             entities: BTreeMap::new(),
             vanished: Vec::new(),
@@ -570,6 +578,23 @@ impl Bot {
             .write(&SetPlayerPosition {
                 x,
                 y: self.location.1,
+                z,
+                flags: movement_flags::ON_GROUND,
+            })
+            .await?;
+        self.has_sent();
+        self.connection.write(&ClientTickEnd).await
+    }
+
+    /// Says in a single step that the bot is at `x`, `y` and `z`, wherever that is, as
+    /// [`Bot::step_to`] does at the current height. A server that checks movement may
+    /// refuse it; one that takes a client at its word puts the player there.
+    pub async fn stand_at(&mut self, x: f64, y: f64, z: f64) -> Result<()> {
+        self.location = (x, y, z);
+        self.connection
+            .write(&SetPlayerPosition {
+                x,
+                y,
                 z,
                 flags: movement_flags::ON_GROUND,
             })
@@ -1257,6 +1282,7 @@ impl Bot {
             }
             ClientboundPlay::UnloadChunk(packet) => {
                 self.chunks.remove(&(packet.chunk_x, packet.chunk_z));
+                self.chunks_came.remove(&(packet.chunk_x, packet.chunk_z));
                 self.forget_block_changes((packet.chunk_x, packet.chunk_z));
                 self.light_since.remove(&(packet.chunk_x, packet.chunk_z));
             }
@@ -1310,6 +1336,8 @@ impl Bot {
                 // Its light too begins anew: the updates before it were for the chunk
                 // of before.
                 self.light_since.remove(&(packet.chunk_x, packet.chunk_z));
+                self.chunks_came
+                    .insert((packet.chunk_x, packet.chunk_z), Instant::now());
                 self.chunks.insert((packet.chunk_x, packet.chunk_z), packet);
                 // A client leaves the loading screen once the chunk it is in has
                 // arrived, and tells the server.
