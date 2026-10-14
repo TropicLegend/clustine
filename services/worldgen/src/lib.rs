@@ -4,6 +4,7 @@
 //! [`TerrainGenerator`], a preview of the game's bare land for a seed (see
 //! [`terrain`]).
 
+pub mod scheduler;
 pub mod stages;
 pub mod terrain;
 
