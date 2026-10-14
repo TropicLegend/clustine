@@ -1198,6 +1198,7 @@ tests do not wait on a clock.
 | The crowd's wait at a merge and at a split while a third region's first view is generated from nothing | W5, `crowds.rs` | 1 s at worst (ADR-0017, 9.7), or 0.2 s more than without the third region |
 | The same for two regions whose players both walk outward | W5 | 1 s at worst |
 | A sync of 512 notes of real terrain | W5 | 250 ms |
+| A restore after a kill with nothing cached (`chaos.rs`, `measured_how_long_players_stand_still…`: land of seed 13579, two pinned regions, four ledger bots, the store killed and started again before each kill so that its cache is empty; ten kills, checkpoints every second or practically never) | 7 s (M3's promise, with a lease of 5) | the heir runs the region 0.02 s after it is given it, and every bot has an answer again 0.43 to 1.07 s after it is given it; the test's lease is 3 s and the kill fell 2.3 to 3.6 s before the hand-over, so with the lease of 5 at most about 6.1 s |
 | A restore after a kill with nothing cached, on the imported world | W5 | 7 s (M3's promise) |
 | A join far from anything stored: the first chunk | W5, T8 | 2 s |
 | A region's tick while a first view is generated in the same process | T8 | 50 ms |
@@ -1560,7 +1561,7 @@ worked out: the edge's light threads did 60 s of work where they did 22 s, and
 compressing chunks took 22 s where it took 2. Nothing logs a region's tick time, so
 where the half second goes is not seen.
 
-Still to be measured: the same on a disk of 22 ms a sync (without the cache); a restore after a kill
-with nothing cached, on the imported world (7 s); the first chunk walked beyond the
-rim after a start; the store's end with requests under way (test 7j); the
-two-regions-walking-outward case.
+Still to be measured: the same on a disk of 22 ms a sync (without the cache); the
+restore on a world imported from Anvil, once there is an importer; the first chunk
+walked beyond the rim after a start; the store's end with requests under way (test
+7j); the two-regions-walking-outward case.

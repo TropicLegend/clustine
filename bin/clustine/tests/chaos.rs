@@ -27,11 +27,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clustine::Config;
 use clustine_botswarm::ledger::LineCrossing;
-use clustine_botswarm::{Bot, Ledger, LedgerReport, Progress, Random, audit_blocks, ledger};
+use clustine_botswarm::{
+    Bot, Ledger, LedgerReport, Progress, Random, World as BotWorld, audit_blocks, ledger,
+};
 use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
+use clustine_worldgen::TerrainGenerator;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
@@ -177,6 +180,19 @@ impl Chaos {
         west: f64,
         east: f64,
     ) -> Self {
+        Self::start_on(test, world, workers, None, west, east).await
+    }
+
+    /// The same on the land of the seed `land`, if one is given, rather than the flat
+    /// world. The bots enter where the generator says a newcomer enters.
+    async fn start_on<'a>(
+        test: &str,
+        world: impl Into<World<'a>>,
+        workers: usize,
+        land: Option<u64>,
+        west: f64,
+        east: f64,
+    ) -> Self {
         let world = world.into();
         let boundaries: &[i32] = match world {
             World::Pinned(boundaries) => boundaries,
@@ -200,6 +216,12 @@ impl Chaos {
             cluster.coordinator_arguments = following::coordinator_arguments();
             cluster.view_distance = following::VIEW;
         }
+        if let Some(land) = land {
+            let seed = format!("--seed={land}");
+            cluster.store_arguments.push(seed.clone());
+            cluster.coordinator_arguments.push(seed.clone());
+            cluster.edge_arguments.push(seed);
+        }
         cluster.start().await;
 
         let lines: Vec<i32> = boundaries.iter().map(|chunk| chunk * 16).collect();
@@ -211,6 +233,16 @@ impl Chaos {
             east,
             lines: lines.clone(),
             seed,
+            world: match land {
+                None => BotWorld::clustine(),
+                Some(land) => {
+                    let spawn = TerrainGenerator::new(land as i64).spawn_point();
+                    BotWorld {
+                        spawn: (spawn.x, spawn.y, spawn.z),
+                        ..BotWorld::clustine()
+                    }
+                }
+            },
             ..Ledger::default()
         };
         if follows {
@@ -906,6 +938,78 @@ async fn players_keep_playing_while_the_workers_that_run_their_regions_are_kille
     }
     let report = chaos.finish().await;
     assert!(report.actions > 0 && report.crossings > 0, "{report}");
+}
+
+/// What is measured (ADR-0021, W5m): how long players stand still when the worker of
+/// their region is killed on the land of a seed (`CLUSTINE_CHAOS_LAND`, by default
+/// 13579), with nothing in the store's cache of what the generator made, as the store
+/// is killed and started again before each kill. M3 promised 5 to 7 seconds, of which
+/// 5 are the lease; the test cluster's lease is 3, so what follows the region being
+/// given to another worker is what to compare. Printed for each kill: when another worker was given the region,
+/// when it ran it with the edge linked to it, and when every bot had an action
+/// acknowledged again; and the longest any bot waited for an answer.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "a measurement that takes minutes; run it by name with --ignored --nocapture"]
+async fn measured_how_long_players_stand_still_when_the_worker_of_their_region_on_land_is_killed() {
+    if a_repetition() {
+        return;
+    }
+    let land = std::env::var("CLUSTINE_CHAOS_LAND")
+        .map(|land| land.parse().expect("CLUSTINE_CHAOS_LAND is a number"))
+        .unwrap_or(13579);
+    let mut chaos = Chaos::start_on("restore", &[3], 3, Some(land), 33.5, 62.5).await;
+    let mut kills = Vec::new();
+    for _ in 0..rounds(5) {
+        chaos.kill_store().await;
+        chaos.start_store(true).await;
+        chaos.whole().await;
+        let region = chaos.region_with_players();
+        let Some(worker) = chaos.owner(region) else {
+            chaos.fail(&format!("region {region} has no owner to kill"));
+        };
+        let killed = Instant::now();
+        chaos
+            .kill_worker(worker, &format!("which ran region {region}"))
+            .await;
+        chaos
+            .until("another worker is given the region", |chaos| {
+                chaos.owner(region).is_some_and(|heir| heir != worker)
+            })
+            .await;
+        let given = killed.elapsed();
+        chaos
+            .until(
+                "the region runs and the edge is linked to it",
+                Chaos::every_region_runs,
+            )
+            .await;
+        let runs = killed.elapsed();
+        chaos.served().await;
+        let served = killed.elapsed();
+        kills.push(format!(
+            "given {:.2} s, running {:.2} s, every bot served {:.2} s; {:.2} s from given \
+             to served",
+            given.as_secs_f64(),
+            runs.as_secs_f64(),
+            served.as_secs_f64(),
+            (served - given).as_secs_f64()
+        ));
+        chaos.start_worker(worker);
+        chaos.registered(worker).await;
+    }
+    let report = chaos.finish().await;
+    println!(
+        "MEASURED (a kill on the land of seed {land}, the store's cache empty, after the kill):"
+    );
+    for kill in &kills {
+        println!("  {kill}");
+    }
+    println!(
+        "  the longest a bot waited: {:.2} s ({})",
+        report.longest_wait.as_secs_f64(),
+        report.longest_wait_of
+    );
+    assert!(report.actions > 0, "{report}");
 }
 
 /// Two workers run three regions between them. One of the two is killed, again and
