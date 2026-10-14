@@ -24,12 +24,12 @@ pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
 }
 
-/// Waits for the next answer to `store` other than that a commit is done, which most
-/// tests here do not look at.
+/// Waits for the next answer to `store` other than that a commit is done or that a
+/// chunk is being made, which most tests here do not look at.
 pub(crate) fn reply(store: &StoreHandle) -> StoreReply {
     for _ in 0..30_000 {
         match store.try_reply() {
-            Some(StoreReply::Committed { .. }) => {}
+            Some(StoreReply::Committed { .. } | StoreReply::Generating { .. }) => {}
             Some(reply) => return reply,
             None => thread::sleep(Duration::from_millis(1)),
         }
@@ -766,6 +766,8 @@ fn answers_reach_only_the_handle_that_asked() {
         assert_eq!(reply(&east), StoreReply::Flushed);
         assert_eq!(east.try_reply(), None);
         // The east asked last, so the west has been answered by now.
+        let generating = StoreReply::Generating { position: here };
+        assert_eq!(west.try_reply(), Some(generating));
         assert_eq!(west.try_reply(), Some(loaded(here)));
         assert_eq!(west.try_reply(), Some(StoreReply::Flushed));
         assert_eq!(west.try_reply(), None);
@@ -1349,6 +1351,14 @@ impl Chunks for HeldSaves {
 
     fn sync(&mut self) -> Result<(), StoreError> {
         Ok(())
+    }
+
+    fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
+        self.chunks.note(position, chunk)
+    }
+
+    fn noted(&self) -> usize {
+        self.chunks.noted()
     }
 }
 

@@ -27,9 +27,10 @@ use crate::regions::{
 use crate::tests::{HELD, Switched, committed, generator, load, log, save, switched_for};
 use crate::unpinned::Built;
 
-/// Generates what [`generator`] does, but stops before the chunk at [`HELD`] until it
-/// is let go on, which keeps the thread for chunks busy while what it is given queues
-/// up. And whoever has the other end of `_alive` learns when it is dropped: the store
+/// Generates what [`generator`] does, but stops before the chunk at [`HELD`], and at
+/// [`HELD_AGAIN`], until it is let go on, which keeps the thread for chunks busy while
+/// what it is given queues up. (A chunk that was made once for a load is stored from
+/// then on, so a test that holds the thread twice loads two chunks.) And whoever has the other end of `_alive` learns when it is dropped: the store
 /// has the only one, and the thread for chunks lets go of it when it ends, which it
 /// does after the commit thread has.
 struct Watched {
@@ -39,7 +40,7 @@ struct Watched {
 
 impl ChunkGenerator for Watched {
     fn generate(&self, position: ChunkPos) -> Chunk {
-        if position == HELD {
+        if position == HELD || position == HELD_AGAIN {
             // Once to say that the store has got here, once to be let go on.
             self.held.wait();
             self.held.wait();
@@ -107,6 +108,10 @@ impl Rig {
 }
 
 const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
+
+/// The second chunk at which [`Watched`] holds the thread for chunks: of the region
+/// that holds [`HELD`] in every division here.
+pub(crate) const HELD_AGAIN: ChunkPos = ChunkPos::new(1001, 1000);
 
 /// Two regions side by side: 0 west of x = 0, and 1 east of it, which holds the origin
 /// and the chunk at [`HELD`].
@@ -374,6 +379,7 @@ fn what_waits_for_the_group_of_the_barrier_is_passed_on_before_it() {
     let answers = [
         StoreReply::Committed { tick: 1 },
         StoreReply::Committed { tick: 2 },
+        StoreReply::Generating { position: HELD },
         StoreReply::Loaded {
             position: HELD,
             chunk: generator().generate(HELD),
@@ -428,7 +434,9 @@ fn the_barrier_is_answered_only_when_what_came_back_with_it_is_durable() {
     give_back(&west, &[free]);
     let barrier = store.barrier();
     log(&east, 2, &[]);
-    east.request(StoreRequest::Load { position: HELD });
+    east.request(StoreRequest::Load {
+        position: HELD_AGAIN,
+    });
     hold_the_next();
     let_go();
 

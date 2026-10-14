@@ -464,6 +464,14 @@ impl<C: Chunks> Chunks for Stopping<C> {
         self.gate.pass(Stop::AfterSync);
         done
     }
+
+    fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
+        self.chunks.note(position, chunk)
+    }
+
+    fn noted(&self) -> usize {
+        self.chunks.noted()
+    }
 }
 
 /// A store on `disk`, with its chunks in files there, whose thread for chunks stops

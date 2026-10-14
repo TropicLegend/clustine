@@ -978,7 +978,8 @@ mod tests {
         let saved = directory.path().join("chunks/overworld").exists();
         // Looked at only now: a test that fails while it holds the store never ends.
         held.0.wait();
-        assert_eq!(answered, None);
+        // The store says at once that the chunk is being made, and nothing more.
+        assert_eq!(answered, Some(StoreReply::Generating { position: HELD }));
         assert!(!saved);
 
         let loaded = StoreReply::Loaded {
@@ -987,9 +988,10 @@ mod tests {
         };
         assert_eq!(reply(&remote), loaded);
         // The saves are in the files when the flush is answered: it is what writes
-        // them, a save alone only notes the chunk.
+        // them, a save alone only notes the chunk. So is the chunk that was made for
+        // the load, which is stored once a region was answered with it.
         assert_eq!(reply(&remote), StoreReply::Flushed);
-        assert_eq!(stored(directory.path()), 50);
+        assert_eq!(stored(directory.path()), 51);
 
         // The same for the flush that waits, which writes the next fifty. A load that
         // is still unanswered does not confuse it.
@@ -1000,7 +1002,7 @@ mod tests {
             position: ChunkPos::new(0, 0),
         });
         remote.flush();
-        assert_eq!(stored(directory.path()), 100);
+        assert_eq!(stored(directory.path()), 101);
         assert_eq!(remote.try_reply(), None);
     }
 
@@ -1903,8 +1905,11 @@ mod tests {
             log(&remote, tick, &[]);
             remote.request(StoreRequest::Load { position: origin });
             remote.request(StoreRequest::Flush);
-            let mut answers = vec![any_reply(&remote), any_reply(&remote), any_reply(&remote)];
+            let mut answers: Vec<_> = (0..4).map(|_| any_reply(&remote)).collect();
             // The commit and the load are answered in whichever order they are done.
+            // The chunk is not stored, so the store says first that it is made.
+            let generating = StoreReply::Generating { position: origin };
+            assert!(answers.contains(&generating));
             let loaded = StoreReply::Loaded {
                 position: origin,
                 chunk: generator().generate(origin),

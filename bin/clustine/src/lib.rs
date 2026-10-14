@@ -494,12 +494,13 @@ impl Server {
         // Taking the store out waits for a hello or a reading of the list that was
         // under way, on whichever thread; the store is then waited for until it is at
         // rest with all that was asked of it, which a runner that let go in the middle
-        // did not wait for.
+        // did not wait for, and what it holds to be written is made durable: chunks
+        // that were made for regions and are not in a file yet (ADR-0021, S7).
         let store = self.store;
         let rest = move || {
             let store = store.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(store) = store
-                && let Err(error) = store.flush()
+                && let Err(error) = store.close()
             {
                 warn!(%error, "the world store did not come to rest");
             }

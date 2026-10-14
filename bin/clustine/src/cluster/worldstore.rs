@@ -33,7 +33,8 @@ pub async fn worldstore(
         .with_context(|| format!("opening the world in {}", world.display()))?;
     let listener =
         std::net::TcpListener::bind(listen).with_context(|| format!("listening on {listen}"))?;
-    let server = clustine_worldstore::serve(store, listener).context("serving the world")?;
+    let server =
+        clustine_worldstore::serve(store.clone(), listener).context("serving the world")?;
     info!(
         address = %server.local_addr(),
         world = %world.display(),
@@ -42,7 +43,14 @@ pub async fn worldstore(
     );
     crate::stop_signal().await;
     info!("shutting down");
-    // Closes the connections; what their owners asked for before is done first.
-    tokio::task::spawn_blocking(move || server.stop()).await?;
+    // Closes the connections; what their owners asked for before is done first. Then
+    // what the store holds to be written is made durable: chunks that were made for
+    // regions and are not in a file yet (ADR-0021, S7).
+    tokio::task::spawn_blocking(move || {
+        server.stop();
+        store.close()
+    })
+    .await?
+    .context("writing what the world store held")?;
     Ok(())
 }

@@ -92,6 +92,9 @@ fn settle(handle: &StoreHandle) -> (Vec<u64>, Vec<StoreReply>) {
         match reply {
             StoreReply::Committed { tick } => committed.push(tick),
             StoreReply::Flushed => break,
+            // Where nothing was stored, a chunk is made, and the store says so before
+            // it answers with it.
+            StoreReply::Generating { .. } => {}
             other => others.push(other),
         }
     }

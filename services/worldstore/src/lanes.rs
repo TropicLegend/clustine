@@ -57,7 +57,7 @@ use clustine_rpc::{
 use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds, PlayerId};
 use tracing::{error, info, warn};
 
-use crate::chunks::Job;
+use crate::chunks::{Job, Jobs};
 use crate::disk::{Disk, replace};
 use crate::players::{self, Players, Taken, Undo};
 use crate::table::{Division, Table};
@@ -79,7 +79,7 @@ const RECORD_CHUNKS: usize = 65_536;
 pub(crate) struct Lanes {
     disk: Arc<dyn Disk>,
     root: PathBuf,
-    jobs: Sender<Job>,
+    jobs: Jobs,
     log: Log,
     /// The regions there are and the chunks each holds.
     table: Table,
@@ -235,7 +235,7 @@ impl Lanes {
     pub(crate) fn load(
         disk: Arc<dyn Disk>,
         root: &Path,
-        jobs: Sender<Job>,
+        jobs: Jobs,
         told: &Division,
     ) -> Result<Self, StoreError> {
         told.check()?;
@@ -585,7 +585,7 @@ impl Lanes {
                 if let Some(lane) = self.regions.get_mut(&session.region)
                     && lane.current == Some(session.number)
                 {
-                    lose(lane);
+                    lose(lane, &self.jobs);
                 }
             }
             Message::Checkpointed {
@@ -615,7 +615,11 @@ impl Lanes {
                 // Whoever asked may have gone.
                 let _ = answer.send(list);
             }
-            Message::Barrier { reply_to, answer } => {
+            Message::Barrier {
+                reply_to,
+                answer,
+                sync,
+            } => {
                 // Everything that was sent before it has been handled. What of it
                 // waited for the group to end is answered and passed on now, so that
                 // the barrier reaches the thread for chunks behind all of it. A merge
@@ -623,7 +627,11 @@ impl Lanes {
                 self.end_group();
                 // If that thread has gone, the answer goes with the job, and whoever
                 // waits is told so.
-                let _ = self.jobs.send(Job::Barrier { reply_to, answer });
+                let _ = self.jobs.send(Job::Barrier {
+                    reply_to,
+                    answer,
+                    sync,
+                });
             }
             #[cfg(test)]
             Message::Players { answer } => {
@@ -631,7 +639,7 @@ impl Lanes {
                 self.end_group();
                 let _ = answer.send((self.players.issued(), self.players.list()));
             }
-            Message::Passed { answer } => {
+            Message::Passed { answer, chunks } => {
                 // The thread for chunks has done what it was given before the barrier,
                 // and what it had to say of it has been handled here: state files are
                 // in place and returns are in the log. Ending the group makes that
@@ -640,7 +648,7 @@ impl Lanes {
                 // is why one round there and back is enough.
                 self.end_group();
                 let rested = match self.log.settle() {
-                    Ok(()) => Ok(()),
+                    Ok(()) => chunks,
                     Err(error) => Err(StoreError::Io(error)),
                 };
                 // Whoever asked may have gone.
@@ -989,7 +997,7 @@ impl Lanes {
                     // A failed sync is not tried again: what it was to make durable may
                     // be lost even if a later one succeeds. The region is opened again,
                     // and read afresh then.
-                    lose(lane);
+                    lose(lane, &self.jobs);
                 }
             }
         }
@@ -1075,7 +1083,7 @@ impl Lanes {
                 lane.live
                     .retain(|entry| entry.segment != segment || entry.offset < durable);
             }
-            lose(lane);
+            lose(lane, &self.jobs);
         }
     }
 
@@ -1262,7 +1270,7 @@ impl Lanes {
             Err(error) => {
                 error!(region = %session.region, %error, "a state file could not be put in place");
                 let _ = self.disk.remove(temporary);
-                lose(lane);
+                lose(lane, &self.jobs);
             }
         }
     }
@@ -1409,6 +1417,8 @@ impl Lanes {
         // thread for chunks is through with what it had asked for.
         if let Some(replaced) = lane.owner.take() {
             replaced.peer.mark_lost();
+            // Its loads that are being generated are let go of at once.
+            let _ = self.jobs.send(Job::Wake);
             info!(%region, epoch, "the owner of a region was replaced");
         }
         lane.current = None;
@@ -1549,7 +1559,7 @@ impl Lanes {
         if let Some(mut gone) = self.regions.remove(&absorbed) {
             // Its owner gets nothing done any more; what it had the thread for chunks
             // do is done before anything the survivor asks from now on.
-            lose(&mut gone);
+            lose(&mut gone, &self.jobs);
             let mut removed = Vec::new();
             if gone.state_tick.is_some() {
                 removed.push(self.state_path(absorbed));
@@ -1976,9 +1986,12 @@ fn is_empty(entity_ids: EntityIds) -> bool {
 
 /// The region's owner, if any, gets nothing done any more, and the region is read
 /// afresh when it is opened next.
-fn lose(lane: &mut Lane) {
+fn lose(lane: &mut Lane, jobs: &Jobs) {
     if let Some(owner) = lane.owner.take() {
         owner.peer.mark_lost();
+        // What the generator is making for its loads is let go of now, and not when
+        // the thread for chunks is next given something (ADR-0021, section 7, rule 4).
+        let _ = jobs.send(Job::Wake);
     }
     lane.current = None;
     lane.installing = None;

@@ -15,8 +15,11 @@
 //! it, and [`Store::regions`] lists the regions. See
 //! `docs/adr/0011-the-world-store-and-regions.md`.
 //!
-//! Only chunks that were changed are stored. Any other chunk is generated again when it
-//! is needed, which is why a world is tied to the generator settings it was created with.
+//! A chunk that is not stored is generated when a region asks for it, off the thread
+//! that serves chunks, and is stored once a region was answered with it; until that is
+//! durable it is generated again when it is needed, and is the same. That is why a
+//! world is tied to the generator settings it was created with. See
+//! `docs/adr/0021-generation-is-a-function.md`, sections 6 and 7.
 //!
 //! Whoever runs a region may be in another process than the store: [`serve`] offers a
 //! store over TCP, [`StoreHandle::connect`] opens a region of a store that is served,
@@ -69,7 +72,7 @@ use clustine_region::RegionId;
 use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest};
 use clustine_world::{ChunkArea, ChunkGenerator, ChunkPos};
 
-use crate::chunks::{ChunkService, Chunks, FileChunks, MemoryChunks};
+use crate::chunks::{ChunkService, Chunks, FileChunks, Jobs, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk};
 use crate::lanes::Lanes;
 pub use crate::table::{Division, NotAscending};
@@ -254,15 +257,19 @@ enum Message {
     },
     /// Someone waits for the store to be at rest with what was asked of it before.
     /// The commit thread passes it on to the thread for chunks, behind what it has
-    /// for that thread; `reply_to` is how that thread gets back to this one.
+    /// for that thread; `reply_to` is how that thread gets back to this one. With
+    /// `sync`, that thread makes durable what it holds to be written.
     Barrier {
         reply_to: Sender<Message>,
         answer: Sender<Result<(), StoreError>>,
+        sync: bool,
     },
     /// The thread for chunks has done everything it was given before a barrier, and
-    /// has said what it had to say of it.
+    /// has said what it had to say of it; `chunks` is how its sync went, if it was
+    /// asked for one.
     Passed {
         answer: Sender<Result<(), StoreError>>,
+        chunks: Result<(), StoreError>,
     },
     /// A test wants what the store keeps of the players: the highest stay ever given
     /// and the records.
@@ -374,6 +381,21 @@ impl Store {
         Self::rested(&self.barrier())
     }
 
+    /// What [`Store::flush`] does, and then makes durable every chunk that is held to
+    /// be written: the saves no checkpoint, return or flush has written yet, and the
+    /// generated chunks that regions were answered with
+    /// (`docs/adr/0021-generation-is-a-function.md`, section 6, S7). For an orderly
+    /// stop, once nothing asks anything of the store any more: nothing is written when
+    /// a store is dropped.
+    ///
+    /// It waits for every load that was asked for before it and is being generated.
+    /// If the chunks cannot be made durable, the error says so, and the handles that
+    /// saved since they last were are lost; the generated ones are made again when
+    /// they are needed, and are the same.
+    pub fn close(&self) -> Result<(), StoreError> {
+        Self::rested(&self.send_barrier(true))
+    }
+
     /// What the store keeps of the players, once everything asked for before is
     /// durable: the highest stay ever given, and the records in ascending order of
     /// the players. Nothing outside the store reads the records; its tests do.
@@ -389,11 +411,16 @@ impl Store {
     /// The first half of [`Store::flush`]: sends the barrier, and returns where its
     /// answer arrives.
     pub(crate) fn barrier(&self) -> Receiver<Result<(), StoreError>> {
+        self.send_barrier(false)
+    }
+
+    fn send_barrier(&self, sync: bool) -> Receiver<Result<(), StoreError>> {
         let (answer, answered) = mpsc::channel();
         // The store runs for as long as there is a `Store`, so it is still there.
         let _ = self.messages.send(Message::Barrier {
             reply_to: self.messages.clone(),
             answer,
+            sync,
         });
         answered
     }
@@ -582,7 +609,7 @@ pub fn spawn_local(
 ///
 /// The thread for chunks runs first: reading the world may have it put what the regions
 /// of another division committed into the stored chunks. It ends by itself if the world
-/// cannot be read, when nothing can give it work any more.
+/// cannot be read, when the commit thread's way to it goes.
 fn start(
     disk: Arc<dyn Disk>,
     root: &Path,
@@ -591,18 +618,17 @@ fn start(
     division: &Division,
 ) -> Result<Store, StoreError> {
     let (jobs, queued) = mpsc::channel();
-    let service = ChunkService {
+    let service = ChunkService::new(
         chunks,
         generator,
-        disk: Arc::clone(&disk),
-        regions: root.join("regions"),
-        saved: Vec::new(),
-        states: 0,
-    };
+        Arc::clone(&disk),
+        root.join("regions"),
+        jobs.clone(),
+    );
     thread::Builder::new()
         .name("worldstore-chunks".to_owned())
         .spawn(move || service.run(queued))?;
-    let lanes = Lanes::load(disk, root, jobs, division)?;
+    let lanes = Lanes::load(disk, root, Jobs::new(jobs), division)?;
     let (messages, received) = mpsc::channel();
     thread::Builder::new()
         .name("worldstore".to_owned())

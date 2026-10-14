@@ -690,6 +690,14 @@ impl<C: Chunks> Chunks for Gated<C> {
     fn sync(&mut self) -> Result<(), StoreError> {
         self.chunks.sync()
     }
+
+    fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
+        self.chunks.note(position, chunk)
+    }
+
+    fn noted(&self) -> usize {
+        self.chunks.noted()
+    }
 }
 
 /// A store for the world with a gap on `disk`, whose saves of the chunks in `gated`

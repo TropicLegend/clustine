@@ -17,7 +17,7 @@ use super::*;
 use crate::disk::{Fault, MemoryDisk, OsDisk, Survival, replace};
 use crate::players::{Players, Taken, Undo, Why};
 use crate::regions::{SURVIVALS, checkpoint, claim, gap, give_back, put, store_on, table_file};
-use crate::rest::held_twice;
+use crate::rest::{HELD_AGAIN, held_twice};
 use crate::tests::{HELD, Switched, division, generator, hello, open, switched_for};
 use crate::unpinned::logged;
 
@@ -1522,6 +1522,7 @@ fn a_group_in_which_a_return_cannot_be_written_takes_its_notes_back() {
     let (home, west) = opened_before(&store, p);
     let east = open(&store, hello(GAP_EAST, 1));
     assert!(gap().pinned[GAP_EAST as usize].contains(HELD));
+    assert!(gap().pinned[GAP_EAST as usize].contains(HELD_AGAIN));
     // The opening is durable by itself, so that the sync held below is the commit's:
     // a hello is answered before the sync of its record.
     assert_eq!(answers(&east), []);
@@ -1533,7 +1534,9 @@ fn a_group_in_which_a_return_cannot_be_written_takes_its_notes_back() {
     east.request(StoreRequest::Load { position: HELD });
     generating.wait();
     give_back(&west, &[FREE]);
-    east.request(StoreRequest::Load { position: HELD });
+    east.request(StoreRequest::Load {
+        position: HELD_AGAIN,
+    });
     hold(&disk, &home, 3);
     commit(&home, 4, doomed(p, q));
     // The thread for chunks goes on, says that the return's saves are durable, and

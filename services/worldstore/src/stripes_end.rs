@@ -157,11 +157,12 @@ fn says(lines: &[(Level, String)], case: &str) -> bool {
     counted == (1, 1)
 }
 
-/// The next answer to `handle` other than that a commit is done.
+/// The next answer to `handle` other than that a commit is done or that a chunk is
+/// being made.
 fn next(handle: &StoreHandle, case: &str) -> StoreReply {
     loop {
         match handle.replies.recv_timeout(PATIENCE) {
-            Ok(StoreReply::Committed { .. }) => {}
+            Ok(StoreReply::Committed { .. } | StoreReply::Generating { .. }) => {}
             Ok(reply) => return reply,
             Err(error) => panic!("{case}: the store did not answer: {error}"),
         }
@@ -2019,6 +2020,8 @@ fn the_answers_to_a_claim_and_a_flush_are_out_when_the_store_is_at_rest() {
         position: HOME,
         chunk: generator().generate(HOME),
     };
+    let generating = StoreReply::Generating { position: HOME };
+    assert_eq!(handle.try_reply(), Some(generating));
     assert!(handle.try_reply() == Some(loaded));
     assert_eq!(handle.try_reply(), None);
 }
