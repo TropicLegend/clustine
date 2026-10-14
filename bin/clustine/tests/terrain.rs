@@ -331,7 +331,7 @@ async fn the_command_refuses_a_seed_that_is_no_number_and_a_world_of_another_see
     }
 }
 
-/// What the preview costs a player, through the world store's one chunk thread:
+/// What the preview costs a player, made on the generation scheduler's pool:
 ///
 /// ```text
 /// cargo test --release -p clustine --test terrain -- --ignored --nocapture

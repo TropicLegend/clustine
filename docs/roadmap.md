@@ -1155,9 +1155,9 @@ they came stayed dark for them); all three are mended. Measured with a hundred b
 chunk, about 2.5 ms of a thread each, and no chunk waited at the edge longer than
 the second of its hold; compressing light updates costs at most two thirds of a
 processor where forty chunks at the rim of a hundred players change four times a
-second. What a joining player waits for is the generator (3.3 s to the nine
+second. What a joining player waited for was the generator (3.3 s to the nine
 chunks around them, 5.2 s to the view, all of it the store's one thread), not
-light. **Still owed**: a real client's eye on it, which is step 4 below under "the
+light; since W5 it is 0.24 and 1.0 s. **Still owed**: a real client's eye on it, which is step 4 below under "the
 land beside the game's", and L8 (smaller updates).
 
 **The biome source is built** (T3, `crates/clustine-terrain`): for a seed and a place,
@@ -1234,8 +1234,8 @@ chunks: a join at view distance 8 still takes about 6 s.
 So for a seed the land has the game's shape, the game's skin, the game's caves and
 the game's building sites: a chunk takes about 9 ms on one thread. Still to come:
 everything that grows, the ores placed as features and the structures' blocks
-(phase F), and the service that makes chunks on demand and stores what it handed
-out.
+(phase F), and the store keeping what was handed out (W6); chunks are made on
+demand off the store's thread since W5, below.
 
 **The land can be walked: `--seed`** (2026-10-14). A server that is given a seed
 serves that seed's bare overworld, and one that is given none is flat as before.
@@ -1243,12 +1243,10 @@ What makes the chunks is a second generator beside the flat one
 (`services/worldgen/src/terrain.rs`): the biomes, the carved blocks and the marks of
 `clustine-terrain`, lit by `clustine-light` beside the chunk's eight neighbours.
 **It is a preview, which the generation service of
-[ADR-0021](adr/0021-generation-is-a-function.md) replaces** (W5 and W6 of the plan): a
-chunk is made in one call on the world store's one chunk thread, in no fixed order of
-runs, and the store keeps nothing of what it handed out, so a chunk nobody changed is
-made again whenever it is loaded. The generator keeps the last 1,024 chunks' blocks
-without their light, so that neighbours share them; that changes what a chunk costs
-and not what it is.
+[ADR-0021](adr/0021-generation-is-a-function.md) replaces** (W5 and W6 of the plan).
+Since W5 (below) its chunks are made on the scheduler's pool rather than on the world
+store's one thread; the store still keeps nothing of what it handed out, so a chunk
+nobody changed is made again whenever it is loaded (W6).
 
 - Players enter above the block at the origin, as in the flat world, on the highest
   block of that column that blocks motion, or on the water where that is under water
@@ -1281,6 +1279,32 @@ the land comes 1.5 s late. The one thread is shared: three players exploring in
 three directions at a flying sprint take all of it, and a join meanwhile waits. That
 is what ADR-0021's pool is for, and its store what makes a second visit free.
 
+**Chunks are made off the store's thread: W5** (2026-10-14). The scheduler of
+ADR-0021 (`services/worldgen/src/scheduler/`) makes chunks in the record's stages on
+a pool of two thirds of the processors, with a cache bounded in bytes, and a chunk's
+neighbours made ahead of it; the world store asks it for chunks nobody has stored and
+goes on meanwhile, answering `Generating` and, when a region lets go of a chunk not yet
+begun, `Withdrawn`; a worker holds no link for a chunk being made and asks for the
+chunks nearest its players first. A world records which generator made it, with its
+version, in its `meta`, and **a world made before this is refused** ("malformed
+meta"): move it away or name another with `--world`. The `--seed` preview runs as the
+scheduler's stages in a bare order, where a finished chunk is its terrain, and gives
+the preview's chunks unchanged. Where this departs from the record is in the record's
+"As built" section. Each part was tested from the record by someone who had not
+written it.
+
+Measured on 2026-10-14 in an optimised build on this machine (12 processors, the
+world on its local disk; the generator does not wait for the disk), three runs of
+`cargo test --release -p clustine --test terrain -- --ignored --nocapture`: **a first
+join has its own chunk after a quarter of a second and all 329 chunks of a view of 8
+after 1.0 to 1.06 s**, where it took 6.3 s; a second player beside the first has them
+in 0.27 s. Flying east 32 chunks, the 19 chunks of the view that are missing on
+arriving come within 0.02 to 0.11 s at a sprint, flying and flying at a sprint, 0.10
+s at 34 blocks a second, and 0.14 to 0.24 s at 60 (gliding with rockets), where it was
+1.5 s. Rows 1 and 2 of the lights test (`CLUSTINE_LIGHTS=100 CLUSTINE_LIGHTS_VIEW=8
+CLUSTINE_LIGHTS_ROWS=1,2`): the nine around a joining bot in 0.24 s and its view in
+1.0 s, where they took 3.3 and 5.2 s, one light job a chunk as before.
+
 **What to try with a real client: the land beside the game's.** With `--release`,
 and a directory of its own for the world:
 
@@ -1293,7 +1317,7 @@ and, to compare, the official server on the same seed with structures off
 world), both in creative mode. Press F3 for the coordinates and fly:
 
 1. You enter at 0, 63, 0 on the sea beside a coast, within half a second, and
-   the land fills in around you for about six seconds, nearest first. Double-tap
+   the land fills in around you within about a second, nearest first. Double-tap
    jump to fly.
 2. **The same land at the same coordinates**: the coast at the origin, the
    mountains, rivers, oceans and beaches around it, the same biome in F3 at the same
