@@ -10,6 +10,8 @@ mod connection;
 mod encode;
 mod fanout;
 mod light;
+#[cfg(test)]
+mod light_orders;
 mod login;
 mod play;
 #[cfg(test)]
