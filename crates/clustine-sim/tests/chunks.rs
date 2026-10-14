@@ -27,6 +27,7 @@ use clustine_data::{BlockState, blocks, items};
 use clustine_sim::api::{
     Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
 };
+use clustine_sim::placement::Click;
 use clustine_sim::{
     Durable, EdgeEvent, Entered, Holdings, Knowledge, Misdirected, PlayerChange, PlayerEvent,
     PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig, RegionState, StateDelta,
@@ -3077,6 +3078,39 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
     }
 }
 
+/// The click of player 1 of [`at_the_line`] with the stone in their hand on `face` of
+/// `position`, standing at `feet` and looking straight ahead, as a region passes it on
+/// (docs/groundwork/w6-plan.md, section 4.6).
+fn click_with_stone(position: BlockPos, face: Face, feet: Vec3) -> Click {
+    Click {
+        position,
+        face,
+        cursor: [0.5; 3],
+        sneaking: false,
+        held: Some(items::STONE),
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+    }
+}
+
+/// A click passed on whole to the region that holds the clicked block.
+fn using(position: BlockPos, face: Face, feet: Vec3) -> RemoteStep {
+    RemoteStep::UseOn {
+        click: click_with_stone(position, face, feet),
+    }
+}
+
+/// A placement beside a clicked block of stone, passed on to the region that holds
+/// the spot.
+fn placing_beside(position: BlockPos, face: Face, feet: Vec3) -> RemoteStep {
+    RemoteStep::PlaceAt {
+        click: click_with_stone(position, face, feet),
+        target: face.neighbour(position),
+        clicked: blocks::STONE,
+    }
+}
+
 /// Has player 1 of [`at_the_line`], after a step to `from`, use the stone in their hand
 /// on `face` of `position`, and returns the entries that made, having checked that
 /// nothing was placed or acknowledged and no chunk claimed for it.
@@ -3125,7 +3159,12 @@ fn placing_against_a_held_block_into_a_chunk_believed_anothers_is_passed_on_with
             E,
             1,
             Durable::Remote {
-                action: own(player(1), entity(1), 6, place_at(BORDER_BLOCK_B, SPAWN)),
+                action: own(
+                    player(1),
+                    entity(1),
+                    6,
+                    placing_beside(BORDER_BLOCK_A, Face::East, SPAWN)
+                ),
                 to: Some(REGION_B),
             }
         )]
@@ -3140,7 +3179,12 @@ fn placing_against_a_held_block_into_an_unknown_or_asked_chunk_is_passed_on_with
             E,
             1,
             Durable::Remote {
-                action: own(player(1), entity(1), 6, place_at(NORTH_BLOCK, BY_NORTH)),
+                action: own(
+                    player(1),
+                    entity(1),
+                    6,
+                    placing_beside(BY_NORTH_BLOCK, Face::North, BY_NORTH)
+                ),
                 to: None,
             }
         )]
@@ -3151,7 +3195,12 @@ fn placing_against_a_held_block_into_an_unknown_or_asked_chunk_is_passed_on_with
             E,
             1,
             Durable::Remote {
-                action: own(player(1), entity(1), 6, place_at(SOUTH_BLOCK, BY_SOUTH)),
+                action: own(
+                    player(1),
+                    entity(1),
+                    6,
+                    placing_beside(BY_SOUTH_BLOCK, Face::South, BY_SOUTH)
+                ),
                 to: None,
             }
         )]
@@ -3161,23 +3210,16 @@ fn placing_against_a_held_block_into_an_unknown_or_asked_chunk_is_passed_on_with
 #[test]
 fn placing_against_a_block_of_a_chunk_believed_anothers_is_passed_on_with_that_region() {
     // Into a spot above it, which is that region's as well, and into one of the
-    // region's own chunk: either way the block to place against is the first to ask.
-    for (face, target) in [
-        (Face::Top, BORDER_BLOCK_B.offset(0, 1, 0)),
-        (Face::West, BORDER_BLOCK_A),
-    ] {
+    // region's own chunk: either way the clicked block is the first to ask, and the
+    // click goes there whole.
+    for face in [Face::Top, Face::West] {
         assert_eq!(
             placed_from(SPAWN, BORDER_BLOCK_B, face),
             vec![(
                 E,
                 1,
                 Durable::Remote {
-                    action: own(
-                        player(1),
-                        entity(1),
-                        6,
-                        place_against(BORDER_BLOCK_B, target, SPAWN)
-                    ),
+                    action: own(player(1), entity(1), 6, using(BORDER_BLOCK_B, face, SPAWN)),
                     to: Some(REGION_B),
                 }
             )]
@@ -3193,19 +3235,13 @@ fn placing_against_a_block_of_an_unknown_or_asked_chunk_is_passed_on_without_a_r
         (BY_SOUTH, SOUTH_BLOCK, Face::Top),
         (BY_SOUTH, SOUTH_BLOCK, Face::North),
     ] {
-        let target = face.neighbour(against);
         assert_eq!(
             placed_from(from, against, face),
             vec![(
                 E,
                 1,
                 Durable::Remote {
-                    action: own(
-                        player(1),
-                        entity(1),
-                        6,
-                        place_against(against, target, from)
-                    ),
+                    action: own(player(1), entity(1), 6, using(against, face, from)),
                     to: None,
                 }
             )]
@@ -3213,8 +3249,11 @@ fn placing_against_a_block_of_an_unknown_or_asked_chunk_is_passed_on_without_a_r
     }
 }
 
+/// A click out of reach is acknowledged and goes nowhere. One with an empty hand is the
+/// region's that holds the clicked block, as any click is, since it may open a door
+/// there (docs/groundwork/w6-plan.md, sections 3.2 and 4.7).
 #[test]
-fn a_placement_without_a_block_in_hand_or_out_of_reach_is_acknowledged_whatever_the_chunks() {
+fn a_click_out_of_reach_is_acknowledged_and_one_with_an_empty_hand_goes_where_the_block_is() {
     let mut world = at_the_line();
     // Out of reach, with the stone in hand.
     for (index, block) in FAR_BLOCKS.into_iter().enumerate() {
@@ -3226,7 +3265,8 @@ fn a_placement_without_a_block_in_hand_or_out_of_reach_is_acknowledged_whatever_
         assert!(output.durable.is_empty() && output.events.is_empty());
         assert!(output.claims.is_empty());
     }
-    // Within reach, with an empty hand.
+    // Within reach, with an empty hand: the block of region B goes there, unanswered
+    // here; this region's own blocks are clicked here, and nothing comes of it.
     world.tick(&single_input(
         E,
         player(1),
@@ -3246,15 +3286,31 @@ fn a_placement_without_a_block_in_hand_or_out_of_reach_is_acknowledged_whatever_
         let sequence = index as i32 + 40;
         let input = use_on(block, face, sequence);
         let output = world.tick(&single_input(E, player(1), entity(1), number, input));
-        assert_eq!(acknowledged(&output), [(player(1), sequence)], "{block:?}");
-        assert!(output.durable.is_empty() && output.events.is_empty());
+        assert!(output.events.is_empty(), "{block:?}");
+        if block == BORDER_BLOCK_B {
+            assert!(acknowledged(&output).is_empty(), "{block:?}");
+            let click = Click {
+                held: None,
+                ..click_with_stone(block, face, SPAWN)
+            };
+            let entry = Durable::Remote {
+                action: own(player(1), entity(1), sequence, RemoteStep::UseOn { click }),
+                to: Some(REGION_B),
+            };
+            assert_eq!(output.durable, [(E, 1, entry)]);
+        } else {
+            assert_eq!(acknowledged(&output), [(player(1), sequence)], "{block:?}");
+            assert!(output.durable.is_empty());
+        }
     }
 }
 
+/// A click on the air above the stone of the region's own chunk, on its face towards
+/// the chunk across the line, places into that air, as the official server does with
+/// a block the client still showed: nothing is left to ask of the other region
+/// (docs/groundwork/w6-plan.md, sections 4.1 and 4.7).
 #[test]
-fn a_placement_against_no_block_of_a_held_chunk_is_acknowledged_and_goes_nowhere() {
-    // Against the air above the stone of the region's own chunk, into the chunk across
-    // the line: there is nothing to place against, so nothing is left to ask.
+fn a_click_on_air_of_a_held_chunk_places_into_that_air_and_goes_nowhere() {
     let mut world = at_the_line();
     let air = BORDER_BLOCK_A.offset(0, 1, 0);
     let output = world.tick(&single_input(
@@ -3265,7 +3321,8 @@ fn a_placement_against_no_block_of_a_held_chunk_is_acknowledged_and_goes_nowhere
         use_on(air, Face::East, 6),
     ));
     assert_eq!(acknowledged(&output), [(player(1), 6)]);
-    assert!(output.durable.is_empty() && output.events.is_empty());
+    assert!(output.durable.is_empty());
+    assert_eq!(block_changes(&output), [(air, blocks::STONE)]);
 }
 
 #[test]
@@ -3671,7 +3728,12 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
                 F,
                 5,
                 Durable::Remote {
-                    action: own(player(2), entity(2), 12, place_at(BORDER_BLOCK_B, SPAWN)),
+                    action: own(
+                        player(2),
+                        entity(2),
+                        12,
+                        placing_beside(BORDER_BLOCK_A, Face::East, SPAWN)
+                    ),
                     to: Some(REGION_B),
                 }
             ),

@@ -2779,6 +2779,12 @@ impl RegionRunner {
                     against, target, ..
                 } => vec![chunk(*against), chunk(*target)],
                 RemoteStep::Place { target, .. } => vec![chunk(*target)],
+                // As for a click of the region's own player.
+                RemoteStep::UseOn { click } => {
+                    let beside = click.face.neighbour(click.position);
+                    vec![chunk(click.position), chunk(beside)]
+                }
+                RemoteStep::PlaceAt { target, .. } => vec![chunk(*target)],
             },
             // A move, an arrival, a join and a leave are about no chunk for this.
             _ => return false,

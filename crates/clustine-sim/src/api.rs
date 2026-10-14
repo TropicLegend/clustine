@@ -7,6 +7,7 @@ use clustine_data::BlockState;
 use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3};
 use serde::{Deserialize, Serialize};
 
+use crate::placement::Click;
 use crate::state::StateDelta;
 
 /// Where an entity is and how it is oriented.
@@ -307,6 +308,11 @@ pub struct RemoteAction {
 
 /// The next step of a [`RemoteAction`]. The player's region has found the player to be
 /// within reach and, for placing, to hold the block.
+///
+/// The first three are what regions passed on before clicks carried what vanilla
+/// decides by; a region still takes them, from a state stored by an older build, as
+/// it did then. New variants are added at the end, so that what is stored reads as
+/// it did (`docs/groundwork/w6-plan.md`, section 4.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RemoteStep {
     /// Break the block at `position`.
@@ -326,6 +332,17 @@ pub enum RemoteStep {
         block: BlockState,
         placer: Vec3,
     },
+    /// A click on the block at `click.position`, for the region that holds it to use
+    /// the block, or to find where a block is placed and place it or pass it on.
+    UseOn { click: Click },
+    /// Place the item of `click` at `target`, which is not the clicked block. The
+    /// clicked block was `clicked` when the region that holds it read it: the region
+    /// that holds `target` places against that unless it has the clicked block itself.
+    PlaceAt {
+        click: Click,
+        target: BlockPos,
+        clicked: BlockState,
+    },
 }
 
 impl RemoteStep {
@@ -335,6 +352,8 @@ impl RemoteStep {
             Self::Break { position } => *position,
             Self::PlaceAgainst { against, .. } => *against,
             Self::Place { target, .. } => *target,
+            Self::UseOn { click } => click.position,
+            Self::PlaceAt { target, .. } => *target,
         }
     }
 }

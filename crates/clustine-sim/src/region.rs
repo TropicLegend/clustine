@@ -13,6 +13,7 @@ use crate::api::{
     Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent,
     RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
 };
+use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
 mod reshape;
@@ -1199,9 +1200,37 @@ impl Region {
                 }
             }
             PlayerInput::SetFlying { flying } => player.flying = *flying,
-            // Buckets and lily pads come with step W6e; until then the client is told
-            // its guess was handled, so that it stops guessing.
-            PlayerInput::UseItem { sequence, .. } => player.acknowledge(*sequence),
+            PlayerInput::UseItem {
+                rotation,
+                sneaking,
+                sequence,
+            } => {
+                // The rotation the client used the item along is the player's from now
+                // on, as vanilla takes it before it uses the item.
+                (player.pose.yaw, player.pose.pitch) = *rotation;
+                let item_use = ItemUse {
+                    held: player.hotbar[usize::from(player.selected_slot)].map(|stack| stack.item),
+                    feet: player.pose.position,
+                    yaw: rotation.0,
+                    pitch: rotation.1,
+                    sneaking: *sneaking,
+                    hotbar: player.hotbar,
+                };
+                let sequence = *sequence;
+                let bodies = self.bodies(Some(id));
+                let used = placement::use_item(&item_use, &Loaded(&self.chunks), &bodies);
+                if let Some(used) = used
+                    && self.change_all(&used.changes, output)
+                    && let Some((slot, stack)) = used.hotbar
+                    && let Some(player) = self.players.get_mut(&id)
+                    && let Some(held) = player.hotbar.get_mut(usize::from(slot))
+                {
+                    *held = stack;
+                }
+                if let Some(player) = self.players.get_mut(&id) {
+                    player.acknowledge(sequence);
+                }
+            }
             PlayerInput::Dig { position, sequence } => {
                 let (position, sequence) = (*position, *sequence);
                 let knowledge = self.land.knowledge(position.chunk());
@@ -1229,56 +1258,46 @@ impl Region {
             PlayerInput::UseItemOn {
                 position,
                 face,
+                cursor,
+                sneaking,
                 sequence,
-                ..
             } => {
-                let (against, sequence) = (*position, *sequence);
-                let target = face.neighbour(against);
-                let placer = player.pose.position;
-                // In creative mode placing does not use the item up.
-                let held = player.hotbar[usize::from(player.selected_slot)]
-                    .and_then(|stack| ITEMS.get(usize::try_from(stack.item).ok()?)?.block);
-                let Some(block) = held.filter(|_| player.can_reach(against)) else {
+                let sequence = *sequence;
+                // Acknowledged whatever comes of it, so the client stops guessing.
+                if !player.can_reach(*position) {
                     player.acknowledge(sequence);
                     return;
+                }
+                // Also with an empty hand: the click may open a door.
+                let click = Click {
+                    position: *position,
+                    face: *face,
+                    cursor: *cursor,
+                    sneaking: *sneaking,
+                    held: player.hotbar[usize::from(player.selected_slot)].map(|stack| stack.item),
+                    feet: player.pose.position,
+                    yaw: player.pose.yaw,
+                    pitch: player.pose.pitch,
                 };
-                // Placed against a block, into a free spot nobody stands in. Each of
-                // the two is for the region that holds its chunk to see to.
-                let (at_against, at_target) = (
-                    self.land.knowledge(against.chunk()),
-                    self.land.knowledge(target.chunk()),
-                );
-                let step = if at_against != Knowledge::Held {
-                    let step = RemoteStep::PlaceAgainst {
-                        against,
-                        target,
-                        block,
-                        placer,
-                    };
-                    Some((step, at_against.holder()))
-                } else if !self.is_block(against) {
-                    None
-                } else if at_target != Knowledge::Held {
-                    let step = RemoteStep::Place {
-                        target,
-                        block,
-                        placer,
-                    };
-                    Some((step, at_target.holder()))
+                let action = RemoteAction {
+                    player: id,
+                    entity,
+                    sequence,
+                    step: RemoteStep::UseOn { click },
+                };
+                // The clicked block is for the region that holds its chunk to judge,
+                // and what is placed beside it for the region that holds that one's.
+                let at_clicked = self.land.knowledge(position.chunk());
+                let passed_on = if at_clicked == Knowledge::Held {
+                    self.click_here(&action, output)
                 } else {
-                    self.place_block(target, block, None, output);
-                    None
+                    Some(Durable::Remote {
+                        action,
+                        to: at_clicked.holder(),
+                    })
                 };
-                match step {
-                    Some((step, to)) => {
-                        let action = RemoteAction {
-                            player: id,
-                            entity,
-                            sequence,
-                            step,
-                        };
-                        self.send(edge, Durable::Remote { action, to }, output);
-                    }
+                match passed_on {
+                    Some(entry) => self.send(edge, entry, output),
                     None => {
                         if let Some(player) = self.players.get_mut(&id) {
                             player.acknowledge(sequence);
@@ -1287,6 +1306,82 @@ impl Region {
                 }
             }
         }
+    }
+
+    /// Takes a click of `action`, a [`RemoteStep::UseOn`] or a [`RemoteStep::PlaceAt`],
+    /// whose block the region holds: the clicked block for the one, the target for the
+    /// other. Returns `None` when it is done, and the entry that passes it on when what
+    /// is left is another region's: a placement beside the clicked block in a chunk the
+    /// region does not hold. See `docs/groundwork/w6-plan.md`, sections 3.2 and 4.6.
+    fn click_here(&mut self, action: &RemoteAction, output: &mut TickOutput) -> Option<Durable> {
+        let bodies = self.bodies(Some(action.player));
+        let (click, target, replace_clicked, clicked) = match &action.step {
+            RemoteStep::UseOn { click } => match placement::click(click, &Loaded(&self.chunks)) {
+                Clicked::Nothing => return None,
+                Clicked::Used(changes) => {
+                    self.change_all(&changes, output);
+                    return None;
+                }
+                Clicked::Place {
+                    target,
+                    replace_clicked,
+                    clicked,
+                } => (click, target, replace_clicked, clicked),
+            },
+            RemoteStep::PlaceAt {
+                click,
+                target,
+                clicked,
+            } => (click, *target, false, *clicked),
+            _ => unreachable!("only a click's steps are taken here"),
+        };
+        let at_target = self.land.knowledge(target.chunk());
+        if at_target != Knowledge::Held {
+            let step = RemoteStep::PlaceAt {
+                click: click.clone(),
+                target,
+                clicked,
+            };
+            let action = RemoteAction {
+                step,
+                ..action.clone()
+            };
+            return Some(Durable::Remote {
+                action,
+                to: at_target.holder(),
+            });
+        }
+        let loaded = Loaded(&self.chunks);
+        let placed = placement::place(click, target, replace_clicked, clicked, &loaded, &bodies);
+        if let Some(changes) = placed {
+            self.change_all(&changes, output);
+        }
+        None
+    }
+
+    /// The boxes of the region's players other than `except`, which a placed block may
+    /// not overlap. Whether a player sneaks is not region state: every box is of a
+    /// player who stands.
+    fn bodies(&self, except: Option<PlayerId>) -> Vec<[f64; 6]> {
+        let others = self.players.iter().filter(|(id, _)| Some(**id) != except);
+        others
+            .map(|(_, player)| placement::body(player.pose.position, false))
+            .collect()
+    }
+
+    /// Changes every block of `changes`, or none of them if one is in a chunk the
+    /// region has not loaded. Returns whether it changed them.
+    fn change_all(&mut self, changes: &[(BlockPos, BlockState)], output: &mut TickOutput) -> bool {
+        if changes
+            .iter()
+            .any(|(position, _)| self.block(*position).is_none())
+        {
+            return false;
+        }
+        for (position, state) in changes {
+            self.set_block(*position, *state, output);
+        }
+        true
     }
 
     /// Takes the next step of something a player of another region did to blocks of
@@ -1368,6 +1463,9 @@ impl Region {
             } => {
                 self.place_block(target, block, Some(placer), output);
                 done
+            }
+            RemoteStep::UseOn { .. } | RemoteStep::PlaceAt { .. } => {
+                self.click_here(action, output).unwrap_or(done)
             }
         }
     }
@@ -1569,6 +1667,16 @@ impl Region {
 }
 
 /// Whether the body of a player whose feet are at `feet` overlaps the block at `position`.
+/// The chunks a region has loaded, as the rules of placing read blocks.
+struct Loaded<'a>(&'a BTreeMap<ChunkPos, Chunk>);
+
+impl placement::Blocks for Loaded<'_> {
+    fn block(&self, at: BlockPos) -> Option<BlockState> {
+        let (x, z) = at.in_chunk();
+        self.0.get(&at.chunk())?.get(x, at.y, z)
+    }
+}
+
 fn occupies(feet: Vec3, position: BlockPos) -> bool {
     let half = PLAYER_WIDTH / 2.0;
     let overlaps =
@@ -3106,10 +3214,8 @@ mod tests {
             // Where the player themselves stands, and where the other player stands.
             place(1, 0, -61, 0, Face::Top),
             place(1, 3, -61, 3, Face::Top),
-            // Against thin air.
-            place(1, 2, -55, 0, Face::Top),
-            // Into a spot that is taken: below the floor is air, but the floor is not.
-            place(1, 2, -62, 0, Face::Top),
+            // Into a spot that is taken: the side of the floor faces more floor.
+            place(1, 2, -61, 0, Face::East),
             // Out of reach.
             place(1, 12, -61, 0, Face::Top),
             // Above the top of the world.
@@ -3124,6 +3230,11 @@ mod tests {
             );
             assert_eq!(told(&output), [acknowledged(1, 1)], "attempt {index}");
         }
+        // A click on thin air places into it, as the official server does with a block
+        // the client still showed (docs/groundwork/w6-plan.md, 4.1).
+        let output = region.tick(&moves(vec![place(1, 2, -55, 0, Face::Top)]));
+        assert_eq!(output.events, [changed(2, -55, 0, blocks::STONE)]);
+        assert_eq!(told(&output), [acknowledged(1, 1)]);
     }
 
     #[test]
@@ -4636,6 +4747,47 @@ mod tests {
         }
     }
 
+    /// The click a test player makes with `held` in hand on `face` of the block at
+    /// `x`, `y`, `z`: in the middle of the face, standing at `feet` and looking straight
+    /// ahead, as [`place`] has them.
+    fn click_of(x: i32, y: i32, z: i32, face: Face, held: Option<i32>, feet: Vec3) -> Click {
+        Click {
+            position: BlockPos::new(x, y, z),
+            face,
+            cursor: [0.5; 3],
+            sneaking: false,
+            held,
+            feet,
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+
+    /// What a region passes on of a click with stone in hand on a block it does not
+    /// hold.
+    fn use_on(x: i32, y: i32, z: i32, face: Face, feet: Vec3) -> RemoteStep {
+        let click = click_of(x, y, z, face, Some(items::STONE), feet);
+        RemoteStep::UseOn { click }
+    }
+
+    /// What a region passes on of a click with stone in hand on a block it holds, whose
+    /// state is `clicked`, when the block goes beside it into a chunk it does not hold.
+    fn place_beside(
+        x: i32,
+        y: i32,
+        z: i32,
+        face: Face,
+        clicked: BlockState,
+        feet: Vec3,
+    ) -> RemoteStep {
+        let click = click_of(x, y, z, face, Some(items::STONE), feet);
+        RemoteStep::PlaceAt {
+            target: face.neighbour(click.position),
+            click,
+            clicked,
+        }
+    }
+
     fn is_block_change(event: &RegionEvent) -> bool {
         matches!(event, RegionEvent::BlockChanged { .. })
     }
@@ -4685,12 +4837,12 @@ mod tests {
         let (east, outputs) = attempt(EAST);
         let asked = [
             remote(1, 1, break_at(-1, -61, 2)),
+            remote(1, 2, use_on(-2, -61, 2, Face::Top, FEET)),
             remote(
                 1,
-                2,
-                place_against(-2, -61, 2, Face::Top, blocks::STONE, FEET),
+                3,
+                place_beside(0, -61, 2, Face::West, blocks::STONE, FEET),
             ),
-            remote(1, 3, place_at(-1, -61, 2, blocks::STONE, FEET)),
         ];
         for output in &outputs {
             assert!(output.events.is_empty(), "{:?}", output.events);
@@ -4779,22 +4931,23 @@ mod tests {
         for (sequence, ((x, y, z), face)) in (1..).zip(clicks) {
             let click = sequenced(sequence, place(1, x, y, z, face));
             let output = region.tick(&moves(vec![click]));
-            let step = place_against(x, y, z, face, blocks::STONE, FEET);
+            let step = use_on(x, y, z, face, FEET);
             assert_eq!(requests(&output), [remote(1, sequence, step)]);
             assert_eq!(asked_of(&output), [Some(WEST_REGION)]);
             assert!(output.events.is_empty(), "{:?}", output.events);
             assert!(told(&output).is_empty(), "sequence {sequence}");
         }
 
-        // The block is the one the player holds and the placer is where they stand when
-        // they place it.
+        // The item the player holds and where they stand when they click go with the
+        // click.
         let output = region.tick(&moves(vec![
             select(1, 1),
             walk(1, 2.5, 3.5),
             sequenced(5, place(1, -2, -61, 2, Face::North)),
         ]));
         let feet = Vec3::new(2.5, -60.0, 3.5);
-        let step = place_against(-2, -61, 2, Face::North, blocks::DIRT, feet);
+        let click = click_of(-2, -61, 2, Face::North, Some(items::DIRT), feet);
+        let step = RemoteStep::UseOn { click };
         assert_eq!(requests(&output), [remote(1, 5, step)]);
         assert!(told(&output).is_empty());
         assert_eq!(region.chunk(EAST_CHUNK), Some(&floor()));
@@ -4806,18 +4959,19 @@ mod tests {
         // Against the western side of the floor at the line.
         let click = sequenced(1, place(1, 0, -61, 2, Face::West));
         let output = region.tick(&moves(vec![click]));
-        let step = place_at(-1, -61, 2, blocks::STONE, FEET);
+        let step = place_beside(0, -61, 2, Face::West, blocks::STONE, FEET);
         assert_eq!(requests(&output), [remote(1, 1, step)]);
         assert_eq!(asked_of(&output), [Some(WEST_REGION)]);
         assert!(output.events.is_empty(), "{:?}", output.events);
         assert!(told(&output).is_empty());
 
-        // Against thin air there is nothing to ask for: this region knows that no block
-        // is there.
+        // A click on thin air at the line asks nothing of the other region: the block
+        // goes into that air, which is this region's, as the official server places
+        // against a block the client still showed (docs/groundwork/w6-plan.md, 4.1).
         let click = sequenced(2, place(1, 0, -60, 2, Face::West));
         let output = region.tick(&moves(vec![click]));
         assert!(requests(&output).is_empty());
-        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert_eq!(output.events, [changed(0, -60, 2, blocks::STONE)]);
         assert_eq!(told(&output), [acknowledged(1, 2)]);
 
         // Nor against a chunk that is not loaded. The player walks to the end of the
@@ -4832,14 +4986,17 @@ mod tests {
         // One block back there is a floor to place against.
         let click = sequenced(4, place(1, 0, -61, 15, Face::West));
         let output = region.tick(&moves(vec![click]));
-        let step = place_at(-1, -61, 15, blocks::STONE, feet);
+        let step = place_beside(0, -61, 15, Face::West, blocks::STONE, feet);
         assert_eq!(requests(&output), [remote(1, 4, step)]);
         assert!(told(&output).is_empty());
-        assert_eq!(region.chunk(EAST_CHUNK), Some(&floor()));
+        // The floor, with the block placed in the air at the line.
+        let mut placed = floor();
+        placed.set(0, -60, 2, blocks::STONE);
+        assert_eq!(region.chunk(EAST_CHUNK), Some(&placed));
     }
 
     #[test]
-    fn placing_without_a_block_or_out_of_reach_is_acknowledged_whoever_has_the_blocks() {
+    fn a_click_without_a_block_goes_where_the_clicked_block_is_and_out_of_reach_nowhere() {
         let mut region = east_with_player();
         let clicks = [
             // The block clicked and the spot are both beyond the line.
@@ -4851,24 +5008,41 @@ mod tests {
             // Neither is.
             ((2, -61, 2), Face::Top),
         ];
-        let attempt = |region: &mut Region, hand: &str| {
+        // A click with a stick or an empty hand is the region's that has the clicked
+        // block, as any click is: it could open a door there (docs/groundwork/
+        // w6-plan.md, 3.2). One on a block of this region places nothing and is
+        // handled here.
+        let attempt = |region: &mut Region, held: Option<i32>, hand: &str| {
             for (sequence, ((x, y, z), face)) in (1..).zip(clicks) {
                 let click = sequenced(sequence, place(1, x, y, z, face));
                 let output = region.tick(&moves(vec![click]));
-                assert!(requests(&output).is_empty(), "{hand}, {sequence}");
                 assert!(output.events.is_empty(), "{hand}: {:?}", output.events);
-                assert_eq!(told(&output), [acknowledged(1, sequence)], "{hand}");
+                if x < 0 {
+                    let click = click_of(x, y, z, face, held, FEET);
+                    let step = RemoteStep::UseOn { click };
+                    assert_eq!(requests(&output), [remote(1, sequence, step)], "{hand}");
+                    assert!(told(&output).is_empty(), "{hand}, {sequence}");
+                } else {
+                    assert!(requests(&output).is_empty(), "{hand}, {sequence}");
+                    assert_eq!(told(&output), [acknowledged(1, sequence)], "{hand}");
+                }
             }
         };
-
-        // A stick, then an empty slot.
         region.tick(&moves(vec![select(1, 2)]));
-        attempt(&mut region, "a stick");
+        attempt(&mut region, Some(items::STICK), "a stick");
         region.tick(&moves(vec![select(1, 5)]));
-        attempt(&mut region, "nothing");
-        // Stone, but from eight blocks further east.
+        attempt(&mut region, None, "nothing");
+
+        // Stone, but from eight blocks further east: out of reach, nothing is asked of
+        // anyone, and each click is acknowledged.
         region.tick(&moves(vec![select(1, 0), walk(1, 9.5, 2.5)]));
-        attempt(&mut region, "too far");
+        for (sequence, ((x, y, z), face)) in (1..).zip(clicks) {
+            let click = sequenced(sequence, place(1, x, y, z, face));
+            let output = region.tick(&moves(vec![click]));
+            assert!(requests(&output).is_empty(), "too far, {sequence}");
+            assert!(output.events.is_empty(), "too far: {:?}", output.events);
+            assert_eq!(told(&output), [acknowledged(1, sequence)], "too far");
+        }
         assert_eq!(region.chunk(EAST_CHUNK), Some(&floor()));
 
         // From where the player stood before, the last of these places a block.
@@ -4926,12 +5100,12 @@ mod tests {
             requests(&output),
             [
                 remote(2, 1, break_at(-1, -61, 4)),
+                remote(1, 1, use_on(-2, -61, 2, Face::Top, FEET)),
                 remote(
-                    1,
-                    1,
-                    place_against(-2, -61, 2, Face::Top, blocks::STONE, FEET)
+                    2,
+                    2,
+                    place_beside(0, -61, 4, Face::West, blocks::STONE, other)
                 ),
-                remote(2, 2, place_at(-1, -61, 4, blocks::STONE, other)),
                 remote(1, 3, break_at(-1, -61, 2)),
             ]
         );
@@ -5142,11 +5316,7 @@ mod tests {
                 },
                 RemoteAction {
                     entity: second,
-                    ..remote(
-                        1,
-                        1,
-                        place_against(-2, -61, 2, Face::Top, blocks::STONE, FEET)
-                    )
+                    ..remote(1, 1, use_on(-2, -61, 2, Face::Top, FEET))
                 },
             ]
         );
@@ -5554,13 +5724,21 @@ mod tests {
                 changed(-3, -60, 2, blocks::AIR),
             ]
         );
-        // finds nothing left to place a block against,
+        // clicks the floor that is broken in it, and so clicks air, into which the
+        // glass they hold goes, as the official server places on a block the client
+        // still showed (docs/groundwork/w6-plan.md, 4.1),
         let output = region.tick(&TickInputs {
             remote_actions: vec![(REMOTE, remote(1, 3, break_at(-3, -61, 2)))],
             inputs: vec![as_entity(77, place(2, -3, -61, 2, Face::Top))],
             ..TickInputs::default()
         });
-        assert_eq!(output.events, [changed(-3, -61, 2, blocks::AIR)]);
+        assert_eq!(
+            output.events,
+            [
+                changed(-3, -61, 2, blocks::AIR),
+                changed(-3, -61, 2, blocks::GLASS),
+            ]
+        );
         // and is not yet in the way where they walk to.
         let output = region.tick(&TickInputs {
             remote_actions: vec![(
@@ -6287,8 +6465,8 @@ mod tests {
         for action in actions {
             let kind = match action.step {
                 RemoteStep::Break { .. } => 0,
-                RemoteStep::PlaceAgainst { .. } => 1,
-                RemoteStep::Place { .. } => 2,
+                RemoteStep::PlaceAgainst { .. } | RemoteStep::UseOn { .. } => 1,
+                RemoteStep::Place { .. } | RemoteStep::PlaceAt { .. } => 2,
             };
             kinds[kind] += 1;
         }
@@ -6332,8 +6510,9 @@ mod tests {
             // action goes there and comes back.
             dig(1, 0, -61, 4, 6),
             sequenced(7, place(1, -1, -61, 4, Face::East)),
-            // What comes to nothing: against thin air beyond the line, into a spot
-            // that is taken there, and against thin air on their own side.
+            // A click on thin air beyond the line, which places there as on the
+            // official server (a block the client still showed), into a spot that is
+            // taken there, which comes to nothing, and on thin air on their own side.
             sequenced(8, place(1, -2, -59, 2, Face::Top)),
             sequenced(9, place(1, -2, -61, 2, Face::Top)),
             sequenced(10, place(1, 0, -60, 2, Face::West)),
@@ -6341,7 +6520,8 @@ mod tests {
             select(1, 1),
             sequenced(11, place(1, -2, -60, 2, Face::South)),
             dig(1, -2, -60, 2, 12),
-            // With a stick in hand, and from too far away.
+            // With a stick in hand, which goes to the region of the clicked block as
+            // any click does, since it might open a door; and from too far away.
             select(1, 2),
             sequenced(13, place(1, -3, -61, 2, Face::Top)),
             dig(1, -9, -61, 2, 14),
@@ -6364,15 +6544,12 @@ mod tests {
         // The player's region handled what was about its own blocks only, and what it
         // could tell to be in vain. The rest was for the other region to finish, or,
         // for the two placements that went there and back, for itself.
-        assert_eq!(
-            numbers(&world.acknowledged),
-            [1, 3, 6, 10, 13, 14, 15, 17, 20]
-        );
+        assert_eq!(numbers(&world.acknowledged), [1, 3, 6, 10, 14, 15, 17, 20]);
         assert_eq!(
             numbers(&world.done),
-            [2, 4, 5, 7, 8, 9, 11, 12, 16, 18, 19, 21]
+            [2, 4, 5, 7, 8, 9, 11, 12, 13, 16, 18, 19, 21]
         );
-        assert_eq!(kinds(&world.asked), [3, 7, 2]);
+        assert_eq!(kinds(&world.asked), [3, 8, 2]);
         let passed_on: Vec<_> = world
             .passed_on
             .iter()
@@ -6382,8 +6559,8 @@ mod tests {
         assert_eq!(world.handovers, 1);
         // Block for block the same happened in the same order.
         assert_eq!(world.changes, world.whole_changes);
-        assert_eq!(world.changes.len(), 16);
-        assert_eq!(world.changed_for_others, 10);
+        assert_eq!(world.changes.len(), 18);
+        assert_eq!(world.changed_for_others, 11);
     }
 
     /// The same for a player who does at random what can be done near the line: digs,
