@@ -7,9 +7,9 @@
 
 use clustine_data::{
     BLOCK_ENTITY_TYPES, BLOCK_INFO, BLOCK_STATE_COUNT, BLOCKS, BiomeParameterList, BlockClass,
-    BlockState, CollisionShape, FLUIDS, Face, FaceShape, PushReaction, SERVER_JAR_SHA1,
-    SERVER_JAR_SHA1_BYTES, SERVER_JAR_URL, SYNCED_REGISTRIES, SupportType, block_id_by_name,
-    block_properties, blocks,
+    BlockState, FLUIDS, Face, FaceShape, PushReaction, SERVER_JAR_SHA1, SERVER_JAR_SHA1_BYTES,
+    SERVER_JAR_URL, SYNCED_REGISTRIES, Shape, SupportType, block_id_by_name, block_properties,
+    blocks,
 };
 
 const BLOCK_STATES: &[u8] = include_bytes!("../src/generated/block_states.bin");
@@ -57,7 +57,7 @@ fn the_table_of_block_states_has_the_head_the_record_gives() {
     assert_eq!(layout, clustine_data::block_states::LAYOUT);
     assert_eq!(hexadecimal(sha1), SERVER_JAR_SHA1);
     assert_eq!(sections.len(), 7);
-    assert_eq!(sections[0], (BLOCK_STATE_COUNT as usize, 16));
+    assert_eq!(sections[0], (BLOCK_STATE_COUNT as usize, 18));
     let row_bytes: Vec<usize> = sections.iter().map(|section| section.1).collect();
     assert_eq!(row_bytes, clustine_data::block_states::ROW_BYTES);
     let data: usize = sections.iter().map(|(rows, bytes)| rows * bytes).sum();
@@ -90,7 +90,7 @@ fn air_is_air_gives_no_light_and_is_in_nobodys_way() {
         assert!(!props.is_solid() && !props.is_solid_render() && !props.is_liquid());
         assert!(!props.occludes() && !props.occludes_by_shape());
         assert!(props.collision_is_empty() && !props.collision_is_full_block());
-        assert_eq!(props.collision_shape(), CollisionShape::EMPTY);
+        assert_eq!(props.collision_shape(), Shape::EMPTY);
         assert_eq!(props.collision_shape().boxes().count(), 0);
         assert!(!props.in_motion_heightmap() && !props.in_motion_heightmap_no_leaves());
         assert_eq!(props.fluid(), None);
@@ -117,7 +117,7 @@ fn stone_is_a_full_solid_cube_that_stops_light() {
     assert!(!props.can_be_replaced());
     assert!(props.in_motion_heightmap() && props.in_motion_heightmap_no_leaves());
     assert!(props.collision_is_full_block() && !props.collision_is_empty());
-    assert_eq!(props.collision_shape(), CollisionShape::FULL_BLOCK);
+    assert_eq!(props.collision_shape(), Shape::FULL_BLOCK);
     let boxes: Vec<[f64; 6]> = props.collision_shape().boxes().collect();
     assert_eq!(boxes, [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
     for support in SUPPORTS {
@@ -575,15 +575,11 @@ fn every_row_is_consistent_in_itself() {
         assert!(props.light_emission() <= 15 && props.light_dampening() <= 15);
         assert_eq!(
             props.collision_is_empty(),
-            props.collision_shape() == CollisionShape::EMPTY,
+            props.collision_shape() == Shape::EMPTY,
             "state {id}"
         );
         if props.collision_is_full_block() {
-            assert_eq!(
-                props.collision_shape(),
-                CollisionShape::FULL_BLOCK,
-                "state {id}"
-            );
+            assert_eq!(props.collision_shape(), Shape::FULL_BLOCK, "state {id}");
         }
         if !props.occludes_by_shape() {
             assert_eq!(props.occlusion_face_set(), 0, "state {id}");
@@ -619,8 +615,10 @@ fn every_row_is_consistent_in_itself() {
             }
         }
     }
-    // The blocks that look at their block entity or stand shifted by their position.
-    assert_eq!(beyond.len(), 21, "{beyond:?}");
+    // The blocks that look at their block entity or stand shifted by their position,
+    // and the flowers and saplings whose outline alone is shifted.
+    assert_eq!(beyond.len(), 40, "{beyond:?}");
+    assert!(beyond.contains(&"minecraft:poppy"));
     assert!(beyond.contains(&"minecraft:shulker_box"));
     assert!(beyond.contains(&"minecraft:moving_piston"));
     assert!(beyond.contains(&"minecraft:bamboo"));
@@ -630,14 +628,12 @@ fn every_row_is_consistent_in_itself() {
 
 #[test]
 fn every_shape_a_row_points_at_is_there() {
-    use clustine_data::block_states::{
-        collision_shape_count, face_shape_count, occlusion_face_set_count,
-    };
+    use clustine_data::block_states::{face_shape_count, occlusion_face_set_count, shape_count};
     assert!(occlusion_face_set_count() >= 2 && face_shape_count() >= 2);
     for id in 0..BLOCK_STATE_COUNT {
         let props = BlockState(id as u16).props();
         assert!(usize::from(props.occlusion_face_set()) < occlusion_face_set_count());
-        assert!(usize::from(props.collision_shape().index()) < collision_shape_count());
+        assert!(usize::from(props.collision_shape().index()) < shape_count());
         for face in Face::ALL {
             assert!(usize::from(props.occlusion_face(face).index()) < face_shape_count());
         }

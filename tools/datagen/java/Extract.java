@@ -43,13 +43,18 @@ import net.minecraft.data.registries.VanillaRegistries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.StandingAndWallBlockItem;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterList;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FlowerPotBlock;
 import net.minecraft.world.level.block.SupportType;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
@@ -136,6 +141,7 @@ public final class Extract {
         write(out, "block_entity_types.txt", blockEntityTypes());
         write(out, "block_states.txt", blockStates());
         write(out, "blocks.txt", blocks());
+        write(out, "items.txt", items());
         for (Map.Entry<String, String> list : biomeParameters().entrySet()) {
             write(out, "biome_parameters_" + list.getKey() + ".txt", list.getValue());
         }
@@ -201,6 +207,15 @@ public final class Extract {
                 consulted.add("collision:position");
             }
 
+            // What a click or a bucket's ray hits. The game gives it without the offset
+            // that plants have by their position, which it adds where it is used.
+            level.reset();
+            String outlineText = shape(state.getShape(level, FIRST));
+            note(consulted, "outline", level);
+            if (!outlineText.equals(shape(state.getShape(level, SECOND)))) {
+                consulted.add("outline:position");
+            }
+
             int flags = 0;
             flags |= bit(0, state.isAir());
             flags |= bit(1, state.isSolid());
@@ -256,6 +271,7 @@ public final class Extract {
                 field(text, shape(state.getFaceOcclusionShape(face)));
             }
             field(text, collisionText);
+            field(text, outlineText);
             field(text, consulted.isEmpty() ? "-" : String.join(",", consulted));
             text.append('\n');
         }
@@ -316,11 +332,17 @@ public final class Extract {
     }
 
     /// One line a block, in id order: id, name, the simple name of its class, the id of
-    /// its block entity type or -1, whether a click without an item uses it, and for the
-    /// reader the class that handles the click and whether its set type opens by hand.
+    /// its block entity type or -1, whether a click without an item uses it, for the
+    /// reader the class that handles the click and whether its set type opens by hand,
+    /// the class that says where the block can stay (`-` if none), the classes its
+    /// class is made from (`-` if none but the base of all blocks), and for a flower
+    /// pot the id of the block it holds (-1 for every other block, and the empty pot
+    /// holds air).
     private static String blocks() throws ReflectiveOperationException {
         // A simple name has to mean one class, since the committed table has only it.
         TreeMap<String, Class<?>> classes = new TreeMap<>();
+        Field pottedField = FlowerPotBlock.class.getDeclaredField("potted");
+        pottedField.setAccessible(true);
         StringBuilder text = new StringBuilder();
         for (int id = 0; id < BuiltInRegistries.BLOCK.size(); id++) {
             Block block = BuiltInRegistries.BLOCK.byId(id);
@@ -362,6 +384,79 @@ public final class Extract {
             field(text, used ? "1" : "0");
             field(text, handler == null ? "-" : handler.getSimpleName());
             field(text, opensByHand == null ? "-" : opensByHand ? "1" : "0");
+            Class<?> survival = survivalRule(block.getClass());
+            field(text, survival == null ? "-" : survival.getSimpleName());
+
+            // The classes the block's class is made from, nearest first, without the
+            // base of all blocks: a rule written for doors holds for copper doors.
+            List<String> chain = new ArrayList<>();
+            for (Class<?> c = named.getSuperclass();
+                c != null && c != Block.class && c != BlockBehaviour.class;
+                c = c.getSuperclass()) {
+                if (c.getSimpleName().isEmpty()) {
+                    continue;
+                }
+                Class<?> other = classes.put(c.getSimpleName(), c);
+                if (other != null && other != c) {
+                    throw new IllegalStateException(
+                        "two block classes are called " + c.getSimpleName());
+                }
+                chain.add(c.getSimpleName());
+            }
+            field(text, chain.isEmpty() ? "-" : String.join(",", chain));
+
+            int potted = -1;
+            if (block instanceof FlowerPotBlock pot) {
+                Block content = (Block) pottedField.get(pot);
+                potted = BuiltInRegistries.BLOCK.getId(content);
+            }
+            field(text, Integer.toString(potted));
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line an item, in id order: id, name, the simple name of its class, the id of
+    /// the block it places or -1, and for an item that places a standing or a wall
+    /// block, the id of the wall block and the direction it attaches in (`down`, `up`
+    /// and the four sides), or -1 and `-`.
+    private static String items() throws ReflectiveOperationException {
+        TreeMap<String, Class<?>> classes = new TreeMap<>();
+        Field wallBlock = StandingAndWallBlockItem.class.getDeclaredField("wallBlock");
+        Field attachment = StandingAndWallBlockItem.class.getDeclaredField("attachmentDirection");
+        wallBlock.setAccessible(true);
+        attachment.setAccessible(true);
+        StringBuilder text = new StringBuilder();
+        for (int id = 0; id < BuiltInRegistries.ITEM.size(); id++) {
+            Item item = BuiltInRegistries.ITEM.byId(id);
+
+            Class<?> named = item.getClass();
+            while (named.getSimpleName().isEmpty()) {
+                named = named.getSuperclass();
+            }
+            Class<?> earlier = classes.put(named.getSimpleName(), named);
+            if (earlier != null && earlier != named) {
+                throw new IllegalStateException(
+                    "two item classes are called " + named.getSimpleName());
+            }
+
+            int block = -1;
+            int wall = -1;
+            String direction = "-";
+            if (item instanceof BlockItem placing) {
+                block = BuiltInRegistries.BLOCK.getId(placing.getBlock());
+            }
+            if (item instanceof StandingAndWallBlockItem standing) {
+                wall = BuiltInRegistries.BLOCK.getId((Block) wallBlock.get(standing));
+                direction = ((Direction) attachment.get(standing)).getSerializedName();
+            }
+
+            text.append(Integer.toString(id));
+            field(text, BuiltInRegistries.ITEM.getKey(item).toString());
+            field(text, named.getSimpleName());
+            field(text, Integer.toString(block));
+            field(text, Integer.toString(wall));
+            field(text, direction);
             text.append('\n');
         }
         return text.toString();
@@ -376,6 +471,22 @@ public final class Extract {
                     "useWithoutItem",
                     BlockState.class, Level.class, BlockPos.class, Player.class,
                     BlockHitResult.class);
+                return c;
+            } catch (NoSuchMethodException none) {
+                // Look further up.
+            }
+        }
+        return null;
+    }
+
+    /// The class, at or above `start` and below the base of all blocks, that says
+    /// where a block of it can stay (`canSurvive`); `null` if none does, and the block
+    /// stays anywhere.
+    private static Class<?> survivalRule(Class<?> start) {
+        for (Class<?> c = start; c != BlockBehaviour.class && c != null; c = c.getSuperclass()) {
+            try {
+                c.getDeclaredMethod(
+                    "canSurvive", BlockState.class, LevelReader.class, BlockPos.class);
                 return c;
             } catch (NoSuchMethodException none) {
                 // Look further up.

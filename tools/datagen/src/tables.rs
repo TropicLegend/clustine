@@ -13,7 +13,7 @@ use crate::model::{BiomeReport, Block};
 use crate::packed::{self, Section};
 
 /// The layout of `block_states.bin`; the reader in `clustine-data` names the same.
-pub const BLOCK_STATES_LAYOUT: u16 = 1;
+pub const BLOCK_STATES_LAYOUT: u16 = 2;
 /// The layout of `biome_parameters.bin`.
 pub const BIOME_PARAMETERS_LAYOUT: u16 = 1;
 
@@ -59,16 +59,119 @@ pub struct BeyondItsState {
     pub done: &'static str,
 }
 
-const BLOCK_ENTITY: &[&str] = &["collision:block_entity", "sturdy:block_entity"];
+const BLOCK_ENTITY: &[&str] = &[
+    "collision:block_entity",
+    "sturdy:block_entity",
+    "outline:block_entity",
+];
 const SHULKER_BOX: &str = "Its shape is the box's as its block entity has it open. The row \
      holds the answer without a block entity: the closed box, a full block. The flag says so.";
 const SHIFTED: &str = "Its shape is shifted sideways by a number made from its position. The \
      row holds the shape at (0, 0, 0); whether it is empty or full does not change. The flag \
      says so.";
 
+const SHIFTED_OUTLINE: &str = "Its outline is shifted sideways by a number made from its \
+     position; what collides with it is not. The row holds the outline at (0, 0, 0). The flag \
+     says so.";
+
 /// The blocks that may look at the level or answer by position. A state of any other
 /// block that does so fails the run, so that the day a jar adds one is noticed.
 pub const BEYOND_ITS_STATE: &[BeyondItsState] = &[
+    BeyondItsState {
+        block: "minecraft:closed_eyeblossom",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:open_eyeblossom",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:bamboo_sapling",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:lily_of_the_valley",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:wither_rose",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:cornflower",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:oxeye_daisy",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:pink_tulip",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:white_tulip",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:orange_tulip",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:red_tulip",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:azure_bluet",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:allium",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:blue_orchid",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:poppy",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:torchflower",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:golden_dandelion",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:dandelion",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
+    BeyondItsState {
+        block: "minecraft:mangrove_propagule",
+        consulted: &["outline:position"],
+        done: SHIFTED_OUTLINE,
+    },
     BeyondItsState {
         block: "minecraft:moving_piston",
         consulted: BLOCK_ENTITY,
@@ -162,17 +265,17 @@ pub const BEYOND_ITS_STATE: &[BeyondItsState] = &[
     },
     BeyondItsState {
         block: "minecraft:bamboo",
-        consulted: &["collision:position"],
+        consulted: &["collision:position", "outline:position"],
         done: SHIFTED,
     },
     BeyondItsState {
         block: "minecraft:pointed_dripstone",
-        consulted: &["collision:position", "sturdy:position"],
+        consulted: &["collision:position", "outline:position", "sturdy:position"],
         done: SHIFTED,
     },
     BeyondItsState {
         block: "minecraft:sulfur_spike",
-        consulted: &["collision:position", "sturdy:position"],
+        consulted: &["collision:position", "outline:position", "sturdy:position"],
         done: SHIFTED,
     },
 ];
@@ -243,7 +346,7 @@ fn face_rectangles(boxes: &[ShapeBox], face: usize) -> Result<Vec<Rectangle>> {
         .collect()
 }
 
-/// `block_states.bin`: one row of 16 bytes for each state, and the shapes behind them.
+/// `block_states.bin`: one row of 18 bytes for each state, and the shapes behind them.
 ///
 /// `blocks` are the blocks of the report with their ranges of states; `in_heightmap`
 /// and `in_heightmap_no_leaves` are the ids of the blocks in the two heightmap tags;
@@ -263,11 +366,11 @@ pub fn block_states(
         states.len()
     );
 
-    let mut rows = Section::new(16);
+    let mut rows = Section::new(18);
     let mut face_shapes: Distinct<Vec<Rectangle>> =
         Distinct::starting_with([Vec::new(), vec![[ZERO, ZERO, ONE, ONE]]]);
     let mut face_sets: Distinct<[u16; 6]> = Distinct::starting_with([[0; 6], [1; 6]]);
-    let mut collision_shapes: Distinct<Vec<ShapeBox>> =
+    let mut shapes: Distinct<Vec<ShapeBox>> =
         Distinct::starting_with([Vec::new(), vec![[ZERO, ZERO, ZERO, ONE, ONE, ONE]]]);
     let mut post_offsets: Distinct<[i8; 3]> = Distinct::starting_with([]);
 
@@ -282,7 +385,7 @@ pub fn block_states(
                 fluid_count,
                 &mut face_shapes,
                 &mut face_sets,
-                &mut collision_shapes,
+                &mut shapes,
                 &mut post_offsets,
             )
             .with_context(|| format!("block state {id} ({})", block.name))?;
@@ -296,7 +399,7 @@ pub fn block_states(
         sets.push(&bytes);
     }
     let (face_starts, rectangles) = flattened(&face_shapes.values, 32)?;
-    let (collision_starts, boxes) = flattened(&collision_shapes.values, 48)?;
+    let (collision_starts, boxes) = flattened(&shapes.values, 48)?;
     let mut offsets = Section::new(3);
     for offset in &post_offsets.values {
         offsets.push(&offset.map(|part| part as u8));
@@ -330,9 +433,9 @@ fn state_row(
     fluid_count: usize,
     face_shapes: &mut Distinct<Vec<Rectangle>>,
     face_sets: &mut Distinct<[u16; 6]>,
-    collision_shapes: &mut Distinct<Vec<ShapeBox>>,
+    shapes: &mut Distinct<Vec<ShapeBox>>,
     post_offsets: &mut Distinct<[i8; 3]>,
-) -> Result<[u8; 16]> {
+) -> Result<[u8; 18]> {
     ensure!(
         state.block == block,
         "the extract program has {} where the report has this block",
@@ -370,7 +473,7 @@ fn state_row(
         flags |= FLAG_BEYOND_ITS_STATE;
     }
 
-    let mut row = [0; 16];
+    let mut row = [0; 18];
     row[0] = state.light_emission;
     row[1] = state.light_dampening;
     ensure!(
@@ -437,7 +540,7 @@ fn state_row(
     };
     row[12..14].copy_from_slice(&u16::try_from(set)?.to_le_bytes());
 
-    let collision = collision_shapes.number(state.collision.clone());
+    let collision = shapes.number(state.collision.clone());
     // The two flags and the shape are asked separately; they have to agree.
     ensure!(
         (flags & (1 << 10) != 0) == (collision == 0),
@@ -448,6 +551,10 @@ fn state_row(
         "the flag for a full collision shape is set and the shape is not the full block"
     );
     row[14..16].copy_from_slice(&u16::try_from(collision)?.to_le_bytes());
+    // Outline shapes are numbered among the same distinct shapes as collision shapes:
+    // most blocks have one shape for both.
+    let outline = shapes.number(state.outline.clone());
+    row[16..18].copy_from_slice(&u16::try_from(outline)?.to_le_bytes());
     Ok(row)
 }
 
@@ -603,6 +710,7 @@ mod tests {
             post_process: None,
             occlusion_faces: Default::default(),
             collision: Vec::new(),
+            outline: Vec::new(),
             consulted: Vec::new(),
         }
     }
@@ -613,6 +721,7 @@ mod tests {
             flags: 1 << 1 | 1 << 2 | 1 << 5 | 1 << 11,
             sturdy: [63; 3],
             collision: vec![FULL_BOX],
+            outline: vec![FULL_BOX],
             occlusion_faces: std::array::from_fn(|_| vec![FULL_BOX]),
             ..state(block)
         }
@@ -633,6 +742,7 @@ mod tests {
             flags: 1 << 1 | 1 << 5 | 1 << 6,
             sturdy: [1, 1, 1],
             collision: vec![lower],
+            outline: vec![lower],
             occlusion_faces: faces,
             ..state(block)
         }
@@ -667,6 +777,17 @@ mod tests {
         let mut magma = solid("minecraft:magma_block");
         magma.light_emission = 3;
         magma.post_process = Some([0, 1, 0]);
+        // Nothing collides with a torch, and a click hits its stick.
+        let mut torch = state("minecraft:torch");
+        let sixteenth = |n: u64| (n as f64 / 16.0).to_bits();
+        torch.outline = vec![[
+            sixteenth(6),
+            ZERO,
+            sixteenth(6),
+            sixteenth(10),
+            sixteenth(10),
+            sixteenth(10),
+        ]];
         let states = vec![
             state("minecraft:air"),
             solid("minecraft:stone"),
@@ -674,6 +795,7 @@ mod tests {
             falling,
             slab("minecraft:slab"),
             magma,
+            torch,
         ];
         let blocks = vec![
             block("minecraft:air", 0, 0),
@@ -681,6 +803,7 @@ mod tests {
             block("minecraft:water", 2, 3),
             block("minecraft:slab", 4, 4),
             block("minecraft:magma_block", 5, 5),
+            block("minecraft:torch", 6, 6),
         ];
         (states, blocks)
     }
@@ -693,12 +816,15 @@ mod tests {
         assert_eq!(table.kind, packed::KIND_BLOCK_STATES);
         assert_eq!(table.sha1, packed::sha1_bytes(SHA1).unwrap());
         let row_bytes: Vec<usize> = table.sections.iter().map(|s| s.row_bytes).collect();
-        assert_eq!(row_bytes, [16, 12, 4, 32, 4, 48, 3]);
+        assert_eq!(row_bytes, [18, 12, 4, 32, 4, 48, 3]);
         let rows: Vec<&[u8]> = table.sections[0].rows().collect();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
 
         // Air: nothing set but the empty collision shape, sets and shapes 0.
-        assert_eq!(rows[0], [0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            rows[0],
+            [0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         // Stone is block 1, which is in both tags; it does not occlude by shape, so
         // its faces are set 0, and its collision shape is the full block, shape 1.
         let stone_flags = u16::from_le_bytes([rows[1][2], rows[1][3]]);
@@ -707,13 +833,18 @@ mod tests {
             1 << 1 | 1 << 2 | 1 << 5 | 1 << 11 | 1 << 12 | 1 << 13
         );
         assert_eq!(&rows[1][4..7], [63, 63, 63]);
-        assert_eq!(&rows[1][12..16], [0, 0, 1, 0]);
+        // Its outline is the full block too.
+        assert_eq!(&rows[1][12..18], [0, 0, 1, 0, 1, 0]);
         // A water source: fluid 2 plus one, eight with the source bit.
         assert_eq!(&rows[2][8..10], [3, 8 | 0x40]);
         // Falling water: fluid 1 plus one, eight with the falling bit.
         assert_eq!(&rows[3][8..10], [2, 8 | 0x80]);
-        // The slab has the first set and the first collision shape that are not fixed.
-        assert_eq!(&rows[4][12..16], [2, 0, 2, 0]);
+        // The slab has the first set and the first shape that are not fixed, as its
+        // collision shape and as its outline.
+        assert_eq!(&rows[4][12..18], [2, 0, 2, 0, 2, 0]);
+        // The torch collides with nothing, and its outline is a shape of its own,
+        // numbered among the collision shapes.
+        assert_eq!(&rows[6][14..18], [0, 0, 3, 0]);
         let set: Vec<u16> = table.sections[1]
             .row(2)
             .unwrap()

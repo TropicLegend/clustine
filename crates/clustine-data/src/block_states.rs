@@ -1,29 +1,29 @@
 //! What the game's code says of every block state: light, shapes, fluid, and the like.
 //!
 //! The values are in `generated/block_states.bin`, a packed table that `cargo datagen`
-//! makes by asking the game itself (ADR-0019, section 5): one row of 16 bytes for each
+//! makes by asking the game itself (ADR-0019, section 5): one row of 18 bytes for each
 //! state id, and behind the rows the distinct shapes the rows point into. This module
 //! reads it. [`BlockState::props`] is the way in.
 //!
-//! Three kinds of block do not answer by their state alone, and their rows hold what
+//! Four kinds of block do not answer by their state alone, and their rows hold what
 //! they answer in one given place; see [`StateProps::answers_beyond_its_state`].
 
 use crate::BlockState;
 use crate::packed::{self, Table};
 
 /// The layout of the table this module reads.
-pub const LAYOUT: u16 = 1;
+pub const LAYOUT: u16 = 2;
 
 const STATES: usize = 0;
 const FACE_SETS: usize = 1;
 const FACE_SHAPE_STARTS: usize = 2;
 const RECTANGLES: usize = 3;
-const COLLISION_SHAPE_STARTS: usize = 4;
+const SHAPE_STARTS: usize = 4;
 const BOXES: usize = 5;
 const POST_PROCESS_OFFSETS: usize = 6;
 
 /// The bytes of a row of each section.
-pub const ROW_BYTES: [usize; 7] = [16, 12, 4, 32, 4, 48, 3];
+pub const ROW_BYTES: [usize; 7] = [18, 12, 4, 32, 4, 48, 3];
 
 static TABLE: Table<7> = Table::parse(
     include_bytes!("generated/block_states.bin"),
@@ -223,7 +223,7 @@ impl StateProps {
         self.flag(10)
     }
 
-    /// The game's `isCollisionShapeFullBlock`.
+    /// The game's `isShapeFullBlock`.
     pub fn collision_is_full_block(self) -> bool {
         self.flag(11)
     }
@@ -241,13 +241,16 @@ impl StateProps {
     }
 
     /// Whether the game answers for this block by more than its state, so that the
-    /// collision shape and the sturdy faces here are what it answers in one place only.
+    /// shapes and the sturdy faces here are what it answers in one place only.
     ///
     /// - A shulker box and a moving piston look at their block entity. The row holds
     ///   the answer without one: the closed box, and nothing to collide with.
     /// - Bamboo, pointed dripstone and a sulfur spike are shifted sideways by where
     ///   they stand. The row holds the shape at the position (0, 0, 0). Whether the
     ///   shape is empty or a full block does not depend on the position.
+    /// - Most flowers, the mangrove propagule, the bamboo sapling and the eyeblossoms
+    ///   have their outline shifted the same way, though nothing collides with them.
+    ///   The row holds the outline at (0, 0, 0).
     pub fn answers_beyond_its_state(self) -> bool {
         self.flag(14)
     }
@@ -323,8 +326,14 @@ impl StateProps {
     }
 
     /// What collides with the block.
-    pub fn collision_shape(self) -> CollisionShape {
-        CollisionShape(packed::row_u16(self.0, 14))
+    pub fn collision_shape(self) -> Shape {
+        Shape(packed::row_u16(self.0, 14))
+    }
+
+    /// What a click or a ray hits of the block: the game's `getShape`. Plants that the
+    /// game shifts by their position have it here unshifted.
+    pub fn outline_shape(self) -> Shape {
+        Shape(packed::row_u16(self.0, 16))
     }
 }
 
@@ -338,9 +347,9 @@ pub fn face_shape_count() -> usize {
     TABLE.rows(FACE_SHAPE_STARTS) - 1
 }
 
-/// The number of distinct collision shapes.
-pub fn collision_shape_count() -> usize {
-    TABLE.rows(COLLISION_SHAPE_STARTS) - 1
+/// The number of distinct shapes, collision and outline shapes together.
+pub fn shape_count() -> usize {
+    TABLE.rows(SHAPE_STARTS) - 1
 }
 
 /// What a block covers of one of its faces: rectangles on the unit square.
@@ -384,18 +393,18 @@ impl FaceShape {
     }
 }
 
-/// What collides with a block: boxes within (and for a fence or a wall, above) the
-/// block's cube.
+/// A shape of a block: boxes within (and for a fence or a wall, above) the block's
+/// cube. Collision shapes and outline shapes are numbered together.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct CollisionShape(u16);
+pub struct Shape(u16);
 
-impl CollisionShape {
+impl Shape {
     /// Nothing collides.
-    pub const EMPTY: CollisionShape = CollisionShape(0);
+    pub const EMPTY: Shape = Shape(0);
     /// The whole cube.
-    pub const FULL_BLOCK: CollisionShape = CollisionShape(1);
+    pub const FULL_BLOCK: Shape = Shape(1);
 
-    /// The shape's number among the distinct collision shapes.
+    /// The shape's number among the distinct shapes.
     pub fn index(self) -> u16 {
         self.0
     }
@@ -404,8 +413,8 @@ impl CollisionShape {
     /// order.
     pub fn boxes(self) -> impl Iterator<Item = [f64; 6]> {
         let index = usize::from(self.0);
-        let first = packed::row_u32(TABLE.row(COLLISION_SHAPE_STARTS, index), 0) as usize;
-        let end = packed::row_u32(TABLE.row(COLLISION_SHAPE_STARTS, index + 1), 0) as usize;
+        let first = packed::row_u32(TABLE.row(SHAPE_STARTS, index), 0) as usize;
+        let end = packed::row_u32(TABLE.row(SHAPE_STARTS, index + 1), 0) as usize;
         (first..end).map(|shape_box| {
             let row = TABLE.row(BOXES, shape_box);
             [0, 8, 16, 24, 32, 40].map(|at| packed::row_f64(row, at))

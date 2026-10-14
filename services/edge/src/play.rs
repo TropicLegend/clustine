@@ -171,6 +171,7 @@ async fn pump(
                         send_input(shared, client, PlayerInput::SetFlying { flying }).await?;
                     }
                     ServerboundPlay::ClientTickEnd(_)
+                    | ServerboundPlay::ServerboundPlayerInput(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}
                 }

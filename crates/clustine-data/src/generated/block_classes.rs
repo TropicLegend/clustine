@@ -67,6 +67,13 @@ pub static BLOCK_ENTITY_TYPES: [&str; 49] = [
 /// The classes of the game's blocks, by the simple names of the Java classes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum BlockClass {
+    AbstractBannerBlock,
+    AbstractBedBlock,
+    AbstractCandleBlock,
+    AbstractCauldronBlock,
+    AbstractChestBlock,
+    AbstractFurnaceBlock,
+    AbstractSkullBlock,
     AirBlock,
     AmethystBlock,
     AmethystClusterBlock,
@@ -80,7 +87,13 @@ pub enum BlockClass {
     BarrierBlock,
     BaseCoralFanBlock,
     BaseCoralPlantBlock,
+    BaseCoralPlantTypeBlock,
     BaseCoralWallFanBlock,
+    BaseEntityBlock,
+    BaseFireBlock,
+    BasePressurePlateBlock,
+    BaseRailBlock,
+    BaseTorchBlock,
     BeaconBlock,
     BedBlock,
     BeehiveBlock,
@@ -135,10 +148,13 @@ pub enum BlockClass {
     CraftingTableBlock,
     CreakingHeartBlock,
     CropBlock,
+    CrossCollisionBlock,
     CryingObsidianBlock,
     DaylightDetectorBlock,
     DecoratedPotBlock,
     DetectorRailBlock,
+    DiodeBlock,
+    DirectionalBlock,
     DispenserBlock,
     DoorBlock,
     DoublePlantBlock,
@@ -154,6 +170,9 @@ pub enum BlockClass {
     EndRodBlock,
     EnderChestBlock,
     EyeblossomBlock,
+    FaceAttachedHorizontalDirectionalBlock,
+    FallingBlock,
+    FallingParticlesLeavesBlock,
     FarmlandBlock,
     FenceBlock,
     FenceGateBlock,
@@ -169,6 +188,9 @@ pub enum BlockClass {
     GlowLichenBlock,
     GrassBlock,
     GrindstoneBlock,
+    GrowingPlantBlock,
+    GrowingPlantBodyBlock,
+    GrowingPlantHeadBlock,
     HalfTransparentBlock,
     HangingMossBlock,
     HangingRootsBlock,
@@ -176,6 +198,7 @@ pub enum BlockClass {
     HeavyCoreBlock,
     HoneyBlock,
     HopperBlock,
+    HorizontalDirectionalBlock,
     HugeMushroomBlock,
     IceBlock,
     InfestedBlock,
@@ -206,6 +229,7 @@ pub enum BlockClass {
     MovingPistonBlock,
     MudBlock,
     MultifaceBlock,
+    MultifaceSpreadeableBlock,
     MushroomBlock,
     MyceliumBlock,
     NetherFungusBlock,
@@ -219,6 +243,7 @@ pub enum BlockClass {
     ObserverBlock,
     PathBlock,
     PiglinWallSkullBlock,
+    PipeBlock,
     PistonBaseBlock,
     PistonHeadBlock,
     PitcherCropBlock,
@@ -240,6 +265,7 @@ pub enum BlockClass {
     RedstoneWireBlock,
     RepeaterBlock,
     RespawnAnchorBlock,
+    RodBlock,
     RootedDirtBlock,
     RotatedPillarBlock,
     SandBlock,
@@ -256,6 +282,7 @@ pub enum BlockClass {
     ShelfMushroomBlock,
     ShortDryGrassBlock,
     ShulkerBoxBlock,
+    SignBlock,
     SkullBlock,
     SlabBlock,
     SlimeBlock,
@@ -268,8 +295,10 @@ pub enum BlockClass {
     SoulFireBlock,
     SoulSandBlock,
     SpawnerBlock,
+    SpeleothemBlock,
     SpongeBlock,
     SporeBlossomBlock,
+    SpreadingSnowyBlock,
     StainedGlassBlock,
     StainedGlassPaneBlock,
     StairBlock,
@@ -305,6 +334,7 @@ pub enum BlockClass {
     TwistingVinesPlantBlock,
     UntintedParticleLeavesBlock,
     VaultBlock,
+    VegetationBlock,
     VineBlock,
     WallBannerBlock,
     WallBlock,
@@ -337,1295 +367,1605 @@ pub enum BlockClass {
     WoolCarpetBlock,
 }
 
+impl BlockClass {
+    /// The classes this one is made from, nearest first, without the base of all
+    /// blocks.
+    pub fn ancestors(self) -> &'static [BlockClass] {
+        ANCESTORS[self as usize]
+    }
+}
+
+/// What [`BlockClass::ancestors`] gives, in the order of the classes.
+static ANCESTORS: [&[BlockClass]; 298] = [
+    &[BlockClass::BaseEntityBlock], // AbstractBannerBlock
+    &[BlockClass::HorizontalDirectionalBlock], // AbstractBedBlock
+    &[], // AbstractCandleBlock
+    &[], // AbstractCauldronBlock
+    &[BlockClass::BaseEntityBlock], // AbstractChestBlock
+    &[BlockClass::BaseEntityBlock], // AbstractFurnaceBlock
+    &[BlockClass::BaseEntityBlock], // AbstractSkullBlock
+    &[], // AirBlock
+    &[], // AmethystBlock
+    &[BlockClass::AmethystBlock], // AmethystClusterBlock
+    &[BlockClass::FallingBlock], // AnvilBlock
+    &[BlockClass::VegetationBlock], // AttachedStemBlock
+    &[BlockClass::VegetationBlock], // AzaleaBlock
+    &[], // BambooSaplingBlock
+    &[], // BambooStalkBlock
+    &[BlockClass::AbstractBannerBlock, BlockClass::BaseEntityBlock], // BannerBlock
+    &[BlockClass::BaseEntityBlock], // BarrelBlock
+    &[], // BarrierBlock
+    &[BlockClass::BaseCoralPlantTypeBlock], // BaseCoralFanBlock
+    &[BlockClass::BaseCoralPlantTypeBlock], // BaseCoralPlantBlock
+    &[], // BaseCoralPlantTypeBlock
+    &[BlockClass::BaseCoralFanBlock, BlockClass::BaseCoralPlantTypeBlock], // BaseCoralWallFanBlock
+    &[], // BaseEntityBlock
+    &[], // BaseFireBlock
+    &[], // BasePressurePlateBlock
+    &[], // BaseRailBlock
+    &[], // BaseTorchBlock
+    &[BlockClass::BaseEntityBlock], // BeaconBlock
+    &[BlockClass::AbstractBedBlock, BlockClass::HorizontalDirectionalBlock], // BedBlock
+    &[BlockClass::BaseEntityBlock], // BeehiveBlock
+    &[BlockClass::CropBlock, BlockClass::VegetationBlock], // BeetrootBlock
+    &[BlockClass::BaseEntityBlock], // BellBlock
+    &[BlockClass::HorizontalDirectionalBlock], // BigDripleafBlock
+    &[BlockClass::HorizontalDirectionalBlock], // BigDripleafStemBlock
+    &[BlockClass::AbstractFurnaceBlock, BlockClass::BaseEntityBlock], // BlastFurnaceBlock
+    &[], // Block
+    &[], // BonemealableFeaturePlacerBlock
+    &[BlockClass::BaseEntityBlock], // BrewingStandBlock
+    &[BlockClass::BaseEntityBlock], // BrushableBlock
+    &[], // BubbleColumnBlock
+    &[BlockClass::AmethystBlock], // BuddingAmethystBlock
+    &[BlockClass::VegetationBlock], // BushBlock
+    &[BlockClass::FaceAttachedHorizontalDirectionalBlock, BlockClass::HorizontalDirectionalBlock], // ButtonBlock
+    &[], // CactusBlock
+    &[BlockClass::VegetationBlock], // CactusFlowerBlock
+    &[], // CakeBlock
+    &[BlockClass::SculkSensorBlock, BlockClass::BaseEntityBlock], // CalibratedSculkSensorBlock
+    &[BlockClass::BaseEntityBlock], // CampfireBlock
+    &[BlockClass::AbstractCandleBlock], // CandleBlock
+    &[BlockClass::AbstractCandleBlock], // CandleCakeBlock
+    &[], // CarpetBlock
+    &[BlockClass::CropBlock, BlockClass::VegetationBlock], // CarrotBlock
+    &[], // CartographyTableBlock
+    &[BlockClass::HorizontalDirectionalBlock], // CarvedPumpkinBlock
+    &[BlockClass::AbstractCauldronBlock], // CauldronBlock
+    &[BlockClass::GrowingPlantHeadBlock, BlockClass::GrowingPlantBlock], // CaveVinesBlock
+    &[BlockClass::GrowingPlantBodyBlock, BlockClass::GrowingPlantBlock], // CaveVinesPlantBlock
+    &[BlockClass::SignBlock, BlockClass::BaseEntityBlock], // CeilingHangingSignBlock
+    &[BlockClass::RotatedPillarBlock], // ChainBlock
+    &[BlockClass::AbstractChestBlock, BlockClass::BaseEntityBlock], // ChestBlock
+    &[BlockClass::BaseEntityBlock], // ChiseledBookShelfBlock
+    &[], // ChorusFlowerBlock
+    &[BlockClass::PipeBlock], // ChorusPlantBlock
+    &[BlockClass::HorizontalDirectionalBlock], // CocoaBlock
+    &[BlockClass::FallingBlock], // ColoredFallingBlock
+    &[BlockClass::BaseEntityBlock], // CommandBlock
+    &[BlockClass::DiodeBlock, BlockClass::HorizontalDirectionalBlock], // ComparatorBlock
+    &[], // ComposterBlock
+    &[BlockClass::FallingBlock], // ConcretePowderBlock
+    &[BlockClass::BaseEntityBlock], // ConduitBlock
+    &[], // CopperBulbBlock
+    &[BlockClass::ChestBlock, BlockClass::AbstractChestBlock, BlockClass::BaseEntityBlock], // CopperChestBlock
+    &[BlockClass::BaseEntityBlock], // CopperGolemStatueBlock
+    &[], // CoralBlock
+    &[BlockClass::BaseCoralFanBlock, BlockClass::BaseCoralPlantTypeBlock], // CoralFanBlock
+    &[BlockClass::BaseCoralPlantTypeBlock], // CoralPlantBlock
+    &[BlockClass::BaseCoralWallFanBlock, BlockClass::BaseCoralFanBlock, BlockClass::BaseCoralPlantTypeBlock], // CoralWallFanBlock
+    &[BlockClass::BaseEntityBlock], // CrafterBlock
+    &[], // CraftingTableBlock
+    &[BlockClass::BaseEntityBlock], // CreakingHeartBlock
+    &[BlockClass::VegetationBlock], // CropBlock
+    &[], // CrossCollisionBlock
+    &[], // CryingObsidianBlock
+    &[BlockClass::BaseEntityBlock], // DaylightDetectorBlock
+    &[BlockClass::BaseEntityBlock], // DecoratedPotBlock
+    &[BlockClass::BaseRailBlock], // DetectorRailBlock
+    &[BlockClass::HorizontalDirectionalBlock], // DiodeBlock
+    &[], // DirectionalBlock
+    &[BlockClass::BaseEntityBlock], // DispenserBlock
+    &[], // DoorBlock
+    &[BlockClass::VegetationBlock], // DoublePlantBlock
+    &[BlockClass::FallingBlock], // DragonEggBlock
+    &[BlockClass::HorizontalDirectionalBlock], // DriedGhastBlock
+    &[], // DropExperienceBlock
+    &[BlockClass::DispenserBlock, BlockClass::BaseEntityBlock], // DropperBlock
+    &[BlockClass::VegetationBlock], // DryVegetationBlock
+    &[BlockClass::BaseEntityBlock], // EnchantingTableBlock
+    &[BlockClass::BaseEntityBlock], // EndGatewayBlock
+    &[BlockClass::BaseEntityBlock], // EndPortalBlock
+    &[], // EndPortalFrameBlock
+    &[BlockClass::RodBlock, BlockClass::DirectionalBlock], // EndRodBlock
+    &[BlockClass::AbstractChestBlock, BlockClass::BaseEntityBlock], // EnderChestBlock
+    &[BlockClass::FlowerBlock, BlockClass::VegetationBlock], // EyeblossomBlock
+    &[BlockClass::HorizontalDirectionalBlock], // FaceAttachedHorizontalDirectionalBlock
+    &[], // FallingBlock
+    &[BlockClass::LeavesBlock], // FallingParticlesLeavesBlock
+    &[], // FarmlandBlock
+    &[BlockClass::CrossCollisionBlock], // FenceBlock
+    &[BlockClass::HorizontalDirectionalBlock], // FenceGateBlock
+    &[BlockClass::BaseFireBlock], // FireBlock
+    &[BlockClass::VegetationBlock], // FireflyBushBlock
+    &[BlockClass::VegetationBlock], // FlowerBedBlock
+    &[BlockClass::VegetationBlock], // FlowerBlock
+    &[], // FlowerPotBlock
+    &[], // FrogspawnBlock
+    &[BlockClass::IceBlock, BlockClass::HalfTransparentBlock], // FrostedIceBlock
+    &[BlockClass::AbstractFurnaceBlock, BlockClass::BaseEntityBlock], // FurnaceBlock
+    &[BlockClass::HorizontalDirectionalBlock], // GlazedTerracottaBlock
+    &[BlockClass::MultifaceSpreadeableBlock, BlockClass::MultifaceBlock], // GlowLichenBlock
+    &[BlockClass::SpreadingSnowyBlock, BlockClass::SnowyBlock], // GrassBlock
+    &[BlockClass::FaceAttachedHorizontalDirectionalBlock, BlockClass::HorizontalDirectionalBlock], // GrindstoneBlock
+    &[], // GrowingPlantBlock
+    &[BlockClass::GrowingPlantBlock], // GrowingPlantBodyBlock
+    &[BlockClass::GrowingPlantBlock], // GrowingPlantHeadBlock
+    &[], // HalfTransparentBlock
+    &[], // HangingMossBlock
+    &[], // HangingRootsBlock
+    &[BlockClass::RotatedPillarBlock], // HayBlock
+    &[], // HeavyCoreBlock
+    &[BlockClass::HalfTransparentBlock], // HoneyBlock
+    &[BlockClass::BaseEntityBlock], // HopperBlock
+    &[], // HorizontalDirectionalBlock
+    &[], // HugeMushroomBlock
+    &[BlockClass::HalfTransparentBlock], // IceBlock
+    &[], // InfestedBlock
+    &[BlockClass::InfestedBlock], // InfestedRotatedPillarBlock
+    &[BlockClass::CrossCollisionBlock], // IronBarsBlock
+    &[], // JigsawBlock
+    &[BlockClass::BaseEntityBlock], // JukeboxBlock
+    &[BlockClass::GrowingPlantHeadBlock, BlockClass::GrowingPlantBlock], // KelpBlock
+    &[BlockClass::GrowingPlantBodyBlock, BlockClass::GrowingPlantBlock], // KelpPlantBlock
+    &[], // LadderBlock
+    &[], // LanternBlock
+    &[BlockClass::AbstractCauldronBlock], // LavaCauldronBlock
+    &[BlockClass::AbstractCauldronBlock], // LayeredCauldronBlock
+    &[BlockClass::VegetationBlock], // LeafLitterBlock
+    &[], // LeavesBlock
+    &[BlockClass::BaseEntityBlock], // LecternBlock
+    &[BlockClass::FaceAttachedHorizontalDirectionalBlock, BlockClass::HorizontalDirectionalBlock], // LeverBlock
+    &[], // LightBlock
+    &[BlockClass::RodBlock, BlockClass::DirectionalBlock], // LightningRodBlock
+    &[BlockClass::VegetationBlock], // LilyPadBlock
+    &[], // LiquidBlock
+    &[BlockClass::HorizontalDirectionalBlock], // LoomBlock
+    &[], // MagmaBlock
+    &[BlockClass::TintedParticleLeavesBlock, BlockClass::FallingParticlesLeavesBlock, BlockClass::LeavesBlock], // MangroveLeavesBlock
+    &[BlockClass::SaplingBlock, BlockClass::VegetationBlock], // MangrovePropaguleBlock
+    &[], // MangroveRootsBlock
+    &[], // MossyCarpetBlock
+    &[BlockClass::BaseEntityBlock], // MovingPistonBlock
+    &[], // MudBlock
+    &[], // MultifaceBlock
+    &[BlockClass::MultifaceBlock], // MultifaceSpreadeableBlock
+    &[BlockClass::VegetationBlock], // MushroomBlock
+    &[BlockClass::SpreadingSnowyBlock, BlockClass::SnowyBlock], // MyceliumBlock
+    &[BlockClass::VegetationBlock], // NetherFungusBlock
+    &[], // NetherPortalBlock
+    &[BlockClass::VegetationBlock], // NetherRootsBlock
+    &[BlockClass::VegetationBlock], // NetherSproutsBlock
+    &[BlockClass::VegetationBlock], // NetherWartBlock
+    &[], // NetherrackBlock
+    &[], // NoteBlock
+    &[], // NyliumBlock
+    &[BlockClass::DirectionalBlock], // ObserverBlock
+    &[], // PathBlock
+    &[BlockClass::WallSkullBlock, BlockClass::AbstractSkullBlock, BlockClass::BaseEntityBlock], // PiglinWallSkullBlock
+    &[], // PipeBlock
+    &[BlockClass::DirectionalBlock], // PistonBaseBlock
+    &[BlockClass::DirectionalBlock], // PistonHeadBlock
+    &[BlockClass::DoublePlantBlock, BlockClass::VegetationBlock], // PitcherCropBlock
+    &[BlockClass::SkullBlock, BlockClass::AbstractSkullBlock, BlockClass::BaseEntityBlock], // PlayerHeadBlock
+    &[BlockClass::WallSkullBlock, BlockClass::AbstractSkullBlock, BlockClass::BaseEntityBlock], // PlayerWallHeadBlock
+    &[BlockClass::SpeleothemBlock], // PointedDripstoneBlock
+    &[BlockClass::CropBlock, BlockClass::VegetationBlock], // PotatoBlock
+    &[BlockClass::BaseEntityBlock], // PotentSulfurBlock
+    &[], // PowderSnowBlock
+    &[], // PoweredBlock
+    &[BlockClass::BaseRailBlock], // PoweredRailBlock
+    &[BlockClass::BasePressurePlateBlock], // PressurePlateBlock
+    &[], // PumpkinBlock
+    &[BlockClass::BaseRailBlock], // RailBlock
+    &[], // RedStoneOreBlock
+    &[], // RedstoneLampBlock
+    &[BlockClass::BaseTorchBlock], // RedstoneTorchBlock
+    &[BlockClass::RedstoneTorchBlock, BlockClass::BaseTorchBlock], // RedstoneWallTorchBlock
+    &[], // RedstoneWireBlock
+    &[BlockClass::DiodeBlock, BlockClass::HorizontalDirectionalBlock], // RepeaterBlock
+    &[], // RespawnAnchorBlock
+    &[BlockClass::DirectionalBlock], // RodBlock
+    &[], // RootedDirtBlock
+    &[], // RotatedPillarBlock
+    &[BlockClass::ColoredFallingBlock, BlockClass::FallingBlock], // SandBlock
+    &[BlockClass::VegetationBlock], // SaplingBlock
+    &[], // ScaffoldingBlock
+    &[BlockClass::DropExperienceBlock], // SculkBlock
+    &[BlockClass::BaseEntityBlock], // SculkCatalystBlock
+    &[BlockClass::BaseEntityBlock], // SculkSensorBlock
+    &[BlockClass::BaseEntityBlock], // SculkShriekerBlock
+    &[BlockClass::MultifaceSpreadeableBlock, BlockClass::MultifaceBlock], // SculkVeinBlock
+    &[BlockClass::VegetationBlock], // SeaPickleBlock
+    &[BlockClass::VegetationBlock], // SeagrassBlock
+    &[BlockClass::BaseEntityBlock], // ShelfBlock
+    &[BlockClass::HorizontalDirectionalBlock], // ShelfMushroomBlock
+    &[BlockClass::DryVegetationBlock, BlockClass::VegetationBlock], // ShortDryGrassBlock
+    &[BlockClass::BaseEntityBlock], // ShulkerBoxBlock
+    &[BlockClass::BaseEntityBlock], // SignBlock
+    &[BlockClass::AbstractSkullBlock, BlockClass::BaseEntityBlock], // SkullBlock
+    &[], // SlabBlock
+    &[BlockClass::HalfTransparentBlock], // SlimeBlock
+    &[BlockClass::DoublePlantBlock, BlockClass::VegetationBlock], // SmallDripleafBlock
+    &[BlockClass::CraftingTableBlock], // SmithingTableBlock
+    &[BlockClass::AbstractFurnaceBlock, BlockClass::BaseEntityBlock], // SmokerBlock
+    &[], // SnifferEggBlock
+    &[], // SnowLayerBlock
+    &[], // SnowyBlock
+    &[BlockClass::BaseFireBlock], // SoulFireBlock
+    &[], // SoulSandBlock
+    &[BlockClass::BaseEntityBlock], // SpawnerBlock
+    &[], // SpeleothemBlock
+    &[], // SpongeBlock
+    &[], // SporeBlossomBlock
+    &[BlockClass::SnowyBlock], // SpreadingSnowyBlock
+    &[BlockClass::TransparentBlock, BlockClass::HalfTransparentBlock], // StainedGlassBlock
+    &[BlockClass::IronBarsBlock, BlockClass::CrossCollisionBlock], // StainedGlassPaneBlock
+    &[], // StairBlock
+    &[BlockClass::SignBlock, BlockClass::BaseEntityBlock], // StandingSignBlock
+    &[BlockClass::VegetationBlock], // StemBlock
+    &[], // StonecutterBlock
+    &[BlockClass::AbstractBedBlock, BlockClass::HorizontalDirectionalBlock], // StrawBedBlock
+    &[BlockClass::BaseEntityBlock], // StructureBlock
+    &[], // StructureVoidBlock
+    &[], // SugarCaneBlock
+    &[BlockClass::SpeleothemBlock], // SulfurSpikeBlock
+    &[BlockClass::VegetationBlock], // SweetBerryBushBlock
+    &[BlockClass::DryVegetationBlock, BlockClass::VegetationBlock], // TallDryGrassBlock
+    &[BlockClass::DoublePlantBlock, BlockClass::VegetationBlock], // TallFlowerBlock
+    &[BlockClass::VegetationBlock], // TallGrassBlock
+    &[BlockClass::DoublePlantBlock, BlockClass::VegetationBlock], // TallSeagrassBlock
+    &[], // TargetBlock
+    &[BlockClass::BaseEntityBlock], // TestBlock
+    &[BlockClass::BaseEntityBlock], // TestInstanceBlock
+    &[BlockClass::TransparentBlock, BlockClass::HalfTransparentBlock], // TintedGlassBlock
+    &[BlockClass::FallingParticlesLeavesBlock, BlockClass::LeavesBlock], // TintedParticleLeavesBlock
+    &[], // TntBlock
+    &[BlockClass::BaseTorchBlock], // TorchBlock
+    &[BlockClass::CropBlock, BlockClass::VegetationBlock], // TorchflowerCropBlock
+    &[BlockClass::HalfTransparentBlock], // TransparentBlock
+    &[BlockClass::HorizontalDirectionalBlock], // TrapDoorBlock
+    &[BlockClass::ChestBlock, BlockClass::AbstractChestBlock, BlockClass::BaseEntityBlock], // TrappedChestBlock
+    &[BlockClass::BaseEntityBlock], // TrialSpawnerBlock
+    &[], // TripWireBlock
+    &[], // TripWireHookBlock
+    &[], // TurtleEggBlock
+    &[BlockClass::GrowingPlantHeadBlock, BlockClass::GrowingPlantBlock], // TwistingVinesBlock
+    &[BlockClass::GrowingPlantBodyBlock, BlockClass::GrowingPlantBlock], // TwistingVinesPlantBlock
+    &[BlockClass::FallingParticlesLeavesBlock, BlockClass::LeavesBlock], // UntintedParticleLeavesBlock
+    &[BlockClass::BaseEntityBlock], // VaultBlock
+    &[], // VegetationBlock
+    &[], // VineBlock
+    &[BlockClass::AbstractBannerBlock, BlockClass::BaseEntityBlock], // WallBannerBlock
+    &[], // WallBlock
+    &[BlockClass::SignBlock, BlockClass::BaseEntityBlock], // WallHangingSignBlock
+    &[BlockClass::SignBlock, BlockClass::BaseEntityBlock], // WallSignBlock
+    &[BlockClass::AbstractSkullBlock, BlockClass::BaseEntityBlock], // WallSkullBlock
+    &[BlockClass::TorchBlock, BlockClass::BaseTorchBlock], // WallTorchBlock
+    &[BlockClass::TransparentBlock, BlockClass::HalfTransparentBlock], // WaterloggedTransparentBlock
+    &[BlockClass::IronBarsBlock, BlockClass::CrossCollisionBlock], // WeatheringCopperBarsBlock
+    &[BlockClass::CopperBulbBlock], // WeatheringCopperBulbBlock
+    &[BlockClass::ChainBlock, BlockClass::RotatedPillarBlock], // WeatheringCopperChainBlock
+    &[BlockClass::CopperChestBlock, BlockClass::ChestBlock, BlockClass::AbstractChestBlock, BlockClass::BaseEntityBlock], // WeatheringCopperChestBlock
+    &[BlockClass::DoorBlock], // WeatheringCopperDoorBlock
+    &[], // WeatheringCopperFullBlock
+    &[BlockClass::CopperGolemStatueBlock, BlockClass::BaseEntityBlock], // WeatheringCopperGolemStatueBlock
+    &[BlockClass::WaterloggedTransparentBlock, BlockClass::TransparentBlock, BlockClass::HalfTransparentBlock], // WeatheringCopperGrateBlock
+    &[BlockClass::SlabBlock], // WeatheringCopperSlabBlock
+    &[BlockClass::StairBlock], // WeatheringCopperStairBlock
+    &[BlockClass::TrapDoorBlock, BlockClass::HorizontalDirectionalBlock], // WeatheringCopperTrapDoorBlock
+    &[BlockClass::LanternBlock], // WeatheringLanternBlock
+    &[BlockClass::LightningRodBlock, BlockClass::RodBlock, BlockClass::DirectionalBlock], // WeatheringLightningRodBlock
+    &[], // WebBlock
+    &[BlockClass::GrowingPlantHeadBlock, BlockClass::GrowingPlantBlock], // WeepingVinesBlock
+    &[BlockClass::GrowingPlantBodyBlock, BlockClass::GrowingPlantBlock], // WeepingVinesPlantBlock
+    &[BlockClass::BasePressurePlateBlock], // WeightedPressurePlateBlock
+    &[], // WetSpongeBlock
+    &[BlockClass::FlowerBlock, BlockClass::VegetationBlock], // WitherRoseBlock
+    &[BlockClass::SkullBlock, BlockClass::AbstractSkullBlock, BlockClass::BaseEntityBlock], // WitherSkullBlock
+    &[BlockClass::WallSkullBlock, BlockClass::AbstractSkullBlock, BlockClass::BaseEntityBlock], // WitherWallSkullBlock
+    &[BlockClass::CarpetBlock], // WoolCarpetBlock
+];
+
 // The table names the classes without their type, which its lines would repeat.
 use self::BlockClass::*;
 
 /// What the game's code says of each block, by block id.
 pub static BLOCK_INFO: [BlockInfo; 1286] = [
-    BlockInfo { class: AirBlock, block_entity_type: None, used_by_click: false }, // air
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // stone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // granite
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_granite
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // diorite
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_diorite
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // andesite
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_andesite
-    BlockInfo { class: GrassBlock, block_entity_type: None, used_by_click: false }, // grass_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dirt
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // coarse_dirt
-    BlockInfo { class: SnowyBlock, block_entity_type: None, used_by_click: false }, // podzol
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cobblestone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // oak_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // spruce_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // birch_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // jungle_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // acacia_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cherry_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dark_oak_planks
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // pale_oak_wood
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // pale_oak_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // mangrove_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // poplar_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // bamboo_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // bamboo_mosaic
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // oak_sapling
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // spruce_sapling
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // birch_sapling
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // jungle_sapling
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // acacia_sapling
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // cherry_sapling
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // dark_oak_sapling
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // pale_oak_sapling
-    BlockInfo { class: MangrovePropaguleBlock, block_entity_type: None, used_by_click: false }, // mangrove_propagule
-    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false }, // poplar_sapling
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // bedrock
-    BlockInfo { class: LiquidBlock, block_entity_type: None, used_by_click: false }, // water
-    BlockInfo { class: LiquidBlock, block_entity_type: None, used_by_click: false }, // lava
-    BlockInfo { class: SandBlock, block_entity_type: None, used_by_click: false }, // sand
-    BlockInfo { class: BrushableBlock, block_entity_type: Some(40), used_by_click: false }, // suspicious_sand
-    BlockInfo { class: SandBlock, block_entity_type: None, used_by_click: false }, // red_sand
-    BlockInfo { class: ColoredFallingBlock, block_entity_type: None, used_by_click: false }, // gravel
-    BlockInfo { class: BrushableBlock, block_entity_type: Some(40), used_by_click: false }, // suspicious_gravel
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // gold_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // deepslate_gold_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // iron_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // deepslate_iron_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // coal_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // deepslate_coal_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // nether_gold_ore
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // oak_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // spruce_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // birch_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // jungle_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // acacia_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // cherry_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // dark_oak_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // pale_oak_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // mangrove_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // poplar_log
-    BlockInfo { class: MangroveRootsBlock, block_entity_type: None, used_by_click: false }, // mangrove_roots
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // muddy_mangrove_roots
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // bamboo_block
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_spruce_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_birch_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_jungle_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_acacia_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_cherry_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_dark_oak_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_pale_oak_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_oak_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_mangrove_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_poplar_log
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_bamboo_block
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // oak_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // spruce_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // birch_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // jungle_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // acacia_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // cherry_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // dark_oak_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // mangrove_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // poplar_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_oak_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_spruce_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_birch_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_jungle_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_acacia_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_cherry_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_dark_oak_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_pale_oak_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_mangrove_wood
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_poplar_wood
-    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // oak_leaves
-    BlockInfo { class: LeavesBlock, block_entity_type: None, used_by_click: false }, // spruce_leaves
-    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // birch_leaves
-    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // jungle_leaves
-    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // acacia_leaves
-    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // cherry_leaves
-    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // dark_oak_leaves
-    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // pale_oak_leaves
-    BlockInfo { class: MangroveLeavesBlock, block_entity_type: None, used_by_click: false }, // mangrove_leaves
-    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // red_poplar_leaves
-    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // orange_poplar_leaves
-    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // yellow_poplar_leaves
-    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // azalea_leaves
-    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false }, // flowering_azalea_leaves
-    BlockInfo { class: SpongeBlock, block_entity_type: None, used_by_click: false }, // sponge
-    BlockInfo { class: WetSpongeBlock, block_entity_type: None, used_by_click: false }, // wet_sponge
-    BlockInfo { class: TransparentBlock, block_entity_type: None, used_by_click: false }, // glass
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // lapis_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // deepslate_lapis_ore
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // lapis_block
-    BlockInfo { class: DispenserBlock, block_entity_type: Some(5), used_by_click: true }, // dispenser
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // sandstone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_sandstone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cut_sandstone
-    BlockInfo { class: NoteBlock, block_entity_type: None, used_by_click: true }, // note_block
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // white_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // orange_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // magenta_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // light_blue_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // yellow_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // lime_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // pink_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // gray_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // light_gray_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // cyan_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // purple_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // blue_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // brown_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // green_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // red_bed
-    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true }, // black_bed
-    BlockInfo { class: StrawBedBlock, block_entity_type: None, used_by_click: true }, // straw_bed
-    BlockInfo { class: PoweredRailBlock, block_entity_type: None, used_by_click: false }, // powered_rail
-    BlockInfo { class: DetectorRailBlock, block_entity_type: None, used_by_click: false }, // detector_rail
-    BlockInfo { class: PistonBaseBlock, block_entity_type: None, used_by_click: false }, // sticky_piston
-    BlockInfo { class: WebBlock, block_entity_type: None, used_by_click: false }, // cobweb
-    BlockInfo { class: TallGrassBlock, block_entity_type: None, used_by_click: false }, // short_grass
-    BlockInfo { class: TallGrassBlock, block_entity_type: None, used_by_click: false }, // fern
-    BlockInfo { class: DryVegetationBlock, block_entity_type: None, used_by_click: false }, // dead_bush
-    BlockInfo { class: BushBlock, block_entity_type: None, used_by_click: false }, // bush
-    BlockInfo { class: BushBlock, block_entity_type: None, used_by_click: false }, // red_shrub
-    BlockInfo { class: ShortDryGrassBlock, block_entity_type: None, used_by_click: false }, // short_dry_grass
-    BlockInfo { class: TallDryGrassBlock, block_entity_type: None, used_by_click: false }, // tall_dry_grass
-    BlockInfo { class: SeagrassBlock, block_entity_type: None, used_by_click: false }, // seagrass
-    BlockInfo { class: TallSeagrassBlock, block_entity_type: None, used_by_click: false }, // tall_seagrass
-    BlockInfo { class: PistonBaseBlock, block_entity_type: None, used_by_click: false }, // piston
-    BlockInfo { class: PistonHeadBlock, block_entity_type: None, used_by_click: false }, // piston_head
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // white_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // orange_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // magenta_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // light_blue_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // yellow_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // lime_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // pink_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // gray_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // light_gray_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cyan_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // purple_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // blue_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // brown_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // green_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // red_wool
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // black_wool
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // white_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // orange_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // magenta_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // light_blue_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // yellow_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // lime_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // pink_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // gray_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // light_gray_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // cyan_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // purple_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // blue_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // brown_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // green_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // red_wool_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // black_wool_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // white_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // orange_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // magenta_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // light_blue_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // yellow_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // lime_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // pink_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // gray_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // light_gray_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cyan_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // purple_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // blue_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // brown_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // green_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // red_wool_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // black_wool_slab
-    BlockInfo { class: MovingPistonBlock, block_entity_type: Some(11), used_by_click: true }, // moving_piston
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // dandelion
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // golden_dandelion
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // torchflower
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // poppy
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // blue_orchid
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // allium
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // azure_bluet
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // red_tulip
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // orange_tulip
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // white_tulip
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // pink_tulip
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // oxeye_daisy
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // cornflower
-    BlockInfo { class: WitherRoseBlock, block_entity_type: None, used_by_click: false }, // wither_rose
-    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false }, // lily_of_the_valley
-    BlockInfo { class: MushroomBlock, block_entity_type: None, used_by_click: false }, // brown_mushroom
-    BlockInfo { class: MushroomBlock, block_entity_type: None, used_by_click: false }, // red_mushroom
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // gold_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // iron_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // bricks
-    BlockInfo { class: TntBlock, block_entity_type: None, used_by_click: false }, // tnt
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // bookshelf
-    BlockInfo { class: ChiseledBookShelfBlock, block_entity_type: Some(38), used_by_click: true }, // chiseled_bookshelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // acacia_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // bamboo_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // birch_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // cherry_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // crimson_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // dark_oak_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // jungle_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // mangrove_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // oak_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // pale_oak_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // poplar_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // spruce_shelf
-    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false }, // warped_shelf
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // mossy_cobblestone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // obsidian
-    BlockInfo { class: TorchBlock, block_entity_type: None, used_by_click: false }, // torch
-    BlockInfo { class: WallTorchBlock, block_entity_type: None, used_by_click: false }, // wall_torch
-    BlockInfo { class: FireBlock, block_entity_type: None, used_by_click: false }, // fire
-    BlockInfo { class: SoulFireBlock, block_entity_type: None, used_by_click: false }, // soul_fire
-    BlockInfo { class: SpawnerBlock, block_entity_type: Some(9), used_by_click: false }, // spawner
-    BlockInfo { class: CreakingHeartBlock, block_entity_type: Some(10), used_by_click: false }, // creaking_heart
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // oak_stairs
-    BlockInfo { class: ChestBlock, block_entity_type: Some(1), used_by_click: true }, // chest
-    BlockInfo { class: RedstoneWireBlock, block_entity_type: None, used_by_click: true }, // redstone_wire
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // diamond_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // deepslate_diamond_ore
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // diamond_block
-    BlockInfo { class: CraftingTableBlock, block_entity_type: None, used_by_click: true }, // crafting_table
-    BlockInfo { class: CropBlock, block_entity_type: None, used_by_click: false }, // wheat
-    BlockInfo { class: FarmlandBlock, block_entity_type: None, used_by_click: false }, // farmland
-    BlockInfo { class: FurnaceBlock, block_entity_type: Some(0), used_by_click: true }, // furnace
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // oak_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // spruce_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // birch_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // acacia_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // cherry_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // jungle_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // dark_oak_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // pale_oak_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // mangrove_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // poplar_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // bamboo_sign
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // oak_door
-    BlockInfo { class: LadderBlock, block_entity_type: None, used_by_click: false }, // ladder
-    BlockInfo { class: RailBlock, block_entity_type: None, used_by_click: false }, // rail
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // cobblestone_stairs
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // oak_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // spruce_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // birch_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // acacia_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // cherry_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // jungle_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // dark_oak_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // pale_oak_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // mangrove_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // poplar_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // bamboo_wall_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // oak_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // spruce_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // birch_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // acacia_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // cherry_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // jungle_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // dark_oak_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // pale_oak_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // crimson_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // warped_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // mangrove_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // poplar_hanging_sign
-    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // bamboo_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // oak_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // spruce_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // birch_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // acacia_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // cherry_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // jungle_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // dark_oak_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // pale_oak_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // mangrove_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // poplar_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // crimson_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // warped_wall_hanging_sign
-    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true }, // bamboo_wall_hanging_sign
-    BlockInfo { class: LeverBlock, block_entity_type: None, used_by_click: true }, // lever
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // stone_pressure_plate
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: false }, // iron_door
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // oak_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // spruce_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // birch_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // jungle_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // acacia_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // cherry_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // dark_oak_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // pale_oak_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // mangrove_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // poplar_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // bamboo_pressure_plate
-    BlockInfo { class: RedStoneOreBlock, block_entity_type: None, used_by_click: false }, // redstone_ore
-    BlockInfo { class: RedStoneOreBlock, block_entity_type: None, used_by_click: false }, // deepslate_redstone_ore
-    BlockInfo { class: RedstoneTorchBlock, block_entity_type: None, used_by_click: false }, // redstone_torch
-    BlockInfo { class: RedstoneWallTorchBlock, block_entity_type: None, used_by_click: false }, // redstone_wall_torch
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // stone_button
-    BlockInfo { class: SnowLayerBlock, block_entity_type: None, used_by_click: false }, // snow
-    BlockInfo { class: IceBlock, block_entity_type: None, used_by_click: false }, // ice
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // snow_block
-    BlockInfo { class: CactusBlock, block_entity_type: None, used_by_click: false }, // cactus
-    BlockInfo { class: CactusFlowerBlock, block_entity_type: None, used_by_click: false }, // cactus_flower
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // clay
-    BlockInfo { class: SugarCaneBlock, block_entity_type: None, used_by_click: false }, // sugar_cane
-    BlockInfo { class: JukeboxBlock, block_entity_type: Some(4), used_by_click: true }, // jukebox
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // oak_fence
-    BlockInfo { class: NetherrackBlock, block_entity_type: None, used_by_click: false }, // netherrack
-    BlockInfo { class: SoulSandBlock, block_entity_type: None, used_by_click: false }, // soul_sand
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // soul_soil
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // basalt
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // polished_basalt
-    BlockInfo { class: TorchBlock, block_entity_type: None, used_by_click: false }, // soul_torch
-    BlockInfo { class: WallTorchBlock, block_entity_type: None, used_by_click: false }, // soul_wall_torch
-    BlockInfo { class: TorchBlock, block_entity_type: None, used_by_click: false }, // copper_torch
-    BlockInfo { class: WallTorchBlock, block_entity_type: None, used_by_click: false }, // copper_wall_torch
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // glowstone
-    BlockInfo { class: NetherPortalBlock, block_entity_type: None, used_by_click: false }, // nether_portal
-    BlockInfo { class: CarvedPumpkinBlock, block_entity_type: None, used_by_click: false }, // carved_pumpkin
-    BlockInfo { class: CarvedPumpkinBlock, block_entity_type: None, used_by_click: false }, // jack_o_lantern
-    BlockInfo { class: CakeBlock, block_entity_type: None, used_by_click: true }, // cake
-    BlockInfo { class: RepeaterBlock, block_entity_type: None, used_by_click: true }, // repeater
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // white_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // orange_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // magenta_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // light_blue_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // yellow_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // lime_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // pink_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // gray_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // light_gray_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // cyan_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // purple_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // blue_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // brown_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // green_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // red_stained_glass
-    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false }, // black_stained_glass
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // oak_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // spruce_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // birch_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // jungle_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // acacia_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // cherry_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // dark_oak_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // pale_oak_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // mangrove_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // poplar_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // bamboo_trapdoor
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // stone_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // mossy_stone_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cracked_stone_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_stone_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // packed_mud
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // mud_bricks
-    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false }, // infested_stone
-    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false }, // infested_cobblestone
-    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false }, // infested_stone_bricks
-    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false }, // infested_mossy_stone_bricks
-    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false }, // infested_cracked_stone_bricks
-    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false }, // infested_chiseled_stone_bricks
-    BlockInfo { class: HugeMushroomBlock, block_entity_type: None, used_by_click: false }, // brown_mushroom_block
-    BlockInfo { class: HugeMushroomBlock, block_entity_type: None, used_by_click: false }, // red_mushroom_block
-    BlockInfo { class: HugeMushroomBlock, block_entity_type: None, used_by_click: false }, // mushroom_stem
-    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false }, // iron_bars
-    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false }, // copper_bars
-    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false }, // exposed_copper_bars
-    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false }, // weathered_copper_bars
-    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false }, // oxidized_copper_bars
-    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false }, // waxed_copper_bars
-    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_copper_bars
-    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_copper_bars
-    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_copper_bars
-    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false }, // iron_chain
-    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false }, // copper_chain
-    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false }, // exposed_copper_chain
-    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false }, // weathered_copper_chain
-    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false }, // oxidized_copper_chain
-    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false }, // waxed_copper_chain
-    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_copper_chain
-    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_copper_chain
-    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_copper_chain
-    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false }, // glass_pane
-    BlockInfo { class: PumpkinBlock, block_entity_type: None, used_by_click: false }, // pumpkin
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // melon
-    BlockInfo { class: AttachedStemBlock, block_entity_type: None, used_by_click: false }, // attached_pumpkin_stem
-    BlockInfo { class: AttachedStemBlock, block_entity_type: None, used_by_click: false }, // attached_melon_stem
-    BlockInfo { class: StemBlock, block_entity_type: None, used_by_click: false }, // pumpkin_stem
-    BlockInfo { class: StemBlock, block_entity_type: None, used_by_click: false }, // melon_stem
-    BlockInfo { class: VineBlock, block_entity_type: None, used_by_click: false }, // vine
-    BlockInfo { class: GlowLichenBlock, block_entity_type: None, used_by_click: false }, // glow_lichen
-    BlockInfo { class: MultifaceBlock, block_entity_type: None, used_by_click: false }, // resin_clump
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // oak_fence_gate
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // brick_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // stone_brick_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // mud_brick_stairs
-    BlockInfo { class: MyceliumBlock, block_entity_type: None, used_by_click: false }, // mycelium
-    BlockInfo { class: LilyPadBlock, block_entity_type: None, used_by_click: false }, // lily_pad
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // resin_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // resin_bricks
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // resin_brick_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // resin_brick_slab
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // resin_brick_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_resin_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // nether_bricks
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // nether_brick_fence
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // nether_brick_stairs
-    BlockInfo { class: NetherWartBlock, block_entity_type: None, used_by_click: false }, // nether_wart
-    BlockInfo { class: EnchantingTableBlock, block_entity_type: Some(13), used_by_click: true }, // enchanting_table
-    BlockInfo { class: BrewingStandBlock, block_entity_type: Some(12), used_by_click: true }, // brewing_stand
-    BlockInfo { class: CauldronBlock, block_entity_type: None, used_by_click: false }, // cauldron
-    BlockInfo { class: LayeredCauldronBlock, block_entity_type: None, used_by_click: false }, // water_cauldron
-    BlockInfo { class: LavaCauldronBlock, block_entity_type: None, used_by_click: false }, // lava_cauldron
-    BlockInfo { class: LayeredCauldronBlock, block_entity_type: None, used_by_click: false }, // powder_snow_cauldron
-    BlockInfo { class: EndPortalBlock, block_entity_type: Some(14), used_by_click: false }, // end_portal
-    BlockInfo { class: EndPortalFrameBlock, block_entity_type: None, used_by_click: false }, // end_portal_frame
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // end_stone
-    BlockInfo { class: DragonEggBlock, block_entity_type: None, used_by_click: true }, // dragon_egg
-    BlockInfo { class: RedstoneLampBlock, block_entity_type: None, used_by_click: false }, // redstone_lamp
-    BlockInfo { class: CocoaBlock, block_entity_type: None, used_by_click: false }, // cocoa
-    BlockInfo { class: ShelfMushroomBlock, block_entity_type: None, used_by_click: false }, // shelf_mushroom
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // sandstone_stairs
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // emerald_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // deepslate_emerald_ore
-    BlockInfo { class: EnderChestBlock, block_entity_type: Some(3), used_by_click: true }, // ender_chest
-    BlockInfo { class: TripWireHookBlock, block_entity_type: None, used_by_click: false }, // tripwire_hook
-    BlockInfo { class: TripWireBlock, block_entity_type: None, used_by_click: false }, // tripwire
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // emerald_block
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // spruce_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // birch_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // jungle_stairs
-    BlockInfo { class: CommandBlock, block_entity_type: Some(23), used_by_click: true }, // command_block
-    BlockInfo { class: BeaconBlock, block_entity_type: Some(15), used_by_click: true }, // beacon
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // cobblestone_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // mossy_cobblestone_wall
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // flower_pot
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_torchflower
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_oak_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_spruce_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_birch_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_jungle_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_acacia_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_cherry_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_dark_oak_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_pale_oak_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_poplar_sapling
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_mangrove_propagule
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_fern
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_dandelion
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_golden_dandelion
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_poppy
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_blue_orchid
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_allium
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_azure_bluet
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_red_tulip
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_orange_tulip
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_white_tulip
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_pink_tulip
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_oxeye_daisy
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_cornflower
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_lily_of_the_valley
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_wither_rose
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_red_mushroom
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_brown_mushroom
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_dead_bush
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_cactus
-    BlockInfo { class: CarrotBlock, block_entity_type: None, used_by_click: false }, // carrots
-    BlockInfo { class: PotatoBlock, block_entity_type: None, used_by_click: false }, // potatoes
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // oak_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // spruce_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // birch_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // jungle_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // acacia_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // cherry_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // dark_oak_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // pale_oak_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // mangrove_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // poplar_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // bamboo_button
-    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false }, // skeleton_skull
-    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false }, // skeleton_wall_skull
-    BlockInfo { class: WitherSkullBlock, block_entity_type: Some(16), used_by_click: false }, // wither_skeleton_skull
-    BlockInfo { class: WitherWallSkullBlock, block_entity_type: Some(16), used_by_click: false }, // wither_skeleton_wall_skull
-    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false }, // zombie_head
-    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false }, // zombie_wall_head
-    BlockInfo { class: PlayerHeadBlock, block_entity_type: Some(16), used_by_click: false }, // player_head
-    BlockInfo { class: PlayerWallHeadBlock, block_entity_type: Some(16), used_by_click: false }, // player_wall_head
-    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false }, // creeper_head
-    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false }, // creeper_wall_head
-    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false }, // dragon_head
-    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false }, // dragon_wall_head
-    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false }, // piglin_head
-    BlockInfo { class: PiglinWallSkullBlock, block_entity_type: Some(16), used_by_click: false }, // piglin_wall_head
-    BlockInfo { class: AnvilBlock, block_entity_type: None, used_by_click: true }, // anvil
-    BlockInfo { class: AnvilBlock, block_entity_type: None, used_by_click: true }, // chipped_anvil
-    BlockInfo { class: AnvilBlock, block_entity_type: None, used_by_click: true }, // damaged_anvil
-    BlockInfo { class: TrappedChestBlock, block_entity_type: Some(2), used_by_click: true }, // trapped_chest
-    BlockInfo { class: WeightedPressurePlateBlock, block_entity_type: None, used_by_click: false }, // light_weighted_pressure_plate
-    BlockInfo { class: WeightedPressurePlateBlock, block_entity_type: None, used_by_click: false }, // heavy_weighted_pressure_plate
-    BlockInfo { class: ComparatorBlock, block_entity_type: Some(19), used_by_click: true }, // comparator
-    BlockInfo { class: DaylightDetectorBlock, block_entity_type: Some(17), used_by_click: true }, // daylight_detector
-    BlockInfo { class: PoweredBlock, block_entity_type: None, used_by_click: false }, // redstone_block
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // nether_quartz_ore
-    BlockInfo { class: HopperBlock, block_entity_type: Some(18), used_by_click: true }, // hopper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // quartz_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_quartz_block
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // quartz_pillar
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // quartz_stairs
-    BlockInfo { class: PoweredRailBlock, block_entity_type: None, used_by_click: false }, // activator_rail
-    BlockInfo { class: DropperBlock, block_entity_type: Some(6), used_by_click: true }, // dropper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // white_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // orange_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // magenta_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // light_blue_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // yellow_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // lime_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // pink_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // gray_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // light_gray_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cyan_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // purple_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // blue_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // brown_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // green_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // red_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // black_terracotta
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // white_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // orange_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // magenta_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // light_blue_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // yellow_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // lime_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // pink_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // gray_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // light_gray_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // cyan_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // purple_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // blue_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // brown_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // green_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // red_stained_glass_pane
-    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false }, // black_stained_glass_pane
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // acacia_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // cherry_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // dark_oak_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // pale_oak_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // mangrove_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // poplar_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // bamboo_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // bamboo_mosaic_stairs
-    BlockInfo { class: SlimeBlock, block_entity_type: None, used_by_click: false }, // slime_block
-    BlockInfo { class: BarrierBlock, block_entity_type: None, used_by_click: false }, // barrier
-    BlockInfo { class: LightBlock, block_entity_type: None, used_by_click: true }, // light
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: false }, // iron_trapdoor
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // prismarine
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // prismarine_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dark_prismarine
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // prismarine_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // prismarine_brick_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // dark_prismarine_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // prismarine_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // prismarine_brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // dark_prismarine_slab
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // sea_lantern
-    BlockInfo { class: HayBlock, block_entity_type: None, used_by_click: false }, // hay_block
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // white_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // orange_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // magenta_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // light_blue_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // yellow_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // lime_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // pink_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // gray_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // light_gray_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // cyan_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // purple_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // blue_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // brown_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // green_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // red_carpet
-    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false }, // black_carpet
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // coal_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // packed_ice
-    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false }, // sunflower
-    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false }, // lilac
-    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false }, // rose_bush
-    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false }, // peony
-    BlockInfo { class: DoublePlantBlock, block_entity_type: None, used_by_click: false }, // tall_grass
-    BlockInfo { class: DoublePlantBlock, block_entity_type: None, used_by_click: false }, // large_fern
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // white_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // orange_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // magenta_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // light_blue_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // yellow_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // lime_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // pink_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // gray_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // light_gray_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // cyan_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // purple_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // blue_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // brown_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // green_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // red_banner
-    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false }, // black_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // white_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // orange_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // magenta_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // light_blue_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // yellow_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // lime_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // pink_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // gray_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // light_gray_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // cyan_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // purple_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // blue_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // brown_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // green_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // red_wall_banner
-    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false }, // black_wall_banner
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // red_sandstone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_red_sandstone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cut_red_sandstone
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // red_sandstone_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // oak_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // spruce_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // birch_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // jungle_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // acacia_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cherry_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // dark_oak_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // pale_oak_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // mangrove_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // poplar_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // bamboo_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // bamboo_mosaic_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // stone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // sandstone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cut_sandstone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // petrified_oak_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cobblestone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // stone_brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // mud_brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // nether_brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // quartz_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // red_sandstone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cut_red_sandstone_slab
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // smooth_stone
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // smooth_stone_slab
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // smooth_sandstone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // smooth_quartz
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // smooth_red_sandstone
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // spruce_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // birch_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // jungle_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // acacia_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // cherry_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // dark_oak_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // pale_oak_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // mangrove_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // poplar_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // bamboo_fence_gate
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // spruce_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // birch_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // jungle_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // acacia_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // cherry_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // dark_oak_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // pale_oak_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // mangrove_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // poplar_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // bamboo_fence
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // spruce_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // birch_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // jungle_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // acacia_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // cherry_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // dark_oak_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // pale_oak_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // mangrove_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // poplar_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // bamboo_door
-    BlockInfo { class: EndRodBlock, block_entity_type: None, used_by_click: false }, // end_rod
-    BlockInfo { class: ChorusPlantBlock, block_entity_type: None, used_by_click: false }, // chorus_plant
-    BlockInfo { class: ChorusFlowerBlock, block_entity_type: None, used_by_click: false }, // chorus_flower
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // purpur_block
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // purpur_slab
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // purpur_pillar
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // purpur_stairs
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // end_stone_bricks
-    BlockInfo { class: TorchflowerCropBlock, block_entity_type: None, used_by_click: false }, // torchflower_crop
-    BlockInfo { class: PitcherCropBlock, block_entity_type: None, used_by_click: false }, // pitcher_crop
-    BlockInfo { class: DoublePlantBlock, block_entity_type: None, used_by_click: false }, // pitcher_plant
-    BlockInfo { class: BeetrootBlock, block_entity_type: None, used_by_click: false }, // beetroots
-    BlockInfo { class: PathBlock, block_entity_type: None, used_by_click: false }, // dirt_path
-    BlockInfo { class: EndGatewayBlock, block_entity_type: Some(22), used_by_click: false }, // end_gateway
-    BlockInfo { class: CommandBlock, block_entity_type: Some(23), used_by_click: true }, // repeating_command_block
-    BlockInfo { class: CommandBlock, block_entity_type: Some(23), used_by_click: true }, // chain_command_block
-    BlockInfo { class: FrostedIceBlock, block_entity_type: None, used_by_click: false }, // frosted_ice
-    BlockInfo { class: MagmaBlock, block_entity_type: None, used_by_click: false }, // magma_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // nether_wart_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // red_nether_bricks
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // bone_block
-    BlockInfo { class: StructureVoidBlock, block_entity_type: None, used_by_click: false }, // structure_void
-    BlockInfo { class: ObserverBlock, block_entity_type: None, used_by_click: false }, // observer
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // white_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // orange_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // magenta_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // light_blue_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // yellow_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // lime_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // pink_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // gray_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // light_gray_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // cyan_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // purple_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // blue_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // brown_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // green_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // red_shulker_box
-    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true }, // black_shulker_box
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // white_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // orange_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // magenta_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // light_blue_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // yellow_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // lime_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // pink_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // gray_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // light_gray_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // cyan_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // purple_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // blue_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // brown_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // green_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // red_glazed_terracotta
-    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false }, // black_glazed_terracotta
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // white_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // orange_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // magenta_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // light_blue_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // yellow_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // lime_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // pink_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // gray_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // light_gray_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cyan_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // purple_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // blue_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // brown_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // green_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // red_concrete
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // black_concrete
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // white_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // orange_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // magenta_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // light_blue_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // yellow_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // lime_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // pink_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // gray_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // light_gray_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // cyan_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // purple_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // blue_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // brown_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // green_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // red_concrete_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // black_concrete_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // white_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // orange_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // magenta_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // light_blue_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // yellow_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // lime_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // pink_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // gray_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // light_gray_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cyan_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // purple_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // blue_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // brown_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // green_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // red_concrete_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // black_concrete_slab
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // white_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // orange_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // magenta_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // light_blue_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // yellow_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // lime_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // pink_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // gray_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // light_gray_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // cyan_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // purple_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // blue_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // brown_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // green_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // red_concrete_powder
-    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false }, // black_concrete_powder
-    BlockInfo { class: KelpBlock, block_entity_type: None, used_by_click: false }, // kelp
-    BlockInfo { class: KelpPlantBlock, block_entity_type: None, used_by_click: false }, // kelp_plant
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dried_kelp_block
-    BlockInfo { class: TurtleEggBlock, block_entity_type: None, used_by_click: false }, // turtle_egg
-    BlockInfo { class: SnifferEggBlock, block_entity_type: None, used_by_click: false }, // sniffer_egg
-    BlockInfo { class: DriedGhastBlock, block_entity_type: None, used_by_click: false }, // dried_ghast
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dead_tube_coral_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dead_brain_coral_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dead_bubble_coral_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dead_fire_coral_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dead_horn_coral_block
-    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false }, // tube_coral_block
-    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false }, // brain_coral_block
-    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false }, // bubble_coral_block
-    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false }, // fire_coral_block
-    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false }, // horn_coral_block
-    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false }, // dead_tube_coral
-    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false }, // dead_brain_coral
-    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false }, // dead_bubble_coral
-    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false }, // dead_fire_coral
-    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false }, // dead_horn_coral
-    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false }, // tube_coral
-    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false }, // brain_coral
-    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false }, // bubble_coral
-    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false }, // fire_coral
-    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false }, // horn_coral
-    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false }, // dead_tube_coral_fan
-    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false }, // dead_brain_coral_fan
-    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false }, // dead_bubble_coral_fan
-    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false }, // dead_fire_coral_fan
-    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false }, // dead_horn_coral_fan
-    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false }, // tube_coral_fan
-    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false }, // brain_coral_fan
-    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false }, // bubble_coral_fan
-    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false }, // fire_coral_fan
-    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false }, // horn_coral_fan
-    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false }, // dead_tube_coral_wall_fan
-    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false }, // dead_brain_coral_wall_fan
-    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false }, // dead_bubble_coral_wall_fan
-    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false }, // dead_fire_coral_wall_fan
-    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false }, // dead_horn_coral_wall_fan
-    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false }, // tube_coral_wall_fan
-    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false }, // brain_coral_wall_fan
-    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false }, // bubble_coral_wall_fan
-    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false }, // fire_coral_wall_fan
-    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false }, // horn_coral_wall_fan
-    BlockInfo { class: SeaPickleBlock, block_entity_type: None, used_by_click: false }, // sea_pickle
-    BlockInfo { class: HalfTransparentBlock, block_entity_type: None, used_by_click: false }, // blue_ice
-    BlockInfo { class: ConduitBlock, block_entity_type: Some(25), used_by_click: false }, // conduit
-    BlockInfo { class: BambooSaplingBlock, block_entity_type: None, used_by_click: false }, // bamboo_sapling
-    BlockInfo { class: BambooStalkBlock, block_entity_type: None, used_by_click: false }, // bamboo
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_bamboo
-    BlockInfo { class: AirBlock, block_entity_type: None, used_by_click: false }, // void_air
-    BlockInfo { class: AirBlock, block_entity_type: None, used_by_click: false }, // cave_air
-    BlockInfo { class: BubbleColumnBlock, block_entity_type: None, used_by_click: false }, // bubble_column
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_granite_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // smooth_red_sandstone_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // mossy_stone_brick_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_diorite_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // mossy_cobblestone_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // end_stone_brick_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // stone_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // smooth_sandstone_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // smooth_quartz_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // granite_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // andesite_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // red_nether_brick_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_andesite_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // diorite_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_granite_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // smooth_red_sandstone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // mossy_stone_brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_diorite_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // mossy_cobblestone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // end_stone_brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // smooth_sandstone_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // smooth_quartz_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // granite_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // andesite_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // red_nether_brick_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_andesite_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // diorite_slab
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // brick_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // prismarine_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // red_sandstone_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // mossy_stone_brick_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // granite_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // stone_brick_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // mud_brick_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // nether_brick_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // andesite_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // red_nether_brick_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // sandstone_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // end_stone_brick_wall
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // diorite_wall
-    BlockInfo { class: ScaffoldingBlock, block_entity_type: None, used_by_click: false }, // scaffolding
-    BlockInfo { class: LoomBlock, block_entity_type: None, used_by_click: true }, // loom
-    BlockInfo { class: BarrelBlock, block_entity_type: Some(26), used_by_click: true }, // barrel
-    BlockInfo { class: SmokerBlock, block_entity_type: Some(27), used_by_click: true }, // smoker
-    BlockInfo { class: BlastFurnaceBlock, block_entity_type: Some(28), used_by_click: true }, // blast_furnace
-    BlockInfo { class: CartographyTableBlock, block_entity_type: None, used_by_click: true }, // cartography_table
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // fletching_table
-    BlockInfo { class: GrindstoneBlock, block_entity_type: None, used_by_click: true }, // grindstone
-    BlockInfo { class: LecternBlock, block_entity_type: Some(29), used_by_click: true }, // lectern
-    BlockInfo { class: SmithingTableBlock, block_entity_type: None, used_by_click: true }, // smithing_table
-    BlockInfo { class: StonecutterBlock, block_entity_type: None, used_by_click: true }, // stonecutter
-    BlockInfo { class: BellBlock, block_entity_type: Some(30), used_by_click: true }, // bell
-    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false }, // lantern
-    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false }, // soul_lantern
-    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false }, // copper_lantern
-    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false }, // exposed_copper_lantern
-    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false }, // weathered_copper_lantern
-    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false }, // oxidized_copper_lantern
-    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false }, // waxed_copper_lantern
-    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_copper_lantern
-    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_copper_lantern
-    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_copper_lantern
-    BlockInfo { class: CampfireBlock, block_entity_type: Some(32), used_by_click: false }, // campfire
-    BlockInfo { class: CampfireBlock, block_entity_type: Some(32), used_by_click: false }, // soul_campfire
-    BlockInfo { class: SweetBerryBushBlock, block_entity_type: None, used_by_click: true }, // sweet_berry_bush
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // warped_stem
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_warped_stem
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // warped_hyphae
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_warped_hyphae
-    BlockInfo { class: NyliumBlock, block_entity_type: None, used_by_click: false }, // warped_nylium
-    BlockInfo { class: NetherFungusBlock, block_entity_type: None, used_by_click: false }, // warped_fungus
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // warped_wart_block
-    BlockInfo { class: NetherRootsBlock, block_entity_type: None, used_by_click: false }, // warped_roots
-    BlockInfo { class: NetherSproutsBlock, block_entity_type: None, used_by_click: false }, // nether_sprouts
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // crimson_stem
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_crimson_stem
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // crimson_hyphae
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // stripped_crimson_hyphae
-    BlockInfo { class: NyliumBlock, block_entity_type: None, used_by_click: false }, // crimson_nylium
-    BlockInfo { class: NetherFungusBlock, block_entity_type: None, used_by_click: false }, // crimson_fungus
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // shroomlight
-    BlockInfo { class: WeepingVinesBlock, block_entity_type: None, used_by_click: false }, // weeping_vines
-    BlockInfo { class: WeepingVinesPlantBlock, block_entity_type: None, used_by_click: false }, // weeping_vines_plant
-    BlockInfo { class: TwistingVinesBlock, block_entity_type: None, used_by_click: false }, // twisting_vines
-    BlockInfo { class: TwistingVinesPlantBlock, block_entity_type: None, used_by_click: false }, // twisting_vines_plant
-    BlockInfo { class: NetherRootsBlock, block_entity_type: None, used_by_click: false }, // crimson_roots
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // crimson_planks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // warped_planks
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // crimson_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // warped_slab
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // crimson_pressure_plate
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // warped_pressure_plate
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // crimson_fence
-    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true }, // warped_fence
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // crimson_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // warped_trapdoor
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // crimson_fence_gate
-    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true }, // warped_fence_gate
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // crimson_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // warped_stairs
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // crimson_button
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // warped_button
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // crimson_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // warped_door
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // crimson_sign
-    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true }, // warped_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // crimson_wall_sign
-    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true }, // warped_wall_sign
-    BlockInfo { class: StructureBlock, block_entity_type: Some(21), used_by_click: true }, // structure_block
-    BlockInfo { class: JigsawBlock, block_entity_type: Some(31), used_by_click: true }, // jigsaw
-    BlockInfo { class: TestBlock, block_entity_type: Some(45), used_by_click: true }, // test_block
-    BlockInfo { class: TestInstanceBlock, block_entity_type: Some(46), used_by_click: true }, // test_instance_block
-    BlockInfo { class: ComposterBlock, block_entity_type: None, used_by_click: true }, // composter
-    BlockInfo { class: TargetBlock, block_entity_type: None, used_by_click: false }, // target
-    BlockInfo { class: BeehiveBlock, block_entity_type: Some(33), used_by_click: false }, // bee_nest
-    BlockInfo { class: BeehiveBlock, block_entity_type: Some(33), used_by_click: false }, // beehive
-    BlockInfo { class: HoneyBlock, block_entity_type: None, used_by_click: false }, // honey_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // honeycomb_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // netherite_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // ancient_debris
-    BlockInfo { class: CryingObsidianBlock, block_entity_type: None, used_by_click: false }, // crying_obsidian
-    BlockInfo { class: RespawnAnchorBlock, block_entity_type: None, used_by_click: true }, // respawn_anchor
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_crimson_fungus
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_warped_fungus
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_crimson_roots
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_warped_roots
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // lodestone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // blackstone
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // blackstone_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // blackstone_wall
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // blackstone_slab
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_blackstone
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_blackstone_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cracked_polished_blackstone_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_polished_blackstone
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_blackstone_brick_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_blackstone_brick_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // polished_blackstone_brick_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // gilded_blackstone
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_blackstone_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_blackstone_slab
-    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false }, // polished_blackstone_pressure_plate
-    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true }, // polished_blackstone_button
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // polished_blackstone_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_nether_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cracked_nether_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // quartz_bricks
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // white_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // orange_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // magenta_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // light_blue_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // yellow_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // lime_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // pink_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // gray_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // light_gray_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // cyan_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // purple_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // blue_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // brown_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // green_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // red_candle
-    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false }, // black_candle
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // white_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // orange_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // magenta_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // light_blue_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // yellow_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // lime_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // pink_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // gray_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // light_gray_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // cyan_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // purple_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // blue_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // brown_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // green_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // red_candle_cake
-    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true }, // black_candle_cake
-    BlockInfo { class: AmethystBlock, block_entity_type: None, used_by_click: false }, // amethyst_block
-    BlockInfo { class: BuddingAmethystBlock, block_entity_type: None, used_by_click: false }, // budding_amethyst
-    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false }, // amethyst_cluster
-    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false }, // large_amethyst_bud
-    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false }, // medium_amethyst_bud
-    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false }, // small_amethyst_bud
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // tuff
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // tuff_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // tuff_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // tuff_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_tuff
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_tuff_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_tuff_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // polished_tuff_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_tuff
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // tuff_bricks
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // tuff_brick_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // tuff_brick_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // tuff_brick_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_tuff_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // sulfur
-    BlockInfo { class: PotentSulfurBlock, block_entity_type: Some(48), used_by_click: false }, // potent_sulfur
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // sulfur_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // sulfur_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // sulfur_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_sulfur
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_sulfur_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_sulfur_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // polished_sulfur_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // sulfur_bricks
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // sulfur_brick_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // sulfur_brick_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // sulfur_brick_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_sulfur
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cinnabar
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cinnabar_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // cinnabar_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // cinnabar_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_cinnabar
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_cinnabar_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_cinnabar_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // polished_cinnabar_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cinnabar_bricks
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cinnabar_brick_slab
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // cinnabar_brick_stairs
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // cinnabar_brick_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_cinnabar
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // calcite
-    BlockInfo { class: TintedGlassBlock, block_entity_type: None, used_by_click: false }, // tinted_glass
-    BlockInfo { class: PowderSnowBlock, block_entity_type: None, used_by_click: false }, // powder_snow
-    BlockInfo { class: SculkSensorBlock, block_entity_type: Some(34), used_by_click: false }, // sculk_sensor
-    BlockInfo { class: CalibratedSculkSensorBlock, block_entity_type: Some(35), used_by_click: false }, // calibrated_sculk_sensor
-    BlockInfo { class: SculkBlock, block_entity_type: None, used_by_click: false }, // sculk
-    BlockInfo { class: SculkVeinBlock, block_entity_type: None, used_by_click: false }, // sculk_vein
-    BlockInfo { class: SculkCatalystBlock, block_entity_type: Some(36), used_by_click: false }, // sculk_catalyst
-    BlockInfo { class: SculkShriekerBlock, block_entity_type: Some(37), used_by_click: false }, // sculk_shrieker
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // copper_block
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // exposed_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // weathered_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // oxidized_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_copper_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_exposed_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_weathered_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_oxidized_copper
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // copper_ore
-    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false }, // deepslate_copper_ore
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // cut_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // exposed_cut_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // weathered_cut_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // oxidized_cut_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_cut_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_exposed_cut_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_weathered_cut_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_oxidized_cut_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // chiseled_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // exposed_chiseled_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // weathered_chiseled_copper
-    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false }, // oxidized_chiseled_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_chiseled_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_exposed_chiseled_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_weathered_chiseled_copper
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // waxed_oxidized_chiseled_copper
-    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false }, // cut_copper_stairs
-    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false }, // exposed_cut_copper_stairs
-    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false }, // weathered_cut_copper_stairs
-    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false }, // oxidized_cut_copper_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // waxed_cut_copper_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_cut_copper_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_cut_copper_stairs
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_cut_copper_stairs
-    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false }, // cut_copper_slab
-    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false }, // exposed_cut_copper_slab
-    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false }, // weathered_cut_copper_slab
-    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false }, // oxidized_cut_copper_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // waxed_cut_copper_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_cut_copper_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_cut_copper_slab
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_cut_copper_slab
-    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true }, // copper_door
-    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true }, // exposed_copper_door
-    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true }, // weathered_copper_door
-    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true }, // oxidized_copper_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // waxed_copper_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // waxed_exposed_copper_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // waxed_weathered_copper_door
-    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true }, // waxed_oxidized_copper_door
-    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true }, // copper_trapdoor
-    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true }, // exposed_copper_trapdoor
-    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true }, // weathered_copper_trapdoor
-    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true }, // oxidized_copper_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // waxed_copper_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // waxed_exposed_copper_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // waxed_weathered_copper_trapdoor
-    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true }, // waxed_oxidized_copper_trapdoor
-    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false }, // copper_grate
-    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false }, // exposed_copper_grate
-    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false }, // weathered_copper_grate
-    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false }, // oxidized_copper_grate
-    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false }, // waxed_copper_grate
-    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_copper_grate
-    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_copper_grate
-    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_copper_grate
-    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false }, // copper_bulb
-    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false }, // exposed_copper_bulb
-    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false }, // weathered_copper_bulb
-    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false }, // oxidized_copper_bulb
-    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false }, // waxed_copper_bulb
-    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_copper_bulb
-    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_copper_bulb
-    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_copper_bulb
-    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // copper_chest
-    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // exposed_copper_chest
-    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // weathered_copper_chest
-    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // oxidized_copper_chest
-    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // waxed_copper_chest
-    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // waxed_exposed_copper_chest
-    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // waxed_weathered_copper_chest
-    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true }, // waxed_oxidized_copper_chest
-    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // copper_golem_statue
-    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // exposed_copper_golem_statue
-    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // weathered_copper_golem_statue
-    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // oxidized_copper_golem_statue
-    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // waxed_copper_golem_statue
-    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // waxed_exposed_copper_golem_statue
-    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // waxed_weathered_copper_golem_statue
-    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false }, // waxed_oxidized_copper_golem_statue
-    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false }, // lightning_rod
-    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false }, // exposed_lightning_rod
-    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false }, // weathered_lightning_rod
-    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false }, // oxidized_lightning_rod
-    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false }, // waxed_lightning_rod
-    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false }, // waxed_exposed_lightning_rod
-    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false }, // waxed_weathered_lightning_rod
-    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false }, // waxed_oxidized_lightning_rod
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // dripstone_block
-    BlockInfo { class: PointedDripstoneBlock, block_entity_type: None, used_by_click: false }, // pointed_dripstone
-    BlockInfo { class: SulfurSpikeBlock, block_entity_type: None, used_by_click: false }, // sulfur_spike
-    BlockInfo { class: CaveVinesBlock, block_entity_type: None, used_by_click: true }, // cave_vines
-    BlockInfo { class: CaveVinesPlantBlock, block_entity_type: None, used_by_click: true }, // cave_vines_plant
-    BlockInfo { class: SporeBlossomBlock, block_entity_type: None, used_by_click: false }, // spore_blossom
-    BlockInfo { class: AzaleaBlock, block_entity_type: None, used_by_click: false }, // azalea
-    BlockInfo { class: AzaleaBlock, block_entity_type: None, used_by_click: false }, // flowering_azalea
-    BlockInfo { class: CarpetBlock, block_entity_type: None, used_by_click: false }, // moss_carpet
-    BlockInfo { class: FlowerBedBlock, block_entity_type: None, used_by_click: false }, // pink_petals
-    BlockInfo { class: FlowerBedBlock, block_entity_type: None, used_by_click: false }, // wildflowers
-    BlockInfo { class: LeafLitterBlock, block_entity_type: None, used_by_click: false }, // leaf_litter
-    BlockInfo { class: BonemealableFeaturePlacerBlock, block_entity_type: None, used_by_click: false }, // moss_block
-    BlockInfo { class: BigDripleafBlock, block_entity_type: None, used_by_click: false }, // big_dripleaf
-    BlockInfo { class: BigDripleafStemBlock, block_entity_type: None, used_by_click: false }, // big_dripleaf_stem
-    BlockInfo { class: SmallDripleafBlock, block_entity_type: None, used_by_click: false }, // small_dripleaf
-    BlockInfo { class: HangingRootsBlock, block_entity_type: None, used_by_click: false }, // hanging_roots
-    BlockInfo { class: RootedDirtBlock, block_entity_type: None, used_by_click: false }, // rooted_dirt
-    BlockInfo { class: MudBlock, block_entity_type: None, used_by_click: false }, // mud
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // deepslate
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cobbled_deepslate
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // cobbled_deepslate_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // cobbled_deepslate_slab
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // cobbled_deepslate_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // polished_deepslate
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // polished_deepslate_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // polished_deepslate_slab
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // polished_deepslate_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // deepslate_tiles
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // deepslate_tile_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // deepslate_tile_slab
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // deepslate_tile_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // deepslate_bricks
-    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false }, // deepslate_brick_stairs
-    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false }, // deepslate_brick_slab
-    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false }, // deepslate_brick_wall
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // chiseled_deepslate
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cracked_deepslate_bricks
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // cracked_deepslate_tiles
-    BlockInfo { class: InfestedRotatedPillarBlock, block_entity_type: None, used_by_click: false }, // infested_deepslate
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // smooth_basalt
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // raw_iron_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // raw_copper_block
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // raw_gold_block
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_azalea_bush
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_flowering_azalea_bush
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // ochre_froglight
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // verdant_froglight
-    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false }, // pearlescent_froglight
-    BlockInfo { class: FrogspawnBlock, block_entity_type: None, used_by_click: false }, // frogspawn
-    BlockInfo { class: Block, block_entity_type: None, used_by_click: false }, // reinforced_deepslate
-    BlockInfo { class: DecoratedPotBlock, block_entity_type: Some(41), used_by_click: true }, // decorated_pot
-    BlockInfo { class: CrafterBlock, block_entity_type: Some(42), used_by_click: true }, // crafter
-    BlockInfo { class: TrialSpawnerBlock, block_entity_type: Some(43), used_by_click: false }, // trial_spawner
-    BlockInfo { class: VaultBlock, block_entity_type: Some(44), used_by_click: false }, // vault
-    BlockInfo { class: HeavyCoreBlock, block_entity_type: None, used_by_click: false }, // heavy_core
-    BlockInfo { class: BonemealableFeaturePlacerBlock, block_entity_type: None, used_by_click: false }, // pale_moss_block
-    BlockInfo { class: MossyCarpetBlock, block_entity_type: None, used_by_click: false }, // pale_moss_carpet
-    BlockInfo { class: HangingMossBlock, block_entity_type: None, used_by_click: false }, // pale_hanging_moss
-    BlockInfo { class: EyeblossomBlock, block_entity_type: None, used_by_click: false }, // open_eyeblossom
-    BlockInfo { class: EyeblossomBlock, block_entity_type: None, used_by_click: false }, // closed_eyeblossom
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_open_eyeblossom
-    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true }, // potted_closed_eyeblossom
-    BlockInfo { class: FireflyBushBlock, block_entity_type: None, used_by_click: false }, // firefly_bush
+    BlockInfo { class: AirBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // air
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // granite
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_granite
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // diorite
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_diorite
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // andesite
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_andesite
+    BlockInfo { class: GrassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // grass_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dirt
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // coarse_dirt
+    BlockInfo { class: SnowyBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // podzol
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobblestone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oak_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // spruce_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // birch_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // jungle_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // acacia_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cherry_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_oak_planks
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pale_oak_wood
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pale_oak_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mangrove_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // poplar_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bamboo_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bamboo_mosaic
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // oak_sapling
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // spruce_sapling
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // birch_sapling
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // jungle_sapling
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // acacia_sapling
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cherry_sapling
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dark_oak_sapling
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pale_oak_sapling
+    BlockInfo { class: MangrovePropaguleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // mangrove_propagule
+    BlockInfo { class: SaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // poplar_sapling
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bedrock
+    BlockInfo { class: LiquidBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // water
+    BlockInfo { class: LiquidBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lava
+    BlockInfo { class: SandBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sand
+    BlockInfo { class: BrushableBlock, block_entity_type: Some(40), used_by_click: false, survival_rule: false, potted: None }, // suspicious_sand
+    BlockInfo { class: SandBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_sand
+    BlockInfo { class: ColoredFallingBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gravel
+    BlockInfo { class: BrushableBlock, block_entity_type: Some(40), used_by_click: false, survival_rule: false, potted: None }, // suspicious_gravel
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gold_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_gold_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // iron_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_iron_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // coal_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_coal_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_gold_ore
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oak_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // spruce_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // birch_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // jungle_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // acacia_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cherry_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_oak_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pale_oak_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mangrove_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // poplar_log
+    BlockInfo { class: MangroveRootsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mangrove_roots
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // muddy_mangrove_roots
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bamboo_block
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_spruce_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_birch_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_jungle_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_acacia_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_cherry_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_dark_oak_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_pale_oak_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_oak_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_mangrove_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_poplar_log
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_bamboo_block
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oak_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // spruce_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // birch_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // jungle_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // acacia_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cherry_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_oak_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mangrove_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // poplar_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_oak_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_spruce_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_birch_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_jungle_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_acacia_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_cherry_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_dark_oak_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_pale_oak_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_mangrove_wood
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_poplar_wood
+    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oak_leaves
+    BlockInfo { class: LeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // spruce_leaves
+    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // birch_leaves
+    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // jungle_leaves
+    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // acacia_leaves
+    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cherry_leaves
+    BlockInfo { class: TintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_oak_leaves
+    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pale_oak_leaves
+    BlockInfo { class: MangroveLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mangrove_leaves
+    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_poplar_leaves
+    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_poplar_leaves
+    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_poplar_leaves
+    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // azalea_leaves
+    BlockInfo { class: UntintedParticleLeavesBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // flowering_azalea_leaves
+    BlockInfo { class: SpongeBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sponge
+    BlockInfo { class: WetSpongeBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // wet_sponge
+    BlockInfo { class: TransparentBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // glass
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lapis_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_lapis_ore
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lapis_block
+    BlockInfo { class: DispenserBlock, block_entity_type: Some(5), used_by_click: true, survival_rule: false, potted: None }, // dispenser
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sandstone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_sandstone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cut_sandstone
+    BlockInfo { class: NoteBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // note_block
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // white_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // orange_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // magenta_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // light_blue_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // yellow_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // lime_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // pink_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // gray_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // light_gray_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // cyan_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // purple_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // blue_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // brown_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // green_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // red_bed
+    BlockInfo { class: BedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // black_bed
+    BlockInfo { class: StrawBedBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // straw_bed
+    BlockInfo { class: PoweredRailBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // powered_rail
+    BlockInfo { class: DetectorRailBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // detector_rail
+    BlockInfo { class: PistonBaseBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sticky_piston
+    BlockInfo { class: WebBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobweb
+    BlockInfo { class: TallGrassBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // short_grass
+    BlockInfo { class: TallGrassBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // fern
+    BlockInfo { class: DryVegetationBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_bush
+    BlockInfo { class: BushBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bush
+    BlockInfo { class: BushBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // red_shrub
+    BlockInfo { class: ShortDryGrassBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // short_dry_grass
+    BlockInfo { class: TallDryGrassBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // tall_dry_grass
+    BlockInfo { class: SeagrassBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // seagrass
+    BlockInfo { class: TallSeagrassBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // tall_seagrass
+    BlockInfo { class: PistonBaseBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // piston
+    BlockInfo { class: PistonHeadBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // piston_head
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_wool
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_wool
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_wool_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_wool_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_wool_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_wool_slab
+    BlockInfo { class: MovingPistonBlock, block_entity_type: Some(11), used_by_click: true, survival_rule: false, potted: None }, // moving_piston
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dandelion
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // golden_dandelion
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // torchflower
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // poppy
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // blue_orchid
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // allium
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // azure_bluet
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // red_tulip
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // orange_tulip
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // white_tulip
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pink_tulip
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // oxeye_daisy
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cornflower
+    BlockInfo { class: WitherRoseBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // wither_rose
+    BlockInfo { class: FlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // lily_of_the_valley
+    BlockInfo { class: MushroomBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // brown_mushroom
+    BlockInfo { class: MushroomBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // red_mushroom
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gold_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // iron_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bricks
+    BlockInfo { class: TntBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tnt
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bookshelf
+    BlockInfo { class: ChiseledBookShelfBlock, block_entity_type: Some(38), used_by_click: true, survival_rule: false, potted: None }, // chiseled_bookshelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // acacia_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // bamboo_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // birch_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // cherry_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // crimson_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // dark_oak_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // jungle_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // mangrove_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // oak_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // pale_oak_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // poplar_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // spruce_shelf
+    BlockInfo { class: ShelfBlock, block_entity_type: Some(39), used_by_click: false, survival_rule: false, potted: None }, // warped_shelf
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_cobblestone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // obsidian
+    BlockInfo { class: TorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // torch
+    BlockInfo { class: WallTorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // wall_torch
+    BlockInfo { class: FireBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // fire
+    BlockInfo { class: SoulFireBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // soul_fire
+    BlockInfo { class: SpawnerBlock, block_entity_type: Some(9), used_by_click: false, survival_rule: false, potted: None }, // spawner
+    BlockInfo { class: CreakingHeartBlock, block_entity_type: Some(10), used_by_click: false, survival_rule: false, potted: None }, // creaking_heart
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oak_stairs
+    BlockInfo { class: ChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // chest
+    BlockInfo { class: RedstoneWireBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // redstone_wire
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // diamond_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_diamond_ore
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // diamond_block
+    BlockInfo { class: CraftingTableBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // crafting_table
+    BlockInfo { class: CropBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // wheat
+    BlockInfo { class: FarmlandBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // farmland
+    BlockInfo { class: FurnaceBlock, block_entity_type: Some(0), used_by_click: true, survival_rule: false, potted: None }, // furnace
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // oak_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // spruce_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // birch_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // acacia_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // cherry_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // jungle_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // dark_oak_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // pale_oak_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // mangrove_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // poplar_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // bamboo_sign
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // oak_door
+    BlockInfo { class: LadderBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // ladder
+    BlockInfo { class: RailBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // rail
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobblestone_stairs
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // oak_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // spruce_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // birch_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // acacia_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // cherry_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // jungle_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // dark_oak_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // pale_oak_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // mangrove_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // poplar_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // bamboo_wall_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // oak_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // spruce_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // birch_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // acacia_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // cherry_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // jungle_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // dark_oak_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // pale_oak_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // crimson_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // warped_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // mangrove_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // poplar_hanging_sign
+    BlockInfo { class: CeilingHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: true, potted: None }, // bamboo_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // oak_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // spruce_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // birch_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // acacia_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // cherry_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // jungle_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // dark_oak_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // pale_oak_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // mangrove_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // poplar_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // crimson_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // warped_wall_hanging_sign
+    BlockInfo { class: WallHangingSignBlock, block_entity_type: Some(8), used_by_click: true, survival_rule: false, potted: None }, // bamboo_wall_hanging_sign
+    BlockInfo { class: LeverBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // lever
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // stone_pressure_plate
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // iron_door
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // oak_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // spruce_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // birch_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // jungle_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // acacia_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cherry_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dark_oak_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pale_oak_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // mangrove_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // poplar_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bamboo_pressure_plate
+    BlockInfo { class: RedStoneOreBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // redstone_ore
+    BlockInfo { class: RedStoneOreBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_redstone_ore
+    BlockInfo { class: RedstoneTorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // redstone_torch
+    BlockInfo { class: RedstoneWallTorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // redstone_wall_torch
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // stone_button
+    BlockInfo { class: SnowLayerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // snow
+    BlockInfo { class: IceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // ice
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // snow_block
+    BlockInfo { class: CactusBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cactus
+    BlockInfo { class: CactusFlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cactus_flower
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // clay
+    BlockInfo { class: SugarCaneBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // sugar_cane
+    BlockInfo { class: JukeboxBlock, block_entity_type: Some(4), used_by_click: true, survival_rule: false, potted: None }, // jukebox
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // oak_fence
+    BlockInfo { class: NetherrackBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // netherrack
+    BlockInfo { class: SoulSandBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // soul_sand
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // soul_soil
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // basalt
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_basalt
+    BlockInfo { class: TorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // soul_torch
+    BlockInfo { class: WallTorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // soul_wall_torch
+    BlockInfo { class: TorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // copper_torch
+    BlockInfo { class: WallTorchBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // copper_wall_torch
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // glowstone
+    BlockInfo { class: NetherPortalBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_portal
+    BlockInfo { class: CarvedPumpkinBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // carved_pumpkin
+    BlockInfo { class: CarvedPumpkinBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // jack_o_lantern
+    BlockInfo { class: CakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // cake
+    BlockInfo { class: RepeaterBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // repeater
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_stained_glass
+    BlockInfo { class: StainedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_stained_glass
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // oak_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // spruce_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // birch_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // jungle_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // acacia_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // cherry_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // dark_oak_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // pale_oak_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // mangrove_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // poplar_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // bamboo_trapdoor
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stone_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_stone_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cracked_stone_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_stone_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // packed_mud
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mud_bricks
+    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // infested_stone
+    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // infested_cobblestone
+    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // infested_stone_bricks
+    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // infested_mossy_stone_bricks
+    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // infested_cracked_stone_bricks
+    BlockInfo { class: InfestedBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // infested_chiseled_stone_bricks
+    BlockInfo { class: HugeMushroomBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_mushroom_block
+    BlockInfo { class: HugeMushroomBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_mushroom_block
+    BlockInfo { class: HugeMushroomBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mushroom_stem
+    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // iron_bars
+    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // copper_bars
+    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_copper_bars
+    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_copper_bars
+    BlockInfo { class: WeatheringCopperBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_copper_bars
+    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_copper_bars
+    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_copper_bars
+    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_copper_bars
+    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_copper_bars
+    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // iron_chain
+    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // copper_chain
+    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_copper_chain
+    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_copper_chain
+    BlockInfo { class: WeatheringCopperChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_copper_chain
+    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_copper_chain
+    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_copper_chain
+    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_copper_chain
+    BlockInfo { class: ChainBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_copper_chain
+    BlockInfo { class: IronBarsBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // glass_pane
+    BlockInfo { class: PumpkinBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pumpkin
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // melon
+    BlockInfo { class: AttachedStemBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // attached_pumpkin_stem
+    BlockInfo { class: AttachedStemBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // attached_melon_stem
+    BlockInfo { class: StemBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pumpkin_stem
+    BlockInfo { class: StemBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // melon_stem
+    BlockInfo { class: VineBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // vine
+    BlockInfo { class: GlowLichenBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // glow_lichen
+    BlockInfo { class: MultifaceBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // resin_clump
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // oak_fence_gate
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brick_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stone_brick_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mud_brick_stairs
+    BlockInfo { class: MyceliumBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mycelium
+    BlockInfo { class: LilyPadBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // lily_pad
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // resin_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // resin_bricks
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // resin_brick_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // resin_brick_slab
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // resin_brick_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_resin_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_bricks
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // nether_brick_fence
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_brick_stairs
+    BlockInfo { class: NetherWartBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // nether_wart
+    BlockInfo { class: EnchantingTableBlock, block_entity_type: Some(13), used_by_click: true, survival_rule: false, potted: None }, // enchanting_table
+    BlockInfo { class: BrewingStandBlock, block_entity_type: Some(12), used_by_click: true, survival_rule: false, potted: None }, // brewing_stand
+    BlockInfo { class: CauldronBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cauldron
+    BlockInfo { class: LayeredCauldronBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // water_cauldron
+    BlockInfo { class: LavaCauldronBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lava_cauldron
+    BlockInfo { class: LayeredCauldronBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // powder_snow_cauldron
+    BlockInfo { class: EndPortalBlock, block_entity_type: Some(14), used_by_click: false, survival_rule: false, potted: None }, // end_portal
+    BlockInfo { class: EndPortalFrameBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // end_portal_frame
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // end_stone
+    BlockInfo { class: DragonEggBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // dragon_egg
+    BlockInfo { class: RedstoneLampBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // redstone_lamp
+    BlockInfo { class: CocoaBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cocoa
+    BlockInfo { class: ShelfMushroomBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // shelf_mushroom
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sandstone_stairs
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // emerald_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_emerald_ore
+    BlockInfo { class: EnderChestBlock, block_entity_type: Some(3), used_by_click: true, survival_rule: false, potted: None }, // ender_chest
+    BlockInfo { class: TripWireHookBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // tripwire_hook
+    BlockInfo { class: TripWireBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tripwire
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // emerald_block
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // spruce_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // birch_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // jungle_stairs
+    BlockInfo { class: CommandBlock, block_entity_type: Some(23), used_by_click: true, survival_rule: false, potted: None }, // command_block
+    BlockInfo { class: BeaconBlock, block_entity_type: Some(15), used_by_click: true, survival_rule: false, potted: None }, // beacon
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobblestone_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_cobblestone_wall
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(0) }, // flower_pot
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(202) }, // potted_torchflower
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(26) }, // potted_oak_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(27) }, // potted_spruce_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(28) }, // potted_birch_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(29) }, // potted_jungle_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(30) }, // potted_acacia_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(31) }, // potted_cherry_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(32) }, // potted_dark_oak_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(33) }, // potted_pale_oak_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(35) }, // potted_poplar_sapling
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(34) }, // potted_mangrove_propagule
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(141) }, // potted_fern
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(200) }, // potted_dandelion
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(201) }, // potted_golden_dandelion
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(203) }, // potted_poppy
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(204) }, // potted_blue_orchid
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(205) }, // potted_allium
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(206) }, // potted_azure_bluet
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(207) }, // potted_red_tulip
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(208) }, // potted_orange_tulip
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(209) }, // potted_white_tulip
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(210) }, // potted_pink_tulip
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(211) }, // potted_oxeye_daisy
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(212) }, // potted_cornflower
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(214) }, // potted_lily_of_the_valley
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(213) }, // potted_wither_rose
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(216) }, // potted_red_mushroom
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(215) }, // potted_brown_mushroom
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(142) }, // potted_dead_bush
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(328) }, // potted_cactus
+    BlockInfo { class: CarrotBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // carrots
+    BlockInfo { class: PotatoBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // potatoes
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // oak_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // spruce_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // birch_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // jungle_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // acacia_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // cherry_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // dark_oak_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // pale_oak_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // mangrove_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // poplar_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // bamboo_button
+    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // skeleton_skull
+    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // skeleton_wall_skull
+    BlockInfo { class: WitherSkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // wither_skeleton_skull
+    BlockInfo { class: WitherWallSkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // wither_skeleton_wall_skull
+    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // zombie_head
+    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // zombie_wall_head
+    BlockInfo { class: PlayerHeadBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // player_head
+    BlockInfo { class: PlayerWallHeadBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // player_wall_head
+    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // creeper_head
+    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // creeper_wall_head
+    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // dragon_head
+    BlockInfo { class: WallSkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // dragon_wall_head
+    BlockInfo { class: SkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // piglin_head
+    BlockInfo { class: PiglinWallSkullBlock, block_entity_type: Some(16), used_by_click: false, survival_rule: false, potted: None }, // piglin_wall_head
+    BlockInfo { class: AnvilBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // anvil
+    BlockInfo { class: AnvilBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // chipped_anvil
+    BlockInfo { class: AnvilBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // damaged_anvil
+    BlockInfo { class: TrappedChestBlock, block_entity_type: Some(2), used_by_click: true, survival_rule: false, potted: None }, // trapped_chest
+    BlockInfo { class: WeightedPressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // light_weighted_pressure_plate
+    BlockInfo { class: WeightedPressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // heavy_weighted_pressure_plate
+    BlockInfo { class: ComparatorBlock, block_entity_type: Some(19), used_by_click: true, survival_rule: true, potted: None }, // comparator
+    BlockInfo { class: DaylightDetectorBlock, block_entity_type: Some(17), used_by_click: true, survival_rule: false, potted: None }, // daylight_detector
+    BlockInfo { class: PoweredBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // redstone_block
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_quartz_ore
+    BlockInfo { class: HopperBlock, block_entity_type: Some(18), used_by_click: true, survival_rule: false, potted: None }, // hopper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // quartz_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_quartz_block
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // quartz_pillar
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // quartz_stairs
+    BlockInfo { class: PoweredRailBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // activator_rail
+    BlockInfo { class: DropperBlock, block_entity_type: Some(6), used_by_click: true, survival_rule: false, potted: None }, // dropper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_terracotta
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_stained_glass_pane
+    BlockInfo { class: StainedGlassPaneBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_stained_glass_pane
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // acacia_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cherry_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_oak_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pale_oak_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mangrove_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // poplar_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bamboo_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bamboo_mosaic_stairs
+    BlockInfo { class: SlimeBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // slime_block
+    BlockInfo { class: BarrierBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // barrier
+    BlockInfo { class: LightBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // light
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // iron_trapdoor
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // prismarine
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // prismarine_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_prismarine
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // prismarine_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // prismarine_brick_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_prismarine_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // prismarine_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // prismarine_brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_prismarine_slab
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sea_lantern
+    BlockInfo { class: HayBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // hay_block
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // white_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // orange_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // magenta_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // light_blue_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // yellow_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // lime_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pink_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // gray_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // light_gray_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cyan_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // purple_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // blue_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // brown_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // green_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // red_carpet
+    BlockInfo { class: WoolCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // black_carpet
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // coal_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // packed_ice
+    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // sunflower
+    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // lilac
+    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // rose_bush
+    BlockInfo { class: TallFlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // peony
+    BlockInfo { class: DoublePlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // tall_grass
+    BlockInfo { class: DoublePlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // large_fern
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // white_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // orange_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // magenta_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // light_blue_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // yellow_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // lime_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // pink_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // gray_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // light_gray_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // cyan_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // purple_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // blue_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // brown_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // green_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // red_banner
+    BlockInfo { class: BannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // black_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // white_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // orange_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // magenta_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // light_blue_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // yellow_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // lime_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // pink_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // gray_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // light_gray_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // cyan_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // purple_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // blue_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // brown_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // green_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // red_wall_banner
+    BlockInfo { class: WallBannerBlock, block_entity_type: Some(20), used_by_click: false, survival_rule: true, potted: None }, // black_wall_banner
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_sandstone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_red_sandstone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cut_red_sandstone
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_sandstone_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oak_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // spruce_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // birch_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // jungle_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // acacia_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cherry_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dark_oak_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pale_oak_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mangrove_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // poplar_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bamboo_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bamboo_mosaic_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sandstone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cut_sandstone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // petrified_oak_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobblestone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stone_brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mud_brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // quartz_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_sandstone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cut_red_sandstone_slab
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_stone
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_stone_slab
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_sandstone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_quartz
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_red_sandstone
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // spruce_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // birch_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // jungle_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // acacia_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // cherry_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // dark_oak_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // pale_oak_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // mangrove_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // poplar_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // bamboo_fence_gate
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // spruce_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // birch_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // jungle_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // acacia_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // cherry_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // dark_oak_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // pale_oak_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // mangrove_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // poplar_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // bamboo_fence
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // spruce_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // birch_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // jungle_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // acacia_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // cherry_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // dark_oak_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // pale_oak_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // mangrove_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // poplar_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // bamboo_door
+    BlockInfo { class: EndRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // end_rod
+    BlockInfo { class: ChorusPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // chorus_plant
+    BlockInfo { class: ChorusFlowerBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // chorus_flower
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purpur_block
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purpur_slab
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purpur_pillar
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purpur_stairs
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // end_stone_bricks
+    BlockInfo { class: TorchflowerCropBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // torchflower_crop
+    BlockInfo { class: PitcherCropBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pitcher_crop
+    BlockInfo { class: DoublePlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pitcher_plant
+    BlockInfo { class: BeetrootBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // beetroots
+    BlockInfo { class: PathBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dirt_path
+    BlockInfo { class: EndGatewayBlock, block_entity_type: Some(22), used_by_click: false, survival_rule: false, potted: None }, // end_gateway
+    BlockInfo { class: CommandBlock, block_entity_type: Some(23), used_by_click: true, survival_rule: false, potted: None }, // repeating_command_block
+    BlockInfo { class: CommandBlock, block_entity_type: Some(23), used_by_click: true, survival_rule: false, potted: None }, // chain_command_block
+    BlockInfo { class: FrostedIceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // frosted_ice
+    BlockInfo { class: MagmaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magma_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_wart_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_nether_bricks
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bone_block
+    BlockInfo { class: StructureVoidBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // structure_void
+    BlockInfo { class: ObserverBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // observer
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // white_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // orange_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // magenta_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // light_blue_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // yellow_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // lime_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // pink_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // gray_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // light_gray_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // cyan_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // purple_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // blue_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // brown_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // green_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // red_shulker_box
+    BlockInfo { class: ShulkerBoxBlock, block_entity_type: Some(24), used_by_click: true, survival_rule: false, potted: None }, // black_shulker_box
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_glazed_terracotta
+    BlockInfo { class: GlazedTerracottaBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_glazed_terracotta
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_concrete
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_concrete
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_concrete_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_concrete_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_concrete_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_concrete_slab
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // white_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // orange_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // magenta_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_blue_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // yellow_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lime_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pink_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gray_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // light_gray_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cyan_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // purple_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brown_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // green_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_concrete_powder
+    BlockInfo { class: ConcretePowderBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // black_concrete_powder
+    BlockInfo { class: KelpBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // kelp
+    BlockInfo { class: KelpPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // kelp_plant
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dried_kelp_block
+    BlockInfo { class: TurtleEggBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // turtle_egg
+    BlockInfo { class: SnifferEggBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sniffer_egg
+    BlockInfo { class: DriedGhastBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dried_ghast
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dead_tube_coral_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dead_brain_coral_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dead_bubble_coral_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dead_fire_coral_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dead_horn_coral_block
+    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tube_coral_block
+    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brain_coral_block
+    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // bubble_coral_block
+    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // fire_coral_block
+    BlockInfo { class: CoralBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // horn_coral_block
+    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_tube_coral
+    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_brain_coral
+    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_bubble_coral
+    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_fire_coral
+    BlockInfo { class: BaseCoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_horn_coral
+    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // tube_coral
+    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // brain_coral
+    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bubble_coral
+    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // fire_coral
+    BlockInfo { class: CoralPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // horn_coral
+    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_tube_coral_fan
+    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_brain_coral_fan
+    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_bubble_coral_fan
+    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_fire_coral_fan
+    BlockInfo { class: BaseCoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_horn_coral_fan
+    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // tube_coral_fan
+    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // brain_coral_fan
+    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bubble_coral_fan
+    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // fire_coral_fan
+    BlockInfo { class: CoralFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // horn_coral_fan
+    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_tube_coral_wall_fan
+    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_brain_coral_wall_fan
+    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_bubble_coral_wall_fan
+    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_fire_coral_wall_fan
+    BlockInfo { class: BaseCoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // dead_horn_coral_wall_fan
+    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // tube_coral_wall_fan
+    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // brain_coral_wall_fan
+    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bubble_coral_wall_fan
+    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // fire_coral_wall_fan
+    BlockInfo { class: CoralWallFanBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // horn_coral_wall_fan
+    BlockInfo { class: SeaPickleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // sea_pickle
+    BlockInfo { class: HalfTransparentBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blue_ice
+    BlockInfo { class: ConduitBlock, block_entity_type: Some(25), used_by_click: false, survival_rule: false, potted: None }, // conduit
+    BlockInfo { class: BambooSaplingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bamboo_sapling
+    BlockInfo { class: BambooStalkBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bamboo
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(882) }, // potted_bamboo
+    BlockInfo { class: AirBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // void_air
+    BlockInfo { class: AirBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cave_air
+    BlockInfo { class: BubbleColumnBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // bubble_column
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_granite_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_red_sandstone_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_stone_brick_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_diorite_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_cobblestone_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // end_stone_brick_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stone_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_sandstone_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_quartz_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // granite_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // andesite_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_nether_brick_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_andesite_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // diorite_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_granite_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_red_sandstone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_stone_brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_diorite_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_cobblestone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // end_stone_brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_sandstone_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_quartz_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // granite_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // andesite_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_nether_brick_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_andesite_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // diorite_slab
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // brick_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // prismarine_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_sandstone_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mossy_stone_brick_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // granite_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stone_brick_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mud_brick_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // nether_brick_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // andesite_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // red_nether_brick_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sandstone_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // end_stone_brick_wall
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // diorite_wall
+    BlockInfo { class: ScaffoldingBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // scaffolding
+    BlockInfo { class: LoomBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // loom
+    BlockInfo { class: BarrelBlock, block_entity_type: Some(26), used_by_click: true, survival_rule: false, potted: None }, // barrel
+    BlockInfo { class: SmokerBlock, block_entity_type: Some(27), used_by_click: true, survival_rule: false, potted: None }, // smoker
+    BlockInfo { class: BlastFurnaceBlock, block_entity_type: Some(28), used_by_click: true, survival_rule: false, potted: None }, // blast_furnace
+    BlockInfo { class: CartographyTableBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // cartography_table
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // fletching_table
+    BlockInfo { class: GrindstoneBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // grindstone
+    BlockInfo { class: LecternBlock, block_entity_type: Some(29), used_by_click: true, survival_rule: false, potted: None }, // lectern
+    BlockInfo { class: SmithingTableBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // smithing_table
+    BlockInfo { class: StonecutterBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // stonecutter
+    BlockInfo { class: BellBlock, block_entity_type: Some(30), used_by_click: true, survival_rule: true, potted: None }, // bell
+    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // lantern
+    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // soul_lantern
+    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // copper_lantern
+    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // exposed_copper_lantern
+    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // weathered_copper_lantern
+    BlockInfo { class: WeatheringLanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // oxidized_copper_lantern
+    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // waxed_copper_lantern
+    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // waxed_exposed_copper_lantern
+    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // waxed_weathered_copper_lantern
+    BlockInfo { class: LanternBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // waxed_oxidized_copper_lantern
+    BlockInfo { class: CampfireBlock, block_entity_type: Some(32), used_by_click: false, survival_rule: false, potted: None }, // campfire
+    BlockInfo { class: CampfireBlock, block_entity_type: Some(32), used_by_click: false, survival_rule: false, potted: None }, // soul_campfire
+    BlockInfo { class: SweetBerryBushBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // sweet_berry_bush
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // warped_stem
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_warped_stem
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // warped_hyphae
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_warped_hyphae
+    BlockInfo { class: NyliumBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // warped_nylium
+    BlockInfo { class: NetherFungusBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // warped_fungus
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // warped_wart_block
+    BlockInfo { class: NetherRootsBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // warped_roots
+    BlockInfo { class: NetherSproutsBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // nether_sprouts
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // crimson_stem
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_crimson_stem
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // crimson_hyphae
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // stripped_crimson_hyphae
+    BlockInfo { class: NyliumBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // crimson_nylium
+    BlockInfo { class: NetherFungusBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // crimson_fungus
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // shroomlight
+    BlockInfo { class: WeepingVinesBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // weeping_vines
+    BlockInfo { class: WeepingVinesPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // weeping_vines_plant
+    BlockInfo { class: TwistingVinesBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // twisting_vines
+    BlockInfo { class: TwistingVinesPlantBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // twisting_vines_plant
+    BlockInfo { class: NetherRootsBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // crimson_roots
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // crimson_planks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // warped_planks
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // crimson_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // warped_slab
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // crimson_pressure_plate
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // warped_pressure_plate
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // crimson_fence
+    BlockInfo { class: FenceBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // warped_fence
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // crimson_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // warped_trapdoor
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // crimson_fence_gate
+    BlockInfo { class: FenceGateBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // warped_fence_gate
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // crimson_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // warped_stairs
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // crimson_button
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // warped_button
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // crimson_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // warped_door
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // crimson_sign
+    BlockInfo { class: StandingSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // warped_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // crimson_wall_sign
+    BlockInfo { class: WallSignBlock, block_entity_type: Some(7), used_by_click: true, survival_rule: true, potted: None }, // warped_wall_sign
+    BlockInfo { class: StructureBlock, block_entity_type: Some(21), used_by_click: true, survival_rule: false, potted: None }, // structure_block
+    BlockInfo { class: JigsawBlock, block_entity_type: Some(31), used_by_click: true, survival_rule: false, potted: None }, // jigsaw
+    BlockInfo { class: TestBlock, block_entity_type: Some(45), used_by_click: true, survival_rule: false, potted: None }, // test_block
+    BlockInfo { class: TestInstanceBlock, block_entity_type: Some(46), used_by_click: true, survival_rule: false, potted: None }, // test_instance_block
+    BlockInfo { class: ComposterBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // composter
+    BlockInfo { class: TargetBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // target
+    BlockInfo { class: BeehiveBlock, block_entity_type: Some(33), used_by_click: false, survival_rule: false, potted: None }, // bee_nest
+    BlockInfo { class: BeehiveBlock, block_entity_type: Some(33), used_by_click: false, survival_rule: false, potted: None }, // beehive
+    BlockInfo { class: HoneyBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // honey_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // honeycomb_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // netherite_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // ancient_debris
+    BlockInfo { class: CryingObsidianBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // crying_obsidian
+    BlockInfo { class: RespawnAnchorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // respawn_anchor
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(966) }, // potted_crimson_fungus
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(957) }, // potted_warped_fungus
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(972) }, // potted_crimson_roots
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(959) }, // potted_warped_roots
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lodestone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blackstone
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blackstone_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blackstone_wall
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // blackstone_slab
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cracked_polished_blackstone_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_polished_blackstone
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone_brick_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone_brick_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone_brick_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // gilded_blackstone
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone_slab
+    BlockInfo { class: PressurePlateBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // polished_blackstone_pressure_plate
+    BlockInfo { class: ButtonBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // polished_blackstone_button
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_blackstone_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_nether_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cracked_nether_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // quartz_bricks
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // white_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // orange_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // magenta_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // light_blue_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // yellow_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // lime_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pink_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // gray_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // light_gray_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // cyan_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // purple_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // blue_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // brown_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // green_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // red_candle
+    BlockInfo { class: CandleBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // black_candle
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // white_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // orange_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // magenta_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // light_blue_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // yellow_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // lime_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // pink_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // gray_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // light_gray_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // cyan_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // purple_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // blue_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // brown_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // green_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // red_candle_cake
+    BlockInfo { class: CandleCakeBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // black_candle_cake
+    BlockInfo { class: AmethystBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // amethyst_block
+    BlockInfo { class: BuddingAmethystBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // budding_amethyst
+    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // amethyst_cluster
+    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // large_amethyst_bud
+    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // medium_amethyst_bud
+    BlockInfo { class: AmethystClusterBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // small_amethyst_bud
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_tuff
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_tuff_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_tuff_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_tuff_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_tuff
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff_bricks
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff_brick_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff_brick_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tuff_brick_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_tuff_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur
+    BlockInfo { class: PotentSulfurBlock, block_entity_type: Some(48), used_by_click: false, survival_rule: false, potted: None }, // potent_sulfur
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_sulfur
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_sulfur_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_sulfur_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_sulfur_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur_bricks
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur_brick_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur_brick_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sulfur_brick_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_sulfur
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_cinnabar
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_cinnabar_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_cinnabar_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_cinnabar_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar_bricks
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar_brick_slab
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar_brick_stairs
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cinnabar_brick_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_cinnabar
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // calcite
+    BlockInfo { class: TintedGlassBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // tinted_glass
+    BlockInfo { class: PowderSnowBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // powder_snow
+    BlockInfo { class: SculkSensorBlock, block_entity_type: Some(34), used_by_click: false, survival_rule: false, potted: None }, // sculk_sensor
+    BlockInfo { class: CalibratedSculkSensorBlock, block_entity_type: Some(35), used_by_click: false, survival_rule: false, potted: None }, // calibrated_sculk_sensor
+    BlockInfo { class: SculkBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // sculk
+    BlockInfo { class: SculkVeinBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // sculk_vein
+    BlockInfo { class: SculkCatalystBlock, block_entity_type: Some(36), used_by_click: false, survival_rule: false, potted: None }, // sculk_catalyst
+    BlockInfo { class: SculkShriekerBlock, block_entity_type: Some(37), used_by_click: false, survival_rule: false, potted: None }, // sculk_shrieker
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // copper_block
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_copper_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_copper
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // copper_ore
+    BlockInfo { class: DropExperienceBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_copper_ore
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cut_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_cut_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_cut_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_cut_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_cut_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_cut_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_cut_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_cut_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_chiseled_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_chiseled_copper
+    BlockInfo { class: WeatheringCopperFullBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_chiseled_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_chiseled_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_chiseled_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_chiseled_copper
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_chiseled_copper
+    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cut_copper_stairs
+    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_cut_copper_stairs
+    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_cut_copper_stairs
+    BlockInfo { class: WeatheringCopperStairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_cut_copper_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_cut_copper_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_cut_copper_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_cut_copper_stairs
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_cut_copper_stairs
+    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cut_copper_slab
+    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_cut_copper_slab
+    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_cut_copper_slab
+    BlockInfo { class: WeatheringCopperSlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_cut_copper_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_cut_copper_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_cut_copper_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_cut_copper_slab
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_cut_copper_slab
+    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // copper_door
+    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // exposed_copper_door
+    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // weathered_copper_door
+    BlockInfo { class: WeatheringCopperDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // oxidized_copper_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // waxed_copper_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // waxed_exposed_copper_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // waxed_weathered_copper_door
+    BlockInfo { class: DoorBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // waxed_oxidized_copper_door
+    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // copper_trapdoor
+    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // exposed_copper_trapdoor
+    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // weathered_copper_trapdoor
+    BlockInfo { class: WeatheringCopperTrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // oxidized_copper_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // waxed_copper_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // waxed_exposed_copper_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // waxed_weathered_copper_trapdoor
+    BlockInfo { class: TrapDoorBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: None }, // waxed_oxidized_copper_trapdoor
+    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // copper_grate
+    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_copper_grate
+    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_copper_grate
+    BlockInfo { class: WeatheringCopperGrateBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_copper_grate
+    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_copper_grate
+    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_copper_grate
+    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_copper_grate
+    BlockInfo { class: WaterloggedTransparentBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_copper_grate
+    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // copper_bulb
+    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_copper_bulb
+    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_copper_bulb
+    BlockInfo { class: WeatheringCopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_copper_bulb
+    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_copper_bulb
+    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_copper_bulb
+    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_copper_bulb
+    BlockInfo { class: CopperBulbBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_copper_bulb
+    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // copper_chest
+    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // exposed_copper_chest
+    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // weathered_copper_chest
+    BlockInfo { class: WeatheringCopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // oxidized_copper_chest
+    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // waxed_copper_chest
+    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // waxed_exposed_copper_chest
+    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // waxed_weathered_copper_chest
+    BlockInfo { class: CopperChestBlock, block_entity_type: Some(1), used_by_click: true, survival_rule: false, potted: None }, // waxed_oxidized_copper_chest
+    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // copper_golem_statue
+    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // exposed_copper_golem_statue
+    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // weathered_copper_golem_statue
+    BlockInfo { class: WeatheringCopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // oxidized_copper_golem_statue
+    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // waxed_copper_golem_statue
+    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_copper_golem_statue
+    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_copper_golem_statue
+    BlockInfo { class: CopperGolemStatueBlock, block_entity_type: Some(47), used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_copper_golem_statue
+    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // lightning_rod
+    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // exposed_lightning_rod
+    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // weathered_lightning_rod
+    BlockInfo { class: WeatheringLightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // oxidized_lightning_rod
+    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_lightning_rod
+    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_exposed_lightning_rod
+    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_weathered_lightning_rod
+    BlockInfo { class: LightningRodBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // waxed_oxidized_lightning_rod
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // dripstone_block
+    BlockInfo { class: PointedDripstoneBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pointed_dripstone
+    BlockInfo { class: SulfurSpikeBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // sulfur_spike
+    BlockInfo { class: CaveVinesBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // cave_vines
+    BlockInfo { class: CaveVinesPlantBlock, block_entity_type: None, used_by_click: true, survival_rule: true, potted: None }, // cave_vines_plant
+    BlockInfo { class: SporeBlossomBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // spore_blossom
+    BlockInfo { class: AzaleaBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // azalea
+    BlockInfo { class: AzaleaBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // flowering_azalea
+    BlockInfo { class: CarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // moss_carpet
+    BlockInfo { class: FlowerBedBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pink_petals
+    BlockInfo { class: FlowerBedBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // wildflowers
+    BlockInfo { class: LeafLitterBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // leaf_litter
+    BlockInfo { class: BonemealableFeaturePlacerBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // moss_block
+    BlockInfo { class: BigDripleafBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // big_dripleaf
+    BlockInfo { class: BigDripleafStemBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // big_dripleaf_stem
+    BlockInfo { class: SmallDripleafBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // small_dripleaf
+    BlockInfo { class: HangingRootsBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // hanging_roots
+    BlockInfo { class: RootedDirtBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // rooted_dirt
+    BlockInfo { class: MudBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // mud
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobbled_deepslate
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobbled_deepslate_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobbled_deepslate_slab
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cobbled_deepslate_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_deepslate
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_deepslate_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_deepslate_slab
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // polished_deepslate_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_tiles
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_tile_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_tile_slab
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_tile_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_bricks
+    BlockInfo { class: StairBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_brick_stairs
+    BlockInfo { class: SlabBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_brick_slab
+    BlockInfo { class: WallBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // deepslate_brick_wall
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // chiseled_deepslate
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cracked_deepslate_bricks
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // cracked_deepslate_tiles
+    BlockInfo { class: InfestedRotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // infested_deepslate
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // smooth_basalt
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // raw_iron_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // raw_copper_block
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // raw_gold_block
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(1228) }, // potted_azalea_bush
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(1229) }, // potted_flowering_azalea_bush
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // ochre_froglight
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // verdant_froglight
+    BlockInfo { class: RotatedPillarBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pearlescent_froglight
+    BlockInfo { class: FrogspawnBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // frogspawn
+    BlockInfo { class: Block, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // reinforced_deepslate
+    BlockInfo { class: DecoratedPotBlock, block_entity_type: Some(41), used_by_click: true, survival_rule: false, potted: None }, // decorated_pot
+    BlockInfo { class: CrafterBlock, block_entity_type: Some(42), used_by_click: true, survival_rule: false, potted: None }, // crafter
+    BlockInfo { class: TrialSpawnerBlock, block_entity_type: Some(43), used_by_click: false, survival_rule: false, potted: None }, // trial_spawner
+    BlockInfo { class: VaultBlock, block_entity_type: Some(44), used_by_click: false, survival_rule: false, potted: None }, // vault
+    BlockInfo { class: HeavyCoreBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // heavy_core
+    BlockInfo { class: BonemealableFeaturePlacerBlock, block_entity_type: None, used_by_click: false, survival_rule: false, potted: None }, // pale_moss_block
+    BlockInfo { class: MossyCarpetBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pale_moss_carpet
+    BlockInfo { class: HangingMossBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // pale_hanging_moss
+    BlockInfo { class: EyeblossomBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // open_eyeblossom
+    BlockInfo { class: EyeblossomBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // closed_eyeblossom
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(1281) }, // potted_open_eyeblossom
+    BlockInfo { class: FlowerPotBlock, block_entity_type: None, used_by_click: true, survival_rule: false, potted: Some(1282) }, // potted_closed_eyeblossom
+    BlockInfo { class: FireflyBushBlock, block_entity_type: None, used_by_click: false, survival_rule: true, potted: None }, // firefly_bush
 ];

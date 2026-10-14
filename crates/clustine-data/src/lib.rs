@@ -17,14 +17,12 @@ pub mod packed;
 use serde::{Deserialize, Serialize};
 
 pub use biome_parameters::{BiomeParameterList, BiomeParameters};
-pub use block_states::{
-    CollisionShape, Face, FaceShape, FluidProps, PushReaction, StateProps, SupportType,
-};
+pub use block_states::{Face, FaceShape, FluidProps, PushReaction, Shape, StateProps, SupportType};
 pub use generated::block_classes::{BLOCK_ENTITY_TYPES, BLOCK_INFO, BlockClass, FLUIDS};
 pub use generated::blocks::{BLOCK_STATE_COUNT, BLOCKS};
 pub use generated::dimension_types::DIMENSION_TYPES;
 pub use generated::entity_types::ENTITY_TYPES;
-pub use generated::items::ITEMS;
+pub use generated::items::{ITEMS, ItemClass};
 pub use generated::registries::SYNCED_REGISTRIES;
 pub use generated::tags::TAGS;
 pub use generated::version::{
@@ -214,6 +212,19 @@ pub struct BlockInfo {
     /// material opens by hand: an oak door is used, an iron door is not. A block whose
     /// class answers by its state or by what is held, such as a cake, counts as used.
     pub used_by_click: bool,
+    /// Whether the block's class, or one it is made from, says where the block can stay
+    /// (the game's `canSurvive`): what it needs below it or behind it.
+    pub survival_rule: bool,
+    /// For a flower pot, the id of the block it holds: air for the empty pot.
+    pub potted: Option<u16>,
+}
+
+impl BlockInfo {
+    /// Whether the block's class is `class` or is made from it: a copper door is a
+    /// door, a repeater a diode.
+    pub fn is(&self, class: BlockClass) -> bool {
+        self.class == class || self.class.ancestors().contains(&class)
+    }
 }
 
 /// An item. Indexed by item id in [`ITEMS`].
@@ -224,6 +235,16 @@ pub struct Item {
     ///
     /// Items that place a differently named block, such as seeds, have `None` here.
     pub block: Option<BlockState>,
+    /// The item's class in the game, which says how it places a block: as it is, as
+    /// two blocks one above the other, or on a floor or a wall.
+    pub class: ItemClass,
+    /// The id of the block the item places, if it places one; for an item that places
+    /// a standing or a wall block, the standing one.
+    pub places: Option<u16>,
+    /// For an item that places a standing or a wall block (torches, signs, banners,
+    /// heads), the id of the wall block and the direction the item attaches in: down
+    /// for a block that stands on the floor, up for a sign that hangs.
+    pub wall: Option<(u16, Face)>,
 }
 
 /// A registry the server sends to the client during configuration.
@@ -326,6 +347,99 @@ mod tests {
     fn items_know_their_block() {
         assert_eq!(ITEMS[items::STONE as usize].block, Some(blocks::STONE));
         assert_eq!(ITEMS[items::STICK as usize].block, None);
+    }
+
+    /// Which block an item places is the game's, and is not always the block of the
+    /// item's name: seeds and redstone place others, a torch or a sign one of two.
+    #[test]
+    fn items_know_what_they_place_and_how() {
+        let name = |id: Option<u16>| id.map(|id| BLOCKS[usize::from(id)].name);
+        let item = |id: i32| &ITEMS[id as usize];
+        let placing = |id: i32| (item(id).class, name(item(id).places));
+        assert_eq!(
+            placing(items::OAK_LOG),
+            (ItemClass::BlockItem, Some("minecraft:oak_log"))
+        );
+        assert_eq!(
+            placing(items::WHEAT_SEEDS),
+            (ItemClass::BlockItem, Some("minecraft:wheat"))
+        );
+        assert_eq!(
+            placing(items::REDSTONE),
+            (ItemClass::BlockItem, Some("minecraft:redstone_wire"))
+        );
+        assert_eq!(
+            placing(items::OAK_DOOR),
+            (ItemClass::DoubleHighBlockItem, Some("minecraft:oak_door"))
+        );
+        assert_eq!(
+            placing(items::RED_BED),
+            (ItemClass::BlockItem, Some("minecraft:red_bed"))
+        );
+        assert_eq!(placing(items::WATER_BUCKET), (ItemClass::BucketItem, None));
+        assert_eq!(placing(items::STICK), (ItemClass::Item, None));
+        for (id, class, wall, direction) in [
+            (
+                items::TORCH,
+                ItemClass::StandingAndWallBlockItem,
+                "minecraft:wall_torch",
+                Face::Down,
+            ),
+            (
+                items::OAK_SIGN,
+                ItemClass::StandingAndWallBlockItem,
+                "minecraft:oak_wall_sign",
+                Face::Down,
+            ),
+            (
+                items::OAK_HANGING_SIGN,
+                ItemClass::HangingSignItem,
+                "minecraft:oak_wall_hanging_sign",
+                Face::Up,
+            ),
+            (
+                items::WHITE_BANNER,
+                ItemClass::BannerItem,
+                "minecraft:white_wall_banner",
+                Face::Down,
+            ),
+        ] {
+            assert_eq!(item(id).class, class, "{}", item(id).name);
+            let (block, attached) = item(id).wall.unwrap();
+            assert_eq!((name(Some(block)), attached), (Some(wall), direction));
+        }
+        assert_eq!(item(items::OAK_LOG).wall, None);
+    }
+
+    /// A rule written for a class holds for the classes made from it; a pot knows
+    /// what it holds; a torch is clicked by a shape nothing collides with.
+    #[test]
+    fn blocks_know_their_classes_their_pots_and_their_outlines() {
+        let info = |name: &str| BlockState::parse(name).unwrap().block_info().unwrap();
+        assert!(info("minecraft:oak_door").is(BlockClass::DoorBlock));
+        assert!(info("minecraft:copper_door").is(BlockClass::DoorBlock));
+        assert_ne!(info("minecraft:copper_door").class, BlockClass::DoorBlock);
+        assert!(info("minecraft:repeater").is(BlockClass::DiodeBlock));
+        assert!(info("minecraft:comparator").is(BlockClass::DiodeBlock));
+        assert!(!info("minecraft:stone").is(BlockClass::DoorBlock));
+        assert!(info("minecraft:torch").survival_rule);
+        assert!(!info("minecraft:stone").survival_rule);
+
+        let fern = BlockState::parse("minecraft:fern")
+            .unwrap()
+            .block_id()
+            .unwrap();
+        assert_eq!(info("minecraft:potted_fern").potted, Some(fern as u16));
+        assert_eq!(info("minecraft:flower_pot").potted, Some(0));
+        assert_eq!(info("minecraft:fern").potted, None);
+
+        let torch = blocks::TORCH.props();
+        assert!(torch.collision_is_empty());
+        let outline: Vec<[f64; 6]> = torch.outline_shape().boxes().collect();
+        assert_eq!(outline.len(), 1);
+        assert!(outline[0][4] > 0.5 && outline[0][0] > 0.0, "{outline:?}");
+        assert_eq!(blocks::STONE.props().outline_shape(), Shape::FULL_BLOCK);
+        assert_eq!(blocks::AIR.props().outline_shape(), Shape::EMPTY);
     }
 
     #[test]

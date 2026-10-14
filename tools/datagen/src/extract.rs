@@ -22,6 +22,8 @@ pub struct Extract {
     pub states: Vec<StateDump>,
     /// One for each block, by block id.
     pub blocks: Vec<BlockDump>,
+    /// One for each item, by item id.
+    pub items: Vec<ItemDump>,
     /// The biome parameter lists the game knows, sorted by name.
     pub biome_parameters: Vec<ParameterList>,
     /// What the game's noise routers give at fixed positions, by the name of the file
@@ -49,9 +51,24 @@ pub struct StateDump {
     /// The occlusion shape of each face, in the order of the game's `Direction`.
     pub occlusion_faces: [Vec<ShapeBox>; 6],
     pub collision: Vec<ShapeBox>,
+    /// What a click or a ray hits, without a plant's offset.
+    pub outline: Vec<ShapeBox>,
     /// The questions whose answer looked at the level or changed with the position,
     /// such as `collision:block_entity`. Empty for a state that answers by itself.
     pub consulted: Vec<String>,
+}
+
+/// What the game's code says of one item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemDump {
+    pub name: String,
+    /// The simple name of the item's Java class.
+    pub class: String,
+    /// The id of the block the item places, if it places one.
+    pub block: Option<usize>,
+    /// For an item that places a standing or a wall block, the id of the wall block
+    /// and the direction it attaches in, as the game names it (`down`, `north`).
+    pub wall: Option<(usize, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +87,13 @@ pub struct BlockDump {
     pub class: String,
     pub block_entity_type: Option<usize>,
     pub used_by_click: bool,
+    /// Whether the block's class says where it can stay (the game's `canSurvive`).
+    pub survival_rule: bool,
+    /// The simple names of the classes the block's class is made from, nearest first,
+    /// without the base of all blocks.
+    pub ancestors: Vec<String>,
+    /// For a flower pot, the id of the block it holds (air for the empty pot).
+    pub potted: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +164,7 @@ impl Extract {
                 .context("reading block_entity_types.txt")?,
             states: states(&read("block_states.txt")?).context("reading block_states.txt")?,
             blocks: blocks(&read("blocks.txt")?).context("reading blocks.txt")?,
+            items: items(&read("items.txt")?).context("reading items.txt")?,
             biome_parameters,
             router_values,
         })
@@ -177,8 +202,8 @@ pub fn states(text: &str) -> Result<Vec<StateDump>> {
 fn state(line: &str, expected_id: usize) -> Result<StateDump> {
     let fields: Vec<&str> = line.split('\t').collect();
     ensure!(
-        fields.len() == 22,
-        "{} fields where 22 are expected",
+        fields.len() == 23,
+        "{} fields where 23 are expected",
         fields.len()
     );
     ensure!(
@@ -230,7 +255,8 @@ fn state(line: &str, expected_id: usize) -> Result<StateDump> {
         post_process,
         occlusion_faces,
         collision: shape(fields[20])?,
-        consulted: match fields[21] {
+        outline: shape(fields[21])?,
+        consulted: match fields[22] {
             "-" => Vec::new(),
             listed => listed.split(',').map(str::to_owned).collect(),
         },
@@ -263,10 +289,10 @@ pub fn blocks(text: &str) -> Result<Vec<BlockDump>> {
     let mut blocks = Vec::new();
     for line in text.lines() {
         let fields: Vec<&str> = line.split('\t').collect();
-        // The last two fields say how "used by a click" came about, for a reader.
+        // Fields 5 and 6 say how "used by a click" came about, for a reader.
         ensure!(
-            fields.len() == 7,
-            "a line has {} fields where 7 are expected",
+            fields.len() == 10,
+            "a line has {} fields where 10 are expected",
             fields.len()
         );
         ensure!(
@@ -284,9 +310,54 @@ pub fn blocks(text: &str) -> Result<Vec<BlockDump>> {
                 Some(usize::try_from(entity_type)?)
             },
             used_by_click: boolean(fields[4])?,
+            survival_rule: fields[7] != "-",
+            ancestors: match fields[8] {
+                "-" => Vec::new(),
+                listed => listed.split(',').map(str::to_owned).collect(),
+            },
+            potted: match integer::<i64>(fields[9])? {
+                -1 => None,
+                id => Some(usize::try_from(id)?),
+            },
         });
     }
     Ok(blocks)
+}
+
+/// The lines of `items.txt`.
+pub fn items(text: &str) -> Result<Vec<ItemDump>> {
+    let mut items = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        ensure!(
+            fields.len() == 6,
+            "a line has {} fields where 6 are expected",
+            fields.len()
+        );
+        ensure!(
+            integer::<usize>(fields[0])? == items.len(),
+            "the item ids have a gap at {}",
+            fields[0]
+        );
+        let block: i64 = integer(fields[3])?;
+        let wall: i64 = integer(fields[4])?;
+        items.push(ItemDump {
+            name: fields[1].to_owned(),
+            class: fields[2].to_owned(),
+            block: if block < 0 {
+                None
+            } else {
+                Some(usize::try_from(block)?)
+            },
+            wall: if wall < 0 {
+                ensure!(fields[5] == "-", "a direction without a wall block");
+                None
+            } else {
+                Some((usize::try_from(wall)?, fields[5].to_owned()))
+            },
+        });
+    }
+    Ok(items)
 }
 
 /// The lines of one `biome_parameters_*.txt`.
@@ -341,7 +412,8 @@ mod tests {
         let lower = format!("0,0,0,{ONE},{HALF},{ONE}");
         let line = format!(
             "0\tminecraft:thing\t7\t1\t2086\t63\t2\t1\tPOPPED\t2\t8\t1\t0\t0,1,0\t\
-             -\t{full}\t{lower}\t{lower}\t{lower}\t{lower}\t{lower};{full}\tcollision:block_entity"
+             -\t{full}\t{lower}\t{lower}\t{lower}\t{lower}\t{lower};{full}\t{lower}\t\
+             collision:block_entity"
         );
         let read = states(&line).unwrap();
         assert_eq!(read.len(), 1);
@@ -366,27 +438,34 @@ mod tests {
         assert_eq!(state.occlusion_faces[1], [[0, 0, 0, one, one, one]]);
         assert_eq!(state.occlusion_faces[2][0][4], 0.5f64.to_bits());
         assert_eq!(state.collision.len(), 2);
+        assert_eq!(state.outline.len(), 1);
         assert_eq!(state.consulted, ["collision:block_entity"]);
     }
 
     #[test]
     fn a_state_out_of_order_or_with_a_field_missing_is_refused() {
-        let line =
-            "1\tminecraft:thing\t0\t0\t0\t0\t0\t0\tPUSH\t-1\t0\t0\t0\tnone\t-\t-\t-\t-\t-\t-\t-\t-";
+        let line = "1\tminecraft:thing\t0\t0\t0\t0\t0\t0\tPUSH\t-1\t0\t0\t0\tnone\t-\t-\t-\t-\t-\t-\t-\t-\t-";
         assert!(states(line).is_err(), "the first id has to be 0");
         let line =
-            "0\tminecraft:thing\t0\t0\t0\t0\t0\t0\tPUSH\t-1\t0\t0\t0\tnone\t-\t-\t-\t-\t-\t-\t-";
+            "0\tminecraft:thing\t0\t0\t0\t0\t0\t0\tPUSH\t-1\t0\t0\t0\tnone\t-\t-\t-\t-\t-\t-\t-\t-";
         assert!(states(line).is_err(), "a field is missing");
     }
 
     #[test]
     fn lines_of_blocks_and_of_parameters_are_read() {
         let read = blocks(
-            "0\tminecraft:air\tAirBlock\t-1\t0\t-\t-\n\
-             1\tminecraft:chest\tChestBlock\t1\t1\tChestBlock\t-\n",
+            "0\tminecraft:air\tAirBlock\t-1\t0\t-\t-\t-\t-\t-1\n\
+             1\tminecraft:chest\tChestBlock\t1\t1\tChestBlock\t-\t-\t\
+             AbstractChestBlock,BaseEntityBlock\t-1\n\
+             2\tminecraft:potted_fern\tFlowerPotBlock\t-1\t1\tFlowerPotBlock\t-\t-\t-\t7\n\
+             3\tminecraft:torch\tTorchBlock\t-1\t0\t-\t-\tBaseTorchBlock\tBaseTorchBlock\t-1\n",
         )
         .unwrap();
         assert_eq!(read[1].class, "ChestBlock");
+        assert_eq!(read[1].ancestors, ["AbstractChestBlock", "BaseEntityBlock"]);
+        assert!(read[0].ancestors.is_empty());
+        assert_eq!((read[2].potted, read[1].potted), (Some(7), None));
+        assert!(read[3].survival_rule && !read[1].survival_rule);
         assert_eq!(read[1].block_entity_type, Some(1));
         assert!(read[1].used_by_click && !read[0].used_by_click);
         assert_eq!(read[0].block_entity_type, None);

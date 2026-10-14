@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::density;
 use crate::jar::SERVER_JAR;
@@ -537,8 +537,26 @@ fn block_classes(data: &GameData) -> Result<String> {
         dumped.len(),
         data.blocks.len()
     );
-    let classes: BTreeSet<&str> = dumped.iter().map(|block| block.class.as_str()).collect();
-    for class in &classes {
+    // Every class a block is of or is made from, with the classes each is made from:
+    // a class that no block has as its own (`DiodeBlock`) is known by its descendants.
+    let mut made_from: BTreeMap<&str, &[String]> = BTreeMap::new();
+    for block in dumped {
+        let chain = &block.ancestors[..];
+        let links = std::iter::once((block.class.as_str(), chain)).chain(
+            chain
+                .iter()
+                .enumerate()
+                .map(|(at, class)| (class.as_str(), &chain[at + 1..])),
+        );
+        for (class, above) in links {
+            let earlier = made_from.insert(class, above);
+            ensure!(
+                earlier.is_none_or(|earlier| earlier == above),
+                "the class {class} is made from two lists of classes"
+            );
+        }
+    }
+    for class in made_from.keys() {
         let valid = class.starts_with(|c: char| c.is_ascii_uppercase())
             && class.chars().all(|c| c.is_ascii_alphanumeric());
         ensure!(valid, "the class {class} cannot name a variant");
@@ -575,11 +593,40 @@ fn block_classes(data: &GameData) -> Result<String> {
         "#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]"
     )?;
     writeln!(out, "pub enum BlockClass {{")?;
-    for class in &classes {
+    for class in made_from.keys() {
         writeln!(out, "    {class},")?;
     }
     writeln!(out, "}}\n")?;
-
+    writeln!(out, "impl BlockClass {{")?;
+    writeln!(
+        out,
+        "    /// The classes this one is made from, nearest first, without the base of all\n    \
+         /// blocks."
+    )?;
+    writeln!(
+        out,
+        "    pub fn ancestors(self) -> &'static [BlockClass] {{"
+    )?;
+    writeln!(out, "        ANCESTORS[self as usize]")?;
+    writeln!(out, "    }}")?;
+    writeln!(out, "}}\n")?;
+    writeln!(
+        out,
+        "/// What [`BlockClass::ancestors`] gives, in the order of the classes."
+    )?;
+    writeln!(
+        out,
+        "static ANCESTORS: [&[BlockClass]; {}] = [",
+        made_from.len()
+    )?;
+    for (class, above) in &made_from {
+        let listed: Vec<String> = above
+            .iter()
+            .map(|name| format!("BlockClass::{name}"))
+            .collect();
+        writeln!(out, "    &[{}], // {class}", listed.join(", "))?;
+    }
+    writeln!(out, "];\n")?;
     writeln!(
         out,
         "// The table names the classes without their type, which its lines would repeat."
@@ -612,12 +659,23 @@ fn block_classes(data: &GameData) -> Result<String> {
             }
             None => "None".to_owned(),
         };
+        let potted = match dumped.potted {
+            Some(id) => {
+                ensure!(
+                    id < data.blocks.len(),
+                    "{} holds the block {id}, which the report lacks",
+                    block.name
+                );
+                format!("Some({id})")
+            }
+            None => "None".to_owned(),
+        };
         let name = block.name.strip_prefix("minecraft:").unwrap_or(&block.name);
         writeln!(
             out,
             "    BlockInfo {{ class: {}, block_entity_type: {entity_type}, \
-             used_by_click: {} }}, // {name}",
-            dumped.class, dumped.used_by_click
+             used_by_click: {}, survival_rule: {}, potted: {potted} }}, // {name}",
+            dumped.class, dumped.used_by_click, dumped.survival_rule
         )?;
     }
     writeln!(out, "];")?;
@@ -654,15 +712,83 @@ fn blocks(data: &GameData) -> Result<String> {
 }
 
 fn items(data: &GameData) -> Result<String> {
+    let dumped = &data.extract.items;
+    ensure!(
+        dumped.len() == data.items.len(),
+        "the extract program wrote {} items, the report has {}",
+        dumped.len(),
+        data.items.len()
+    );
+    let classes: BTreeSet<&str> = dumped.iter().map(|item| item.class.as_str()).collect();
+    for class in &classes {
+        let valid = class.starts_with(|c: char| c.is_ascii_uppercase())
+            && class.chars().all(|c| c.is_ascii_alphanumeric());
+        ensure!(valid, "the class {class} cannot name a variant");
+    }
+    let block_id = |id: usize, item: &str| -> Result<u16> {
+        ensure!(
+            id < data.blocks.len(),
+            "{item} places the block {id}, which the report lacks"
+        );
+        Ok(u16::try_from(id)?)
+    };
+
     let mut out = String::new();
-    writeln!(out, "use crate::{{BlockState, Item}};\n")?;
+    writeln!(out, "use crate::{{BlockState, Face, Item}};\n")?;
+    writeln!(
+        out,
+        "/// The classes of the game's items, by the simple names of the Java classes."
+    )?;
+    writeln!(
+        out,
+        "#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]"
+    )?;
+    writeln!(out, "pub enum ItemClass {{")?;
+    for class in &classes {
+        writeln!(out, "    {class},")?;
+    }
+    writeln!(out, "}}\n")?;
+    writeln!(
+        out,
+        "// The table names the classes without their type, which its lines would repeat."
+    )?;
+    writeln!(out, "use self::ItemClass::*;\n")?;
     writeln!(out, "pub static ITEMS: [Item; {}] = [", data.items.len())?;
-    for item in &data.items {
+    for (item, dumped) in data.items.iter().zip(dumped) {
+        ensure!(
+            item.name == dumped.name,
+            "the extract program has {} where the report has {}",
+            dumped.name,
+            item.name
+        );
         let block = match item.block {
             Some(state) => format!("Some(BlockState({state}))"),
             None => "None".to_owned(),
         };
-        writeln!(out, "    Item {{ name: {:?}, block: {block} }},", item.name)?;
+        let places = match dumped.block {
+            Some(id) => format!("Some({})", block_id(id, &item.name)?),
+            None => "None".to_owned(),
+        };
+        let wall = match &dumped.wall {
+            Some((id, direction)) => {
+                let face = match direction.as_str() {
+                    "down" => "Down",
+                    "up" => "Up",
+                    "north" => "North",
+                    "south" => "South",
+                    "west" => "West",
+                    "east" => "East",
+                    other => bail!("{} attaches in the direction {other}", item.name),
+                };
+                format!("Some(({}, Face::{face}))", block_id(*id, &item.name)?)
+            }
+            None => "None".to_owned(),
+        };
+        writeln!(
+            out,
+            "    Item {{ name: {:?}, block: {block}, class: {}, places: {places}, wall: {wall} }},",
+            item.name, dumped.class
+        )?;
     }
     writeln!(out, "];\n")?;
     let names = data.items.iter().map(|item| item.name.as_str());

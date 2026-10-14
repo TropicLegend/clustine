@@ -807,6 +807,43 @@ impl Decode for SetPlayerMovementFlags {
     }
 }
 
+/// The movement keys a player holds, sent when one of them changes. The server reads
+/// the sneak key from it: a sneaking player who clicks a door with a block in hand
+/// places the block instead of opening the door.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerboundPlayerInput {
+    /// A combination of [`player_input`].
+    pub flags: u8,
+}
+
+/// The keys in [`ServerboundPlayerInput::flags`].
+pub mod player_input {
+    pub const FORWARD: u8 = 0x01;
+    pub const BACKWARD: u8 = 0x02;
+    pub const LEFT: u8 = 0x04;
+    pub const RIGHT: u8 = 0x08;
+    pub const JUMP: u8 = 0x10;
+    /// The sneak key.
+    pub const SHIFT: u8 = 0x20;
+    pub const SPRINT: u8 = 0x40;
+}
+
+impl Packet for ServerboundPlayerInput {
+    const ID: i32 = serverbound::PLAYER_INPUT;
+}
+
+impl Encode for ServerboundPlayerInput {
+    fn encode(&self, w: &mut Writer) {
+        w.put_u8(self.flags);
+    }
+}
+
+impl Decode for ServerboundPlayerInput {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { flags: r.u8()? })
+    }
+}
+
 /// Tells the client to forget a chunk that left its view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnloadChunk {
@@ -1510,6 +1547,7 @@ packet_set! {
         SetPlayerPositionAndRotation,
         SetPlayerRotation,
         SetPlayerMovementFlags,
+        ServerboundPlayerInput,
         PlayerLoaded,
         PlayerAction,
         UseItemOn,
@@ -1915,6 +1953,10 @@ mod tests {
             Set::decode,
             Set::SetPlayerMovementFlags,
         );
+        let keys = player_input::SHIFT | player_input::FORWARD;
+        let packet = ServerboundPlayerInput { flags: keys };
+        assert_eq!(crate::packets::encode(&packet), [43, 0x21]);
+        assert_round_trip(packet, Set::decode, Set::ServerboundPlayerInput);
     }
 
     #[test]
