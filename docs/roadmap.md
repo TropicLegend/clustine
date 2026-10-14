@@ -1234,8 +1234,8 @@ chunks: a join at view distance 8 still takes about 6 s.
 So for a seed the land has the game's shape, the game's skin, the game's caves and
 the game's building sites: a chunk takes about 9 ms on one thread. Still to come:
 everything that grows, the ores placed as features and the structures' blocks
-(phase F), and the store keeping what was handed out (W6); chunks are made on
-demand off the store's thread since W5, below.
+(phase F); since W5, below, chunks are made on demand off the store's thread and
+the store keeps what it handed out.
 
 **The land can be walked: `--seed`** (2026-10-14). A server that is given a seed
 serves that seed's bare overworld, and one that is given none is flat as before.
@@ -1243,10 +1243,10 @@ What makes the chunks is a second generator beside the flat one
 (`services/worldgen/src/terrain.rs`): the biomes, the carved blocks and the marks of
 `clustine-terrain`, lit by `clustine-light` beside the chunk's eight neighbours.
 **It is a preview, which the generation service of
-[ADR-0021](adr/0021-generation-is-a-function.md) replaces** (W5 and W6 of the plan).
-Since W5 (below) its chunks are made on the scheduler's pool rather than on the world
-store's one thread; the store still keeps nothing of what it handed out, so a chunk
-nobody changed is made again whenever it is loaded (W6).
+[ADR-0021](adr/0021-generation-is-a-function.md) replaces** with the game's
+features and structures (phase F). Since W5 (below) its chunks are made on the
+scheduler's pool rather than on the world store's one thread, and the store keeps
+each chunk it made, so a chunk is made once.
 
 - Players enter above the block at the origin, as in the flat world, on the highest
   block of that column that blocks motion, or on the water where that is under water
@@ -1284,8 +1284,10 @@ ADR-0021 (`services/worldgen/src/scheduler/`) makes chunks in the record's stage
 a pool of two thirds of the processors, with a cache bounded in bytes, and a chunk's
 neighbours made ahead of it; the world store asks it for chunks nobody has stored and
 goes on meanwhile, answering `Generating` and, when a region lets go of a chunk not yet
-begun, `Withdrawn`; a worker holds no link for a chunk being made and asks for the
-chunks nearest its players first. A world records which generator made it, with its
+begun, `Withdrawn`. It notes each chunk it made and writes the notes with the next
+sync of any region, or by themselves once 512 wait, so a chunk is made once and a
+second visit reads it from the disk. A worker holds no link for a chunk being made
+and asks for the chunks nearest its players first. A world records which generator made it, with its
 version, in its `meta`, and **a world made before this is refused** ("malformed
 meta"): move it away or name another with `--world`. The `--seed` preview runs as the
 scheduler's stages in a bare order, where a finished chunk is its terrain, and gives
@@ -1294,7 +1296,7 @@ the preview's chunks unchanged. Where this departs from the record is in the rec
 written it.
 
 Measured on 2026-10-14 in an optimised build on this machine (12 processors, the
-world on its local disk; the generator does not wait for the disk), three runs of
+world on its own disk, which is the network storage), three runs of
 `cargo test --release -p clustine --test terrain -- --ignored --nocapture`: **a first
 join has its own chunk after a quarter of a second and all 329 chunks of a view of 8
 after 1.0 to 1.06 s**, where it took 6.3 s; a second player beside the first has them

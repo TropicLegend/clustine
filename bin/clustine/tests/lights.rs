@@ -27,9 +27,9 @@
 //!    light threads and on the default.
 //! 6. A join beside a hundred who have their views.
 //!
-//! Terrain of a seed is made when it is needed, on the same machine: a chunk nobody
-//! changed is made again whenever a region loads it. Every time below includes that,
-//! and the test says how long making the chunks of one view takes on one thread here.
+//! Terrain of a seed is made when it is first needed, on the same machine, and kept by
+//! the store from then on. Every time below includes that, and the test says how long
+//! making the chunks of one view takes on one thread here.
 //!
 //! An ordinary run, which is in the full check, has five bots and a view distance of
 //! 2, and asserts only what must always hold: nobody is dropped, every bot is sent
