@@ -147,7 +147,27 @@ impl PartialEq for Section {
             && self.biomes().eq(other.biomes())
             && match (&self.blocks, &other.blocks) {
                 (Blocks::Uniform(a), Blocks::Uniform(b)) => a == b,
-                // The forms and the palettes say how a section came to its blocks.
+                // Sections stored alike hold the same blocks. An edge compares every
+                // chunk a region sends it again after a merge or a split with the one
+                // it has, which are mostly the same and stored alike, and block by
+                // block that took a quarter of a second on land.
+                (
+                    Blocks::Indexed {
+                        bits,
+                        palette,
+                        words,
+                    },
+                    Blocks::Indexed {
+                        bits: other_bits,
+                        palette: other_palette,
+                        words: other_words,
+                    },
+                ) if bits == other_bits && palette == other_palette && words == other_words => true,
+                (Blocks::Direct(words), Blocks::Direct(other_words)) if words == other_words => {
+                    true
+                }
+                // Otherwise the forms and the palettes say how a section came to its
+                // blocks, and not which blocks it holds.
                 _ => self.states().eq(other.states()),
             }
     }
@@ -619,6 +639,34 @@ mod tests {
         assert_eq!(worn.uniform_state(), None);
         fresh.set(0, 0, 0, blocks::DIRT);
         assert_ne!(worn, fresh);
+    }
+
+    #[test]
+    fn sections_stored_alike_are_equal_and_one_block_apart_are_not() {
+        let mut section = Section::filled(blocks::AIR, PLAINS);
+        for state in 1..10u16 {
+            section.set(usize::from(state), 0, 0, BlockState(state));
+        }
+        let copy = section.clone();
+        assert_eq!(copy, section);
+        // The same palette and width, one index apart.
+        let mut changed = section.clone();
+        changed.set(1, 0, 0, BlockState(2));
+        assert_ne!(changed, section);
+        // Direct, as a section of many states is.
+        let mut many = Section::filled(blocks::AIR, PLAINS);
+        for state in 1..300u16 {
+            many.set(
+                usize::from(state & 15),
+                usize::from(state >> 4 & 15),
+                0,
+                BlockState(state),
+            );
+        }
+        assert_eq!(many.clone(), many);
+        let mut other = many.clone();
+        other.set(15, 15, 15, blocks::STONE);
+        assert_ne!(other, many);
     }
 
     #[test]
