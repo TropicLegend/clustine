@@ -21,6 +21,8 @@
 //!   chunk's aquifer has there; grass again on dirt that was laid bare). Compared the
 //!   same way: every block of 4,780 chunks. The head of [`carver`] says more.
 //!
+//! - [`spawn`]: where the game begins to look for a new world's spawn, from the
+//!   climate.
 //! - [`beard`]: what structures do to the ground, as a number the fill adds to the
 //!   density near their pieces (the game's `Beardifier`). Which pieces are near a
 //!   chunk is `clustine-structures`' to say.
@@ -73,4 +75,5 @@ pub mod biome;
 pub mod carver;
 pub mod fill;
 pub mod noise_chunk;
+pub mod spawn;
 pub mod surface;

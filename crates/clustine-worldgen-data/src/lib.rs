@@ -10,7 +10,8 @@
 //! rules read of a biome ([`biomes`]); and the carvers of caves and ravines with the
 //! biomes that have them ([`carver`], [`carvers`]); and the structures, the structure
 //! sets and the template pools as statics ([`structure`], [`structures`],
-//! [`template_pools`]) with, of every structure template, its size and its jigsaw
+//! [`template_pools`]) and the offsets of the game's search for a place to spawn
+//! ([`spawn_search`]) with, of every structure template, its size and its jigsaw
 //! blocks as a packed table ([`templates`]): no block of a template is here
 //! (ADR-0019). Features come with later steps of `docs/groundwork/terrain-plan.md`.
 //!
@@ -50,11 +51,14 @@ mod generated;
 
 pub use density::{
     AquiferEntry, Give, Interpolated, NoiseParameters, NoiseRouter, NoiseSettings, RouterEntry,
+    SpawnPass,
 };
 pub use generated::end::router::EndRouter;
 pub use generated::nether::router::NetherRouter;
 pub use generated::overworld::router::OverworldRouter;
-pub use generated::{biomes, carvers, noise_settings, noises, structures, template_pools};
+pub use generated::{
+    biomes, carvers, noise_settings, noises, spawn_search, structures, template_pools,
+};
 
 /// The table of structure templates: of each its size and its jigsaw blocks.
 pub fn templates() -> &'static structure::Templates {

@@ -19,6 +19,7 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
   overworld/mod.rs
   overworld/router.rs
   overworld/splines.rs
+  spawn_search.rs
   structures.rs
   tables/templates.bin
   template_pools.rs

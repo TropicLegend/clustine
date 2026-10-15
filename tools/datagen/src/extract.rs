@@ -29,6 +29,17 @@ pub struct Extract {
     /// What the game's noise routers give at fixed positions, by the name of the file
     /// (`overworld_13579`: the noise settings and the seed), sorted.
     pub router_values: Vec<(String, RouterValues)>,
+    /// The passes of the game's search for a place to spawn from the climate, in the
+    /// game's order.
+    pub spawn_rings: Vec<SpawnPass>,
+}
+
+/// One pass of `NoiseSpawnFinder.radialSearch`: the offsets from the ring's centre at
+/// which it samples, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnPass {
+    pub increment: u32,
+    pub offsets: Vec<[i32; 2]>,
 }
 
 /// What the game says of one block state.
@@ -167,6 +178,8 @@ impl Extract {
             items: items(&read("items.txt")?).context("reading items.txt")?,
             biome_parameters,
             router_values,
+            spawn_rings: spawn_rings(&read("spawn_rings.txt")?)
+                .context("reading spawn_rings.txt")?,
         })
     }
 }
@@ -386,6 +399,37 @@ pub fn parameter_entries(text: &str) -> Result<Vec<ParameterEntry>> {
     Ok(entries)
 }
 
+/// Lines of a pass's increment, x and z; a pass is the lines with one increment in a
+/// row.
+pub fn spawn_rings(text: &str) -> Result<Vec<SpawnPass>> {
+    let mut passes: Vec<SpawnPass> = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        ensure!(
+            fields.len() == 3,
+            "a line has {} fields where 3 are expected",
+            fields.len()
+        );
+        let increment = integer(fields[0])?;
+        let offset = [integer(fields[1])?, integer(fields[2])?];
+        match passes.last_mut() {
+            Some(pass) if pass.increment == increment => pass.offsets.push(offset),
+            _ => {
+                ensure!(
+                    passes.iter().all(|pass| pass.increment != increment),
+                    "the pass of increment {increment} is not all in one place"
+                );
+                passes.push(SpawnPass {
+                    increment,
+                    offsets: vec![offset],
+                });
+            }
+        }
+    }
+    ensure!(!passes.is_empty(), "there are no offsets");
+    Ok(passes)
+}
+
 fn integer<T: std::str::FromStr>(text: &str) -> Result<T> {
     text.parse()
         .map_err(|_| anyhow::anyhow!("{text:?} is not a number that fits"))
@@ -478,5 +522,26 @@ mod tests {
         assert_eq!(read[0].bounds[5], [9, 10]);
         assert_eq!(read[0].offset, 3750);
         assert_eq!(read[0].biome, "minecraft:plains");
+    }
+
+    #[test]
+    fn the_offsets_of_a_spawn_search_are_grouped_by_their_pass() {
+        let read = spawn_rings("512\t0\t512\n512\t-3\t-511\n32\t0\t32\n").unwrap();
+        assert_eq!(
+            read,
+            [
+                SpawnPass {
+                    increment: 512,
+                    offsets: vec![[0, 512], [-3, -511]],
+                },
+                SpawnPass {
+                    increment: 32,
+                    offsets: vec![[0, 32]],
+                },
+            ]
+        );
+        assert!(spawn_rings("512\t0\t512\n32\t0\t32\n512\t1\t1\n").is_err());
+        assert!(spawn_rings("").is_err());
+        assert!(spawn_rings("512\t0\n").is_err());
     }
 }

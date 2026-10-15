@@ -257,6 +257,7 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
         "carvers",
         "noise_settings",
         "noises",
+        "spawn_search",
         "structures",
         "template_pools",
     ];
@@ -274,6 +275,11 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
         carver::emit(&biomes.entries, &data.worldgen)?,
     );
     add("noises.rs", false, router::noises(&noises)?);
+    add(
+        "spawn_search.rs",
+        false,
+        spawn_search(&data.extract.spawn_rings)?,
+    );
     let templates = structure::templates(&data.worldgen)?;
     add(
         "structures.rs",
@@ -356,6 +362,46 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `spawn_search.rs`: the passes of the game's search for a place to spawn.
+fn spawn_search(passes: &[crate::extract::SpawnPass]) -> Result<String> {
+    // The game's two passes, which the search is ported for: a change here is a
+    // change of the game's search to be looked at, not data to pass through.
+    let increments: Vec<u32> = passes.iter().map(|pass| pass.increment).collect();
+    ensure!(
+        increments == [512, 32],
+        "the search for a spawn has passes of the increments {increments:?}, not 512 and 32"
+    );
+    let mut out = String::from(
+        "use crate::density::SpawnPass;\n\n\
+         /// The passes of `NoiseSpawnFinder.radialSearch`, in the game's order.\n",
+    );
+    writeln!(out, "pub static PASSES: [SpawnPass; {}] = [", passes.len())?;
+    for pass in passes {
+        writeln!(out, "    SpawnPass {{")?;
+        writeln!(out, "        increment: {},", pass.increment)?;
+        writeln!(out, "        offsets: &[")?;
+        let mut line = String::new();
+        for [x, z] in &pass.offsets {
+            let item = format!("[{x}, {z}],");
+            if !line.is_empty() && 12 + line.len() + 1 + item.len() > LINE_WIDTH {
+                writeln!(out, "            {line}")?;
+                line.clear();
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&item);
+        }
+        if !line.is_empty() {
+            writeln!(out, "            {line}")?;
+        }
+        writeln!(out, "        ],")?;
+        writeln!(out, "    }},")?;
+    }
+    writeln!(out, "];")?;
+    Ok(out)
 }
 
 /// The notice of a generated directory: whose the data is, and the files it covers.

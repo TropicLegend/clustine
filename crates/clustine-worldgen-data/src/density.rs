@@ -236,6 +236,17 @@ pub struct SpawnRange {
     pub max: f32,
 }
 
+/// One pass of the game's search for a place to spawn from the climate
+/// (`NoiseSpawnFinder.radialSearch`): rings around the best place so far, the radius
+/// growing by the increment. The offsets are from the ring's centre, in the order the
+/// game samples them; they are emitted from the game's own arithmetic rather than
+/// computed here, as they rest on the last bit of a sine.
+#[derive(Debug)]
+pub struct SpawnPass {
+    pub increment: u32,
+    pub offsets: &'static [[i32; 2]],
+}
+
 /// A cubic spline as static data. The emitted router has a method that evaluates the
 /// coordinate with a given number.
 #[derive(Debug)]

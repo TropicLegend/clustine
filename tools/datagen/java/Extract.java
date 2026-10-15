@@ -148,6 +148,7 @@ public final class Extract {
         for (Map.Entry<String, String> file : routerValues().entrySet()) {
             write(out, "router_" + file.getKey() + ".txt", file.getValue());
         }
+        write(out, "spawn_rings.txt", spawnRings());
         // The game's start leaves threads behind that would keep the JVM alive.
         System.exit(0);
     }
@@ -573,6 +574,38 @@ public final class Extract {
     /// that has a value in every row, `constant <name> <bits>` for one whose value is
     /// the same at every position. A row is a position (x, y, z) and the values of the
     /// entries in their order, each the bits of a float in hexadecimal.
+    /// The offsets from the centre of a ring at which `NoiseSpawnFinder.radialSearch`
+    /// samples, one line each: the pass's increment, then x and z. They are the same
+    /// for every seed, as the centre is fixed for a pass and only added. The loop is
+    /// a copy of the game's, run here because `Math.sin` and `Math.cos` are what
+    /// HotSpot makes of them, which no Rust library is bound to give in the last bit;
+    /// the terrain's comparison with the game's own search over many seeds judges the
+    /// copy.
+    private static String spawnRings() {
+        StringBuilder text = new StringBuilder();
+        // The two passes of `NoiseSpawnFinder`'s constructor: the largest radius, then
+        // the increment.
+        float[][] passes = {{2048.0f, 512.0f}, {512.0f, 32.0f}};
+        for (float[] pass : passes) {
+            float max = pass[0];
+            float increment = pass[1];
+            float angle = 0.0f;
+            float radius = increment;
+            while (radius <= max) {
+                int x = (int) (Math.sin((double) angle) * (double) radius);
+                int z = (int) (Math.cos((double) angle) * (double) radius);
+                text.append((int) increment).append('\t').append(x).append('\t').append(z)
+                        .append('\n');
+                angle += increment / radius;
+                if ((double) angle > 6.283185307179586) {
+                    angle = 0.0f;
+                    radius += increment;
+                }
+            }
+        }
+        return text.toString();
+    }
+
     private static TreeMap<String, String> routerValues() {
         HolderLookup.Provider lookup = VanillaRegistries.createWorldLookup();
         HolderGetter<NormalNoise> noises = lookup.lookupOrThrow(Registries.NOISE);
