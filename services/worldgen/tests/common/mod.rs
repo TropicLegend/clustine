@@ -1121,7 +1121,16 @@ impl Neighbourhood for ModelView<'_> {
     }
 }
 
+/// Adds a tick unless the chunk has one of the same block or fluid at that place: the
+/// game keeps one while a chunk is generated (`ProtoChunkTicks.schedule`).
 fn add_tick(chunk: &mut Chunk, tick: ScheduledTick) {
+    if chunk
+        .ticks()
+        .iter()
+        .any(|kept| kept.at == tick.at && kept.of == tick.of)
+    {
+        return;
+    }
     let mut ticks = chunk.ticks().to_vec();
     ticks.push(tick);
     chunk.set_ticks(ticks);

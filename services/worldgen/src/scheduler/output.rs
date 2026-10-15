@@ -1,12 +1,12 @@
 //! What the tasks give, as the cache holds it, and how the changes of runs are put
 //! into a chunk (definition D of ADR-0021, section 2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use clustine_data::BlockState;
 use clustine_world::generation::{PieceKey, PieceState};
-use clustine_world::{BlockEntity, Chunk, ChunkPos, InChunk, ScheduledTick, SectionLight};
+use clustine_world::{BlockEntity, Chunk, ChunkPos, InChunk, ScheduledTick, SectionLight, Ticked};
 
 use super::Recorded;
 use crate::stages::{Starts, Terrain};
@@ -230,6 +230,15 @@ pub(crate) fn apply_blocks(chunk: &mut Chunk, changes: &Changes) {
     }
 }
 
+/// What makes two ticks one for the game: where, and of which block or fluid.
+fn tick_key(tick: &ScheduledTick) -> (i16, u8, u8, bool, u16) {
+    let (fluid, id) = match tick.of {
+        Ticked::Block(block) => (false, block),
+        Ticked::Fluid(fluid) => (true, u16::from(fluid)),
+    };
+    (tick.at.y, tick.at.z, tick.at.x, fluid, id)
+}
+
 /// Definition D: the terrain of `e` with what the runs within 1 of it changed in it,
 /// in ascending rank. `runs` are those runs with their positions, in ascending rank.
 pub(crate) fn finish(
@@ -239,6 +248,10 @@ pub(crate) fn finish(
 ) -> FinishedChunk {
     let mut chunk = terrain.chunk.clone();
     let mut ticks = chunk.ticks().to_vec();
+    // The game keeps one tick of a block or a fluid at a position while a chunk is
+    // generated (`ProtoChunkTicks.schedule`): a second is not added, whichever run
+    // asks for it.
+    let mut scheduled: BTreeSet<_> = ticks.iter().map(tick_key).collect();
     let mut marks = chunk.marks().to_vec();
     let mut tainted = false;
     for (d, run) in runs {
@@ -247,7 +260,11 @@ pub(crate) fn finish(
             super::lattice::index_in_three(*d, e).expect("a finished chunk has runs within 1");
         let changes = &run.changes[index];
         apply_blocks(&mut chunk, changes);
-        ticks.extend_from_slice(&changes.ticks);
+        for tick in &changes.ticks {
+            if scheduled.insert(tick_key(tick)) {
+                ticks.push(*tick);
+            }
+        }
         marks.extend_from_slice(&changes.marks);
         tainted |= run.tainted;
     }

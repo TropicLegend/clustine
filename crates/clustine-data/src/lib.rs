@@ -68,6 +68,19 @@ impl BlockState {
         (index < BLOCKS.len()).then_some(index)
     }
 
+    /// Where world generation marks a block for post-processing when it sets this
+    /// state (`getPostProcessPos`), as a height above the block: the two small
+    /// mushrooms mark themselves, and soul sand and magma the block above, where a
+    /// bubble column may stand. Asked of the pinned jar for every state; no other
+    /// state asks to be marked.
+    pub fn post_process_above(self) -> Option<i32> {
+        match self.block()?.name {
+            "minecraft:brown_mushroom" | "minecraft:red_mushroom" => Some(0),
+            "minecraft:soul_sand" | "minecraft:magma_block" => Some(1),
+            _ => None,
+        }
+    }
+
     /// What the game's code says of the block this state belongs to: its class, its
     /// block entity type, whether a click uses it. `None` if the id is not a block
     /// state.

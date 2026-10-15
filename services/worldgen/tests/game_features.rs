@@ -639,3 +639,61 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
 fn num_threads() -> usize {
     std::thread::available_parallelism().map_or(4, usize::from)
 }
+
+/// The chooser of the judge's areas (the plan, section 3): for every biome of the
+/// overworld, a 24 by 24 area around the first chunk outwards from the spawn, at least
+/// forty chunks from it, whose middle column has that biome at some height, so that
+/// cave biomes are found as well. One line each, `biome x0 z0 x1 z1`, for
+/// `CLUSTINE_GAME_FEATURES_AREA`.
+#[test]
+#[ignore = "a search over the world; run by name with --release --ignored --nocapture"]
+fn areas_where_every_biome_of_the_overworld_stands() {
+    use clustine_terrain::biome::{BiomeSource, Dimension};
+    use clustine_world::ChunkGenerator as _;
+
+    let seed: i64 = std::env::var("CLUSTINE_GAME_FEATURES_SEED")
+        .map_or(13579, |seed| seed.parse().expect("a seed is a number"));
+    let names = &clustine_data::SYNCED_REGISTRIES
+        .iter()
+        .find(|registry| registry.name == "minecraft:worldgen/biome")
+        .expect("the biomes are a synchronised registry")
+        .entries;
+    let source = BiomeSource::new(seed, Dimension::Overworld);
+    let wanted: Vec<u16> = source
+        .possible_biomes()
+        .iter()
+        .map(|biome| biome.0)
+        .collect();
+    let spawn = TerrainGenerator::new(seed).spawn().chunk();
+    let mut found: BTreeMap<u16, ChunkPos> = BTreeMap::new();
+    const STEP: i32 = 6;
+    'rings: for ring in (40 / STEP)..(1200 / STEP) {
+        for dx in -ring..=ring {
+            for dz in -ring..=ring {
+                if dx.abs() != ring && dz.abs() != ring {
+                    continue;
+                }
+                let chunk = ChunkPos::new(spawn.x + dx * STEP, spawn.z + dz * STEP);
+                for biome in source.column(chunk.x * 4 + 2, chunk.z * 4 + 2) {
+                    found.entry(biome.0).or_insert(chunk);
+                }
+                if wanted.iter().all(|biome| found.contains_key(biome)) {
+                    break 'rings;
+                }
+            }
+        }
+    }
+    for biome in &wanted {
+        match found.get(biome) {
+            Some(chunk) => println!(
+                "{} {} {} {} {}",
+                names[usize::from(*biome)],
+                chunk.x - 12,
+                chunk.z - 12,
+                chunk.x + 11,
+                chunk.z + 11
+            ),
+            None => println!("{} not found", names[usize::from(*biome)]),
+        }
+    }
+}

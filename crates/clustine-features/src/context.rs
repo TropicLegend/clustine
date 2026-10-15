@@ -140,13 +140,8 @@ impl<'a> Level<'a> {
         if !self.view.set_block(at, state) {
             return false;
         }
-        let name = state.block().map(|block| block.name);
-        match name {
-            Some("minecraft:brown_mushroom" | "minecraft:red_mushroom") => self.view.mark(at),
-            Some("minecraft:soul_sand" | "minecraft:magma_block") => {
-                self.view.mark(at.offset(0, 1, 0));
-            }
-            _ => {}
+        if let Some(above) = state.post_process_above() {
+            self.view.mark(at.offset(0, above, 0));
         }
         true
     }
