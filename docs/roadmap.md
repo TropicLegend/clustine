@@ -1343,9 +1343,9 @@ A new player stands on the spawn column as it is now, also on a tower or a fence
 someone built there; the home region keeps that chunk loaded for it. The rules are
 SteelMC's port of vanilla (`crates/clustine-sim/src/placement/`), checked by 119 tests
 and 37 tests written from the plan alone by others, and by 205 cases compared with
-the official server (`bin/clustine/tests/placing_oracle.rs`), each of which matched
-in at least one of two runs (the official server left one or two clicks of the test
-undone in each run, a different one each time).
+the official server (`bin/clustine/tests/placing_oracle.rs`), all of which matched
+in two runs in a row (before the official server was started without mobs, an animal
+on a spot made it leave a click or two of each run undone).
 
 **What to try with a real client: placing and using.** `cargo run --release -p
 clustine` (the flat world), or with `--seed 13579`, in creative mode:

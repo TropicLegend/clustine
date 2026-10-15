@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use clustine_data::GAME_VERSION;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio::time::timeout;
 
@@ -49,6 +49,8 @@ static EXCLUSIVE: Mutex<()> = Mutex::const_new(());
 pub struct Oracle {
     address: String,
     _server: Child,
+    /// Kept open so that the server's console does not see its input end.
+    _console: ChildStdin,
     /// Held until the server has been killed; declared last so it is released last.
     _exclusive: MutexGuard<'static, ()>,
 }
@@ -88,13 +90,14 @@ impl Oracle {
             .arg(&jar)
             .arg("nogui")
             .current_dir(&directory)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
             .context("starting `java`; is a Java runtime installed?")?;
         let mut output = BufReader::new(server.stdout.take().context("no server output")?).lines();
+        let mut console = server.stdin.take().context("no server console")?;
 
         let started = async {
             let mut log = Vec::new();
@@ -109,12 +112,48 @@ impl Oracle {
         timeout(START_TIMEOUT, started)
             .await
             .context("the official server did not start in time")??;
+
+        // Clustine has no mobs, and an animal that wanders onto a spot makes the official
+        // server refuse to place a block there: comparisons of placing lost a click or
+        // two in every run to that. So no mob spawns, and any that has is removed, before
+        // a bot joins. Each command is waited for by the server's answer to it.
+        let quiet = async {
+            for (command, answers) in [
+                ("gamerule spawn_mobs false", &["now set to"][..]),
+                (
+                    "kill @e[type=!minecraft:player]",
+                    &["Killed", "No entity was found"][..],
+                ),
+            ] {
+                console.write_all(format!("{command}\n").as_bytes()).await?;
+                console.flush().await?;
+                loop {
+                    let line = output
+                        .next_line()
+                        .await?
+                        .context("the official server exited")?;
+                    // The server echoes a command it cannot read with this mark in it.
+                    ensure!(
+                        !line.contains("<--[HERE]"),
+                        "the official server refused `{command}`: {line}"
+                    );
+                    if answers.iter().any(|answer| line.contains(answer)) {
+                        break;
+                    }
+                }
+            }
+            anyhow::Ok(())
+        };
+        timeout(START_TIMEOUT, quiet)
+            .await
+            .context("the official server did not answer its console in time")??;
         // Keep reading so the server never blocks on a full output pipe.
         tokio::spawn(async move { while let Ok(Some(_)) = output.next_line().await {} });
 
         Ok(Self {
             address: format!("127.0.0.1:{port}"),
             _server: server,
+            _console: console,
             _exclusive: exclusive,
         })
     }
