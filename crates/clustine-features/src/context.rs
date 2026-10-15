@@ -140,8 +140,9 @@ impl<'a> Level<'a> {
         if !self.view.set_block(at, state) {
             return false;
         }
-        if let Some(above) = state.post_process_above() {
-            self.view.mark(at.offset(0, above, 0));
+        if let Some([dx, dy, dz]) = state.props().post_process() {
+            self.view
+                .mark(at.offset(i32::from(dx), i32::from(dy), i32::from(dz)));
         }
         true
     }
