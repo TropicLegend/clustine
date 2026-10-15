@@ -455,6 +455,7 @@ dependencies = [
  "clustine-structures",
  "clustine-terrain",
  "clustine-world",
+ "flate2",
  "tracing",
  "tracing-subscriber",
 ]
