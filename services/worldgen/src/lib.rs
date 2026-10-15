@@ -4,6 +4,7 @@
 //! [`TerrainGenerator`], a preview of the game's bare land for a seed (see
 //! [`terrain`]).
 
+pub mod features;
 pub mod preview;
 pub mod scheduler;
 pub mod stages;
@@ -16,6 +17,7 @@ use clustine_world::{Biome, BlockPos, Chunk, ChunkGenerator, ChunkPos, SECTION_S
 
 pub use clustine_world::spawn;
 
+pub use crate::features::{FEATURES_VERSION, FeatureStages};
 pub use crate::preview::PreviewStages;
 pub use crate::terrain::{TERRAIN_VERSION, TerrainGenerator};
 

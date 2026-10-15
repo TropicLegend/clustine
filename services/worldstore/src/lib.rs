@@ -129,6 +129,20 @@ pub enum StoreError {
         directory.display()
     )]
     SpawnWouldMove { spawn: BlockPos, directory: PathBuf },
+    /// The land of the world's seed was made by another generator of Clustine than
+    /// this server's: chunks of the two side by side would meet in a seam (phase F's
+    /// plan, question 1).
+    #[error(
+        "the world in {} was made by another generator of Clustine (`{stored}`) than this \
+         server's (`{current}`), and worlds are not carried over before the first release: \
+         move the directory away, or name another with --world, and a new world is made",
+        directory.display()
+    )]
+    EarlierGenerator {
+        stored: String,
+        current: String,
+        directory: PathBuf,
+    },
     #[error("the world was made with {setting} `{stored}`, but this server uses `{current}`")]
     Incompatible {
         setting: &'static str,

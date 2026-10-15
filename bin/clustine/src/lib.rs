@@ -26,7 +26,7 @@ use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
 use clustine_world::ChunkGenerator;
 use clustine_worldgen::scheduler::{Options, Order, Scheduler};
-use clustine_worldgen::{FlatGenerator, PreviewStages, TerrainGenerator};
+use clustine_worldgen::{FeatureStages, FlatGenerator, PreviewStages, TerrainGenerator};
 use clustine_worldstore::{Pins, Store, StoreError};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -102,6 +102,21 @@ impl Land {
                     order: Order::Bare,
                     ..Options::for_processors(processors())
                 },
+            )),
+        }
+    }
+
+    /// The land of the overworld with this seed with the features built so far,
+    /// made in the order of runs of ADR-0021 (phase F). Until the plan's switch
+    /// (`docs/groundwork/f-plan.md`, step F6) it is reached only by a hidden setting,
+    /// for trials and tests: a world it makes is refused by every other generator.
+    pub fn with_features(seed: i64) -> Self {
+        let terrain = Arc::new(TerrainGenerator::new(seed));
+        Self {
+            login: login_of(Some(seed)),
+            generator: Arc::new(Scheduler::new(
+                FeatureStages::new(terrain),
+                Options::for_processors(processors()),
             )),
         }
     }

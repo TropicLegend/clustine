@@ -87,6 +87,9 @@ pub struct TerrainGenerator {
     /// Where structures start, and the ground and biomes they and the chunks are
     /// made of.
     structures: Structures,
+    /// Whether structures start at all, and so bend the ground. Off only for
+    /// comparisons with the official server run with `generate-structures=false`.
+    with_structures: bool,
     /// Change what a chunk costs, never what it is.
     kept: Mutex<Kept>,
     starts: Mutex<KeptStarts>,
@@ -116,10 +119,27 @@ impl TerrainGenerator {
             seed,
             dimension,
             structures: Structures::new(seed, Dimension::Overworld),
+            with_structures: true,
             kept: Mutex::new(Kept::default()),
             starts: Mutex::new(KeptStarts::default()),
             scratch: Mutex::new(clustine_light::Scratch::new()),
         }
+    }
+
+    /// The generator of the same overworld where no structure starts, so that the
+    /// ground is bent for none: what the official server makes with
+    /// `generate-structures=false`, against which features are judged until phase S
+    /// places structures' blocks.
+    pub fn without_structures(seed: i64) -> Self {
+        Self {
+            with_structures: false,
+            ..Self::new(seed)
+        }
+    }
+
+    /// Whether structures start in what this makes.
+    pub fn with_structures(&self) -> bool {
+        self.with_structures
     }
 
     /// The dimension type of what this makes.
@@ -155,6 +175,9 @@ impl TerrainGenerator {
 
     /// The structures that start in the chunk, from what is kept where it is there.
     fn starts(&self, position: ChunkPos) -> Arc<[Start]> {
+        if !self.with_structures {
+            return Arc::from([]);
+        }
         {
             let mut kept = self.starts.lock().unwrap_or_else(PoisonError::into_inner);
             kept.asked += 1;

@@ -74,6 +74,20 @@ fn parent_of(path: &Path) -> &Path {
     path.parent().unwrap_or(Path::new("."))
 }
 
+/// Whether two identities of generators are land of one seed made by different
+/// generators of Clustine (the preview and the land with features, or the land with
+/// features at two steps of phase F), rather than worlds of two seeds.
+fn same_seed(stored: &str, current: &str) -> bool {
+    let seed = |identity: &str| {
+        identity
+            .starts_with("terrain;")
+            .then(|| identity.split(';').find(|part| part.starts_with("seed ")))
+            .flatten()
+            .map(str::to_owned)
+    };
+    seed(stored).is_some() && seed(stored) == seed(current)
+}
+
 /// Creates the world in `root` if there is none, and checks that the one there was
 /// made with what this server uses. Returns its `meta`.
 pub(crate) fn prepare(
@@ -111,6 +125,13 @@ pub(crate) fn prepare(
             }
             for (setting, current) in current {
                 let stored = stored(setting)?;
+                if setting == "generator" && stored != current && same_seed(stored, &current) {
+                    return Err(StoreError::EarlierGenerator {
+                        stored: stored.to_owned(),
+                        current,
+                        directory: root.to_owned(),
+                    });
+                }
                 if stored != current {
                     return Err(StoreError::Incompatible {
                         setting,
@@ -432,6 +453,66 @@ mod tests {
         let second = generator.asked.lock().unwrap().concat();
         assert_eq!(second.len(), 17 * 17 - 1);
         assert!(!second.contains(&ChunkPos::new(0, 0)));
+    }
+
+    /// The flat generator's chunks under another identity.
+    struct Named(&'static str);
+
+    impl ChunkGenerator for Named {
+        fn generate(&self, position: ChunkPos) -> Chunk {
+            FlatGenerator::classic().generate(position)
+        }
+
+        fn settings(&self) -> GeneratorSettings {
+            GeneratorSettings {
+                identity: self.0.to_owned(),
+                version: 1,
+            }
+        }
+    }
+
+    #[test]
+    fn land_of_its_seed_made_by_another_generator_of_clustine_is_refused_with_a_sentence_of_its_own()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let preview = "terrain;preview;minecraft:overworld;seed 5";
+        drop(Store::local(directory.path(), Arc::new(Named(preview))).unwrap());
+        let before = meta(directory.path());
+        let features = "terrain;features 1;minecraft:overworld;seed 5";
+        let Err(error) = Store::local(directory.path(), Arc::new(Named(features))) else {
+            panic!("the preview's world was opened by the land with features");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the world in {} was made by another generator of Clustine (`{preview}`) than \
+                 this server's (`{features}`), and worlds are not carried over before the first \
+                 release: move the directory away, or name another with --world, and a new world \
+                 is made",
+                directory.path().display()
+            )
+        );
+        assert_eq!(meta(directory.path()), before);
+
+        // Another seed is another world, and is told so as before.
+        let other = "terrain;preview;minecraft:overworld;seed 6";
+        let Err(error) = Store::local(directory.path(), Arc::new(Named(other))) else {
+            panic!("the world was opened with another seed");
+        };
+        assert!(matches!(error, StoreError::Incompatible { .. }), "{error}");
+    }
+
+    #[test]
+    fn identities_are_of_one_seed_only_where_both_are_land_and_name_the_same_seed() {
+        assert!(same_seed(
+            "terrain;features 1;minecraft:overworld;seed 5",
+            "terrain;features 2;minecraft:overworld;seed 5;no structures"
+        ));
+        assert!(!same_seed(
+            "terrain;preview;minecraft:overworld;seed 5",
+            "terrain;preview;minecraft:overworld;seed 50"
+        ));
+        assert!(!same_seed("flat;classic", "flat;classic"));
     }
 
     #[test]

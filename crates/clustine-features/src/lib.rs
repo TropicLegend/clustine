@@ -20,4 +20,10 @@ mod run;
 mod settings;
 
 pub use run::decorate;
+
+/// How many of the plan's steps that build kinds of features are in (section 3: F1b,
+/// F2, F3, F4, F5 and the overworld's last in F6), raised by each. It is part of the
+/// identity of what the features' stages make, so that a world made with fewer is
+/// refused rather than continued with more.
+pub const GENERATION: u16 = 0;
 pub use settings::{FeatureSettings, STEPS};

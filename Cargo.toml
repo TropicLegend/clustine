@@ -80,6 +80,11 @@ opt-level = 3
 [profile.dev.package.clustine-worldgen-data]
 opt-level = 3
 
+# A feature run places a chunk's trees, ores and plants, and one finished chunk needs
+# 94 runs (ADR-0021, section 2).
+[profile.dev.package.clustine-features]
+opt-level = 3
+
 # A structure asks the terrain for the ground at many columns before it starts, and
 # assembles a village from hundreds of tried templates.
 [profile.dev.package.clustine-structures]

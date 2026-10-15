@@ -87,6 +87,27 @@ struct Made {
     /// given the same seed; nothing checks that they agree.
     #[arg(long, allow_negative_numbers = true, value_name = "NUMBER")]
     seed: Option<i64>,
+    /// `features`: the land of the seed with the features built so far, which phase F
+    /// of the terrain plan builds step by step. Hidden until it is the land a seed
+    /// has; a world it makes is refused by a server without it.
+    #[arg(long, hide = true, value_name = "GENERATOR", requires = "seed")]
+    generator: Option<Generator>,
+}
+
+/// What `--generator` names.
+#[derive(Clone, Copy, ValueEnum)]
+enum Generator {
+    Features,
+}
+
+impl Made {
+    /// The land this says.
+    fn land(&self) -> Land {
+        match (self.seed, self.generator) {
+            (Some(seed), Some(Generator::Features)) => Land::with_features(seed),
+            (seed, _) => Land::of(seed),
+        }
+    }
 }
 
 impl Players {
@@ -495,7 +516,7 @@ async fn main() -> Result<()> {
                 refuse(NO_BOUNDARIES_FOR_THE_STORE.to_owned());
             }
             let pins = pins(&pin).unwrap_or_else(|why| refuse(why));
-            cluster::worldstore(listen, world, pins, Land::of(made.seed)).await
+            cluster::worldstore(listen, world, pins, made.land()).await
         }
         Some(Service::Worker {
             coordinator,
@@ -596,7 +617,7 @@ fn pins(pins: &[i32]) -> Result<Vec<i32>, String> {
 
 /// Runs every service in this process until it is asked to stop.
 async fn run_standalone(args: Standalone, pins: Vec<i32>, follow: Option<Policy>) -> Result<()> {
-    let land = Land::of(args.made.seed);
+    let land = args.made.land();
     let edge = args.players.edge_config(land.login());
     let config = Config {
         bind: args.bind,
