@@ -83,6 +83,8 @@ pub(crate) struct Lanes {
     log: Log,
     /// The regions there are and the chunks each holds.
     table: Table,
+    /// The world's spawn ([`Restored::spawn`]). The table's home chunk is its chunk.
+    spawn: BlockPos,
     /// A lane for every living region, and for no other.
     regions: BTreeMap<RegionId, Lane>,
     /// The last segment of the log that has a record which changes the table and is not
@@ -237,8 +239,10 @@ impl Lanes {
         root: &Path,
         jobs: Jobs,
         told: &Division,
+        spawn: BlockPos,
     ) -> Result<Self, StoreError> {
         told.check()?;
+        debug_assert_eq!(told.home, spawn.chunk(), "the home chunk is the spawn's");
         let regions_directory = root.join("regions");
         let log_directory = root.join("log");
         disk.create_dir_all(&regions_directory)?;
@@ -495,6 +499,7 @@ impl Lanes {
             log,
             // Where there is none, this one stands in until the table is written below.
             table: stored.unwrap_or_else(|| Table::made_from(told, 0, 0)),
+            spawn,
             regions,
             table_last,
             players,
@@ -671,10 +676,11 @@ impl Lanes {
 
     /// The list of regions as the table has it.
     fn list(&self) -> RegionList {
-        self.table.list(|region| {
+        let epoch = |region| {
             let file = self.regions.get(&region).and_then(|lane| lane.file);
-            file.map_or(0, |file| file.epoch)
-        })
+            file.map_or(0, |file: RegionFile| file.epoch)
+        };
+        self.table.list(self.spawn, epoch)
     }
 
     /// Writes the table file, with `from` as the first segment of the log that is not
@@ -1504,6 +1510,7 @@ impl Lanes {
             held: self.table.grants(region),
             pinned: self.table.pinned(region).to_vec(),
             issued: EntityId(highest),
+            spawn: self.spawn,
         };
         let opened = Opened {
             session,

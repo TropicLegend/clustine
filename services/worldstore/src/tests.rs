@@ -13,13 +13,23 @@ use clustine_format::{LogRecord, read_log};
 use clustine_rpc::TickState;
 use clustine_world::generation::GeneratorSettings;
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, EntityIds, InChunk, LIGHT_ARRAY_LENGTH, Light, ScheduledTick,
-    SectionLight, Ticked,
+    BlockPos, Chunk, ChunkArea, ChunkPos, EntityIds, InChunk, LIGHT_ARRAY_LENGTH, Light,
+    ScheduledTick, SectionLight, Ticked,
 };
 use clustine_worldgen::FlatGenerator;
 
 use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival};
+
+/// The spawn of the flat world, which the generator of the tests makes: the first
+/// column of the chunk at the origin, on its grass.
+pub(crate) const SPAWN: BlockPos = BlockPos::new(0, -60, 0);
+
+/// The spawn of a flat world whose search for one begins in the chunk `home`: the
+/// chunk's first column.
+pub(crate) fn spawn_in(home: ChunkPos) -> BlockPos {
+    BlockPos::new(home.x * 16, SPAWN.y, home.z * 16)
+}
 
 pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
@@ -95,12 +105,12 @@ pub(crate) fn division() -> Division {
 
 /// A store in memory for the two regions of [`division`].
 pub(crate) fn memory() -> Store {
-    Store::memory_divided(generator(), division()).unwrap()
+    Store::memory_told(generator(), division()).unwrap()
 }
 
 /// A store for the two regions of [`division`] that keeps the world in `directory`.
 pub(crate) fn local(directory: &Path) -> Store {
-    Store::local_divided(directory, generator(), division()).unwrap()
+    Store::local_told(directory, generator(), division()).unwrap()
 }
 
 /// A store of each kind.
@@ -905,7 +915,7 @@ fn what_a_replaced_owner_has_queued_or_asks_for_later_is_not_done() {
     };
 
     let held = Arc::new(Held(Barrier::new(2)));
-    let store = Store::local_divided(directory.path(), held.clone(), division()).unwrap();
+    let store = Store::local_told(directory.path(), held.clone(), division()).unwrap();
     let old = open(&store, hello(1, 1));
     log(&old, 1, &[(3, -61, 4, blocks::AIR)]);
 
@@ -1280,7 +1290,7 @@ fn a_world_of_format_1_is_refused_with_the_records_sentence_and_nothing_in_it_is
             world.display()
         );
         for attempt in 1..=2 {
-            let Err(error) = Store::local_divided(&world, generator(), division()) else {
+            let Err(error) = Store::local_told(&world, generator(), division()) else {
                 panic!("the world of format 1 was opened at attempt {attempt}: {meta:?}");
             };
             assert_eq!(error.to_string(), sentence, "{meta:?}");
@@ -1424,7 +1434,7 @@ fn commits_are_answered_while_a_save_is_under_way() {
 fn a_load_after_a_save_finds_what_was_saved_even_while_the_save_waits() {
     let directory = tempfile::tempdir().unwrap();
     let held = Arc::new(Held(Barrier::new(2)));
-    let store = Store::local_divided(directory.path(), held.clone(), division()).unwrap();
+    let store = Store::local_told(directory.path(), held.clone(), division()).unwrap();
     let owner = open(&store, hello(1, 1));
     let origin = ChunkPos::new(0, 0);
 

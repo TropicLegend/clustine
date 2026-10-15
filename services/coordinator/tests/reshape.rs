@@ -32,7 +32,7 @@ use clustine_coordinator::{
 };
 use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, RegionInfo, RegionList, Vouch};
-use clustine_world::{ChunkPos, EntityIds, Vec3};
+use clustine_world::{ChunkPos, EntityIds};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -54,7 +54,6 @@ fn region(id: u32) -> RegionId {
 
 fn config(lease: Duration) -> CoordinatorConfig {
     CoordinatorConfig {
-        spawn: Vec3::new(0.5, 64.0, 0.5),
         lease,
         follow: None,
     }
@@ -87,6 +86,7 @@ fn held(id: u32, epoch: u64) -> Assignment {
 /// pairs of `absorbed`, and `next` as the id of the next region.
 fn list(living: &[u32], absorbed: &[(u32, u32)], next: u32) -> RegionList {
     RegionList {
+        spawn: clustine_world::BlockPos::new(0, -60, 0),
         home: region(0),
         regions: living
             .iter()
@@ -4109,6 +4109,7 @@ impl Store {
 
     fn list(&self) -> RegionList {
         RegionList {
+            spawn: clustine_world::BlockPos::new(0, -60, 0),
             home: region(0),
             regions: self
                 .living
@@ -6164,6 +6165,7 @@ fn the_coordinator_reads_the_list_again_after_a_split_whose_worker_lost_the_stor
     let lease = Duration::from_secs(5);
     let look = Duration::from_millis(250);
     let list = |living: &[u32], next: u32| RegionList {
+        spawn: clustine_world::BlockPos::new(0, -60, 0),
         home: RegionId(0),
         regions: living
             .iter()

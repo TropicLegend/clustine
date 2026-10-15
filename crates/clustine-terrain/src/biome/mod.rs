@@ -69,6 +69,16 @@ pub enum Dimension {
 impl Dimension {
     pub const ALL: [Dimension; 3] = [Dimension::Overworld, Dimension::Nether, Dimension::End];
 
+    /// The dimension's noise settings, which are the same for every seed.
+    pub fn noise_settings(self) -> &'static clustine_worldgen_data::NoiseSettings {
+        use clustine_worldgen_data::noise_settings;
+        match self {
+            Dimension::Overworld => &noise_settings::OVERWORLD,
+            Dimension::Nether => &noise_settings::NETHER,
+            Dimension::End => &noise_settings::END,
+        }
+    }
+
     /// The name of the dimension's type in the game's registry.
     pub const fn type_name(self) -> &'static str {
         match self {

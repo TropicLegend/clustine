@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use clustine_region::{RegionId, RegionRoute, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, PlayersOf, RegionList, Vouch};
-use clustine_world::{ChunkPos, EntityId, EntityIds, Vec3};
+use clustine_world::{ChunkPos, EntityId, EntityIds};
 use tracing::{info, warn};
 
 use crate::policy::Policy;
@@ -28,8 +28,6 @@ const LOG: &str = module_path!();
 /// What a coordinator is created with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoordinatorConfig {
-    /// Where players enter the world.
-    pub spawn: Vec3,
     /// How long a worker may be silent before it loses its regions, and how long a
     /// region may go without being vouched for before it loses its owner. A new
     /// coordinator also waits this long before it gives any region away; see
@@ -880,6 +878,9 @@ pub struct Coordinator {
     /// The home region, the absorbed pairs and the next region id of the world
     /// store's list as it was last read; nothing until it has been.
     home: Option<RegionId>,
+    /// The chunk players enter the world in, which the store keeps with the world:
+    /// that of its spawn, as the same list said.
+    enter: Option<ChunkPos>,
     absorbed: Vec<(RegionId, RegionId)>,
     next: Option<RegionId>,
     /// The merges under way, each under the region that is to be absorbed.
@@ -955,6 +956,7 @@ impl Coordinator {
             version: first_epoch,
             releases: BTreeMap::new(),
             home: None,
+            enter: None,
             absorbed: Vec::new(),
             next: None,
             merges: BTreeMap::new(),
@@ -1741,6 +1743,7 @@ impl Coordinator {
         let home = Some(list.home);
         self.pending.relisted |= self.home != home || self.absorbed != list.absorbed;
         self.home = home;
+        self.enter = Some(list.spawn.chunk());
         self.absorbed.clone_from(&list.absorbed);
         self.next = Some(list.next);
         self.note_answered(now);
@@ -2810,7 +2813,6 @@ impl Coordinator {
             absorbed: self.absorbed.clone(),
             waiting: self.waiting_count(),
             version: self.version,
-            spawn: self.config.spawn,
             routes,
         }
     }
@@ -3153,8 +3155,6 @@ mod tests {
 
     /// What a coordinator is given as its first epoch unless a test says otherwise.
     const FIRST_EPOCH: u64 = 1000;
-
-    const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
     /// What can be seen of a coordinator from outside.
     #[derive(Debug, Clone, PartialEq)]
@@ -3510,7 +3510,6 @@ mod tests {
             }
             routes.sort_by_key(|route| route.region);
             assert_eq!(now.table.routes, routes);
-            assert_eq!(now.table.spawn, SPAWN);
             // And counts the regions that have none.
             let known = &self.coordinator.regions;
             assert_eq!(now.table.waiting as usize, known.len() - routes.len());
@@ -3682,7 +3681,6 @@ mod tests {
     /// What the coordinators of these tests are created with.
     fn config() -> CoordinatorConfig {
         CoordinatorConfig {
-            spawn: SPAWN,
             lease: Duration::from_millis(LEASE),
             follow: None,
         }
@@ -3728,6 +3726,7 @@ mod tests {
     fn stripes(count: u32) -> RegionList {
         let regions = (0..count).map(|region| living(region, 0)).collect();
         RegionList {
+            spawn: clustine_world::BlockPos::new(0, -60, 0),
             home: RegionId(0),
             regions,
             absorbed: Vec::new(),
@@ -3783,7 +3782,6 @@ mod tests {
                 route(1, FIRST_EPOCH + 2, "a:25601"),
             ]
         );
-        assert_eq!(table.spawn, SPAWN);
 
         // There is nothing left to do.
         assert_eq!(cluster.tick(LEASE + 1), Changes::default());
@@ -8581,6 +8579,7 @@ mod tests {
         fn list(&self) -> RegionList {
             let regions = self.living.iter();
             RegionList {
+                spawn: clustine_world::BlockPos::new(0, -60, 0),
                 home: RegionId(0),
                 regions: regions.map(|(id, epoch)| living(id.0, *epoch)).collect(),
                 absorbed: self.absorbed.clone(),

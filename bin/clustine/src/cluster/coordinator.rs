@@ -24,9 +24,6 @@ pub struct CoordinatorArgs {
     /// The largest view distance the edges grant, in chunks, as the coordinator was
     /// told it.
     pub view_distance: u32,
-    /// Where players enter the world, which follows from what the world is made of
-    /// (`crate::Land::spawn`).
-    pub spawn: clustine_world::Vec3,
 }
 
 /// Says in the log how regions are reshaped and with which numbers, for whoever reads
@@ -77,7 +74,6 @@ pub async fn coordinator(args: CoordinatorArgs) -> Result<()> {
     );
     say_how_it_reshapes(args.follow.as_ref(), args.view_distance);
     let config = CoordinatorConfig {
-        spawn: args.spawn,
         lease: args.lease,
         follow: args.follow,
     };

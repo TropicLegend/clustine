@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use clustine_data::DATA_VERSION;
 use clustine_format::FORMAT_VERSION;
-use clustine_world::ChunkGenerator;
+use clustine_world::{BlockPos, ChunkGenerator};
 use tracing::info;
 
 use crate::StoreError;
@@ -27,6 +27,10 @@ use crate::disk::{Disk, replace};
 /// chunk the world stores (`docs/adr/0021-generation-is-a-function.md`, section 8).
 const GENERATOR_VERSION: &str = "generator-version";
 
+/// The line of `meta` that holds the world's spawn, `x,y,z`: where the generator put it
+/// when the world was made (`docs/groundwork/t8-plan.md`, T8c).
+const SPAWN: &str = "spawn";
+
 /// A world's `meta` as the store keeps it, to raise its `generator-version` when the
 /// first chunk of a newer generator is about to be stored (ADR-0021, section 6).
 pub(crate) struct Meta {
@@ -35,6 +39,8 @@ pub(crate) struct Meta {
     lines: Vec<String>,
     /// The version the file names.
     pub(crate) version: u16,
+    /// The world's spawn, which the file holds.
+    pub(crate) spawn: BlockPos,
 }
 
 impl Meta {
@@ -131,18 +137,57 @@ pub(crate) fn prepare(
                     "this world's chunks were made by an older version of the generator; chunks made from now on are this version's"
                 );
             }
+            let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+            let spawn = match text
+                .lines()
+                .find_map(|line| line.strip_prefix(SPAWN)?.strip_prefix('='))
+            {
+                Some(spawn) => parse_spawn(spawn).ok_or_else(|| {
+                    StoreError::MalformedMeta(format!("{SPAWN} is not three whole numbers"))
+                })?,
+                None => {
+                    // A world made before a world kept its spawn, whose players entered on
+                    // the column at the origin. Where the game's rule leaves them there it
+                    // is kept and the spawn written down, by the same durable replacement
+                    // as a raised version: a crash before it leaves the file as it was,
+                    // and the rule gives the same spawn again.
+                    let spawn = generator.spawn();
+                    if (spawn.x, spawn.z) != (0, 0) {
+                        return Err(StoreError::SpawnWouldMove {
+                            spawn,
+                            directory: root.to_owned(),
+                        });
+                    }
+                    lines.push(spawn_line(spawn));
+                    let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+                    replace(disk.as_ref(), &path, text.as_bytes())?;
+                    disk.sync_directory(root)?;
+                    info!(
+                        x = spawn.x,
+                        y = spawn.y,
+                        z = spawn.z,
+                        "the world's meta now holds its spawn, which the game's rule puts where its players entered"
+                    );
+                    spawn
+                }
+            };
             Ok(Meta {
                 path,
-                lines: text.lines().map(str::to_owned).collect(),
+                lines,
                 version,
+                spawn,
             })
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
+            // Before anything is written: a crash while the generator works leaves no
+            // `meta`, so the world is new again, and its spawn is the same.
+            let spawn = generator.spawn();
             let mut lines: Vec<String> = current
                 .iter()
                 .map(|(setting, value)| format!("{setting}={value}"))
                 .collect();
             lines.push(format!("{GENERATOR_VERSION}={}", settings.version));
+            lines.push(spawn_line(spawn));
             let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
             replace(disk.as_ref(), &path, text.as_bytes())?;
             disk.sync_directory(root)?;
@@ -150,10 +195,21 @@ pub(crate) fn prepare(
                 path,
                 lines,
                 version: settings.version,
+                spawn,
             })
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn spawn_line(spawn: BlockPos) -> String {
+    format!("{SPAWN}={},{},{}", spawn.x, spawn.y, spawn.z)
+}
+
+fn parse_spawn(text: &str) -> Option<BlockPos> {
+    let mut numbers = text.split(',').map(|number| number.parse::<i32>().ok());
+    let spawn = BlockPos::new(numbers.next()??, numbers.next()??, numbers.next()??);
+    numbers.next().is_none().then_some(spawn)
 }
 
 #[cfg(test)]
@@ -225,7 +281,7 @@ mod tests {
     }
 
     fn local(directory: &Path, generator: Arc<Versioned>) -> Result<Store, StoreError> {
-        Store::local_divided(directory, generator, division())
+        Store::local_told(directory, generator, division())
     }
 
     #[test]
@@ -236,6 +292,81 @@ mod tests {
         // A line of its own, apart from the generator's identity.
         let identity = FlatGenerator::classic().settings().identity;
         assert!(meta(directory.path()).contains(&format!("\ngenerator={identity}\n")));
+    }
+
+    #[test]
+    fn a_new_world_keeps_its_spawn_in_meta_and_a_newer_generator_keeps_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let somewhere = BlockPos::new(-37, 70, 1204);
+        let generator = Arc::new(FlatGenerator::classic().with_spawn(somewhere));
+        let store = Store::local_divided(directory.path(), generator, crate::Pins::none());
+        let store = store.unwrap();
+        assert_eq!(store.regions().unwrap().spawn, somewhere);
+        drop(store);
+        assert!(meta(directory.path()).contains("\nspawn=-37,70,1204\n"));
+
+        // A server whose generator would put the spawn elsewhere opens the world with
+        // the spawn it was made with, and the home chunk is that spawn's.
+        let elsewhere = Arc::new(FlatGenerator::classic());
+        let store = Store::local_divided(directory.path(), elsewhere, crate::Pins::none());
+        let list = store.unwrap().regions().unwrap();
+        assert_eq!(list.spawn, somewhere);
+    }
+
+    #[test]
+    fn a_world_from_before_the_spawn_was_kept_is_given_it_where_its_players_entered() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(local(directory.path(), Versioned::new(1)).unwrap());
+        // As the world's meta was before it held a spawn.
+        let earlier: String = meta(directory.path())
+            .lines()
+            .filter(|line| !line.starts_with("spawn="))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(directory.path().join("meta"), &earlier).unwrap();
+
+        // The flat world's spawn is on the column at the origin, where its players
+        // entered: it is written down and the world opens.
+        let store = local(directory.path(), Versioned::new(1)).unwrap();
+        assert_eq!(store.regions().unwrap().spawn, BlockPos::new(0, -60, 0));
+        drop(store);
+        assert!(meta(directory.path()).ends_with("spawn=0,-60,0\n"));
+
+        // A world whose spawn the game puts elsewhere is refused, and nothing in it
+        // is changed.
+        fs::write(directory.path().join("meta"), &earlier).unwrap();
+        let away = BlockPos::new(-96, 66, 32);
+        let generator = Arc::new(FlatGenerator::classic().with_spawn(away));
+        let Err(error) = Store::local_divided(directory.path(), generator, crate::Pins::none())
+        else {
+            panic!("a world whose spawn would move was opened");
+        };
+        assert!(matches!(error, StoreError::SpawnWouldMove { spawn, .. } if spawn == away));
+        assert!(error.to_string().contains("-96, 66, 32"), "{error}");
+        assert_eq!(meta(directory.path()), earlier);
+    }
+
+    #[test]
+    fn a_spawn_in_meta_that_is_not_three_numbers_is_malformed() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(local(directory.path(), Versioned::new(1)).unwrap());
+        for broken in ["0,-60", "0,-60,0,1", "0,high,0", ""] {
+            let text: String = meta(directory.path())
+                .lines()
+                .map(|line| match line.starts_with("spawn=") {
+                    true => format!("spawn={broken}\n"),
+                    false => format!("{line}\n"),
+                })
+                .collect();
+            fs::write(directory.path().join("meta"), text).unwrap();
+            let Err(error) = local(directory.path(), Versioned::new(1)) else {
+                panic!("{broken:?} was read as a spawn");
+            };
+            assert!(
+                matches!(error, StoreError::MalformedMeta(_)),
+                "{broken:?}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -331,6 +462,7 @@ mod tests {
             disk.sync_directory(root).unwrap();
             let disk = Arc::new(disk.with(Fault::Stop(stop)));
             let meta = Meta {
+                spawn: crate::tests::SPAWN,
                 path: root.join("meta"),
                 lines: text.lines().map(str::to_owned).collect(),
                 version: 1,

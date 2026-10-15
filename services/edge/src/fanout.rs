@@ -4355,9 +4355,8 @@ mod tests {
         async fn start_with_patience(region_patience: Duration) -> Self {
             let (west, west_end) = link_to(WEST, 1);
             let (east, east_end) = link_to(EAST, 1);
-            let spawn = Vec3::new(0.5, -60.0, 0.5);
             // Players enter the world in the west.
-            let (routing, relinks) = Routing::new(WEST, spawn, IDENTITY, vec![west, east]);
+            let (routing, relinks) = Routing::new(WEST, IDENTITY, vec![west, east]);
             let config = FanoutConfig {
                 max_players: 20,
                 view_distance: 2,
@@ -6474,7 +6473,7 @@ mod scenarios {
                 links.push(link);
                 ends[region.0 as usize] = Some(end);
             }
-            let (routing, relinks) = Routing::new(WEST, SPAWN, IDENTITY, links);
+            let (routing, relinks) = Routing::new(WEST, IDENTITY, links);
             let config = FanoutConfig {
                 max_players: 20,
                 view_distance: VIEW,

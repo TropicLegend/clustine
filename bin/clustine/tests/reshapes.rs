@@ -38,7 +38,7 @@ use clustine_botswarm::Bot;
 use clustine_region::RegionId;
 use clustine_rpc::link::End;
 use clustine_rpc::{Assignment, FromCoordinator, RegionList, ToCoordinator, tcp};
-use clustine_world::{EntityId, EntityIds, Vec3};
+use clustine_world::{EntityId, EntityIds};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -1142,9 +1142,6 @@ async fn every_region_is_run_again_when_the_world_store_is_killed_in_the_middle_
 /// coordinator.
 type Heard = End<FromCoordinator, ToCoordinator>;
 
-/// Where every player enters the world.
-const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
-
 /// What a coordinator tells a worker that is to run `regions`, each with its epoch.
 fn orders(regions: &[(Region, u64)]) -> FromCoordinator {
     let assignments = regions.iter().map(|(region, epoch)| Assignment {
@@ -1157,7 +1154,6 @@ fn orders(regions: &[(Region, u64)]) -> FromCoordinator {
         },
     });
     FromCoordinator::Assigned {
-        spawn: SPAWN,
         assignments: assignments.collect(),
     }
 }

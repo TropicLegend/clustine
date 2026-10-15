@@ -18,7 +18,9 @@
 
 use clustine_data::Face;
 use clustine_data::faces::face_full;
-use clustine_world::{BlockPos, Chunk, ChunkPos};
+use std::borrow::Borrow;
+
+use crate::{BlockPos, Chunk, ChunkPos};
 
 /// How many chunks the spiral takes: 11 by 11.
 pub const SPIRAL_CHUNKS: usize = 121;
@@ -48,13 +50,13 @@ pub fn spiral() -> impl Iterator<Item = (i32, i32)> {
 /// The spawn of a world whose search of the climate ended in the chunk `origin`, with
 /// `chunk` giving a chunk of the world as it is made. Asks for one chunk after another
 /// until one has a column to stand on, which is mostly the first.
-pub fn place_to_stand<C: std::ops::Deref<Target = Chunk>>(
+pub fn place_to_stand<C: Borrow<Chunk>>(
     origin: ChunkPos,
     mut chunk: impl FnMut(ChunkPos) -> C,
 ) -> BlockPos {
     for (x, z) in spiral() {
         let position = ChunkPos::new(origin.x + x, origin.z + z);
-        if let Some(spawn) = in_chunk(&chunk(position), position) {
+        if let Some(spawn) = in_chunk(chunk(position).borrow(), position) {
             return spawn;
         }
     }

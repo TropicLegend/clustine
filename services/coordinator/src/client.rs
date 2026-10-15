@@ -11,7 +11,7 @@ use std::time::Duration;
 use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::link::{self, End};
 use clustine_rpc::{Assignment, FromCoordinator, Off, PlayersOf, ToCoordinator, Vouch, tcp};
-use clustine_world::{ChunkPos, Vec3};
+use clustine_world::ChunkPos;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -112,8 +112,6 @@ pub enum ClientError {
 /// What a worker is told: where players enter the world and what it is to run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Orders {
-    /// Where players enter the world.
-    pub spawn: Vec3,
     /// The regions the worker is to run, in ascending order. It has to stop running
     /// whatever is not among them.
     pub assignments: Vec<Assignment>,
@@ -685,8 +683,8 @@ fn orders_from(message: Option<FromCoordinator>) -> Result<Orders, ClientError> 
 /// What the coordinator said to a worker, or why it says no more.
 fn event_from(message: Option<FromCoordinator>) -> Result<WorkerEvent, ClientError> {
     match message {
-        Some(FromCoordinator::Assigned { spawn, assignments }) => {
-            Ok(WorkerEvent::Orders(Orders { spawn, assignments }))
+        Some(FromCoordinator::Assigned { assignments }) => {
+            Ok(WorkerEvent::Orders(Orders { assignments }))
         }
         Some(FromCoordinator::Release { region, epoch }) => {
             Ok(WorkerEvent::Release { region, epoch })
@@ -787,14 +785,13 @@ mod tests {
 
     fn orders(assignments: &[Assignment]) -> Orders {
         Orders {
-            spawn: Vec3::new(0.5, -60.0, 0.5),
             assignments: assignments.to_vec(),
         }
     }
 
     fn assigned(assignments: &[Assignment]) -> FromCoordinator {
-        let Orders { spawn, assignments } = orders(assignments);
-        FromCoordinator::Assigned { spawn, assignments }
+        let Orders { assignments } = orders(assignments);
+        FromCoordinator::Assigned { assignments }
     }
 
     fn table(version: u64) -> RoutingTable {
@@ -803,7 +800,6 @@ mod tests {
             absorbed: Vec::new(),
             waiting: 1,
             version,
-            spawn: Vec3::new(0.5, -60.0, 0.5),
             routes: vec![RegionRoute {
                 region: RegionId(1),
                 epoch: version,

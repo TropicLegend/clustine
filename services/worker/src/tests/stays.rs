@@ -35,9 +35,9 @@ const HOME_X: f64 = 9.5;
 /// How long a region of these tests keeps a chunk nothing uses: as the processes set it.
 const KEPT: u64 = DEFAULT_RETURN_AFTER;
 
-/// What a region of these tests is made with.
-fn keeping() -> RegionConfig {
-    config(KEPT)
+/// What a region of these tests is restored with beside what the store says.
+fn keeping() -> RegionSettings {
+    settings(KEPT)
 }
 
 /// How a test's world is divided.
@@ -70,9 +70,8 @@ impl Land {
     fn started(shape: Shape, directory: Option<&tempfile::TempDir>) -> Divided {
         let division = match shape {
             Shape::Stripes => Divided::line_at_one(),
-            Shape::Gap => Division {
-                home: ORIGIN,
-                pinned: vec![
+            Shape::Gap => Pins {
+                areas: vec![
                     ChunkArea {
                         min_x: None,
                         max_x: Some(0),
@@ -1770,6 +1769,7 @@ fn restored_with(
 ) -> Restored {
     let tick_state = |tick: u64, state: Vec<u8>| clustine_rpc::TickState { tick, state };
     Restored {
+        spawn: clustine_world::BlockPos::new(0, -60, 0),
         entity_ids: block,
         state: state.map(|state| tick_state(state.tick, stored(state))),
         deltas: deltas

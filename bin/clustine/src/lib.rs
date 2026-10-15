@@ -24,10 +24,10 @@ pub use clustine_edge::{EdgeConfig, LoginWorld};
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
-use clustine_world::{ChunkGenerator, ChunkPos, Vec3};
+use clustine_world::ChunkGenerator;
 use clustine_worldgen::scheduler::{Options, Order, Scheduler};
 use clustine_worldgen::{FlatGenerator, PreviewStages, TerrainGenerator};
-use clustine_worldstore::{Division, Store, StoreError};
+use clustine_worldstore::{Pins, Store, StoreError};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -65,21 +65,15 @@ pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
 }
 
-/// Where players enter the flat world: above the middle of the block at the origin.
-pub(crate) fn spawn_point() -> Vec3 {
-    Vec3::new(0.5, f64::from(FlatGenerator::classic().surface_y()), 0.5)
-}
-
-/// What a world is made of, and what follows from that for the services: what makes
-/// the chunks nobody has changed (the world store's), where players enter (the
-/// coordinator's) and what a client is told of the world (an edge's). Every service
-/// has to go by the same, or the world would not fit together; in a cluster that
-/// means the same `--seed`, or none, for the world store, the coordinator and every
-/// edge.
+/// What a world is made of: what makes the chunks nobody has changed, which only the
+/// world store has, and what a client is told of the world when it logs in, which is
+/// an edge's. The world's spawn follows from the first: the store puts it where the
+/// game would when it makes the world, keeps it, and says it to every region it opens
+/// and to the coordinator. In a cluster the world store and every edge need the same
+/// `--seed`, or none.
 #[derive(Clone)]
 pub struct Land {
     pub(crate) generator: Arc<dyn ChunkGenerator>,
-    pub(crate) spawn: Vec3,
     pub(crate) login: LoginWorld,
 }
 
@@ -88,28 +82,18 @@ impl Land {
     pub fn flat() -> Self {
         Self {
             generator: generator(),
-            spawn: spawn_point(),
             login: LoginWorld::FLAT,
         }
     }
 
     /// The bare land of the overworld with this seed, made on the generation
-    /// scheduler's pool: a preview, see
-    /// `clustine_worldgen::terrain`. Players enter above the block at the origin as
-    /// in the flat world, on the ground of that column or on the water over it.
+    /// scheduler's pool: a preview, see `clustine_worldgen::terrain`.
     ///
-    /// This seeds the world's noises and makes the chunk at the origin, which takes
-    /// some tens of milliseconds.
+    /// This seeds the world's noises, which takes some tens of milliseconds.
     pub fn of_seed(seed: i64) -> Self {
         let terrain = Arc::new(TerrainGenerator::new(seed));
-        let login = LoginWorld {
-            hashed_seed: terrain.hashed_seed(),
-            flat: false,
-            sea_level: terrain.sea_level(),
-        };
         Self {
-            spawn: terrain.spawn_point(),
-            login,
+            login: login_of(Some(seed)),
             // Made on a pool of its own, off the store's thread for chunks, nearest a
             // joining player first (ADR-0021, section 5).
             generator: Arc::new(Scheduler::new(
@@ -127,14 +111,22 @@ impl Land {
         seed.map_or_else(Self::flat, Self::of_seed)
     }
 
-    /// Where players enter the world.
-    pub fn spawn(&self) -> Vec3 {
-        self.spawn
-    }
-
     /// What a client is told of the world when it logs in.
     pub fn login(&self) -> LoginWorld {
         self.login
+    }
+}
+
+/// What a client is told of the world of this seed when it logs in, or of the flat
+/// world without one. It needs no generator, so an edge makes none.
+pub fn login_of(seed: Option<i64>) -> LoginWorld {
+    match seed {
+        Some(seed) => LoginWorld {
+            hashed_seed: TerrainGenerator::hashed_seed(seed),
+            flat: false,
+            sea_level: TerrainGenerator::sea_level(),
+        },
+        None => LoginWorld::FLAT,
     }
 }
 
@@ -260,20 +252,21 @@ impl Server {
 
     /// [`Self::start`] for a world of the given land.
     pub async fn start_in(config: Config, land: Land) -> Result<Self> {
-        let spawn = land.spawn;
         let generator = || Arc::clone(&land.generator);
-        let home = ChunkPos::containing(spawn.x, spawn.z);
-        let division = if config.pins.is_empty() {
-            Division::open(home)
+        // Without pins the world is one home region pinned to nothing, which its
+        // regions grow from; with them, regions pinned side by side at the cuts.
+        let pins = if config.pins.is_empty() {
+            Pins::none()
         } else {
-            Division::side_by_side(home, &config.pins)
+            Pins::side_by_side(&config.pins)
                 .map_err(|error| anyhow!("the pins have to be {error}"))?
         };
         let store = match &config.world {
-            Some(directory) => Store::local_divided(directory, generator(), division)
+            Some(directory) => Store::local_divided(directory, generator(), pins)
                 .with_context(|| format!("opening the world in {}", directory.display()))?,
-            None => Store::memory_divided(generator(), division)
-                .context("starting a world in memory")?,
+            None => {
+                Store::memory_divided(generator(), pins).context("starting a world in memory")?
+            }
         };
         let store: Kept = Arc::new(Mutex::new(Some(store)));
 
@@ -292,7 +285,6 @@ impl Server {
             })
         };
         let coordinator_config = CoordinatorConfig {
-            spawn,
             lease: CoordinatorConfig::DEFAULT_LEASE,
             follow: config.follow,
         };
@@ -389,7 +381,7 @@ impl Server {
             login: land.login,
         };
         let identity = EdgeIdentity::starting_now("edge");
-        let (routing, relinks) = Routing::new(home, table.spawn, identity, Vec::new());
+        let (routing, relinks) = Routing::new(home, identity, Vec::new());
         let edge = Edge::bind(config.bind, edge_config, routing)
             .await
             .with_context(|| format!("listening on {}", config.bind))

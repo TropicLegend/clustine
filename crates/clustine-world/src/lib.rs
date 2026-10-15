@@ -9,6 +9,7 @@ pub mod generation;
 mod light;
 mod position;
 mod section;
+pub mod spawn;
 
 pub use chunk::{
     BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, MAX_BLOCK_ENTITY_DATA,

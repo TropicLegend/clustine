@@ -56,13 +56,13 @@ use clustine_rpc::{
     Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Presence, Restored, SplitPart, StoreReply,
     StoreRequest, Welcome, WorkerToEdge,
 };
-use clustine_sim::api::{Entered, PlayerInput, RegionEvent};
+use clustine_sim::api::{Entered, HOTBAR_SLOTS, ItemStack, PlayerInput, RegionEvent};
 use clustine_sim::{
     Durable, EdgeEvent, Holdings, Knowledge, Misdirected, NoSplit, Part, PlayerChange, PlayerEvent,
     Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting, StateDelta, TickInputs,
     Ticket,
 };
-use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3};
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
 
@@ -912,6 +912,32 @@ pub struct RegionRunner {
     stopped: Option<Stopped>,
 }
 
+/// What a region is restored with beside what the world store says of it: a
+/// [`RegionConfig`] without the spawn, which is the world's, kept by the store and said
+/// when it opens the region.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionSettings {
+    /// [`RegionConfig::starting_hotbar`].
+    pub starting_hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    /// [`RegionConfig::return_after`].
+    pub return_after: u64,
+    /// [`RegionConfig::lowest_y`].
+    pub lowest_y: i32,
+}
+
+impl RegionSettings {
+    /// The configuration of a region of the world whose spawn is the block `spawn`:
+    /// players enter in the middle of it.
+    pub fn with_spawn(self, spawn: BlockPos) -> RegionConfig {
+        RegionConfig {
+            spawn: Vec3::bottom_centre_of(spawn),
+            starting_hotbar: self.starting_hotbar,
+            return_after: self.return_after,
+            lowest_y: self.lowest_y,
+        }
+    }
+}
+
 impl RegionRunner {
     /// A runner for the region as the world store has it: `restored` is what the store
     /// returned when the region was opened, and `store` the handle it came with. The
@@ -922,11 +948,12 @@ impl RegionRunner {
     /// [`RegionRunner::links`], and does not know which region it is until it is told
     /// ([`RegionRunner::with_id`]).
     pub fn restore(
-        config: RegionConfig,
+        settings: RegionSettings,
         store: StoreHandle,
         restored: Restored,
     ) -> Result<Self, RestoreError> {
         let holdings = holdings(&restored);
+        let config = settings.with_spawn(restored.spawn);
         let state = restored_state(restored)?;
         Ok(Self::with_store(
             Region::restore(config, state, holdings),
@@ -3656,7 +3683,7 @@ mod tests {
     use clustine_sim::{PlayerTransfer, RemoteAction};
     use clustine_world::{ChunkArea, EntityIds, Vec3};
     use clustine_worldgen::FlatGenerator;
-    use clustine_worldstore::{Division, Store, StoreHandle};
+    use clustine_worldstore::{Pins, Store, StoreHandle};
     use tokio::time::timeout;
     use uuid::Uuid;
 
@@ -4125,15 +4152,21 @@ mod tests {
     /// the chunks with x = 1 do.
     const EAST: RegionId = RegionId(1);
 
-    /// What a region is made with. It knows of a chunk only what the store tells it,
-    /// and gives one back that nothing has used for `return_after` ticks.
-    fn config(return_after: u64) -> RegionConfig {
-        RegionConfig {
-            spawn: SPAWN,
+    /// What a region is restored with beside what the store says. It knows of a chunk
+    /// only what the store tells it, and gives one back that nothing has used for
+    /// `return_after` ticks.
+    fn settings(return_after: u64) -> RegionSettings {
+        RegionSettings {
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
             lowest_y: -64,
         }
+    }
+
+    /// What [`settings`] makes of a region of the flat world, whose spawn [`SPAWN`]
+    /// is the middle of.
+    fn config(return_after: u64) -> RegionConfig {
+        settings(return_after).with_spawn(BlockPos::new(0, -60, 0))
     }
 
     /// A store of a flat world that is one region and only lasts as long as the store.
@@ -4175,15 +4208,15 @@ mod tests {
     /// region it runs, as the runner of a home region has to be: the store names the
     /// region that held a player's last place when they join again, and a runner that
     /// does not know that this is its own would let the player go to it.
-    fn opened(store: &Store, config: RegionConfig) -> RegionRunner {
+    fn opened(store: &Store, settings: RegionSettings) -> RegionRunner {
         let (handle, restored) = store.open_region(owner()).unwrap();
-        let runner = RegionRunner::restore(config, handle, restored).unwrap();
+        let runner = RegionRunner::restore(settings, handle, restored).unwrap();
         runner.with_id(owner().region)
     }
 
     /// A runner as [`opened`] makes it, with a gate before its store.
-    fn gated(store: &Store, config: RegionConfig) -> (RegionRunner, Arc<GateControl>) {
-        let (runner, gate) = gated_as(store, owner(), config);
+    fn gated(store: &Store, settings: RegionSettings) -> (RegionRunner, Arc<GateControl>) {
+        let (runner, gate) = gated_as(store, owner(), settings);
         (runner.with_id(owner().region), gate)
     }
 
@@ -4192,9 +4225,10 @@ mod tests {
     fn gated_as(
         store: &Store,
         hello: RegionHello,
-        config: RegionConfig,
+        settings: RegionSettings,
     ) -> (RegionRunner, Arc<GateControl>) {
         let (inner, restored) = store.open_region(hello).unwrap();
+        let config = settings.with_spawn(restored.spawn);
         let control = Arc::new(GateControl::default());
 
         let gate = Gate {
@@ -4210,7 +4244,7 @@ mod tests {
     /// A runner for the one region of a flat world that only lasts as long as the
     /// runner, with `link` as its first link.
     fn runner(link: WorkerEnd) -> RegionRunner {
-        let runner = opened(&memory(), config(0));
+        let runner = opened(&memory(), settings(0));
         runner.links().attach(link);
         runner
     }
@@ -4793,7 +4827,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_link_attached_while_the_runner_runs_is_served() {
         for connect in KINDS {
-            let runner = opened(&memory(), config(0));
+            let runner = opened(&memory(), settings(0));
             let (links, status) = (runner.links(), runner.status());
             let worker = Worker::spawn(runner);
 
@@ -4917,7 +4951,7 @@ mod tests {
     async fn stopping_stores_changed_chunks_and_the_state() {
         let directory = tempfile::tempdir().unwrap();
         let (edge, worker_end) = in_process(256);
-        let mut first = opened(&on_disk(directory.path()), config(0));
+        let mut first = opened(&on_disk(directory.path()), settings(0));
         first.links().attach(worker_end);
         joined(&edge, &mut first).await;
         edge.send(dig(1)).await.unwrap();
@@ -4930,7 +4964,7 @@ mod tests {
         drop((first, edge));
 
         let (edge, worker_end) = in_process(256);
-        let mut second = opened(&on_disk(directory.path()), config(0));
+        let mut second = opened(&on_disk(directory.path()), settings(0));
         assert_eq!(second.region().state(), state);
         second.links().attach(worker_end);
         edge.send(asking_for(vec![ORIGIN])).await.unwrap();
@@ -4946,13 +4980,9 @@ mod tests {
     #[tokio::test]
     async fn checkpoints_save_loaded_chunks_and_empty_the_log() {
         let directory = tempfile::tempdir().unwrap();
-        let generator = FlatGenerator::classic();
-        let config = RegionConfig {
-            spawn: Vec3::new(0.5, f64::from(generator.surface_y()), 0.5),
-            ..config(0)
-        };
         let (edge, worker_end) = in_process(256);
-        let mut runner = opened(&on_disk(directory.path()), config).with_checkpoint_interval(50);
+        let mut runner =
+            opened(&on_disk(directory.path()), settings(0)).with_checkpoint_interval(50);
         runner.links().attach(worker_end);
         joined(&edge, &mut runner).await;
         // The log is in segments, which a checkpoint removes once it covers them.
@@ -5946,7 +5976,7 @@ mod tests {
     #[tokio::test]
     async fn nothing_of_a_tick_is_published_before_its_commit_is_confirmed() {
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = gated(&memory(), config(0));
+        let (mut runner, gate) = gated(&memory(), settings(0));
         runner.links().attach(worker_end);
 
         // The player has entered the world before the store's answers are held back:
@@ -6010,7 +6040,7 @@ mod tests {
     #[tokio::test]
     async fn a_tick_that_changes_nothing_sends_no_commit_and_is_published() {
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = gated(&memory(), config(0));
+        let (mut runner, gate) = gated(&memory(), settings(0));
         runner.links().attach(worker_end);
 
         // The hello makes the edge known, which is a change. Loading a chunk and showing
@@ -6077,7 +6107,7 @@ mod tests {
     async fn a_runner_restored_after_a_commit_that_was_never_published_tells_it_on_hello() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(RegionId(0), config(0));
+        let (mut runner, gate) = world.gated(RegionId(0), settings(0));
         runner.links().attach(worker_end);
         look_east(&mut runner, &mut edge);
         edge.send(join(player(), "Notch")).await.unwrap();
@@ -6480,7 +6510,7 @@ mod tests {
                 epoch: owner().epoch + 1,
             })
             .unwrap();
-        let mut runner = RegionRunner::restore(config(0), handle, restored)
+        let mut runner = RegionRunner::restore(settings(0), handle, restored)
             .unwrap()
             .with_id(owner().region);
         runner.links().attach(worker_end);
@@ -6700,7 +6730,7 @@ mod tests {
     async fn a_region_whose_store_handle_is_lost_stops_and_publishes_nothing_held() {
         let store = memory();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = gated(&store, config(0));
+        let (mut runner, gate) = gated(&store, settings(0));
         let (links, status) = (runner.links(), runner.status());
         links.attach(worker_end);
         step(&mut runner);
@@ -6749,6 +6779,7 @@ mod tests {
     #[test]
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
+            spawn: clustine_world::BlockPos::new(0, -60, 0),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
@@ -7099,6 +7130,7 @@ mod tests {
     fn what_an_earlier_build_stored_of_a_region_is_dropped_and_the_rest_applied() {
         let ids = EntityIds::block(0).unwrap();
         let restored = |state, deltas| Restored {
+            spawn: clustine_world::BlockPos::new(0, -60, 0),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids: ids,
@@ -7284,7 +7316,7 @@ mod tests {
                 restored.state.as_ref().map(|stored| stored.tick),
                 Some(state.tick)
             );
-            let mut second = RegionRunner::restore(config(0), handle, restored).unwrap();
+            let mut second = RegionRunner::restore(settings(0), handle, restored).unwrap();
             assert_eq!(second.region().state(), state);
             let (again, worker_end) = in_process(256);
             second.links().attach(worker_end);
@@ -7310,7 +7342,7 @@ mod tests {
         for connect in KINDS {
             let store = memory();
             let (mut edge, worker_end) = connect(256);
-            let (mut runner, gate) = gated(&store, config(0));
+            let (mut runner, gate) = gated(&store, settings(0));
             runner.links().attach(worker_end);
             joined(&edge, &mut runner).await;
 
@@ -7357,7 +7389,7 @@ mod tests {
     async fn a_region_ticks_on_during_the_first_checkpoint_of_a_release_and_not_after() {
         let store = memory();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = gated(&store, config(0));
+        let (mut runner, gate) = gated(&store, settings(0));
         runner.links().attach(worker_end);
         joined(&edge, &mut runner).await;
         step(&mut runner);
@@ -7409,7 +7441,7 @@ mod tests {
         // under the number it had.
         let (handle, restored) = opened_next(&store);
         assert_eq!(restored.deltas, []);
-        let mut next = RegionRunner::restore(config(0), handle, restored).unwrap();
+        let mut next = RegionRunner::restore(settings(0), handle, restored).unwrap();
         assert_eq!(next.region().state(), state);
         let (edge_end, worker_end) = link::in_process(256);
         let mut again = edge.again(edge_end, &runner);
@@ -7432,7 +7464,7 @@ mod tests {
     async fn a_release_publishes_the_ticks_that_ran_once_they_are_confirmed_and_in_order() {
         let store = memory();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = gated(&store, config(0));
+        let (mut runner, gate) = gated(&store, settings(0));
         runner.links().attach(worker_end);
         joined(&edge, &mut runner).await;
         step(&mut runner);
@@ -7504,7 +7536,7 @@ mod tests {
         ] {
             let store = memory();
             let (mut edge, worker_end) = in_process(256);
-            let (mut runner, gate) = gated(&store, config(0));
+            let (mut runner, gate) = gated(&store, settings(0));
             let (links, status) = (runner.links(), runner.status());
             links.attach(worker_end);
             joined(&edge, &mut runner).await;
@@ -7589,7 +7621,7 @@ mod tests {
     async fn a_link_attached_once_a_released_region_ticks_no_more_is_closed_and_not_served() {
         let store = memory();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = gated(&store, config(0));
+        let (mut runner, gate) = gated(&store, settings(0));
         let links = runner.links();
         links.attach(worker_end);
         joined(&edge, &mut runner).await;
@@ -7635,7 +7667,7 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let store = on_disk(directory.path());
             let (edge, worker_end) = in_process(256);
-            let (runner, gate) = gated(&store, config(0));
+            let (runner, gate) = gated(&store, settings(0));
             // A checkpoint with every tick.
             let mut runner = runner.with_checkpoint_interval(1);
             runner.links().attach(worker_end);
@@ -7664,8 +7696,8 @@ mod tests {
 
             let (handle, restored) = opened_next(&store);
             assert_eq!(restored.deltas, []);
-            let config = config(0);
-            let mut next = RegionRunner::restore(config, handle, restored).unwrap();
+            let settings = settings(0);
+            let mut next = RegionRunner::restore(settings, handle, restored).unwrap();
             assert_eq!(next.region().state(), state);
             let (again, worker_end) = in_process(256);
             next.links().attach(worker_end);
@@ -7695,7 +7727,7 @@ mod tests {
         // Waiting for the release, and asking for it and looking later.
         for blocking in [true, false] {
             let store = memory();
-            let runner = opened(&store, config(0));
+            let runner = opened(&store, settings(0));
             let (links, status) = (runner.links(), runner.status());
             let worker = Worker::spawn(runner);
             let (mut edge, worker_end) = in_process(256);
@@ -7742,8 +7774,8 @@ mod tests {
             let (handle, restored) = opened_next(&store);
             assert_eq!(restored.deltas, []);
             assert!(restored.state.is_some());
-            let config = config(0);
-            let mut next = RegionRunner::restore(config, handle, restored).unwrap();
+            let settings = settings(0);
+            let mut next = RegionRunner::restore(settings, handle, restored).unwrap();
             assert_eq!(next.region().player_count(), 1);
             assert_eq!(
                 next.region().tick_number(),
@@ -7767,7 +7799,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn stopping_a_worker_ends_a_release_that_waits_for_the_store() {
         let store = memory();
-        let (runner, gate) = gated(&store, config(0));
+        let (runner, gate) = gated(&store, settings(0));
         let (links, status) = (runner.links(), runner.status());
         let worker = Worker::spawn(runner);
         let (mut edge, worker_end) = in_process(256);
@@ -7800,7 +7832,7 @@ mod tests {
         let state = restored_state(restored).unwrap();
         assert!(state.players.contains_key(&player()));
 
-        let runner = opened(&memory(), config(0));
+        let runner = opened(&memory(), settings(0));
         let status = runner.status();
         let worker = Worker::spawn(runner);
         assert_eq!(worker.stop(), Ended::Stopped);
@@ -7826,15 +7858,15 @@ mod tests {
     }
 
     impl Divided {
-        fn new(division: Division) -> Self {
+        fn new(division: Pins) -> Self {
             let generator = Arc::new(FlatGenerator::classic());
             let store = Store::memory_divided(generator, division).unwrap();
             Self { store }
         }
 
         /// The division of [`Divided::stripes`].
-        fn line_at_one() -> Division {
-            Division::side_by_side(ORIGIN, &[1]).unwrap()
+        fn line_at_one() -> Pins {
+            Pins::side_by_side(&[1]).unwrap()
         }
 
         /// Two stripes with the line at x = 1: region 0 west of it, which has the chunk
@@ -7864,9 +7896,8 @@ mod tests {
                 min_x: Some(16),
                 max_x: None,
             };
-            Self::new(Division {
-                home: ORIGIN,
-                pinned: vec![west, east],
+            Self::new(Pins {
+                areas: vec![west, east],
             })
         }
 
@@ -7884,7 +7915,7 @@ mod tests {
         /// chunk back as soon as nothing uses it and is told which region it runs.
         fn runner(&self, region: RegionId, epoch: u64) -> RegionRunner {
             let (handle, restored) = self.open(region, epoch);
-            let runner = RegionRunner::restore(config(0), handle, restored).unwrap();
+            let runner = RegionRunner::restore(settings(0), handle, restored).unwrap();
             runner.with_id(region)
         }
 
@@ -7893,9 +7924,9 @@ mod tests {
         fn gated(
             &self,
             region: RegionId,
-            config: RegionConfig,
+            settings: RegionSettings,
         ) -> (RegionRunner, Arc<GateControl>) {
-            let (runner, gate) = gated_as(&self.store, self.hello(region, 1), config);
+            let (runner, gate) = gated_as(&self.store, self.hello(region, 1), settings);
             (runner.with_id(region), gate)
         }
     }
@@ -8600,7 +8631,7 @@ mod tests {
 
         // The next owner keeps a chunk for long, so that what it holds can be looked at.
         let hello = world.hello(HOME, 2);
-        let (mut next, gate) = gated_as(&world.store, hello, config(1000));
+        let (mut next, gate) = gated_as(&world.store, hello, settings(1000));
         drop(runner);
         assert_eq!(next.region().knowledge(ORIGIN), Knowledge::Held);
         assert_eq!(next.region().knowledge(BESIDE), Knowledge::Held);
@@ -8632,7 +8663,7 @@ mod tests {
     async fn a_chunk_is_given_back_only_after_nothing_has_used_it_for_a_while() {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(30));
+        let (mut runner, gate) = world.gated(HOME, settings(30));
         runner.links().attach(worker_end);
         edge.send(asking_for(vec![BESIDE])).await.unwrap();
         assert_eq!(
@@ -8659,7 +8690,7 @@ mod tests {
      {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
         let (loaded, claimed) = (ChunkPos::new(2, 0), ChunkPos::new(3, 0));
 
@@ -8715,7 +8746,7 @@ mod tests {
         // nothing a region and a store do brings one about.
         let (handle, mut restored) = world.open(RegionId(0), 1);
         restored.held.push((BESIDE, 0));
-        let mut runner = RegionRunner::restore(config(0), handle, restored).unwrap();
+        let mut runner = RegionRunner::restore(settings(0), handle, restored).unwrap();
         runner.links().attach(worker_end);
         let status = runner.status();
 
@@ -8738,7 +8769,7 @@ mod tests {
      {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
 
         gate.hold_claims();
@@ -8775,7 +8806,7 @@ mod tests {
     async fn what_storage_read_for_a_request_the_region_dropped_is_not_taken_for_a_later_one() {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
         let (neighbour, _) = world.open(EAST, 1);
         let held = |runner: &RegionRunner| runner.region().knowledge(BESIDE) == Knowledge::Held;
@@ -8836,7 +8867,7 @@ mod tests {
         for confirmed in [true, false] {
             let world = Divided::stripes();
             let (mut edge, worker_end) = in_process(256);
-            let (mut runner, gate) = world.gated(RegionId(0), config(0));
+            let (mut runner, gate) = world.gated(RegionId(0), settings(0));
             runner.links().attach(worker_end);
             step(&mut runner);
             // Two players join. The first has entered the world. Of the second the
@@ -9089,7 +9120,7 @@ mod tests {
     async fn a_dig_behind_a_subscription_waits_for_a_chunk_the_region_holds_and_has_not_loaded() {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, _) = world.gated(HOME, config(40));
+        let (mut runner, _) = world.gated(HOME, settings(40));
         runner.links().attach(worker_end);
         joined(&edge, &mut runner).await;
         edge.everything();
@@ -9609,7 +9640,7 @@ mod tests {
                 false => Divided::stripes(),
             };
             let (mut edge, worker_end) = in_process(256);
-            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            let (mut west, gate) = world.gated(RegionId(0), settings(0));
             west.links().attach(worker_end);
             look_east(&mut west, &mut edge);
             joined(&edge, &mut west).await;
@@ -9765,7 +9796,7 @@ mod tests {
     async fn a_warm_chunk_is_served_from_memory_and_forgotten_when_the_region_gives_it_back() {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
         joined(&edge, &mut runner).await;
         edge.everything();
@@ -9820,7 +9851,7 @@ mod tests {
     async fn a_merge_is_not_handed_to_the_store_while_a_chunk_is_being_loaded() {
         let world = Divided::stripes();
         let (edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         let east = untouched_east(&world);
@@ -9876,7 +9907,7 @@ mod tests {
     async fn a_runner_stopped_while_the_store_has_a_merge_is_abandoned_and_has_said_nothing() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         let east = released_east(&world, &edge).await;
@@ -9937,7 +9968,7 @@ mod tests {
     /// `absorbed_epoch`, which is 2 if the store is to do it, and stops it so.
     async fn stalled(world: &Divided, absorbed_epoch: u64) -> Stalled {
         let (edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         step(&mut west);
@@ -10123,7 +10154,7 @@ mod tests {
                 false => Divided::stripes(),
             };
             let (mut edge, worker_end) = in_process(256);
-            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            let (mut west, gate) = world.gated(RegionId(0), settings(0));
             west.links().attach(worker_end);
             two_players_apart(&mut west, &mut edge).await;
             gate.asked();
@@ -10254,7 +10285,7 @@ mod tests {
     async fn a_split_that_names_another_id_than_the_next_is_made_with_the_next() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         two_players_apart(&mut west, &mut edge).await;
         gate.asked();
@@ -10302,7 +10333,7 @@ mod tests {
     async fn a_split_of_nobody_and_one_that_is_too_large_leave_the_region_as_it_was() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         two_players_apart(&mut west, &mut edge).await;
         let east = untouched_east(&world);
@@ -10360,7 +10391,7 @@ mod tests {
     async fn a_runner_does_one_thing_at_a_time_and_a_release_waits_for_a_merge() {
         let world = Divided::stripes();
         let (edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         let east = untouched_east(&world);
@@ -10468,7 +10499,7 @@ mod tests {
                 false => Divided::stripes(),
             };
             let (mut edge, worker_end) = in_process(256);
-            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            let (mut west, gate) = world.gated(RegionId(0), settings(0));
             west.links().attach(worker_end);
             joined(&edge, &mut west).await;
             let east = untouched_east(&world);
@@ -10538,7 +10569,7 @@ mod tests {
      {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         edge.everything();
@@ -10597,7 +10628,7 @@ mod tests {
                 false => Divided::stripes(),
             };
             let (edge, worker_end) = in_process(256);
-            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            let (mut west, gate) = world.gated(RegionId(0), settings(0));
             west.links().attach(worker_end);
             joined(&edge, &mut west).await;
             let east = untouched_east(&world);
@@ -10652,7 +10683,7 @@ mod tests {
     async fn a_merge_waits_for_the_checkpoint_of_the_order_to_prepare_and_asks_for_no_other() {
         let world = Divided::stripes();
         let (edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         let east = untouched_east(&world);
@@ -10700,7 +10731,7 @@ mod tests {
     async fn a_prepared_region_that_has_changed_much_since_checkpoints_once_more_before_it_stops() {
         let world = Divided::stripes();
         let (edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         let east = untouched_east(&world);
@@ -10764,7 +10795,7 @@ mod tests {
     async fn a_region_prepared_a_moment_ago_stops_at_once_however_much_has_changed() {
         let world = Divided::stripes();
         let (edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         let east = untouched_east(&world);
@@ -10810,7 +10841,7 @@ mod tests {
     async fn an_order_to_prepare_is_not_repeated_needlessly_and_is_good_for_one_merge_or_split() {
         let world = Divided::stripes();
         let (edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         gate.asked();
@@ -10903,7 +10934,7 @@ mod tests {
         for prepared in [false, true] {
             let world = Divided::stripes();
             let (edge, worker_end) = in_process(256);
-            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            let (mut west, gate) = world.gated(RegionId(0), settings(0));
             west.links().attach(worker_end);
             joined(&edge, &mut west).await;
             let east = untouched_east(&world);
@@ -10957,7 +10988,7 @@ mod tests {
     async fn a_worker_that_is_released_between_two_ticks_takes_nothing_from_its_links() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         edge.everything();
@@ -11005,7 +11036,7 @@ mod tests {
         for stage in [Stage::Preparing, Stage::Settling, Stage::Closing] {
             let world = Divided::stripes();
             let (mut edge, worker_end) = in_process(256);
-            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            let (mut west, gate) = world.gated(RegionId(0), settings(0));
             west.links().attach(worker_end);
             joined(&edge, &mut west).await;
             let east = untouched_east(&world);
@@ -11022,7 +11053,7 @@ mod tests {
             assert_eq!(world.store.regions().unwrap().absorbed, []);
 
             let again = world.hello(RegionId(0), 2);
-            let (mut west, _) = gated_as(&world.store, again, config(0));
+            let (mut west, _) = gated_as(&world.store, again, settings(0));
             let (done, outcome) = self::outcome();
             west.reshape(east.absorb(), done);
             step_to(&mut west, stage);
@@ -11037,7 +11068,7 @@ mod tests {
     async fn warm_chunks_are_forgotten_when_nobody_has_asked_for_them_for_600_ticks() {
         let world = Divided::stripes();
         let (edge, worker_end) = in_process(256);
-        let (mut west, _) = world.gated(RegionId(0), config(0));
+        let (mut west, _) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         joined(&edge, &mut west).await;
         // A chunk besides the home chunk, which the region asks for again at once
@@ -11128,7 +11159,7 @@ mod tests {
 
         let (handle, restored) = world.open(EAST, 2);
         assert!(!restored.deltas.is_empty());
-        let (mut west, _) = world.gated(RegionId(0), config(0));
+        let (mut west, _) = world.gated(RegionId(0), settings(0));
         let absorb = |state: RegionState| Reshape::Absorb {
             absorbed: EAST,
             absorbed_epoch: 2,
@@ -11163,7 +11194,7 @@ mod tests {
     async fn a_chunk_read_before_the_region_gave_it_back_is_not_kept_when_it_is_granted_again() {
         let world = Divided::gap();
         let (edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
         joined(&edge, &mut runner).await;
 
@@ -11220,7 +11251,7 @@ mod tests {
     async fn a_chunk_that_is_still_warm_goes_with_the_part_when_its_region_is_split_again() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, _) = world.gated(RegionId(0), config(0));
+        let (mut west, _) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         two_players_apart(&mut west, &mut edge).await;
         let further = ChunkPos::new(-4, 0);
@@ -11409,7 +11440,7 @@ mod tests {
                 false => Divided::stripes(),
             };
             let (mut edge, worker_end) = in_process(256);
-            let (mut west, gate) = world.gated(RegionId(0), config(0));
+            let (mut west, gate) = world.gated(RegionId(0), settings(0));
             west.links().attach(worker_end);
             two_players_apart(&mut west, &mut edge).await;
             asked_and_not_told(&mut west, &gate, &edge, &[AHEAD, AT_HOME]).await;
@@ -11465,7 +11496,7 @@ mod tests {
             let mut held = holdings(&restored).held;
             held.sort();
             assert_eq!(held, [AHEAD, FAR_WEST]);
-            let next = RegionRunner::restore(config(0), handle, restored).unwrap();
+            let next = RegionRunner::restore(settings(0), handle, restored).unwrap();
             assert_eq!(*next.region(), part.region);
             // The next owner of the region that was split is told nothing of the chunk
             // ahead, and when it asks, that it is the part's. A pinned region is
@@ -11485,7 +11516,7 @@ mod tests {
     async fn a_grant_that_waited_while_a_split_came_to_nothing_is_taken_by_the_next_tick() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, gate) = world.gated(RegionId(0), config(0));
+        let (mut west, gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         two_players_apart(&mut west, &mut edge).await;
         asked_and_not_told(&mut west, &gate, &edge, &[AHEAD]).await;
@@ -11557,7 +11588,7 @@ mod tests {
     async fn a_chunk_read_before_it_was_given_back_is_not_kept_when_its_new_grant_goes_to_a_part() {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
         two_players_apart_in_the_gap(&mut runner, &mut edge).await;
 
@@ -11623,7 +11654,7 @@ mod tests {
     async fn a_split_that_is_made_again_with_another_id_takes_the_grants_that_wait_with_it() {
         let world = Divided::gap();
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
         two_players_apart_in_the_gap(&mut runner, &mut edge).await;
         asked_and_not_told(&mut runner, &gate, &edge, &[BEYOND, BESIDE]).await;
@@ -11662,7 +11693,7 @@ mod tests {
         drop(runner);
         for (id, epoch, in_memory) in [(HOME, 2, &split), (region, 5, &part.region)] {
             let (handle, restored) = world.open(id, epoch);
-            let next = RegionRunner::restore(config(0), handle, restored).unwrap();
+            let next = RegionRunner::restore(settings(0), handle, restored).unwrap();
             assert_eq!(next.region(), in_memory, "{id:?}");
         }
         assert_eq!(split.held_chunk_count(), 2);
@@ -11684,7 +11715,7 @@ mod tests {
         world: &Divided,
     ) -> (RegionRunner, Arc<GateControl>, TestEdge, RegionId, u64) {
         let (mut edge, worker_end) = in_process(256);
-        let (mut runner, gate) = world.gated(HOME, config(0));
+        let (mut runner, gate) = world.gated(HOME, settings(0));
         runner.links().attach(worker_end);
         two_players_apart_in_the_gap(&mut runner, &mut edge).await;
         let (done, outcome) = outcome();
@@ -11917,7 +11948,7 @@ mod tests {
         Receiver<Standstill>,
     ) {
         let (edge, worker_end) = in_process(256);
-        let (west, gate) = world.gated(RegionId(0), config(0));
+        let (west, gate) = world.gated(RegionId(0), settings(0));
         let (said, told) = mpsc::channel();
         let tell = move |standstill| {
             // Whoever listened may have stopped looking.
@@ -12060,7 +12091,7 @@ mod tests {
     async fn a_runner_tells_nothing_of_a_release_nor_when_it_ends_in_the_middle() {
         let world = Divided::stripes();
         let (mut edge, worker_end) = in_process(256);
-        let (mut west, _gate) = world.gated(RegionId(0), config(0));
+        let (mut west, _gate) = world.gated(RegionId(0), settings(0));
         west.links().attach(worker_end);
         two_players_apart(&mut west, &mut edge).await;
         let (done, _outcome) = outcome();
@@ -12178,13 +12209,13 @@ mod tests {
         /// A world that is one home region, pinned to nothing: every chunk but the
         /// home chunk is nobody's until a region claims it.
         fn open_land() -> Divided {
-            Divided::new(Division::open(ORIGIN))
+            Divided::new(Pins::none())
         }
 
         /// The world of [`open_land`] as it is kept in `directory`.
         fn open_land_in(directory: &std::path::Path) -> Divided {
             let generator = Arc::new(FlatGenerator::classic());
-            let division = Division::open(ORIGIN);
+            let division = Pins::none();
             let store = Store::local_divided(directory, generator, division).unwrap();
             Divided { store }
         }
@@ -12192,7 +12223,7 @@ mod tests {
         /// Two regions pinned side by side: `A`, region 0, to x < 30, with the home
         /// chunk, and `B`, which is [`EAST`], to the rest.
         fn cut_at_thirty() -> Divided {
-            Divided::new(Division::side_by_side(ORIGIN, &[30]).unwrap())
+            Divided::new(Pins::side_by_side(&[30]).unwrap())
         }
 
         /// A home region pinned to nothing on open land, with two pinned regions far
@@ -12207,9 +12238,8 @@ mod tests {
                 min_x: Some(60),
                 max_x: None,
             };
-            Divided::new(Division {
-                home: ORIGIN,
-                pinned: vec![west, east],
+            Divided::new(Pins {
+                areas: vec![west, east],
             })
         }
 
@@ -12354,7 +12384,7 @@ mod tests {
             assert_eq!(p_at.z, 0, "p walks along the row the spawn point is in");
             let list = world.store.regions().unwrap();
             let (home, next) = (list.home, list.next);
-            let (runner, gate) = world.gated(home, config(return_after));
+            let (runner, gate) = world.gated(home, settings(return_after));
             let mut runner = make(runner);
             let (mut edge, worker_end) = in_process(4096);
             runner.links().attach(worker_end);
@@ -12825,7 +12855,8 @@ mod tests {
             assert!(list.regions.iter().any(|info| info.region == part));
             assert_eq!(bounds_of(&world.store, part), Some((at(16, -3), at(22, 3))));
             assert_eq!(bounds_of(&world.store, home), Some((at(-4, -3), at(3, 3))));
-            let (mut runner, gate) = gated_as(&world.store, world.hello(home, 2), config(KEPT_FOR));
+            let (mut runner, gate) =
+                gated_as(&world.store, world.hello(home, 2), settings(KEPT_FOR));
             assert_eq!(runner.region().player_count(), 1);
             assert!(runner.region().player(other_player()).is_none());
             let state = runner.region().edge(edge.edge).unwrap();

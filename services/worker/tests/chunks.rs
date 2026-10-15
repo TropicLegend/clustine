@@ -32,13 +32,13 @@ use clustine_sim::api::{
     EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerInput, PlayerTransfer,
     Pose, RegionEvent, RemoteAction, RemoteStep,
 };
-use clustine_sim::{Durable, Knowledge, PlayerEvent, PlayerJoin, RegionConfig};
-use clustine_worker::{Ended, RegionRunner, Worker};
+use clustine_sim::{Durable, Knowledge, PlayerEvent, PlayerJoin};
+use clustine_worker::{Ended, RegionRunner, RegionSettings, Worker};
 use clustine_world::{
     BlockPos, Chunk, ChunkArea, ChunkGenerator, ChunkPos, EdgeId, EntityId, PlayerId, Vec3,
 };
 use clustine_worldgen::FlatGenerator;
-use clustine_worldstore::{Division, Store, StoreHandle};
+use clustine_worldstore::{Pins, Store, StoreHandle};
 use uuid::Uuid;
 
 const E: EdgeId = EdgeId(11);
@@ -63,7 +63,7 @@ const FEET: f64 = -60.0;
 
 /// Players enter the world three blocks from the eastern end of the home chunk, so that
 /// they can reach blocks of the chunk east of it and walk into it.
-const SPAWN: Vec3 = Vec3::new(13.5, FEET, 8.5);
+const SPAWN_BLOCK: BlockPos = BlockPos::new(13, FEET as i32, 8);
 
 /// A block of the home chunk that a player at the spawn can reach.
 const NEAR: BlockPos = BlockPos::new(12, GROUND, 9);
@@ -114,9 +114,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 }
 
 /// Of every chunk the region asks the store whether it is its own.
-fn config(return_after: u64) -> RegionConfig {
-    RegionConfig {
-        spawn: SPAWN,
+fn settings(return_after: u64) -> RegionSettings {
+    RegionSettings {
         starting_hotbar: hotbar(),
         return_after,
         lowest_y: -64,
@@ -155,10 +154,9 @@ impl World {
         // A new world knows no edge, whatever a test before on this thread was told.
         SINCE.with(|since| since.borrow_mut().clear());
         let division = match shape {
-            Shape::Stripes => Division::side_by_side(HOME, &[1]).expect("one cut ascends"),
-            Shape::Gap => Division {
-                home: HOME,
-                pinned: vec![
+            Shape::Stripes => Pins::side_by_side(&[1]).expect("one cut ascends"),
+            Shape::Gap => Pins {
+                areas: vec![
                     ChunkArea {
                         min_x: None,
                         max_x: Some(0),
@@ -170,7 +168,7 @@ impl World {
                 ],
             },
         };
-        let generator = Arc::new(FlatGenerator::classic());
+        let generator = Arc::new(FlatGenerator::classic().with_spawn(SPAWN_BLOCK));
         let (store, directory) = if on_disk {
             let directory = tempfile::tempdir().expect("a temporary directory");
             let store = Store::local_divided(directory.path(), generator, division)
@@ -230,7 +228,7 @@ impl World {
         // answers a join of someone who was in the world before with the region that
         // held their place, and the home region places them itself where that is the
         // home region (ADR-0020, section 4, step 7).
-        RegionRunner::restore(config(ticks), handle, restored)
+        RegionRunner::restore(settings(ticks), handle, restored)
             .expect("what the store has is readable")
             .with_id(self.region())
     }
@@ -1822,7 +1820,7 @@ fn with_the_gap_a_free_chunk_is_served_to_a_viewer_and_is_the_regions_after_a_cr
     let held: Vec<ChunkPos> = restored.held.iter().map(|(chunk, _)| *chunk).collect();
     assert_eq!(held, vec![HOME, NEXT]);
     assert!(restored.pinned.is_empty());
-    let mut next = RegionRunner::restore(config(0), handle, restored).expect("readable");
+    let mut next = RegionRunner::restore(settings(0), handle, restored).expect("readable");
     assert_eq!(next.region().knowledge(NEXT), Knowledge::Held);
     let again = greeted(&mut next, E, 5, Vec::new(), vec![NEXT], Vec::new());
     assert_eq!(again.answers(NEXT), vec![(0, Answer::Snapshot)]);
@@ -2238,7 +2236,7 @@ fn loaded_by_whoever_holds_it(
 ) -> (Chunk, RegionRunner) {
     let (handle, restored) = world.open_raw();
     let ours = restored.held.iter().any(|(held, _)| *held == chunk);
-    let mut next = RegionRunner::restore(config(0), handle, restored).expect("readable");
+    let mut next = RegionRunner::restore(settings(0), handle, restored).expect("readable");
     match neighbour.claim(chunk) {
         Ok(()) => {
             assert!(!ours, "the store granted a chunk it says the region holds");
@@ -3423,7 +3421,7 @@ fn the_next_owner_of_a_released_region_returns_its_chunks_with_its_forty_first_t
     let neighbour = world.neighbour();
     let (handle, restored) = released_with_two_granted_chunks(&mut world, 40);
     assert_eq!(held(&restored), vec![HOME, NEXT, FREE]);
-    let mut next = RegionRunner::restore(config(40), handle, restored).expect("readable");
+    let mut next = RegionRunner::restore(settings(40), handle, restored).expect("readable");
     let restored_at = next.region().tick_number();
 
     // The ticks before the restore count as ticks in which the chunks were used.
@@ -3467,7 +3465,7 @@ fn a_hello_that_names_the_next_owners_chunks_before_their_time_has_come_keeps_th
 ) {
     let neighbour = world.neighbour();
     let (handle, restored) = released_with_two_granted_chunks(&mut world, 40);
-    let mut next = RegionRunner::restore(config(40), handle, restored).expect("readable");
+    let mut next = RegionRunner::restore(settings(40), handle, restored).expect("readable");
     let restored_at = next.region().tick_number();
     run_to_tick(&mut next, &mut [], restored_at + 40);
 
@@ -3505,7 +3503,7 @@ fn a_region_that_is_released_keeps_its_chunks_also_with_no_time_before_a_return_
 
     // The next owner starts the time anew, which is none here: what nobody comes to
     // use goes with its first tick.
-    let mut next = RegionRunner::restore(config(0), handle, restored).expect("readable");
+    let mut next = RegionRunner::restore(settings(0), handle, restored).expect("readable");
     for chunk in [HOME, NEXT, FREE] {
         assert_eq!(next.region().knowledge(chunk), Knowledge::Held);
     }
@@ -3568,7 +3566,7 @@ fn what_a_released_region_held_or_had_asked_for_is_what_the_next_owner_is_told_i
             );
 
             // The next owner knows nothing of what was asked: it holds what it is told.
-            let mut next = RegionRunner::restore(config(0), handle, restored).expect("readable");
+            let mut next = RegionRunner::restore(settings(0), handle, restored).expect("readable");
             for chunk in &expected {
                 assert_eq!(next.region().knowledge(*chunk), Knowledge::Held);
             }
@@ -3619,7 +3617,7 @@ fn a_runner_that_is_told_to_stop_returns_nothing_on_its_way_out() {
     let (handle, restored) = world.open_raw();
     assert_eq!(held(&restored), vec![HOME, NEXT]);
 
-    let mut next = RegionRunner::restore(config(0), handle, restored).expect("readable");
+    let mut next = RegionRunner::restore(settings(0), handle, restored).expect("readable");
     one_tick(&mut next, &mut []);
     assert_eq!(next.region().knowledge(NEXT), Knowledge::Unknown);
     claim_until_granted(&mut next, &mut [], &neighbour, NEXT);

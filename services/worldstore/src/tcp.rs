@@ -32,7 +32,7 @@ use clustine_rpc::{
     RegionHello, RegionList, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreHello,
     StoreReply, StoreRequest, StoreWelcome, TickState, held_bytes, held_from_bytes, wire,
 };
-use clustine_world::{ChunkArea, ChunkPos, EntityId, EntityIds};
+use clustine_world::{BlockPos, ChunkArea, ChunkPos, EntityId, EntityIds};
 use tracing::{info, warn};
 
 use crate::{Link, Store, StoreError, StoreHandle};
@@ -318,12 +318,14 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         state,
         deltas,
         issued,
+        spawn,
     } = restored;
     stream.set_write_timeout(Some(patience))?;
     let accepted = StoreWelcome::Accepted {
         entity_ids,
         pinned,
         issued,
+        spawn,
     };
     wire::blocking::write(&mut &*stream, &accepted)?;
     for part in Parts::new(state, deltas, &held, PART_BYTES) {
@@ -452,7 +454,12 @@ struct Arriving {
 }
 
 impl Arriving {
-    fn new(entity_ids: EntityIds, pinned: Vec<ChunkArea>, issued: EntityId) -> Self {
+    fn new(
+        entity_ids: EntityIds,
+        pinned: Vec<ChunkArea>,
+        issued: EntityId,
+        spawn: BlockPos,
+    ) -> Self {
         Self {
             restored: Restored {
                 held: Vec::new(),
@@ -461,6 +468,7 @@ impl Arriving {
                 state: None,
                 deltas: Vec::new(),
                 issued,
+                spawn,
             },
             cut: None,
             held: false,
@@ -664,12 +672,13 @@ fn welcomed(
     stream: &mut &TcpStream,
     hello: RegionHello,
 ) -> io::Result<Option<Result<Restored, StoreError>>> {
-    let (entity_ids, pinned, issued) = match wire::blocking::read(stream)? {
+    let (entity_ids, pinned, issued, spawn) = match wire::blocking::read(stream)? {
         Some(StoreWelcome::Accepted {
             entity_ids,
             pinned,
             issued,
-        }) => (entity_ids, pinned, issued),
+            spawn,
+        }) => (entity_ids, pinned, issued, spawn),
         Some(StoreWelcome::EpochRefused { seen }) => {
             return Ok(Some(Err(StoreError::EpochRefused {
                 region: hello.region,
@@ -688,7 +697,7 @@ fn welcomed(
         }
         None => return Ok(None),
     };
-    let mut arriving = Arriving::new(entity_ids, pinned, issued);
+    let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn);
     loop {
         let Some(part) = wire::blocking::read(stream)? else {
             return Err(io::Error::new(
@@ -931,6 +940,7 @@ mod tests {
             refused.err()
         );
         let expected = Restored {
+            spawn: crate::tests::SPAWN,
             held: Vec::new(),
             // The eastern stripe.
             pinned: division().pinned[1..].to_vec(),
@@ -963,7 +973,7 @@ mod tests {
     fn a_remote_flush_is_answered_only_when_everything_before_it_is_done() {
         let directory = tempfile::tempdir().unwrap();
         let held = Arc::new(Held(Barrier::new(2)));
-        let store = Store::local_divided(directory.path(), held.clone(), division()).unwrap();
+        let store = Store::local_told(directory.path(), held.clone(), division()).unwrap();
         let (_server, address) = served(&store);
         let remote = connect(&address, hello(1, 1));
 
@@ -1327,8 +1337,8 @@ mod tests {
         // in the middle of a request: a hello for a region there is none of is refused.
         let three = Division::side_by_side(division().home, &[0, 16]).unwrap();
         let stores = [
-            Store::memory_divided(generator(), three.clone()).unwrap(),
-            Store::local_divided(directory.path(), generator(), three).unwrap(),
+            Store::memory_told(generator(), three.clone()).unwrap(),
+            Store::local_told(directory.path(), generator(), three).unwrap(),
         ];
         for store in stores {
             let (server, address) = served(&store);
@@ -1472,6 +1482,7 @@ mod tests {
             let said: Option<StoreHello> = wire::blocking::read(&mut connection).unwrap();
             assert_eq!(said, Some(StoreHello::Region(hello(1, 1))));
             let welcome = StoreWelcome::Accepted {
+                spawn: crate::tests::SPAWN,
                 entity_ids: EntityIds::block(0).unwrap(),
                 pinned: Vec::new(),
                 issued: EntityId(0),
@@ -1636,7 +1647,7 @@ mod tests {
 
     /// Puts together what [`Parts`] made.
     fn together(entity_ids: EntityIds, parts: Vec<RestoredPart>) -> io::Result<Restored> {
-        let mut arriving = Arriving::new(entity_ids, Vec::new(), EntityId(0));
+        let mut arriving = Arriving::new(entity_ids, Vec::new(), EntityId(0), crate::tests::SPAWN);
         let mut parts = parts.into_iter();
         loop {
             let part = parts.next().expect("the last part ends them");
@@ -1661,6 +1672,7 @@ mod tests {
     fn what_a_region_is_restored_with_is_cut_into_bounded_parts_that_fit_together_again() {
         let entity_ids = EntityIds::block(2).unwrap();
         let restored = |state: Option<usize>, deltas: &[usize]| Restored {
+            spawn: crate::tests::SPAWN,
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids,
@@ -1863,6 +1875,7 @@ mod tests {
             },
         ];
         let expected = Restored {
+            spawn: crate::tests::SPAWN,
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids,
@@ -2058,6 +2071,7 @@ mod tests {
                 wire::blocking::write(&mut connection, &StoreHello::Region(hello(1, 3))).unwrap();
                 let welcome = wire::blocking::read(&mut connection).unwrap();
                 let accepted = StoreWelcome::Accepted {
+                    spawn: crate::tests::SPAWN,
                     entity_ids: expected.entity_ids,
                     pinned: expected.pinned.clone(),
                     issued: EntityId(0),
@@ -2092,6 +2106,7 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         // Far more than the system takes for a connection that nobody reads from.
         let restored = Restored {
+            spawn: crate::tests::SPAWN,
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),

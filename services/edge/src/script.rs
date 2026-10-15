@@ -907,7 +907,7 @@ impl Script {
             port.link = Some(end);
             port.epoch = 1;
         }
-        let (routing, relinks) = Routing::new(WEST, within(HOME), IDENTITY, links);
+        let (routing, relinks) = Routing::new(WEST, IDENTITY, links);
         let (commands, receiver) = mpsc::channel(64);
         let view_distance = setup.config.view_distance;
         let (lighting, held) = match setup.end {

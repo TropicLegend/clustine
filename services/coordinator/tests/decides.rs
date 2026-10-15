@@ -46,7 +46,7 @@ use clustine_coordinator::{
 };
 use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, PlayersOf, RegionInfo, RegionList, Vouch};
-use clustine_world::{ChunkArea, ChunkPos, EntityIds, Vec3};
+use clustine_world::{BlockPos, ChunkArea, ChunkPos, EntityIds};
 
 /// The lease of the coordinators of these tests, and so how often the list is read
 /// (`LIST_EVERY`).
@@ -290,11 +290,11 @@ impl World {
     /// A coordinator that has just been made, for a world of `regions` stripes. The
     /// list has every stripe pinned to its area, as the store has them.
     fn anew(follow: Option<Policy>, regions: u32) -> Self {
-        Self::anew_at(follow, regions, Vec3::new(0.5, 64.0, 0.5))
+        Self::anew_at(follow, regions, BlockPos::new(0, 64, 0))
     }
 
-    /// As [`World::anew`], with players entering the world at `spawn`.
-    fn anew_at(follow: Option<Policy>, regions: u32, spawn: Vec3) -> Self {
+    /// As [`World::anew`], in a world whose spawn the store's list says is `spawn`.
+    fn anew_at(follow: Option<Policy>, regions: u32, spawn: BlockPos) -> Self {
         // Each stripe is four chunks wide, but for the first and the last, which have
         // no end in the west and in the east.
         let boundaries: Vec<i32> = (1..regions as i32).map(|stripe| stripe * 4).collect();
@@ -303,6 +303,7 @@ impl World {
             max_x: boundaries.get(stripe).copied(),
         };
         let list = RegionList {
+            spawn,
             home: region(0),
             regions: (0..regions)
                 .map(|id| RegionInfo {
@@ -316,7 +317,6 @@ impl World {
             next: region(regions),
         };
         let config = CoordinatorConfig {
-            spawn,
             lease: LEASE,
             follow,
         };
@@ -5550,11 +5550,12 @@ fn a_region_is_not_told_to_prepare_while_the_last_good_reading_is_more_than_two_
     assert_eq!(world.step().begun, [split(1, 2, &[&[at(106)]])]);
 }
 
-// Section 4: the chunk players enter in is that of the coordinator's spawn point.
+// Section 4: the chunk players enter in is that of the world's spawn, which the world
+// store's list says.
 #[test]
-fn the_chunk_players_enter_in_is_where_the_coordinator_was_told_they_enter() {
-    // Block 1608.5, -24.5 is in the chunk 100, -2.
-    let mut world = World::anew_at(follow(), 3, Vec3::new(1608.5, 64.0, -24.5));
+fn the_chunk_players_enter_in_is_that_of_the_spawn_the_store_lists() {
+    // Block 1608, -25 is in the chunk 100, -2.
+    let mut world = World::anew_at(follow(), 3, BlockPos::new(1608, 64, -25));
     world.settle(&["a"]);
     world.rest();
     world.put(1, &[(2, 0, 1)]);

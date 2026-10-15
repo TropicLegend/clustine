@@ -100,7 +100,10 @@ cargo run -p clustine -- --pin 4 --reshape by-hand
 With a seed the world is not flat but the bare land of the game's overworld for that
 seed: its mountains, coasts, oceans, rivers, caves and ravines, with the game's
 biomes, block for block what the game makes before it adds structures and anything
-that grows; the ground is already levelled where a village will stand. There are no
+that grows; the ground is already levelled where a village will stand. Players enter
+where the game would put a new world's spawn for that seed, which the world keeps from
+when it is made (until trees come, on the ground where the game's player would stand
+on a tree that grows there). There are no
 trees, plants, ores (but the large veins), or structures' buildings yet. Chunks are
 made on a pool of threads as they are first asked for and kept, so a second visit
 reads them from the disk; in an optimised build the land around someone who joins
@@ -144,9 +147,10 @@ enter the world in, which takes a moment: a coordinator gives nothing away for t
 first five seconds (its lease, `--lease-seconds`). With `coordinator --reshape by-hand` and `worldstore --pin 4` the
 world is two pinned regions, one for each worker, and nothing merges or splits unless
 it is asked for (`clustine merge`, `clustine split`, `clustine move`). For a world with
-a seed, give the same `--seed` to the world store (which makes the chunks), the
-coordinator (which says where players enter the world) and every edge (which tells
-clients of the world); nothing checks that they agree. The services do
+a seed, give the same `--seed` to the world store (which makes the chunks and puts
+the spawn where the game would, keeping it with the world) and every edge (which tells
+clients of the world); nothing checks that they agree. The coordinator learns where
+players enter from the store. The services do
 not authenticate each other, so their ports are for a private network only.
 
 [deploy/](deploy/README.md) has the same as Kubernetes manifests, and a test that runs

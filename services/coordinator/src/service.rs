@@ -907,9 +907,7 @@ impl Service {
         let Some(&id) = self.workers.get(name) else {
             return;
         };
-        let config = self.coordinator.config();
         let orders = FromCoordinator::Assigned {
-            spawn: config.spawn,
             assignments: self.coordinator.assignments(name),
         };
         self.tell(id, orders);
@@ -1083,7 +1081,7 @@ mod tests {
 
     use clustine_region::{RegionId, RegionRoute};
     use clustine_rpc::{PlayersOf, RegionInfo, Vouch, link};
-    use clustine_world::{EntityId, EntityIds, Vec3};
+    use clustine_world::{EntityId, EntityIds};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::task::JoinHandle;
@@ -1103,8 +1101,6 @@ mod tests {
 
     /// How long a test waits for something that should happen within a few leases.
     const PATIENCE: Duration = Duration::from_secs(20);
-
-    const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
     /// A client's end of a connection that a test drives by hand.
     type RawEnd = End<ToCoordinator, FromCoordinator>;
@@ -1186,7 +1182,6 @@ mod tests {
         /// What a worker is told that is to run `assignments`.
         fn orders(&self, assignments: &[Assignment]) -> Orders {
             Orders {
-                spawn: SPAWN,
                 assignments: assignments.to_vec(),
             }
         }
@@ -1208,7 +1203,6 @@ mod tests {
 
     fn config() -> CoordinatorConfig {
         CoordinatorConfig {
-            spawn: SPAWN,
             lease: LEASE,
             follow: None,
         }
@@ -1264,7 +1258,6 @@ mod tests {
 
             let table = table_where(&mut watch, |table| table.routes.len() == 2).await;
             assert_eq!(table.routes, [route(held_a, "a"), route(held_b, "b")]);
-            assert_eq!(table.spawn, SPAWN);
             Self {
                 served,
                 a,
@@ -1310,7 +1303,6 @@ mod tests {
     /// on a connection.
     fn assigned(assignments: &[Assignment]) -> FromCoordinator {
         FromCoordinator::Assigned {
-            spawn: SPAWN,
             assignments: assignments.to_vec(),
         }
     }
@@ -2583,6 +2575,7 @@ mod tests {
         };
         let pair = |(gone, into): &(u32, u32)| (RegionId(*gone), RegionId(*into));
         RegionList {
+            spawn: clustine_world::BlockPos::new(0, -60, 0),
             home: RegionId(regions[0].0),
             regions: regions.iter().map(info).collect(),
             absorbed: absorbed.iter().map(pair).collect(),
@@ -3016,7 +3009,6 @@ mod tests {
             absorbed: Vec::new(),
             waiting: 2,
             version: 7,
-            spawn: SPAWN,
             routes: vec![route(holding[1], "a"), route(assignment(2, 31, 1), "c")],
         };
         // The regions without an owner are named, which the table only counts: one

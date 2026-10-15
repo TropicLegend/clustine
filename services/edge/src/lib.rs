@@ -32,7 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clustine_region::RegionId;
 use clustine_rpc::link::EdgeEnd;
-use clustine_world::{EdgeId, Vec3};
+use clustine_world::EdgeId;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -144,15 +144,13 @@ impl EdgeIdentity {
     }
 }
 
-/// What an edge starts with: where players enter the world and how the edge reaches the
-/// regions. It is not told how the world is divided: what a region says tells it who
+/// What an edge starts with: the region players enter the world in and how the edge
+/// reaches the regions. It is not told how the world is divided: what a region says tells it who
 /// holds what (`docs/adr/0013-the-edge-without-a-layout.md`).
 #[derive(Debug)]
 pub struct Routing {
     /// The region players enter the world in.
     pub home: RegionId,
-    /// Where players enter the world.
-    pub spawn: Vec3,
     /// Who this edge is to the regions.
     pub identity: EdgeIdentity,
     /// The links the edge starts with. A region without one is waited for: what its
@@ -171,18 +169,12 @@ pub struct Routing {
 impl Routing {
     /// The routing of an edge that starts with `links`, and the handle through which it
     /// is given new ones while it runs.
-    pub fn new(
-        home: RegionId,
-        spawn: Vec3,
-        identity: EdgeIdentity,
-        links: Vec<RegionLink>,
-    ) -> (Self, Relinks) {
+    pub fn new(home: RegionId, identity: EdgeIdentity, links: Vec<RegionLink>) -> (Self, Relinks) {
         let (sender, relinks) = mpsc::channel(RELINK_CAPACITY);
         // Without a limit, as nobody has to listen. It stays short: a link ends once.
         let (lost, ended) = mpsc::unbounded_channel();
         let routing = Self {
             home,
-            spawn,
             identity,
             links,
             relinks,

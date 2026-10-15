@@ -50,7 +50,6 @@ fn following_by(policy: Policy, boundaries: &[i32]) -> Cluster {
     let regions = stripes_of(boundaries);
     let start = Instant::now();
     let config = CoordinatorConfig {
-        spawn: SPAWN,
         lease: Duration::from_millis(LEASE),
         follow: Some(policy),
     };

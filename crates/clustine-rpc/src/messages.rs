@@ -6,9 +6,7 @@ use clustine_sim::api::{
     Durable, EntityState, HOTBAR_SLOTS, ItemStack, Place, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote,
 };
-use clustine_world::{
-    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3,
-};
+use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
 use serde::{Deserialize, Serialize};
 
 /// A message of an edge to the worker that owns a region, with its number.
@@ -536,6 +534,10 @@ pub struct Restored {
     /// it: steps R1.1 and R1.3 of `docs/adr/0020-one-stay-per-player.md` give it
     /// meaning (section 7).
     pub issued: EntityId,
+    /// The world's spawn: the block a player's feet are in where they enter the world
+    /// for the first time, as the world keeps it from when it was made. Its chunk is
+    /// the home chunk, which the region that holds it never gives back.
+    pub spawn: BlockPos,
 }
 
 impl Restored {
@@ -583,6 +585,8 @@ pub enum StoreWelcome {
         pinned: Vec<ChunkArea>,
         /// [`Restored::issued`].
         issued: EntityId,
+        /// [`Restored::spawn`].
+        spawn: BlockPos,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.
@@ -647,6 +651,9 @@ pub fn held_from_bytes(bytes: &[u8]) -> Option<Vec<(ChunkPos, u64)>> {
 pub struct RegionList {
     /// The region that holds the chunk players enter the world in.
     pub home: RegionId,
+    /// The world's spawn ([`Restored::spawn`]), whose chunk is the one players enter
+    /// the world in.
+    pub spawn: BlockPos,
     /// Every region that exists, in the order of their ids.
     pub regions: Vec<RegionInfo>,
     /// The regions that were absorbed, each with the region it went into, which may
@@ -845,11 +852,7 @@ pub enum Vouch {
 pub enum FromCoordinator {
     /// To a worker: which regions the worker is to run. Sent again whenever that
     /// changes.
-    Assigned {
-        /// Where players enter the world.
-        spawn: Vec3,
-        assignments: Vec<Assignment>,
-    },
+    Assigned { assignments: Vec<Assignment> },
     /// To an edge: the current routing table.
     Routing(RoutingTable),
     /// To a worker: let go of `region`, which you hold with `epoch`, so that another

@@ -12,7 +12,7 @@ use clustine::cluster::{
     self, COORDINATOR_PORT, CoordinatorArgs, EdgeArgs, MergeArgs, MoveArgs, SplitArgs, WORKER_PORT,
     WORLDSTORE_PORT, WorkerArgs,
 };
-use clustine::{Config, EdgeConfig, Land, LoginWorld, Server, stop_signal};
+use clustine::{Config, EdgeConfig, Land, LoginWorld, Server, login_of, stop_signal};
 use clustine_coordinator::Policy;
 use clustine_region::RegionId;
 use clustine_world::ChunkPos;
@@ -32,6 +32,11 @@ const NO_BOUNDARIES_FOR_THE_COORDINATOR: &str = "--boundaries is no more: the co
     learns which regions there are from the world store. Regions pinned side by side are the \
     store's to be told (clustine worldstore --pin 4); say --reshape by-hand here if they are \
     to stay as they are.";
+
+/// Why `clustine coordinator --seed` is refused.
+const NO_SEED_FOR_THE_COORDINATOR: &str = "--seed is no more for the coordinator: the world \
+    store puts the spawn where the game would when it makes the world, and says it to the \
+    coordinator and to the regions. Give --seed to the world store and to every edge.";
 
 /// [`NO_BOUNDARIES`] for `clustine worldstore`.
 const NO_BOUNDARIES_FOR_THE_STORE: &str = "--boundaries is --pin now: --pin 4 pins two \
@@ -78,8 +83,8 @@ struct Made {
     /// its mountains, coasts, oceans, rivers, caves and ravines, with their biomes,
     /// and nothing that grows or was built. Without one the world is flat. A world
     /// is made one way for good: a directory that holds a world of another seed, or
-    /// a flat one, is refused. In a cluster the world store, the coordinator and
-    /// every edge have to be given the same seed; nothing checks that they agree.
+    /// a flat one, is refused. In a cluster the world store and every edge have to be
+    /// given the same seed; nothing checks that they agree.
     #[arg(long, allow_negative_numbers = true, value_name = "NUMBER")]
     seed: Option<i64>,
 }
@@ -252,10 +257,14 @@ enum Service {
         #[arg(long, default_value_t = EdgeConfig::DEFAULT_VIEW_DISTANCE as u32, value_parser = clap::value_parser!(u32).range(2..=32))]
         view_distance: u32,
 
-        /// Where players enter the world follows from it, which the coordinator tells
-        /// the workers and the edges.
-        #[command(flatten)]
-        made: Made,
+        /// Refused with [`NO_SEED_FOR_THE_COORDINATOR`], whatever it is given.
+        #[arg(
+            long,
+            hide = true,
+            allow_negative_numbers = true,
+            value_name = "NUMBER"
+        )]
+        seed: Option<i64>,
 
         #[command(flatten)]
         reshaping: Reshaping,
@@ -438,7 +447,7 @@ async fn main() -> Result<()> {
             lease_seconds,
             store,
             view_distance,
-            made,
+            seed,
             reshaping,
         }) => {
             // Refused as the parser refuses what it finds wrong itself, with how the
@@ -453,6 +462,9 @@ async fn main() -> Result<()> {
             if boundaries.is_some() {
                 refuse(NO_BOUNDARIES_FOR_THE_COORDINATOR.to_owned());
             }
+            if seed.is_some() {
+                refuse(NO_SEED_FOR_THE_COORDINATOR.to_owned());
+            }
             let follow = reshaping
                 .follow(view_distance)
                 .unwrap_or_else(|why| refuse(why));
@@ -462,7 +474,6 @@ async fn main() -> Result<()> {
                 store,
                 follow,
                 view_distance,
-                spawn: Land::of(made.seed).spawn(),
             })
             .await
         }
@@ -551,7 +562,7 @@ async fn main() -> Result<()> {
                 name,
                 coordinator,
                 bind,
-                edge: players.edge_config(Land::of(made.seed).login()),
+                edge: players.edge_config(login_of(made.seed)),
             })
             .await
         }

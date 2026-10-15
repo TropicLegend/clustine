@@ -34,6 +34,7 @@ use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
+use clustine_world::{ChunkGenerator, Vec3};
 use clustine_worldgen::TerrainGenerator;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
@@ -236,7 +237,7 @@ impl Chaos {
             world: match land {
                 None => BotWorld::clustine(),
                 Some(land) => {
-                    let spawn = TerrainGenerator::new(land as i64).spawn_point();
+                    let spawn = Vec3::bottom_centre_of(TerrainGenerator::new(land as i64).spawn());
                     BotWorld {
                         spawn: (spawn.x, spawn.y, spawn.z),
                         ..BotWorld::clustine()

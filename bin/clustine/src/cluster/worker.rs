@@ -17,10 +17,10 @@ use clustine_region::RegionId;
 use clustine_rpc::{
     Assignment, EdgeMessage, Off, PlayersOf, RegionHello, Restored, Vouch, WorkerToEdge, tcp,
 };
-use clustine_sim::{Part, RegionConfig, RegionState};
+use clustine_sim::{Part, RegionState};
 use clustine_worker::{
-    DEFAULT_RETURN_AFTER, Ended, Links, RegionRunner, RegionStatus, Reshape, Reshaped,
-    RestoreError, Standstill, Worker, absorbable,
+    DEFAULT_RETURN_AFTER, Ended, Links, RegionRunner, RegionSettings, RegionStatus, Reshape,
+    Reshaped, RestoreError, Standstill, Worker, absorbable,
 };
 use clustine_world::{EntityId, EntityIds};
 use clustine_worldstore::{StoreError, StoreHandle};
@@ -67,7 +67,7 @@ pub struct WorkerArgs {
 struct Held {
     assignment: Assignment,
     hello: RegionHello,
-    config: RegionConfig,
+    settings: RegionSettings,
 }
 
 type Opening = Pin<Box<dyn Future<Output = Result<(StoreHandle, Restored), StoreError>> + Send>>;
@@ -957,7 +957,7 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                             info!("registered; waiting to be given a region");
                         }
                         for assignment in offered {
-                            let held = hold(&next, assignment);
+                            let held = hold(assignment);
                             info!(
                                 region = %assignment.region,
                                 epoch = assignment.epoch,
@@ -984,7 +984,7 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                                 // what the part in memory is, and the part has its
                                 // chunks at hand.
                                 Some(part) => RegionRunner::of_part(*part, store),
-                                None => match RegionRunner::restore(held.config.clone(), store, restored) {
+                                None => match RegionRunner::restore(held.settings.clone(), store, restored) {
                                     Ok(runner) => runner,
                                     Err(error) => {
                                         let context = format!("restoring region {region}");
@@ -1224,7 +1224,7 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                             epoch: as_epoch,
                             entity_ids: NO_ENTITY_IDS,
                         };
-                        let held = Held { assignment, hello, config: held.config };
+                        let held = Held { assignment, hello, settings: held.settings };
                         let opening = Box::pin(open_region(store.clone(), hello));
                         let starting = Phase::Starting { held, part: Box::new(memory), opening };
                         // The store gives an id to one region, so nothing was there.
@@ -1350,10 +1350,10 @@ async fn told(stop: &mut mpsc::UnboundedReceiver<Stop>) -> Stop {
     }
 }
 
-/// What it takes to run the region of `assignment` under `orders`. Whether the world
+/// What it takes to run the region of `assignment`. Whether the world
 /// has such a region is the store's to say: it refuses the hello of one it does not
 /// have, which ends the worker.
-fn hold(orders: &Orders, assignment: Assignment) -> Held {
+fn hold(assignment: Assignment) -> Held {
     Held {
         assignment,
         hello: RegionHello {
@@ -1361,9 +1361,8 @@ fn hold(orders: &Orders, assignment: Assignment) -> Held {
             epoch: assignment.epoch,
         },
         // The region's entity ids are the store's to say, not the coordinator's, and so
-        // are the chunks it holds and the areas it is pinned to.
-        config: RegionConfig {
-            spawn: orders.spawn,
+        // are the chunks it holds, the areas it is pinned to and the world's spawn.
+        settings: RegionSettings {
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
             lowest_y: lowest_y(),
@@ -1687,11 +1686,11 @@ mod tests {
     use clustine_rpc::link::{self, End};
     use clustine_rpc::{FromCoordinator, ToCoordinator};
     use clustine_world::ChunkPos;
-    use clustine_worldstore::Store;
+    use clustine_worldstore::{Pins, Store};
     use tokio::time::timeout;
 
     use super::*;
-    use crate::{generator, spawn_point};
+    use crate::generator;
 
     const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -1704,10 +1703,8 @@ mod tests {
 
     /// How the world of these tests is divided: into two regions pinned side by side
     /// at chunk x 4, so that players enter it in region 0 and nobody is in region 1.
-    fn division() -> Division {
-        let spawn = spawn_point();
-        Division::side_by_side(ChunkPos::containing(spawn.x, spawn.z), &[4])
-            .expect("one cut divides a world")
+    fn division() -> Pins {
+        Pins::side_by_side(&[4]).expect("one cut divides a world")
     }
 
     /// Such a world, kept in memory.
@@ -1726,12 +1723,7 @@ mod tests {
 
     /// What a worker that is given `region` with `epoch` holds it as.
     fn held(region: u32, epoch: u64) -> Held {
-        let assignment = assignment(region, epoch);
-        let orders = Orders {
-            spawn: spawn_point(),
-            assignments: vec![assignment],
-        };
-        hold(&orders, assignment)
+        hold(assignment(region, epoch))
     }
 
     /// Opens `region` at `world` with `epoch` and restores it, as a worker does with a
@@ -1739,7 +1731,7 @@ mod tests {
     fn restored(world: &Store, region: u32, epoch: u64) -> (Held, RegionRunner) {
         let held = held(region, epoch);
         let (store, restored) = world.open_region(held.hello).expect("the store opens it");
-        let runner = RegionRunner::restore(held.config.clone(), store, restored)
+        let runner = RegionRunner::restore(held.settings.clone(), store, restored)
             .expect("what the store has can be read");
         (held, runner)
     }
@@ -1804,7 +1796,7 @@ mod tests {
         // the world in the chunk at the origin, which is region 0's.
         let identity = EdgeIdentity::starting_now("edge");
         let links = vec![home_link, empty_link];
-        let (routing, _relinks) = Routing::new(RegionId(0), spawn_point(), identity, links);
+        let (routing, _relinks) = Routing::new(RegionId(0), identity, links);
         let config = EdgeConfig {
             description: "a test".to_owned(),
             max_players: 7,
@@ -1985,10 +1977,7 @@ mod tests {
             else {
                 panic!("a worker registers before it says anything else");
             };
-            let orders = FromCoordinator::Assigned {
-                spawn: spawn_point(),
-                assignments,
-            };
+            let orders = FromCoordinator::Assigned { assignments };
             heard.send(orders).await.expect("the worker listens");
             (heard, holding)
         }
@@ -2306,7 +2295,6 @@ mod tests {
     use clustine_edge::Relinks;
     use clustine_rpc::{EdgeMessage, EdgeToWorker, Welcome, WorkerToEdge};
     use clustine_world::EdgeId;
-    use clustine_worldstore::Division;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const HOME: RegionId = RegionId(0);
@@ -2320,7 +2308,7 @@ mod tests {
 
     /// A world that is one home region, pinned to nothing, kept in memory.
     fn open_world() -> Store {
-        Store::memory_divided(generator(), Division::open(ORIGIN)).expect("a world in memory")
+        Store::memory_divided(generator(), Pins::none()).expect("a world in memory")
     }
 
     /// How a loop opens its regions at a store in its own process.
@@ -2360,7 +2348,6 @@ mod tests {
                 }
             };
             let config = CoordinatorConfig {
-                spawn: spawn_point(),
                 lease: CoordinatorConfig::DEFAULT_LEASE,
                 follow: None,
             };
@@ -2464,7 +2451,7 @@ mod tests {
     /// Starts an edge called `name` with `links`.
     async fn edge_with(name: &str, links: Vec<RegionLink>) -> Linked {
         let identity = EdgeIdentity::starting_now(name);
-        let (routing, relinks) = Routing::new(HOME, spawn_point(), identity, links);
+        let (routing, relinks) = Routing::new(HOME, identity, links);
         let config = EdgeConfig {
             description: "a test".to_owned(),
             max_players: 7,

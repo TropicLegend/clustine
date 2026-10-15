@@ -10,7 +10,7 @@ use clustine::{Config, Land, Server};
 use clustine_botswarm::Bot;
 use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
-use clustine_world::{Chunk, ChunkGenerator, ChunkPos};
+use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, Vec3};
 use clustine_worldgen::TerrainGenerator;
 
 use common::processes::Cluster;
@@ -19,7 +19,7 @@ use common::{config, free_address, view_area};
 const PATIENCE: Duration = Duration::from_secs(60);
 
 /// A world whose origin is on land: grass at the height 70, on ground that is not
-/// level.
+/// level. The game puts its spawn on the column at the origin, the first of its chunk.
 const SEED: i64 = 3;
 
 /// The smallest a server grants, so that the test makes few chunks.
@@ -81,14 +81,14 @@ fn top(chunk: &Chunk, x: usize, z: usize) -> i32 {
 async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     let directory = tempfile::tempdir().unwrap();
     let generator = TerrainGenerator::new(SEED);
-    let spawn = Land::of_seed(SEED).spawn();
-    assert_eq!(spawn, generator.spawn_point());
+    assert_eq!(generator.spawn(), BlockPos::new(0, 71, 0));
+    let spawn = Vec3::bottom_centre_of(generator.spawn());
     let origin = generator.generate(ChunkPos::new(0, 0));
 
     let (server, address) = start(directory.path()).await;
     let mut walker = join(&address, "Walker", (0, 0)).await;
 
-    // Put on the ground of the column at the origin: something under the feet,
+    // Put on the ground of the spawn's column: something under the feet,
     // nothing where the feet and the head are.
     let entered = walker.entered(PATIENCE).await.unwrap();
     assert_eq!(entered.location, (spawn.x, spawn.y, spawn.z));
@@ -106,7 +106,7 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     // A client is told the hash of the seed, that the world is not flat and where
     // its sea is. (Until the edge's login packet says them, it says what it said.)
     let login = Land::of_seed(SEED).login();
-    assert_eq!(login.hashed_seed, generator.hashed_seed());
+    assert_eq!(login.hashed_seed, TerrainGenerator::hashed_seed(SEED));
     assert!(!login.flat);
     assert_eq!(login.sea_level, 63);
 
@@ -227,20 +227,20 @@ fn column_top(chunk: &Chunk, x: i32, z: i32) -> i32 {
     chunk.min_y() + i32::from(chunk.heights().motion_blocking[column])
 }
 
-/// The services as processes of their own, each of which has to be told the seed that
-/// its part follows from: the store makes the chunks, the coordinator says where
-/// players enter, and the edge tells clients of the world.
+/// The services as processes of their own, of which the two that need it are told the
+/// seed: the store, which makes the chunks and puts the spawn where the game would,
+/// and the edge, which tells clients of the world. The coordinator learns where
+/// players enter from the store.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cluster_whose_processes_are_told_the_seed_serves_its_land() {
     let directory = tempfile::tempdir().unwrap();
     let generator = TerrainGenerator::new(SEED);
-    let spawn = generator.spawn_point();
+    let spawn = Vec3::bottom_centre_of(generator.spawn());
     let seed = format!("--seed={SEED}");
 
     let mut cluster = Cluster::new(directory.path(), 1, "").await;
     cluster.view_distance = VIEW;
     cluster.store_arguments = vec![seed.clone()];
-    cluster.coordinator_arguments = vec![seed.clone()];
     cluster.edge_arguments = vec![seed];
     cluster.start().await;
 
@@ -323,6 +323,11 @@ async fn the_command_refuses_a_seed_that_is_no_number_and_a_world_of_another_see
     // A worker makes nothing and is told no seed.
     let (code, said) = run(words(&["worker", "--name", "w", "--seed=3"])).await;
     assert_eq!(code, Some(2), "{said}");
+    // Nor is the coordinator any more, which learns where players enter from the
+    // world store, and whoever still gives it one is told so.
+    let (code, said) = run(words(&["coordinator", "--seed=3"])).await;
+    assert_eq!(code, Some(2), "{said}");
+    assert!(said.contains("world store"), "{said}");
 
     // A world of the seed 3, made by a server that has stopped.
     let directory = tempfile::tempdir().unwrap();

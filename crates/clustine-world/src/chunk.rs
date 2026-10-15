@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::generation::{Done, Failed, GeneratorSettings, Wanted};
 use crate::light::{Light, SectionLight};
-use crate::{Biome, COLUMNS_PER_CHUNK, ChunkPos, SECTION_SIZE, Section};
+use crate::{Biome, BlockPos, COLUMNS_PER_CHUNK, ChunkPos, SECTION_SIZE, Section};
 
 /// The most data one block entity may have, in bytes, and the most all of a chunk's
 /// may have together. Data is refused where it comes in, so that no chunk can be made
@@ -618,6 +618,22 @@ pub trait ChunkGenerator: Send + Sync {
     /// whose identity is another, or whose version is below the highest that made a
     /// chunk it stores (`docs/adr/0021-generation-is-a-function.md`, section 8).
     fn settings(&self) -> GeneratorSettings;
+
+    /// The chunk the search for a new world's spawn begins in, as the game's
+    /// `ChunkGenerator.getOrigin` says: the origin's, unless the generator looks for a
+    /// place whose climate suits a start.
+    fn origin(&self) -> ChunkPos {
+        ChunkPos::new(0, 0)
+    }
+
+    /// Where the game puts a new world's spawn: the block a player's feet are in, on
+    /// the first column to stand on in a spiral of chunks from [`origin`](Self::origin)
+    /// ([`crate::spawn`]). It is the same for the same generator every time, and
+    /// generates the chunks it reads, mostly one; a world keeps what it gave when the
+    /// world was made, so that a later version of the generator does not move it.
+    fn spawn(&self) -> BlockPos {
+        crate::spawn::place_to_stand(self.origin(), |position| self.generate(position))
+    }
 
     /// Has `done` called once with the chunk, on any thread, perhaps before this
     /// returns. After the [`Wanted`] is dropped, `done` may never be called.

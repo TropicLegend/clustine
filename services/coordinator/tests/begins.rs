@@ -44,7 +44,7 @@ use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::{
     Assignment, FromCoordinator, PlayersOf, RegionInfo, RegionList, ToCoordinator, Vouch,
 };
-use clustine_world::{ChunkArea, ChunkPos, EntityIds, Vec3};
+use clustine_world::{ChunkArea, ChunkPos, EntityIds};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -75,9 +75,6 @@ const FIRST_EPOCH: u64 = 1_000;
 /// Who asks for the merges and splits that a test asks for by hand.
 const ASKER: Option<u64> = Some(41);
 
-/// Where players enter the world: in the chunk at the origin.
-const SPAWN: Vec3 = Vec3::new(0.5, 64.0, 0.5);
-
 /// The epoch of Q12's word of release, the record's 40.
 const WORD: u64 = 1_040;
 
@@ -96,11 +93,7 @@ fn region(id: u32) -> RegionId {
 
 /// What the coordinators of these tests are created with.
 fn config(lease: Duration, follow: Option<Policy>) -> CoordinatorConfig {
-    CoordinatorConfig {
-        spawn: SPAWN,
-        lease,
-        follow,
-    }
+    CoordinatorConfig { lease, follow }
 }
 
 /// The distances 2 and 5, and the rest given.
@@ -134,6 +127,7 @@ fn held(id: u32, epoch: u64) -> Assignment {
 /// as the id of the next region. No region is pinned to an area.
 fn list(living: &[(u32, u64)], absorbed: &[(u32, u32)], next: u32) -> RegionList {
     RegionList {
+        spawn: clustine_world::BlockPos::new(0, -60, 0),
         home: region(0),
         regions: living
             .iter()
@@ -3048,9 +3042,8 @@ async fn reached(served: &Served) -> Vec<String> {
     let mut watch = served.watch().await;
     let first = table(&mut watch).await;
 
-    // A worker registers and is answered, with where players enter and what it runs.
+    // A worker registers and is answered with what it runs.
     let (mut a, answer) = served.worker("a", &[], HEARTBEAT).await;
-    assert_eq!(answer.spawn, SPAWN);
     assert_eq!(answer.assignments, []);
     // It is told its orders: the home region of the list.
     let (given, _) = orders_naming(&mut a, 0, 0).await;
@@ -3470,16 +3463,15 @@ async fn a_registration_is_answered_assigned_with_the_spawn_point_and_the_assign
                 .await
                 .expect("the connection is open");
             let answer = within(worker.recv()).await;
-            let Some(FromCoordinator::Assigned { spawn, assignments }) = answer else {
+            let Some(FromCoordinator::Assigned { assignments }) = answer else {
                 panic!("{name}, round {round}: expected `Assigned`: {answer:?}");
             };
-            assert_eq!(spawn, SPAWN, "{name}, round {round}");
             assert_eq!(assignments, runs, "{name}, round {round}");
         }
         connections.push(worker);
     }
     // And what a client makes of that answer is all of it.
     let (_e, orders) = served.worker("e", &[], HEARTBEAT).await;
-    let Orders { spawn, assignments } = orders;
-    assert_eq!((spawn, assignments), (SPAWN, Vec::new()));
+    let Orders { assignments } = orders;
+    assert_eq!(assignments, Vec::new());
 }

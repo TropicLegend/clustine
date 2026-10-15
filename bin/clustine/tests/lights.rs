@@ -745,8 +745,8 @@ fn generation_of_a_view(centre: (i32, i32), view: i32) -> String {
 
 /// The chunk players enter in.
 fn spawn_chunk() -> (i32, i32) {
-    let spawn = TerrainGenerator::new(SEED).spawn_point();
-    chunk_of((spawn.x, spawn.y, spawn.z))
+    let spawn = TerrainGenerator::new(SEED).spawn().chunk();
+    (spawn.x, spawn.z)
 }
 
 /// A fresh directory for a row's world and log, under `TMPDIR`.

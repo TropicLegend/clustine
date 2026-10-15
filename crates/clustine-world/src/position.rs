@@ -72,6 +72,16 @@ impl Vec3 {
     pub const fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
+
+    /// The middle of the bottom of the block at `pos`, where the game stands a player
+    /// it puts on a block (`Vec3.atBottomCenterOf`).
+    pub fn bottom_centre_of(pos: BlockPos) -> Self {
+        Self::new(
+            f64::from(pos.x) + 0.5,
+            f64::from(pos.y),
+            f64::from(pos.z) + 0.5,
+        )
+    }
 }
 
 /// Identifies an entity to clients. Ids are unique within a world.

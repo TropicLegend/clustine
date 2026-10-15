@@ -23,7 +23,6 @@ use clustine_rpc::link::End;
 use clustine_rpc::{
     EdgeMessage, EdgeToWorker, FromCoordinator, Presence, ToCoordinator, Welcome, WorkerToEdge, tcp,
 };
-use clustine_world::Vec3;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -32,9 +31,6 @@ use common::VIEW_DISTANCE;
 use common::processes::{Cluster, turn};
 
 const PATIENCE: Duration = Duration::from_secs(30);
-
-/// Where every player enters the world.
-const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
 /// What the edge logs when it begins to listen for players.
 const LISTENING: &str = "listening";
@@ -72,7 +68,6 @@ fn table(
     });
     FromCoordinator::Routing(RoutingTable {
         version,
-        spawn: SPAWN,
         routes: routes.collect(),
         home: home.map(RegionId),
         absorbed: Vec::new(),

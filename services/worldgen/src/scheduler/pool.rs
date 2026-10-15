@@ -172,6 +172,10 @@ impl<S: Stages> ChunkGenerator for Scheduler<S> {
         }
     }
 
+    fn origin(&self) -> ChunkPos {
+        self.shared.stages.origin()
+    }
+
     fn request(&self, position: ChunkPos, done: Done) -> Wanted {
         self.ask(Key::Lit(position), done)
     }

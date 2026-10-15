@@ -105,6 +105,7 @@ fn begun(told: &Division, epochs: &[u64], next: u32) -> RegionList {
             pinned: Vec::new(),
         };
         return RegionList {
+            spawn: crate::tests::spawn_in(told.home),
             home: RegionId(0),
             regions: vec![home],
             absorbed: Vec::new(),
@@ -120,6 +121,7 @@ fn begun(told: &Division, epochs: &[u64], next: u32) -> RegionList {
         pinned: vec![*area],
     };
     RegionList {
+        spawn: crate::tests::spawn_in(told.home),
         home: RegionId(home as u32),
         regions: told.pinned.iter().enumerate().map(region).collect(),
         absorbed: Vec::new(),
@@ -406,7 +408,7 @@ fn a_division_is_open_or_side_by_side_at_cuts_that_ascend() {
         assert_eq!((told.home, &told.pinned), (HOME, &stripes), "{cuts:?}");
         // And a store that is started with them has that many pinned regions, of
         // which the one with the home chunk is home.
-        let store = Store::memory_divided(generator(), told.clone()).unwrap();
+        let store = Store::memory_told(generator(), told.clone()).unwrap();
         let regions = cuts.len() as u32 + 1;
         assert_eq!(
             store.regions().unwrap(),
@@ -468,8 +470,8 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
 fn a_new_world_without_pins_is_the_same_in_memory_and_in_a_directory() {
     let told = following();
     let directory = tempfile::tempdir().unwrap();
-    let in_memory = Store::memory_divided(generator(), told.clone()).unwrap();
-    let in_files = Store::local_divided(directory.path(), generator(), told.clone()).unwrap();
+    let in_memory = Store::memory_told(generator(), told.clone()).unwrap();
+    let in_files = Store::local_told(directory.path(), generator(), told.clone()).unwrap();
     let mut issued = Vec::new();
     for (kind, store) in [("in memory", &in_memory), ("in a directory", &in_files)] {
         assert_eq!(store.regions().unwrap(), begun(&told, &[], 1), "{kind}");
@@ -483,8 +485,7 @@ fn a_new_world_without_pins_is_the_same_in_memory_and_in_a_directory() {
     // Started again without pins, the world in the directory is found as it was.
     at_rest(&in_files).unwrap();
     drop(in_files);
-    let (again, lines) =
-        logged(|| Store::local_divided(directory.path(), generator(), told.clone()));
+    let (again, lines) = logged(|| Store::local_told(directory.path(), generator(), told.clone()));
     let again = again.unwrap();
     assert!(!says(&lines, "a world without pins, started again"));
     assert_eq!(again.regions().unwrap(), begun(&told, &[1], 1));
@@ -900,6 +901,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
         pinned,
     };
     let expected = RegionList {
+        spawn: crate::tests::spawn_in(from.home),
         home: RegionId(1),
         regions: vec![
             info(0, around(&[MERGED]), vec![west]),
@@ -929,6 +931,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     };
     let expected = [
         Restored {
+            spawn: crate::tests::spawn_in(from.home),
             entity_ids: before.files[0].entity_ids,
             state: state(5, "merged"),
             deltas: deltas(&[6]),
@@ -937,6 +940,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             issued: EntityId(0),
         },
         Restored {
+            spawn: crate::tests::spawn_in(from.home),
             entity_ids: before.files[1].entity_ids,
             state: state(1, "east"),
             deltas: deltas(&[2]),
@@ -945,6 +949,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             issued: EntityId(0),
         },
         Restored {
+            spawn: crate::tests::spawn_in(from.home),
             entity_ids: NO_ENTITY_IDS,
             state: state(2, "part"),
             deltas: deltas(&[3, 4]),
@@ -1335,14 +1340,13 @@ fn a_world_of_stripes_is_made_over_for_no_pins_whenever_the_start_is_killed() {
 #[test]
 fn a_world_of_stripes_in_a_directory_is_made_over_for_no_pins() {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::local_divided(directory.path(), generator(), stripes()).unwrap();
+    let store = Store::local_told(directory.path(), generator(), stripes()).unwrap();
     let before = lives_on_stripes(&store);
     at_rest(&store).unwrap();
     drop(store);
 
     let told = following();
-    let (store, lines) =
-        logged(|| Store::local_divided(directory.path(), generator(), told.clone()));
+    let (store, lines) = logged(|| Store::local_told(directory.path(), generator(), told.clone()));
     let store = store.unwrap();
     assert!(says(&lines, "in a directory"), "{lines:?}");
     assert!(!directory.path().join("layout").exists());
@@ -1589,15 +1593,14 @@ fn a_world_of_stripes_started_with_its_boundary_as_a_pin_is_found_as_it_was() {
 #[test]
 fn a_world_of_stripes_in_a_directory_is_found_as_it_was_by_a_pin() {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::local_divided(directory.path(), generator(), stripes()).unwrap();
+    let store = Store::local_told(directory.path(), generator(), stripes()).unwrap();
     let before = lives_on_stripes(&store);
     at_rest(&store).unwrap();
     drop(store);
 
     let told = pinned_at(&[CUT]);
     let table = std::fs::read(directory.path().join("regions/table")).unwrap();
-    let (store, lines) =
-        logged(|| Store::local_divided(directory.path(), generator(), told.clone()));
+    let (store, lines) = logged(|| Store::local_told(directory.path(), generator(), told.clone()));
     let store = store.unwrap();
     assert!(!says(&lines, "in a directory"), "{lines:?}");
     assert_eq!(
@@ -1828,6 +1831,7 @@ fn a_store_that_is_told_no_division_has_one_region_pinned_to_the_whole_world() {
         pinned: vec![ChunkArea::EVERYWHERE],
     };
     let expected = RegionList {
+        spawn: crate::tests::SPAWN,
         home: RegionId(0),
         regions: vec![whole_world],
         absorbed: Vec::new(),
@@ -1962,6 +1966,7 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_durable_when_the_store_is
         pinned: Vec::new(),
     };
     let expected = RegionList {
+        spawn: crate::tests::spawn_in(HOME),
         home: RegionId(0),
         regions: vec![info(0, &[HOME, stays]), info(1, &goes)],
         absorbed: Vec::new(),
@@ -1995,7 +2000,7 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_durable_when_the_store_is
 #[test]
 fn the_answers_to_a_claim_and_a_flush_are_out_when_the_store_is_at_rest() {
     let told = following();
-    let store = Store::memory_divided(generator(), told.clone()).unwrap();
+    let store = Store::memory_told(generator(), told.clone()).unwrap();
     let (handle, _) = store.open_region(hello_of(&told, 0, 1)).unwrap();
     let chunks = vec![ChunkPos::new(7, -3), ChunkPos::new(7, -2)];
     handle.request(StoreRequest::Claim {

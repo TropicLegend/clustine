@@ -95,6 +95,7 @@ fn a_new_world_has_the_regions_of_its_division() {
         max: ORIGIN,
     };
     let expected = RegionList {
+        spawn: crate::tests::SPAWN,
         home: RegionId(2),
         regions: vec![
             RegionInfo {
@@ -198,7 +199,7 @@ fn a_division_whose_areas_overlap_starts_no_store() {
     };
     let disk = Arc::new(MemoryDisk::default());
     for started in [
-        Store::memory_divided(generator(), overlapping.clone()),
+        Store::memory_told(generator(), overlapping.clone()),
         store_on(&disk, &overlapping),
     ] {
         assert!(matches!(
@@ -252,7 +253,7 @@ fn only_the_holder_loads_and_saves_a_chunk() {
     }
 
     // A chunk nobody holds is loaded and saved by nobody, and has no holder to name.
-    let store = Store::memory_divided(generator(), gap()).unwrap();
+    let store = Store::memory_told(generator(), gap()).unwrap();
     let free = ChunkPos::new(5, 5);
     for region in 0..3 {
         let handle = open(&store, hello_of(&gap(), region, 1));
@@ -329,7 +330,8 @@ fn as_lived_in(store: &Store, epoch: u64, case: &str) {
 /// none: the ids below it are not given out again, so the list's next id is above
 /// them also where `told` has fewer regions.
 fn as_made_over(store: &Store, told: &Division, used: u32, epoch: u64, case: &str) {
-    let expected = table::Table::made_from(told, used, 1).list(|_| 0);
+    let expected =
+        table::Table::made_from(told, used, 1).list(crate::tests::spawn_in(told.home), |_| 0);
     let list = store.regions().unwrap();
     assert_eq!(listed(&list), listed(&expected), "{case}");
     let mut loaded = Vec::new();
@@ -1413,7 +1415,7 @@ fn a_claim_of_very_many_chunks_takes_several_records() {
 /// with.
 #[test]
 fn what_a_region_was_granted_is_restored_over_a_connection() {
-    let store = Store::memory_divided(generator(), gap()).unwrap();
+    let store = Store::memory_told(generator(), gap()).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = serve(store.clone(), listener).unwrap();
     let address = server.local_addr().to_string();
@@ -2156,8 +2158,8 @@ fn a_checkpoint_of_a_region_that_is_absorbed_meanwhile_is_not_put_in_place() {
 fn the_list_of_regions_is_read_over_a_connection() {
     let directory = tempfile::tempdir().unwrap();
     let stores = [
-        Store::memory_divided(generator(), gap()).unwrap(),
-        Store::local_divided(directory.path(), generator(), gap()).unwrap(),
+        Store::memory_told(generator(), gap()).unwrap(),
+        Store::local_told(directory.path(), generator(), gap()).unwrap(),
     ];
     for store in stores {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

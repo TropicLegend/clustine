@@ -59,6 +59,7 @@ fn around(chunks: &[ChunkPos]) -> Option<ChunkBox> {
 /// and nothing else, with `next` as the next region id and without its epoch.
 fn alone(home: ChunkPos, next: u32) -> RegionList {
     RegionList {
+        spawn: crate::tests::spawn_in(home),
         home: RegionId(0),
         regions: vec![RegionInfo {
             region: RegionId(0),
@@ -355,7 +356,8 @@ fn as_made_over(
     epoch: u64,
     case: &str,
 ) -> Vec<Restored> {
-    let expected = table::Table::made_from(told, used, 1).list(|_| 0);
+    let expected =
+        table::Table::made_from(told, used, 1).list(crate::tests::spawn_in(told.home), |_| 0);
     let (list, regions) = opened(store, told, epoch, case);
     assert_eq!(list, expected, "{case}");
     for (info, (_, restored)) in list.regions.iter().zip(&regions) {
@@ -392,8 +394,8 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
     let disk = Arc::new(MemoryDisk::default());
     let told = open_world();
     let stores = [
-        Store::memory_divided(generator(), told.clone()).unwrap(),
-        Store::local_divided(directory.path(), generator(), told.clone()).unwrap(),
+        Store::memory_told(generator(), told.clone()).unwrap(),
+        Store::local_told(directory.path(), generator(), told.clone()).unwrap(),
         store_on(&disk, &told).unwrap(),
     ];
     for store in stores {
@@ -675,6 +677,7 @@ fn as_after_a_life(store: &Store, built: &Built, epoch: u64, case: &str) {
     let told = open_world();
     let (list, regions) = opened(store, &told, epoch, case);
     let expected = RegionList {
+        spawn: crate::tests::spawn_in(told.home),
         home: RegionId(0),
         regions: vec![RegionInfo {
             region: RegionId(0),
@@ -719,13 +722,13 @@ fn as_after_a_life(store: &Store, built: &Built, epoch: u64, case: &str) {
 #[test]
 fn a_world_without_pins_lives_through_claims_a_split_and_a_merge() {
     // In memory.
-    let store = Store::memory_divided(generator(), open_world()).unwrap();
+    let store = Store::memory_told(generator(), open_world()).unwrap();
     let built = life(&store);
     as_after_a_life(&store, &built, 2, "in memory");
 
     // In a directory, where the next store finds it.
     let directory = tempfile::tempdir().unwrap();
-    let local = || Store::local_divided(directory.path(), generator(), open_world()).unwrap();
+    let local = || Store::local_told(directory.path(), generator(), open_world()).unwrap();
     let built = life(&local());
     as_after_a_life(&local(), &built, 2, "in a directory");
     as_after_a_life(&local(), &built, 3, "in a directory, again");
@@ -767,7 +770,7 @@ fn a_world_without_pins_lives_through_claims_a_split_and_a_merge() {
 #[test]
 fn a_world_without_pins_is_served_over_a_connection() {
     let told = open_world();
-    let store = Store::memory_divided(generator(), told.clone()).unwrap();
+    let store = Store::memory_told(generator(), told.clone()).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = serve(store.clone(), listener).unwrap();
     let address = server.local_addr().to_string();
@@ -902,6 +905,7 @@ fn as_without_pins_lived_in(store: &Store, built: &Built, epoch: u64, case: &str
         pinned: Vec::new(),
     };
     let expected = RegionList {
+        spawn: crate::tests::spawn_in(HOME),
         home: RegionId(0),
         regions: vec![
             region(0, &[HOME, NEAR]),
@@ -1022,7 +1026,8 @@ fn as_side_by_side_lived_in(
     case: &str,
 ) {
     let (list, regions) = opened(store, told, epoch, case);
-    let mut expected = table::Table::made_from(told, 3, 1).list(|_| 0);
+    let mut expected =
+        table::Table::made_from(told, 3, 1).list(crate::tests::spawn_in(told.home), |_| 0);
     expected.regions.push(RegionInfo {
         region: RegionId(2),
         epoch: 0,
@@ -1358,7 +1363,7 @@ fn a_world_in_a_directory_is_made_over_for_other_pins() {
     let directory = tempfile::tempdir().unwrap();
     let start = |told: &Division, made_over: bool, case: &str| {
         let (store, lines) =
-            logged(|| Store::local_divided(directory.path(), generator(), told.clone()));
+            logged(|| Store::local_told(directory.path(), generator(), told.clone()));
         assert_eq!(says_made_over(&lines, case), made_over, "{case}");
         store.unwrap_or_else(|error| panic!("{case}: {error}"))
     };

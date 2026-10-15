@@ -6,14 +6,15 @@
 
 pub mod preview;
 pub mod scheduler;
-pub mod spawn;
 pub mod stages;
 pub mod terrain;
 
 use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks, synced_registry};
 use clustine_light::Around;
 use clustine_world::generation::GeneratorSettings;
-use clustine_world::{Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE};
+use clustine_world::{Biome, BlockPos, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE};
+
+pub use clustine_world::spawn;
 
 pub use crate::preview::PreviewStages;
 pub use crate::terrain::{TERRAIN_VERSION, TerrainGenerator};
@@ -28,6 +29,8 @@ pub struct FlatGenerator {
     /// The chunk of every position, with its light: made once, since every chunk has
     /// the same blocks and stands beside eight like it.
     made: Chunk,
+    /// Where a new world's spawn is, if not where the game's rule puts it.
+    spawn: Option<BlockPos>,
 }
 
 impl FlatGenerator {
@@ -53,7 +56,17 @@ impl FlatGenerator {
             biome,
             made: made(dimension, biome, &layers),
             layers,
+            spawn: None,
         }
+    }
+
+    /// The same world with a new world's spawn at `spawn`, the block a player's feet
+    /// are in, where the game's rule would put it on the first column of the chunk at
+    /// the origin. For tests and trials that need players to enter somewhere else, such
+    /// as beside a boundary between regions. A world keeps the spawn it was made with.
+    pub fn with_spawn(mut self, spawn: BlockPos) -> Self {
+        self.spawn = Some(spawn);
+        self
     }
 
     /// The y coordinate of the lowest air block, where a player stands.
@@ -101,6 +114,11 @@ impl ChunkGenerator for FlatGenerator {
         self.made.clone()
     }
 
+    fn spawn(&self) -> BlockPos {
+        self.spawn
+            .unwrap_or_else(|| clustine_world::spawn::place_to_stand(self.origin(), |_| &self.made))
+    }
+
     fn settings(&self) -> GeneratorSettings {
         let layers: Vec<_> = self
             .layers
@@ -125,6 +143,17 @@ mod tests {
     use clustine_world::SectionLight;
 
     use super::*;
+
+    #[test]
+    fn the_flat_worlds_spawn_is_on_its_grass_at_the_origin_unless_it_is_set() {
+        // The game's rule: the first column of the chunk at the origin, on the grass,
+        // where players entered the flat world before a world kept its spawn.
+        let flat = FlatGenerator::classic();
+        assert_eq!(flat.spawn(), BlockPos::new(0, flat.surface_y(), 0));
+        assert_eq!(flat.spawn(), BlockPos::new(0, -60, 0));
+        let beside = BlockPos::new(13, -60, 8);
+        assert_eq!(FlatGenerator::classic().with_spawn(beside).spawn(), beside);
+    }
 
     #[test]
     fn classic_flat_has_four_layers_at_the_bottom() {

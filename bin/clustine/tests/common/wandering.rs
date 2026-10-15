@@ -27,6 +27,7 @@ use clustine::{Config, Server};
 use clustine_botswarm::{Bot, Ledger, LedgerReport, Progress, Random, World, audit_blocks, ledger};
 use clustine_coordinator::Policy;
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList};
+use clustine_world::{ChunkGenerator, Vec3};
 use clustine_worldgen::TerrainGenerator;
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
@@ -1262,7 +1263,9 @@ impl Wanders {
         match self.setup.land {
             None => flat,
             Some(land) => {
-                let spawn = TerrainGenerator::new(land as i64).spawn_point();
+                // Players enter in the middle of the world's spawn block, on the
+                // ground of its column as it is when they enter.
+                let spawn = Vec3::bottom_centre_of(TerrainGenerator::new(land as i64).spawn());
                 World {
                     spawn: (spawn.x, spawn.y, spawn.z),
                     ..flat

@@ -28,7 +28,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use clustine_data::BlockState;
-use clustine_world::{Biome, BlockPos, Chunk, ChunkPos};
+use clustine_world::{Biome, BlockPos, Chunk, ChunkGenerator, ChunkPos};
 use clustine_worldgen::TerrainGenerator;
 use clustine_worldgen::spawn::{feet, place_to_stand, spiral};
 

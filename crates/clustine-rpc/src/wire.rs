@@ -250,6 +250,7 @@ mod tests {
         }
         round_trip(RegionList {
             home: RegionId(0),
+            spawn: clustine_world::BlockPos::new(-31, 72, -1_000_000),
             regions: vec![RegionInfo {
                 region,
                 epoch: 5,
@@ -500,6 +501,7 @@ mod tests {
                 },
             ],
             issued: EntityId(0),
+            spawn: BlockPos::new(-1, 320, 29_999_999),
         };
         assert_eq!(restored.tick(), 9);
         let welcomes = [
@@ -507,6 +509,7 @@ mod tests {
                 entity_ids: restored.entity_ids,
                 pinned: restored.pinned.clone(),
                 issued: EntityId(i32::MAX),
+                spawn: BlockPos::new(0, -60, 0),
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Absorbed {
@@ -598,6 +601,7 @@ mod tests {
             state: None,
             deltas: Vec::new(),
             issued: EntityId(0),
+            spawn: BlockPos::new(-1, 320, 29_999_999),
         };
         assert_eq!(fresh.tick(), 0);
         fresh.state = Some(TickState {
@@ -613,7 +617,7 @@ mod tests {
     #[test]
     fn what_is_said_of_stays_to_and_by_the_world_store_round_trips() {
         use clustine_sim::api::{HOTBAR_SLOTS, ItemStack, Place, Pose, StayNote};
-        use clustine_world::{EntityId, EntityIds, PlayerId, Vec3};
+        use clustine_world::{BlockPos, EntityId, EntityIds, PlayerId, Vec3};
 
         use crate::{Restored, StoreReply, StoreRequest, StoreWelcome};
 
@@ -694,6 +698,7 @@ mod tests {
                 entity_ids: EntityIds::block(3).unwrap(),
                 pinned: Vec::new(),
                 issued,
+                spawn: BlockPos::new(-90, 64, 32),
             });
             round_trip(Restored {
                 held: Vec::new(),
@@ -702,6 +707,7 @@ mod tests {
                 state: None,
                 deltas: Vec::new(),
                 issued,
+                spawn: BlockPos::new(-90, 64, 32),
             });
         }
     }

@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, VecDeque};
 use clustine_format::{TableFile, TableRegion};
 use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList};
-use clustine_world::{ChunkArea, ChunkPos};
+use clustine_world::{BlockPos, ChunkArea, ChunkPos};
 
 use crate::StoreError;
 
@@ -43,6 +43,44 @@ pub struct Division {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("chunk x coordinates in ascending order without repetitions")]
 pub struct NotAscending;
+
+/// The regions a world is pinned to, which whoever starts a store chooses. The home
+/// chunk is not among what they choose: it is the chunk of the world's spawn, which
+/// the store keeps from when the world was made (`docs/groundwork/t8-plan.md`, T8c).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pins {
+    /// The areas, which must not overlap. Region `i` is pinned to area `i`.
+    pub areas: Vec<ChunkArea>,
+}
+
+impl Pins {
+    /// No region is pinned: the regions follow their players.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// One region pinned to the whole world.
+    pub fn whole_world() -> Self {
+        Self {
+            areas: vec![ChunkArea::EVERYWHERE],
+        }
+    }
+
+    /// Regions pinned side by side, cut at these chunk x coordinates, as
+    /// [`Division::side_by_side`] has them.
+    pub fn side_by_side(cuts: &[i32]) -> Result<Self, NotAscending> {
+        let areas = Division::side_by_side(ChunkPos::new(0, 0), cuts)?.pinned;
+        Ok(Self { areas })
+    }
+
+    /// The division of a world whose spawn is in the chunk `home`.
+    pub(crate) fn with_home(self, home: ChunkPos) -> Division {
+        Division {
+            home,
+            pinned: self.areas,
+        }
+    }
+}
 
 impl Division {
     /// A world that is one home region, pinned to nothing. It holds the home chunk,
@@ -460,11 +498,12 @@ impl Table {
         Ok(())
     }
 
-    /// The list of regions for whoever assigns them. `epoch` says the highest epoch a
-    /// region was opened with.
-    pub(crate) fn list(&self, epoch: impl Fn(RegionId) -> u64) -> RegionList {
+    /// The list of regions for whoever assigns them, in a world with this spawn.
+    /// `epoch` says the highest epoch a region was opened with.
+    pub(crate) fn list(&self, spawn: BlockPos, epoch: impl Fn(RegionId) -> u64) -> RegionList {
         RegionList {
             home: self.home_region,
+            spawn,
             regions: self
                 .regions
                 .iter()
@@ -597,6 +636,7 @@ mod tests {
             max: home,
         };
         let expected = RegionList {
+            spawn: crate::tests::SPAWN,
             home: RegionId(0),
             regions: vec![RegionInfo {
                 region: RegionId(0),
@@ -607,7 +647,7 @@ mod tests {
             absorbed: Vec::new(),
             next: RegionId(1),
         };
-        assert_eq!(table.list(|_| 0), expected);
+        assert_eq!(table.list(crate::tests::SPAWN, |_| 0), expected);
 
         // The file has no area, and is read as the table it was written from.
         let file = table.file(table.from);
@@ -798,7 +838,10 @@ mod tests {
             min: second,
             max: second,
         };
-        assert_eq!(read.list(|_| 0).regions[0].bounds, Some(around));
+        assert_eq!(
+            read.list(crate::tests::SPAWN, |_| 0).regions[0].bounds,
+            Some(around)
+        );
     }
 
     #[test]
@@ -835,7 +878,7 @@ mod tests {
         // Its id is not used again, and it is still the division it was made from.
         assert_eq!(table.next_region, 3);
         assert!(table.is_of(&gap()));
-        let list = table.list(|_| 0);
+        let list = table.list(crate::tests::SPAWN, |_| 0);
         assert_eq!(list.absorbed, [(RegionId(1), RegionId(0))]);
         assert_eq!(list.regions.len(), 2);
         let read = Table::read(TableFile::decode(&table.file(1).encode()).unwrap()).unwrap();
@@ -851,7 +894,10 @@ mod tests {
                 .unwrap();
             table.absorb(RegionId(2), RegionId(part), 12).unwrap();
         }
-        assert_eq!(table.list(|_| 0).absorbed.len(), ABSORBED_KEPT);
+        assert_eq!(
+            table.list(crate::tests::SPAWN, |_| 0).absorbed.len(),
+            ABSORBED_KEPT
+        );
         assert_eq!(table.absorbed_into(RegionId(1)), None);
         assert_eq!(table.absorbed_into(RegionId(3)), Some(RegionId(2)));
     }
@@ -905,7 +951,7 @@ mod tests {
     #[test]
     fn the_list_has_the_regions_with_what_they_are_pinned_to() {
         let table = Table::made_from(&gap(), 0, 1);
-        let list = table.list(|region| u64::from(region.0) * 10);
+        let list = table.list(crate::tests::SPAWN, |region| u64::from(region.0) * 10);
         assert_eq!(list.home, RegionId(2));
         assert_eq!(list.absorbed, []);
         let origin = ChunkPos::new(0, 0);

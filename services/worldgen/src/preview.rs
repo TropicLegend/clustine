@@ -40,6 +40,10 @@ impl Stages for PreviewStages {
         self.terrain.dimension()
     }
 
+    fn origin(&self) -> ChunkPos {
+        ChunkGenerator::origin(&*self.terrain)
+    }
+
     fn starts(&self, _source: ChunkPos) -> Starts {
         // The preview bends the ground for its starts itself and places none of them.
         Starts::default()

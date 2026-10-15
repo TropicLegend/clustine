@@ -24,11 +24,11 @@ use clustine_rpc::{
 use clustine_sim::api::{
     EntityKind, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
 };
-use clustine_sim::{Durable, PlayerEvent, PlayerJoin, RegionConfig, RegionState};
-use clustine_worker::{Ended, RegionRunner, Worker};
+use clustine_sim::{Durable, PlayerEvent, PlayerJoin, RegionState};
+use clustine_worker::{Ended, RegionRunner, RegionSettings, Worker};
 use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
 use clustine_worldgen::FlatGenerator;
-use clustine_worldstore::{Division, Store, StoreHandle};
+use clustine_worldstore::{Pins, Store, StoreHandle};
 use uuid::Uuid;
 
 const E: EdgeId = EdgeId(11);
@@ -66,6 +66,9 @@ const FEET: f64 = -60.0;
 /// reach blocks of the next region and walk into it.
 const SPAWN: Vec3 = Vec3::new(13.5, FEET, 8.5);
 
+/// The block [`SPAWN`] is the middle of, which the world is made with.
+const SPAWN_BLOCK: BlockPos = BlockPos::new(13, FEET as i32, 8);
+
 /// A block of the next region that a player at the spawn can reach.
 const BEYOND: BlockPos = BlockPos::new(16, GROUND, 8);
 
@@ -100,9 +103,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 /// Of every chunk the region asks the store, which is divided into two stripes at
 /// [`CUT`], whether it is its own (`docs/adr/0012-the-tick-on-chunks.md`, section 1).
-fn config() -> RegionConfig {
-    RegionConfig {
-        spawn: SPAWN,
+fn settings() -> RegionSettings {
+    RegionSettings {
         starting_hotbar: hotbar(),
         return_after: 0,
         lowest_y: -64,
@@ -123,16 +125,19 @@ struct World {
 
 /// How the stores of these tests divide the world: into two regions pinned side by
 /// side, cut at [`CUT`].
-fn division() -> Division {
-    Division::side_by_side(ChunkPos::containing(SPAWN.x, SPAWN.z), &[CUT]).expect("one cut ascends")
+fn division() -> Pins {
+    Pins::side_by_side(&[CUT]).expect("one cut ascends")
 }
 
 impl World {
     fn memory() -> Self {
         // A new world knows no edge, whatever a test before on this thread was told.
         SINCE.with(|since| since.borrow_mut().clear());
-        let store = Store::memory_divided(Arc::new(FlatGenerator::classic()), division())
-            .expect("stripes do not overlap");
+        let store = Store::memory_divided(
+            Arc::new(FlatGenerator::classic().with_spawn(SPAWN_BLOCK)),
+            division(),
+        )
+        .expect("stripes do not overlap");
         Self {
             store,
             epoch: 0,
@@ -143,7 +148,7 @@ impl World {
     fn local() -> Self {
         SINCE.with(|since| since.borrow_mut().clear());
         let directory = tempfile::tempdir().expect("a temporary directory");
-        let generator = Arc::new(FlatGenerator::classic());
+        let generator = Arc::new(FlatGenerator::classic().with_spawn(SPAWN_BLOCK));
         let store = Store::local_divided(directory.path(), generator, division())
             .expect("a new world in an empty directory");
         Self {
@@ -198,7 +203,7 @@ impl World {
     /// the world before with the region that held their place, and the home region
     /// places them itself where that is the home region (ADR-0020, section 4, step 7).
     fn run(handle: StoreHandle, restored: Restored) -> RegionRunner {
-        RegionRunner::restore(config(), handle, restored)
+        RegionRunner::restore(settings(), handle, restored)
             .expect("what the store has is readable")
             .with_id(REGION)
     }
@@ -956,7 +961,7 @@ impl Witness {
         self.entities
             .iter()
             .filter(|(_, pose)| {
-                division().pinned[REGION.0 as usize]
+                division().areas[REGION.0 as usize]
                     .contains(ChunkPos::containing(pose.position.x, pose.position.z))
             })
             .map(|(entity, pose)| (*entity, *pose))
@@ -2912,7 +2917,7 @@ fn a_tick_that_changes_nothing_is_published_without_a_commit() {
         "the store has tick {}, and nothing changed after {busy}",
         restored.tick()
     );
-    let next = RegionRunner::restore(config(), handle, restored).expect("readable");
+    let next = RegionRunner::restore(settings(), handle, restored).expect("readable");
     assert!(next.region().player(player(1)).is_some());
 }
 
@@ -3123,7 +3128,7 @@ fn a_region_restored_for_the_first_time_is_new_and_takes_its_entity_ids_from_the
     let (handle, restored) = world.open_raw();
     let ids = restored.entity_ids;
     assert_eq!(restored.tick(), 0);
-    let mut runner = RegionRunner::restore(config(), handle, restored).expect("readable");
+    let mut runner = RegionRunner::restore(settings(), handle, restored).expect("readable");
     assert_eq!(runner.region().tick_number(), 0);
     assert_eq!(runner.region().state().entity_ids, ids);
 
@@ -3659,8 +3664,8 @@ fn a_released_region_is_restored_from_its_state_alone_with_all_its_edges_were_to
         "{} commits come with the state of a released region",
         restored.deltas.len()
     );
-    let mut next =
-        RegionRunner::restore(config(), handle, restored).expect("what the store has is readable");
+    let mut next = RegionRunner::restore(settings(), handle, restored)
+        .expect("what the store has is readable");
     let state = next.region().state();
     assert_eq!(state, runner.region().state());
     // And the edges had been told all of it before their links were closed.
@@ -3832,8 +3837,8 @@ fn a_worker_that_releases_its_region_has_stored_everything_and_closed_its_links(
     let (handle, restored) = world.open_raw();
     assert!(restored.state.is_some());
     assert!(restored.deltas.is_empty());
-    let mut next =
-        RegionRunner::restore(config(), handle, restored).expect("what the store has is readable");
+    let mut next = RegionRunner::restore(settings(), handle, restored)
+        .expect("what the store has is readable");
     assert_eq!(
         next.region().player(player(1)).map(|(entity, _)| entity),
         Some(entity)
@@ -5268,7 +5273,7 @@ fn stored_ticks(restored: &Restored) -> (Option<u64>, Vec<u64>) {
 /// Why the region cannot be restored from what the store has.
 fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
     let (handle, restored) = world.open_raw();
-    match RegionRunner::restore(config(), handle, restored) {
+    match RegionRunner::restore(settings(), handle, restored) {
         Ok(runner) => panic!(
             "the region was restored, at tick {} with {} players",
             runner.region().tick_number(),
@@ -5504,7 +5509,7 @@ fn what_a_worker_stores_begins_with_a_zero_byte_and_the_format_number_in(mut wor
     }
 
     // A release leaves the whole state.
-    let mut next = RegionRunner::restore(config(), handle, restored).expect("readable");
+    let mut next = RegionRunner::restore(settings(), handle, restored).expect("readable");
     next.begin_release();
     assert_eq!(run_to_the_end(&mut next, &mut []), Ended::Released);
     let (_handle, restored) = world.open_raw();
@@ -5553,7 +5558,7 @@ fn a_region_stored_before_there_was_a_format_is_restored_empty_at_its_last_tick_
             (Some(40), vec![41, 42]),
             "the store has what was written by hand"
         );
-        let runner = RegionRunner::restore(config(), handle, restored)
+        let runner = RegionRunner::restore(settings(), handle, restored)
             .expect("a region from before is carried on");
         let state = runner.region().state();
         assert!(state.players.is_empty(), "{:?}", state.players);
@@ -5639,7 +5644,7 @@ fn deltas_of_this_build_behind_what_is_from_before_are_applied_in(mut world: Wor
         "the store has what was written by hand"
     );
     let mut runner =
-        RegionRunner::restore(config(), handle, restored).expect("a region from before");
+        RegionRunner::restore(settings(), handle, restored).expect("a region from before");
     assert_eq!(runner.region().tick_number(), 44);
     assert_eq!(runner.region().state(), expected);
 
@@ -5695,7 +5700,7 @@ fn a_state_of_this_build_before_a_delta_from_before_is_dropped_with_it_in(mut wo
 
     let (handle, restored) = world.open_raw();
     assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42, 43]));
-    let runner = RegionRunner::restore(config(), handle, restored).expect("a region from before");
+    let runner = RegionRunner::restore(settings(), handle, restored).expect("a region from before");
     assert_eq!(runner.region().state(), expected);
 }
 
@@ -5727,7 +5732,7 @@ fn what_is_from_before_is_dropped_without_being_read_in(mut world: World) {
 
     let (handle, restored) = world.open_raw();
     assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42, 43]));
-    let runner = RegionRunner::restore(config(), handle, restored)
+    let runner = RegionRunner::restore(settings(), handle, restored)
         .expect("what is from before is not read, so it cannot fail to be");
     assert_eq!(runner.region().state(), expected);
 
@@ -5755,7 +5760,7 @@ fn what_is_from_before_is_dropped_without_being_read_in(mut world: World) {
     expected.tick = 42;
     let (handle, restored) = world.open_raw();
     assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42]));
-    let runner = RegionRunner::restore(config(), handle, restored)
+    let runner = RegionRunner::restore(settings(), handle, restored)
         .expect("what is from before is not read, so it cannot fail to be");
     assert_eq!(runner.region().state(), expected);
 }
@@ -5792,7 +5797,7 @@ fn deltas_from_before_without_a_state_are_dropped_up_to_the_last_in(mut world: W
         (None, vec![3, 4]),
         "the store has what was written by hand"
     );
-    let mut runner = RegionRunner::restore(config(), handle, restored)
+    let mut runner = RegionRunner::restore(settings(), handle, restored)
         .expect("a region from before is carried on");
     assert_eq!(runner.region().state(), expected);
 
@@ -5834,7 +5839,7 @@ fn the_state_of_a_region_that_never_ran_stored_before_there_was_a_format_is_not_
         (Some(0), Vec::new()),
         "the store has what was written by hand"
     );
-    let runner = RegionRunner::restore(config(), handle, restored)
+    let runner = RegionRunner::restore(settings(), handle, restored)
         .unwrap_or_else(|error| panic!("a state of tick 0 was read: {error}"));
     assert_eq!(runner.region().state(), RegionState::new(ids));
 }
@@ -5850,8 +5855,8 @@ fn a_state_of_tick_0_of_this_build_is_that_of_a_region_that_never_ran() {
     });
     let (handle, restored) = world.open_raw();
     assert_eq!(stored_ticks(&restored), (Some(0), Vec::new()));
-    let runner =
-        RegionRunner::restore(config(), handle, restored).unwrap_or_else(|error| panic!("{error}"));
+    let runner = RegionRunner::restore(settings(), handle, restored)
+        .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(runner.region().state(), RegionState::new(ids));
 }
 
@@ -5868,7 +5873,7 @@ fn a_runner_told_to_stop_before_its_first_tick_leaves_a_state_of_tick_0_that_is_
 
     let (handle, restored) = world.open_raw();
     assert_eq!(stored_ticks(&restored), (Some(0), Vec::new()));
-    let next = RegionRunner::restore(config(), handle, restored)
+    let next = RegionRunner::restore(settings(), handle, restored)
         .expect("the state of a region that never ran");
     assert_eq!(next.region().state(), RegionState::new(ids));
 }
@@ -5903,7 +5908,7 @@ fn a_state_of_tick_0_is_not_read_whatever_it_is_and_what_was_committed_since_is_
         (Some(0), vec![1]),
         "the store has what was written by hand"
     );
-    let runner = RegionRunner::restore(config(), handle, restored)
+    let runner = RegionRunner::restore(settings(), handle, restored)
         .unwrap_or_else(|error| panic!("a state of tick 0 was read: {error}"));
     assert_eq!(runner.region().state(), expected);
 }
@@ -6049,7 +6054,7 @@ fn a_checkpoint_replaces_what_was_dropped_in(mut world: World) {
     );
     assert!(item.tick > 41);
     assert!(restored.deltas.is_empty(), "{:?}", stored_ticks(&restored));
-    let next = RegionRunner::restore(config(), handle, restored).expect("readable");
+    let next = RegionRunner::restore(settings(), handle, restored).expect("readable");
     assert_eq!(next.region().state(), runner.region().state());
     assert_eq!(
         next.region().player(player(1)).map(|(entity, _)| entity),

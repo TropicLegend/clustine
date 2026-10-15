@@ -520,6 +520,13 @@ owner** (section 5.4), and lets players in then.
 
 #### 2.5 Where the spawn point and the home chunk come from
 
+> **Superseded on 2026-10-15 by T8c** (`docs/groundwork/t8-plan.md`): the world store
+> works out the spawn when it makes a world, keeps it in `meta`, derives the home
+> chunk from it, and says it to each region in its welcome (`Restored::spawn`) and to
+> the coordinator in its list (`RegionList::spawn`). `CoordinatorConfig::spawn`,
+> `FromCoordinator::Assigned::spawn` and `RoutingTable::spawn` are gone. What follows
+> is the design as it was.
+
 From where they come from today, which is not the layout. `spawn_point()` in
 `bin/clustine/src/lib.rs` is fixed in the program. The store's process makes its
 `Division::home` of it; the coordinator's process puts it into `CoordinatorConfig::spawn`,

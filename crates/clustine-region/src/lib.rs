@@ -5,7 +5,6 @@
 //! move (`docs/adr/0017-the-end-of-the-stripes.md`).
 
 pub use clustine_world::RegionId;
-use clustine_world::Vec3;
 use serde::{Deserialize, Serialize};
 
 /// Where an edge reaches the worker that runs a region.
@@ -24,8 +23,6 @@ pub struct RegionRoute {
 pub struct RoutingTable {
     /// Increases whenever the table changes.
     pub version: u64,
-    /// Where players enter the world.
-    pub spawn: Vec3,
     /// The regions that have an owner, in ascending order of their ids.
     pub routes: Vec<RegionRoute>,
     /// The region players enter the world in, as the world store's list of regions had
@@ -70,7 +67,6 @@ mod tests {
             absorbed: Vec::new(),
             waiting: 1,
             version: 1,
-            spawn: Vec3::new(0.5, -60.0, 0.5),
             routes: vec![route(1)],
         };
         assert!(!table.is_complete());

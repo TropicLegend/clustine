@@ -25,6 +25,7 @@ fn cluster(make: fn(CoordinatorConfig, Instant, u64) -> Coordinator) -> Cluster 
 /// opened with, of which region 0 is the home region.
 fn listing(regions: &[(u32, u64)], absorbed: &[(u32, u32)], next: u32) -> RegionList {
     RegionList {
+        spawn: clustine_world::BlockPos::new(0, -60, 0),
         home: RegionId(0),
         regions: regions
             .iter()

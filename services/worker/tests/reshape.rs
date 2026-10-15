@@ -48,15 +48,15 @@ use clustine_sim::api::{
     EntityState, Face, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerInput, PlayerTransfer, Pose,
     RegionEvent, RemoteAction, RemoteStep,
 };
-use clustine_sim::{
-    Durable, EdgeState, Knowledge, Part, PlayerEvent, PlayerJoin, RegionConfig, RegionState,
+use clustine_sim::{Durable, EdgeState, Knowledge, Part, PlayerEvent, PlayerJoin, RegionState};
+use clustine_worker::{
+    Ended, RegionRunner, RegionSettings, Reshape, Reshaped, Stage, Worker, absorbable,
 };
-use clustine_worker::{Ended, RegionRunner, Reshape, Reshaped, Stage, Worker, absorbable};
 use clustine_world::{
     BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3,
 };
 use clustine_worldgen::FlatGenerator;
-use clustine_worldstore::{Division, Store, StoreError, StoreHandle};
+use clustine_worldstore::{Pins, Store, StoreError, StoreHandle};
 use uuid::Uuid;
 
 const E: EdgeId = EdgeId(11);
@@ -87,6 +87,9 @@ const FEET: f64 = -60.0;
 /// Players enter the world three blocks from the eastern end of the home chunk, so that
 /// they can reach blocks of the chunk east of it and walk into it.
 const SPAWN: Vec3 = Vec3::new(13.5, FEET, 8.5);
+
+/// The block [`SPAWN`] is the middle of, which the world is made with.
+const SPAWN_BLOCK: BlockPos = BlockPos::new(13, FEET as i32, 8);
 
 /// A block of the home chunk that a player at the spawn can reach.
 const NEAR: BlockPos = BlockPos::new(12, GROUND, 9);
@@ -145,9 +148,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     hotbar
 }
 
-fn config(return_after: u64) -> RegionConfig {
-    RegionConfig {
-        spawn: SPAWN,
+fn settings(return_after: u64) -> RegionSettings {
+    RegionSettings {
         starting_hotbar: hotbar(),
         return_after,
         lowest_y: -64,
@@ -208,10 +210,9 @@ struct World {
 impl World {
     fn new(shape: Shape, on_disk: bool) -> Self {
         let division = match shape.cuts() {
-            Some(cuts) => Division::side_by_side(HOME, cuts).expect("the cuts ascend"),
-            None => Division {
-                home: HOME,
-                pinned: vec![
+            Some(cuts) => Pins::side_by_side(cuts).expect("the cuts ascend"),
+            None => Pins {
+                areas: vec![
                     ChunkArea {
                         min_x: None,
                         max_x: Some(0),
@@ -223,7 +224,7 @@ impl World {
                 ],
             },
         };
-        let generator = Arc::new(FlatGenerator::classic());
+        let generator = Arc::new(FlatGenerator::classic().with_spawn(SPAWN_BLOCK));
         let (store, directory) = if on_disk {
             let directory = tempfile::tempdir().expect("a temporary directory");
             let store = Store::local_divided(directory.path(), generator, division)
@@ -283,7 +284,7 @@ impl World {
         // answers a join of someone who was in the world before with the region that
         // held their place, and the home region places them itself where that is the
         // home region (ADR-0020, section 4, step 7).
-        RegionRunner::restore(config(ticks), handle, restored)
+        RegionRunner::restore(settings(ticks), handle, restored)
             .expect("what the store has is readable")
             .with_id(region)
     }
@@ -2646,9 +2647,7 @@ fn a_leave_that_names_the_entity_of_a_presence_answer_ends_that_stay_and_another
 /// The areas the stripes of a world are pinned to, in the order of their regions.
 fn areas(shape: Shape) -> Vec<ChunkArea> {
     let cuts = shape.cuts().expect("a world of stripes");
-    Division::side_by_side(HOME, cuts)
-        .expect("the cuts ascend")
-        .pinned
+    Pins::side_by_side(cuts).expect("the cuts ascend").areas
 }
 
 /// On stripes: region 0 with player 1, and region 1 with player 2, who walked over
@@ -2961,7 +2960,7 @@ fn a_crash_right_after_a_merge_restores_the_merged_state_with_no_commit_to_apply
     assert!(restored.deltas.is_empty());
     assert_eq!(restored.pinned, areas(Shape::Stripes));
     assert!(restored.held.is_empty());
-    let mut next = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+    let mut next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
         .expect("what the store has is readable");
     assert_eq!(next.region().state(), merged);
     assert_eq!(merged.players.len(), 2);
@@ -3381,7 +3380,7 @@ fn a_merge_that_the_store_declines_leaves_the_region_ticking_with_its_link_as_if
         Off::Declined(Decline::NotOpened { epoch: Some(epoch) })
     );
     // Region 1 is its new owner's, with its player.
-    let other = RegionRunner::restore(config(RETURN_AFTER), taken, restored)
+    let other = RegionRunner::restore(settings(RETURN_AFTER), taken, restored)
         .expect("what the store has is readable");
     assert_eq!(
         other.region().player(player(2)).map(|(entity, _)| entity),
@@ -3870,7 +3869,7 @@ fn a_release_asked_for_during_a_merge_waits_for_it_and_the_next_owner_has_the_me
 
     let (handle, restored) = pair.world.open_raw(A);
     assert!(restored.deltas.is_empty());
-    let next = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+    let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
         .expect("what the store has is readable");
     let state = next.region().state();
     assert_eq!(state.players, merged.players);
@@ -4413,7 +4412,7 @@ fn after_a_split_the_list_has_the_new_region_and_a_crash_of_either_restores_the_
     assert!(restored.deltas.is_empty());
     assert_eq!(restored.pinned, areas(Shape::Stripes)[..1]);
     assert!(restored.held.is_empty());
-    let next = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+    let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
         .expect("what the store has is readable");
     assert_eq!(next.region().state(), stays);
 
@@ -4429,7 +4428,7 @@ fn after_a_split_the_list_has_the_new_region_and_a_crash_of_either_restores_the_
     );
     assert_eq!(restored.held, vec![(FARTHER, m), (FAR, m)]);
     assert!(restored.pinned.is_empty());
-    let next = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+    let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
         .expect("what the store has is readable");
     assert_eq!(next.region().state(), goes);
     assert_eq!(next.region().knowledge(FAR), Knowledge::Held);
@@ -5841,7 +5840,7 @@ fn a_link_after_a_merge(world: World, crash: bool) -> Run {
     let m = pair.merge();
     if crash {
         let (handle, restored) = pair.world.open_raw(A);
-        pair.a = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+        pair.a = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
             .expect("what the store has is readable")
             .with_id(A);
     }
@@ -5885,11 +5884,11 @@ fn links_after_a_split(world: World, crash: bool) -> Run {
     let mut part_runner = if crash {
         drop(part);
         let (handle, restored) = whole.world.open_raw(A);
-        whole.a = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+        whole.a = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
             .expect("what the store has is readable")
             .with_id(A);
         let (handle, restored) = whole.world.open_raw(n);
-        RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+        RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
             .expect("what the store has is readable")
             .with_id(n)
     } else {
@@ -7837,7 +7836,7 @@ fn a_region_that_checkpoints_with_every_tick_merges_and_splits_all_the_same() {
         let (handle, restored) = pair.world.open_raw(A);
         assert!(restored.tick() > m);
         assert_eq!(restored.pinned, areas(Shape::Stripes));
-        let next = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+        let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
             .expect("what the store has is readable");
         assert_eq!(next.region().state().players, state.players);
         assert_eq!(next.region().state().edges, state.edges);
@@ -7851,7 +7850,7 @@ fn a_region_that_checkpoints_with_every_tick_merges_and_splits_all_the_same() {
         drop(part);
         for (region, state) in [(A, stays), (n, goes)] {
             let (handle, restored) = whole.world.open_raw(region);
-            let next = RegionRunner::restore(config(RETURN_AFTER), handle, restored)
+            let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
                 .expect("what the store has is readable");
             assert_eq!(next.region().state(), state, "{region:?}");
         }

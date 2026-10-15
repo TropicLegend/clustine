@@ -12,7 +12,7 @@ use clustine_botswarm::Bot;
 use clustine_region::{RegionId, RegionRoute, RoutingTable};
 use clustine_rpc::link::End;
 use clustine_rpc::{Assignment, FromCoordinator, PlayersOf, ToCoordinator, tcp};
-use clustine_world::{ChunkPos, EntityId, EntityIds, Vec3};
+use clustine_world::{ChunkPos, EntityId, EntityIds};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 
@@ -24,9 +24,6 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// The chunk x coordinate at which the world is divided: players enter it in region
 /// 0, which has what is west of block x = 64, and nobody is in region 1.
 const BOUNDARY: i32 = 4;
-
-/// Where every player enters the world.
-const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
 const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
 
@@ -70,7 +67,6 @@ impl Played {
             panic!("expected a worker to register, and heard {first:?}");
         };
         let orders = FromCoordinator::Assigned {
-            spawn: SPAWN,
             assignments: assignments.to_vec(),
         };
         heard.send(orders).await.expect("the worker listens");
@@ -88,7 +84,6 @@ impl Played {
         });
         FromCoordinator::Routing(RoutingTable {
             version,
-            spawn: SPAWN,
             routes: routes.collect(),
             home: Some(RegionId(0)),
             absorbed: Vec::new(),

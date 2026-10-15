@@ -13,6 +13,11 @@ use clustine_world::{COLUMNS_PER_CHUNK, Chunk, ChunkPos};
 pub trait Stages: Send + Sync + 'static {
     fn settings(&self) -> GeneratorSettings;
     fn dimension(&self) -> &'static DimensionType;
+    /// [`ChunkGenerator::origin`](clustine_world::ChunkGenerator::origin) of the chunks
+    /// the stages make.
+    fn origin(&self) -> ChunkPos {
+        ChunkPos::new(0, 0)
+    }
     /// The structure starts whose source chunk is `source`, as made.
     fn starts(&self, source: ChunkPos) -> Starts;
     /// The chunk after carving. `starts` answers for every source chunk within 8.

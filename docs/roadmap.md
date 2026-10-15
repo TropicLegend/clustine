@@ -1316,13 +1316,16 @@ each chunk it made, so a chunk is made once.
 - Players enter above the block at the origin, as in the flat world, on the highest
   block of that column that blocks motion, or on the water where that is under water
   (the game's own choice of a place is T8). On seed 13579 that is the sea at a coast:
-  one sinks unless one flies.
+  one sinks unless one flies. **Since T8c** players enter where the game would put a
+  new world's spawn, which the world store works out when it makes the world and
+  keeps in `meta` (`spawn=x,y,z`); on seed 13579 that is block -96, 66, 32.
 - A world records what made it (`terrain;preview;minecraft:overworld;seed 13579`, and
   since W5 the generator's version on a line of its own, `generator-version=2`),
   and is refused with another seed or without one, as a flat world is with a seed.
 - In a cluster the seed is told to the world store, the coordinator and every edge
   (`--seed` on each); nothing checks that they agree, and the manifests under
-  `deploy/` are as they were, which is flat.
+  `deploy/` are as they were, which is flat. **Since T8c** the coordinator is told
+  none and refuses one: it learns the spawn's chunk from the store's list.
 - A client is told the hash of the seed, with which it blurs the borders of biomes as
   the server's surface did, that the world is not flat, and that the sea is at 63
   (`EdgeConfig::login`).

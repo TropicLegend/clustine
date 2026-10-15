@@ -4,8 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
-use clustine_world::ChunkPos;
-use clustine_worldstore::{Division, Store};
+use clustine_worldstore::{Pins, Store};
 use tracing::info;
 
 use crate::Land;
@@ -21,15 +20,13 @@ pub async fn worldstore(
     pins: Vec<i32>,
     land: Land,
 ) -> Result<()> {
-    let spawn = land.spawn;
-    let home = ChunkPos::containing(spawn.x, spawn.z);
-    let division = if !pins.is_empty() {
-        Division::side_by_side(home, &pins).map_err(|error| anyhow!("--pin takes {error}"))?
+    let pins = if pins.is_empty() {
+        Pins::none()
     } else {
-        Division::open(home)
+        Pins::side_by_side(&pins).map_err(|error| anyhow!("--pin takes {error}"))?
     };
-    let pinned = division.pinned.len();
-    let store = Store::local_divided(&world, land.generator, division)
+    let pinned = pins.areas.len();
+    let store = Store::local_divided(&world, land.generator, pins)
         .with_context(|| format!("opening the world in {}", world.display()))?;
     let listener =
         std::net::TcpListener::bind(listen).with_context(|| format!("listening on {listen}"))?;

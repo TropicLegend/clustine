@@ -53,7 +53,7 @@ use clustine_botswarm::{Ledger, LedgerReport, Progress, Random, audit_blocks, le
 use clustine_coordinator::{Asked, Coordinator, CoordinatorConfig, Order, Policy, Reshaped};
 use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, Crowds, PlayersOf, RegionInfo, RegionList, Vouch};
-use clustine_world::{ChunkArea, ChunkPos, Vec3};
+use clustine_world::{ChunkArea, ChunkPos};
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -2235,7 +2235,6 @@ async fn regions_follow_their_players_when_the_coordinator_or_the_store_is_kille
 fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_that_failed() {
     let start = Instant::now();
     let config = CoordinatorConfig {
-        spawn: Vec3::new(0.5, 64.0, 0.5),
         lease: Duration::from_secs(3),
         follow: Some(Policy {
             merge_distance: MERGE_DISTANCE,
@@ -2247,6 +2246,7 @@ fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_tha
     // One region: region 0 is the home region and holds everything.
     let home = RegionId(0);
     let mut list = RegionList {
+        spawn: clustine_world::BlockPos::new(0, 64, 0),
         home,
         regions: vec![RegionInfo {
             region: home,

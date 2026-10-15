@@ -59,7 +59,7 @@ use clustine_coordinator::{
 };
 use clustine_region::RegionId;
 use clustine_rpc::{Assignment, Off, PlayersOf, Vouch};
-use clustine_world::{ChunkPos, Vec3};
+use clustine_world::ChunkPos;
 
 #[path = "follows/judge.rs"]
 mod judge;
@@ -398,7 +398,6 @@ impl Cluster {
         // chunks are does not matter to it or to the model: the list says which
         // regions there are, and nothing here goes by where a region's chunks are.
         let config = CoordinatorConfig {
-            spawn: Vec3::new(0.5, 64.0, 0.5),
             lease: LEASE,
             follow: variant.follow.then(|| variant.told.unwrap_or_else(policy)),
         };

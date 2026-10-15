@@ -197,47 +197,39 @@ fn the_settings_name_the_seed_and_the_version_apart() {
 fn a_client_is_told_the_hash_of_the_seed_and_where_the_sea_is() {
     let generator = TerrainGenerator::new(SEED);
     assert_eq!(generator.seed(), SEED);
-    assert_eq!(generator.hashed_seed(), obfuscate_seed(SEED));
-    assert_ne!(generator.hashed_seed(), 0);
-    assert_eq!(generator.sea_level(), 63);
+    // Without a generator: an edge makes none.
+    assert_eq!(TerrainGenerator::hashed_seed(SEED), obfuscate_seed(SEED));
+    assert_ne!(TerrainGenerator::hashed_seed(SEED), 0);
+    assert_eq!(TerrainGenerator::sea_level(), 63);
 }
 
-/// Where players enter: above the middle of the block at the origin, their feet in
-/// the first block over the ground or the water that is neither.
+/// A new world's spawn is a place to stand: the block under the feet covers its top
+/// and holds no fluid, and the feet are in no fluid. Where the game puts it, column for
+/// column, is judged against the official server in `tests/official_spawn.rs`.
 #[test]
-fn players_enter_on_the_ground_of_the_column_at_the_origin_or_on_its_water() {
-    // The first has sea at the origin; the others were not chosen.
-    let mut on_water = 0;
+fn a_new_worlds_spawn_is_dry_ground_to_stand_on() {
+    // The first has sea at the origin, where players entered before a world's spawn
+    // was chosen as the game chooses it; the others were not chosen.
     for seed in [SEED, 1, 2, 3, -4] {
         let generator = TerrainGenerator::new(seed);
-        let spawn = generator.spawn_point();
-        assert_eq!((spawn.x, spawn.z), (0.5, 0.5));
-        assert_eq!(spawn.y.fract(), 0.0);
-        let feet = spawn.y as i32;
-
-        let chunk = generator.generate(ChunkPos::new(0, 0));
-        let state = |y: i32| chunk.get(0, y, 0).unwrap();
-        let below = state(feet - 1);
-        assert!(!below.is_air(), "seed {seed}: on air at {feet}");
+        let spawn = generator.spawn();
+        let chunk = generator.generate(spawn.chunk());
+        let (x, z) = spawn.in_chunk();
+        let below = chunk.get(x, spawn.y - 1, z).unwrap();
+        let boxes: Vec<[f64; 6]> = below.props().collision_shape().boxes().collect();
         assert!(
-            below.props().in_motion_heightmap() || below.has_fluid(),
+            clustine_data::faces::face_full(&boxes, clustine_data::Face::Up),
             "seed {seed}: on {below:?}"
         );
-        on_water += usize::from(below.has_fluid());
-        // Nothing above blocks motion or is a fluid: the player is not in the
-        // ground, not under an overhang's rock and not under water.
-        for y in feet..chunk.min_y() + chunk.height() as i32 {
-            let above = state(y);
-            assert!(
-                !above.props().in_motion_heightmap() && !above.has_fluid(),
-                "seed {seed}: {above:?} at {y} over the feet at {feet}"
-            );
-        }
+        assert!(!below.has_fluid(), "seed {seed}: on {below:?}");
+        assert!(
+            !chunk.get(x, spawn.y, z).unwrap().has_fluid(),
+            "seed {seed}: in a fluid"
+        );
+        // The same every time: a world keeps what it got, and a crash before it was
+        // kept gets it again.
+        assert_eq!(TerrainGenerator::new(seed).spawn(), spawn);
     }
-    assert!(on_water >= 1, "the sea of seed {SEED} is at its origin");
-
-    // The sea of that seed is 63 high, and the player's feet are over it.
-    assert_eq!(TerrainGenerator::new(SEED).spawn_point().y, 63.0);
 }
 
 /// The preview made on the scheduler's pool is the preview: the same chunk, lit the

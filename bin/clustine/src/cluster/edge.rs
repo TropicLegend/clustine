@@ -58,7 +58,7 @@ pub async fn edge(args: EdgeArgs) -> Result<()> {
     // Players enter the world in its home region, which the world store's list names
     // and the routing table passes on. The edge is told that region and nothing else of
     // how the world is divided.
-    let (routing, relinks) = Routing::new(home, table.spawn, identity, Vec::new());
+    let (routing, relinks) = Routing::new(home, identity, Vec::new());
     let edge = Edge::bind(args.bind, args.edge.clone(), routing)
         .await
         .with_context(|| format!("listening on {}", args.bind))?;
@@ -418,7 +418,6 @@ async fn next_table(watch: &mut Option<RoutingWatch>) -> Option<RoutingTable> {
 #[cfg(test)]
 mod tests {
     use clustine_region::RegionRoute;
-    use clustine_world::Vec3;
 
     use super::*;
 
@@ -431,7 +430,6 @@ mod tests {
         };
         RoutingTable {
             version: 1,
-            spawn: Vec3::new(0.5, 64.0, 0.5),
             routes: routed.iter().map(route).collect(),
             home: home.map(RegionId),
             absorbed: Vec::new(),

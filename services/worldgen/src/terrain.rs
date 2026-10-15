@@ -36,7 +36,7 @@ use clustine_terrain::biome::{BiomeSource, Dimension};
 use clustine_terrain::fill::Terrain;
 use clustine_terrain::surface::Biomes;
 use clustine_world::generation::GeneratorSettings;
-use clustine_world::{BIOME_CELLS, Biome, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE, Vec3};
+use clustine_world::{BIOME_CELLS, Biome, BlockPos, Chunk, ChunkGenerator, ChunkPos, SECTION_SIZE};
 
 /// The version of the terrain generator: what a chunk says it is exactly as made by
 /// (`docs/adr/0022-what-a-chunk-carries.md`, section 1), and what its light says its
@@ -134,13 +134,15 @@ impl TerrainGenerator {
 
     /// What a client is sent in place of the seed, and blurs the borders of biomes
     /// with: the game's `BiomeManager.obfuscateSeed`.
-    pub fn hashed_seed(&self) -> i64 {
-        obfuscate_seed(self.seed)
+    pub fn hashed_seed(seed: i64) -> i64 {
+        obfuscate_seed(seed)
     }
 
-    /// The height of the dimension's sea, which a client is told when it logs in.
-    pub fn sea_level(&self) -> i32 {
-        self.terrain().settings().sea_level
+    /// The height of the overworld's sea, which a client is told when it logs in. Like
+    /// [`Self::hashed_seed`] it needs no generator, so that whoever only tells clients
+    /// of the world makes none.
+    pub fn sea_level() -> i32 {
+        Dimension::Overworld.noise_settings().sea_level
     }
 
     fn terrain(&self) -> &Terrain {
@@ -250,41 +252,21 @@ impl TerrainGenerator {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         kept.chunks.clear();
     }
-
-    /// Where the game puts a new world's spawn: the block a player's feet are in. The
-    /// search of the climate gives the chunk to begin from
-    /// (`clustine_terrain::spawn`), and the first column to stand on in a spiral of
-    /// chunks around it is the spawn (`crate::spawn`). Asks for the chunks it reads,
-    /// mostly one, and is the same for a seed every time.
-    pub fn spawn(&self) -> clustine_world::BlockPos {
-        let [x, z] = clustine_terrain::spawn::search_origin(self.seed);
-        let origin = ChunkPos::new(x >> 4, z >> 4);
-        crate::spawn::place_to_stand(origin, |position| self.shared(position))
-    }
-
-    /// Where players enter the world: above the middle of the block at the origin,
-    /// as in the flat world, standing on the ground of that column. (Where the game
-    /// itself would put them is step T8 of `docs/groundwork/terrain-plan.md`.)
-    ///
-    /// The ground is the highest block of the column that blocks motion, in the
-    /// chunk as it is generated: a cave that opens there counts. Where that is under
-    /// water or lava the player is put on the fluid's surface and not on the bed.
-    pub fn spawn_point(&self) -> Vec3 {
-        let chunk = self.shared(ChunkPos::new(0, 0));
-        let top = chunk.min_y() + chunk.height() as i32;
-        let state = |y: i32| chunk.get(0, y, 0);
-        let ground = (chunk.min_y()..top)
-            .rev()
-            .find(|y| state(*y).is_some_and(|state| state.props().in_motion_heightmap()));
-        let mut feet = ground.map_or(chunk.min_y(), |ground| ground + 1);
-        while state(feet).is_some_and(|state| state.has_fluid()) {
-            feet += 1;
-        }
-        Vec3::new(0.5, f64::from(feet), 0.5)
-    }
 }
 
 impl ChunkGenerator for TerrainGenerator {
+    /// The chunk the game's search of the climate ends in (`clustine_terrain::spawn`).
+    fn origin(&self) -> ChunkPos {
+        let [x, z] = clustine_terrain::spawn::search_origin(self.seed);
+        ChunkPos::new(x >> 4, z >> 4)
+    }
+
+    /// As every generator's, from the chunks before they are lit: the light changes
+    /// nothing the spawn is chosen by.
+    fn spawn(&self) -> BlockPos {
+        clustine_world::spawn::place_to_stand(self.origin(), |position| self.shared(position))
+    }
+
     fn generate(&self, position: ChunkPos) -> Chunk {
         let centre = self.shared(position);
         // North-west first, row by row from the north, without the centre: the order

@@ -833,7 +833,7 @@ fn a_region_that_names_its_stays_after_a_restore_is_told_which_are_dead() {
 /// `issued` cross the connection as they are.
 #[test]
 fn notes_and_their_answers_cross_a_connection() {
-    let store = Store::memory_divided(generator(), division()).unwrap();
+    let store = Store::memory_told(generator(), division()).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = serve(store.clone(), listener).unwrap();
     let address = server.local_addr().to_string();

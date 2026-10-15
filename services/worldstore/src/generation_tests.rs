@@ -1292,7 +1292,7 @@ fn close_writes_what_is_pending_in_a_world_on_disk() {
     let directory = tempfile::tempdir().unwrap();
     let path = FileChunks::new(Arc::new(MemoryDisk::default()), directory.path()).chunk_path(A);
     let (toy, control) = toy_of(VERSION);
-    let store = Store::local_divided(directory.path(), toy, gap()).unwrap();
+    let store = Store::local_told(directory.path(), toy, gap()).unwrap();
     let x = open(&store, hello(EAST, 1));
     let chunk = generated(&x, A);
     store.flush().unwrap();
@@ -1303,7 +1303,7 @@ fn close_writes_what_is_pending_in_a_world_on_disk() {
     control.wait_gone();
 
     let (toy, control) = toy_of(VERSION);
-    let store = Store::local_divided(directory.path(), toy, gap()).unwrap();
+    let store = Store::local_told(directory.path(), toy, gap()).unwrap();
     let x = open(&store, hello(EAST, 2));
     load(&x, A);
     assert_eq!(answer(&x), loaded(A, chunk));
