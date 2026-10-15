@@ -144,10 +144,11 @@ pub fn can_survive(state: BlockState, pos: BlockPos, level: &mut Level<'_>) -> b
         Survival::OnTag(tag) => in_block_tag(below, tag),
         Survival::OnTagByName => tag_by_name(state).is_some_and(|tag| in_block_tag(below, tag)),
         Survival::Mushroom => {
-            // The game asks for less light than 13; nothing is lit while features are
-            // placed, and the game's region answers 0 then (the plan, section 3).
+            // The game asks for less light than 13 where the block below does not
+            // override it; while features are placed its sky reads 15 everywhere
+            // (`Level::sky_light`), so only the blocks that override it hold one.
             in_block_tag(below, "minecraft:overrides_mushroom_light_requirement")
-                || below.props().is_solid_render()
+                || (level.raw_brightness(pos) < 13 && below.props().is_solid_render())
         }
         Survival::SugarCane => sugar_cane(below_pos, below, level),
         Survival::Cactus => cactus(pos, below, level),
@@ -409,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn stone_stays_anywhere_and_a_mushroom_on_any_full_opaque_block() {
+    fn stone_stays_anywhere_and_a_mushroom_only_where_the_block_below_overrides_light() {
         let mut world = World::flat(blocks::STONE, 64);
         let at = BlockPos::new(0, 65, 0);
         assert!(world.with_level(|level| can_survive(
@@ -417,6 +418,10 @@ mod tests {
             BlockPos::new(0, 200, 0),
             level
         )));
+        // The sky reads 15 while features are placed, under ground as well, so stone
+        // does not hold a mushroom then; mycelium does.
+        assert!(!world.with_level(|level| can_survive(blocks::RED_MUSHROOM, at, level)));
+        let mut world = World::flat(blocks::MYCELIUM, 64);
         assert!(world.with_level(|level| can_survive(blocks::RED_MUSHROOM, at, level)));
         assert!(!world.with_level(|level| can_survive(
             blocks::RED_MUSHROOM,

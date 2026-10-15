@@ -293,7 +293,8 @@ mod tests {
         let (pos, tick) = world.ticks[0];
         assert_eq!(pos, at);
         assert_eq!(tick.of, Ticked::Block(block_id(blocks::MAGMA_BLOCK) as u16));
-        assert_eq!(tick.delay, 1);
+        // A chunk being generated keeps no delay (`ProtoChunkTicks.schedule`).
+        assert_eq!(tick.delay, 0);
     }
 
     #[test]

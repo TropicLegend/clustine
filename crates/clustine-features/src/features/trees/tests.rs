@@ -309,7 +309,8 @@ fn water_beside_a_trunk_is_given_a_tick() {
         .collect();
     assert_eq!(ticks.len(), 1);
     assert_eq!(ticks[0].1.of, Ticked::Fluid(2));
-    assert_eq!(ticks[0].1.delay, 5);
+    // A chunk being generated keeps no delay (`ProtoChunkTicks.schedule`).
+    assert_eq!(ticks[0].1.delay, 0);
 }
 
 #[test]

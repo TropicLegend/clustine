@@ -196,6 +196,19 @@ impl<'a> Level<'a> {
         0
     }
 
+    /// The light of the sky at a block while features are placed: 15, also under
+    /// ground. No chunk within one of a run is lit before the run (it would need the
+    /// run's own chunk decorated first), and where a column has no light at all the
+    /// game's sky light answers 15 (`SkyLightSectionStorage.getLightValue`).
+    pub fn sky_light(&mut self, _at: BlockPos) -> u8 {
+        15
+    }
+
+    /// `getRawBrightness(at, 0)`: the greater of the sky's and the blocks' light.
+    pub fn raw_brightness(&mut self, at: BlockPos) -> u8 {
+        self.sky_light(at).max(self.block_light(at))
+    }
+
     /// `scheduleTick` of a block, which waits for phase B in the chunk.
     pub fn schedule_block_tick(&mut self, at: BlockPos, block: u16, delay: i32) {
         self.view
@@ -216,8 +229,10 @@ impl<'a> Level<'a> {
 }
 
 /// A tick of the game's normal priority, the one `scheduleTick` without a priority
-/// gives.
-fn tick(at: BlockPos, of: Ticked, delay: i32) -> ScheduledTick {
+/// gives, as a chunk being generated keeps it: without the delay it was asked for
+/// (`ProtoChunkTicks.schedule` saves every tick with a delay of nought), so that it
+/// falls due as soon as the chunk is whole.
+fn tick(at: BlockPos, of: Ticked, _delay: i32) -> ScheduledTick {
     ScheduledTick {
         at: InChunk::new(
             at.x.rem_euclid(16) as usize,
@@ -225,7 +240,7 @@ fn tick(at: BlockPos, of: Ticked, delay: i32) -> ScheduledTick {
             at.z.rem_euclid(16) as usize,
         ),
         of,
-        delay,
+        delay: 0,
         priority: 0,
     }
 }

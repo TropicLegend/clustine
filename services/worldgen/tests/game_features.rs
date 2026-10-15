@@ -273,6 +273,8 @@ type Tick = (At, String, i32, i32);
 #[derive(Debug, Default, PartialEq)]
 struct Written {
     blocks: Vec<u16>,
+    /// The biome of every cell, section by section in the order y, z, x.
+    biomes: Vec<String>,
     /// By position: the type and the data, compounds sorted by key.
     entities: BTreeMap<At, (String, Option<Nbt>)>,
     /// Sorted: position, what, delay, priority.
@@ -348,6 +350,14 @@ fn parse(text: &str) -> BTreeMap<ChunkPos, Written> {
                         .extend(std::iter::repeat_n(id, count.parse().unwrap()));
                 }
             }
+            "biomes" => {
+                for run in rest.split(' ') {
+                    let (name, count) = run.rsplit_once('*').unwrap();
+                    written
+                        .biomes
+                        .extend(std::iter::repeat_n(name.to_owned(), count.parse().unwrap()));
+                }
+            }
             "entity" => {
                 let mut parts = rest.split(' ');
                 let at = position(parts.next().unwrap());
@@ -412,6 +422,16 @@ fn ours(chunk: &Chunk, at: ChunkPos) -> Written {
                     .push(chunk.get(x, y, z).map_or(0, |state: BlockState| state.0));
             }
         }
+    }
+    let names = clustine_data::synced_registry("minecraft:worldgen/biome")
+        .expect("the biomes are a synchronised registry")
+        .entries;
+    for section in chunk.sections() {
+        written.biomes.extend(
+            section
+                .biomes()
+                .map(|biome| names[usize::from(biome.0)].to_owned()),
+        );
     }
     for (place, entity) in chunk.block_entities() {
         let at = (
@@ -485,9 +505,25 @@ fn differences(at: ChunkPos, game: &Written, ours: &Written) -> Vec<String> {
             id.and_then(|id| BlockState(*id).block())
                 .map_or("?", |block| block.name)
         };
+        let mut pairs: BTreeMap<(&str, &str), (usize, i32, i32)> = BTreeMap::new();
+        for index in &differing {
+            let y = min_y + (index / 256) as i32;
+            let pair = (name(game.blocks.get(*index)), name(ours.blocks.get(*index)));
+            let entry = pairs.entry(pair).or_insert((0, y, y));
+            entry.0 += 1;
+            entry.1 = entry.1.min(y);
+            entry.2 = entry.2.max(y);
+        }
+        let pairs: Vec<String> = pairs
+            .iter()
+            .map(|((theirs, mine), (count, low, high))| {
+                format!("{count} {theirs} for {mine} at y {low} to {high}")
+            })
+            .collect();
         found.push(format!(
-            "{at:?}: {} blocks differ, the first at ({}, {}, {}): the game has {} and Clustine {}",
+            "{at:?}: {} blocks differ ({}), the first at ({}, {}, {}): the game has {} and Clustine {}",
             differing.len(),
+            pairs.join(", "),
             at.x * 16 + x as i32,
             min_y + y as i32,
             at.z * 16 + z as i32,
@@ -516,10 +552,20 @@ fn differences(at: ChunkPos, game: &Written, ours: &Written) -> Vec<String> {
         ));
     }
     if game.ticks != ours.ticks {
+        let only = |these: &[Tick], those: &[Tick]| {
+            these
+                .iter()
+                .filter(|tick| !those.contains(tick))
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         found.push(format!(
-            "{at:?}: {} ticks in the game and {} in Clustine differ",
+            "{at:?}: {} ticks in the game and {} in Clustine differ; only the game's: {:?}; only Clustine's: {:?}",
             game.ticks.len(),
-            ours.ticks.len()
+            ours.ticks.len(),
+            only(&game.ticks, &ours.ticks),
+            only(&ours.ticks, &game.ticks)
         ));
     }
     if game.marks != ours.marks {
@@ -597,11 +643,28 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
 
     let ascending = game(seed, area, true, &classes, &pack_directory);
     let descending = game(seed, area, false, &classes, &pack_directory);
-    assert!(
-        ascending == descending,
-        "the game's chunks depend on the order within a rank, which ADR-0021 says they cannot"
-    );
     let game = parse(&ascending);
+    let other = parse(&descending);
+    // Runs of one rank do not meet (ADR-0021), so the two orders give one world, but
+    // for exact ties of biomes, which the game answers by what each of its threads
+    // looked up last: a chunk the two runs of the game made otherwise is left out
+    // where the game's own biomes differ between them within two chunks, and is a
+    // failure anywhere else.
+    let mut unsettled = Vec::new();
+    for (at, written) in &game {
+        if other.get(at) == Some(written) {
+            continue;
+        }
+        let biomes_differ = around(*at, 2).any(|near| {
+            matches!((game.get(&near), other.get(&near)), (Some(a), Some(b)) if a.biomes != b.biomes)
+        });
+        assert!(
+            biomes_differ,
+            "the game made {at:?} otherwise in the two orders within a rank, and not beside \
+             a tie of biomes it answered otherwise: the order of runs matters"
+        );
+        unsettled.push(*at);
+    }
 
     // The game's own buildings, from the jar `cargo datagen` downloaded, as a server
     // reads them from its operator's.
@@ -615,29 +678,102 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     let scheduler = Scheduler::new(stages, Options::for_processors(num_threads()));
     let compared: Vec<ChunkPos> = area
         .chunks()
-        .filter(|e| area.holds_the_runs_of(*e))
+        .filter(|e| area.holds_the_runs_of(*e) && !unsettled.contains(e))
         .collect();
     assert!(
         !compared.is_empty(),
         "the area is too small to compare a chunk"
     );
     let mut found = Vec::new();
+    let mut failed = Vec::new();
+    let mut beside_ties = Vec::new();
+    let mut made: BTreeMap<ChunkPos, Written> = BTreeMap::new();
     for at in &compared {
         let chunk = scheduler.finished(*at).expect("Clustine makes the chunk");
-        found.extend(differences(*at, &game[at], &ours(&chunk, *at)));
+        if chunk.with_failure() {
+            failed.push(*at);
+        }
+        let mine = ours(&chunk, *at);
+        let here = differences(*at, &game[at], &mine);
+        made.insert(*at, mine);
+        if here.is_empty() {
+            continue;
+        }
+        // Where two biomes are exactly tied the game answers by what its thread looked
+        // up last (the terrain plan, T3), so a feature asked about a biome there may be
+        // placed in one world and not the other: named, as the T-judges name them,
+        // where a chunk within two of this one has a cell of another biome in the game.
+        // Two: a run sees the biomes of the three by three around it and writes into
+        // the three by three around it.
+        let mut other_biomes = None;
+        for near in around(*at, 2) {
+            let Some(theirs) = game.get(&near) else {
+                continue;
+            };
+            let mine = match made.get(&near) {
+                Some(mine) => mine.biomes.clone(),
+                None => {
+                    let chunk = scheduler.finished(near).expect("Clustine makes the chunk");
+                    ours(&chunk, near).biomes
+                }
+            };
+            let differing: Vec<(usize, (&String, &String))> = theirs
+                .biomes
+                .iter()
+                .zip(&mine)
+                .enumerate()
+                .filter(|(_, (theirs, mine))| theirs != mine)
+                .collect();
+            if let Some((cell, (theirs, mine))) = differing.first() {
+                // Cells go section by section, sixty-four to a section, y, z, x.
+                let (section, inside) = (cell / 64, cell % 64);
+                let y = -16 + (section as i32) * 4 + (inside >> 4) as i32;
+                let (z, x) = ((inside >> 2) & 3, inside & 3);
+                other_biomes = Some(format!(
+                    "{} biome cells of {near:?} differ, the first ({}, {y}, {}) {theirs} in the game and {mine} in Clustine",
+                    differing.len(),
+                    near.x * 4 + x as i32,
+                    near.z * 4 + z as i32
+                ));
+                break;
+            }
+        }
+        match other_biomes {
+            Some(why) => beside_ties.extend(here.into_iter().map(|line| format!("{line}; {why}"))),
+            None => found.extend(here),
+        }
     }
+    // A placement that panicked was undone and marked its chunks (ADR-0021), and a
+    // read beyond the three by three was answered from terrain: either explains a
+    // difference, and neither is to happen.
+    let figures = scheduler.figures();
+    println!(
+        "Clustine: {} placements failed, chunks made with a failure {failed:?}; recorded {:?}",
+        figures.failed_placements, figures.recorded
+    );
     let mut report = String::new();
     writeln!(
         report,
-        "seed {seed}, area {:?} to {:?}: {} configured features turned off as not built, {} chunks compared",
+        "seed {seed}, area {:?} to {:?}: {} configured features turned off as not built, {} chunks compared, {} left out as the game's two runs made them otherwise beside a tie: {unsettled:?}",
         area.min,
         area.max,
         turned_off,
-        compared.len()
+        compared.len(),
+        unsettled.len()
     )
     .unwrap();
     for line in &found {
         writeln!(report, "  {line}").unwrap();
+    }
+    if !beside_ties.is_empty() {
+        writeln!(
+            report,
+            "beside cells where the game chose another of two exactly tied biomes:"
+        )
+        .unwrap();
+        for line in &beside_ties {
+            writeln!(report, "  {line}").unwrap();
+        }
     }
     print!("{report}");
     std::io::stdout().flush().unwrap();
@@ -702,6 +838,70 @@ fn areas_where_every_biome_of_the_overworld_stands() {
                 chunk.z + 11
             ),
             None => println!("{} not found", names[usize::from(*biome)]),
+        }
+    }
+}
+
+/// What Clustine's biomes are around a block where the judge found a difference
+/// (`CLUSTINE_GAME_FEATURES_BLOCK`, `x y z`): the eight cells the game's zoom chooses
+/// among, each with the biomes it is exactly tied with, which the game may answer
+/// otherwise.
+#[test]
+#[ignore = "a look into a difference; run by name with --ignored --nocapture"]
+fn the_biomes_around_a_block() {
+    use clustine_terrain::biome::{BiomeSource, Dimension};
+
+    let seed: i64 = std::env::var("CLUSTINE_GAME_FEATURES_SEED")
+        .map_or(13579, |seed| seed.parse().expect("a seed is a number"));
+    let block: Vec<i32> = std::env::var("CLUSTINE_GAME_FEATURES_BLOCK")
+        .expect("CLUSTINE_GAME_FEATURES_BLOCK names a block")
+        .split_whitespace()
+        .map(|part| part.parse().expect("a block is three numbers"))
+        .collect();
+    let names = clustine_data::synced_registry("minecraft:worldgen/biome")
+        .expect("the biomes are a synchronised registry")
+        .entries;
+    let source = BiomeSource::new(seed, Dimension::Overworld);
+    let zoom = clustine_terrain::biome::zoom::Zoom::new(seed);
+    let (x, y, z) = (block[0], block[1], block[2]);
+    println!("the zoom chooses the cell {:?}", zoom.cell(x, y, z));
+    for corner in 0..8 {
+        let cell = (
+            ((x - 2) >> 2) + (corner >> 2 & 1),
+            ((y - 2) >> 2) + (corner >> 1 & 1),
+            ((z - 2) >> 2) + (corner & 1),
+        );
+        let found = source.found(cell.0, cell.1, cell.2);
+        let tied: Vec<&str> = found
+            .tied
+            .iter()
+            .map(|biome| names[usize::from(biome.0)])
+            .collect();
+        println!(
+            "cell {cell:?}: {} tied with {tied:?}",
+            names[usize::from(found.biome.0)]
+        );
+    }
+    // Further out, the cells whose biome is not the block's or that are tied: where a
+    // feature's origin may have been asked about.
+    let own = source.biome(x >> 2, y >> 2, z >> 2);
+    for dx in -3..=3 {
+        for dy in -3..=3 {
+            for dz in -3..=3 {
+                let cell = ((x >> 2) + dx, (y >> 2) + dy, (z >> 2) + dz);
+                let found = source.found(cell.0, cell.1, cell.2);
+                if found.biome != own || !found.tied.is_empty() {
+                    let tied: Vec<&str> = found
+                        .tied
+                        .iter()
+                        .map(|biome| names[usize::from(biome.0)])
+                        .collect();
+                    println!(
+                        "near: cell {cell:?}: {} tied with {tied:?}",
+                        names[usize::from(found.biome.0)]
+                    );
+                }
+            }
         }
     }
 }

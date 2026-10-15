@@ -61,6 +61,13 @@ pub fn update_shape(
     if state.property("waterlogged") == Some("true") {
         level.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
     }
+    // A block that falls looks again whether it is held up once something beside it
+    // changes (`FallingBlock.updateShape`, and suspicious sand and gravel's
+    // `BrushableBlock.updateShape`), however it is held up now.
+    if is_class(state, BlockClass::FallingBlock) || is_class(state, BlockClass::BrushableBlock) {
+        level.schedule_block_tick(pos, tick_id(state), 2);
+        return state;
+    }
     if is_class(state, BlockClass::LeavesBlock) {
         let distance = leaf_distance(neighbour).unwrap_or(7) + 1;
         let own = state

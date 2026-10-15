@@ -204,6 +204,36 @@ public class GameFeatures {
         }
         text.append(' ').append(last).append('*').append(count).append('\n');
 
+        // Biome cells of each section in the order y, z, x, in runs of names: where the
+        // game answered an exact tie of biomes otherwise than Clustine, a feature may be
+        // placed in one world and not in the other.
+        text.append("biomes");
+        String lastBiome = null;
+        int biomes = 0;
+        int sections = chunk.getSections().length;
+        for (int index = 0; index < sections; index++) {
+            int quartY = chunk.getSectionYFromSectionIndex(index) << 2;
+            for (int y = 0; y < 4; y++) {
+                for (int z = 0; z < 4; z++) {
+                    for (int x = 0; x < 4; x++) {
+                        String biome = chunk.getNoiseBiome(
+                            (pos.x() << 2) + x, quartY + y, (pos.z() << 2) + z)
+                            .unwrapKey().orElseThrow().identifier().toString();
+                        if (biome.equals(lastBiome)) {
+                            biomes++;
+                            continue;
+                        }
+                        if (biomes > 0) {
+                            text.append(' ').append(lastBiome).append('*').append(biomes);
+                        }
+                        lastBiome = biome;
+                        biomes = 1;
+                    }
+                }
+            }
+        }
+        text.append(' ').append(lastBiome).append('*').append(biomes).append('\n');
+
         // Block entities, by position: those made and those still kept as data.
         ProtoChunk proto = (ProtoChunk) chunk;
         TreeMap<Long, String> entities = new TreeMap<>();
