@@ -60,7 +60,8 @@ End (phase D); survival mode, inventories beyond the hotbar, and crafting.
   while a first view is made (T8, [plan](groundwork/t8-plan.md)). Not built: W4
   (serving a world the official server made).
 
-**Next**, in the terrain plan's order: the features (F),
+**Next**, in the terrain plan's order: the features (F, agreed
+[plan](groundwork/f-plan.md)),
 the structures' blocks (S) and block behaviour (B) side by side; then the Nether and
 the End (D).
 

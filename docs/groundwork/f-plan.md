@@ -1,7 +1,8 @@
 # Phase F: features, placed as the game places them
 
 - Status: **Drafted on 2026-10-15 and revised after an independent review** the same
-  day (its sixteen findings are answered in the last section). Phase F of the
+  day (its sixteen findings are answered in the last section), **and agreed**: the
+  owner answered the two questions of section 6 as recommended. Phase F of the
   [terrain plan](terrain-plan.md), section 3, made concrete;
   [ADR-0021](../adr/0021-generation-is-a-function.md) decided the order of runs, the
   view a run works in and how runs are judged, and this plan does not reopen those.
