@@ -58,7 +58,8 @@ End (phase D); survival mode, inventories beyond the hotbar, and crafting.
   own classes. Not built: W4 (serving a world the official server made) and T8.
 
 **Next**, in the terrain plan's order: T8, a new world's spawn chosen as the game
-chooses it and fixed for that world, and the speed measured; then the features (F),
+chooses it and fixed for that world, and the speed measured (agreed
+[plan](groundwork/t8-plan.md)); then the features (F),
 the structures' blocks (S) and block behaviour (B) side by side; then the Nether and
 the End (D).
 
