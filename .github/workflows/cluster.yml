@@ -1,7 +1,8 @@
 name: Cluster
 
 # Deploys Clustine on a Kubernetes cluster inside the runner (kind) and lets bots walk
-# across the boundary between two workers; see deploy/README.md. It builds a release
+# across the boundary between two regions, each on a worker of its own; see
+# deploy/README.md. It builds a release
 # image and starts a cluster, so it only runs when something changes that ends up in the
 # image or in the deployment.
 on:

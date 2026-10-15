@@ -4,13 +4,17 @@ A from-scratch Minecraft: Java Edition server that simulates **one world across 
 instances**. Adding instances adds compute and memory to the same world rather than
 creating more separate servers.
 
-> **Status: pre-alpha.** Players walk around a flat creative world, see each other and
-> build; that world is simulated in regions that follow the players, split when a group
-> goes off on its own and merged when it comes back, and shared out among several
-> worker processes; and a worker or the world store can die without anyone being
-> disconnected or losing anything they were shown: another worker carries on with the
-> region from what is on disk. There is one edge and one coordinator, and no terrain
-> yet. See the [roadmap](docs/roadmap.md).
+> **Status: pre-alpha.** Players walk around a creative world, see each other and
+> build: a flat world, or with `--seed` the game's bare overworld for that seed, block
+> for block (no trees, plants or structures' buildings yet). Blocks are placed and used
+> by vanilla's rules: doors open, stairs face the player, fences join their
+> neighbours, buckets pour (nothing flows yet). The world is simulated in regions that
+> follow the players, split when a group goes off on its own and merged when it comes
+> back, and shared out among several worker processes; a worker or the world store
+> can die without anyone being disconnected or losing anything they were shown. A
+> player who leaves comes back where they left, also in another region. There is one
+> coordinator. See the [roadmap](docs/roadmap.md), whose first section says where the
+> work stands.
 
 ## Goals
 
@@ -35,22 +39,24 @@ creating more separate servers.
 - [Library evaluation](docs/library-evaluation.md)
 - [World format](docs/world-format.md)
 - [Protocol notes for Minecraft 26.3](docs/protocol-26.3.md)
-- [Architecture decision records](docs/adr/)
+- [Architecture decision records](docs/adr/README.md)
+- [Plans and studies before a milestone](docs/groundwork/), among them the
+  [terrain plan](docs/groundwork/terrain-plan.md)
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `crates/` | Shared libraries: protocol, game data, world model, world format, simulation, region graph, RPC |
-| `services/` | One crate per service: edge, coordinator, worker, worldstore, worldgen, playerdata, operator |
+| `crates/` | Shared libraries: protocol, game data, world model, world format, simulation, regions and who runs them, RPC; light (`clustine-light`); terrain generation (`clustine-noise`, `clustine-terrain`, `clustine-structures`, and `clustine-worldgen-data`, emitted from the game's data) |
+| `services/` | One crate per service: edge, coordinator, worker, worldstore, worldgen (the generator and its scheduler); `playerdata` and `operator` are empty so far |
 | `bin/clustine` | Single-binary mode running every service in one process |
-| `tools/` | Development tools: the `botswarm` load-test harness and the `datagen` table generator |
+| `tools/` | Development tools: the `botswarm` load-test harness, the `datagen` table generator, and `check.sh`, which runs every check CI runs |
 | `deploy/` | Kubernetes manifests and the test that runs a cluster in kind |
 | `docs/` | Architecture, roadmap, parity matrix and decision records |
 
 ## Building
 
-Requires Rust 1.85 or newer.
+Requires Rust 1.88 or newer.
 
 ```bash
 cargo build --workspace
@@ -63,8 +69,10 @@ cargo test --workspace
 ### Running
 
 The server listens on `127.0.0.1:25565` by default and runs in offline mode: names are
-not authenticated, so keep it on localhost. So far players can log in, are put into a
-flat creative world, can walk around it, see each other, and break and place blocks.
+not authenticated, so keep it on localhost. Players are put into a flat creative world
+(or the land of a seed, below), walk and fly around it, see each other, break blocks,
+place them as vanilla does, open doors and gates and use buckets. Someone who leaves
+and comes back is where they were, flying or not, with the same hotbar.
 The world is kept in the directory `world` (see `--world`). Changes are logged as they
 happen, so they survive the server being killed.
 
@@ -75,8 +83,10 @@ cargo run -p clustine
 The world begins as one region. A group of players that goes far from everybody else
 (30 chunks at the usual view distance) is split off into a region of its own, which is
 simulated on a thread of its own, and merged again when it comes back within 22
-chunks. Each is a pause of about a fifth of a second for those it concerns, and the
-log says when it happens. `--release` makes the pauses several times shorter.
+chunks. Each is a pause for those it concerns, and the log says when it happens: in an
+optimised build (`--release`) well under a second, also for a crowd of a hundred
+(measured with the world on network storage: the
+[roadmap](docs/roadmap.md) has the numbers).
 
 Regions can also be pinned side by side, by naming the chunk x coordinates where they
 meet, to have a boundary at a known place. Players are handed from region to region as
@@ -90,11 +100,13 @@ cargo run -p clustine -- --pin 4 --reshape by-hand
 With a seed the world is not flat but the bare land of the game's overworld for that
 seed: its mountains, coasts, oceans, rivers, caves and ravines, with the game's
 biomes, block for block what the game makes before it adds structures and anything
-that grows. There are no trees, plants, ores (but the large veins), villages or other
-structures yet. This is a preview: chunks are made on one thread as they are asked
-for, so the land around someone who joins first takes about six seconds to appear
-at the usual view distance, and it needs `--release`. A world is made one way for good, so give it a directory of its
-own; one that holds a flat world, or a world of another seed, is refused.
+that grows; the ground is already levelled where a village will stand. There are no
+trees, plants, ores (but the large veins), or structures' buildings yet. Chunks are
+made on a pool of threads as they are first asked for and kept, so a second visit
+reads them from the disk; in an optimised build the land around someone who joins
+first is all there after about a second. A world is made one way for good, so give it
+a directory of its own; one that holds a flat world, or a world of another seed, is
+refused.
 
 ```bash
 cargo run --release -p clustine -- --seed 13579 --world world-13579
@@ -129,7 +141,7 @@ cargo run -p clustine -- edge
 
 Players connect to the edge on `127.0.0.1:25565` once a worker runs the region players
 enter the world in, which takes a moment: a coordinator gives nothing away for the
-first ten seconds. With `coordinator --reshape by-hand` and `worldstore --pin 4` the
+first five seconds (its lease, `--lease-seconds`). With `coordinator --reshape by-hand` and `worldstore --pin 4` the
 world is two pinned regions, one for each worker, and nothing merges or splits unless
 it is asked for (`clustine merge`, `clustine split`, `clustine move`). For a world with
 a seed, give the same `--seed` to the world store (which makes the chunks), the

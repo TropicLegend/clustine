@@ -3,18 +3,70 @@
 Ordering principle: get a distributed world working with trivial gameplay first, then add
 vanilla mechanics on top of it.
 
-| Milestone | Scope | Done when |
-|---|---|---|
-| **M0 Foundations** | Workspace skeleton, CI, architecture and decision records, parity matrix template, evaluation of reusable libraries, `botswarm` skeleton | Workspace builds and tests pass locally and in CI |
-| **M1 Single-node walking skeleton** | Login, flat world, movement, placing and breaking blocks, chunk streaming through edge, world persisted in the Clustine format, single-binary mode | `botswarm` sessions (login, walk, place, break) pass against the single binary; world survives a restart |
-| **M2 Two-worker cluster** | Coordinator with leases, static region assignment, player and entity handoff between workers | Bots walk across a worker boundary on a local Kubernetes cluster with no disconnects and no duplicated entities |
-| **M3 Dynamic regions** | Merge and split, live migration, crash recovery from the log, fencing | Chaos tests killing workers lose no acknowledged state |
-| **M4 Kubernetes** | Operator, Helm chart, autoscaling on tick time, drain on termination, metrics and tracing | Rolling update of all workers under bot load with no disconnects |
-| **M5 Dense crowds** | Independent fan-out scaling, per-region time dilation, dynamic view distance | Benchmark with 1,000+ bots in one place published |
-| **M6+ Vanilla parity** | Tiers T1–T5 of the [parity matrix](parity-matrix.md), worked on in parallel | Nightly differential tests against the vanilla server |
-| **M7 Plugins** | WebAssembly plugin API, later the Bukkit bridge | Example plugins run unchanged on one and on many workers |
+| Milestone | Scope | Done when | State |
+|---|---|---|---|
+| **M0 Foundations** | Workspace skeleton, CI, architecture and decision records, parity matrix template, evaluation of reusable libraries, `botswarm` skeleton | Workspace builds and tests pass locally and in CI | Done |
+| **M1 Single-node walking skeleton** | Login, flat world, movement, placing and breaking blocks, chunk streaming through edge, world persisted in the Clustine format, single-binary mode | `botswarm` sessions (login, walk, place, break) pass against the single binary; world survives a restart | Done |
+| **M2 Two-worker cluster** | Coordinator with leases, static region assignment, player and entity handoff between workers | Bots walk across a worker boundary on a local Kubernetes cluster with no disconnects and no duplicated entities | Done |
+| **M3 Dynamic regions** | Merge and split, live migration, crash recovery from the log, fencing | Chaos tests killing workers lose no acknowledged state | Done on 2026-10-10 |
+| **M4 Kubernetes** | Operator, Helm chart, autoscaling on tick time, drain on termination, metrics and tracing | Rolling update of all workers under bot load with no disconnects | Not begun |
+| **M5 Dense crowds** | Independent fan-out scaling, per-region time dilation, dynamic view distance | Benchmark with 1,000+ bots in one place published | Not begun |
+| **M6+ Vanilla parity** | Tiers T1–T5 of the [parity matrix](parity-matrix.md), worked on in parallel | Nightly differential tests against the vanilla server | Begun: terrain and placing |
+| **M7 Plugins** | WebAssembly plugin API, later the Bukkit bridge | Example plugins run unchanged on one and on many workers | Not begun |
 
 M6 can start once M3 has stabilised the simulation API; it does not wait for M4 and M5.
+After M3 the owner asked for two pieces of work as milestones of their own
+(2026-10-08): every service with several replicas, and terrain generation. Both have
+agreed plans, below.
+
+## Where the work stands (2026-10-15)
+
+This section is the current state; the sections after it are the history of how it
+came about, with what was measured on the way.
+
+**What a player has.** A creative world, flat or with `--seed` the game's bare
+overworld for that seed: its biomes, the shape of its land, its surface, ore veins,
+caves and ravines, block for block what the game makes before anything grows on it,
+with the ground levelled where structures will stand. Light as the game's, also after
+blocks change. Placing and using blocks by vanilla's rules: facing, halves,
+connections to neighbours as placed, waterlogging, doors, trapdoors, fence gates,
+flower pots, buckets and lily pads. A player who leaves comes back where they left,
+looking the same way, flying or not, with the same hotbar. The world runs in regions
+that follow their players across several workers; a worker or the world store can
+die without anyone being disconnected or losing what they were shown.
+
+**What a player will miss within minutes**, all of it planned: trees, plants, the ores
+but for the large veins, lakes and structures' buildings (phases F and S of the
+terrain plan); water and lava that flow, sand that falls, and blocks beside a placed or
+broken one that change in turn (phase B); animals and monsters; the Nether and the
+End (phase D); survival mode, inventories beyond the hotbar, and crafting.
+
+**Built since M3:**
+
+- *Replicas, phase R1* (2026-10-10 and 11, [ADR-0020](adr/0020-one-stay-per-player.md)):
+  the world store keeps one stay per player, and a second login puts the first out.
+  The later phases (an edge's planned stop, several coordinators, moving by load, a
+  store that survives its node) are [planned](groundwork/replicas-plan.md) and not
+  begun.
+- *Terrain* ([plan](groundwork/terrain-plan.md), agreed on 2026-10-10): the trials and
+  the data from the jar (G0 to G6); light (W1, and at the edge W3,
+  [ADR-0023](adr/0023-light-at-the-edge.md)); the chunk's new form (W2,
+  [ADR-0022](adr/0022-what-a-chunk-carries.md)); generation on a pool with what it made
+  stored (W5, [ADR-0021](adr/0021-generation-is-a-function.md)); placing and using
+  (W6, [plan](groundwork/w6-plan.md)); noise, routers, biomes, the fill, the surface,
+  the carvers and the structures' starts (T1 to T7), each judged against the game's
+  own classes. Not built: W4 (serving a world the official server made) and T8.
+
+**Next**, in the terrain plan's order: T8, a new world's spawn chosen as the game
+chooses it and fixed for that world, and the speed measured; then the features (F),
+the structures' blocks (S) and block behaviour (B) side by side; then the Nether and
+the End (D).
+
+**What to try with a real client** is under "Where the work after M3 stands" below:
+a player's place kept across leaving (R1), placing and using (W6), and the land beside
+the game's (`--seed`). The trials written for M3 under "Where M3 stands" were written
+before R1: where they expect a player who joins again to be at the spawn point, they
+are now where they left.
 
 ## M1 steps
 
@@ -892,7 +944,8 @@ cargo run --release -p clustine -- --world trial
    after it whatever you do out there. Each sees the other and what the other builds,
    as at the spawn point.
 7. One of you leaves the game out there and joins again. **Expected**: they are at
-   the spawn point; the other sees their figure go and nothing else; no line with
+   the spawn point (since R1, where they left; the rest of this step then does not
+   happen); the other sees their figure go and nothing else; no line with
    `split` or `merge`. Then the one at the spawn point flies out to the other.
    **Expected**: within 352 blocks of the other, `a merge is begun by the distances
    survivor=0 absorbed=3`; and when both are east of x = 496 and ten seconds have
@@ -901,7 +954,7 @@ cargo run --release -p clustine -- --world trial
    joins is in the home region, which survives every merge), not a fault.
 8. Build and break out there and at the spawn point, stop the server with Ctrl-C,
    start it again with the same line. **Expected**: `running a region` for region 0
-   and for a part that was there; you join at the spawn point; every block is as you
+   and for a part that was there; you join at the spawn point (since R1, where you left); every block is as you
    left it, out there as well.
 
 To see it sooner, on foot: `cargo run --release -p clustine -- --world trial3
@@ -958,7 +1011,8 @@ Seen and left as it is, or not tried, in C5:
   for the split, and when their new region is moved to the other worker. Whether a
   part should stay where it was made while the workers are nearly even is a question
   to the owner (the record's open question 2).
-- Somebody who joins again and flies back out to a friend stands that friend still
+- (Before R1, which ended it: a player who joins again enters where they left.)
+  Somebody who joins again and flies back out to a friend stands that friend still
   twice (step 7 above).
 - Nothing prints which regions there are; their numbers are in the coordinator's log
   only. A `clustine regions` is a day's work and comes with C6 if the trial is hard to
@@ -966,7 +1020,7 @@ Seen and left as it is, or not tried, in C5:
 - The comparisons with the official server were not run for C5.0 to C5.9 when those
   were pushed, as this machine had no Java then. Run on the commit that has the
   tests of C5.8, all six pass.
-- Not tried: two edges; more than two workers; real clients.
+- Not tried: two edges (tried since, in R1.7); more than two workers; real clients.
 
 ### After M3, as the owner asked on 2026-10-08
 
@@ -976,8 +1030,8 @@ review first:
 - **Every service with several replicas**, highly available and balanced by load. M3
   leaves one coordinator with nothing on disk and one edge whose death takes its
   players with it (see the limits below); regions that survive their worker and edges
-  that survive a region are what this builds on. **A plan is proposed and waits for
-  the owner:** [groundwork/replicas-plan.md](groundwork/replicas-plan.md). It rests on
+  that survive a region are what this builds on. **A plan was proposed and agreed on
+  2026-10-10, and its phase R1 is built:** [groundwork/replicas-plan.md](groundwork/replicas-plan.md). It rests on
   the groundwork of 2026-10-08
   ([groundwork/replicas-and-availability.md](groundwork/replicas-and-availability.md)),
   which was written before regions followed their players and is checked against the
@@ -1009,7 +1063,7 @@ review first:
   store surviving a node to a standby store of Clustine's own, which then has to
   hold a write before it is called safe.
 - **Terrain generation**, reusing what SteelMC or Pumpkin have, which ADR-0002 chose
-  the AGPL for. **A plan is proposed and waits for the owner:**
+  the AGPL for. **A plan was proposed and agreed on 2026-10-10:**
   [groundwork/terrain-plan.md](groundwork/terrain-plan.md). It rests on the groundwork
   of 2026-10-08 ([groundwork/terrain-generation.md](groundwork/terrain-generation.md),
   written from web pages) and on its check against clones of both projects, which the
@@ -1072,7 +1126,8 @@ other questions go by what the plans recommend unless the owner says otherwise.
   takes about 22 ms there. Measured on it, unoptimised, with four bots: a merge takes
   about a second by the command (0.19 s with the world in memory), a move 0.3 to 0.4 s
   (0.06 s), a split 0.3 s. That is over what ADR-0017 set for a merge, so the store's
-  syncs in turn are being counted and cut next; the pauses of the tables above were
+  syncs in turn are being counted and cut next (the runner's part was built; the
+  store's part was measured and set aside, below); the pauses of the tables above were
   measured on another disk.
 - *Terrain, later the same day.* The plan is agreed. Where the official server's
   result depends on the order chunks were made in, block for block means equal to the
@@ -1102,7 +1157,11 @@ plans):
 The owner also asked for the work to go on without waiting for them: at each stop of M3
 what to try with real clients is written down here, and the next phase begins.
 
-### Where the work after M3 stands (2026-10-11)
+### Where the work after M3 stands
+
+Written as each step was done, from 2026-10-11 to 2026-10-15; the summary at the top
+of this file is the current state. Where a later step changed a number or a
+statement, the earlier one says so.
 
 **Replicas, phase R1: a player's place is kept by the world store**
 ([ADR-0020](adr/0020-one-stay-per-player.md)). Built and on `main`: the types (R1.0b),
@@ -1115,7 +1174,7 @@ the earlier records (R1.8), and the bots and their ledger across a leave (R1.6, 
 found no fault either). The setting that the steps were built behind is gone: there is
 one behaviour, and the phase is built. The one number of R1.7 that looked wrong (3.8 s at the
 spawn point with twenty joining far apart, in an unoptimised build beside other work)
-is 0.25 s at worst in an optimised build on the network disk.8 s at worst, where a second is the bound.
+is 0.25 s at worst in an optimised build on the network disk.
 
 What a player notices from here, and **what to try with a real client**
 (`cargo run --release -p clustine`). **A world made by an earlier build is refused at
@@ -1138,8 +1197,9 @@ directory away, or name another with `--world`, and a new world is made:
 
 **Terrain** ([plan](groundwork/terrain-plan.md)): the trials G0 to G3, the noise crate
 (T1), the emitted routers for all three dimensions (first part of T2), the light crate
-(W1) and the tables made from the jar (G6) are built; nothing of it is in the running
-server yet, which still serves the flat world. The chunk's new form
+(W1) and the tables made from the jar (G6) are built. (When this was written the
+running server served only the flat world; since 2026-10-14 `--seed` serves the land,
+below.) The chunk's new form
 ([ADR-0022](adr/0022-what-a-chunk-carries.md)) is built: blocks
 packed behind a palette (2 KB a section where it was 8), a biome for each cell, block
 entities, the four heightmaps, light and what generation leaves for later carried by
@@ -1231,9 +1291,9 @@ beyond its box (which doors a stronghold has, where a mineshaft has rails), whic
 falls to the step that places blocks. Four things the pinned jar does otherwise than
 SteelMC were found on the way; the crate's head names them. Starts cost 38 µs a
 chunk on average; a bent chunk's fill takes twice an unbent one's, for the 7% that
-are bent. The `--seed` preview bends its ground as well (version 2 of its chunks,
-so a world made by version 1 is refused), keeping the starts of the last 4,096
-chunks: a join at view distance 8 still takes about 6 s.
+are bent. The `--seed` preview bends its ground as well (version 2 of its chunks),
+keeping the starts of the last 4,096 chunks: a join at view distance 8 still took
+about 6 s then, on one thread; since W5, below, it takes about 1 s.
 
 So for a seed the land has the game's shape, the game's skin, the game's caves and
 the game's building sites: a chunk takes about 9 ms on one thread. Still to come:
@@ -1256,7 +1316,8 @@ each chunk it made, so a chunk is made once.
   block of that column that blocks motion, or on the water where that is under water
   (the game's own choice of a place is T8). On seed 13579 that is the sea at a coast:
   one sinks unless one flies.
-- A world records what made it (`terrain;preview 2;minecraft:overworld;seed 13579`),
+- A world records what made it (`terrain;preview;minecraft:overworld;seed 13579`, and
+  since W5 the generator's version on a line of its own, `generator-version=2`),
   and is refused with another seed or without one, as a flat world is with a seed.
 - In a cluster the seed is told to the world store, the coordinator and every edge
   (`--seed` on each); nothing checks that they agree, and the manifests under
@@ -1267,7 +1328,7 @@ each chunk it made, so a chunk is made once.
 - The bots' scenarios that judge a world (`cross`, `ledger`, `World::clustine()`)
   know the flat world's ground and are for the flat world only.
 
-What it costs, in an optimised build on one thread of this machine (`cargo run
+What it cost before W5 (below), in an optimised build on one thread of this machine (`cargo run
 --release -p clustine-worldgen --example terrain_speed`): a chunk's blocks and
 biomes 12 ms, its light beside eight 2 ms; a chunk alone, with nothing kept, 110 ms
 (nine chunks' blocks); in a run of neighbours 57 to 70 chunks a second. Through the
@@ -1360,7 +1421,8 @@ clustine` (the flat world), or with `--seed 13579`, in creative mode:
 3. Torches, signs, banners, buttons, levers and ladders on the side of a block, and
    on top; a lantern under a block hangs. A bed is two blocks.
 4. Fences, panes and walls beside stone and each other: the one you place joins what
-   is there. The one already there does not join back yet, which phase B brings.
+   is there. The one already there does not join back yet, which B1 of the terrain
+   plan's phase B brings.
 5. A water bucket on the ground and on a slab (the slab is waterlogged); an empty
    bucket on the water takes it back. A lily pad on water. A poppy into a flower pot.
 6. Build a tower at 0, 0 and join with a new player name: they stand on top of it.
@@ -1400,7 +1462,8 @@ world), both in creative mode. Press F3 for the coordinates and fly:
 5. Leave and join again, and restart the server: the land and what you built are
    the same.
 
-**What is expected to be missing**, since nothing after the carvers is built: trees,
+**What is expected to be missing**, since nothing after the carvers and the
+structures' starts is built: trees,
 grass, flowers and every other plant, kelp and seagrass; the ores but for the large
 veins; lakes, springs and the lava and water that run from them; snow lying on the
 ground and ice on frozen water (snow and ice that are the surface itself, as on
@@ -1410,10 +1473,7 @@ or an outpost is to stand is levelled as the game levels it, and an ancient city
 cavern is cut out; animals and monsters. **What will
 look wrong**: water and lava do not flow, so where a cave or a ravine cuts an
 aquifer or the sea, the water stands as a wall, and stays so when a block beside it
-is broken; sand and gravel over a cave stay up when touched; grass and water are
-coloured for their biome a few blocks off at biome borders until the edge sends the
-seed's hash, and far below the sea's height the sky stays light as in a flat world.
-Flying faster than about 35 blocks a second outruns the land.
+is broken; sand and gravel over a cave stay up when touched.
 
 **Pauses on network storage** (22 ms a synced write; first measured in
 [groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)). Since then
@@ -1451,7 +1511,8 @@ waits a quarter of a second at worst.
 
 - One coordinator, nothing on disk; while it is down nothing is taken over, moved, merged
   or split. Regions and players carry on.
-- One edge; an edge that dies takes its players with it.
+- An edge that dies takes its players with it. They can join again at once, through
+  another edge where a cluster has several, and are where they were (R1).
 - A takeover takes the lease plus a moment; players of that region stand still meanwhile.
 - No load-based balancing; no authentication between services.
 - A player who places a block across a region boundary and digs that same block within

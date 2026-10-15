@@ -1,7 +1,7 @@
 # The test of a deployed cluster: bots join through the edge and walk back and forth
-# across the boundary between the two workers while another bot watches them. The Job
-# succeeds only if every bot stayed connected and the watcher saw each walker as exactly
-# one entity the whole time.
+# across the boundary between the two regions of the pinned world, each run by a worker
+# of its own, while another bot watches them. The Job succeeds only if every bot stayed
+# connected and the watcher saw each walker as exactly one entity the whole time.
 #
 # Not in the kustomization one directory up, because it is a test and not part of the
 # deployment. Apply it when the edge is ready, as deploy/kind/test.sh does:
@@ -61,7 +61,7 @@ spec:
             - --west=40.5
             - --east=90.5
             # The first block of the eastern region. With it the bots also place and
-            # break blocks across the boundary, which the two workers do together.
+            # break blocks across the boundary, which the two regions' workers do together.
             - --line=64
           resources:
             requests:

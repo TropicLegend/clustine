@@ -3,7 +3,7 @@
 Clustine is a from-scratch Minecraft: Java Edition server (26.3, protocol 777) in Rust that
 simulates one world on several worker processes. Read `README.md` and
 `docs/architecture.md` first, then `docs/roadmap.md`, which has what is done, the agreed
-plan for the current milestone and **where it stands** (the last sections of that file).
+plan for the current milestone and **where it stands** (the first section of that file).
 The decision records in `docs/adr/` say why things are the way they are.
 
 ## How the owner wants the work done
@@ -25,8 +25,8 @@ The decision records in `docs/adr/` say why things are the way they are.
   wait; a seam in ordinary play cannot, whatever a later milestone will do about it.
 - **After each of M3's three phases the owner tries it with real clients.** Since
   2026-10-08 the work does not wait for that: what to try is written into the roadmap
-  ("Where M3 stands") and the next phase begins. The owner asked for as much as
-  possible to be done without them.
+  (its first section, "Where the work stands", says where) and the next phase begins.
+  The owner asked for as much as possible to be done without them.
 - Downloads: since 2026-10-10 the owner allows downloading what the work needs on
   their machine ("You can generally download stuff you need"): a JDK, reference clones
   of other projects, crates, the Mojang server jar (the owner has agreed to the
@@ -50,7 +50,8 @@ The last line runs the end-to-end tests on a world divided into three regions. T
 of chaos and of moves divide their worlds themselves and run only in the third line. CI
 runs all four, and names failed tests on the run's summary page (readable without
 signing in through the check run's annotations). `tools/check.sh` runs the four, the two
-test runs at the same time, and says which failed; that takes about an hour and a
+test runs at the same time, and `cargo datagen --check` where the jar is in
+`target/datagen/`, and says which failed; that takes about an hour and a
 quarter on six processors, half of it the end-to-end tests of a world without pins
 (`bin/clustine/tests/wanders.rs`), and CI takes an hour and three quarters.
 The tests that start clusters of processes run several at a time

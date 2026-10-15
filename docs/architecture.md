@@ -11,9 +11,16 @@ process or as processes of their own, on Kubernetes or without. Since the first 
 milestone M3 a region is durable: its worker shows players nothing that the world store
 does not have on disk, another worker can carry on with it from there, and the edge
 keeps its players meanwhile and resumes with whoever runs the region then; see
-[ADR-0008](adr/0008-durable-regions-and-resuming.md). World generation is a flat world,
-or with `--seed` a preview of that seed's bare land, made
-inside the world store; `playerdata` and the operator do not exist yet.
+[ADR-0008](adr/0008-durable-regions-and-resuming.md). The world store also keeps each
+player's place, so that a player who leaves comes back where they were, in whichever
+region that is now ([ADR-0020](adr/0020-one-stay-per-player.md)). The edge makes the
+light of chunks whose blocks changed, on threads of its own
+([ADR-0023](adr/0023-light-at-the-edge.md)). World generation is a flat world, or with
+`--seed` that seed's bare land as the game makes it before anything grows on it; it
+runs in the world store's process on the scheduler of `services/worldgen`, on a pool of
+threads, and the store keeps each chunk once made
+([ADR-0021](adr/0021-generation-is-a-function.md)). `playerdata` and the operator are
+empty crates so far.
 
 Where the implementation is simpler than the design below:
 
@@ -24,7 +31,8 @@ Where the implementation is simpler than the design below:
 | Coordinator replicated with Raft, leases fenced everywhere | One coordinator with its state in memory; only the world store acts on epochs; see [ADR-0007](adr/0007-coordinator-scope.md) |
 | Losing a worker is recovered from by migration | Another worker is given the region once the dead one's lease of 5 seconds is over and restores it from the world store; the region's players stand still meanwhile and stay connected. A region is moved on purpose the same way, with the old owner letting go first, so that nobody waits for the lease (`clustine move`, and every worker that is told to stop) |
 | An edge can be lost without its players noticing | An edge that dies takes its players with it |
-| Several edges | One edge; the workers can serve several, but there is no shared player list yet |
+| Several edges | The workers and the world store serve several edges (a cluster with two is tested); a player has one place in the world whichever edge they come through, and a second login puts the first out ([ADR-0020](adr/0020-one-stay-per-player.md)). The single binary runs one edge |
+| A generation service of its own, stateless | Generation runs inside the world store's process on a pool of two thirds of the processors, and what it made is stored ([ADR-0021](adr/0021-generation-is-a-function.md)) |
 | Protobuf over gRPC, QUIC | One message format over TCP for everything |
 | Trained zstd dictionaries, object storage | Plain zstd on the local file system |
 
@@ -143,9 +151,16 @@ section describes where the format is going.
 
 - Ids and names of packets, block states, registry entries and tags are generated from the
   official server jar's data generator by `tools/datagen` and committed as Rust tables
-  ([ADR-0004](adr/0004-game-data.md)). The jar and its data pack are never redistributed.
-- `difftest` runs the vanilla server with the same seed and inputs and compares chunk
-  hashes, redstone outcomes and entity behaviour.
+  ([ADR-0004](adr/0004-game-data.md)), and since
+  [ADR-0019](adr/0019-data-made-from-mojangs-jar.md) also what the game's code says of
+  blocks (light, shapes, fluids, placement classes) and the world generation's data
+  (noise routers, surface rules, carvers, structures), emitted as Rust. The jar and its
+  data pack are never redistributed.
+- Tests marked `#[ignore]` whose names contain `official_server` run the same bots
+  against Mojang's server and compare what both send (joining, chunks, light, placing
+  and using blocks). Terrain is judged by Java programs that call the game's own
+  classes without a server (`crates/clustine-terrain/tests/java`) and compare every
+  block.
 - Progress is tracked in the [parity matrix](parity-matrix.md).
 
 ## Plugins
