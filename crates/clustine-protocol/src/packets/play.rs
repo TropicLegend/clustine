@@ -1846,6 +1846,28 @@ mod tests {
     }
 
     #[test]
+    fn a_client_information_packet_in_play_is_decoded_by_its_id_from_bytes_a_client_sends() {
+        // Written out by hand from the protocol, so that the id and the order of the
+        // fields are checked against something other than the encoder: id 14, then
+        // the locale, the render distance as one signed byte, the chat mode, chat
+        // colours, the skin parts, the main hand, text filtering, listing and
+        // particles.
+        let mut bytes = vec![14, 5];
+        bytes.extend(b"en_gb");
+        bytes.extend([12, 0, 1, 0x7F, 1, 0, 1, 2]);
+        let decoded = ServerboundPlay::decode(&bytes).expect("the packet decodes");
+        let ServerboundPlay::ServerboundClientInformation(packet) = decoded else {
+            panic!("decoded as {decoded:?}");
+        };
+        let information = packet.information;
+        assert_eq!(information.locale, "en_gb");
+        assert_eq!(information.view_distance, 12);
+        assert_eq!(information.main_hand, 1);
+        assert!(information.allow_server_listing);
+        assert_eq!(information.particle_status, 2);
+    }
+
+    #[test]
     fn the_serverbound_abilities_packet_is_its_id_and_one_byte_of_flags() {
         let (begin, stop) = (
             ServerboundPlayerAbilities::flying(true),

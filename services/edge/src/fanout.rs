@@ -6542,6 +6542,17 @@ mod scenarios {
 
         /// An edge that starts with links to `linked` only.
         async fn start_with(linked: &[RegionId], region_patience: Duration) -> Self {
+            Self::start_limited(linked, region_patience, VIEW).await
+        }
+
+        /// An edge linked to all three regions that grants view distances up to
+        /// `limit`, for the tests of a distance that changes in play: with the limit
+        /// of the other tests there is no distance but the one a player has.
+        async fn start_with_limit(limit: i32) -> Self {
+            Self::start_limited(&REGIONS, Duration::from_secs(1_000_000), limit).await
+        }
+
+        async fn start_limited(linked: &[RegionId], region_patience: Duration, limit: i32) -> Self {
             let mut links = Vec::new();
             let mut ends: Vec<Option<WorkerEnd>> = (0..PORTS).map(|_| None).collect();
             for region in linked {
@@ -6552,7 +6563,7 @@ mod scenarios {
             let (routing, relinks) = Routing::new(WEST, FLAT_SPAWN, IDENTITY, links);
             let config = FanoutConfig {
                 max_players: 20,
-                view_distance: VIEW,
+                view_distance: limit,
                 online: Arc::default(),
                 region_patience,
                 login: crate::LoginWorld::FLAT,
@@ -6757,6 +6768,11 @@ mod scenarios {
 
         /// A player connects. Returns their client.
         async fn join(&mut self, player: PlayerId) -> Client {
+            self.join_asking(player, None).await
+        }
+
+        /// A player connects whose client asks for `requested` as its view distance.
+        async fn join_asking(&mut self, player: PlayerId, requested: Option<i32>) -> Client {
             self.sessions += 1;
             self.attempts.insert(player, self.sessions);
             let session = SessionId(self.sessions);
@@ -6767,7 +6783,7 @@ mod scenarios {
                     uuid: player.0,
                     name: format!("Player{}", self.sessions),
                 },
-                requested_view_distance: None,
+                requested_view_distance: requested,
                 outbound,
                 awaiting_teleport: Arc::new(AtomicI32::new(NO_TELEPORT)),
             };
@@ -6779,7 +6795,17 @@ mod scenarios {
         /// players enter the world. The edge has asked for their view when this
         /// returns, and no test has looked at that yet.
         async fn joined(&mut self, player: PlayerId, entity: EntityId) -> Client {
-            let client = self.join(player).await;
+            self.joined_asking(player, entity, None).await
+        }
+
+        /// The same for a client that asks for `requested` as its view distance.
+        async fn joined_asking(
+            &mut self,
+            player: PlayerId,
+            entity: EntityId,
+            requested: Option<i32>,
+        ) -> Client {
+            let client = self.join_asking(player, requested).await;
             let (_, join) = self.next_numbered(WEST).await;
             assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
             self.tell(WEST, self.spawned(player, entity));
@@ -6794,6 +6820,19 @@ mod scenarios {
                 player: client.player,
             };
             self.commands.send(leave).await.unwrap();
+            self.drained().await;
+        }
+
+        /// The client asks for `requested` as its view distance in play, as the
+        /// connection passes on from the settings packet, on the connection
+        /// `session`. The edge has taken the command when this returns.
+        async fn ask_view_distance(&mut self, client: &Client, session: SessionId, requested: i32) {
+            let command = Command::ViewDistance {
+                session,
+                player: client.player,
+                requested,
+            };
+            self.commands.send(command).await.unwrap();
             self.drained().await;
         }
 
@@ -7097,6 +7136,10 @@ mod scenarios {
         /// What it was told of entities and of the player list, in order, for the
         /// tests that ask what a client showed at any moment and not only at the end.
         told: Vec<Told>,
+        /// Every chunk it was told its view is centred on, in order.
+        centres: Vec<ChunkPos>,
+        /// How many packets it has taken, of whatever kind.
+        taken: usize,
     }
 
     /// Something a client was told that changes whom it shows or lists.
@@ -7128,13 +7171,20 @@ mod scenarios {
                 disconnected: None,
                 closed: false,
                 told: Vec::new(),
+                centres: Vec::new(),
+                taken: 0,
             }
         }
 
         /// Takes a packet as a client would.
         fn take(&mut self, packet: Bytes) {
             let decoded = ClientboundPlay::decode(&packet).expect("the edge sends packets");
+            self.taken += 1;
             match decoded {
+                ClientboundPlay::SetCenterChunk(centre) => {
+                    self.centres
+                        .push(ChunkPos::new(centre.chunk_x, centre.chunk_z));
+                }
                 ClientboundPlay::LevelChunkWithLight(chunk) => {
                     let position = ChunkPos::new(chunk.chunk_x, chunk.chunk_z);
                     // By the block that tells these tests' chunks apart, read as a
@@ -18131,6 +18181,273 @@ mod scenarios {
         };
         // One step west of the lamp, across the border, and then one less a step.
         assert_eq!((at(15, 4, 5), at(14, 4, 5), at(15, 5, 5)), (14, 13, 13));
+        edge.end().await;
+    }
+
+    /// The server's limit of the view distance in the tests of a distance that
+    /// changes in play, and a shorter one a player asks for.
+    const LIMIT: i32 = 6;
+    const SHORT: i32 = 3;
+
+    /// What the client was told of chunks being sent or unloaded since `from`, in
+    /// order.
+    fn loads_since(client: &Client, from: usize) -> Vec<OfChunk> {
+        let loads = client.of_chunks[from..].iter().copied();
+        loads
+            .filter(|told| matches!(told, OfChunk::Sent(_) | OfChunk::Unloaded(_)))
+            .collect()
+    }
+
+    /// The player's view grows around the chunk they stand in: what came into it is
+    /// asked of their region and shown once served, with whoever is in it, and
+    /// nothing they had is taken away.
+    #[tokio::test]
+    async fn a_player_who_asks_for_a_longer_view_has_the_chunks_that_came_into_it_asked_for_and_sent()
+     {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let mut client = edge
+            .joined_asking(player(1), EntityId(5), Some(SHORT))
+            .await;
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, SHORT));
+        let near = ChunkPos::new(1, 0);
+        edge.tell(WEST, snapshot(near, edge.ask(WEST, near)));
+        assert!(edge.shows(&mut client, WEST, near).await);
+        edge.quiet().await;
+        let (centred, told) = (client.centres.len(), client.of_chunks.len());
+
+        edge.ask_view_distance(&client, client.session, 5).await;
+        let asked = edge.asked(WEST).await;
+        let grown = minus(&view_area(HOME, 5), &view_area(HOME, SHORT));
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Viewer), grown)])
+        );
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, 5));
+        for region in [EAST, NORTH] {
+            let asked = edge.asked(region).await;
+            assert!(asked.is_empty(), "{region:?} was asked {asked:?}");
+        }
+        edge.sync(&mut client).await;
+        assert_eq!(client.centres[centred..], [HOME]);
+        assert_eq!(loads_since(&client, told), []);
+        assert!(client.chunks.contains_key(&near));
+
+        // A chunk that came into the view is sent once its region serves it, and
+        // the stranger in it is shown.
+        let new = ChunkPos::new(5, 0);
+        assert!(!view_area(HOME, SHORT).contains(&new));
+        let there = vec![stranger(EntityId(70), new)];
+        let ask = edge.ask(WEST, new);
+        edge.tell(WEST, snapshot_of(new, ask, empty_chunk(), there));
+        assert!(edge.shows(&mut client, WEST, new).await);
+        assert!(client.entities.contains(&70), "{:?}", client.entities);
+        edge.end().await;
+    }
+
+    /// The player's view shrinks around the chunk they stand in: what left it is
+    /// unloaded at the client, with whoever was in it, and is no longer asked of the
+    /// region.
+    #[tokio::test]
+    async fn a_player_who_asks_for_a_shorter_view_has_the_chunks_outside_it_unloaded_and_given_up()
+    {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, LIMIT));
+        let (near, far) = (ChunkPos::new(1, 0), ChunkPos::new(5, 0));
+        assert!(!view_area(HOME, SHORT).contains(&far));
+        for (chunk, entity) in [(near, 71), (far, 70)] {
+            let there = vec![stranger(EntityId(entity), chunk)];
+            let ask = edge.ask(WEST, chunk);
+            edge.tell(WEST, snapshot_of(chunk, ask, empty_chunk(), there));
+        }
+        assert!(edge.shows(&mut client, WEST, far).await);
+        assert!(client.chunks.contains_key(&near));
+        assert_eq!(client.entities, BTreeSet::from([70, 71]));
+        edge.quiet().await;
+        let (centred, told) = (client.centres.len(), client.of_chunks.len());
+
+        edge.ask_view_distance(&client, client.session, SHORT).await;
+        let asked = edge.asked(WEST).await;
+        let shrunk = minus(&view_area(HOME, LIMIT), &view_area(HOME, SHORT));
+        assert_eq!(meanings(&asked), BTreeSet::from([(None, shrunk)]));
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, SHORT));
+        edge.sync(&mut client).await;
+        assert_eq!(client.centres[centred..], [HOME]);
+        assert_eq!(loads_since(&client, told), [OfChunk::Unloaded(far)]);
+        assert_eq!(client.chunks.keys().copied().collect::<Vec<_>>(), [near]);
+        assert_eq!(client.entities, BTreeSet::from([71]));
+        edge.end().await;
+    }
+
+    /// A chunk that leaves one player's view as they shrink it stays subscribed
+    /// where another player of the edge still sees it.
+    #[tokio::test]
+    async fn a_chunk_that_leaves_a_shrunk_view_stays_subscribed_while_another_player_sees_it() {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let first = edge.joined(player(1), EntityId(5)).await;
+        let _second = edge.joined(player(2), EntityId(6)).await;
+        // The second walks a few chunks east, and sees further east than the first.
+        let east = ChunkPos::new(4, 0);
+        edge.tell(WEST, walked(EntityId(6), HOME, east));
+        edge.settle(WEST).await;
+        edge.quiet().await;
+        let seen: BTreeSet<_> = view_area(HOME, LIMIT)
+            .union(&view_area(east, LIMIT))
+            .copied()
+            .collect();
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), seen);
+
+        edge.ask_view_distance(&first, first.session, SHORT).await;
+        let asked = edge.asked(WEST).await;
+        let left = minus(&view_area(HOME, LIMIT), &view_area(HOME, SHORT));
+        let unseen = minus(&left, &view_area(east, LIMIT));
+        assert!(!unseen.is_empty() && unseen.len() < left.len());
+        assert_eq!(meanings(&asked), BTreeSet::from([(None, unseen)]));
+        let kept = ChunkPos::new(5, 0);
+        assert!(left.contains(&kept));
+        assert!(!asked.iter().any(|body| names(body, kept)), "{asked:?}");
+        let still: BTreeSet<_> = view_area(HOME, SHORT)
+            .union(&view_area(east, LIMIT))
+            .copied()
+            .collect();
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), still);
+        edge.end().await;
+    }
+
+    /// A distance above the server's limit is granted as the limit, as at the join.
+    #[tokio::test]
+    async fn a_view_distance_asked_for_above_the_servers_limit_is_granted_as_the_limit() {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let client = edge
+            .joined_asking(player(1), EntityId(5), Some(SHORT))
+            .await;
+        edge.quiet().await;
+        edge.ask_view_distance(&client, client.session, 32).await;
+        let asked = edge.asked(WEST).await;
+        let grown = minus(&view_area(HOME, LIMIT), &view_area(HOME, SHORT));
+        assert_eq!(
+            meanings(&asked),
+            BTreeSet::from([(Some(Role::Viewer), grown)])
+        );
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, LIMIT));
+        edge.end().await;
+    }
+
+    /// A distance below 2, which a client can send as any byte, is granted as 2, and
+    /// asking for less than 2 again then changes nothing.
+    #[tokio::test]
+    async fn a_view_distance_asked_for_below_two_is_granted_as_two() {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        edge.quiet().await;
+        edge.ask_view_distance(&client, client.session, 1).await;
+        let asked = edge.asked(WEST).await;
+        let shrunk = minus(&view_area(HOME, LIMIT), &view_area(HOME, 2));
+        assert_eq!(meanings(&asked), BTreeSet::from([(None, shrunk)]));
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, 2));
+        edge.sync(&mut client).await;
+        let centred = client.centres.len();
+
+        for requested in [0, -3] {
+            edge.ask_view_distance(&client, client.session, requested)
+                .await;
+            let asked = edge.asked(WEST).await;
+            assert!(asked.is_empty(), "{requested}: {asked:?}");
+        }
+        edge.sync(&mut client).await;
+        assert_eq!(client.centres.len(), centred);
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, 2));
+        edge.end().await;
+    }
+
+    /// Asking for the distance one has, or for one that is granted as it, is not a
+    /// change: nothing is sent to the client and nothing asked of any region.
+    #[tokio::test]
+    async fn asking_for_the_view_distance_one_has_changes_nothing() {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let mut short = edge
+            .joined_asking(player(1), EntityId(5), Some(SHORT))
+            .await;
+        let mut long = edge.joined(player(2), EntityId(6)).await;
+        edge.quiet().await;
+        edge.sync(&mut short).await;
+        edge.sync(&mut long).await;
+        let (short_taken, long_taken) = (short.taken, long.taken);
+
+        edge.ask_view_distance(&short, short.session, SHORT).await;
+        edge.ask_view_distance(&long, long.session, LIMIT).await;
+        edge.ask_view_distance(&long, long.session, LIMIT + 10)
+            .await;
+        for region in REGIONS {
+            let asked = edge.asked(region).await;
+            assert!(asked.is_empty(), "{region:?} was asked {asked:?}");
+        }
+        // The one packet each client takes is the acknowledgement `sync` asks for.
+        edge.sync(&mut short).await;
+        edge.sync(&mut long).await;
+        assert_eq!(short.taken, short_taken + 1);
+        assert_eq!(long.taken, long_taken + 1);
+        edge.end().await;
+    }
+
+    /// A player who changes the distance while they wait to be placed has their
+    /// view laid out at the new distance when they are, and nothing before.
+    #[tokio::test]
+    async fn a_view_distance_asked_for_before_the_player_is_placed_is_the_one_their_view_has() {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let mut client = edge.join(player(1)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+
+        edge.ask_view_distance(&client, client.session, SHORT).await;
+        for region in REGIONS {
+            let asked = edge.asked(region).await;
+            assert!(asked.is_empty(), "{region:?} was asked {asked:?}");
+        }
+        client.drain();
+        assert!(client.centres.is_empty(), "{:?}", client.centres);
+        assert!(client.of_chunks.is_empty(), "{:?}", client.of_chunks);
+
+        edge.tell(WEST, edge.spawned(player(1), EntityId(5)));
+        assert_eq!(
+            edge.asked(WEST).await,
+            [subscribe(1, view_area(HOME, SHORT))]
+        );
+        edge.end().await;
+    }
+
+    /// A command from a connection that is not the player's current one, which can
+    /// still be on its way when the player has connected again, is passed over.
+    #[tokio::test]
+    async fn a_view_distance_asked_for_on_an_earlier_connection_changes_nothing() {
+        let mut edge = Harness::start_with_limit(LIMIT).await;
+        let earlier = edge.joined(player(1), EntityId(5)).await;
+        let stale = earlier.session;
+        edge.leave(&earlier).await;
+        edge.quiet().await;
+        let mut client = edge.joined(player(1), EntityId(6)).await;
+        assert_ne!(client.session, stale);
+        edge.quiet().await;
+        edge.sync(&mut client).await;
+        let (centred, told) = (client.centres.len(), client.of_chunks.len());
+
+        edge.ask_view_distance(&client, stale, SHORT).await;
+        for region in REGIONS {
+            let asked = edge.asked(region).await;
+            assert!(asked.is_empty(), "{region:?} was asked {asked:?}");
+        }
+        edge.sync(&mut client).await;
+        assert_eq!(client.centres.len(), centred);
+        assert_eq!(loads_since(&client, told), []);
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, LIMIT));
+
+        // The same on the current connection is taken.
+        edge.ask_view_distance(&client, client.session, SHORT).await;
+        let asked = edge.asked(WEST).await;
+        assert!(!asked.is_empty());
+        assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, SHORT));
         edge.end().await;
     }
 }
