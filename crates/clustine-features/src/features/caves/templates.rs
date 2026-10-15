@@ -3,95 +3,15 @@
 //! the data names, and the name of a template checked against the table of templates.
 //!
 //! The data names processor lists of the registry `worldgen/processor_list`, which
-//! `cargo datagen` does not emit for features. The three that features name (the
-//! fossils') are written out here as the jar's files have them;
-//! `the_processor_lists_written_here_are_the_jars` holds them to the files.
+//! `cargo datagen` emits with the features.
 
 use clustine_structures::processors::ProcessorList;
-use clustine_worldgen_data::feature::Data;
+use clustine_worldgen_data::feature::{self as data, Data};
 
 use crate::reader::{DataError, Read, Reader};
 
-/// `minecraft:fossil_rot`.
-static FOSSIL_ROT: Data = Data::Object(&[(
-    "processors",
-    Data::List(&[
-        Data::Object(&[
-            ("integrity", Data::Number("0.9")),
-            ("processor_type", Data::Text("minecraft:block_rot")),
-        ]),
-        Data::Object(&[
-            ("processor_type", Data::Text("minecraft:protected_blocks")),
-            ("value", Data::Text("#minecraft:features_cannot_replace")),
-        ]),
-    ]),
-)]);
-
-/// `minecraft:fossil_coal`.
-static FOSSIL_COAL: Data = Data::Object(&[(
-    "processors",
-    Data::List(&[
-        Data::Object(&[
-            ("integrity", Data::Number("0.1")),
-            ("processor_type", Data::Text("minecraft:block_rot")),
-        ]),
-        Data::Object(&[
-            ("processor_type", Data::Text("minecraft:protected_blocks")),
-            ("value", Data::Text("#minecraft:features_cannot_replace")),
-        ]),
-    ]),
-)]);
-
-/// `minecraft:fossil_diamonds`.
-static FOSSIL_DIAMONDS: Data = Data::Object(&[(
-    "processors",
-    Data::List(&[
-        Data::Object(&[
-            ("integrity", Data::Number("0.1")),
-            ("processor_type", Data::Text("minecraft:block_rot")),
-        ]),
-        Data::Object(&[
-            ("processor_type", Data::Text("minecraft:rule")),
-            (
-                "rules",
-                Data::List(&[Data::Object(&[
-                    (
-                        "input_predicate",
-                        Data::Object(&[
-                            ("block", Data::Text("minecraft:coal_ore")),
-                            ("predicate_type", Data::Text("minecraft:block_match")),
-                        ]),
-                    ),
-                    (
-                        "location_predicate",
-                        Data::Object(&[("predicate_type", Data::Text("minecraft:always_true"))]),
-                    ),
-                    (
-                        "output_state",
-                        Data::Text("minecraft:deepslate_diamond_ore"),
-                    ),
-                ])]),
-            ),
-        ]),
-        Data::Object(&[
-            ("processor_type", Data::Text("minecraft:protected_blocks")),
-            ("value", Data::Text("#minecraft:features_cannot_replace")),
-        ]),
-    ]),
-)]);
-
-/// The processor lists the features' data names, by name.
-pub static NAMED_LISTS: [(&str, &Data); 3] = [
-    ("minecraft:fossil_coal", &FOSSIL_COAL),
-    ("minecraft:fossil_diamonds", &FOSSIL_DIAMONDS),
-    ("minecraft:fossil_rot", &FOSSIL_ROT),
-];
-
 fn named_list(name: &str) -> Option<&'static Data> {
-    NAMED_LISTS
-        .iter()
-        .find(|(listed, _)| *listed == name)
-        .map(|(_, data)| *data)
+    data::processor_list(name).map(|(_, entry)| &entry.data)
 }
 
 /// Reads a processor list where the game's codec takes a `Holder` of one: the name of
@@ -122,39 +42,24 @@ pub fn read_template_name(reader: &Reader) -> Read<&'static str> {
 mod tests {
     use super::*;
 
-    /// The data as the jar's file writes it, without white space: members in the
-    /// order written, which is the files' sorted order.
-    fn json(data: &Data) -> String {
-        match data {
-            Data::Bool(value) => value.to_string(),
-            Data::Number(number) => (*number).to_string(),
-            Data::Text(text) => format!("\"{text}\""),
-            Data::List(items) => {
-                let items: Vec<String> = items.iter().map(json).collect();
-                format!("[{}]", items.join(","))
-            }
-            Data::Object(members) => {
-                let members: Vec<String> = members
-                    .iter()
-                    .map(|(key, value)| format!("\"{key}\":{}", json(value)))
-                    .collect();
-                format!("{{{}}}", members.join(","))
-            }
-        }
-    }
-
+    /// Every processor list of the game is read whole by `clustine-structures`'
+    /// reader, as a structure's pool or a feature names it: every processor type and
+    /// rule the data uses is built.
     #[test]
-    fn every_named_list_reads_whole() {
-        for (name, data) in NAMED_LISTS {
-            let list = read_processors(&Reader::new(data, name)).unwrap();
-            assert!(!list.processors.is_empty(), "{name}");
+    fn every_processor_list_of_the_game_reads_whole() {
+        for entry in data::processor_lists() {
+            // A reader holds its data for as long as the data lives, which here is the
+            // whole test.
+            let named: &'static Data = Box::leak(Box::new(Data::Text(entry.name)));
+            let list = read_processors(&Reader::new(named, entry.name))
+                .unwrap_or_else(|error| panic!("{}: {error:?}", entry.name));
+            assert_eq!(
+                list,
+                read_processors(&Reader::new(&entry.data, entry.name)).unwrap(),
+                "{}: by name and in place",
+                entry.name
+            );
         }
-        assert!(NAMED_LISTS.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        static NAMED: Data = Data::Text("minecraft:fossil_rot");
-        assert_eq!(
-            read_processors(&Reader::new(&NAMED, "test")).unwrap(),
-            read_processors(&Reader::new(&FOSSIL_ROT, "test")).unwrap()
-        );
         static UNKNOWN: Data = Data::Text("minecraft:no_such_list");
         assert!(read_processors(&Reader::new(&UNKNOWN, "test")).is_err());
     }
@@ -168,20 +73,5 @@ mod tests {
             Ok("minecraft:desert_well/well")
         );
         assert!(read_template_name(&Reader::new(&NONE, "test")).is_err());
-    }
-
-    /// The lists written here against the jar's files, which `cargo datagen` extracts.
-    /// `CLUSTINE_DATAGEN` names its output: `target/datagen/26.3/generated`.
-    #[test]
-    #[ignore = "needs the files `cargo datagen` extracts, named by CLUSTINE_DATAGEN"]
-    fn the_processor_lists_written_here_are_the_jars() {
-        let root = std::env::var("CLUSTINE_DATAGEN").expect("CLUSTINE_DATAGEN names the output");
-        for (name, data) in NAMED_LISTS {
-            let file = name.strip_prefix("minecraft:").unwrap();
-            let path = format!("{root}/data/minecraft/worldgen/processor_list/{file}.json");
-            let text = std::fs::read_to_string(&path).unwrap();
-            let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-            assert_eq!(json(data), compact, "{name}");
-        }
     }
 }

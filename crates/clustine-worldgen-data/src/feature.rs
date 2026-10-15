@@ -17,7 +17,9 @@
 //! `tools/datagen/java/Extract.java`), not worked out here: a feature's place in its
 //! step's list is part of its seed.
 
-use crate::generated::features::{BIOME_FEATURES, CONFIGURED, ORDER, PLACED, PROVIDERS};
+use crate::generated::features::{
+    BIOME_FEATURES, CONFIGURED, ORDER, PLACED, PROCESSOR_LISTS, PROVIDERS,
+};
 
 /// A value in a feature's file.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,6 +112,17 @@ pub fn placed(name: &str) -> Option<(usize, &'static Entry)> {
 /// The named block-state provider called `name`, with its index.
 pub fn provider(name: &str) -> Option<(usize, &'static Entry)> {
     find(&PROVIDERS, name)
+}
+
+/// The named processor list called `name` (`worldgen/processor_list`), with its index:
+/// what structure pools and features name by name.
+pub fn processor_list(name: &str) -> Option<(usize, &'static Entry)> {
+    find(&PROCESSOR_LISTS, name)
+}
+
+/// Every named processor list, sorted by name.
+pub fn processor_lists() -> &'static [Entry] {
+    &PROCESSOR_LISTS
 }
 
 /// The order of the features of `dimension` (`overworld`, `nether` or `end`).

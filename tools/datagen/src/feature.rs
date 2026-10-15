@@ -1,11 +1,12 @@
 // Written for Clustine from the game's data (`worldgen/feature/**`,
-// `worldgen/placed_feature/**`, `worldgen/block_state_provider/**`, the member
+// `worldgen/placed_feature/**`, `worldgen/block_state_provider/**`,
+// `worldgen/processor_list/**`, the member
 // `features` of `worldgen/biome/**`) and the order the game's own generators place
 // features in, which `java/Extract.java` reads from them.
 
 //! Emits the features of `clustine-worldgen-data`: every configured feature, placed
-//! feature and named block-state provider as a tree that mirrors its file, sorted by
-//! name; for each dimension the game's order of features by step; and for each biome
+//! feature, named block-state provider and named processor list as a tree that mirrors
+//! its file, sorted by name; for each dimension the game's order of features by step; and for each biome
 //! the placed features it lists in each step.
 //!
 //! The trees are not typed here, since only the place where a name stands says what it
@@ -34,6 +35,7 @@ pub fn emit(biomes: &[String], worldgen: &Worldgen, order: &FeatureOrder) -> Res
     let configured = worldgen.registry("feature")?;
     let placed = worldgen.registry("placed_feature")?;
     let providers = worldgen.registry("block_state_provider")?;
+    let processor_lists = worldgen.registry("processor_list")?;
     let index: BTreeMap<&str, usize> = placed
         .keys()
         .enumerate()
@@ -53,11 +55,12 @@ pub fn emit(biomes: &[String], worldgen: &Worldgen, order: &FeatureOrder) -> Res
     let mut out = String::new();
     writeln!(
         out,
-        "//! Every configured feature, placed feature and named block-state provider, sorted by"
+        "//! Every configured feature, placed feature, named block-state provider and named"
     )?;
+    writeln!(out, "//! processor list, sorted by name;")?;
     writeln!(
         out,
-        "//! name; the order of each dimension's features by step, as the game's generators"
+        "//! the order of each dimension's features by step, as the game's generators"
     )?;
     writeln!(
         out,
@@ -72,6 +75,7 @@ pub fn emit(biomes: &[String], worldgen: &Worldgen, order: &FeatureOrder) -> Res
         ("CONFIGURED", configured),
         ("PLACED", placed),
         ("PROVIDERS", providers),
+        ("PROCESSOR_LISTS", processor_lists),
     ] {
         writeln!(out)?;
         writeln!(out, "pub static {name}: [Entry; {}] = [", registry.len())?;
