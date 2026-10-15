@@ -22,6 +22,7 @@ pub mod providers;
 pub mod reader;
 mod run;
 mod settings;
+pub mod structures;
 pub mod survive;
 #[cfg(test)]
 mod testing;
@@ -34,4 +35,7 @@ pub use run::decorate;
 /// identity of what the features' stages make, so that a world made with fewer is
 /// refused rather than continued with more.
 pub const GENERATION: u16 = 5;
+/// Raised whenever the blocks the structures' placers make change, while phase S is
+/// built: part of the generator's identity where they are placed.
+pub const STRUCTURES_GENERATION: u16 = 0;
 pub use settings::{FeatureSettings, STEPS};

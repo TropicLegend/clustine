@@ -14,6 +14,7 @@ use crate::feature::{Feature, FeatureRef, read_configured};
 use crate::features::frame::no_op::NoOp;
 use crate::placement::PlacedFeature;
 use crate::reader::{Read, Reader};
+use crate::structures::StartsOf;
 use crate::values::Generation;
 
 /// How many steps of decoration the game has (`GenerationStep.Decoration`).
@@ -44,6 +45,9 @@ pub struct FeatureSettings {
     /// own jar (the terrain plan's question 3); without them a feature built of a
     /// template places nothing.
     templates: Option<Arc<TemplateLibrary>>,
+    /// Where the starts of structures are found; without them no structure's block
+    /// is placed (the plan of phase S, until its switch).
+    structures: Option<Arc<dyn StartsOf>>,
 }
 
 impl fmt::Debug for FeatureSettings {
@@ -129,6 +133,7 @@ impl FeatureSettings {
             steps,
             biomes,
             templates: None,
+            structures: None,
         })
     }
 
@@ -155,6 +160,18 @@ impl FeatureSettings {
             };
         }
         Ok(self)
+    }
+
+    /// These settings placing the structures' blocks, of the starts `starts` gives.
+    #[must_use]
+    pub fn with_structures(mut self, starts: Arc<dyn StartsOf>) -> Self {
+        self.structures = Some(starts);
+        self
+    }
+
+    /// Where the starts of structures are found, if their blocks are placed.
+    pub fn structures(&self) -> Option<&dyn StartsOf> {
+        self.structures.as_deref()
     }
 
     /// The blocks of the structure templates, where the server has them.

@@ -2,9 +2,9 @@
 //! (`docs/groundwork/f-plan.md`, section 3): the land of [`TerrainGenerator`] for each
 //! chunk by itself, then the runs of `clustine-features` in the order of ADR-0021.
 //!
-//! Until phase S the structures start and bend the ground, and no block of theirs is
-//! placed: the runs have no starts to hand on. Until the plan's switch (step F6) the
-//! served world stays the preview, and these stages are reached by a hidden setting.
+//! The structures start and bend the ground, and the runs are handed their starts and
+//! references; their blocks are placed only where the features' settings say so,
+//! which until phase S's switch only the judge does (`docs/groundwork/s-plan.md`).
 
 use std::sync::Arc;
 
@@ -12,12 +12,15 @@ use clustine_data::DimensionType;
 use clustine_features::FeatureSettings;
 use clustine_structures::template_blocks::TemplateLibrary;
 use clustine_terrain::biome::Dimension;
+use clustine_world::BlockPos;
 use clustine_world::ChunkGenerator;
 use clustine_world::ChunkPos;
-use clustine_world::generation::{GeneratorSettings, Neighbourhood};
+use clustine_world::generation::{
+    BlockBox, GeneratorSettings, Neighbourhood, PieceState, StartRef,
+};
 
 use crate::TerrainGenerator;
-use crate::stages::{Stages, Starts, StartsNear, Terrain, WorldgenHeights};
+use crate::stages::{PieceMade, Stages, Start, Starts, StartsNear, Terrain, WorldgenHeights};
 
 /// Raised whenever a change makes any chunk of these stages come out otherwise
 /// (ADR-0021, section 8). Which kinds of features are built is in the identity.
@@ -45,7 +48,8 @@ impl FeatureStages {
     }
 
     /// The stages of `terrain`'s world with features read and changed by the caller:
-    /// for the judge, which turns some off on both sides.
+    /// for the judge, which turns some off on both sides and places the structures'
+    /// blocks of `terrain`'s starts ([`FeatureSettings::with_structures`]).
     pub fn with_features(terrain: Arc<TerrainGenerator>, features: FeatureSettings) -> Self {
         Self {
             terrain,
@@ -83,9 +87,15 @@ impl Stages for FeatureStages {
         } else {
             ";no templates"
         };
+        // Whose blocks are placed is a generation of its own while phase S is built.
+        let placed = if self.features.structures().is_some() {
+            format!(";structures {}", clustine_features::STRUCTURES_GENERATION)
+        } else {
+            String::new()
+        };
         GeneratorSettings {
             identity: format!(
-                "terrain;features {};{};seed {}{structures}{templates}",
+                "terrain;features {}{placed};{};seed {}{structures}{templates}",
                 clustine_features::GENERATION,
                 self.terrain.dimension().name,
                 self.terrain.seed()
@@ -102,9 +112,33 @@ impl Stages for FeatureStages {
         ChunkGenerator::origin(&*self.terrain)
     }
 
-    fn starts(&self, _source: ChunkPos) -> Starts {
-        // Pieces are placed in phase S; the ground is bent for them by the terrain.
-        Starts::default()
+    fn starts(&self, source: ChunkPos) -> Starts {
+        let starts = self.terrain.starts(source);
+        Starts {
+            starts: starts
+                .iter()
+                .map(|start| Start {
+                    structure: start.data().name,
+                    pieces: start
+                        .pieces
+                        .iter()
+                        .map(|piece| {
+                            let (min, max) = (
+                                piece.bounding_box.min_corner(),
+                                piece.bounding_box.max_corner(),
+                            );
+                            PieceMade {
+                                bounds: BlockBox {
+                                    min: BlockPos::new(min.x, min.y, min.z),
+                                    max: BlockPos::new(max.x, max.y, max.z),
+                                },
+                                state: PieceState::default(),
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
     }
 
     fn terrain(&self, position: ChunkPos, _starts: &dyn StartsNear) -> Terrain {
@@ -116,10 +150,32 @@ impl Stages for FeatureStages {
             world_surface: heights.world_surface,
             ocean_floor: heights.ocean_floor,
         });
+        // The starts within eight whose box reaches into the chunk, as the game finds
+        // them (`createReferences`); each by its place among its source's starts. The
+        // terrain's own starts are those the scheduler hands, made by the same function.
+        let references =
+            clustine_structures::Structures::references(position.x, position.z, |x, z| {
+                self.terrain.starts(ChunkPos::new(x, z))
+            })
+            .into_iter()
+            .map(|(structure, (x, z))| {
+                let source = ChunkPos::new(x, z);
+                let index = self
+                    .terrain
+                    .starts(source)
+                    .iter()
+                    .position(|start| start.structure == structure)
+                    .expect("a reference names a start of its source");
+                StartRef {
+                    source,
+                    index: u16::try_from(index).expect("a chunk starts few structures"),
+                }
+            })
+            .collect();
         Terrain {
             chunk,
             worldgen_heights,
-            references: Vec::new(),
+            references,
         }
     }
 

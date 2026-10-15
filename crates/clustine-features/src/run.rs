@@ -1,20 +1,24 @@
-//! One feature run: the features of a chunk, placed as the game's
-//! `ChunkGenerator.applyBiomeDecoration` places them, leaving out the structures'
-//! pieces (phase S).
+//! One feature run: the structures' pieces and the features of a chunk, placed as the
+//! game's `ChunkGenerator.applyBiomeDecoration` places them.
 
 use std::collections::BTreeSet;
 
-use clustine_noise::WorldgenRandom;
-use clustine_world::generation::{Neighbourhood, Placing};
+use clustine_noise::{RandomSource, WorldgenRandom};
+use clustine_structures::geometry::{BoundingBox, IVec3};
+use clustine_structures::{Start, long_set_order};
+use clustine_world::generation::{Neighbourhood, PieceKey, Placing, StartRef};
 use clustine_world::{BlockPos, ChunkPos};
 use clustine_worldgen_data::feature as data;
+use clustine_worldgen_data::structures::STRUCTURES;
 
 use crate::context::{Context, Level};
 use crate::settings::{FeatureSettings, STEPS};
+use crate::structures::{self, StartsOf};
 
-/// Places the features of `centre` into `view`.
+/// Places the structures' pieces and the features of `centre` into `view`.
 ///
-/// The decoration seed comes from the world's seed and the chunk's lowest corner. The
+/// In each step the structures come first, where the settings place them
+/// ([`structures`]). The decoration seed comes from the world's seed and the chunk's lowest corner. The
 /// features that can be placed are those the biomes anywhere in the three by three
 /// chunks list; for each step, in the order of their places in the step's list, each
 /// is seeded by its place and the step and placed from the corner, each in an attempt
@@ -44,6 +48,16 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
     // The region's own random source, which the game makes once for the run.
     let mut region_random = None;
     for step in 0..STEPS.max(settings.steps()) {
+        if let Some(starts_of) = settings.structures() {
+            let mut run = Run {
+                settings,
+                view: &mut *view,
+                centre,
+                random: &mut random,
+                region_random: &mut region_random,
+            };
+            run.place_structures(starts_of, decoration, step);
+        }
         let mut places = BTreeSet::new();
         for biome in &biomes {
             places.extend(settings.listed(*biome, step).iter().copied());
@@ -67,4 +81,152 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
             });
         }
     }
+}
+
+/// What a feature run carries from one placement to the next.
+struct Run<'r> {
+    settings: &'r FeatureSettings,
+    view: &'r mut dyn Neighbourhood,
+    centre: ChunkPos,
+    random: &'r mut WorldgenRandom,
+    region_random: &'r mut Option<RandomSource>,
+}
+
+impl Run<'_> {
+    /// The structures of `step`, as the game places them before the step's features:
+    /// every structure of the data whose step it is, in the data's order, each seeded
+    /// by its place among them, counting those with no start here; of each, the
+    /// starts the centre refers to, in the order of the game's set of references; of
+    /// each start, the pieces whose box meets the centre's writable box, then the
+    /// start's `afterPlace`.
+    fn place_structures(&mut self, starts_of: &dyn StartsOf, decoration: i64, step: usize) {
+        let references = self.view.starts().to_vec();
+        let of_step = STRUCTURES
+            .iter()
+            .enumerate()
+            .filter(|(_, structure)| structure.step.ordinal() == step);
+        for (place, (structure, _)) in of_step.enumerate() {
+            self.random
+                .set_feature_seed(decoration, place as i32, step as i32);
+            // A chunk keeps the references to one structure's starts in a set of the
+            // source chunks, in the order they were found.
+            let of_structure: Vec<(i64, StartRef)> = references
+                .iter()
+                .filter(|reference| {
+                    let starts = starts_of.starts(reference.source);
+                    starts[usize::from(reference.index)].structure == structure
+                })
+                .map(|reference| (pack(reference.source), *reference))
+                .collect();
+            if of_structure.is_empty() {
+                continue;
+            }
+            let inserted: Vec<i64> = of_structure.iter().map(|(packed, _)| *packed).collect();
+            for packed in long_set_order(&inserted) {
+                let (_, reference) = of_structure
+                    .iter()
+                    .find(|(of, _)| *of == packed)
+                    .expect("the set gives back what was put in");
+                let starts = starts_of.starts(reference.source);
+                self.place_start(*reference, &starts[usize::from(reference.index)]);
+            }
+        }
+    }
+
+    /// `StructureStart.placeInChunk`.
+    fn place_start(&mut self, reference: StartRef, start: &Start) {
+        let Some(first) = start.pieces.first() else {
+            return;
+        };
+        let name = start.data().name;
+        let (min_y, height) = (self.settings.min_y(), self.settings.height());
+        let (x, z) = (self.centre.x * 16, self.centre.z * 16);
+        let chunk_box = BoundingBox::new(
+            IVec3::new(x, min_y + 1, z),
+            IVec3::new(x + 15, min_y + height - 1, z + 15),
+        );
+        let key = |piece: usize| PieceKey {
+            start: reference,
+            piece: u16::try_from(piece).expect("a start has fewer than 65,536 pieces"),
+        };
+        // A piece that settles its height when first placed moves its box, and the
+        // game takes the pivot and the test of each piece from the box as it is now.
+        let first_state = self.view.piece(key(0));
+        let first_box = first
+            .bounding_box
+            .translate(IVec3::new(0, first_state.shift_y, 0));
+        let centre = first_box.center();
+        let pivot = IVec3::new(centre.x, first_box.min_y(), centre.z);
+        for (index, piece) in start.pieces.iter().enumerate() {
+            // A move in y alone never takes a piece into or out of the centre's
+            // columns, which reach from the bottom to the top.
+            if !piece.bounding_box.intersects_xz(x, z, x + 15, z + 15) {
+                continue;
+            }
+            let state = self.view.piece(key(index));
+            if !piece
+                .bounding_box
+                .translate(IVec3::new(0, state.shift_y, 0))
+                .intersects(chunk_box)
+            {
+                continue;
+            }
+            self.attempt(
+                Placing::Piece(key(index), name),
+                chunk_box,
+                pivot,
+                |placing| {
+                    let kept = structures::place_piece(placing, start, key(index), state);
+                    if kept != state {
+                        placing.level.view().set_piece(key(index), kept);
+                    }
+                },
+            );
+        }
+        self.attempt(
+            Placing::AfterPlace(reference, name),
+            chunk_box,
+            pivot,
+            |placing| {
+                structures::after_place(placing, start);
+            },
+        );
+    }
+
+    /// One placement in an attempt of the view (ADR-0021), with a `Level` that carries
+    /// the region's random source on from the placement before.
+    fn attempt(
+        &mut self,
+        what: Placing,
+        chunk_box: BoundingBox,
+        pivot: IVec3,
+        mut place: impl FnMut(&mut structures::Placing<'_, '_, '_>),
+    ) {
+        let Self {
+            settings,
+            view,
+            centre,
+            random,
+            region_random,
+        } = self;
+        view.attempt(what, &mut |view| {
+            let mut level = Level::new(view, settings.zoom(), settings.min_y(), settings.height());
+            level.carry_region_random(region_random.take());
+            let mut placing = structures::Placing {
+                level: &mut level,
+                random,
+                settings,
+                chunk_box,
+                centre: *centre,
+                pivot,
+            };
+            place(&mut placing);
+            **region_random = level.carry_region_random(None);
+        });
+    }
+}
+
+/// A chunk as the game's sets of chunks hold it (`ChunkPos.asLong`).
+fn pack(chunk: ChunkPos) -> i64 {
+    clustine_structures::geometry::ChunkPos::new(chunk.x, chunk.z).pack()
 }

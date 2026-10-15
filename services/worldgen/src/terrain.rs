@@ -191,8 +191,9 @@ impl TerrainGenerator {
         self.structures.biomes()
     }
 
-    /// The structures that start in the chunk, from what is kept where it is there.
-    fn starts(&self, position: ChunkPos) -> Arc<[Start]> {
+    /// The structures that start in the chunk, as `Structures::starts` makes them,
+    /// from what is kept where it is there; none where structures are off.
+    pub fn starts(&self, position: ChunkPos) -> Arc<[Start]> {
         if !self.with_structures {
             return Arc::from([]);
         }
@@ -302,6 +303,12 @@ impl TerrainGenerator {
     pub fn forget(&self) {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         kept.chunks.clear();
+    }
+}
+
+impl clustine_features::structures::StartsOf for TerrainGenerator {
+    fn starts(&self, source: ChunkPos) -> Arc<[Start]> {
+        TerrainGenerator::starts(self, source)
     }
 }
 

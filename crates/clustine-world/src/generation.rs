@@ -76,6 +76,9 @@ pub enum Placing {
     Feature(&'static str),
     /// A piece of a structure start, with the structure's name.
     Piece(PieceKey, &'static str),
+    /// What a start does once its pieces in the centre are placed (`afterPlace`),
+    /// with the structure's name.
+    AfterPlace(StartRef, &'static str),
 }
 
 /// What one feature run sees and changes: the three by three chunks around

@@ -7,7 +7,13 @@
 //! The features whose kinds Clustine has not built are turned into the game's `no_op`
 //! by a data pack written here from Clustine's own reading of the data, keeping every
 //! feature's place in the order and so its seed: each step of the plan is judged
-//! exactly on what is built so far. Structures are off on both sides until phase S.
+//! exactly on what is built so far.
+//!
+//! Structures are on on both sides (`docs/groundwork/s-plan.md`, section 3). A chunk
+//! is compared only if every piece that meets the five by five chunks around it is of
+//! a structure whose placers are built: the chunk's blocks come from the runs of the
+//! three by three, and each of those reads its own three by three. The others are
+//! counted by the structures that kept them out.
 //! The program runs twice, placing each rank's chunks once in ascending and once in
 //! descending order; runs of one rank do not meet, so the two must agree.
 //!
@@ -210,7 +216,7 @@ fn game(seed: i64, area: Area, ascending: bool, classes: &Path, pack: &Path) -> 
     fs::write(
         directory.join("server.properties"),
         format!(
-            "level-seed={seed}\ngenerate-structures=false\nonline-mode=false\n\
+            "level-seed={seed}\ngenerate-structures=true\nonline-mode=false\n\
              server-port=0\nquery.port=0\ndifficulty=peaceful\nspawn-monsters=false\n\
              pause-when-empty-seconds=-1\nmax-tick-time=-1\nsync-chunk-writes=false\n\
              initial-enabled-packs=vanilla,file/clustine-unbuilt\n"
@@ -772,19 +778,16 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     .with_templates(Arc::new(templates))
     .with_placed_off(&off_names)
     .expect("the placed features turned off are the data's");
-    let stages = FeatureStages::with_features(
-        Arc::new(TerrainGenerator::without_structures(seed).with_biome_answers(answers(&cells))),
-        features,
-    );
+    let terrain = Arc::new(TerrainGenerator::new(seed).with_biome_answers(answers(&cells)));
+    let features = features.with_structures(terrain.clone());
+    let stages = FeatureStages::with_features(Arc::clone(&terrain), features);
     let scheduler = Scheduler::new(stages, Options::for_processors(num_threads()));
-    let compared: Vec<ChunkPos> = area
+    let held: Vec<ChunkPos> = area
         .chunks()
         .filter(|e| area.holds_the_runs_of(*e))
         .collect();
-    assert!(
-        !compared.is_empty(),
-        "the area is too small to compare a chunk"
-    );
+    assert!(!held.is_empty(), "the area is too small to compare a chunk");
+    let (compared, unbuilt) = without_unbuilt_structures(&terrain, &held);
     let mut found = Vec::new();
     let mut failed = Vec::new();
     let mut beside_ties = Vec::new();
@@ -837,6 +840,13 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
         compared.len()
     )
     .unwrap();
+    for (structure, chunks) in &unbuilt {
+        writeln!(
+            report,
+            "  not compared, as {structure} is not built: {chunks} chunks"
+        )
+        .unwrap();
+    }
     for line in &found {
         writeln!(report, "  {line}").unwrap();
     }
@@ -853,6 +863,44 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     print!("{report}");
     std::io::stdout().flush().unwrap();
     assert!(found.is_empty(), "{} differences", found.len());
+}
+
+/// The chunks of `held` that no piece of a structure whose placers are not built meets
+/// within two, and for each such structure how many chunks it kept out, by name.
+fn without_unbuilt_structures(
+    terrain: &TerrainGenerator,
+    held: &[ChunkPos],
+) -> (Vec<ChunkPos>, BTreeMap<&'static str, usize>) {
+    let mut compared = Vec::new();
+    let mut unbuilt = BTreeMap::new();
+    for at in held {
+        let (min_x, min_z) = ((at.x - 2) * 16, (at.z - 2) * 16);
+        let (max_x, max_z) = ((at.x + 2) * 16 + 15, (at.z + 2) * 16 + 15);
+        let mut kept_out = std::collections::BTreeSet::new();
+        // A start's pieces reach at most eight chunks from its source, and a piece
+        // meeting the five by five may be of a start eight beyond any of them.
+        for source in around(*at, 2 + clustine_structures::REACH) {
+            for start in terrain.starts(source).iter() {
+                if clustine_features::structures::built(start.structure) {
+                    continue;
+                }
+                let meets = start
+                    .pieces
+                    .iter()
+                    .any(|piece| piece.bounding_box.intersects_xz(min_x, min_z, max_x, max_z));
+                if meets {
+                    kept_out.insert(start.data().name);
+                }
+            }
+        }
+        if kept_out.is_empty() {
+            compared.push(*at);
+        }
+        for name in kept_out {
+            *unbuilt.entry(name).or_insert(0) += 1;
+        }
+    }
+    (compared, unbuilt)
 }
 
 /// Prints the blocks around `block` (`x y z`) in the game's world and Clustine's, layer
@@ -1029,6 +1077,70 @@ fn areas_where_every_biome_of_the_overworld_stands() {
                 chunk.z + 11
             ),
             None => println!("{} not found", names[usize::from(*biome)]),
+        }
+    }
+}
+
+/// The chooser's twin for structures (`docs/groundwork/s-plan.md`, section 3): for every
+/// structure of the overworld's sets, a 24 by 24 area around the first chunk outwards
+/// from the spawn, at least forty chunks from it, where one of its starts is made. One
+/// line each, `structure x0 z0 x1 z1`, for `CLUSTINE_GAME_FEATURES_AREA`.
+#[test]
+#[ignore = "a search over the world; run by name with --release --ignored --nocapture"]
+fn areas_where_every_structure_stands() {
+    use clustine_world::ChunkGenerator as _;
+    use clustine_worldgen_data::structures::{STRUCTURE_SETS, STRUCTURES};
+
+    let seed: i64 = std::env::var("CLUSTINE_GAME_FEATURES_SEED")
+        .map_or(13579, |seed| seed.parse().expect("a seed is a number"));
+    let terrain = TerrainGenerator::new(seed);
+    let structures =
+        clustine_structures::Structures::new(seed, clustine_terrain::biome::Dimension::Overworld);
+    let sets = structures.possible_sets().to_vec();
+    let wanted: std::collections::BTreeSet<usize> = sets
+        .iter()
+        .flat_map(|set| STRUCTURE_SETS[*set].structures.iter())
+        .map(|(structure, _)| usize::from(*structure))
+        .collect();
+    let spawn = terrain.spawn().chunk();
+    let mut found: BTreeMap<usize, ChunkPos> = BTreeMap::new();
+    'rings: for ring in 40_i32..2000 {
+        for dx in -ring..=ring {
+            for dz in -ring..=ring {
+                if dx.abs() != ring && dz.abs() != ring {
+                    continue;
+                }
+                let chunk = ChunkPos::new(spawn.x + dx, spawn.z + dz);
+                let starts_here = sets.iter().any(|set| {
+                    STRUCTURE_SETS[*set]
+                        .structures
+                        .iter()
+                        .any(|(structure, _)| !found.contains_key(&usize::from(*structure)))
+                        && structures.is_structure_chunk(*set, chunk.x, chunk.z)
+                });
+                if !starts_here {
+                    continue;
+                }
+                for start in terrain.starts(chunk).iter() {
+                    found.entry(start.structure).or_insert(chunk);
+                }
+                if wanted.iter().all(|structure| found.contains_key(structure)) {
+                    break 'rings;
+                }
+            }
+        }
+    }
+    for structure in &wanted {
+        let name = STRUCTURES[*structure].name;
+        match found.get(structure) {
+            Some(chunk) => println!(
+                "{name} {} {} {} {}",
+                chunk.x - 12,
+                chunk.z - 12,
+                chunk.x + 11,
+                chunk.z + 11
+            ),
+            None => println!("{name} not found"),
         }
     }
 }

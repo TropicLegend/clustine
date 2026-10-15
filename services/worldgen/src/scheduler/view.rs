@@ -261,6 +261,10 @@ fn describe(placing: Option<Placing>) -> String {
             "{name}, piece {} of start {} of source chunk ({}, {})",
             key.piece, key.start.index, key.start.source.x, key.start.source.z
         ),
+        Some(Placing::AfterPlace(start, name)) => format!(
+            "{name}, after placing start {} of source chunk ({}, {})",
+            start.index, start.source.x, start.source.z
+        ),
     }
 }
 

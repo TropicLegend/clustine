@@ -40,7 +40,7 @@ import net.minecraft.world.ticks.SavedTick;
 /// an area in Clustine's order of runs, rank by rank, and read back in this process.
 ///
 /// It runs in a server directory the caller prepared (eula.txt, server.properties with
-/// the seed and structures off, a data pack that turns the features Clustine has not
+/// the seed and structures on, a data pack that turns the features Clustine has not
 /// built into no_op), with its standard input kept open, since the thread that reads the
 /// console and through which the server is found ends when it closes. Arguments: the
 /// file of the area (one line, `x0 z0 x1 z1`, the chunks whose features run, both corners
