@@ -2591,6 +2591,18 @@ fn a_hello_with_chunks_and_guests_in_both_stripes_holds_the_link_until_each_is_a
 fn a_hello_with_chunks_and_guests_in_both_stripes_holds_the_link_until_each_is_answered_in(
     mut world: World,
 ) {
+    {
+        // A chunk the store says is being made holds no link (ADR-0021, section 7): the
+        // region's own chunks of the hello are stored, so that they hold it until they
+        // are answered, whatever the generator's speed.
+        let (handle, _) = world.open_raw();
+        let owner = Other { handle };
+        for position in [HOME, OWN] {
+            let chunk = owner.load(position);
+            owner.save(position, &chunk);
+        }
+        owner.handle.flush();
+    }
     let mut runner = world.open();
     let mut e = Link::attach(&runner);
     e.hello(E, 5, Vec::new(), vec![HOME, NEXT], vec![OWN, OTHER]);
@@ -2795,11 +2807,16 @@ fn file_of(world: &World, position: ChunkPos) -> std::path::PathBuf {
 fn a_chunk_of_a_hello_that_the_store_cannot_read_ends_the_hold_and_is_answered_with_nothing() {
     let mut world = World::new(Shape::Stripes, true);
     {
-        // The chunk has to be in the store to be damaged there.
+        // OWN has to be in the store to be damaged there. HOME is stored too: a chunk
+        // the store says is being made holds no link (ADR-0021, section 7), so only a
+        // stored HOME holds the join back until it is answered, whatever the
+        // generator's speed.
         let (handle, _) = world.open_raw();
         let owner = Other { handle };
-        let chunk = owner.load(OWN);
-        owner.save(OWN, &chunk);
+        for position in [HOME, OWN] {
+            let chunk = owner.load(position);
+            owner.save(position, &chunk);
+        }
         owner.handle.flush();
     }
     std::fs::write(file_of(&world, OWN), b"not a chunk").expect("the chunk was stored");
