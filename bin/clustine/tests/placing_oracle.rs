@@ -34,7 +34,9 @@
 //! in every run, a different one each time: an animal that had wandered onto the spot,
 //! as it turned out, since the official server does not place a block into a mob.
 //! Since 2026-10-15 it starts with no mobs and none spawning (`Oracle::start`), and two
-//! runs in a row matched in every case with nothing gone wrong on the way.
+//! runs in a row matched in every case with nothing gone wrong on the way. On the same
+//! day a sapling placed on grass had grown a stage on the official server by the time
+//! it was read, a random tick; since then the official server has none.
 
 mod common;
 

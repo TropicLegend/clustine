@@ -2,7 +2,8 @@
 
 - Status: **Drafted on 2026-10-15, revised after an independent review** the same day
   (its fifteen findings are answered in the last section), **and agreed**: the owner
-  answered the four questions of section 6 as recommended. Step T8 of the [terrain plan](terrain-plan.md), with fixing the
+  answered the four questions of section 6 as recommended. **Built on 2026-10-15**
+  (T8a to T8g); what was judged and measured is in the roadmap. Step T8 of the [terrain plan](terrain-plan.md), with fixing the
   spawn's x, z for a world, which W6 moved here ([W6 plan](w6-plan.md), section 2).
 
 ## 1. What there is now

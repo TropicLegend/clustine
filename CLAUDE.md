@@ -123,6 +123,9 @@ The tests that start clusters of processes run several at a time
 - Run the comparisons with the official server on a quiet machine. Beside a full
   check, the official server once sent a flat chunk before its lighting was done (a
   light section of zeros where it otherwise says "empty"), and the flat comparison
-  failed; alone it passed three times in a row.
+  failed; alone it passed three times in a row. On 2026-10-15 it failed so in two of
+  five runs on a quiet machine too: the official server's race, not Clustine's. Run
+  it again before looking further, and pass `--no-fail-fast`, since cargo otherwise
+  skips the comparisons after the first that fails.
 - GitHub's job logs cannot be read without being signed in; the annotations of a check
   run can (`/repos/<owner>/<repo>/check-runs/<job id>/annotations`).

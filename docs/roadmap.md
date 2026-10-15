@@ -55,11 +55,12 @@ End (phase D); survival mode, inventories beyond the hotbar, and crafting.
   stored (W5, [ADR-0021](adr/0021-generation-is-a-function.md)); placing and using
   (W6, [plan](groundwork/w6-plan.md)); noise, routers, biomes, the fill, the surface,
   the carvers and the structures' starts (T1 to T7), each judged against the game's
-  own classes. Not built: W4 (serving a world the official server made) and T8.
+  own classes; a new world's spawn chosen as the game chooses it, kept in the world's
+  `meta`, the land around it made as the store starts, and the regions' ticks measured
+  while a first view is made (T8, [plan](groundwork/t8-plan.md)). Not built: W4
+  (serving a world the official server made).
 
-**Next**, in the terrain plan's order: T8, a new world's spawn chosen as the game
-chooses it and fixed for that world, and the speed measured (agreed
-[plan](groundwork/t8-plan.md)); then the features (F),
+**Next**, in the terrain plan's order: the features (F),
 the structures' blocks (S) and block behaviour (B) side by side; then the Nether and
 the End (D).
 
@@ -1443,6 +1444,35 @@ the other (B2); a sign does not open its editor; chests, crafting tables, furnac
 buttons and levers do nothing when clicked; flint and steel, axes, hoes, bone meal and
 spawn eggs do nothing; a few plants with their own rules (vines, cocoa, kelp, coral
 plants, cave vines) place nothing yet.
+
+**A new world's spawn: T8** (2026-10-15; [plan](groundwork/t8-plan.md), reviewed
+before it was built, the owner's four answers as recommended). The world store
+works out a new world's spawn as the game does, its search over the climate for x, z
+and then a place to stand in the 121 chunks around it, and writes it into the
+world's `meta` (`spawn=x,y,z`); a world keeps it whatever generator version later
+serves it. A flat world's spawn stays 0, -60, 0; a seeded world made before T8 is
+kept if its spawn would still be at 0, 0 and refused with a sentence otherwise. The
+coordinator learns the spawn's chunk from the store's list of regions and is no
+longer told the seed; an edge tells a joining client the spawn (the compass points
+there), after its position as the official server does. Newcomers stand on the
+spawn column as it is when they enter (W6). Pins stay absolute. As the store
+starts it has the chunks within 8 of the spawn made ahead, unless they are stored.
+Judged by the game's own classes: the search's x, z equal on 1,000 seeds; the place
+to stand equal in worlds the official server made on ten seeds (on two of them, at
+another height where leaves lie on the spawn column, which are features, phase F).
+Tests from the plan by someone who had not read the code: 41, none found a fault.
+
+Measured on 2026-10-15 in an optimised build on this machine, the world on the
+network disk with its cache, nothing else running (`cargo test --release -p
+clustine --test first_view -- --ignored --nocapture`, ADR-0021 section 5): a new
+world is started and a player joins at once with a view of 8. All 329 chunks were
+there after 0.79 s on seed 13579 (spawn -96, 66, 32), 0.72 s on 12345 (96, 136,
+-32, a mountain) and 0.68 s on 3 (0, 71, 0), and **no tick of the home region took
+longer than its 50 ms**. A worker now says so in its log when ticks do (at most once
+a second). The comparisons with the official server matched after T8 added the
+spawn's packet to the join; the official server now runs them without random ticks,
+since a sapling it grew a stage made one comparison of placing differ. The terrain plan's other speed targets (the spawn area with its features,
+flying at a sprint) wait for the features and move to F1.
 
 **What to try with a real client: the land beside the game's.** With `--release`,
 and a directory of its own for the world:

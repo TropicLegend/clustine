@@ -116,10 +116,13 @@ impl Oracle {
         // Clustine has no mobs, and an animal that wanders onto a spot makes the official
         // server refuse to place a block there: comparisons of placing lost a click or
         // two in every run to that. So no mob spawns, and any that has is removed, before
-        // a bot joins. Each command is waited for by the server's answer to it.
+        // a bot joins. Clustine has no random ticks either, and a sapling the official
+        // server grew a stage made a comparison of placing differ once; so none tick.
+        // Each command is waited for by the server's answer to it.
         let quiet = async {
             for (command, answers) in [
                 ("gamerule spawn_mobs false", &["now set to"][..]),
+                ("gamerule random_tick_speed 0", &["now set to"][..]),
                 (
                     "kill @e[type=!minecraft:player]",
                     &["Killed", "No entity was found"][..],
