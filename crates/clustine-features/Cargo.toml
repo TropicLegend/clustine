@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 clustine-data.workspace = true
 clustine-noise.workspace = true
+clustine-structures.workspace = true
 clustine-terrain.workspace = true
 clustine-world.workspace = true
 clustine-worldgen-data.workspace = true

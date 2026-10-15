@@ -313,6 +313,7 @@ dependencies = [
  "clustine-data",
  "clustine-noise",
  "clustine-protocol",
+ "clustine-structures",
  "clustine-terrain",
  "clustine-world",
  "clustine-worldgen-data",

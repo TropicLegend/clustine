@@ -3,7 +3,9 @@
 //! biome lists.
 
 use std::fmt;
+use std::sync::Arc;
 
+use clustine_structures::template_blocks::TemplateLibrary;
 use clustine_terrain::biome::Dimension;
 use clustine_terrain::biome::zoom::Zoom;
 use clustine_worldgen_data::feature as data;
@@ -37,6 +39,10 @@ pub struct FeatureSettings {
     /// For each biome by its number, for each step, the places in the step's list of
     /// the features the biome lists, sorted.
     biomes: Vec<Vec<Vec<usize>>>,
+    /// The blocks of the structure templates, read by the server from the operator's
+    /// own jar (the terrain plan's question 3); without them a feature built of a
+    /// template places nothing.
+    templates: Option<Arc<TemplateLibrary>>,
 }
 
 impl fmt::Debug for FeatureSettings {
@@ -121,7 +127,20 @@ impl FeatureSettings {
             placed,
             steps,
             biomes,
+            templates: None,
         })
+    }
+
+    /// These settings with the blocks of the structure templates.
+    #[must_use]
+    pub fn with_templates(mut self, templates: Arc<TemplateLibrary>) -> Self {
+        self.templates = Some(templates);
+        self
+    }
+
+    /// The blocks of the structure templates, where the server has them.
+    pub fn templates(&self) -> Option<&TemplateLibrary> {
+        self.templates.as_deref()
     }
 
     pub fn seed(&self) -> i64 {
