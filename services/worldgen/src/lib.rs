@@ -8,6 +8,7 @@ pub mod features;
 pub mod preview;
 pub mod scheduler;
 pub mod stages;
+pub mod templates;
 pub mod terrain;
 
 use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks, synced_registry};

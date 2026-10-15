@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use clustine_data::DimensionType;
 use clustine_features::FeatureSettings;
+use clustine_structures::template_blocks::TemplateLibrary;
 use clustine_terrain::biome::Dimension;
 use clustine_world::ChunkGenerator;
 use clustine_world::ChunkPos;
@@ -30,11 +31,25 @@ pub struct FeatureStages {
 }
 
 impl FeatureStages {
-    /// The stages of `terrain`'s world. Reading the features' data takes a moment;
-    /// make them once.
+    /// The stages of `terrain`'s world, without the blocks of structure templates:
+    /// a feature built of one places nothing. Reading the features' data takes a
+    /// moment; make them once.
     pub fn new(terrain: Arc<TerrainGenerator>) -> Self {
-        let features = FeatureSettings::new(terrain.seed(), Dimension::Overworld)
+        Self::of(terrain, None)
+    }
+
+    /// The stages of `terrain`'s world with the blocks of the structure templates,
+    /// read from the operator's jar ([`crate::templates::read_jar`]).
+    pub fn with_templates(terrain: Arc<TerrainGenerator>, templates: Arc<TemplateLibrary>) -> Self {
+        Self::of(terrain, Some(templates))
+    }
+
+    fn of(terrain: Arc<TerrainGenerator>, templates: Option<Arc<TemplateLibrary>>) -> Self {
+        let mut features = FeatureSettings::new(terrain.seed(), Dimension::Overworld)
             .expect("the features of the pinned jar's data are read whole by every build");
+        if let Some(templates) = templates {
+            features = features.with_templates(templates);
+        }
         Self {
             terrain,
             features: Arc::new(features),

@@ -603,7 +603,15 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     );
     let game = parse(&ascending);
 
-    let stages = FeatureStages::new(Arc::new(TerrainGenerator::without_structures(seed)));
+    // The game's own buildings, from the jar `cargo datagen` downloaded, as a server
+    // reads them from its operator's.
+    let templates =
+        clustine_worldgen::templates::read_jar(&root().join("target/datagen/26.3/server.jar"))
+            .expect("the templates of the jar are read");
+    let stages = FeatureStages::with_templates(
+        Arc::new(TerrainGenerator::without_structures(seed)),
+        Arc::new(templates),
+    );
     let scheduler = Scheduler::new(stages, Options::for_processors(num_threads()));
     let compared: Vec<ChunkPos> = area
         .chunks()

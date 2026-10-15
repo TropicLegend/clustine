@@ -477,8 +477,10 @@ dependencies = [
  "clustine-worldgen-data",
  "flate2",
  "tempfile",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]

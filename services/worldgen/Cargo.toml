@@ -14,7 +14,9 @@ clustine-light.workspace = true
 clustine-structures.workspace = true
 clustine-terrain.workspace = true
 clustine-world.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 # The judge of features reads the block entities the official server writes.
