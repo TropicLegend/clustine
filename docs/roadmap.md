@@ -64,8 +64,28 @@ End (phase D); survival mode, inventories beyond the hotbar, and crafting.
   [plan](groundwork/f-plan.md)). Not built: W4 (serving a world the official server
   made), the Nether's and the End's features (F7, with D) and F8.
 
-**Next**, in the terrain plan's order: the structures' blocks (S) and block behaviour
-(B) side by side; then the Nether and the End (D).
+**Under way:** the structures' blocks (S, [plan](groundwork/s-plan.md)) and block
+behaviour (B, [plan](groundwork/b-plan.md), [ADR-0024](adr/0024-block-behaviour-in-a-region.md))
+side by side. S0 is built: the runs place each step's structures before its features,
+by stubs, and the judge of features runs with structures on, comparing the chunks no
+unbuilt structure reaches. B's record is under its third review; nothing of B is built.
+
+**Next, in the order agreed on 2026-10-15** (the owner: "try to follow the roadmap and
+try to accomplish vanilla parity"):
+
+1. Effects carried between regions, so that a border is seamless (a record of its
+   own; the owner's answer to B's question 1).
+2. Redstone, a phase of its own (B's question 4).
+3. Entities other than players: item drops, falling blocks, animals and monsters
+   with their movement, AI and spawning, the structures' villagers and the like
+   (tier T3 of the [parity matrix](parity-matrix.md)); a record of how entities cross
+   regions and survive merges, splits and crashes comes first.
+4. Light in the simulation, which melting, crops and grass spreading need (B's
+   question 3).
+5. The Nether and the End (D), with their features (F7) and structures.
+
+Then the rest of vanilla parity by the parity matrix's tiers, and the milestones M4,
+M5 and M7 and the replicas' later phases, as planned.
 
 **What to try with a real client** is under "Where the work after M3 stands" below:
 a player's place kept across leaving (R1), placing and using (W6), and the land beside
