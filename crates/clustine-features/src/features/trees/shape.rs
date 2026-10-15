@@ -168,6 +168,31 @@ pub fn update_shape(
         }
         return updated;
     }
+    // A creaking heart looks again at its logs whenever something beside it changes
+    // (`CreakingHeartBlock.updateShape`).
+    if is_class(state, BlockClass::CreakingHeartBlock) {
+        level.schedule_block_tick(pos, tick_id(state), 1);
+        return state;
+    }
+    // A bamboo stalk that cannot stay falls by a tick, and one under an older stalk
+    // takes the next age (`BambooStalkBlock.updateShape`).
+    if is_class(state, BlockClass::BambooStalkBlock) {
+        if !can_survive(state, pos, level) {
+            level.schedule_block_tick(pos, tick_id(state), 1);
+        }
+        let age = |state: BlockState| state.property("age").and_then(|age| age.parse::<u8>().ok());
+        if direction == Face::Up
+            && is_block(neighbour, blocks::BAMBOO)
+            && age(neighbour) > age(state)
+        {
+            let next = if age(state) == Some(0) { "1" } else { "0" };
+            return state.with_property("age", next).unwrap_or(state);
+        }
+        return state;
+    }
+    if is_class(state, BlockClass::MossyCarpetBlock) {
+        return mossy_carpet(level, state, pos);
+    }
     if is_class(state, BlockClass::VegetationBlock)
         || is_class(state, BlockClass::CarpetBlock)
         || is_class(state, BlockClass::SnowLayerBlock)
@@ -179,6 +204,29 @@ pub fn update_shape(
 
 /// `VegetationBlock.updateShape`, and the carpet's and the snow's: gone where it can
 /// no longer stay.
+/// `MossyCarpetBlock.updateShape`: gone where it cannot stay (a carpet with a base on
+/// nothing; one without on anything but a carpet with a base), else its sides as
+/// `getUpdatedState` makes them without creating new ones but where it has a base,
+/// and gone where it is left without a base and without sides.
+fn mossy_carpet(level: &mut Level<'_>, state: BlockState, pos: BlockPos) -> BlockState {
+    let base = state.property("bottom") == Some("true");
+    let below = level.block(relative(pos, Face::Down));
+    let stays = if base {
+        !below.props().is_air()
+    } else {
+        is_class(below, BlockClass::MossyCarpetBlock) && below.property("bottom") == Some("true")
+    };
+    if !stays {
+        return blocks::AIR;
+    }
+    let updated = crate::features::frame::simple_block::mossy_updated(state, level, pos, false);
+    let has_faces = base
+        || ["north", "east", "south", "west"]
+            .iter()
+            .any(|side| updated.property(side) != Some("none"));
+    if has_faces { updated } else { blocks::AIR }
+}
+
 fn vegetation(level: &mut Level<'_>, state: BlockState, pos: BlockPos) -> BlockState {
     if can_survive(state, pos, level) {
         state

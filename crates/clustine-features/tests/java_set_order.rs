@@ -450,3 +450,34 @@ fn the_hash_of_a_position_is_the_games() {
     let wide = (i64::from(far.z) * 31 * 31 + i64::from(far.x)) as i32;
     assert_eq!(hash(far), wide);
 }
+
+/// The operations of one set of the game's leaf walk for a spruce whose leaves came out
+/// otherwise once (`tests/data/java_set_leaves.txt`, recorded with the JDK): a bin of
+/// it becomes a tree, and positions taken through the iterator leave the tree's order
+/// as it is. Every position taken first is the one Java's set gave first.
+#[test]
+fn a_leaf_walk_takes_its_positions_in_the_order_java_s_set_gives_them() {
+    let text = include_str!("data/java_set_leaves.txt");
+    let mut set = JavaSet::new();
+    for (line, op) in text
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .enumerate()
+    {
+        let (kind, at) = op.split_once(' ').unwrap();
+        let mut parts = at.split(',').map(|part| part.parse::<i32>().unwrap());
+        let pos = BlockPos::new(
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+        );
+        match kind {
+            "a" => {
+                set.insert(pos);
+            }
+            // Taken through the iterator, as the game takes it.
+            "r" => assert_eq!(set.remove_first(), Some(pos), "operation {line}"),
+            other => panic!("{other}"),
+        }
+    }
+}

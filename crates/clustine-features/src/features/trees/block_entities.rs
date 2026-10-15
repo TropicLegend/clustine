@@ -53,7 +53,8 @@ fn bee(out: &mut Vec<u8>, ticks_in_hive: i32) {
 }
 
 /// A beehive or bee nest with these bees, each by its ticks in the hive: `{bees:
-/// [...]}`, with no flower position.
+/// [...], components: {}}`, with no flower position, and the empty compound of
+/// components the game saves for every block entity it has made.
 pub fn beehive(state: BlockState, bees: &[i32]) -> BlockEntity {
     let mut out = vec![TAG_COMPOUND];
     name(&mut out, TAG_LIST, "bees");
@@ -66,6 +67,8 @@ pub fn beehive(state: BlockState, bees: &[i32]) -> BlockEntity {
     for ticks in bees {
         bee(&mut out, *ticks);
     }
+    name(&mut out, TAG_COMPOUND, "components");
+    out.push(TAG_END);
     out.push(TAG_END);
     entity(state, out)
 }
@@ -111,10 +114,17 @@ mod tests {
         assert_eq!(&data[14..16], &[0, 13]);
         assert_eq!(&data[16..29], b"ticks_in_hive");
         assert_eq!(&data[29..33], &5_i32.to_be_bytes());
-        // Two bees of the same length, the list's end and the compound's.
-        let bee_length = (data.len() - 13 - 1) / 2;
+        // Two bees of the same length, then the empty components and the compound's
+        // end.
+        let components = [
+            &[TAG_COMPOUND, 0, 10][..],
+            b"components",
+            &[TAG_END, TAG_END],
+        ]
+        .concat();
+        assert!(data.ends_with(&components));
+        let bee_length = (data.len() - 13 - components.len()) / 2;
         assert_eq!(data[13 + bee_length], TAG_INT);
-        assert_eq!(&data[data.len() - 1..], &[TAG_END]);
         assert_eq!(data[13 + bee_length - 1], TAG_END);
         let windows = data.windows(13).filter(|w| *w == b"minecraft:bee").count();
         assert_eq!(windows, 2);

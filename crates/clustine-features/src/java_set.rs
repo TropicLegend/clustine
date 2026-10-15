@@ -193,14 +193,32 @@ impl JavaSet {
         true
     }
 
-    /// Removes `pos`; false if the set did not have it (`HashMap.removeNode`).
+    /// Removes `pos`; false if the set did not have it (`HashSet.remove`, which is
+    /// `HashMap.removeNode` with `movable` true).
     pub fn remove(&mut self, pos: BlockPos) -> bool {
         let Some(node) = self.find(pos) else {
             return false;
         };
+        self.remove_node(node, true);
+        true
+    }
+
+    /// Takes the first position of the set's order away and returns it, as an iterator's
+    /// `remove` does after its first `next` (`HashIterator.remove`). That passes
+    /// `movable` false, so a tree bin keeps its form and its order: neither turned back
+    /// into a list where it has grown small nor its root moved to the front, which a
+    /// `remove` of the same position would do.
+    pub fn remove_first(&mut self) -> Option<BlockPos> {
+        let first = self.table.iter().find_map(|bin| *bin)?;
+        let pos = self.nodes[first].pos;
+        self.remove_node(first, false);
+        Some(pos)
+    }
+
+    fn remove_node(&mut self, node: usize, movable: bool) {
         let index = self.index(self.nodes[node].hash);
         if self.nodes[node].tree {
-            self.remove_tree_node(node, index);
+            self.remove_tree_node(node, index, movable);
         } else {
             let first = self.table[index].expect("the bin of a node found in it");
             if first == node {
@@ -215,7 +233,6 @@ impl JavaSet {
         }
         self.free.push(node);
         self.size -= 1;
-        true
     }
 
     /// `HashMap.resize`: a table of 16 at first, then twice as long, each bin split
@@ -497,8 +514,9 @@ impl JavaSet {
         }
     }
 
-    /// `TreeNode.removeTreeNode`, with `movable` true as `HashSet.remove` has it.
-    fn remove_tree_node(&mut self, p: usize, index: usize) {
+    /// `TreeNode.removeTreeNode`: with `movable`, as `HashSet.remove` has it, a bin
+    /// grown small becomes a list again and the root goes to the front of the bin.
+    fn remove_tree_node(&mut self, p: usize, index: usize, movable: bool) {
         let mut first = self.table[index];
         let succ = self.nodes[p].next;
         let pred = self.nodes[p].prev;
@@ -524,7 +542,7 @@ impl JavaSet {
                 None => true,
                 Some(rl) => self.nodes[rl].left.is_none(),
             };
-        if too_small {
+        if movable && too_small {
             self.table[index] = Some(self.untreeify(first));
             return;
         }
@@ -619,7 +637,9 @@ impl JavaSet {
                 }
             }
         }
-        self.move_root_to_front(r);
+        if movable {
+            self.move_root_to_front(r);
+        }
     }
 
     fn is_red(&self, link: Link) -> bool {

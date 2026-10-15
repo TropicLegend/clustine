@@ -10,7 +10,8 @@ use clustine_terrain::biome::Dimension;
 use clustine_terrain::biome::zoom::Zoom;
 use clustine_worldgen_data::feature as data;
 
-use crate::feature::{Feature, read_configured};
+use crate::feature::{Feature, FeatureRef, read_configured};
+use crate::features::frame::no_op::NoOp;
 use crate::placement::PlacedFeature;
 use crate::reader::{Read, Reader};
 use crate::values::Generation;
@@ -136,6 +137,24 @@ impl FeatureSettings {
     pub fn with_templates(mut self, templates: Arc<TemplateLibrary>) -> Self {
         self.templates = Some(templates);
         self
+    }
+
+    /// These settings with the placed features named turned into the game's `no_op`,
+    /// each keeping its place in its step and so every other feature's seed: for the
+    /// judge, which turns the same off in the game to find which feature a difference
+    /// comes from. A name that is no placed feature is refused.
+    pub fn with_placed_off(mut self, names: &[&str]) -> Read<Self> {
+        for name in names {
+            let (index, _) = data::placed(name).ok_or_else(|| crate::reader::DataError {
+                at: (*name).to_owned(),
+                what: "is not a placed feature".to_owned(),
+            })?;
+            self.placed[index] = PlacedFeature {
+                feature: FeatureRef::Inline(Box::new(NoOp)),
+                modifiers: Vec::new(),
+            };
+        }
+        Ok(self)
     }
 
     /// The blocks of the structure templates, where the server has them.

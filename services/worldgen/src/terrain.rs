@@ -78,6 +78,9 @@ struct KeptStarts {
     starts: BTreeMap<ChunkPos, (u64, Arc<[Start]>)>,
 }
 
+/// Biome cells by cell (x, y, z), four blocks across.
+pub type BiomeAnswers = BTreeMap<(i32, i32, i32), Biome>;
+
 /// Generates the overworld of a seed as the game's fill, surface and carvers leave
 /// it, with the game's biomes, lit. See the head of this module for what that leaves
 /// out and for what replaces it.
@@ -90,6 +93,10 @@ pub struct TerrainGenerator {
     /// Whether structures start at all, and so bend the ground. Off only for
     /// comparisons with the official server run with `generate-structures=false`.
     with_structures: bool,
+    /// Biome cells answered otherwise than the source answers them, by cell: only for
+    /// comparisons with the official server, which answers an exact tie of two biomes
+    /// by what its thread looked up last; the judge gives the game's answers.
+    biome_answers: Option<Arc<BiomeAnswers>>,
     /// Change what a chunk costs, never what it is.
     kept: Mutex<Kept>,
     starts: Mutex<KeptStarts>,
@@ -120,6 +127,7 @@ impl TerrainGenerator {
             dimension,
             structures: Structures::new(seed, Dimension::Overworld),
             with_structures: true,
+            biome_answers: None,
             kept: Mutex::new(Kept::default()),
             starts: Mutex::new(KeptStarts::default()),
             scratch: Mutex::new(clustine_light::Scratch::new()),
@@ -135,6 +143,16 @@ impl TerrainGenerator {
             with_structures: false,
             ..Self::new(seed)
         }
+    }
+
+    /// This generator with the biome cells of `answers` in place of the source's,
+    /// for the surface and the chunks' biomes: for a comparison with the official
+    /// server, which may answer an exact tie of two biomes with the other one
+    /// (the terrain plan, T3). Cells are biome cells, four blocks across.
+    #[must_use]
+    pub fn with_biome_answers(mut self, answers: BiomeAnswers) -> Self {
+        self.biome_answers = Some(Arc::new(answers));
+        self
     }
 
     /// Whether structures start in what this makes.
@@ -206,7 +224,17 @@ impl TerrainGenerator {
     /// not yet marked as generated. This is what the light of the chunk and of the
     /// eight around it is made from.
     pub fn unlit(&self, position: ChunkPos) -> Chunk {
-        let around = Biomes::from_source(self.biomes(), position.x, position.z);
+        let mut around = Biomes::from_source(self.biomes(), position.x, position.z);
+        if let Some(answers) = &self.biome_answers {
+            // The cells around the chunk reach a little beyond it on each side; a cell
+            // they do not reach is refused by `set_cell`.
+            let (low, high) = ((position.x << 2) - 2, (position.x << 2) + 5);
+            for (&(x, y, z), biome) in
+                answers.range((low, i32::MIN, i32::MIN)..=(high, i32::MAX, i32::MAX))
+            {
+                around.set_cell(x, y, z, *biome);
+            }
+        }
         let starts_of = |x, z| self.starts(ChunkPos::new(x, z));
         let beard = Structures::beardifier(position.x, position.z, starts_of);
         let carved = self

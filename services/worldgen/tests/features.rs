@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use clustine_structures::template_blocks::TemplateLibrary;
 use clustine_world::ChunkPos;
 use clustine_worldgen::scheduler::{Options, Scheduler};
 use clustine_worldgen::stages::Stages;
@@ -46,13 +47,33 @@ fn the_land_with_features_names_the_steps_built_and_whether_structures_start() {
         TerrainGenerator::without_structures(SEED),
     )));
     let preview = identity(&PreviewStages::new(Arc::new(TerrainGenerator::new(SEED))));
+    // Made without the templates' blocks, which a server reads from its operator's
+    // jar: a world made so says so.
     assert_eq!(
         with,
+        format!(
+            "terrain;features {};minecraft:overworld;seed {SEED};no templates",
+            clustine_features::GENERATION
+        )
+    );
+    assert_eq!(
+        without,
+        format!(
+            "terrain;features {};minecraft:overworld;seed {SEED};no structures;no templates",
+            clustine_features::GENERATION
+        )
+    );
+    let library = TemplateLibrary::from_files(Vec::<(String, Vec<u8>)>::new()).unwrap();
+    let with_templates = identity(&FeatureStages::with_templates(
+        Arc::new(TerrainGenerator::new(SEED)),
+        Arc::new(library),
+    ));
+    assert_eq!(
+        with_templates,
         format!(
             "terrain;features {};minecraft:overworld;seed {SEED}",
             clustine_features::GENERATION
         )
     );
-    assert_eq!(without, format!("{with};no structures"));
     assert_ne!(with, preview);
 }

@@ -164,15 +164,17 @@ impl ShapeUpdates for FluidTicks {
     }
 }
 
-/// `scheduleTick` of a fluid, at the game's normal priority.
-fn schedule_fluid(world: &mut dyn Neighbourhood, at: BlockPos, fluid: u8, delay: i32) {
+/// `scheduleTick` of a fluid, at the game's normal priority, as a chunk being
+/// generated keeps it: without the delay it was asked for (`ProtoChunkTicks.schedule`
+/// saves every tick with a delay of nought).
+fn schedule_fluid(world: &mut dyn Neighbourhood, at: BlockPos, fluid: u8, _delay: i32) {
     let (x, z) = at.in_chunk();
     world.schedule(
         at,
         ScheduledTick {
             at: InChunk::new(x, at.y, z),
             of: Ticked::Fluid(fluid),
-            delay,
+            delay: 0,
             priority: 0,
         },
     );
@@ -777,7 +779,8 @@ mod tests {
         assert_eq!(world.ticks.len(), 1);
         assert_eq!(world.ticks[0].1.of, Ticked::Fluid(WATER));
         assert_eq!(FLUIDS[usize::from(WATER)], "minecraft:water");
-        assert_eq!(world.ticks[0].1.delay, 5);
+        // A chunk being generated keeps no delay (`ProtoChunkTicks.schedule`).
+        assert_eq!(world.ticks[0].1.delay, 0);
 
         let mut dry = World::flat(blocks::DIRT, 0);
         dry.set(at, blocks::WATER);

@@ -112,7 +112,7 @@ fn place_mossy_carpet(level: &mut Level<'_>, pos: BlockPos, seed: i64, legacy: b
 }
 
 /// `MossyCarpetBlock.getUpdatedState`.
-fn mossy_updated(
+pub(crate) fn mossy_updated(
     mut state: BlockState,
     level: &mut Level<'_>,
     pos: BlockPos,

@@ -132,11 +132,10 @@ pub fn update_leaves(level: &mut Level<'_>, bounds: Bounds, placement: &Placemen
             if smallest >= MAX_DISTANCE {
                 return shape;
             }
+            // Through the set's iterator, as the game takes it (`Iterator.remove`).
             let pos = to_check[smallest]
-                .iter()
-                .next()
+                .remove_first()
                 .expect("the set is not empty");
-            to_check[smallest].remove(pos);
             if !bounds.contains(pos) {
                 continue;
             }

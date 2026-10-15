@@ -44,6 +44,15 @@ impl FeatureStages {
         Self::of(terrain, Some(templates))
     }
 
+    /// The stages of `terrain`'s world with features read and changed by the caller:
+    /// for the judge, which turns some off on both sides.
+    pub fn with_features(terrain: Arc<TerrainGenerator>, features: FeatureSettings) -> Self {
+        Self {
+            terrain,
+            features: Arc::new(features),
+        }
+    }
+
     fn of(terrain: Arc<TerrainGenerator>, templates: Option<Arc<TemplateLibrary>>) -> Self {
         let mut features = FeatureSettings::new(terrain.seed(), Dimension::Overworld)
             .expect("the features of the pinned jar's data are read whole by every build");
@@ -67,9 +76,16 @@ impl Stages for FeatureStages {
         } else {
             ";no structures"
         };
+        // Without the templates' blocks fossils and wells are not placed, and a world
+        // made so is not to be continued with them.
+        let templates = if self.features.templates().is_some() {
+            ""
+        } else {
+            ";no templates"
+        };
         GeneratorSettings {
             identity: format!(
-                "terrain;features {};{};seed {}{structures}",
+                "terrain;features {};{};seed {}{structures}{templates}",
                 clustine_features::GENERATION,
                 self.terrain.dimension().name,
                 self.terrain.seed()
