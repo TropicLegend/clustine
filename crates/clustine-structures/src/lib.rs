@@ -1,7 +1,13 @@
 //! Where Minecraft's structures start and with which pieces, as a function of a
 //! world's seed, a dimension and a chunk: the game's "structure starts" and
 //! "structure references" steps, and what they give the terrain to bend the ground
-//! by. **No block of a structure is placed here**: that is the features' stage.
+//! by; and the blocks of templates, placed with their processors.
+//!
+//! The starts place no block: that is the features' stage, which places a piece's
+//! template through [`place::place_in_world`], the game's
+//! `StructureTemplate.placeInWorld`, with the processors of [`processors`]. The blocks
+//! of the templates come from the operator's own jar, which the binary reads and hands
+//! to [`template_blocks::TemplateLibrary::from_files`]; nothing here reads a file.
 //!
 //! - [`Structures::starts`]: the starts of a chunk as the game's
 //!   `ChunkGenerator.createStructures` makes them. For every structure set of the
@@ -22,8 +28,8 @@
 //!
 //! The data is the game's, emitted by `cargo datagen` into `clustine-worldgen-data`:
 //! the structures, the sets, the template pools, and of every structure template its
-//! size and its jigsaw blocks. A template's blocks are not there and are not needed
-//! here (ADR-0019).
+//! size and its jigsaw blocks. A template's blocks are not there (ADR-0019): they are
+//! read from the operator's jar when the server starts (the terrain plan's question 3).
 //!
 //! Like the terrain this is a function of its inputs (ADR-0021): no clock, no thread,
 //! no hash map, no I/O. The rings of the strongholds are made once for a world, when
@@ -35,11 +41,19 @@
 //! generator make the starts without a server, and `tests/game_structures.rs` holds
 //! this crate to every one.
 
+mod blocks;
 pub mod compat;
 pub mod context;
 pub mod geometry;
 pub mod piece;
+pub mod place;
 pub mod placement;
+pub mod processors;
+pub mod reader;
+pub mod state_transform;
+pub mod template_blocks;
+#[cfg(test)]
+mod testing;
 mod utils;
 
 pub mod desert_pyramid;

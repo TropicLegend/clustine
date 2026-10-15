@@ -23,6 +23,13 @@ src/context.rs keep the names and shapes of SteelMC's registry of structures and
 its `StructureGenerationContext`, over Clustine's data and terrain, so that the
 adapted files read as they did.
 
+Placing a template's blocks is adapted from SteelMC's steel-core/src/worldgen/template/
+(loading.rs, placement.rs, processors.rs, state_transforms.rs) and
+steel-registry/src/structure/processor/data.rs, with what the game does otherwise put
+right where it was known, each file saying which: src/template_blocks.rs,
+src/processors.rs, src/place.rs and src/state_transform.rs. src/reader.rs and
+src/blocks.rs follow clustine-features' reader and block helpers.
+
 src/placement.rs, src/jigsaw.rs and src/lib.rs were written from the classes of the
 pinned server jar, with SteelMC's placement.rs, jigsaw.rs, generator.rs and start.rs
 read beside them; each says so at its head.

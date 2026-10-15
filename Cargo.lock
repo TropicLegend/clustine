@@ -409,11 +409,14 @@ version = "0.0.0"
 dependencies = [
  "clustine-data",
  "clustine-noise",
+ "clustine-protocol",
  "clustine-terrain",
  "clustine-world",
  "clustine-worldgen-data",
+ "flate2",
  "md-5",
  "serde_json",
+ "zip",
 ]
 
 [[package]]

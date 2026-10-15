@@ -1,6 +1,6 @@
 [package]
 name = "clustine-structures"
-description = "Where Minecraft's structures start, with which pieces, as a function of seed and chunk: placement, starts, jigsaw layouts, references, and what a structure does to the ground. No blocks."
+description = "Where Minecraft's structures start, with which pieces, as a function of seed and chunk: placement, starts, jigsaw layouts, references, and what a structure does to the ground; and the blocks of templates placed with their processors."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,10 +10,13 @@ publish.workspace = true
 [dependencies]
 clustine-data.workspace = true
 clustine-noise.workspace = true
+clustine-protocol.workspace = true
 clustine-terrain.workspace = true
 clustine-world.workspace = true
 clustine-worldgen-data.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
 md-5.workspace = true
 serde_json.workspace = true
+zip.workspace = true
