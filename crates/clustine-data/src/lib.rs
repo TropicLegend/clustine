@@ -12,6 +12,7 @@ mod generated;
 
 pub mod biome_parameters;
 pub mod block_states;
+pub mod faces;
 pub mod packed;
 
 use serde::{Deserialize, Serialize};

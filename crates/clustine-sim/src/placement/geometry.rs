@@ -230,73 +230,7 @@ pub(crate) fn segment_direction(segment: u8) -> Option<Dir> {
     }
 }
 
-/// How far inside a face vanilla takes a shape's slice for the face's shape
-/// (`VoxelShape.getFaceShape`).
-const FACE_EPSILON: f64 = 1.0e-7;
-
-/// The rectangles that `boxes` cover of `face`, each `[min u, min v, max u, max v]` in
-/// the two axes that lie in the face, in the order x, y, z. A box counts where it
-/// crosses the plane just inside the face, so that a fence's post, which reaches above
-/// its block, covers the top of it.
-fn face_rectangles(boxes: &[[f64; 6]], face: Dir) -> Vec<[f64; 4]> {
-    let (axis, plane) = match face {
-        Dir::Down => (1, FACE_EPSILON),
-        Dir::Up => (1, 1.0 - FACE_EPSILON),
-        Dir::North => (2, FACE_EPSILON),
-        Dir::South => (2, 1.0 - FACE_EPSILON),
-        Dir::West => (0, FACE_EPSILON),
-        Dir::East => (0, 1.0 - FACE_EPSILON),
-    };
-    let (u, v) = match axis {
-        0 => (1, 2),
-        1 => (0, 2),
-        _ => (0, 1),
-    };
-    boxes
-        .iter()
-        .filter(|b| b[axis] < plane && b[axis + 3] > plane)
-        .map(|b| [b[u], b[v], b[u + 3], b[v + 3]])
-        .collect()
-}
-
-/// Whether `boxes` cover the rectangle `area` of `face` entirely, as vanilla's tests of
-/// a face against a shape (`Shapes.joinIsNotEmpty(test, face, ONLY_FIRST)`) find.
-pub(crate) fn face_covers(boxes: &[[f64; 6]], face: Dir, area: [f64; 4]) -> bool {
-    let rectangles = face_rectangles(boxes, face);
-    // The rectangles' edges divide the area into cells, each wholly in or out of every
-    // rectangle; the area is covered if the middle of every cell is.
-    let mut us = vec![area[0], area[2]];
-    let mut vs = vec![area[1], area[3]];
-    for r in &rectangles {
-        for u in [r[0], r[2]] {
-            if u > area[0] && u < area[2] {
-                us.push(u);
-            }
-        }
-        for v in [r[1], r[3]] {
-            if v > area[1] && v < area[3] {
-                vs.push(v);
-            }
-        }
-    }
-    us.sort_by(f64::total_cmp);
-    vs.sort_by(f64::total_cmp);
-    us.dedup();
-    vs.dedup();
-    us.windows(2).all(|u| {
-        vs.windows(2).all(|v| {
-            let middle = [(u[0] + u[1]) / 2.0, (v[0] + v[1]) / 2.0];
-            rectangles.iter().any(|r| {
-                r[0] <= middle[0] && middle[0] <= r[2] && r[1] <= middle[1] && middle[1] <= r[3]
-            })
-        })
-    })
-}
-
-/// Vanilla's `Block.isFaceFull`: whether `boxes` cover the whole of `face`.
-pub(crate) fn face_full(boxes: &[[f64; 6]], face: Dir) -> bool {
-    face_covers(boxes, face, [0.0, 0.0, 1.0, 1.0])
-}
+pub(crate) use clustine_data::faces::{face_covers, face_full};
 
 /// The boxes of a shape moved to the block at `pos`.
 pub(crate) fn moved(shape: clustine_data::Shape, pos: BlockPos) -> Vec<[f64; 6]> {
@@ -417,25 +351,6 @@ mod tests {
         assert_eq!(rotation_segment(180.0), 8);
         assert_eq!(rotation_segment(-90.0), 12);
         assert_eq!(rotation_segment(359.0), 0);
-    }
-
-    #[test]
-    fn a_half_slab_covers_its_bottom_and_not_its_top() {
-        let slab = [[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]];
-        assert!(face_full(&slab, Dir::Down));
-        assert!(!face_full(&slab, Dir::Up));
-        assert!(!face_full(&slab, Dir::North));
-        assert!(face_covers(&slab, Dir::North, [0.0, 0.0, 1.0, 0.5]));
-    }
-
-    #[test]
-    fn two_halves_side_by_side_cover_a_face_together() {
-        let halves = [
-            [0.0, 0.0, 0.0, 0.5, 1.0, 1.0],
-            [0.5, 0.0, 0.0, 1.0, 1.0, 1.0],
-        ];
-        assert!(face_full(&halves, Dir::Up));
-        assert!(!face_full(&halves[..1], Dir::Up));
     }
 
     #[test]

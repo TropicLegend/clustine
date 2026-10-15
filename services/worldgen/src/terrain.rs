@@ -251,6 +251,17 @@ impl TerrainGenerator {
         kept.chunks.clear();
     }
 
+    /// Where the game puts a new world's spawn: the block a player's feet are in. The
+    /// search of the climate gives the chunk to begin from
+    /// (`clustine_terrain::spawn`), and the first column to stand on in a spiral of
+    /// chunks around it is the spawn (`crate::spawn`). Asks for the chunks it reads,
+    /// mostly one, and is the same for a seed every time.
+    pub fn spawn(&self) -> clustine_world::BlockPos {
+        let [x, z] = clustine_terrain::spawn::search_origin(self.seed);
+        let origin = ChunkPos::new(x >> 4, z >> 4);
+        crate::spawn::place_to_stand(origin, |position| self.shared(position))
+    }
+
     /// Where players enter the world: above the middle of the block at the origin,
     /// as in the flat world, standing on the ground of that column. (Where the game
     /// itself would put them is step T8 of `docs/groundwork/terrain-plan.md`.)

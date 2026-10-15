@@ -6,6 +6,7 @@
 
 pub mod preview;
 pub mod scheduler;
+pub mod spawn;
 pub mod stages;
 pub mod terrain;
 
