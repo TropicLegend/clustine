@@ -24,10 +24,11 @@ agreed plans, below.
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
 
-**What a player has.** A creative world, flat or with `--seed` the game's bare
-overworld for that seed: its biomes, the shape of its land, its surface, ore veins,
-caves and ravines, block for block what the game makes before anything grows on it,
-with the ground levelled where structures will stand. Light as the game's, also after
+**What a player has.** A creative world, flat or with `--seed` the game's overworld
+for that seed: its biomes, the shape of its land, its surface, caves and ravines, and
+everything the game's features place, trees, grass, flowers, ores, lakes, springs,
+geodes, dripstone and sculk, block for block what the game makes before it builds
+structures, with the ground levelled where they will stand. Light as the game's, also after
 blocks change. Placing and using blocks by vanilla's rules: facing, halves,
 connections to neighbours as placed, waterlogging, doors, trapdoors, fence gates,
 flower pots, buckets and lily pads. A player who leaves comes back where they left,
@@ -35,10 +36,10 @@ looking the same way, flying or not, with the same hotbar. The world runs in reg
 that follow their players across several workers; a worker or the world store can
 die without anyone being disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: trees, plants, the ores
-but for the large veins, lakes and structures' buildings (phases F and S of the
-terrain plan); water and lava that flow, sand that falls, and blocks beside a placed or
-broken one that change in turn (phase B); animals and monsters; the Nether and the
+**What a player will miss within minutes**, all of it planned: structures' buildings
+(phase S of the terrain plan); water and lava that flow, so a spring stands as one
+block, sand that falls, and blocks beside a placed or broken one that change in turn
+(phase B); animals and monsters; the Nether and the
 End (phase D); survival mode, inventories beyond the hotbar, and crafting.
 
 **Built since M3:**
@@ -57,17 +58,18 @@ End (phase D); survival mode, inventories beyond the hotbar, and crafting.
   the carvers and the structures' starts (T1 to T7), each judged against the game's
   own classes; a new world's spawn chosen as the game chooses it, kept in the world's
   `meta`, the land around it made as the store starts, and the regions' ticks measured
-  while a first view is made (T8, [plan](groundwork/t8-plan.md)). Not built: W4
-  (serving a world the official server made).
+  while a first view is made (T8, [plan](groundwork/t8-plan.md)); the overworld's
+  features in ADR-0021's order of runs, judged against the game's own server over an
+  area of every overworld biome on two seeds, and served (F0 to F6,
+  [plan](groundwork/f-plan.md)). Not built: W4 (serving a world the official server
+  made), the Nether's and the End's features (F7, with D) and F8.
 
-**Next**, in the terrain plan's order: the features (F, agreed
-[plan](groundwork/f-plan.md)),
-the structures' blocks (S) and block behaviour (B) side by side; then the Nether and
-the End (D).
+**Next**, in the terrain plan's order: the structures' blocks (S) and block behaviour
+(B) side by side; then the Nether and the End (D).
 
 **What to try with a real client** is under "Where the work after M3 stands" below:
 a player's place kept across leaving (R1), placing and using (W6), and the land beside
-the game's (`--seed`). The trials written for M3 under "Where M3 stands" were written
+the game's (`--seed`), now with its features. The trials written for M3 under "Where M3 stands" were written
 before R1: where they expect a player who joins again to be at the spawn point, they
 are now where they left.
 
@@ -1475,6 +1477,45 @@ spawn's packet to the join; the official server now runs them without random tic
 since a sapling it grew a stage made one comparison of placing differ. The terrain plan's other speed targets (the spawn area with its features,
 flying at a sprint) wait for the features and move to F1.
 
+**Features: phase F** (2026-10-15; [plan](groundwork/f-plan.md), reviewed before it
+was built, the owner's two answers as recommended). A seed's overworld is served with
+everything the game's features step places, in ADR-0021's order of runs: the frame of
+placement, providers, predicates and ores (F1), the ground's features (F2), trees
+(F3), plants (F4), and caves and buried things with the game's own structure
+templates (F5), each kind ported from SteelMC and judged by the game. The judge
+(F0, `services/worldgen/tests/game_features.rs`) starts the official server inside a
+Java program, holds an area's chunks, places their features rank by rank in
+Clustine's order, twice, and compares every chunk whose 94 runs lay in the area:
+blocks, block entities, ticks, marks, heightmaps and biome cells. Features not yet
+built are turned off in the game by a data pack, so each step was judged exactly on
+its own. Over an area of each of the 56 overworld biomes on seed 13579 and on seed
+12345, 144 chunks each, every chunk is equal, with two kinds of exception named
+rather than mended: the game's surface answers an exact tie of two biomes afresh, so
+a block whose biome cell is such a tie may follow the other biome (as T5 found); and
+HotSpot's `Math.sin` and `Math.cos`, which the icebergs use, differ from the fdlibm
+Clustine follows in about one angle in fifteen, which left one block of one iceberg
+otherwise in 110 areas. The judge gives Clustine the game's answers to biome ties,
+which a chain of runs carries several chunks away. Finding a difference is helped
+by turning any placed features off on both sides and printing both worlds around a
+block. What the sweeps found and mended: the light, ticks and marks of a chunk being
+generated, Java's set order through an iterator, empty components in saved block
+entities, and the shapes the edges of trees change. The world's spawn is now found
+among the features, and equals the official server's on all ten worlds it made.
+Steps F7 (the Nether's and the End's features, with D) and F8 (finished chunks of a
+saved official world) are not built.
+
+The served world switched at F6: a seeded world made before is refused, with a
+sentence of its own. Fossils, desert wells and the sulfur caves' springs need the
+game's server jar for their templates (`--minecraft-jar`, or the one `cargo datagen`
+keeps under `target/`). A spawner shows its mob. Measured on 2026-10-15 in an
+optimised build on this machine, the world on the network disk with its cache,
+nothing else running: a first view of 8 is whole after 2.2 to 2.9 s on three seeds
+(0.7 s for bare land), with no tick of the home region over 50 ms; a second player
+beside the first has it in 0.3 s; flying east 32 chunks at a sprint, flying, flying
+at a sprint, 34 and 60 blocks a second, the 19 chunks missing on arriving came within
+0.04 to 0.12 s (`cargo test --release -p clustine --test terrain -- --ignored
+--nocapture`, and `--test first_view`).
+
 **What to try with a real client: the land beside the game's.** With `--release`,
 and a directory of its own for the world:
 
@@ -1488,9 +1529,9 @@ world), both in creative mode. Press F3 for the coordinates and fly:
 
 1. You enter at -95.5, 66, 32.5 on dry ground near a coast, where the official
    server puts the spawn of a new world of this seed (since T8; the official world's
-   is the same block, -96, 66, 32), within half a second, and the land around you is
-   there at once: the world store made it when it started (T8f). A compass points
-   there. Double-tap jump to fly.
+   is the same block, -96, 66, 32), and the land around you comes within a few
+   seconds: the world store made the spawn's surroundings when it started (T8f). A
+   compass points there. Double-tap jump to fly.
 2. **The same land at the same coordinates**: the coast at the origin, the
    mountains, rivers, oceans and beaches around it, the same biome in F3 at the same
    place. Fly a few hundred blocks in any direction and compare peaks and shores.
@@ -1504,18 +1545,23 @@ world), both in creative mode. Press F3 for the coordinates and fly:
 5. Leave and join again, and restart the server: the land and what you built are
    the same.
 
-**What is expected to be missing**, since nothing after the carvers and the
-structures' starts is built: trees,
-grass, flowers and every other plant, kelp and seagrass; the ores but for the large
-veins; lakes, springs and the lava and water that run from them; snow lying on the
-ground and ice on frozen water (snow and ice that are the surface itself, as on
-peaks and icebergs, are there); villages and every other structure, also the
+6. **Since phase F, what grows** (start a new world: one made before is refused):
+   the same trees in the same places as in the official server's world, with their
+   leaves, vines, cocoa, beehives and leaf litter; grass, ferns and flowers; sugar
+   cane, pumpkins, cacti, bamboo; kelp, seagrass and coral reefs in warm oceans;
+   every ore at its depths; lakes of lava, springs on cliffs; geodes with amethyst;
+   dripstone caves; lush caves with azaleas and dripleaves; sculk in the deep dark;
+   monster rooms with a turning mob in the spawner; icebergs, ice spikes and snow
+   lying in cold biomes; desert wells and fossils when the server has the game's jar.
+   Compare a forest or a coast block for block with the official server's.
+
+**What is expected to be missing**: villages and every other structure, also the
 strongholds' and mineshafts' cuts through caves, though the ground where a village
 or an outpost is to stand is levelled as the game levels it, and an ancient city's
-cavern is cut out; animals and monsters. **What will
-look wrong**: water and lava do not flow, so where a cave or a ravine cuts an
-aquifer or the sea, the water stands as a wall, and stays so when a block beside it
-is broken; sand and gravel over a cave stay up when touched.
+cavern is cut out; animals and monsters. **What will look wrong**: water and lava do
+not flow, so a spring stands as one block on a cliff, and where a cave or a ravine
+cuts an aquifer or the sea the water stands as a wall; sand and gravel over a cave
+stay up when touched; chests do not open.
 
 **Pauses on network storage** (22 ms a synced write; first measured in
 [groundwork/disk-syncs-measured.md](groundwork/disk-syncs-measured.md)). Since then

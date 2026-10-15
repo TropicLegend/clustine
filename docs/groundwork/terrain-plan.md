@@ -3,8 +3,8 @@
 - Status: **Agreed by the owner on 2026-10-10.** The questions of section 7 that the
   owner answered are in the roadmap ("What the owner answered on 2026-10-10"); the
   others go by what this plan recommends. **As of 2026-10-15, built**: phase G but
-  for G7, which the Java judges replaced; W1, W2, W3, W5 and W6; T1 to T8. **Not
-  built**: W4, and phases F, S, B and D (the Nether's and the End's terrain is in
+  for G7, which the Java judges replaced; W1, W2, W3, W5 and W6; T1 to T8; F0 to
+  F6. **Not built**: W4, F7 and F8, and phases S, B and D (the Nether's and the End's terrain is in
   the crate, not served). Each step's row in section 3 says how it stands, and the
   roadmap ("Where the work after M3 stands") has what was measured. How the plan
   came about is in "How this plan came about", before the review's list at the end.
@@ -494,7 +494,9 @@ base heights from T4.
 
 ### Phase F: features
 
-**Not built** as of 2026-10-15. The scheduler of
+**F0 to F6 built on 2026-10-15** by [their own plan](f-plan.md), which says where it
+departs from the rows below; F7 comes with phase D and F8 is not built. Before that,
+as of 2026-10-15: The scheduler of
 [ADR-0021](../adr/0021-generation-is-a-function.md) (W5) runs stages in the order of
 runs and is tested with toy stages; nothing places a feature yet.
 

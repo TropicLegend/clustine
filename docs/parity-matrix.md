@@ -70,17 +70,17 @@ how to run it.
 
 ## T2 — World generation
 
-Everything here is in the crates `clustine-terrain` and `clustine-structures`, and is
-served for the overworld by `--seed` as a preview of bare land; a server without a seed
-is flat. Phases and steps are those of the
+Everything here is in the crates `clustine-terrain`, `clustine-features` and
+`clustine-structures`, and is served for the overworld by `--seed`; a server without a
+seed is flat. Phases and steps are those of the
 [terrain plan](groundwork/terrain-plan.md).
 
 | Feature | Status | Notes |
 |---|---|---|
 | Biomes | verified | T3. Equal to the chunks the official server made on seed 13579 but for four exact ties, and to the game's own classes in all three dimensions (`GameBiomes`) |
-| Overworld terrain (bit-exact for a seed) | partial | The fill from noise with its aquifers (T4), the surface and the ore veins (T5), the carvers (T6) and the ground bent under structures (T7) are built and equal to the game's own classes block for block (`GameFill`, `GameSurface`, `GameCarvers`, `GameStructures`). Nothing that the features stage places: no trees, plants, ores but the veins, lakes or springs |
+| Overworld terrain (bit-exact for a seed) | partial | The fill from noise with its aquifers (T4), the surface and the ore veins (T5), the carvers (T6) and the ground bent under structures (T7) are built and equal to the game's own classes block for block (`GameFill`, `GameSurface`, `GameCarvers`, `GameStructures`). What the features stage places is the row below |
 | Carvers | verified | T6: caves and ravines, judged by the game's own classes |
-| Features | not started | Phase F |
+| Features | partial | The overworld's, placed in ADR-0021's order of runs and equal to the official server's chunk for chunk over an area of each of the 56 overworld biomes on two seeds (`game_features.rs`, phase F of the terrain plan): trees, plants, ores, lakes, springs, geodes, dripstone, sculk, fossils and the rest, with their block entities, ticks and marks. Named exceptions: a surface block whose biome cell is an exact tie may follow the other biome, as the game's surface answers ties afresh; icebergs use `Math.sin` and `Math.cos`, which HotSpot computes otherwise than fdlibm for about one angle in fifteen (one block of one iceberg in 110 areas). Fossils, desert wells and sulfur springs need the game's jar for their templates. Not built: the Nether's and the End's features (with phase D); entities features would make are left out |
 | Structures | partial | T7: which structures start where, with every piece and its place, and the ground bent under them, judged by the game's own classes. No block of a structure is placed (phase S) |
 | Nether | partial | Biomes, fill, surface and carvers are in the crate and judged by the game's own classes; no features, and not served (phase D) |
 | End | partial | As the Nether |

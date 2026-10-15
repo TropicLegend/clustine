@@ -2,7 +2,10 @@
 
 - Status: **Drafted on 2026-10-15 and revised after an independent review** the same
   day (its sixteen findings are answered in the last section), **and agreed**: the
-  owner answered the two questions of section 6 as recommended. Phase F of the
+  owner answered the two questions of section 6 as recommended. **Built on
+  2026-10-15: F0 to F6**; F7 (the Nether's and the End's features) comes with phase D,
+  and F8 is not built. What was built otherwise than planned is in section 10, what
+  was judged and measured in the roadmap. Phase F of the
   [terrain plan](terrain-plan.md), section 3, made concrete;
   [ADR-0021](../adr/0021-generation-is-a-function.md) decided the order of runs, the
   view a run works in and how runs are judged, and this plan does not reopen those.
@@ -362,3 +365,38 @@ taken.
     fallback put to the owner.
 16. Small slips: the heightmap and filter of a patch, the rank table's line, what G2
     found about ending the process, the form of block entities, beehives' bees.
+
+## 10. As built
+
+- **The judge** is `services/worldgen/tests/game_features.rs` with
+  `tests/java/GameFeatures.java`, beside the generation service whose stages it
+  judges. It holds its chunks, checks that nothing ran before it asked and that each
+  request decorated exactly its chunk, and compares biome cells too.
+- **Ties of biomes.** The game answers an exact tie of two biomes by what its thread
+  looked up last, and through a chain of runs such an answer changes chunks several
+  away. The judge therefore gives Clustine the game's own answers for the cells of
+  the area (`TerrainGenerator::with_biome_answers`, for comparisons only). One
+  difference remains possible and is named: the game's surface asks its biome
+  source afresh, so a surface block whose zoom reads a tied cell may follow the
+  other biome (T5 found the same). The game's own two runs can differ for the same
+  reason; the first is compared.
+- **Trigonometry.** HotSpot's `Math.sin` and `Math.cos` differ from fdlibm, which
+  Clustine's `libm` follows, in about one angle in fifteen. Icebergs use them; one
+  block of one iceberg differed in 110 areas. Porting HotSpot's x86-64 intrinsics
+  bit for bit is left as a step of its own (named in the parity matrix).
+- **Finding a difference.** The judge can turn any placed features off on both sides
+  (`CLUSTINE_GAME_FEATURES_OFF`, `CLUSTINE_GAME_FEATURES_FROM`) and print both worlds
+  around a block (`CLUSTINE_GAME_FEATURES_AROUND`); an ignored test prints the biome
+  cells around a block with their ties. The areas are chosen from Clustine's own
+  biomes by an ignored test.
+- **What the generating chunk does** that the plan did not name: sky light reads 15
+  everywhere while features are placed; ticks are kept without their delay and one
+  per block or fluid and place; blocks are marked as their state asks. Trees' edges
+  update the shapes of the blocks beside them, which needed falling blocks, pale
+  moss carpets, creaking hearts and bamboo besides what F3 ported.
+- **Templates' blocks** are read by the generation service from the game's jar
+  (`templates::read_jar`), named with `--minecraft-jar` or found where `cargo
+  datagen` keeps it; without one, fossils, wells and the sulfur springs are not
+  placed, and the world's identity says so.
+- **Two seeds were swept**, 13579 and 12345, an area of each of the 56 overworld
+  biomes on each; seed 3 was not.
