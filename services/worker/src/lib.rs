@@ -910,6 +910,49 @@ pub struct RegionRunner {
     /// Since when the region has not ticked for a merge or a split, until its next
     /// tick has run. Noted only if there is somebody to tell.
     stopped: Option<Stopped>,
+    /// The ticks that took longer than a tick has, for the log.
+    slow: SlowTicks,
+}
+
+/// Ticks that took longer than the [`TICK`] a tick has: the first is said in the log
+/// at once, and those after it within a second are counted, with the longest, and
+/// said with the next slow tick after that, so that a region that is behind does not
+/// fill the log.
+#[derive(Debug, Default)]
+struct SlowTicks {
+    /// When slow ticks were last said.
+    said: Option<Instant>,
+    /// How many there were since, and the longest of them.
+    count: u32,
+    longest: Duration,
+}
+
+impl SlowTicks {
+    fn note(&mut self, region: Option<RegionId>, tick: u64, took: Duration) {
+        if took <= TICK {
+            return;
+        }
+        self.count += 1;
+        self.longest = self.longest.max(took);
+        let now = Instant::now();
+        if self
+            .said
+            .is_some_and(|said| now - said < Duration::from_secs(1))
+        {
+            return;
+        }
+        warn!(
+            region = ?region,
+            tick,
+            ticks = self.count,
+            longest_ms = self.longest.as_secs_f64() * 1000.0,
+            "ticks took longer than the 50 ms a tick has"
+        );
+        *self = Self {
+            said: Some(now),
+            ..Self::default()
+        };
+    }
 }
 
 /// What a region is restored with beside what the world store says of it: a
@@ -1010,6 +1053,7 @@ impl RegionRunner {
             status: Arc::new(RegionStatus::default()),
             standstills: None,
             stopped: None,
+            slow: SlowTicks::default(),
         };
         runner.show_status();
         runner
@@ -1185,7 +1229,10 @@ impl RegionRunner {
         }
         self.publish_committed();
         if self.pending.len() < MAX_TICKS_AHEAD {
+            let started = Instant::now();
             self.tick();
+            let tick = self.region.tick_number();
+            self.slow.note(self.id, tick, started.elapsed());
             self.tell_the_standstill();
             // A tick that changed nothing has nothing to wait for.
             self.publish_committed();
