@@ -245,3 +245,13 @@ pub struct Context<'a, 'v> {
     /// where a feature is placed by another, outside a run's list.
     pub top: Option<usize>,
 }
+
+impl Level<'_> {
+    /// Sets a block as the game's `setBlock` does in a region of world generation
+    /// with the flag `UPDATE_KNOWN_SHAPE` (16) among its flags: false where the view
+    /// refuses it, and nothing marked for post-processing. Trees set their logs,
+    /// leaves, roots and decorations so (the flags 19).
+    pub fn set_block_known_shape(&mut self, at: BlockPos, state: BlockState) -> bool {
+        self.view.set_block(at, state)
+    }
+}
