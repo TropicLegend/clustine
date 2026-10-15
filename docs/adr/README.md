@@ -30,7 +30,7 @@ one names it. As of 2026-10-15:
 | [0021](0021-generation-is-a-function.md) | Generation is a function, decorated in a fixed order | Built (W5); no feature runs yet |
 | [0022](0022-what-a-chunk-carries.md) | What a chunk carries, and where light is made | Built (steps C1 to C5) |
 | [0023](0023-light-at-the-edge.md) | Light at the edge | Built (L0a to L7, which is W3); L8 not built |
-| [0024](0024-block-behaviour-in-a-region.md) | Block behaviour in a region | Proposed, for a third review |
+| [0024](0024-block-behaviour-in-a-region.md) | Block behaviour in a region | Accepted; not built |
 
 The next number, 0024, is promised to the record on neighbour updates and scheduled
 ticks (step B1 of [the terrain plan](../groundwork/terrain-plan.md)), which is not
