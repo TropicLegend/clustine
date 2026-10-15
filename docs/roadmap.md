@@ -1555,6 +1555,12 @@ world), both in creative mode. Press F3 for the coordinates and fly:
    lying in cold biomes; desert wells and fossils when the server has the game's jar.
    Compare a forest or a coast block for block with the official server's.
 
+7. **Render distance in game** (since 2026-10-15): turn the client's render distance
+   down and up in the video settings while playing. The view shrinks and grows at
+   once, without leaving the world, up to what the server was started with
+   (`--view-distance`, 8 unless told). Before, the server kept the distance a client
+   joined with.
+
 **What is expected to be missing**: villages and every other structure, also the
 strongholds' and mineshafts' cuts through caves, though the ground where a village
 or an outpost is to stand is levelled as the game levels it, and an ancient city's
