@@ -1685,6 +1685,32 @@ impl<R: NoiseRouter> Context for Listening<'_, '_, R> {
     }
 }
 
+/// The game's `Biome.getTemperature` at a block, for what asks it after the surface is
+/// made: features freeze water and lay snow by it. The noises are the surface's own,
+/// which the game seeds with fixed numbers, so one of these serves every world.
+pub struct BiomeTemperature(Temperature);
+
+impl BiomeTemperature {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Temperature::new())
+    }
+
+    /// The temperature of `biome` at the block x, y, z of a dimension whose sea is at
+    /// `sea_level`.
+    #[must_use]
+    pub fn at(&self, biome: Biome, x: i32, y: i32, z: i32, sea_level: i32) -> f32 {
+        let climate = &biomes::CLIMATE[usize::from(biome.0)];
+        self.0.at(climate, x, y, z, sea_level)
+    }
+}
+
+impl Default for BiomeTemperature {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clustine_noise::Xoroshiro;

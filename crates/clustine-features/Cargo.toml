@@ -14,3 +14,4 @@ clustine-terrain.workspace = true
 clustine-world.workspace = true
 clustine-worldgen-data.workspace = true
 libm = "0.2"
+clustine-protocol.workspace = true
