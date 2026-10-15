@@ -1434,7 +1434,7 @@ impl Player {
     ) -> Result<()> {
         self.act().await?;
         if let Some(every) = self.ledger.pulse
-            && self.ticks % u64::from(every) == 0
+            && self.ticks.is_multiple_of(u64::from(every))
         {
             self.pulse().await?;
         }

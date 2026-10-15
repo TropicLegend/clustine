@@ -120,7 +120,7 @@ fn after_random_sets_a_section_holds_what_a_plain_array_holds() {
             let at = numbers.next().unwrap() % BLOCKS_PER_SECTION;
             // Half of the time one of the few the counts turn on, so that air and
             // fluids come and go however many kinds there are.
-            let state = if numbers.next().unwrap() % 2 == 0 {
+            let state = if numbers.next().unwrap().is_multiple_of(2) {
                 kinds[numbers.next().unwrap() % kinds.len().min(7)]
             } else {
                 kinds[numbers.next().unwrap() % kinds.len()]

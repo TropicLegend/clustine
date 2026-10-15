@@ -153,28 +153,30 @@ pub(crate) fn stairs(state: BlockState, pos: BlockPos, world: &World) -> BlockSt
     };
     let shape = 'shape: {
         let behind = world.get(own_facing.relative(pos));
-        if is_stairs(behind) && behind.property("half") == half {
-            if let Some(theirs) = facing(behind) {
-                if theirs.axis() != own_facing.axis() && can_take_shape(theirs.opposite()) {
-                    break 'shape if theirs == own_facing.counter_clockwise() {
-                        "outer_left"
-                    } else {
-                        "outer_right"
-                    };
-                }
-            }
+        if is_stairs(behind)
+            && behind.property("half") == half
+            && let Some(theirs) = facing(behind)
+            && theirs.axis() != own_facing.axis()
+            && can_take_shape(theirs.opposite())
+        {
+            break 'shape if theirs == own_facing.counter_clockwise() {
+                "outer_left"
+            } else {
+                "outer_right"
+            };
         }
         let front = world.get(own_facing.opposite().relative(pos));
-        if is_stairs(front) && front.property("half") == half {
-            if let Some(theirs) = facing(front) {
-                if theirs.axis() != own_facing.axis() && can_take_shape(theirs) {
-                    break 'shape if theirs == own_facing.counter_clockwise() {
-                        "inner_left"
-                    } else {
-                        "inner_right"
-                    };
-                }
-            }
+        if is_stairs(front)
+            && front.property("half") == half
+            && let Some(theirs) = facing(front)
+            && theirs.axis() != own_facing.axis()
+            && can_take_shape(theirs)
+        {
+            break 'shape if theirs == own_facing.counter_clockwise() {
+                "inner_left"
+            } else {
+                "inner_right"
+            };
         }
         "straight"
     };

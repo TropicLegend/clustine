@@ -443,7 +443,7 @@ impl Templates {
         );
         let mut strings = Vec::with_capacity(parts[0].len() / 2);
         let mut text_at = 0;
-        for row in parts[0].chunks_exact(2) {
+        for row in parts[0].as_chunks::<2>().0 {
             let length = u16_at(row, 0);
             let text = std::str::from_utf8(&parts[1][text_at..text_at + length])
                 .expect("the strings of the table are UTF-8");

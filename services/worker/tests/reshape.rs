@@ -6055,10 +6055,10 @@ impl Edge {
         let port = self.ports.entry(region).or_default();
         port.sent += 1;
         port.kept.push((port.sent, body.clone()));
-        if port.open {
-            if let Some(link) = port.link.as_mut() {
-                link.offer(Some(port.sent), body);
-            }
+        if port.open
+            && let Some(link) = port.link.as_mut()
+        {
+            link.offer(Some(port.sent), body);
         }
     }
 
@@ -6068,10 +6068,12 @@ impl Edge {
         let Some(port) = self.ports.get_mut(&region) else {
             return;
         };
-        if let Some(link) = port.link.as_mut() {
-            if port.welcomed && !link.closed && !view.is_empty() {
-                link.subscribe(view);
-            }
+        if let Some(link) = port.link.as_mut()
+            && port.welcomed
+            && !link.closed
+            && !view.is_empty()
+        {
+            link.subscribe(view);
         }
     }
 
@@ -6208,10 +6210,10 @@ impl Edge {
                 port.kept.retain(|(number, _)| *number > applied);
                 port.heard |= applied > 0;
                 for (player, last) in inputs {
-                    if let Some(stay) = self.players.get_mut(&player) {
-                        if stay.region == region {
-                            stay.inputs.retain(|(number, _)| *number > last);
-                        }
+                    if let Some(stay) = self.players.get_mut(&player)
+                        && stay.region == region
+                    {
+                        stay.inputs.retain(|(number, _)| *number > last);
                     }
                 }
             }
@@ -7385,10 +7387,10 @@ fn a_release_passes_through_its_stages_a_step_at_a_time_in(mut world: World) {
     runner.begin_release();
     let mut seen = Vec::new();
     for _ in 0..STEPS {
-        if let Some(stage) = runner.stage() {
-            if seen.last() != Some(&stage) {
-                seen.push(stage);
-            }
+        if let Some(stage) = runner.stage()
+            && seen.last() != Some(&stage)
+        {
+            seen.push(stage);
         }
         if runner.ended().is_some() {
             break;

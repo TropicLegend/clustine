@@ -509,8 +509,10 @@ fn words_of(bytes: &[u8], bits: u8) -> Result<Box<[u64]>, String> {
         ));
     }
     let words = bytes
-        .chunks_exact(8)
-        .map(|word| u64::from_le_bytes(word.try_into().expect("chunks of eight bytes")));
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|word| u64::from_le_bytes(*word));
     Ok(words.collect())
 }
 

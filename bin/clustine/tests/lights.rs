@@ -158,7 +158,7 @@ impl Figures {
         let (_, after) = line.split_once("light figures")?;
         let (_, said) = after.split_once("figures=")?;
         let words: Vec<&str> = said.split_whitespace().collect();
-        let pairs = words.chunks_exact(2).map(|pair| {
+        let pairs = words.as_chunks::<2>().0.iter().map(|pair| {
             let value = pair[1].trim_matches('"').parse().ok()?;
             Some((pair[0].trim_matches('"').to_owned(), value))
         });

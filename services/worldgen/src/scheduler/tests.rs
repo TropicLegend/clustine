@@ -135,7 +135,7 @@ impl Stages for Toy {
                 let column = of_chunk(position, (z * 16 + x) as u64);
                 let high = 2 + (column % 6) as usize;
                 for y in 0..high {
-                    let state = if y + 1 == high && column % 7 == 0 {
+                    let state = if y + 1 == high && column.is_multiple_of(7) {
                         blocks::DIRT
                     } else {
                         blocks::STONE

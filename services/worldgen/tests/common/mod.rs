@@ -572,7 +572,7 @@ impl Toy {
                 let state = match kept {
                     Some(data) => wool(u64::from(data)),
                     None if below == blocks::OAK_LEAVES => blocks::GLASS,
-                    None if choice % 5 == 0 => blocks::CHEST,
+                    None if choice.is_multiple_of(5) => blocks::CHEST,
                     None if choice % 5 == 1 => blocks::OAK_LEAVES,
                     None => wool(choice >> 8),
                 };

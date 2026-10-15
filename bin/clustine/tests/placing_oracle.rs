@@ -1709,7 +1709,7 @@ impl Place {
             let row = index / COLUMNS;
             let column = index % COLUMNS;
             // Every other row from east to west, so that the builder never flies far.
-            let column = if row % 2 == 0 {
+            let column = if row.is_multiple_of(2) {
                 column
             } else {
                 COLUMNS - 1 - column

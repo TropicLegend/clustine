@@ -38,8 +38,8 @@ fn sha256_of_eight(bytes: [u8; 8]) -> [u32; 2] {
     block[63] = 64;
 
     let mut w = [0_u32; 64];
-    for (word, four) in w.iter_mut().zip(block.chunks_exact(4)) {
-        *word = u32::from_be_bytes([four[0], four[1], four[2], four[3]]);
+    for (word, four) in w.iter_mut().zip(block.as_chunks::<4>().0) {
+        *word = u32::from_be_bytes(*four);
     }
     for i in 16..64 {
         let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);

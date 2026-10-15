@@ -354,7 +354,7 @@ fn a_chunk_made_from_sections_has_the_heights_counts_and_block_entities_of_its_b
         // The topmost section stays air, so that heights lie below the top.
         if index < 4 {
             for state in states.iter_mut() {
-                if numbers.next().unwrap() % 3 == 0 {
+                if numbers.next().unwrap().is_multiple_of(3) {
                     *state = kinds[numbers.next().unwrap() % kinds.len()];
                 }
             }

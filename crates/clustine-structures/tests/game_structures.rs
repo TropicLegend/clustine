@@ -541,13 +541,13 @@ fn compare_piece(ours: &StructurePiece, game: &GamePiece) -> Option<String> {
                     game.rotation
                 ));
             }
-            if let Some(saved) = game.tag.text("Rot").or(game.tag.text("Rotation")) {
-                if data.rotation.as_str() != rotation_tag(saved) {
-                    return Some(format!(
-                        "saved rotation {} for {saved}",
-                        data.rotation.as_str()
-                    ));
-                }
+            if let Some(saved) = game.tag.text("Rot").or(game.tag.text("Rotation"))
+                && data.rotation.as_str() != rotation_tag(saved)
+            {
+                return Some(format!(
+                    "saved rotation {} for {saved}",
+                    data.rotation.as_str()
+                ));
             }
             let mirror = match data.mirror {
                 StructureMirror::None => "none",
@@ -556,10 +556,10 @@ fn compare_piece(ours: &StructurePiece, game: &GamePiece) -> Option<String> {
             };
             // The mirror of a template is in the piece's tag where the kind saves
             // one; what the piece itself answers is its orientation's.
-            if let Some(saved) = game.tag.text("Mirror") {
-                if mirror != saved.to_lowercase() {
-                    return Some(format!("mirror {mirror} for {saved}"));
-                }
+            if let Some(saved) = game.tag.text("Mirror")
+                && mirror != saved.to_lowercase()
+            {
+                return Some(format!("mirror {mirror} for {saved}"));
             }
         }
         StructurePiecePayload::Procedural(_) => {}

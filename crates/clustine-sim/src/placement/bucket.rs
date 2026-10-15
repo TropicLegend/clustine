@@ -278,10 +278,10 @@ fn clip_block(
     let mut best = geometry::clip_boxes(&outline, from, to);
     if sources && state.props().fluid().is_some_and(|fluid| fluid.source) {
         let fluid_boxes = fluid_shape(state, pos, blocks);
-        if let Some(fluid_hit) = geometry::clip_boxes(&fluid_boxes, from, to) {
-            if best.is_none_or(|(t, _)| fluid_hit.0 < t) {
-                best = Some(fluid_hit);
-            }
+        if let Some(fluid_hit) = geometry::clip_boxes(&fluid_boxes, from, to)
+            && best.is_none_or(|(t, _)| fluid_hit.0 < t)
+        {
+            best = Some(fluid_hit);
         }
     }
     Ok(best.map(|(t, face)| Hit {

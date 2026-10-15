@@ -2261,7 +2261,7 @@ impl RegionRunner {
             });
         }
         // After the commit of the tick the saved chunks show.
-        if output.tick % self.checkpoint_interval == 0 {
+        if output.tick.is_multiple_of(self.checkpoint_interval) {
             self.checkpoint();
         }
 

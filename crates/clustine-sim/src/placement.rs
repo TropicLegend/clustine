@@ -136,10 +136,11 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
         } else {
             (Dir::Up.relative(pos), "upper")
         };
-        if let Some(other) = blocks.block(other_pos) {
-            if data::same_block(other, state) && other.property("half") == Some(other_half) {
-                changes.push((other_pos, flip_open(other)));
-            }
+        if let Some(other) = blocks.block(other_pos)
+            && data::same_block(other, state)
+            && other.property("half") == Some(other_half)
+        {
+            changes.push((other_pos, flip_open(other)));
         }
         return Clicked::Used(changes);
     }

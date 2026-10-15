@@ -276,11 +276,11 @@ fn every_named_class_and_every_class_made_from_one_finds_its_rule() {
             assert_eq!(rule_for(state), expected, "{}", block.name);
             checked += 1;
         }
-        if let Some(expected) = nearest(info, survival) {
-            if info.survival_rule {
-                assert_eq!(survival_rule(state), Some(expected), "{}", block.name);
-                checked += 1;
-            }
+        if let Some(expected) = nearest(info, survival)
+            && info.survival_rule
+        {
+            assert_eq!(survival_rule(state), Some(expected), "{}", block.name);
+            checked += 1;
         }
         if let Some(expected) = nearest(info, replace) {
             assert_eq!(replace_rule(state), Some(expected), "{}", block.name);

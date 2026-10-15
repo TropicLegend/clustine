@@ -540,7 +540,7 @@ fn a_section_with_bytes_changed_at_random_is_an_error_or_a_sound_section_never_a
             let mut bytes = bytes.clone();
             for _ in 0..1 + numbers.next().unwrap() % 3 {
                 // Mostly in the head, where the form, the widths and the lengths are.
-                let at = if numbers.next().unwrap() % 2 == 0 {
+                let at = if numbers.next().unwrap().is_multiple_of(2) {
                     numbers.next().unwrap() % bytes.len().min(24)
                 } else {
                     numbers.next().unwrap() % bytes.len()

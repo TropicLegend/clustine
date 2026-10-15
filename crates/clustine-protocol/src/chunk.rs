@@ -219,8 +219,10 @@ pub fn pack_heightmap(heights: &[u16; COLUMNS_PER_CHUNK], bits: u8) -> Vec<u64> 
         bits,
     );
     w.as_bytes()
-        .chunks_exact(8)
-        .map(|word| u64::from_be_bytes(word.try_into().expect("chunks of 8 bytes")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|word| u64::from_be_bytes(*word))
         .collect()
 }
 
