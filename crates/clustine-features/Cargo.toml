@@ -1,0 +1,15 @@
+[package]
+name = "clustine-features"
+description = "Minecraft's features as a function of a feature run's view: trees, plants, ores, lakes and the rest of the game's features step, placed as the game places them (phase F of docs/groundwork/terrain-plan.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clustine-data.workspace = true
+clustine-noise.workspace = true
+clustine-terrain.workspace = true
+clustine-world.workspace = true
+clustine-worldgen-data.workspace = true

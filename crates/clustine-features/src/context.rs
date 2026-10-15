@@ -1,0 +1,181 @@
+//! What a feature places with: the world as the game's `WorldGenRegion` offers it to a
+//! feature, through the view of one feature run (ADR-0021, section 3), and the random
+//! source and settings of the run.
+
+use clustine_data::BlockState;
+use clustine_noise::WorldgenRandom;
+use clustine_terrain::biome::zoom::Zoom;
+use clustine_world::generation::{FinalHeightmap, Neighbourhood, WorldgenHeightmap};
+use clustine_world::{Biome, BlockEntity, BlockPos, InChunk, ScheduledTick, Ticked};
+
+use crate::settings::FeatureSettings;
+
+/// The game's `Heightmap.Types`. The two of world generation are the terrain's,
+/// which do not change once terrain is made; the four others follow the blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heightmap {
+    WorldSurfaceWg,
+    WorldSurface,
+    OceanFloorWg,
+    OceanFloor,
+    MotionBlocking,
+    MotionBlockingNoLeaves,
+}
+
+impl Heightmap {
+    /// The type a file names (`WORLD_SURFACE_WG` and the like).
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "WORLD_SURFACE_WG" => Self::WorldSurfaceWg,
+            "WORLD_SURFACE" => Self::WorldSurface,
+            "OCEAN_FLOOR_WG" => Self::OceanFloorWg,
+            "OCEAN_FLOOR" => Self::OceanFloor,
+            "MOTION_BLOCKING" => Self::MotionBlocking,
+            "MOTION_BLOCKING_NO_LEAVES" => Self::MotionBlockingNoLeaves,
+            _ => return None,
+        })
+    }
+}
+
+/// The world a feature reads and changes: the three by three chunks of its run.
+pub struct Level<'a> {
+    view: &'a mut dyn Neighbourhood,
+    zoom: Zoom,
+    min_y: i32,
+    height: i32,
+}
+
+impl<'a> Level<'a> {
+    pub fn new(view: &'a mut dyn Neighbourhood, zoom: Zoom, min_y: i32, height: i32) -> Self {
+        Self {
+            view,
+            zoom,
+            min_y,
+            height,
+        }
+    }
+
+    /// The view itself, for what this does not offer.
+    pub fn view(&mut self) -> &mut dyn Neighbourhood {
+        &mut *self.view
+    }
+
+    /// The lowest block's y.
+    pub fn min_y(&self) -> i32 {
+        self.min_y
+    }
+
+    /// The y above the highest block (`getMaxY() + 1` in the game).
+    pub fn top_y(&self) -> i32 {
+        self.min_y + self.height
+    }
+
+    /// The number of blocks from the bottom to the top.
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    pub fn is_outside_build_height(&self, y: i32) -> bool {
+        y < self.min_y || y >= self.top_y()
+    }
+
+    pub fn block(&mut self, at: BlockPos) -> BlockState {
+        self.view.block(at)
+    }
+
+    /// Sets a block, as the game's `setBlock` does in a region of world generation:
+    /// false where the view refuses it, outside the three by three or the height.
+    /// The game's flags of updates have no effect there, as no neighbour is updated
+    /// while features are placed.
+    pub fn set_block(&mut self, at: BlockPos, state: BlockState) -> bool {
+        self.view.set_block(at, state)
+    }
+
+    pub fn block_entity(&mut self, at: BlockPos) -> Option<&BlockEntity> {
+        self.view.block_entity(at)
+    }
+
+    pub fn set_block_entity(&mut self, at: BlockPos, entity: Option<BlockEntity>) -> bool {
+        self.view.set_block_entity(at, entity)
+    }
+
+    /// The y above the highest block that counts for `map` in the column of x, z
+    /// (`getHeight` in the game).
+    pub fn height_at(&mut self, map: Heightmap, x: i32, z: i32) -> i32 {
+        match map {
+            Heightmap::WorldSurfaceWg => {
+                self.view
+                    .worldgen_height(WorldgenHeightmap::WorldSurface, x, z)
+            }
+            Heightmap::OceanFloorWg => {
+                self.view
+                    .worldgen_height(WorldgenHeightmap::OceanFloor, x, z)
+            }
+            Heightmap::WorldSurface => self.view.height(FinalHeightmap::WorldSurface, x, z),
+            Heightmap::OceanFloor => self.view.height(FinalHeightmap::OceanFloor, x, z),
+            Heightmap::MotionBlocking => self.view.height(FinalHeightmap::MotionBlocking, x, z),
+            Heightmap::MotionBlockingNoLeaves => {
+                self.view
+                    .height(FinalHeightmap::MotionBlockingNoLeaves, x, z)
+            }
+        }
+    }
+
+    /// The biome at a block as the game's `getBiome` gives it: the zoom of the biome
+    /// cells around it.
+    pub fn biome(&mut self, at: BlockPos) -> Biome {
+        let (x, y, z) = self.zoom.cell(at.x, at.y, at.z);
+        self.view.biome(BlockPos::new(x << 2, y << 2, z << 2))
+    }
+
+    /// The light of blocks at a block, which nothing has made while features are
+    /// placed: the game answers 0 there as well.
+    pub fn block_light(&mut self, _at: BlockPos) -> u8 {
+        0
+    }
+
+    /// `scheduleTick` of a block, which waits for phase B in the chunk.
+    pub fn schedule_block_tick(&mut self, at: BlockPos, block: u16, delay: i32) {
+        self.view
+            .schedule(at, tick(at, Ticked::Block(block), delay));
+    }
+
+    /// `scheduleTick` of a fluid.
+    pub fn schedule_fluid_tick(&mut self, at: BlockPos, fluid: u8, delay: i32) {
+        self.view
+            .schedule(at, tick(at, Ticked::Fluid(fluid), delay));
+    }
+
+    /// `markPosForPostprocessing`: the block takes its shape when the chunk is
+    /// finished (phase B).
+    pub fn mark_for_post_processing(&mut self, at: BlockPos) {
+        self.view.mark(at);
+    }
+}
+
+/// A tick of the game's normal priority, the one `scheduleTick` without a priority
+/// gives.
+fn tick(at: BlockPos, of: Ticked, delay: i32) -> ScheduledTick {
+    ScheduledTick {
+        at: InChunk::new(
+            at.x.rem_euclid(16) as usize,
+            at.y,
+            at.z.rem_euclid(16) as usize,
+        ),
+        of,
+        delay,
+        priority: 0,
+    }
+}
+
+/// What a feature places with.
+pub struct Context<'a, 'v> {
+    pub level: &'a mut Level<'v>,
+    /// The run's random source, seeded for the placed feature being placed.
+    pub random: &'a mut WorldgenRandom,
+    pub settings: &'a FeatureSettings,
+    /// The placed feature the run is placing, which the modifier `biome` asks about
+    /// (`PlacementContext.topFeature`): its index among the placed features. None
+    /// where a feature is placed by another, outside a run's list.
+    pub top: Option<usize>,
+}

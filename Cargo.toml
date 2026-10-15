@@ -15,6 +15,7 @@ clustine-botswarm = { path = "tools/botswarm" }
 clustine-coordinator = { path = "services/coordinator" }
 clustine-data = { path = "crates/clustine-data" }
 clustine-edge = { path = "services/edge" }
+clustine-features = { path = "crates/clustine-features" }
 clustine-format = { path = "crates/clustine-format" }
 clustine-light = { path = "crates/clustine-light" }
 clustine-noise = { path = "crates/clustine-noise" }
