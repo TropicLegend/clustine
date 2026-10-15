@@ -395,7 +395,8 @@ async fn the_command_refuses_a_seed_that_is_no_number_and_a_world_of_another_see
     }
 }
 
-/// What the preview costs a player, made on the generation scheduler's pool:
+/// What the land with features costs a player, made on the generation scheduler's
+/// pool; from where players enter, the world's spawn:
 ///
 /// ```text
 /// cargo test --release -p clustine --test terrain -- --ignored --nocapture
@@ -431,12 +432,14 @@ async fn what_a_join_and_a_flight_cost_with_a_seed() {
         let asked = Instant::now();
         let mut bot = Bot::join(&address, name).await.unwrap();
         let entered = asked.elapsed();
+        let at = bot.entered(PATIENCE).await.unwrap().location;
+        let home = ((at.0.floor() as i32) >> 4, (at.2.floor() as i32) >> 4);
         // The chunk the player is in, which a client waits for before it shows the
         // world, and the nine around it.
-        let own = |bot: &Bot| bot.chunks.contains_key(&(0, 0));
+        let own = |bot: &Bot| bot.chunks.contains_key(&home);
         bot.wait_until(PATIENCE, own).await.unwrap();
         let (stood, had) = (asked.elapsed(), bot.chunks.len());
-        bot.wait_until(PATIENCE, |bot| whole(bot, (0, 0)))
+        bot.wait_until(PATIENCE, |bot| whole(bot, home))
             .await
             .unwrap();
         println!(
@@ -453,15 +456,15 @@ async fn what_a_join_and_a_flight_cost_with_a_seed() {
         // Straight east for 32 chunks at each speed, in blocks a tick: sprinting,
         // flying, flying at a sprint, and gliding with rockets.
         bot.set_flying(true).await.unwrap();
-        bot.fly_to((0.5, HEIGHT, 0.5), (-90.0, 0.0), 4.0)
+        bot.fly_to((at.0, HEIGHT, at.2), (-90.0, 0.0), 4.0)
             .await
             .unwrap();
-        let mut from = 0.5;
+        let mut from = at.0;
         for speed in [0.28, 0.54, 1.08, 1.7, 3.0] {
             let to = from + 32.0 * 16.0;
-            let centre = ((to as i32) >> 4, 0);
+            let centre = ((to.floor() as i32) >> 4, home.1);
             let left = Instant::now();
-            bot.fly_to((to, HEIGHT, 0.5), (-90.0, 0.0), speed)
+            bot.fly_to((to, HEIGHT, at.2), (-90.0, 0.0), speed)
                 .await
                 .unwrap();
             let flew = left.elapsed();

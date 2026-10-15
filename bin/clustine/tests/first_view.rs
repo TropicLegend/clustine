@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use clustine_botswarm::Bot;
 use clustine_world::ChunkGenerator;
-use clustine_worldgen::TerrainGenerator;
+use clustine_worldgen::scheduler::{Options, Scheduler};
+use clustine_worldgen::{FeatureStages, TerrainGenerator};
 
 use common::{free_address, spawn_server_with_log, view_area};
 
@@ -36,7 +37,13 @@ async fn measured_the_ticks_of_the_home_region_while_a_first_view_is_made() {
     let land: i64 = std::env::var("CLUSTINE_FIRST_VIEW_LAND")
         .map(|land| land.parse().expect("CLUSTINE_FIRST_VIEW_LAND is a number"))
         .unwrap_or(13579);
-    let spawn = TerrainGenerator::new(land).spawn();
+    // Where the store puts the spawn: on the land with features, without templates, as
+    // a server started without a jar of the game's has it.
+    let spawn = Scheduler::new(
+        FeatureStages::new(std::sync::Arc::new(TerrainGenerator::new(land))),
+        Options::for_processors(2),
+    )
+    .spawn();
     let directory = tempfile::Builder::new()
         .prefix("first-view")
         .tempdir()
