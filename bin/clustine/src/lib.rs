@@ -24,9 +24,10 @@ pub use clustine_edge::{EdgeConfig, LoginWorld};
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
+use clustine_structures::template_blocks::TemplateLibrary;
 use clustine_world::ChunkGenerator;
-use clustine_worldgen::scheduler::{Options, Order, Scheduler};
-use clustine_worldgen::{FeatureStages, FlatGenerator, PreviewStages, TerrainGenerator};
+use clustine_worldgen::scheduler::{Options, Scheduler};
+use clustine_worldgen::{FeatureStages, FlatGenerator, TerrainGenerator};
 use clustine_worldstore::{Pins, Store, StoreError};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -86,36 +87,30 @@ impl Land {
         }
     }
 
-    /// The bare land of the overworld with this seed, made on the generation
-    /// scheduler's pool: a preview, see `clustine_worldgen::terrain`.
+    /// The overworld of this seed as the game makes it before structures are built:
+    /// its terrain and its features, made in ADR-0021's order of runs on the
+    /// generation scheduler's pool, off the store's thread for chunks, nearest a
+    /// joining player first. Without the blocks of the structure templates, which
+    /// come from the operator's jar ([`Self::of_seed_with`]), nothing built of a
+    /// template is placed: fossils, desert wells, the sulfur springs.
     ///
-    /// This seeds the world's noises, which takes some tens of milliseconds.
+    /// This reads the features' data and seeds the world's noises, which takes some
+    /// tens of milliseconds.
     pub fn of_seed(seed: i64) -> Self {
-        let terrain = Arc::new(TerrainGenerator::new(seed));
-        Self {
-            login: login_of(Some(seed)),
-            // Made on a pool of its own, off the store's thread for chunks, nearest a
-            // joining player first (ADR-0021, section 5).
-            generator: Arc::new(Scheduler::new(
-                PreviewStages::new(terrain),
-                Options {
-                    order: Order::Bare,
-                    ..Options::for_processors(processors())
-                },
-            )),
-        }
+        Self::of_seed_with(seed, None)
     }
 
-    /// The land of the overworld with this seed with the features built so far,
-    /// made in the order of runs of ADR-0021 (phase F). Until the plan's switch
-    /// (`docs/groundwork/f-plan.md`, step F6) it is reached only by a hidden setting,
-    /// for trials and tests: a world it makes is refused by every other generator.
-    pub fn with_features(seed: i64) -> Self {
+    /// [`Self::of_seed`] with the blocks of the structure templates.
+    pub fn of_seed_with(seed: i64, templates: Option<Arc<TemplateLibrary>>) -> Self {
         let terrain = Arc::new(TerrainGenerator::new(seed));
+        let stages = match templates {
+            Some(templates) => FeatureStages::with_templates(terrain, templates),
+            None => FeatureStages::new(terrain),
+        };
         Self {
             login: login_of(Some(seed)),
             generator: Arc::new(Scheduler::new(
-                FeatureStages::new(terrain),
+                stages,
                 Options::for_processors(processors()),
             )),
         }

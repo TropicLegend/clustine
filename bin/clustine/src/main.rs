@@ -3,9 +3,10 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clustine::cluster::{
@@ -16,7 +17,7 @@ use clustine::{Config, EdgeConfig, Land, LoginWorld, Server, login_of, stop_sign
 use clustine_coordinator::Policy;
 use clustine_region::RegionId;
 use clustine_world::ChunkPos;
-use tracing::info;
+use tracing::{info, warn};
 
 /// What each command says when it is given `--boundaries`, which divided a world into
 /// stripes until regions followed their players
@@ -79,34 +80,54 @@ struct Players {
 #[derive(Args)]
 struct Made {
     /// The seed of the world, as a number (what the game's /seed command shows).
-    /// With one the world is the bare land of the game's overworld for that seed:
-    /// its mountains, coasts, oceans, rivers, caves and ravines, with their biomes,
-    /// and nothing that grows or was built. Without one the world is flat. A world
+    /// With one the world is the game's overworld for that seed: its mountains,
+    /// coasts, oceans, rivers, caves and ravines, with their biomes, trees, plants,
+    /// ores, lakes and the rest of what grows, and no structures' buildings yet.
+    /// Without one the world is flat. A world
     /// is made one way for good: a directory that holds a world of another seed, or
     /// a flat one, is refused. In a cluster the world store and every edge have to be
     /// given the same seed; nothing checks that they agree.
     #[arg(long, allow_negative_numbers = true, value_name = "NUMBER")]
     seed: Option<i64>,
-    /// `features`: the land of the seed with the features built so far, which phase F
-    /// of the terrain plan builds step by step. Hidden until it is the land a seed
-    /// has; a world it makes is refused by a server without it.
-    #[arg(long, hide = true, value_name = "GENERATOR", requires = "seed")]
-    generator: Option<Generator>,
+    /// The game's server jar to read the blocks of structure templates from: fossils,
+    /// desert wells and the sulfur springs are built of them, and they are Mojang's,
+    /// so they are not in Clustine. The server jar or the bundler the game is
+    /// distributed as. Without it, the jar `cargo datagen` keeps under `target/` is
+    /// read where there is one; with none, nothing built of a template is placed, and
+    /// a world made so stays so.
+    #[arg(long, value_name = "PATH", requires = "seed")]
+    minecraft_jar: Option<PathBuf>,
 }
 
-/// What `--generator` names.
-#[derive(Clone, Copy, ValueEnum)]
-enum Generator {
-    Features,
-}
+/// Where `cargo datagen` keeps the game's jar, looked for when no jar is named.
+const DATAGEN_JAR: &str = "target/datagen/26.3/server.jar";
 
 impl Made {
     /// The land this says.
-    fn land(&self) -> Land {
-        match (self.seed, self.generator) {
-            (Some(seed), Some(Generator::Features)) => Land::with_features(seed),
-            (seed, _) => Land::of(seed),
-        }
+    fn land(&self) -> anyhow::Result<Land> {
+        let Some(seed) = self.seed else {
+            return Ok(Land::flat());
+        };
+        let jar = match &self.minecraft_jar {
+            Some(jar) => Some(jar.clone()),
+            None => Some(PathBuf::from(DATAGEN_JAR)).filter(|jar| jar.exists()),
+        };
+        let templates = match jar {
+            Some(jar) => {
+                let templates = clustine_worldgen::templates::read_jar(&jar)
+                    .with_context(|| "reading the blocks of structure templates")?;
+                info!(jar = %jar.display(), templates = templates.len(), "read the structure templates");
+                Some(Arc::new(templates))
+            }
+            None => {
+                warn!(
+                    "no jar of the game's server was named (--minecraft-jar) or found at {DATAGEN_JAR}: \
+                     fossils, desert wells and sulfur springs are not placed in this world"
+                );
+                None
+            }
+        };
+        Ok(Land::of_seed_with(seed, templates))
     }
 }
 
@@ -516,7 +537,7 @@ async fn main() -> Result<()> {
                 refuse(NO_BOUNDARIES_FOR_THE_STORE.to_owned());
             }
             let pins = pins(&pin).unwrap_or_else(|why| refuse(why));
-            cluster::worldstore(listen, world, pins, made.land()).await
+            cluster::worldstore(listen, world, pins, made.land()?).await
         }
         Some(Service::Worker {
             coordinator,
@@ -617,7 +638,7 @@ fn pins(pins: &[i32]) -> Result<Vec<i32>, String> {
 
 /// Runs every service in this process until it is asked to stop.
 async fn run_standalone(args: Standalone, pins: Vec<i32>, follow: Option<Policy>) -> Result<()> {
-    let land = args.made.land();
+    let land = args.made.land()?;
     let edge = args.players.edge_config(land.login());
     let config = Config {
         bind: args.bind,

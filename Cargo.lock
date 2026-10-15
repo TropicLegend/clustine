@@ -225,6 +225,7 @@ dependencies = [
  "clustine-region",
  "clustine-rpc",
  "clustine-sim",
+ "clustine-structures",
  "clustine-worker",
  "clustine-world",
  "clustine-worldgen",

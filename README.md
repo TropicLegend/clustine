@@ -5,8 +5,9 @@ instances**. Adding instances adds compute and memory to the same world rather t
 creating more separate servers.
 
 > **Status: pre-alpha.** Players walk around a creative world, see each other and
-> build: a flat world, or with `--seed` the game's bare overworld for that seed, block
-> for block (no trees, plants or structures' buildings yet). Blocks are placed and used
+> build: a flat world, or with `--seed` the game's overworld for that seed, block for
+> block, trees and plants and ores included (no structures' buildings yet). Blocks are
+> placed and used
 > by vanilla's rules: doors open, stairs face the player, fences join their
 > neighbours, buckets pour (nothing flows yet). The world is simulated in regions that
 > follow the players, split when a group goes off on its own and merged when it comes
@@ -97,19 +98,21 @@ x = 64:
 cargo run -p clustine -- --pin 4 --reshape by-hand
 ```
 
-With a seed the world is not flat but the bare land of the game's overworld for that
-seed: its mountains, coasts, oceans, rivers, caves and ravines, with the game's
-biomes, block for block what the game makes before it adds structures and anything
-that grows; the ground is already levelled where a village will stand. Players enter
+With a seed the world is not flat but the game's overworld for that seed: its
+mountains, coasts, oceans, rivers, caves and ravines, with the game's biomes, trees,
+grass and flowers, ores, lakes, springs, geodes, dripstone and the rest of what the
+game's features place, block for block what the game makes before it builds
+structures; the ground is already levelled where a village will stand. Players enter
 where the game would put a new world's spawn for that seed, which the world keeps from
-when it is made (until trees come, on the ground where the game's player would stand
-on a tree that grows there). There are no
-trees, plants, ores (but the large veins), or structures' buildings yet. Chunks are
-made on a pool of threads as they are first asked for and kept, so a second visit
-reads them from the disk; in an optimised build the land around someone who joins
-first is all there after about a second. A world is made one way for good, so give it
-a directory of its own; one that holds a flat world, or a world of another seed, is
-refused.
+when it is made. There are no structures' buildings yet, and water and lava do not
+flow. Fossils, desert wells and the sulfur caves' springs are built of the game's own
+structure templates, which are Mojang's and not in Clustine: they are read from the
+game's server jar, the one `cargo datagen` keeps under `target/` or another named with
+`--minecraft-jar`, and without one they are left out. Chunks are made on a pool of
+threads as they are first asked for and kept, so a second visit reads them from the
+disk. A world is made one way for good, so give it a directory of its own; one that
+holds a flat world, a world of another seed, or one made by an earlier build of
+Clustine's land, is refused.
 
 ```bash
 cargo run --release -p clustine -- --seed 13579 --world world-13579

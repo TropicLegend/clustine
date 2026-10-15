@@ -1,5 +1,5 @@
-//! A world with a seed: the single process serves the land the terrain generator
-//! makes, puts players on its ground, and keeps what they do to it.
+//! A world with a seed: the single process serves the land with features the
+//! generation scheduler makes, puts players on it, and keeps what they do to it.
 
 mod common;
 
@@ -11,7 +11,8 @@ use clustine_botswarm::Bot;
 use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
 use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, Vec3};
-use clustine_worldgen::TerrainGenerator;
+use clustine_worldgen::scheduler::{Options, Scheduler};
+use clustine_worldgen::{FeatureStages, TerrainGenerator};
 
 use common::processes::Cluster;
 use common::{config, free_address, view_area};
@@ -19,8 +20,19 @@ use common::{config, free_address, view_area};
 const PATIENCE: Duration = Duration::from_secs(60);
 
 /// A world whose origin is on land: grass at the height 70, on ground that is not
-/// level. The game puts its spawn on the column at the origin, the first of its chunk.
+/// level. The game puts its spawn on the column at the origin, the first of its chunk,
+/// where a tree stands: on its leaves.
 const SEED: i64 = 3;
+
+/// What a server of the seed makes, started where it finds no jar of the game's server
+/// (as these tests' processes are): its land with features, without the blocks of the
+/// structure templates.
+fn land() -> Scheduler<FeatureStages> {
+    Scheduler::new(
+        FeatureStages::new(std::sync::Arc::new(TerrainGenerator::new(SEED))),
+        Options::for_processors(2),
+    )
+}
 
 /// The smallest a server grants, so that the test makes few chunks.
 const VIEW: i32 = 2;
@@ -80,22 +92,27 @@ fn top(chunk: &Chunk, x: usize, z: usize) -> i32 {
 #[tokio::test]
 async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     let directory = tempfile::tempdir().unwrap();
-    let generator = TerrainGenerator::new(SEED);
-    assert_eq!(generator.spawn(), BlockPos::new(0, 71, 0));
+    let generator = land();
+    assert_eq!(generator.spawn(), BlockPos::new(0, 74, 0));
     let spawn = Vec3::bottom_centre_of(generator.spawn());
     let origin = generator.generate(ChunkPos::new(0, 0));
 
     let (server, address) = start(directory.path()).await;
     let mut walker = join(&address, "Walker", (0, 0)).await;
 
-    // Put on the ground of the spawn's column: something under the feet,
-    // nothing where the feet and the head are.
+    // Put on the top of the spawn's column, the leaves of the tree there: something
+    // under the feet, nothing where the feet and the head are.
     let entered = walker.entered(PATIENCE).await.unwrap();
     assert_eq!(entered.location, (spawn.x, spawn.y, spawn.z));
-    assert_eq!(entered.location, (0.5, 71.0, 0.5));
+    assert_eq!(entered.location, (0.5, 74.0, 0.5));
     let feet = spawn.y as i32;
     let under = walker.block_at(0, feet - 1, 0).unwrap().unwrap();
-    assert_eq!(under, blocks::GRASS_BLOCK.0 as i32);
+    let leaves = origin.get(0, feet - 1, 0).unwrap();
+    assert!(
+        leaves.block().unwrap().name.ends_with("_leaves"),
+        "{leaves:?}"
+    );
+    assert_eq!(under, i32::from(leaves.0));
     assert_eq!(walker.block_at(0, feet, 0).unwrap(), Some(AIR));
     assert_eq!(walker.block_at(0, feet + 1, 0).unwrap(), Some(AIR));
     // The client is told the world's spawn, which a compass points to.
@@ -106,11 +123,12 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     assert_eq!(told.dimension, "minecraft:overworld");
     assert_eq!(
         (told.position.x, told.position.y, told.position.z),
-        (0, 71, 0)
+        (0, 74, 0)
     );
-    // Under the open sky, and dark inside the ground.
+    // Under the open sky, and dark inside the ground under the tree.
     assert_eq!(walker.light_at(0, feet, 0).unwrap().unwrap().sky, Some(15));
-    let buried = walker.light_at(0, feet - 3, 0).unwrap().unwrap();
+    let ground = top_no_leaves(&origin, 0, 0);
+    let buried = walker.light_at(0, ground - 3, 0).unwrap().unwrap();
     assert_eq!((buried.sky, buried.block), (Some(0), Some(0)));
 
     // A client is told the hash of the seed, that the world is not flat and where
@@ -183,7 +201,8 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     walker.walk_to(3.5, 6.5, 0.5).await.unwrap();
     walker.stand_until_kept(PATIENCE).await.unwrap();
     let left = walker.kept();
-    assert_eq!(left.location, (3.5, 71.0, 6.5));
+    // The bot walks at the height it entered at.
+    assert_eq!(left.location, (3.5, spawn.y, 6.5));
     drop(walker);
     let mut walker = join(&address, "Walker", (0, 0)).await;
     assert_eq!(
@@ -230,6 +249,13 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     server.stop().await;
 }
 
+/// The highest block of the column at `x`, `z` that stops movement or holds a fluid,
+/// leaves left out: the ground under a tree.
+fn top_no_leaves(chunk: &Chunk, x: i32, z: i32) -> i32 {
+    let column = ((z & 15) << 4 | (x & 15)) as usize;
+    chunk.min_y() + i32::from(chunk.heights().motion_blocking_no_leaves[column]) - 1
+}
+
 /// The height above the highest block of the column at `x`, `z` that stops movement or
 /// holds a fluid: the chunk's `motion_blocking` heightmap, counted from its bottom.
 fn column_top(chunk: &Chunk, x: i32, z: i32) -> i32 {
@@ -244,7 +270,7 @@ fn column_top(chunk: &Chunk, x: i32, z: i32) -> i32 {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cluster_whose_processes_are_told_the_seed_serves_its_land() {
     let directory = tempfile::tempdir().unwrap();
-    let generator = TerrainGenerator::new(SEED);
+    let generator = land();
     let spawn = Vec3::bottom_centre_of(generator.spawn());
     let seed = format!("--seed={SEED}");
 

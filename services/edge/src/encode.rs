@@ -1,15 +1,54 @@
 //! Turning world state into packets.
 
-use clustine_data::{BLOCK_STATE_COUNT, synced_registry};
+use clustine_data::{BLOCK_ENTITY_TYPES, BLOCK_STATE_COUNT, synced_registry};
 use clustine_protocol::chunk::{
     PaletteKind, PalettedContainer, SectionData, bits_for, encode_sections, pack_heightmap,
 };
+use clustine_protocol::codec::Reader;
+use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     BlockEntity, Heightmap, LevelChunkWithLight, LightData, heightmap,
 };
 use clustine_world::{
     Chunk, ChunkPos, LIGHT_ARRAY_LENGTH, Light, Section, SectionLight, sky_light,
 };
+
+/// The block entity types a client is sent data of with a chunk, and the keys of the
+/// data it is sent (ADR-0022, section 5). A spawner shows the mob that turns in its
+/// cage: the game sends what it saves of one but the list of what it may spawn
+/// (`SpawnerBlockEntity.getUpdateTag`: `saveCustomOnly` without `SpawnPotentials`, and
+/// so without `components`), read from the pinned jar's code while W4's comparison of
+/// packets is not built; what the store keeps of a spawner is the game's saved form,
+/// which the judge of features compares.
+const SENT: [(&str, &[&str]); 1] = [(
+    "minecraft:mob_spawner",
+    &[
+        "Delay",
+        "MinSpawnDelay",
+        "MaxSpawnDelay",
+        "SpawnCount",
+        "MaxNearbyEntities",
+        "RequiredPlayerRange",
+        "SpawnRange",
+        "SpawnData",
+    ],
+)];
+
+/// What a client is sent of a block entity's data: the keys `SENT` names for its
+/// type, or nothing.
+fn sent(entity: &clustine_world::BlockEntity) -> Option<Nbt> {
+    let name = BLOCK_ENTITY_TYPES.get(usize::from(entity.kind))?;
+    let (_, keys) = SENT.iter().find(|(kind, _)| kind == name)?;
+    let Ok(Some(Nbt::Compound(entries))) = Reader::new(&entity.data).nbt() else {
+        return None;
+    };
+    Some(Nbt::Compound(
+        entries
+            .into_iter()
+            .filter(|(key, _)| keys.contains(&key.as_str()))
+            .collect(),
+    ))
+}
 
 /// The palette layout for block states.
 pub(crate) const BLOCK_PALETTE: PaletteKind = PaletteKind::blocks(BLOCK_STATE_COUNT as usize);
@@ -47,9 +86,8 @@ pub(crate) fn chunk_packet(
     });
 
     // Nothing of a block entity's data is sent until its type is known to need
-    // something: a chest shows as a chest without, and what a generated chest carries
-    // (the seed of what is in it) is nobody's to be told. The list of types that are
-    // sent something starts empty.
+    // something (`SENT`): a chest shows as a chest without, and what a generated chest
+    // carries (the seed of what is in it) is nobody's to be told.
     let block_entities = chunk
         .block_entities()
         .iter()
@@ -57,7 +95,7 @@ pub(crate) fn chunk_packet(
             packed_xz: at.x << 4 | at.z,
             y: at.y,
             kind: entity.kind.into(),
-            data: None,
+            data: sent(entity),
         });
 
     let sections: Vec<_> = chunk.sections().iter().map(section_data).collect();
@@ -306,6 +344,42 @@ mod tests {
         assert_eq!(heights(heightmap::WORLD_SURFACE), [4, 15, 25, 35]);
         assert_eq!(heights(heightmap::MOTION_BLOCKING), [4, 15, 25, 4]);
         assert_eq!(heights(heightmap::MOTION_BLOCKING_NO_LEAVES), [4, 15, 4, 4]);
+    }
+
+    /// A spawner goes out with what the game sends of one: what it saves, without
+    /// the list of what it may spawn and without its components.
+    #[test]
+    fn a_spawner_is_sent_its_mob_and_settings_and_nothing_else() {
+        use clustine_protocol::codec::Writer;
+
+        let mut chunk = flat_chunk();
+        let spawner = clustine_data::BlockState::parse("minecraft:spawner").unwrap();
+        chunk.set(2, -59, 3, spawner);
+        let at = clustine_world::InChunk::new(2, -59, 3);
+        let saved = Nbt::Compound(vec![
+            ("Delay".into(), Nbt::Short(20)),
+            ("SpawnPotentials".into(), Nbt::List(Vec::new())),
+            (
+                "SpawnData".into(),
+                Nbt::Compound(vec![(
+                    "entity".into(),
+                    Nbt::Compound(vec![("id".into(), Nbt::String("minecraft:zombie".into()))]),
+                )]),
+            ),
+            ("components".into(), Nbt::Compound(Vec::new())),
+            ("SpawnRange".into(), Nbt::Short(4)),
+        ]);
+        let mut writer = Writer::new();
+        writer.put_nbt(&saved);
+        chunk
+            .set_block_entity_data(at, writer.into_bytes())
+            .unwrap();
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light());
+        let Nbt::Compound(sent) = packet.block_entities[0].data.clone().unwrap() else {
+            panic!("a spawner is sent a compound");
+        };
+        let keys: Vec<&str> = sent.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys, ["Delay", "SpawnData", "SpawnRange"]);
     }
 
     /// A block entity goes out with its place and its type and without its data,

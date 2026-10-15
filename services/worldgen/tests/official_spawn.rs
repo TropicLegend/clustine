@@ -6,10 +6,11 @@
 //! result must be the spawn in its `level.dat` exactly. That judges the logic apart
 //! from features, which the official chunks carry and the rule reads as they are.
 //!
-//! Judge two compares `TerrainGenerator::spawn`, over Clustine's own chunks, which have
-//! no features yet, with the official spawn: x and z equal, and y equal where the
-//! official column carries no feature. Where a feature explains a difference it is
-//! counted and printed.
+//! Judge two compares the spawn of the land with features (phase F), over Clustine's
+//! own chunks made by the scheduler as a running server makes them, with the official
+//! spawn. Since phase F places the game's features they are to be equal; where they
+//! are not, what stands on the official column and not on Clustine's is printed, which
+//! until phase S can be a structure's building.
 //!
 //! Nothing of such a world is in the repository. The directory holds one directory per
 //! seed, each with the server's `world`; it is named by `CLUSTINE_SPAWN_WORLDS`:
@@ -29,8 +30,11 @@ use std::path::{Path, PathBuf};
 
 use clustine_data::BlockState;
 use clustine_world::{Biome, BlockPos, Chunk, ChunkGenerator, ChunkPos};
-use clustine_worldgen::TerrainGenerator;
+use std::sync::Arc;
+
+use clustine_worldgen::scheduler::{Options, Scheduler};
 use clustine_worldgen::spawn::{feet, place_to_stand, spiral};
+use clustine_worldgen::{FeatureStages, TerrainGenerator};
 
 // --- NBT, as the region files and level.dat have it ------------------------------------
 
@@ -486,11 +490,24 @@ fn the_generators_spawn_is_the_official_one_where_no_feature_explains_otherwise(
     let Some(worlds) = worlds() else {
         return;
     };
+    let templates = Arc::new(
+        clustine_worldgen::templates::read_jar(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/datagen/26.3/server.jar"),
+        )
+        .expect("the templates of the jar cargo datagen downloaded are read"),
+    );
+    let threads = std::thread::available_parallelism().map_or(4, usize::from);
     let mut unexplained = Vec::new();
     let (mut equal, mut other_height, mut other_column) = (0, 0, 0);
     for directory in &worlds {
         let world = World::read(directory);
-        let generator = TerrainGenerator::new(world.seed);
+        let generator = Scheduler::new(
+            FeatureStages::with_templates(
+                Arc::new(TerrainGenerator::new(world.seed)),
+                Arc::clone(&templates),
+            ),
+            Options::for_processors(threads),
+        );
         let ours = generator.spawn();
         let official = world.spawn;
         let origin = origin(world.seed);
@@ -503,7 +520,7 @@ fn the_generators_spawn_is_the_official_one_where_no_feature_explains_otherwise(
             // column at or above Clustine's ground, a tree's canopy or snow.
             let (chunk, x, z) = column_of(official);
             let theirs = world.chunk(chunk);
-            let mine = generator.unlit(chunk);
+            let mine = generator.generate(chunk);
             match feature_on(theirs, &mine, x, z, ours.y - 1) {
                 Some(feature) => {
                     other_height += 1;
@@ -524,7 +541,9 @@ fn the_generators_spawn_is_the_official_one_where_no_feature_explains_otherwise(
             let mut cache: BTreeMap<ChunkPos, Chunk> = BTreeMap::new();
             let mut explanation = None;
             for (chunk, x, z) in columns_in_order(origin) {
-                let mine = cache.entry(chunk).or_insert_with(|| generator.unlit(chunk));
+                let mine = cache
+                    .entry(chunk)
+                    .or_insert_with(|| generator.generate(chunk));
                 let theirs = world.chunk(chunk);
                 if feet(mine, x, z).is_some() != feet(theirs, x, z).is_some() {
                     explanation = Some(match feature_on(theirs, mine, x, z, i32::MIN) {
