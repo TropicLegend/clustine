@@ -98,6 +98,16 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     assert_eq!(under, blocks::GRASS_BLOCK.0 as i32);
     assert_eq!(walker.block_at(0, feet, 0).unwrap(), Some(AIR));
     assert_eq!(walker.block_at(0, feet + 1, 0).unwrap(), Some(AIR));
+    // The client is told the world's spawn, which a compass points to.
+    let told = walker
+        .world_spawn
+        .clone()
+        .expect("the world's spawn was told");
+    assert_eq!(told.dimension, "minecraft:overworld");
+    assert_eq!(
+        (told.position.x, told.position.y, told.position.z),
+        (0, 71, 0)
+    );
     // Under the open sky, and dark inside the ground.
     assert_eq!(walker.light_at(0, feet, 0).unwrap().unwrap().sky, Some(15));
     let buried = walker.light_at(0, feet - 3, 0).unwrap().unwrap();
@@ -253,6 +263,16 @@ async fn a_cluster_whose_processes_are_told_the_seed_serves_its_land() {
     let top = column_top(&home, spawn.x.floor() as i32, spawn.z.floor() as i32);
     assert_eq!(f64::from(top), spawn.y);
     assert_eq!(entered.location, (spawn.x, spawn.y, spawn.z));
+    // The edge, which makes no generator, tells the client the spawn the store keeps.
+    let told = walker
+        .world_spawn
+        .clone()
+        .expect("the world's spawn was told");
+    let block = generator.spawn();
+    assert_eq!(
+        (told.position.x, told.position.y, told.position.z),
+        (block.x, block.y, block.z)
+    );
     for position in [(0, 0), (-3, 2)] {
         let made = generator.generate(ChunkPos::new(position.0, position.1));
         let sections = walker.sections(position).unwrap().unwrap();

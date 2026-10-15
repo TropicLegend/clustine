@@ -797,6 +797,7 @@ mod tests {
     fn table(version: u64) -> RoutingTable {
         RoutingTable {
             home: None,
+            spawn: None,
             absorbed: Vec::new(),
             waiting: 1,
             version,

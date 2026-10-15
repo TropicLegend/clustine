@@ -3006,6 +3006,7 @@ mod tests {
         );
         let table = RoutingTable {
             home: None,
+            spawn: None,
             absorbed: Vec::new(),
             waiting: 2,
             version: 7,

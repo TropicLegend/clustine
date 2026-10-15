@@ -24,8 +24,9 @@ use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
     LightUpdate, Login, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
     ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
-    SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation, SynchronizePlayerPosition,
-    UseItemOn, face, inventory, movement_flags, player_action, player_input,
+    SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation,
+    SynchronizePlayerPosition, UseItemOn, face, inventory, movement_flags, player_action,
+    player_input,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -210,6 +211,8 @@ pub struct Bot {
     pub stats: PlayStats,
     /// Where the server last put the bot.
     pub position: Option<SynchronizePlayerPosition>,
+    /// Where the server last said the world's spawn is.
+    pub world_spawn: Option<SetDefaultSpawnPosition>,
     /// The chunks the client currently holds, by chunk x and z: those the server sent
     /// and has not told the client to forget.
     pub chunks: BTreeMap<(i32, i32), LevelChunkWithLight>,
@@ -449,6 +452,7 @@ impl Bot {
             },
             stats: PlayStats::default(),
             position: None,
+            world_spawn: None,
             chunks: BTreeMap::new(),
             chunks_came: BTreeMap::new(),
             player_list: BTreeMap::new(),
@@ -1254,6 +1258,9 @@ impl Bot {
             }
             ClientboundPlay::SetCenterChunk(packet) => {
                 self.center = Some((packet.chunk_x, packet.chunk_z));
+            }
+            ClientboundPlay::SetDefaultSpawnPosition(packet) => {
+                self.world_spawn = Some(packet);
             }
             ClientboundPlay::PlayerInfoUpdate(packet) => {
                 for entry in packet.entries {

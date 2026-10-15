@@ -1796,7 +1796,12 @@ mod tests {
         // the world in the chunk at the origin, which is region 0's.
         let identity = EdgeIdentity::starting_now("edge");
         let links = vec![home_link, empty_link];
-        let (routing, _relinks) = Routing::new(RegionId(0), identity, links);
+        let (routing, _relinks) = Routing::new(
+            RegionId(0),
+            clustine_world::BlockPos::new(0, -60, 0),
+            identity,
+            links,
+        );
         let config = EdgeConfig {
             description: "a test".to_owned(),
             max_players: 7,
@@ -2451,7 +2456,12 @@ mod tests {
     /// Starts an edge called `name` with `links`.
     async fn edge_with(name: &str, links: Vec<RegionLink>) -> Linked {
         let identity = EdgeIdentity::starting_now(name);
-        let (routing, relinks) = Routing::new(HOME, identity, links);
+        let (routing, relinks) = Routing::new(
+            HOME,
+            clustine_world::BlockPos::new(0, -60, 0),
+            identity,
+            links,
+        );
         let config = EdgeConfig {
             description: "a test".to_owned(),
             max_players: 7,

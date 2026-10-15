@@ -329,7 +329,7 @@ impl Server {
         // each with the epoch of its route when it is restored and ticks. A loop that
         // ends before that could not restore a region, and says why.
         let running = async {
-            let (mut tables, mut table, home) = whole_world(&reach).await;
+            let (mut tables, mut table, home, spawn) = whole_world(&reach).await;
             let mut shown = serving.clone();
             loop {
                 let runs = |route: &clustine_region::RegionRoute| {
@@ -338,7 +338,7 @@ impl Server {
                     served.is_some_and(|(hello, _)| hello.epoch == route.epoch)
                 };
                 if table.routes.iter().all(runs) {
-                    return Ok((tables, table, home));
+                    return Ok((tables, table, home, spawn));
                 }
                 tokio::select! {
                     changed = shown.changed() => {
@@ -357,7 +357,7 @@ impl Server {
                 }
             }
         };
-        let (tables, table, home) = tokio::select! {
+        let (tables, table, home, spawn) = tokio::select! {
             running = running => running,
             ended = &mut worker => Err(match ended {
                 Ok(Ok(())) => anyhow!("the worker of this process ended before its regions ran"),
@@ -381,7 +381,7 @@ impl Server {
             login: land.login,
         };
         let identity = EdgeIdentity::starting_now("edge");
-        let (routing, relinks) = Routing::new(home, identity, Vec::new());
+        let (routing, relinks) = Routing::new(home, spawn, identity, Vec::new());
         let edge = Edge::bind(config.bind, edge_config, routing)
             .await
             .with_context(|| format!("listening on {}", config.bind))

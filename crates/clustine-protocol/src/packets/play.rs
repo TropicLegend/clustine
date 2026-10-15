@@ -342,6 +342,40 @@ impl Decode for GameEvent {
     }
 }
 
+/// Where the world's spawn is: the game's `RespawnData`, a dimension and a block with
+/// the yaw and pitch a player is turned to there. A compass points to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetDefaultSpawnPosition {
+    pub dimension: String,
+    pub position: Position,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Packet for SetDefaultSpawnPosition {
+    const ID: i32 = clientbound::SET_DEFAULT_SPAWN_POSITION;
+}
+
+impl Encode for SetDefaultSpawnPosition {
+    fn encode(&self, w: &mut Writer) {
+        w.put_string(&self.dimension);
+        w.put_position(self.position);
+        w.put_f32(self.yaw);
+        w.put_f32(self.pitch);
+    }
+}
+
+impl Decode for SetDefaultSpawnPosition {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            dimension: r.identifier()?,
+            position: r.position()?,
+            yaw: r.f32()?,
+            pitch: r.f32()?,
+        })
+    }
+}
+
 /// Tells the client which chunk its loaded area is centred on.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetCenterChunk {
@@ -1602,6 +1636,7 @@ packet_set! {
         PlayerAbilities,
         SynchronizePlayerPosition,
         GameEvent,
+        SetDefaultSpawnPosition,
         SetCenterChunk,
         ClientboundKeepAlive,
         Disconnect,
@@ -1671,6 +1706,20 @@ mod tests {
             },
             Set::decode,
             Set::Login,
+        );
+        assert_round_trip(
+            SetDefaultSpawnPosition {
+                dimension: "minecraft:overworld".to_owned(),
+                position: Position {
+                    x: -96,
+                    y: 66,
+                    z: 32,
+                },
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            Set::decode,
+            Set::SetDefaultSpawnPosition,
         );
         assert_round_trip(
             PlayerAbilities {

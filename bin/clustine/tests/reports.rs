@@ -86,6 +86,7 @@ impl Played {
             version,
             routes: routes.collect(),
             home: Some(RegionId(0)),
+            spawn: Some(clustine_world::BlockPos::new(0, -60, 0)),
             absorbed: Vec::new(),
             waiting: 0,
         })

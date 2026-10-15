@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use clustine_region::{RegionId, RegionRoute, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, PlayersOf, RegionList, Vouch};
-use clustine_world::{ChunkPos, EntityId, EntityIds};
+use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds};
 use tracing::{info, warn};
 
 use crate::policy::Policy;
@@ -878,9 +878,9 @@ pub struct Coordinator {
     /// The home region, the absorbed pairs and the next region id of the world
     /// store's list as it was last read; nothing until it has been.
     home: Option<RegionId>,
-    /// The chunk players enter the world in, which the store keeps with the world:
-    /// that of its spawn, as the same list said.
-    enter: Option<ChunkPos>,
+    /// The world's spawn, which the store keeps with the world, as the same list said.
+    /// Players enter the world in its chunk.
+    spawn: Option<BlockPos>,
     absorbed: Vec<(RegionId, RegionId)>,
     next: Option<RegionId>,
     /// The merges under way, each under the region that is to be absorbed.
@@ -956,7 +956,7 @@ impl Coordinator {
             version: first_epoch,
             releases: BTreeMap::new(),
             home: None,
-            enter: None,
+            spawn: None,
             absorbed: Vec::new(),
             next: None,
             merges: BTreeMap::new(),
@@ -1743,7 +1743,7 @@ impl Coordinator {
         let home = Some(list.home);
         self.pending.relisted |= self.home != home || self.absorbed != list.absorbed;
         self.home = home;
-        self.enter = Some(list.spawn.chunk());
+        self.spawn = Some(list.spawn);
         self.absorbed.clone_from(&list.absorbed);
         self.next = Some(list.next);
         self.note_answered(now);
@@ -2810,6 +2810,7 @@ impl Coordinator {
             .collect();
         RoutingTable {
             home: self.home,
+            spawn: self.spawn,
             absorbed: self.absorbed.clone(),
             waiting: self.waiting_count(),
             version: self.version,

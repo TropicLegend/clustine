@@ -70,6 +70,8 @@ fn table(
         version,
         routes: routes.collect(),
         home: home.map(RegionId),
+        // The flat world's spawn, which comes with the home region from the store's list.
+        spawn: home.map(|_| clustine_world::BlockPos::new(0, -60, 0)),
         absorbed: Vec::new(),
         waiting,
     })

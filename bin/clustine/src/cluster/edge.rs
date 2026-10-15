@@ -13,6 +13,7 @@ use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing
 use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{EdgeMessage, RegionHello, WorkerToEdge, tcp};
+use clustine_world::BlockPos;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout};
@@ -47,7 +48,7 @@ pub async fn edge(args: EdgeArgs) -> Result<()> {
     let stop = crate::stop_signal();
     tokio::pin!(stop);
     let coordinator = Reach::Tcp(args.coordinator);
-    let (watch, table, home) = tokio::select! {
+    let (watch, table, home, spawn) = tokio::select! {
         _ = &mut stop => return Ok(()),
         table = whole_world(&coordinator) => table,
     };
@@ -56,9 +57,9 @@ pub async fn edge(args: EdgeArgs) -> Result<()> {
     // lives as long, and so do the numbers it gives its messages.
     let identity = EdgeIdentity::starting_now(&args.name);
     // Players enter the world in its home region, which the world store's list names
-    // and the routing table passes on. The edge is told that region and nothing else of
-    // how the world is divided.
-    let (routing, relinks) = Routing::new(home, identity, Vec::new());
+    // and the routing table passes on with the world's spawn. The edge is told that
+    // region and nothing else of how the world is divided.
+    let (routing, relinks) = Routing::new(home, spawn, identity, Vec::new());
     let edge = Edge::bind(args.bind, args.edge.clone(), routing)
         .await
         .with_context(|| format!("listening on {}", args.bind))?;
@@ -81,21 +82,24 @@ pub async fn edge(args: EdgeArgs) -> Result<()> {
     }
 }
 
-/// Waits until the coordinator names the world's home region, has a worker for it and
-/// has no region waiting for one, trying until the coordinator can be reached. Returns
-/// the connection, the table and the home region.
+/// Waits until the coordinator names the world's home region and its spawn, has a
+/// worker for that region and has no region waiting for one, trying until the
+/// coordinator can be reached. Returns the connection, the table, the home region and
+/// the spawn.
 ///
 /// A table without a home region is that of a coordinator that has not read the world
 /// store's list yet: it knows no region, or only those its workers report, and nothing
 /// says where players enter.
-pub(crate) async fn whole_world(coordinator: &Reach) -> (RoutingWatch, RoutingTable, RegionId) {
+pub(crate) async fn whole_world(
+    coordinator: &Reach,
+) -> (RoutingWatch, RoutingTable, RegionId, BlockPos) {
     loop {
         let watching = async {
             let mut watch = RoutingWatch::connect(coordinator).await?;
             loop {
                 let table = watch.next().await?;
-                if let Some(home) = whole(&table) {
-                    return Ok::<_, ClientError>((watch, table, home));
+                if let Some((home, spawn)) = whole(&table) {
+                    return Ok::<_, ClientError>((watch, table, home, spawn));
                 }
                 info!(
                     home = ?table.home,
@@ -126,9 +130,10 @@ fn place(coordinator: &Reach) -> &str {
 
 /// The home region of `table`, if the table is one an edge can let players in by: it
 /// names the home region, has a route for it, and no region waits for a worker.
-fn whole(table: &RoutingTable) -> Option<RegionId> {
-    let home = table.home?;
-    (table.route(home).is_some() && table.is_complete()).then_some(home)
+fn whole(table: &RoutingTable) -> Option<(RegionId, BlockPos)> {
+    // The two come from the same reading of the store's list.
+    let (home, spawn) = (table.home?, table.spawn?);
+    (table.route(home).is_some() && table.is_complete()).then_some((home, spawn))
 }
 
 /// How an edge links to the regions of its routing table.
@@ -432,6 +437,8 @@ mod tests {
             version: 1,
             routes: routed.iter().map(route).collect(),
             home: home.map(RegionId),
+            // As the coordinator says them: both from one reading of the store's list.
+            spawn: home.map(|_| BlockPos::new(0, -60, 0)),
             absorbed: Vec::new(),
             waiting,
         }
@@ -481,8 +488,12 @@ mod tests {
 
     #[test]
     fn players_are_let_in_by_a_table_that_names_the_home_region_with_a_worker_and_nobody_waiting() {
-        assert_eq!(whole(&table(Some(0), &[0], 0)), Some(RegionId(0)));
-        assert_eq!(whole(&table(Some(2), &[0, 2, 5], 0)), Some(RegionId(2)));
+        let spawn = BlockPos::new(0, -60, 0);
+        assert_eq!(whole(&table(Some(0), &[0], 0)), Some((RegionId(0), spawn)));
+        assert_eq!(
+            whole(&table(Some(2), &[0, 2, 5], 0)),
+            Some((RegionId(2), spawn))
+        );
     }
 
     #[test]

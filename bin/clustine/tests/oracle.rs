@@ -98,6 +98,11 @@ async fn join_matches_the_official_server() {
     vanilla.idle(Duration::from_secs(2)).await.unwrap();
     clustine.idle(Duration::from_secs(2)).await.unwrap();
 
+    // Both tell the client where the world's spawn is, which a compass points to: in
+    // the flat world, the first column of the chunk at the origin, by the game's rule.
+    let told = |bot: &Bot| bot.world_spawn.clone().expect("the world's spawn was told");
+    assert_eq!(told(&clustine), told(&vanilla));
+
     server.stop().await;
 }
 

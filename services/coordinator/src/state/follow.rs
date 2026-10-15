@@ -667,10 +667,11 @@ impl Coordinator {
     ///
     /// Nothing is wanted before the list has said which region is home.
     pub(super) fn decide_and_begin(&mut self, now: Instant) {
-        let (Some(policy), Some(home), Some(enter)) = (self.config.follow, self.home, self.enter)
+        let (Some(policy), Some(home), Some(spawn)) = (self.config.follow, self.home, self.spawn)
         else {
             return;
         };
+        let enter = spawn.chunk();
         let fresh: BTreeSet<RegionId> = self
             .regions
             .keys()

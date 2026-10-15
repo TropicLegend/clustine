@@ -24,9 +24,9 @@ use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, BlockUpdate, ChunkBatchFinished, ChunkBatchStart, Disconnect,
     GameEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
-    PositionPath, RemoveEntities, SetCenterChunk, SetContainerContent, SetHeadRotation,
-    SetHeldSlot, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk,
-    abilities, angle, game_event, game_mode, inventory, player_info,
+    PositionPath, RemoveEntities, SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition,
+    SetHeadRotation, SetHeldSlot, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition,
+    UnloadChunk, abilities, angle, game_event, game_mode, inventory, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -675,6 +675,8 @@ pub(crate) struct Fanout {
     config: FanoutConfig,
     /// The region players enter the world in.
     spawn_region: RegionId,
+    /// The world's spawn, which every client that enters is told.
+    world_spawn: BlockPos,
     /// Who this edge is to the regions.
     identity: EdgeIdentity,
     /// What is kept for each region, by region id.
@@ -783,6 +785,7 @@ impl Fanout {
         Self {
             config,
             spawn_region,
+            world_spawn: routing.spawn,
             identity: routing.identity,
             regions: BTreeMap::new(),
             first_links: routing.links,
@@ -2711,6 +2714,18 @@ impl Fanout {
                 pitch: pose.pitch,
                 relative_flags: 0,
             }),
+            // As the official server's level information, after the position and
+            // before the wait for chunks: where a compass points.
+            encoded(&SetDefaultSpawnPosition {
+                dimension: OVERWORLD.to_owned(),
+                position: Position {
+                    x: self.world_spawn.x,
+                    y: self.world_spawn.y,
+                    z: self.world_spawn.z,
+                },
+                yaw: 0.0,
+                pitch: 0.0,
+            }),
             encoded(&GameEvent {
                 event: game_event::START_WAITING_FOR_LEVEL_CHUNKS,
                 value: 0.0,
@@ -4310,6 +4325,9 @@ mod tests {
     use super::*;
     use crate::Relinks;
 
+    /// The flat world's spawn, which these tests' edges tell their clients.
+    const FLAT_SPAWN: BlockPos = BlockPos::new(0, -60, 0);
+
     /// How long a test waits for something that has to happen.
     const SOON: Duration = Duration::from_secs(10);
 
@@ -4356,7 +4374,7 @@ mod tests {
             let (west, west_end) = link_to(WEST, 1);
             let (east, east_end) = link_to(EAST, 1);
             // Players enter the world in the west.
-            let (routing, relinks) = Routing::new(WEST, IDENTITY, vec![west, east]);
+            let (routing, relinks) = Routing::new(WEST, FLAT_SPAWN, IDENTITY, vec![west, east]);
             let config = FanoutConfig {
                 max_players: 20,
                 view_distance: 2,
@@ -6312,6 +6330,9 @@ mod scenarios {
     use super::*;
     use crate::Relinks;
 
+    /// The flat world's spawn, which these tests' edges tell their clients.
+    const FLAT_SPAWN: BlockPos = BlockPos::new(0, -60, 0);
+
     /// How long a test waits for something that has to happen.
     const SOON: Duration = Duration::from_secs(10);
 
@@ -6473,7 +6494,7 @@ mod scenarios {
                 links.push(link);
                 ends[region.0 as usize] = Some(end);
             }
-            let (routing, relinks) = Routing::new(WEST, IDENTITY, links);
+            let (routing, relinks) = Routing::new(WEST, FLAT_SPAWN, IDENTITY, links);
             let config = FanoutConfig {
                 max_players: 20,
                 view_distance: VIEW,
