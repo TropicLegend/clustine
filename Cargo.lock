@@ -466,10 +466,13 @@ dependencies = [
  "clustine-data",
  "clustine-features",
  "clustine-light",
+ "clustine-protocol",
  "clustine-structures",
  "clustine-terrain",
  "clustine-world",
+ "clustine-worldgen-data",
  "flate2",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]

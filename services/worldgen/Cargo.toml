@@ -17,6 +17,10 @@ clustine-world.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The judge of features reads the block entities the official server writes.
+clustine-protocol.workspace = true
+clustine-worldgen-data.workspace = true
+tempfile.workspace = true
 # The judges of the spawn read the official server's level.dat and region files.
 flate2.workspace = true
 # The failure tests read what the scheduler logs.

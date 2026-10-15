@@ -113,18 +113,19 @@ fn reorient(level: &mut Level<'_>, pos: BlockPos, state: BlockState) -> BlockSta
 
 /// What the game saves for a chest whose loot is still to be rolled
 /// (`RandomizableContainer.trySaveLootTable`): the table, and the seed unless it is
-/// nought.
+/// nought; and, as for every block entity it saves, its components, which are none.
 pub fn chest_data(seed: i64) -> clustine_world::BlockEntity {
     let mut members = vec![("LootTable", Nbt::String(SIMPLE_DUNGEON.to_string()))];
     if seed != 0 {
         members.push(("LootTableSeed", Nbt::Long(seed)));
     }
+    members.push(("components", compound(Vec::new())));
     block_entity("minecraft:chest", members)
 }
 
 /// What the game saves for a fresh spawner given a mob (`BaseSpawner.save`): its
-/// settings as a new spawner has them, the mob to spawn next, and no other
-/// potentials.
+/// settings as a new spawner has them, the mob to spawn next, no other potentials,
+/// and no components.
 pub fn spawner_data(mob: &str) -> clustine_world::BlockEntity {
     let entity = compound(vec![("id", Nbt::String(mob.to_string()))]);
     let spawn_data = compound(vec![("entity", entity)]);
@@ -140,6 +141,7 @@ pub fn spawner_data(mob: &str) -> clustine_world::BlockEntity {
             ("SpawnRange", Nbt::Short(4)),
             ("SpawnData", spawn_data),
             ("SpawnPotentials", Nbt::List(Vec::new())),
+            ("components", compound(Vec::new())),
         ],
     )
 }
@@ -369,9 +371,11 @@ mod tests {
                 "SpawnCount",
                 "SpawnData",
                 "SpawnPotentials",
-                "SpawnRange"
+                "SpawnRange",
+                "components"
             ]
         );
+        assert_eq!(data.get("components"), Some(&Nbt::Compound(Vec::new())));
         assert_eq!(data.get("SpawnCount"), Some(&Nbt::Short(4)));
         assert_eq!(data.get("MaxSpawnDelay"), Some(&Nbt::Short(800)));
         // An empty list is written with no type of element, as the game writes it.
@@ -383,6 +387,7 @@ mod tests {
     fn a_chest_of_seed_nought_saves_no_seed() {
         let data = read(&chest_data(0).data);
         assert_eq!(data.get("LootTableSeed"), None);
+        assert_eq!(data.get("components"), Some(&Nbt::Compound(Vec::new())));
     }
 
     #[test]
