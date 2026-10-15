@@ -11,6 +11,7 @@ use clustine_worldgen_data::feature as data;
 use crate::feature::{Feature, read_configured};
 use crate::placement::PlacedFeature;
 use crate::reader::{Read, Reader};
+use crate::values::Generation;
 
 /// How many steps of decoration the game has (`GenerationStep.Decoration`).
 pub const STEPS: usize = 11;
@@ -21,6 +22,11 @@ pub struct FeatureSettings {
     zoom: Zoom,
     min_y: i32,
     height: i32,
+    /// The heights the generator makes and its sea level, which heights are drawn
+    /// against.
+    generation: Generation,
+    /// Whether the dimension's random numbers are `java.util.Random`'s.
+    legacy_random_source: bool,
     /// Every configured feature of the data, by its index there.
     configured: Vec<Box<dyn Feature>>,
     /// Every placed feature of the data, by its index there.
@@ -94,11 +100,23 @@ impl FeatureSettings {
             .collect();
 
         let (min_section, sections) = dimension.sections();
+        let min_y = min_section * 16;
+        let height = i32::try_from(sections * 16).expect("a dimension is not that high");
+        // The game's `WorldGenerationContext`: the generator's heights within the
+        // dimension's. The Nether and the End generate 128 blocks of their 256.
+        let noise = dimension.noise_settings();
+        let generation = Generation {
+            min_y: min_y.max(noise.min_y),
+            height: height.min(noise.height),
+            sea_level: noise.sea_level,
+        };
         Ok(Self {
             seed,
             zoom: Zoom::new(seed),
-            min_y: min_section * 16,
-            height: i32::try_from(sections * 16).expect("a dimension is not that high"),
+            min_y,
+            height,
+            generation,
+            legacy_random_source: noise.legacy_random_source,
             configured,
             placed,
             steps,
@@ -120,6 +138,18 @@ impl FeatureSettings {
 
     pub fn height(&self) -> i32 {
         self.height
+    }
+
+    /// The heights the generator makes and its sea level (`WorldGenerationContext`),
+    /// which the modifier `height_range` draws against.
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    /// Whether the dimension's random numbers are `java.util.Random`'s, which the
+    /// region's own random source follows.
+    pub fn legacy_random_source(&self) -> bool {
+        self.legacy_random_source
     }
 
     /// The configured feature with this index in the data.

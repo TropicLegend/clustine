@@ -10,14 +10,22 @@
 //! Like the simulation, this is a function of its inputs: no clock, no hash map, no
 //! I/O.
 
+pub mod blocks;
 pub mod context;
 pub mod dispatch;
 pub mod feature;
 pub mod features;
+pub mod java_set;
 pub mod placement;
+pub mod predicates;
+pub mod providers;
 pub mod reader;
 mod run;
 mod settings;
+pub mod survive;
+#[cfg(test)]
+mod testing;
+pub mod values;
 
 pub use run::decorate;
 

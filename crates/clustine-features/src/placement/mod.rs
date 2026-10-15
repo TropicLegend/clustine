@@ -9,6 +9,10 @@ use crate::context::Context;
 use crate::feature::FeatureRef;
 use crate::reader::{Read, Reader};
 
+pub mod count;
+pub mod filters;
+pub mod positions;
+
 /// A placement modifier (`PlacementModifier`).
 pub trait Modifier: fmt::Debug + Send + Sync {
     /// The positions the modifier gives for `origin`, in order, as its
@@ -74,21 +78,33 @@ pub fn read_modifier(reader: &Reader) -> Read<Box<dyn Modifier>> {
     Ok(modifier)
 }
 
-/// The modifiers are step F1b's. Until then a modifier gives no position.
+/// The modifier of the kind `kind`, read from the members of `reader` beside `type`.
 fn read_kind(kind: &'static str, reader: &Reader) -> Read<Box<dyn Modifier>> {
-    reader.skip_rest();
-    Ok(Box::new(Unbuilt(kind)))
-}
-
-/// A modifier whose code is not built: it gives no position.
-struct Unbuilt(&'static str);
-
-impl fmt::Debug for Unbuilt {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Unbuilt({})", self.0)
-    }
-}
-
-impl Modifier for Unbuilt {
-    fn positions(&self, _: &mut Context<'_, '_>, _: BlockPos, _: &mut Vec<BlockPos>) {}
+    Ok(match kind {
+        "minecraft:count" => Box::new(count::Count::read(reader)?),
+        "minecraft:noise_based_count" => Box::new(count::NoiseBasedCount::read(reader)?),
+        "minecraft:noise_threshold_count" => Box::new(count::NoiseThresholdCount::read(reader)?),
+        "minecraft:count_on_every_layer" => Box::new(count::CountOnEveryLayer::read(reader)?),
+        "minecraft:biome" => Box::new(filters::BiomeFilter),
+        "minecraft:block_predicate_filter" => {
+            Box::new(filters::BlockPredicateFilter::read(reader)?)
+        }
+        "minecraft:random_chance" => Box::new(filters::RandomChance::read(reader)?),
+        "minecraft:rarity_filter" => Box::new(filters::RarityFilter::read(reader)?),
+        "minecraft:surface_relative_threshold_filter" => {
+            Box::new(filters::SurfaceRelativeThresholdFilter::read(reader)?)
+        }
+        "minecraft:surface_water_depth_filter" => {
+            Box::new(filters::SurfaceWaterDepthFilter::read(reader)?)
+        }
+        "minecraft:in_square" => Box::new(positions::InSquare),
+        "minecraft:offset" => Box::new(positions::Offset::read(reader)?),
+        "minecraft:height_range" => Box::new(positions::HeightRange::read(reader)?),
+        "minecraft:heightmap" => Box::new(positions::HeightmapPlacement::read(reader)?),
+        "minecraft:environment_scan" => Box::new(positions::EnvironmentScan::read(reader)?),
+        "minecraft:fixed_placement" => Box::new(positions::FixedPlacement::read(reader)?),
+        "minecraft:cuboid" => Box::new(positions::Cuboid::read(reader)?),
+        "minecraft:randomly_selected" => Box::new(positions::RandomlySelected::read(reader)?),
+        other => return Err(reader.error(format!("{other} is not a placement modifier"))),
+    })
 }

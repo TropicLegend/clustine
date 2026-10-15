@@ -3,7 +3,7 @@
 //! source and settings of the run.
 
 use clustine_data::BlockState;
-use clustine_noise::WorldgenRandom;
+use clustine_noise::{NameHash, PositionalRandom, Random, RandomSource, WorldgenRandom};
 use clustine_terrain::biome::zoom::Zoom;
 use clustine_world::generation::{FinalHeightmap, Neighbourhood, WorldgenHeightmap};
 use clustine_world::{Biome, BlockEntity, BlockPos, InChunk, ScheduledTick, Ticked};
@@ -43,6 +43,9 @@ pub struct Level<'a> {
     zoom: Zoom,
     min_y: i32,
     height: i32,
+    /// The region's own random source (`WorldGenRegion.getRandom`), made when it is
+    /// first asked for.
+    region_random: Option<RandomSource>,
 }
 
 impl<'a> Level<'a> {
@@ -52,7 +55,40 @@ impl<'a> Level<'a> {
             zoom,
             min_y,
             height,
+            region_random: None,
         }
+    }
+
+    /// `WorldGenRegion.ensureCanWrite`: whether the chunk of `at` is one the run may
+    /// write, within one chunk of the centre. The game checks this before it places a
+    /// configured feature at all, and before each block an ore places.
+    pub fn ensure_can_write(&self, at: BlockPos) -> bool {
+        let centre = self.view.centre();
+        let chunk = at.chunk();
+        (chunk.x - centre.x).abs() <= 1 && (chunk.z - centre.z).abs() <= 1
+    }
+
+    /// The region's own random source, which a few blocks draw from as they are
+    /// placed (the pale moss carpet's sides): the world's factory for
+    /// `minecraft:worldgen_region_random` at the centre chunk's lowest corner.
+    ///
+    /// The game makes one for a whole feature run and every feature draws from it in
+    /// turn. This one lasts as long as the `Level`, and `run.rs` makes a `Level` for
+    /// each placed feature, so a second feature of a run that draws from it starts it
+    /// again where the game would go on.
+    pub fn region_random(&mut self, seed: i64, legacy_random_source: bool) -> &mut RandomSource {
+        let centre = self.view.centre();
+        self.region_random.get_or_insert_with(|| {
+            let world = if legacy_random_source {
+                clustine_noise::LegacyRandom::from_seed(seed as u64).next_positional()
+            } else {
+                clustine_noise::Xoroshiro::from_seed(seed as u64).next_positional()
+            };
+            world
+                .with_hash_of(&NameHash::new("minecraft:worldgen_region_random"))
+                .next_positional()
+                .at(centre.x * 16, 0, centre.z * 16)
+        })
     }
 
     /// The view itself, for what this does not offer.

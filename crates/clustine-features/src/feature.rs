@@ -39,7 +39,12 @@ impl FeatureRef {
         Ok(FeatureRef::Inline(read_configured(reader)?))
     }
 
+    /// `ConfiguredFeature.place`: nothing where the run may not write the origin's
+    /// chunk (`Feature.place` asks `ensureCanWrite` first), else the kind's `place`.
     pub fn place(&self, context: &mut Context<'_, '_>, origin: BlockPos) -> bool {
+        if !context.level.ensure_can_write(origin) {
+            return false;
+        }
         match self {
             FeatureRef::Named(index) => {
                 let feature = context.settings.configured(*index);
@@ -73,13 +78,18 @@ impl PlacedRef {
     /// `PlacedFeature.place`: the modifiers and then the feature, with no
     /// placed feature on top for the modifier `biome` to ask about.
     pub fn place(&self, context: &mut Context<'_, '_>, origin: BlockPos) -> bool {
-        match self {
+        // The game places a nested placed feature with a context of its own, whose
+        // `topFeature` is empty; the run's is back once it is placed.
+        let top = context.top.take();
+        let placed = match self {
             PlacedRef::Named(index) => {
                 let placed = context.settings.placed(*index);
                 placed.place(context, origin)
             }
             PlacedRef::Inline(placed) => placed.place(context, origin),
-        }
+        };
+        context.top = top;
+        placed
     }
 }
 

@@ -315,6 +315,7 @@ dependencies = [
  "clustine-terrain",
  "clustine-world",
  "clustine-worldgen-data",
+ "libm",
 ]
 
 [[package]]
