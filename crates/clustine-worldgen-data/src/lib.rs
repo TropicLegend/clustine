@@ -13,7 +13,9 @@
 //! [`template_pools`]) and the offsets of the game's search for a place to spawn
 //! ([`spawn_search`]) with, of every structure template, its size and its jigsaw
 //! blocks as a packed table ([`templates`]): no block of a template is here
-//! (ADR-0019). Features come with later steps of `docs/groundwork/terrain-plan.md`.
+//! (ADR-0019); and the features, placed features and named block-state providers as
+//! trees that mirror their files, with the game's order of features and what each biome
+//! lists ([`feature`]).
 //!
 //! A router is made from a world's seed and gives each of its functions at a block
 //! position, through the noises of `clustine-noise`:
@@ -39,6 +41,7 @@
 
 pub mod carver;
 pub mod density;
+pub mod feature;
 pub mod material;
 pub mod structure;
 

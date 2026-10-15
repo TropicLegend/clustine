@@ -12,6 +12,7 @@ mod density;
 mod dump;
 mod emit;
 mod extract;
+mod feature;
 mod jar;
 mod json;
 mod material;

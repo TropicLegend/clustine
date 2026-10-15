@@ -4,6 +4,7 @@
 //! Integers are decimal and a double is its bits in hexadecimal, so that nothing rests
 //! on how a JVM prints a fraction.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -32,6 +33,16 @@ pub struct Extract {
     /// The passes of the game's search for a place to spawn from the climate, in the
     /// game's order.
     pub spawn_rings: Vec<SpawnPass>,
+    /// The order in which the game's generators place features.
+    pub feature_order: FeatureOrder,
+}
+
+/// The order in which the game places the features of each dimension: by dimension,
+/// for each step of decoration, the names of the placed features in the order of the
+/// step, which is read from the generators' own `featuresPerStep`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FeatureOrder {
+    pub dimensions: BTreeMap<String, Vec<Vec<String>>>,
 }
 
 /// One pass of `NoiseSpawnFinder.radialSearch`: the offsets from the ring's centre at
@@ -180,6 +191,8 @@ impl Extract {
             router_values,
             spawn_rings: spawn_rings(&read("spawn_rings.txt")?)
                 .context("reading spawn_rings.txt")?,
+            feature_order: feature_order(&read("feature_order.txt")?)
+                .context("reading feature_order.txt")?,
         })
     }
 }
@@ -401,6 +414,32 @@ pub fn parameter_entries(text: &str) -> Result<Vec<ParameterEntry>> {
 
 /// Lines of a pass's increment, x and z; a pass is the lines with one increment in a
 /// row.
+/// Reads `feature_order.txt`: one line a feature, its dimension, its step and its name,
+/// each dimension's in the order of its steps and each step's in the game's order.
+pub fn feature_order(text: &str) -> Result<FeatureOrder> {
+    let mut order = FeatureOrder::default();
+    for line in text.lines() {
+        let [dimension, step, name] = line.split('\t').collect::<Vec<_>>()[..] else {
+            bail!("a line of the order of features has three fields: {line:?}");
+        };
+        let step: usize = step
+            .parse()
+            .with_context(|| format!("the step of {line:?} is not a number"))?;
+        let steps = order.dimensions.entry(dimension.to_string()).or_default();
+        ensure!(
+            step + 1 >= steps.len(),
+            "{name} comes in step {step} of {dimension} after a later step"
+        );
+        steps.resize_with(steps.len().max(step + 1), Vec::new);
+        steps[step].push(name.to_string());
+    }
+    ensure!(
+        !order.dimensions.is_empty(),
+        "the order of features is empty"
+    );
+    Ok(order)
+}
+
 pub fn spawn_rings(text: &str) -> Result<Vec<SpawnPass>> {
     let mut passes: Vec<SpawnPass> = Vec::new();
     for line in text.lines() {
@@ -543,5 +582,30 @@ mod tests {
         assert!(spawn_rings("512\t0\t512\n32\t0\t32\n512\t1\t1\n").is_err());
         assert!(spawn_rings("").is_err());
         assert!(spawn_rings("512\t0\n").is_err());
+    }
+
+    #[test]
+    fn the_order_of_features_is_read_by_dimension_and_step_in_the_files_order() {
+        let read = feature_order(
+            "end\t0\tminecraft:end_island\noverworld\t1\tminecraft:lake\n\
+             overworld\t1\tminecraft:a\noverworld\t3\tminecraft:b\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read.dimensions["end"],
+            [vec!["minecraft:end_island".to_string()]]
+        );
+        assert_eq!(
+            read.dimensions["overworld"],
+            [
+                vec![],
+                vec!["minecraft:lake".to_string(), "minecraft:a".to_string()],
+                vec![],
+                vec!["minecraft:b".to_string()],
+            ]
+        );
+        assert!(feature_order("overworld\t3\ta\noverworld\t1\tb\n").is_err());
+        assert!(feature_order("overworld\t1\n").is_err());
+        assert!(feature_order("").is_err());
     }
 }

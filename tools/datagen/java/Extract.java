@@ -29,19 +29,28 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Supplier;
 
 import com.mojang.datafixers.util.Pair;
 
 import net.minecraft.SharedConstants;
+import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.HolderGetter;
 import net.minecraft.core.HolderLookup;
-import net.minecraft.core.registries.Registries;
+import net.minecraft.core.Registry;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.data.registries.VanillaRegistries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.Bootstrap;
+import net.minecraft.server.WorldLoader;
+import net.minecraft.server.packs.repository.PackRepository;
+import net.minecraft.server.packs.repository.ServerPacksSource;
+import net.minecraft.server.permissions.PermissionSet;
+import net.minecraft.util.Util;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
@@ -49,8 +58,10 @@ import net.minecraft.world.item.StandingAndWallBlockItem;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Climate;
+import net.minecraft.world.level.biome.FeatureSorter;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterList;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -61,11 +72,16 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockSetType;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.dimension.LevelStem;
 import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.NoiseRouter;
 import net.minecraft.world.level.levelgen.RandomState;
+import net.minecraft.world.level.levelgen.WorldDimensions;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunction;
+import net.minecraft.world.level.levelgen.placement.PlacedFeature;
+import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.minecraft.world.level.levelgen.synth.NormalNoise;
 import net.minecraft.world.level.material.FlowingFluid;
 import net.minecraft.world.level.material.Fluid;
@@ -149,6 +165,7 @@ public final class Extract {
             write(out, "router_" + file.getKey() + ".txt", file.getValue());
         }
         write(out, "spawn_rings.txt", spawnRings());
+        write(out, "feature_order.txt", featureOrder());
         // The game's start leaves threads behind that would keep the JVM alive.
         System.exit(0);
     }
@@ -557,23 +574,6 @@ public final class Extract {
     private static final int ROUTER_POSITIONS = 256;
     private static final int BY_HAND = 24;
 
-    /// The values of every entry of the noise routers of the overworld, the Nether and
-    /// the End at fixed positions, for the seeds above: one file for each dimension and
-    /// seed, by a name such as `overworld_13579`.
-    ///
-    /// They are what `RandomState.sampleBlockValueUncached` gives: the game's own
-    /// density functions, made as a world of that seed makes them, asked at one block
-    /// at a time with nothing cached and no structure near. The settings are those the
-    /// game has built in, which its data generator writes out as the files in the jar;
-    /// `cargo datagen` checks that the two are the same bytes.
-    ///
-    /// The positions are the same for both seeds but for the heights that are taken
-    /// near the surface, which is elsewhere in another world.
-    ///
-    /// A file names the settings and the seed, then each entry: `entry <name>` for one
-    /// that has a value in every row, `constant <name> <bits>` for one whose value is
-    /// the same at every position. A row is a position (x, y, z) and the values of the
-    /// entries in their order, each the bits of a float in hexadecimal.
     /// The offsets from the centre of a ring at which `NoiseSpawnFinder.radialSearch`
     /// samples, one line each: the pass's increment, then x and z. They are the same
     /// for every seed, as the centre is fixed for a pass and only added. The loop is
@@ -606,6 +606,81 @@ public final class Extract {
         return text.toString();
     }
 
+    private record Loaded(RegistryAccess.Frozen registries) {}
+
+    /// The order in which the game places the features of each dimension of a new
+    /// world, step by step: one line a feature, its dimension, its step and its name,
+    /// in the order of the step. It is read from each generator's own memo,
+    /// `featuresPerStep`, which the game's `FeatureSorter` made from the biome source's
+    /// possible biomes; a feature's index in its step, which is part of its seed, is its
+    /// place in that list, and that is checked against the game's own mapping. The data
+    /// is the game's own data pack, loaded as a server loads it before it has a world.
+    private static String featureOrder() throws Exception {
+        PackRepository packs = ServerPacksSource.createVanillaTrustedRepository();
+        WorldLoader.PackConfig packConfig =
+            new WorldLoader.PackConfig(packs, WorldDataConfiguration.DEFAULT, false, true);
+        WorldLoader.InitConfig init = new WorldLoader.InitConfig(
+            packConfig, Commands.CommandSelection.DEDICATED, PermissionSet.NO_PERMISSIONS);
+        RegistryAccess.Frozen registries = WorldLoader.<Object, Loaded>load(
+            init,
+            context -> new WorldLoader.DataLoadOutput<>(null, context.datapackDimensions()),
+            (resources, serverResources, layers, unused) -> new Loaded(layers.compositeAccess()),
+            Util.backgroundExecutor(), Runnable::run).get().registries();
+
+        WorldDimensions dimensions = registries.lookupOrThrow(Registries.WORLD_PRESET)
+            .getOrThrow(WorldPresets.NORMAL).value().createWorldDimensions();
+        Registry<PlacedFeature> placed = registries.lookupOrThrow(Registries.PLACED_FEATURE);
+        Field memo = ChunkGenerator.class.getDeclaredField("featuresPerStep");
+        memo.setAccessible(true);
+
+        TreeMap<String, ResourceKey<LevelStem>> stems = new TreeMap<>();
+        stems.put("overworld", LevelStem.OVERWORLD);
+        stems.put("nether", LevelStem.NETHER);
+        stems.put("end", LevelStem.END);
+        StringBuilder text = new StringBuilder();
+        for (Map.Entry<String, ResourceKey<LevelStem>> stem : stems.entrySet()) {
+            ChunkGenerator generator =
+                dimensions.get(stem.getValue()).orElseThrow().generator();
+            @SuppressWarnings("unchecked")
+            List<FeatureSorter.StepFeatureData> steps =
+                ((Supplier<List<FeatureSorter.StepFeatureData>>) memo.get(generator)).get();
+            for (int step = 0; step < steps.size(); step++) {
+                List<PlacedFeature> features = steps.get(step).features();
+                for (int index = 0; index < features.size(); index++) {
+                    PlacedFeature feature = features.get(index);
+                    if (steps.get(step).indexMapping().applyAsInt(feature) != index) {
+                        throw new IllegalStateException(
+                            "a feature's index in its step is not its place in the list");
+                    }
+                    Object name = placed.getKey(feature);
+                    if (name == null) {
+                        throw new IllegalStateException("a placed feature has no name");
+                    }
+                    text.append(stem.getKey()).append('\t').append(step).append('\t')
+                        .append(name).append('\n');
+                }
+            }
+        }
+        return text.toString();
+    }
+
+    /// The values of every entry of the noise routers of the overworld, the Nether and
+    /// the End at fixed positions, for the seeds above: one file for each dimension and
+    /// seed, by a name such as `overworld_13579`.
+    ///
+    /// They are what `RandomState.sampleBlockValueUncached` gives: the game's own
+    /// density functions, made as a world of that seed makes them, asked at one block
+    /// at a time with nothing cached and no structure near. The settings are those the
+    /// game has built in, which its data generator writes out as the files in the jar;
+    /// `cargo datagen` checks that the two are the same bytes.
+    ///
+    /// The positions are the same for both seeds but for the heights that are taken
+    /// near the surface, which is elsewhere in another world.
+    ///
+    /// A file names the settings and the seed, then each entry: `entry <name>` for one
+    /// that has a value in every row, `constant <name> <bits>` for one whose value is
+    /// the same at every position. A row is a position (x, y, z) and the values of the
+    /// entries in their order, each the bits of a float in hexadecimal.
     private static TreeMap<String, String> routerValues() {
         HolderLookup.Provider lookup = VanillaRegistries.createWorldLookup();
         HolderGetter<NormalNoise> noises = lookup.lookupOrThrow(Registries.NOISE);

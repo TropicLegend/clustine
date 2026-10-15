@@ -3,6 +3,7 @@
 pub mod biomes;
 pub mod carvers;
 pub mod end;
+pub mod features;
 pub mod nether;
 pub mod noise_settings;
 pub mod noises;

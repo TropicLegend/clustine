@@ -16,7 +16,7 @@ use crate::density;
 use crate::jar::SERVER_JAR;
 use crate::model::{GameData, Property};
 use crate::worldgen::{NoiseParameters, NoiseSettings};
-use crate::{carver, material, packed, router, structure, sums, tables};
+use crate::{carver, feature, material, packed, router, structure, sums, tables};
 
 /// Directories that hold nothing but generated files, relative to the workspace root
 /// (ADR-0019, section 3).
@@ -255,6 +255,7 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
     let mut top = vec![
         "biomes",
         "carvers",
+        "features",
         "noise_settings",
         "noises",
         "spawn_search",
@@ -273,6 +274,11 @@ fn worldgen(data: &GameData, outputs: &mut Vec<Output>) -> Result<()> {
         "carvers.rs",
         false,
         carver::emit(&biomes.entries, &data.worldgen)?,
+    );
+    add(
+        "features.rs",
+        false,
+        feature::emit(&biomes.entries, &data.worldgen, &data.extract.feature_order)?,
     );
     add("noises.rs", false, router::noises(&noises)?);
     add(
