@@ -16,6 +16,12 @@ pub trait Feature: fmt::Debug + Send + Sync {
     /// Places the feature at `origin`, as `ConfiguredFeature.place` does, and says
     /// whether it did: selectors and some kinds pass that on, and decide by it.
     fn place(&self, context: &mut Context<'_, '_>, origin: BlockPos) -> bool;
+
+    /// Whether the code of this kind is built: the judge turns every feature whose
+    /// kind is not into the game's `no_op` (`docs/groundwork/f-plan.md`, section 3).
+    fn built(&self) -> bool {
+        true
+    }
 }
 
 /// A configured feature as another names it, by name or written out in place.

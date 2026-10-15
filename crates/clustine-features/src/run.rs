@@ -41,6 +41,8 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
         }
     }
 
+    // The region's own random source, which the game makes once for the run.
+    let mut region_random = None;
     for step in 0..STEPS.max(settings.steps()) {
         let mut places = BTreeSet::new();
         for biome in &biomes {
@@ -53,6 +55,7 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
             view.attempt(Placing::Feature(name), &mut |view| {
                 let mut level =
                     Level::new(view, settings.zoom(), settings.min_y(), settings.height());
+                level.carry_region_random(region_random.take());
                 let mut context = Context {
                     level: &mut level,
                     random: &mut random,
@@ -60,6 +63,7 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
                     top: Some(placed),
                 };
                 settings.placed(placed).place(&mut context, origin);
+                region_random = level.carry_region_random(None);
             });
         }
     }

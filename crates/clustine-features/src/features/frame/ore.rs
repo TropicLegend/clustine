@@ -7,8 +7,8 @@
 //! (`BulkSectionAccess`): it reads them back from there, asks only whether the run
 //! may write a block's chunk, and neither updates a heightmap nor marks a block for
 //! later. The ores replace stone with stone, which leaves the heightmaps as they were,
-//! and [`Level::set_block`](crate::context::Level::set_block) marks nothing; so the
-//! level's own writes stand for the section's.
+//! and [`Level::set_block_in_section`](crate::context::Level::set_block_in_section)
+//! marks nothing; so the level's own writes stand for the section's.
 
 use clustine_data::{BlockState, Face};
 use clustine_noise::{Random, math, trig};
@@ -243,7 +243,7 @@ impl Ore {
                             self.0
                                 .replacement(context.level, &mut *context.random, state, pos)
                         {
-                            context.level.set_block(pos, ore);
+                            context.level.set_block_in_section(pos, ore);
                             placed += 1;
                         }
                     }

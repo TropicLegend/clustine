@@ -38,4 +38,8 @@ impl Feature for Unbuilt {
     fn place(&self, _: &mut Context<'_, '_>, _: BlockPos) -> bool {
         true
     }
+
+    fn built(&self) -> bool {
+        false
+    }
 }

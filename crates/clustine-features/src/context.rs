@@ -73,9 +73,8 @@ impl<'a> Level<'a> {
     /// `minecraft:worldgen_region_random` at the centre chunk's lowest corner.
     ///
     /// The game makes one for a whole feature run and every feature draws from it in
-    /// turn. This one lasts as long as the `Level`, and `run.rs` makes a `Level` for
-    /// each placed feature, so a second feature of a run that draws from it starts it
-    /// again where the game would go on.
+    /// turn; `run.rs` hands it from each feature's `Level` to the next
+    /// ([`Self::carry_region_random`]).
     pub fn region_random(&mut self, seed: i64, legacy_random_source: bool) -> &mut RandomSource {
         let centre = self.view.centre();
         self.region_random.get_or_insert_with(|| {
@@ -89,6 +88,17 @@ impl<'a> Level<'a> {
                 .next_positional()
                 .at(centre.x * 16, 0, centre.z * 16)
         })
+    }
+
+    /// Gives this level the region's random source as the feature before left it, and
+    /// returns what it holds instead: so one source lasts a whole run, as the game's
+    /// does. A feature that panics loses its draws with it, which only a chunk already
+    /// marked as made with a failure (ADR-0021) can show.
+    pub(crate) fn carry_region_random(
+        &mut self,
+        random: Option<RandomSource>,
+    ) -> Option<RandomSource> {
+        std::mem::replace(&mut self.region_random, random)
     }
 
     /// The view itself, for what this does not offer.
@@ -122,8 +132,28 @@ impl<'a> Level<'a> {
     /// Sets a block, as the game's `setBlock` does in a region of world generation:
     /// false where the view refuses it, outside the three by three or the height.
     /// The game's flags of updates have no effect there, as no neighbour is updated
-    /// while features are placed.
+    /// while features are placed. A block whose state asks for it is marked for
+    /// post-processing (`getPostProcessPos`): of the pinned jar's blocks, the two small
+    /// mushrooms mark themselves, and soul sand and magma the block above them, where a
+    /// bubble column may stand.
     pub fn set_block(&mut self, at: BlockPos, state: BlockState) -> bool {
+        if !self.view.set_block(at, state) {
+            return false;
+        }
+        let name = state.block().map(|block| block.name);
+        match name {
+            Some("minecraft:brown_mushroom" | "minecraft:red_mushroom") => self.view.mark(at),
+            Some("minecraft:soul_sand" | "minecraft:magma_block") => {
+                self.view.mark(at.offset(0, 1, 0));
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Sets a block as the game writes straight into a chunk's section
+    /// (`BulkSectionAccess`, which ores use): nothing is marked.
+    pub fn set_block_in_section(&mut self, at: BlockPos, state: BlockState) -> bool {
         self.view.set_block(at, state)
     }
 
