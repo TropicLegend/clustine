@@ -1,7 +1,14 @@
 # Draft of a decision record: Few syncs in turn
 
-- Status: **Draft**, to be numbered. Not reviewed, nothing of it built. Written
-  2026-10-10 against `main` at `12e445f`, from the measurement in
+- Status: **Draft, partly built, not to be numbered as it stands.** Reviewed on
+  2026-10-10 ([few-syncs-in-turn-review.md](few-syncs-in-turn-review.md)). Its
+  section 8, the runner's three changes, was built on 2026-10-11 with the condition
+  the review asked for (`93bedca`; the records were changed in `afc5ade`). The
+  store's parts were not built: sections 2 to 4 were written again against the code
+  in [fewer-waits-in-the-store-draft.md](fewer-waits-in-the-store-draft.md), which
+  was set aside on 2026-10-13, and the review advised against sections 1, 5, 6 and 7
+  as drafted.
+- Written 2026-10-10 against `main` at `12e445f`, from the measurement in
   [`disk-syncs-measured.md`](disk-syncs-measured.md), whose section numbers are meant
   wherever this says "measured". It changes the world store's two threads, one kind of
   record in the log, and three places in the runner; it changes no message between

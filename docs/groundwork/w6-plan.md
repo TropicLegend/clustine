@@ -5,6 +5,20 @@ independently the same day, and revised by that review (section 8) and by the ow
 answers to the questions the review raised. It says what a player meets after W6,
 what is built where, in which order, who writes what and how each part is judged.
 
+- Status: **Built on 2026-10-14**, in the steps of section 6 (`44e3b7b` to
+  `9d65847`), and the comparisons of W6f made reliable on 2026-10-15 (`ea6d3e4`:
+  the official server is started without mobs, which had stood where a block was to
+  go). The rules are in `crates/clustine-sim/src/placement/`. Others wrote tests from
+  this plan alone, 119 of the rules (`crates/clustine-sim/tests/placement.rs`) and 37
+  of the region (`clicks.rs` beside it), and 205 cases are compared with the
+  official server in `bin/clustine/tests/placing_oracle.rs`, which all matched in
+  two runs in a row. It was built as planned: the three points W6d raised were
+  decided into the plan (section 8), and what the comparisons found was in the test
+  and not in the rules (its empty hand held a block, and it compared a fence that
+  the official server joins by a neighbour update, which waits for B1). What to try
+  with a real client, and what is still missing, is in the roadmap under "Placing,
+  using and where a new player stands: W6".
+
 ## 1. What W6 was, and what is left of it
 
 The plan's row: "`--seed`; version in the settings; spawn x, z from the generator,

@@ -2,7 +2,10 @@
 
 - Status: **Accepted**, after an independent review against the code and against
   real chunks, whose fifteen findings are worked in or handed to the record on
-  light at the edge (see "Review"). The last record of step G4 of
+  light at the edge (see "Review"). **Built** in steps C1 to C5 of section 9, by
+  2026-10-11 (what building found is in "Found while building C1 to C3" at the
+  end); light at the edge, which it left open, is
+  [ADR-0023](0023-light-at-the-edge.md) and is built too. The last record of step G4 of
   [the terrain plan](../groundwork/terrain-plan.md), which the owner agreed on
   2026-10-10. It decides what a chunk is in memory, on disk and between services,
   what the edge's chunk packet is made from, and who makes light and what it means

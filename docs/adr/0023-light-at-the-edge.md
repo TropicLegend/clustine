@@ -2,7 +2,11 @@
 
 - Status: **Accepted** on 2026-10-11, after two independent reviews whose findings
   are worked in (see "Review"). The second review's verdict was "accept after the
-  listed changes; no third review needed". The choices it decides for the owner are
+  listed changes; no third review needed". **Built** in steps L0a to L7 of section
+  12, on 2026-10-13 and 2026-10-14, which is step W3 of the terrain plan; how they
+  were built, what the tests written from the record found and what L7 measured is
+  under "Found while building". **L8 is not built**; how far L5 already took what it
+  was for is in that section too. The choices it decides for the owner are
   listed under "Choices the owner has not settled"; each can be turned. It is the record that
   [ADR-0022](0022-what-a-chunk-carries.md) hands over in its section 7. It decides
   where the light of a chunk lives in an edge's replica, when a chunk may be sent

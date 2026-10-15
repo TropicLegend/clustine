@@ -1,18 +1,9 @@
 # ADR-0010: Regions that follow players
 
 - Status: **Accepted** as the plan for milestone M3, phase C; revised after an independent
-  review (see the end). Being built. How the world store does its part is
-  [ADR-0011](0011-the-world-store-and-regions.md), which changes some of what is said
-  here about the store and lists that under "Changes to ADR-0010": above all, the tick
-  of a grant is the store's and a claim carries none, the merge names the epoch the
-  absorbed region was opened with, the new region of a split is opened with an
-  ordinary hello, and a pinned region claims the chunks of its areas like any other.
-  How the tick and the region runner work on chunk sets is
-  [ADR-0012](0012-the-tick-on-chunks.md), with its own list of changes to this record:
-  above all, a guest's ticket keeps a chunk from being given back, a region gives a
-  chunk back only after a while without use, what a player does to a chunk the region
-  is not sure of is routed by the edge, and answers about chunks carry the number of
-  the asking they answer.
+  review (see the end). Built: steps C0 to C6 of phase C are done (2026-10-10; the
+  roadmap's "Phase C"), each designed in a record of its own, ADR-0011 to ADR-0017.
+  Later records changed parts of this one; see "Changed by later records" below.
 - Date: 2026-10-08
 
 ## Context
@@ -326,6 +317,21 @@ who gather from twenty directions are nineteen short pauses for those already th
   and when a merge or a split has happened.
 - Regions do not carry entity ids of their own yet; when things other than players
   need ids away from home, that has to be decided.
+
+## Changed by later records
+
+This was in the status line until 2026-10-15. How the world store does its part is
+[ADR-0011](0011-the-world-store-and-regions.md), which changes some of what is said
+here about the store and lists that under "Changes to ADR-0010": above all, the tick
+of a grant is the store's and a claim carries none, the merge names the epoch the
+absorbed region was opened with, the new region of a split is opened with an
+ordinary hello, and a pinned region claims the chunks of its areas like any other.
+How the tick and the region runner work on chunk sets is
+[ADR-0012](0012-the-tick-on-chunks.md), with its own list of changes to this record:
+above all, a guest's ticket keeps a chunk from being given back, a region gives a
+chunk back only after a while without use, what a player does to a chunk the region
+is not sure of is routed by the edge, and answers about chunks carry the number of
+the asking they answer.
 
 ## Review
 

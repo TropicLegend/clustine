@@ -478,6 +478,12 @@ together with a way to tell damage from a torn tail in the last segment.
 | The hello by its record | Section 5 here | As said there |
 | Anything about the survivor's checkpoints while it ticks | It is the runner's (finding 6), and by 1.2 it may be the larger half of the second | The log lines of 1.2; then a record for the runner |
 
+*Note of 2026-10-15*: ADR-0021's thread has since been built (step W5, 2026-10-14;
+see that record's "As built"): the store's thread for chunks no longer makes chunks
+itself, and goes on while the generator's pool makes them. What the row on sections
+5 and 6 says of `chunks.rs` was true when this was written; whatever brings section
+6 back is to be written against the code as it is now.
+
 ## 7. The chunks that are not at hand at the survivor
 
 The review's finding 7, for a merge as for a move.

@@ -1,13 +1,13 @@
 # Deployment
 
 Clustine as separate services on Kubernetes, and a test that runs them on a local
-cluster and lets bots walk from one worker to another.
+cluster and lets bots walk from one worker's region to another's.
 
 | Path | Contents |
 |---|---|
 | [`../Dockerfile`](../Dockerfile) | The image of every service: the `clustine` binary, whose subcommand says which service a container is, and the test client `clustine-botswarm` |
-| [`kubernetes/`](kubernetes) | A kustomize base in the namespace `clustine`: one coordinator, one world store with a volume, two workers and one edge |
-| [`kubernetes/test/bots.yaml`](kubernetes/test/bots.yaml) | A Job that lets bots walk and build across the boundary between the two workers |
+| [`kubernetes/`](kubernetes) | A kustomize base in the namespace `clustine`: one coordinator, one world store with a volume, three workers and one edge, running a world whose regions follow their players |
+| [`kubernetes/test/`](kubernetes/test) | The Jobs of the cluster test, below. [`bots.yaml`](kubernetes/test/bots.yaml) lets bots walk and build across the boundary between the two regions of the pinned world, each run by a worker of its own |
 | [`kind/`](kind) | The scripts that run all of this on a cluster made with [kind](https://kind.sigs.k8s.io), which runs Kubernetes in Docker containers |
 | [`kind/pinned/`](kind/pinned) | What the test deploys: `kubernetes/` with the world pinned into two regions that meet at block x = 64 and stay as they are |
 

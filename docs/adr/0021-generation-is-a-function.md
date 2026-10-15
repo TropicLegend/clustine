@@ -15,6 +15,10 @@
   [ADR-0019](0019-data-made-from-mojangs-jar.md), and the text of test T10 of
   [ADR-0017](0017-the-end-of-the-stripes.md). What a chunk carries and how it is
   kept is [ADR-0022](0022-what-a-chunk-carries.md)'s.
+- **Built** in steps W5a to W5d and W5h, and measured (W5m), on 2026-10-14: see "As
+  built" and "Measured (W5m)" at the end. Nothing yet runs the feature runs it
+  orders, which are phases F and S of the plan; until then the scheduler runs the
+  `--seed` preview's bare stages.
 - Date: 2026-10-10
 
 Where a figure or a statement is a **guess** it says so. Statements about the code
@@ -22,7 +26,7 @@ are of the tree at `b67a1d0`. `S263:` is SteelMC's 26.3 branch at `885c4b3`; "th
 audit" is the G3 audit of what a feature run reads and writes, whose findings are in
 the plan's "What the first trials found"; "the plan" is the terrain plan.
 
-Nothing was built or run for this record. The counts of sections 2 and 5 were
+When it was written, nothing was built or run for this record. The counts of sections 2 and 5 were
 computed for it and again by the review (Python, a search over the lattice,
 seconds); where the two differed the record has the review's.
 

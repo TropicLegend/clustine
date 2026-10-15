@@ -3,8 +3,10 @@
 - Status: **Accepted**, after two independent reviews against the code, whose ten and
   twelve findings are worked in (see "Review"); the design of step R1 of the milestone
   "every service with several replicas"
-  ([replicas-plan.md](../groundwork/replicas-plan.md)). Nothing of it is built or run
-  yet. Section 4.1 of the plan is where it starts from.
+  ([replicas-plan.md](../groundwork/replicas-plan.md)). **Built**: phase R1 is done,
+  in steps R1.0 to R1.8 (2026-10-10 and 2026-10-11), and the setting the steps were
+  built behind is gone; what the tests written from it found is at the end. Section
+  4.1 of the plan is where it started from.
 - Date: 2026-10-10. The code it cites is as at `6bf1613`.
 - It **departs from section 4.1 in six places**, gathered in section 15. The largest:
   the store never makes a login wait for another region, and a region keeps no floors.

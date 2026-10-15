@@ -1,15 +1,17 @@
-# Terrain generation: the plan, proposed
+# Terrain generation: the plan
 
-- Status: **Agreed by the owner on 2026-10-10**, with its questions 1 to 5 answered as it recommends (the roadmap, "What the owner answered on 2026-10-10"). As proposed: Drafted on 2026-10-10, gone over by an independent
-  reviewer against the code of both projects, and revised; the review's fourteen
-  findings are answered one by one in the last section. It waits for the owner's
-  answers to the ten questions of section 7, each of which has a recommendation and
-  what happens without an answer. The two spikes of phase G (G1, G2) decide whether
-  its claims can be tested at all, and are done before any decision record is written.
+- Status: **Agreed by the owner on 2026-10-10.** The questions of section 7 that the
+  owner answered are in the roadmap ("What the owner answered on 2026-10-10"); the
+  others go by what this plan recommends. **As of 2026-10-15, built**: phase G but
+  for G7, which the Java judges replaced; W1, W2, W3, W5 and W6; T1 to T7b. **Not
+  built**: W4, T8, and phases F, S, B and D (the Nether's and the End's terrain is in
+  the crate, not served). Each step's row in section 3 says how it stands, and the
+  roadmap ("Where the work after M3 stands") has what was measured. How the plan
+  came about is in "How this plan came about", before the review's list at the end.
 
 **Steps G0 to G3 have been done** (2026-10-10), and both trials went well; what
 they found is in "What the first trials found", before section 0, and the text below
-is as it was proposed before them.
+is as it was proposed before them, but for the notes on how each step stands.
 
 It rests on [terrain-generation.md](terrain-generation.md) ("groundwork §n"), on that
 document's check against clones of both projects
@@ -401,15 +403,15 @@ the first draft changed later is in them now.
 | Crate | Holds | Ported from (`S263:`) |
 |---|---|---|
 | `clustine-data` (exists) | + per state: light emission, dampening, **face shapes for states that occlude by shape**, fluid and level, is air, blocks motion, leaves, replaceable, **opens or is used when clicked** | values from the jar (G6) |
-| `clustine-noise` (new) | random numbers, noises, splines, `Mth` tables; scalar; maths through `libm` | `steel-utils/src/random/`, `steel-math/`, `steel-worldgen/src/noise/` (the six noise files), `src/density/spline_eval.rs` |
-| `clustine-worldgen-data` (new, generated, committed) | transpiled routers and material rules for overworld, nether, end; noise parameters and settings; biome parameter lists; features, placed features, providers, carvers; structure sets, pools, processors; **template metadata** (sizes, jigsaw blocks). Template **blocks** by the owner's answer to question 3 | emitted by `tools/datagen`; emitter ported from `steel-worldgen/build/density/` (scalar half), `steel-registry/build/` |
-| `clustine-terrain` (new) | biome source, noise chunk, aquifer, ore veins, beardifier, surface, carvers, worldgen heightmaps | `steel-worldgen/src/`, `steel-utils/src/climate/`, `steel-core/src/worldgen/{generator,surface,carver}` |
-| `clustine-features` (new) | placement, providers, the order of features, Java's hash set, every feature type | `steel-core/src/worldgen/feature/`, `steel-utils/src/value_providers/` |
-| `clustine-structures` (new) | starts, placement, references, jigsaw, pieces, templates | `steel-worldgen/src/structure/`, `steel-core/src/worldgen/{structure,template}/` |
-| `clustine-light` (new) | light of one chunk from the blocks of its 3×3; pure | the rules of `steel-core/src/chunk/light/`; not its queues |
+| `clustine-noise` (made in T1) | random numbers, noises, splines, `Mth` tables; scalar; maths through `libm` | `steel-utils/src/random/`, `steel-math/`, `steel-worldgen/src/noise/` (the six noise files), `src/density/spline_eval.rs` |
+| `clustine-worldgen-data` (made in T2, generated, committed; so far routers, noises, settings, biomes, material rules, carvers, structures, pools and template metadata; the features' data comes with F1) | transpiled routers and material rules for overworld, nether, end; noise parameters and settings; biome parameter lists; features, placed features, providers, carvers; structure sets, pools, processors; **template metadata** (sizes, jigsaw blocks). Template **blocks** by the owner's answer to question 3 | emitted by `tools/datagen`; emitter ported from `steel-worldgen/build/density/` (scalar half), `steel-registry/build/` |
+| `clustine-terrain` (made in T3; the beardifier is its module `beard`) | biome source, noise chunk, aquifer, ore veins, beardifier, surface, carvers, worldgen heightmaps | `steel-worldgen/src/`, `steel-utils/src/climate/`, `steel-core/src/worldgen/{generator,surface,carver}` |
+| `clustine-features` (not made yet: phase F) | placement, providers, the order of features, Java's hash set, every feature type | `steel-core/src/worldgen/feature/`, `steel-utils/src/value_providers/` |
+| `clustine-structures` (made in T7: starts, placement, references, jigsaw, pieces; templates are placed in phase S) | starts, placement, references, jigsaw, pieces, templates | `steel-worldgen/src/structure/`, `steel-core/src/worldgen/{structure,template}/` |
+| `clustine-light` (made in W1) | light of one chunk from the blocks of its 3×3; pure | the rules of `steel-core/src/chunk/light/`; not its queues |
 | `services/worldgen` (exists) | the generator: pool, cache of run results, the order of runs, light of finished chunks | Clustine's own |
 | `tools/datagen` (exists) | + emitters; + the Java program's part that needs no server | |
-| `tools/fixtures` (new) | official server with console and generated data packs; region-file reader; the Java program's part that runs a server; hash fixtures | Clustine's own; logic of SteelExtractor (CC0) |
+| `tools/fixtures` (not made: the Java judges in `crates/clustine-terrain/tests/java` took its place, see G7) | official server with console and generated data packs; region-file reader; the Java program's part that runs a server; hash fixtures | Clustine's own; logic of SteelExtractor (CC0) |
 
 **Light.** Whoever makes a chunk makes its light: the generation service for a finished
 chunk (from the finished 3×3, which is why 409 chunks are finished for a view of 329),
@@ -435,14 +437,14 @@ Sizes are SteelMC's lines (check §9). Each step is one verified commit.
 
 | # | Scope | Verified by / yields |
 |---|---|---|
-| G0 | `cargo datagen` run here; the inventory of section 0 completed with the reports (biome parameters, what `blocks.json` has) and kept with ADR-0019 | The inventory |
-| **G1** | **Spike: terrain from the unmodified server.** The oracle with a console (its standard input is closed and it has 1 GB: `tools/botswarm/src/oracle.rs:87-91`), a normal world on seed 13579, ticking frozen, single chunks force-loaded; a tool that writes three data packs from the jar's own files (never committed): biomes without features; the same without carvers; the same with an empty material rule; a reader for region files. Then: which statuses are saved; whether a terrain-status chunk is the same in two runs with different loaded chunks; **its MD5 against SteelMC's `terrain` hash for the same chunk** | Whether this is the terrain reference (section 4). The first evidence about SteelMC's fixture, and about what its branch does with `exclusion` and `chunk_surface_level` |
-| **G2** | **Spike: the server inside a Java program**, compiled with `javac` against the jar's own classes. Routes, in order: call `Main.main` on a thread and find the server through the server thread by reflection; an agent written with the JDK's own class-file API that keeps the server when it is constructed; Fabric (needs the owner, question 10). Then: one chunk asked for at `terrain` and hashed (must equal G1's); one cluster of SteelMC's brought to terrain with two rings, decorated in ascending x, z, hashed (compared with their `features` hash) | Whether features, light and the rest can be judged at all, before ADR-0021 claims it |
-| G3 | The audit of section 1 finished: the feature files not yet read, with the data's radii; C's reach and counts recomputed by a test | The list in ADR-0021 |
-| G4 | **ADR-0019** data and licences (section 7's questions 3 and 4; a notice that tables made from Mojang's data are not under the AGPL; budgets for size and build time). **ADR-0021** shape, order, the store's promise, the pool, the barrier, panics, with the spikes' results and what follows if G2 failed. **ADR-0022** what a chunk carries, light, the representation. An independent reviewer goes over the three | Review; the owner's questions asked with them |
-| G5 | The shared types of section 2; empty crates with `NOTICE`s; the test profile | All existing tests; the flat comparison with the official server |
-| G6 | The Java program without a server: block properties, face shapes, fluid states, "used when clicked"; biome parameters if the report lacks them; noise and router values at points; hash-set orders | `datagen --check`; known values |
-| G7 | `tools/fixtures` whole; the fixture format; the first fixtures: starts as made, biomes, terrain under each of the three packs, three dimensions | Regenerating gives the same bytes |
+| G0 | `cargo datagen` run here; the inventory of section 0 completed with the reports (biome parameters, what `blocks.json` has) and kept with ADR-0019 | The inventory. **Done** on 2026-10-10 |
+| **G1** | **Spike: terrain from the unmodified server.** The oracle with a console (its standard input is closed and it has 1 GB: `tools/botswarm/src/oracle.rs:87-91`), a normal world on seed 13579, ticking frozen, single chunks force-loaded; a tool that writes three data packs from the jar's own files (never committed): biomes without features; the same without carvers; the same with an empty material rule; a reader for region files. Then: which statuses are saved; whether a terrain-status chunk is the same in two runs with different loaded chunks; **its MD5 against SteelMC's `terrain` hash for the same chunk** | Whether this is the terrain reference (section 4). The first evidence about SteelMC's fixture, and about what its branch does with `exclusion` and `chunk_surface_level`. **Done** on 2026-10-10: it works ("What the first trials found") |
+| **G2** | **Spike: the server inside a Java program**, compiled with `javac` against the jar's own classes. Routes, in order: call `Main.main` on a thread and find the server through the server thread by reflection; an agent written with the JDK's own class-file API that keeps the server when it is constructed; Fabric (needs the owner, question 10). Then: one chunk asked for at `terrain` and hashed (must equal G1's); one cluster of SteelMC's brought to terrain with two rings, decorated in ascending x, z, hashed (compared with their `features` hash) | Whether features, light and the rest can be judged at all, before ADR-0021 claims it. **Done** on 2026-10-10: it works, by the first route |
+| G3 | The audit of section 1 finished: the feature files not yet read, with the data's radii; C's reach and counts recomputed by a test | The list in ADR-0021. **Done** on 2026-10-10 |
+| G4 | **ADR-0019** data and licences (section 7's questions 3 and 4; a notice that tables made from Mojang's data are not under the AGPL; budgets for size and build time). **ADR-0021** shape, order, the store's promise, the pool, the barrier, panics, with the spikes' results and what follows if G2 failed. **ADR-0022** what a chunk carries, light, the representation. An independent reviewer goes over the three | Review; the owner's questions asked with them. **Done** on 2026-10-10: ADR-0019, ADR-0021 and ADR-0022, each reviewed; what ADR-0022 left open about light became a fourth, [ADR-0023](../adr/0023-light-at-the-edge.md), accepted on 2026-10-11 |
+| G5 | The shared types of section 2; empty crates with `NOTICE`s; the test profile | All existing tests; the flat comparison with the official server. **Done in parts, not as one step**: the chunk's new form came with ADR-0022's steps C1 to C3, the generator's types with ADR-0021's W5, and the profile lines (section 4) for each generation crate as its tests came to need them; no empty crates were made ahead of their steps |
+| G6 | The Java program without a server: block properties, face shapes, fluid states, "used when clicked"; biome parameters if the report lacks them; noise and router values at points; hash-set orders | `datagen --check`; known values. **Done** on 2026-10-10 (`f52012a`), and added to since, for W6 among others (items, outline shapes, the classes a block's class is made from) |
+| G7 | `tools/fixtures` whole; the fixture format; the first fixtures: starts as made, biomes, terrain under each of the three packs, three dimensions | Regenerating gives the same bytes. **Not built, and replaced** by the Java judges in `crates/clustine-terrain/tests/java` (`GameBiomes`, `GameFill`, `GameSurface`, `GameCarvers`, `GameStructures`): each has the pinned jar's own generator do one step for lists of chunks, without a server, and ignored tests of `clustine-terrain` and `clustine-structures` read what they wrote. Nothing they write is committed |
 
 G0, G1 and G2 start at once and are independent. G3 can run beside them. G4 follows
 them, G5 follows G4, and nothing of W or T starts before G5 except the two crates that
@@ -459,11 +461,11 @@ drops from "equal to the official server" to "equal to SteelMC's reference".
 
 | # | Scope | From | Verified by |
 |---|---|---|---|
-| W1 | `clustine-light` | rules of 10,305 | Hand-built cases in CI. On the owner's machine: light over the official blocks equals the official light **for chunks whose eight neighbours are lit too** (the inner 14×14 of a 16×16 forced area; no chunk of a lattice). Written from the fixture format by someone who has not seen the engine |
-| W2 | Real heightmaps, fluid counts, biome palettes, block entities in the packet | 793 | Unit tests; official chunks on the owner's machine |
-| W3 | Light at the edge as in section 2 (**not delegated**) | own | Bots: no light is computed for an untouched world; a block placed by one bot gives a later arrival the right light; nothing is lit on the fan-out task |
-| W4 | A generator that serves region files the official server wrote (`--world-from`); full chunks only, proto chunks count as absent; nothing of Mojang's committed. Can be written beside W1 to W3; **verified after them** | G1's reader | Chunk packets equal the official server's for the same world, through the protocol (ignored test) |
-| W5 | Generation in a pool; saving what was handed out (if agreed); the barrier; panics; the cache of run results; sizes of chunks measured; **a restore after a kill, timed** | own | Store tests incl. kills during generation and the new T10; chaos and move tests on the imported world |
+| W1 | `clustine-light` | rules of 10,305 | Hand-built cases in CI. On the owner's machine: light over the official blocks equals the official light **for chunks whose eight neighbours are lit too** (the inner 14×14 of a 16×16 forced area; no chunk of a lattice). Written from the fixture format by someone who has not seen the engine. **Built**: the crate on 2026-10-10, the flat generator's chunks lit by it on 2026-10-11 (ADR-0022's step C4); the comparison with chunks the official server lit is `crates/clustine-light/tests/official.rs` |
+| W2 | Real heightmaps, fluid counts, biome palettes, block entities in the packet | 793 | Unit tests; official chunks on the owner's machine. **Built** on 2026-10-11 as ADR-0022's step C5: the packet is made from what the chunk carries |
+| W3 | Light at the edge as in section 2 (**not delegated**) | own | Bots: no light is computed for an untouched world; a block placed by one bot gives a later arrival the right light; nothing is lit on the fan-out task. **Built** as [ADR-0023](../adr/0023-light-at-the-edge.md)'s steps L0a to L7 (2026-10-13 and 2026-10-14), whose L7 made the three checks with bots; its L8 is not built |
+| W4 | A generator that serves region files the official server wrote (`--world-from`); full chunks only, proto chunks count as absent; nothing of Mojang's committed. Can be written beside W1 to W3; **verified after them** | G1's reader | Chunk packets equal the official server's for the same world, through the protocol (ignored test). **Not built**: there is no `--world-from`, and only tests read the official server's region files |
+| W5 | Generation in a pool; saving what was handed out (if agreed); the barrier; panics; the cache of run results; sizes of chunks measured; **a restore after a kill, timed** | own | Store tests incl. kills during generation and the new T10; chaos and move tests on the imported world. **Built** on 2026-10-14 as [ADR-0021](../adr/0021-generation-is-a-function.md)'s steps W5a to W5d and W5h, and measured (W5m) on the land of seed 13579, as there is no imported world (W4) |
 | W6 | `--seed`; version in the settings; spawn x, z from the generator, fixed for a world, **and a joining player put on the highest block of that column as it is now**; placing into grass, water, snow replaces; **a click on a block that is used when clicked places nothing**; doors, trapdoors and fence gates open and close | own | Simulation tests; oracle for placement and for a door. **Built on 2026-10-14** by [its own plan](w6-plan.md), with the owner's widening to vanilla's common placement rules, shapes from the neighbours as placed, and buckets; fixing the spawn's x, z for a world moved to T8 |
 
 **Then the owner tries:** join a world the official server made: colours, light under
@@ -473,15 +475,15 @@ trees and in caves, chests and signs, digging and building, doors, a second clie
 
 | # | Scope | From (lines) | Verified by |
 |---|---|---|---|
-| T1 | `clustine-noise` | 1,508 + 815 + 2,866 + 155 | SteelMC's noise samples; values from the jar's classes (G6); the `Mth.sin` table and the beardifier's kernel against the JVM's |
-| T2 | The emitter in `tools/datagen`; routers, noise data, material rules for three dimensions, following the jar's data where SteelMC departs from it; **build time of the generated crate measured against ADR-0019's budget** | 3,873 + 2,404 + 541 + 426 | `datagen --check`; router values at points equal the jar's |
+| T1 | `clustine-noise` | 1,508 + 815 + 2,866 + 155 | SteelMC's noise samples; values from the jar's classes (G6); the `Mth.sin` table and the beardifier's kernel against the JVM's. **Built** on 2026-10-10 (`crates/clustine-noise`); what it found is under "What the first trials found" |
+| T2 | The emitter in `tools/datagen`; routers, noise data, material rules for three dimensions, following the jar's data where SteelMC departs from it; **build time of the generated crate measured against ADR-0019's budget** | 3,873 + 2,404 + 541 + 426 | `datagen --check`; router values at points equal the jar's. **Built** in parts: the routers of the three dimensions on 2026-10-10 (15,360 values equal to the jar's; 47,689 bytes of emitted code against a budget of 1,000,000), the material rules with T5 and the carvers' data with T6 |
 | T3 | Biome source and climate | 1,763 | Biomes of every fixture chunk; a differing cell passes only if Clustine finds the two biomes exactly tied there, and is counted. SteelMC's biome hashes. **Built on 2026-10-13** (`crates/clustine-terrain`): equal to the official server's sample but for four exact ties, and to the game's own classes in all three dimensions. SteelMC's hashes hold only with 12 overworld chunks and the far End set aside, where its fixture is not what the pinned jar gives; the jar's search tree has 19 children a node, not SteelMC's 6 |
 | T4 | Noise chunk, aquifers | 499 + 1,085 + part of 3,038 | **Fixture under the pack without rules and carvers**. **Built on 2026-10-13** (`crates/clustine-terrain`, modules `noise_chunk`, `aquifer`, `fill`), and judged another way than this row planned: the jar's own generator does its fill step alone, without a server (`tests/java/GameFill.java`), and every block of 5,600 chunks of the three dimensions on three seeds is equal (380,108,800 blocks), with every mark, the bits of the final density and columns made alone (`tests/game_fill.rs`). In 26.3 the fill is one volume of the final density and the aquifer; **the ore veins are a material rule and belong to T5**. A noise that is not shifted is not multiplied the same way in a volume as at one position, which the emitted routers now know. Of SteelMC's `terrain` hashes only the End's can be held to the fill, and all 2,500 hold; the overworld's and the Nether's wait for T5 to T7b |
-| T5 | Surface rules and ore veins | 926 + 267 | **Fixture under the pack without carvers** |
+| T5 | Surface rules and ore veins | 926 + 267 | **Fixture under the pack without carvers**. **Built** on 2026-10-13 (`crates/clustine-terrain`, module `surface`, the rules emitted from the jar's data), and judged as T4 was: the jar's own generator does its fill and its surface without a server (`tests/java/GameSurface.java`), and every block of the same 5,600 chunks is equal (`tests/game_surface.rs`). The biome at a block, which the surface asks, is built with it |
 | T6 | Carvers | 1,773 | Fixture under the pack without features, structures off. **Built on 2026-10-13** (`crates/clustine-terrain`, module `carver`, and `surface::System::apply_carving_mask`; the carvers' data is emitted from the jar, `clustine_worldgen_data::carvers`), and judged as T4 was: the jar's own generator does its fill, its surface and its private `generateCarvers` without a server (`tests/java/GameCarvers.java`), and every block of 4,780 chunks of the three dimensions on three seeds is equal (353,239,040 blocks), with every mark and every carving mask (`tests/game_carvers.rs`). **In 26.3 a carver only names blocks**: a cave or a canyon sets bits of a mask, and the generator then makes of each named block what the chunk's aquifer has there. There is no Nether carver of its own, no cave air, no lava level, no list of replaceable blocks (one tag, `#minecraft:uncarvable`), the registry is `worldgen/carver`, and **the mask is not kept: no feature can ask it**. The game's `topMaterial` is judged with it, also by itself at 7,342,080 blocks. Of SteelMC's `terrain` hashes 2,444 of the overworld's 2,500 and 2,230 of the Nether's hold; the 326 others equal the game's own chunks made without structures block for block, so what their hashes have more is not of T4 to T6 |
-| T7a | Structure data model; template metadata; pools | 3,286 + about 550 | Unit tests; `datagen --check` |
-| T7b | Placement; starts; jigsaw layout; stronghold and nether fossil layout (the three kinds that bend terrain); references; beardifier | 718 + 1,477 + 483 + about 715 + 1,523 + 279 + 915 + 234 + 287: **about 6,600** | Starts of those types, as made, equal the official ones; then T6's fixture with structures on, and SteelMC's `terrain` hashes |
-| T8 | The spawn area made when a world is made; speed measured (section 6); **the spawn's x, z fixed for a world** (moved here from W6): written into the world's `meta` when it is made, read by the store, and given to the coordinator with the list of regions rather than worked out from its own `--seed` | own | Spawn x, z equal the official world's; a world keeps its spawn when the generator's version changes; the measurement in the roadmap |
+| T7a | Structure data model; template metadata; pools | 3,286 + about 550 | Unit tests; `datagen --check`. **Built** on 2026-10-14, in a crate of its own, `clustine-structures`, with the data in `clustine-worldgen-data` |
+| T7b | Placement; starts; jigsaw layout; stronghold and nether fossil layout (the three kinds that bend terrain); references; beardifier | 718 + 1,477 + 483 + about 715 + 1,523 + 279 + 915 + 234 + 287: **about 6,600** | Starts of those types, as made, equal the official ones; then T6's fixture with structures on, and SteelMC's `terrain` hashes. **Built** on 2026-10-14 for all 52 structures, not only those that bend the ground, and judged by the game's own classes (`crates/clustine-terrain/tests/java/GameStructures.java`, read by `crates/clustine-structures/tests/game_structures.rs` and `game_bent.rs`): 4,006 starts in 58,864 chunks, every piece equal, and of 9,875 chunks whose ground structures bend every block equal but two beside an exact tie of biomes. Of the 326 chunks of SteelMC's that lacked their hash without structures, 321 have it. The `--seed` preview bends its ground |
+| T8 | The spawn area made when a world is made; speed measured (section 6); **the spawn's x, z fixed for a world** (moved here from W6): written into the world's `meta` when it is made, read by the store, and given to the coordinator with the list of regions rather than worked out from its own `--seed` | own | Spawn x, z equal the official world's; a world keeps its spawn when the generator's version changes; the measurement in the roadmap. **Not built**: every generator says the origin, and a new player stands on that column as it is now (W6) |
 
 **Then the owner tries:** `--seed 13579` beside the official server on the same seed:
 the same mountains, coasts, rivers, caves, ore veins and biomes at the same coordinates.
@@ -491,6 +493,10 @@ order. T7a needs T2's data shapes and question 3 answered; T7b needs T7a and T3,
 base heights from T4.
 
 ### Phase F: features
+
+**Not built** as of 2026-10-15. The scheduler of
+[ADR-0021](../adr/0021-generation-is-a-function.md) (W5) runs stages in the order of
+runs and is tested with toy stages; nothing places a feature yet.
 
 | # | Scope | From (lines) | Verified by |
 |---|---|---|---|
@@ -508,6 +514,9 @@ official server has with ticks frozen; phase B's ticks settle them as vanilla do
 
 ### Phase S: structures
 
+**Not built** as of 2026-10-15. Where structures start, with which pieces, and the
+ground they bend are T7's and built; no block of a structure is placed yet.
+
 | # | Scope | From (lines) | Verified by |
 |---|---|---|---|
 | S1 | Placing a template: palettes, processors, liquids, block entities, markers | 3,117 + 801 + 179 | Harness hashes of chunks with jigsaw structures |
@@ -520,6 +529,10 @@ do not open; nobody lives there.
 ### Phase B: block behaviour that real terrain makes necessary (question 5)
 
 In `clustine-sim`, one author, beside F and S. Sizes are guesses.
+
+**Not built** as of 2026-10-15, and ADR-0024 is not written. What W6 does at
+placing (a block takes its shape from its neighbours as it is placed) is not B1: the
+neighbours do not change in turn.
 
 | # | Scope | Verified by |
 |---|---|---|
@@ -534,10 +547,10 @@ In `clustine-sim`, one author, beside F and S. Sizes are guesses.
 
 | # | Scope | Verified by |
 |---|---|---|
-| D1 | Nether: biome source, legacy random, terrain, carvers; features from F7 | Fixtures of the Nether |
-| D2 | End: islands, biome source, features | Fixtures of the End |
-| D3 | A world of one dimension chosen when it is made. Where one stands is Clustine's own rule and named: in the End the highest block at the origin; in the Nether the first floor with two blocks of air above it near the origin | The oracle's join comparison per dimension type |
-| D4 | Parity matrix, architecture, roadmap, world format, known limits | CI |
+| D1 | Nether: biome source, legacy random, terrain, carvers; features from F7 | Fixtures of the Nether. **Partly built**: the biome source, the fill, the surface and the carvers are in `clustine-terrain` with T3 to T6, judged by the game's own classes; no features, and nothing serves the Nether |
+| D2 | End: islands, biome source, features | Fixtures of the End. **Partly built**: the biome source, the fill and the surface, as for the Nether; no features, and nothing serves the End |
+| D3 | A world of one dimension chosen when it is made. Where one stands is Clustine's own rule and named: in the End the highest block at the origin; in the Nether the first floor with two blocks of air above it near the origin | The oracle's join comparison per dimension type. **Not built** |
+| D4 | Parity matrix, architecture, roadmap, world format, known limits | CI. **Not built** |
 
 ---
 
@@ -694,6 +707,16 @@ the count and its cause go into the parity matrix, and the next stage does not w
   (from memory: together, when their union covers the face).
 
 ---
+
+## How this plan came about
+
+This was the status line while the plan waited for the owner: drafted on 2026-10-10,
+gone over by an independent reviewer against the code of both projects, and revised;
+the review's fourteen findings are answered one by one in the next section. It waited
+for the owner's answers to the ten questions of section 7, each of which has a
+recommendation and what happens without an answer. The two spikes of phase G (G1, G2)
+were to decide whether its claims could be tested at all, and were done before any
+decision record was written.
 
 ## What the review changed
 

@@ -2,6 +2,19 @@
 
 Which existing Rust libraries Clustine can reuse for concerns outside the simulation core.
 
+- Status, 2026-10-15: **a record of what was found on 2026-10-07; its
+  recommendations were not all followed.** The protocol codec and the game data went
+  as recommended. NBT is Clustine's own (`crates/clustine-protocol/src/nbt.rs`), not
+  `fastnbt`: the NBT of packets, with a nameless root and modified UTF-8. The bots
+  (`tools/botswarm`) are built on `clustine-protocol` rather than on Azalea, which
+  needs nightly Rust; the cost is that new packets are only really checked against
+  the official server. World generation depends on neither SteelMC nor Pumpkin: it
+  is ported from SteelMC's 26.3 branch, with notices, into Clustine's own crates
+  (`clustine-noise`, `clustine-terrain`, `clustine-structures`, `clustine-light`,
+  fed by `clustine-worldgen-data`), and judged against the game's own classes. None
+  of the infrastructure crates below is used yet: services talk over
+  `clustine-rpc` (postcard over TCP) and the coordinator is a single process.
+
 Researched on 2026-10-07 from the crates.io API, the GitHub API and repository files.
 Versions and licences change; re-check before adding a dependency. Licence statements
 are a reading of the published metadata, not legal advice.

@@ -1,12 +1,15 @@
-# Every service with several replicas: the plan, proposed
+# Every service with several replicas: the plan
 
-- Status: **Agreed by the owner on 2026-10-10** (the four questions that waited were answered; the others go by its defaults). Its first record is written: [ADR-0020](../adr/0020-one-stay-per-player.md). As proposed: Drafted on 2026-10-10 against `main` at
-  `d836674`, by reading the code and the records; nothing was built or run for it.
-  An independent reviewer went over the first draft against the code and found
-  fourteen things; section 11 says what each changed. It waits for the owner's
-  answers to the nine questions of section 8, each with a recommendation and what
-  happens without an answer. Its first step is a decision record of its own for a
-  player's place, which is reviewed before anything is built.
+- Status: **Agreed by the owner on 2026-10-10**: the questions of section 8 that
+  were not to be acted on without an answer were answered (the roadmap, "What the
+  owner answered on 2026-10-10"), and the others go by its defaults. **Phase R1 is
+  built** (2026-10-10 and 2026-10-11), by
+  [ADR-0020](../adr/0020-one-stay-per-player.md): a player's place is kept by the
+  world store, and a second login puts the first out. Of R0, only the agreement
+  (R0.1) and ADR-0020's part of R0.2 are done: **the greeting, the beats and the
+  rest of R0, and phases R2 to R5, are not built**, and the records they name
+  beside ADR-0020 are not written. How the plan came about is in "How this plan
+  came about", before section 11.
 
 It rests on [replicas-and-availability.md](replicas-and-availability.md) ("the
 groundwork", G §n) and does not repeat it. The decision records it names have the
@@ -865,6 +868,16 @@ is an operator's or M4's.
   read that a file of the store's own is needed, not how recovery reads it.
 - I read `fanout.rs` and the runner only in the parts cited, and ADR-0011, 0012,
   0014, 0016 and 0017 by section.
+
+## How this plan came about
+
+This was the status line while the plan waited for the owner: drafted on 2026-10-10
+against `main` at `d836674`, by reading the code and the records; nothing was built
+or run for it. An independent reviewer went over the first draft against the code
+and found fourteen things; section 11 says what each changed. It waited for the
+owner's answers to the nine questions of section 8, each with a recommendation and
+what happens without an answer. Its first step was a decision record of its own for
+a player's place, reviewed before anything was built: that is ADR-0020.
 
 ## 11. What the review changed
 

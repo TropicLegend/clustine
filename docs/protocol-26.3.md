@@ -3,6 +3,13 @@
 Working notes for the packets Clustine needs in milestone M1. Protocol version **777**.
 Packet numeric ids are not listed here; they come from the generated tables.
 
+- Status: **notes of milestone M1 (2026-10-07), added to up to 2026-10-14.** What
+  was added after M1 is listed under "Since M1" below; for anything not here, the
+  codec (`crates/clustine-protocol/src/packets/`) and the comparisons with the
+  official server (`bin/clustine/tests/oracle.rs`, `placing_oracle.rs`) are the
+  reference. Items of "Unverified" that a comparison now asks of the official server
+  say which.
+
 Collected on 2026-10-07 from the Minecraft Wiki's
 [Java Edition protocol](https://minecraft.wiki/w/Java_Edition_protocol) pages, the 26.3
 version manifest, the official 26.3 jars and ViaVersion's 26.x translation code. The wiki
@@ -286,8 +293,8 @@ Confirm Teleportation in 26.3: VarInt id, position (3 Double), yaw, pitch (Float
 The ids are those of the game's packets report (`generated/packet_ids.rs`). The flags
 are 0x01 invulnerable, 0x02 flying, 0x04 may fly, 0x08 instant break. A client sends
 its packet when its player begins or stops flying and sets nothing but 0x02 in it; a
-server answers nothing. The codec has it as `ServerboundPlayerAbilities`, which is not
-among `ServerboundPlay` until the edge reads it (ADR-0020, R1.4).
+server answers nothing. The codec has it as `ServerboundPlayerAbilities`, among
+`ServerboundPlay` since the edge reads it (ADR-0020, R1.4).
 
 ## Text components and the reason of a disconnect
 
@@ -325,6 +332,19 @@ handled sequence once per tick.
 
 Use Item On (`use_item_on`): VarInt hand (0 main, 1 off), Position, VarInt face, cursor
 X, Y, Z as Float in 0..1, Boolean inside block, Boolean world border hit, VarInt sequence.
+
+Use Item (`use_item`, since W6, 2026-10-14): VarInt hand, VarInt sequence, then yaw
+and pitch as Float. A client sends it for an item it uses without aiming at a block
+the item uses, such as a bucket or a lily pad; the server finds what it hits by its
+own ray along that rotation, which becomes the player's first.
+
+Player Input (`player_input`, since W6): one byte of the movement keys held, sent
+when one changes: 0x01 forward, 0x02 backward, 0x04 left, 0x08 right, 0x10 jump,
+0x20 sneak, 0x40 sprint. The edge reads the sneak key from it: a sneaking player who
+clicks a door with a block in hand places the block rather than opening the door.
+
+Both layouts are from the codec; that the official server acts on them as read is
+shown by `bin/clustine/tests/placing_oracle.rs`, whose bots send them.
 
 Block Update (`block_update`): Position, VarInt state id.
 
@@ -390,6 +410,22 @@ tick offset, three Shorts). Path type 0 is three Doubles; path type 1 is an arra
 
 Removal: Remove Entities (array of VarInt) and Player Info Remove (array of UUID).
 
+## Since M1
+
+What the codec and the edge took on after milestone M1, each with its note above:
+
+- 2026-10-10 (ADR-0020, R1.0c): the serverbound Player Abilities ("Abilities"), and a
+  disconnect reason as a text component ("Text components and the reason of a
+  disconnect").
+- 2026-10-13 (ADR-0023, L1): Update Light in the codec and read by the bots, with
+  what the official server was seen to do ("Chunk Data and Update Light"); the edge
+  sends it since step L5 (2026-10-14).
+- 2026-10-14: the Login (play) fields Hashed seed, Is flat and Sea level are the
+  world's with `--seed` (the seed's hash, false and 63), where they were always
+  those of the flat world.
+- 2026-10-14 (W6): Use Item and Player Input ("Blocks"); the cursor of Use Item On is
+  read and passed on with the click.
+
 ## Changes since 1.21.x that affect the above
 
 - **26.1:** fluid count in chunk sections; Update Time carries world clocks; tags and
@@ -414,6 +450,15 @@ Removal: Remove Entities (array of VarInt) and Player Info Remove (array of UUID
   second login as a connected name ends the first connection with
   `{translate: "multiplayer.disconnect.duplicate_login"}` and nothing more in the
   compound, and that a player who left flying is sent 0x02 before their position on
-  entering again: from earlier versions, not observed. The last three tests of
-  `bin/clustine/tests/oracle.rs` ask the official server (ADR-0020, R1.0c).
-- Lighting behaviour with empty masks, and the neighbour-chunk rendering rule: wiki notes from 1.20.x.
+  entering again: from earlier versions, not observed. **Asked of the official
+  server since 2026-10-10** (ADR-0020, R1.0c) by
+  `the_abilities_packet_is_taken_by_the_official_server`,
+  `a_second_login_as_one_name_on_the_official_server` and
+  `entering_again_after_leaving_in_flight_on_the_official_server` in
+  `bin/clustine/tests/oracle.rs`, each of which asserts the guess.
+- Lighting behaviour with empty masks, and the neighbour-chunk rendering rule: wiki
+  notes from 1.20.x. **Partly observed on 2026-10-13**
+  (`light_after_blocks_change_on_the_official_server`): a section in neither mask of
+  an update is left as it was, and a client that has the chunks around a change is
+  sent no light for it ("Chunk Data and Update Light"). How the client draws a chunk
+  whose neighbours are missing is still not observed.

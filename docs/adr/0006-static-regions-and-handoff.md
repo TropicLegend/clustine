@@ -1,6 +1,10 @@
 # ADR-0006: Fixed regions and handing players over through the edge
 
-- Status: **Accepted** for milestone M2; the fixed regions are replaced in M3
+- Status: **Accepted** for milestone M2. The fixed stripes were replaced in M3 by
+  regions that follow their players ([ADR-0010](0010-regions-that-follow-players.md));
+  [ADR-0017](0017-the-end-of-the-stripes.md) took the stripes out in step C5, done on
+  2026-10-10. Handing a player over through their edge, keeping their entity, is
+  still how it is done, on sets of chunks ([ADR-0012](0012-the-tick-on-chunks.md)).
 - Date: 2026-10-07
 
 ## Context

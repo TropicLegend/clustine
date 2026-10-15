@@ -1,7 +1,15 @@
 # ADR-0007: A single coordinator without storage, for now
 
-- Status: **Accepted** for milestone M2; superseded when regions can move (M3). What
-  [ADR-0008](0008-durable-regions-and-resuming.md) changed already is noted below
+- Status: **Accepted** for milestone M2, and superseded in M3 in most of what it
+  decides. Leases and epochs became what
+  [ADR-0008](0008-durable-regions-and-resuming.md) says (noted below); one region per
+  worker ended with step C2a of [ADR-0010](0010-regions-that-follow-players.md);
+  the layout that everyone compared went with
+  [ADR-0017](0017-the-end-of-the-stripes.md) (step C5, 2026-10-10), and the
+  coordinator learns the regions from the world store's list. What still holds is
+  its title: one coordinator, its state in memory and nothing on disk, which the
+  roadmap lists among the known limits after M3 and phase R3 of
+  [the replicas plan](../groundwork/replicas-plan.md) is to replace.
 - Date: 2026-10-07
 
 ## Context

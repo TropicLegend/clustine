@@ -1,7 +1,14 @@
 # ADR-0019: Data made from Mojang's jar, and the notices for what is ported
 
 - Status: **Accepted**, after an independent review against the jar, the code and
-  SteelMC's branch, whose twelve findings are worked in (see "Review"). The owner
+  SteelMC's branch, whose twelve findings are worked in (see "Review"). **Built for
+  what terrain has needed so far**: the tables of what the jar's code says (step G6
+  of the terrain plan, 2026-10-10), the crate `clustine-worldgen-data` with the
+  routers, material rules, carvers, structures and template pools that `cargo
+  datagen` emits from the jar's data, the templates' sizes and jigsaw blocks, the
+  notices and the budgets. **Not built**: reading the templates' blocks from the
+  operator's jar at run time (section 4, `--minecraft-jar` and `--structures`),
+  which comes with phase S of the plan. The owner
   decided what may be committed (the roadmap, "What the owner answered on
   2026-10-10"); the choices this record makes beyond that are listed at its end and
   can each be turned. The record that step G4 of

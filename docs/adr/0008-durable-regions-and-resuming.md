@@ -1,6 +1,7 @@
 # ADR-0008: Durable regions, output commit and resuming
 
-- Status: **Accepted**; being implemented (milestone M3, phase A)
+- Status: **Accepted**; built. Phase A of milestone M3 is done (steps A0 to A7, the
+  roadmap's "Phase A"); what building and testing it changed is listed at the end.
 - Date: 2026-10-08; revised the same day after an independent review (see the end)
 
 ## Context

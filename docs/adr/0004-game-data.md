@@ -1,6 +1,14 @@
 # ADR-0004: Generated game data is committed
 
-- Status: **Accepted**
+- Status: **Accepted**; amended on 2026-10-10 by
+  [ADR-0019](0019-data-made-from-mojangs-jar.md), which lets more than ids and names
+  be committed: tables of what the jar's code says of blocks and biomes (the light a
+  block gives, its shapes, its fluid, its class, which climate is which biome), the
+  Rust that `cargo datagen` emits from the jar's world-generation data (noise routers,
+  material rules, carvers, structures and template pools), and of each structure
+  template its size and jigsaw blocks, all with a notice that the data is Mojang's and
+  not under the AGPL. The jar, its reports, its data pack and the templates' blocks
+  are still never committed.
 - Date: 2026-10-07
 
 ## Context

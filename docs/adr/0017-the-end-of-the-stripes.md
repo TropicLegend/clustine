@@ -1,14 +1,12 @@
 # ADR-0017: The end of the stripes
 
-- Status: **Accepted.** The design of step C5 of milestone M3, phase C: stripes,
-  `Layout` and `--boundaries` go, and the single process and the cluster run regions
-  that follow their players unless told otherwise. It was reviewed twice against the
-  code and revised after each: the first review found fifteen defects, the second,
-  of what the first revision had added, ten, and all of them are worked in here
-  ("Review" at the end says which, and what else each revision found). It is being
-  built in the steps of section 9. Step C5.0 is done (`23a6c3b`, `b841c6f`): the
-  processes of a cluster have a file each, and a coordinator can be reached in its
-  own process without a socket.
+- Status: **Accepted** and built. The design of step C5 of milestone M3, phase C:
+  stripes, `Layout` and `--boundaries` went, and the single process and the cluster
+  run regions that follow their players unless told otherwise. Built in steps C5.0
+  to C5.11 of section 9, done on 2026-10-10 (C5.10 by its own record,
+  [ADR-0018](0018-a-checkpoints-chunks-written-together.md)). It was reviewed twice
+  against the code before it was built ("Review"); what building it found is under
+  "Found while building" at the end.
 - Date: 2026-10-09
 
 ## Context
