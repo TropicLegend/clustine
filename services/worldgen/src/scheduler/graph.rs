@@ -188,6 +188,12 @@ impl Graph {
         asked
     }
 
+    /// Wants `Lit(position)` ahead for nobody in particular, as the look-ahead wants
+    /// a neighbour: after everything a request wants, and kept in the cache when done.
+    pub(crate) fn prepare(&mut self, position: ChunkPos) {
+        self.ahead(position, None);
+    }
+
     /// Wants `Lit(position)` ahead, after everything a request wants.
     fn ahead(&mut self, position: ChunkPos, request: Option<u64>) {
         let key = Key::Lit(position);

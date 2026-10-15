@@ -731,6 +731,32 @@ fn a_request_lights_its_eight_neighbours_ahead_and_they_are_answered_from_the_ca
 }
 
 #[test]
+fn chunks_prepared_ahead_are_lit_and_answered_from_the_cache_without_being_made_again() {
+    use clustine_world::ChunkGenerator;
+
+    // Without the look-ahead of requests, so that only what was prepared is lit.
+    let scheduler = Scheduler::new(
+        Toy::default(),
+        Options {
+            look_ahead: false,
+            ..options(3)
+        },
+    );
+    let prepared = [
+        ChunkPos::new(-4, 7),
+        ChunkPos::new(-3, 7),
+        ChunkPos::new(-4, 8),
+    ];
+    scheduler.prepare(&prepared);
+    scheduler.wait_idle();
+    assert_eq!(scheduler.figures().lit, 3);
+    for position in prepared {
+        assert_eq!(scheduler.generate(position).generated(), 3);
+    }
+    assert_eq!(scheduler.figures().lit, 3, "nothing was made again");
+}
+
+#[test]
 fn a_dropped_request_leaves_no_task_that_has_not_started() {
     let scheduler = Scheduler::new(
         Toy::default(),

@@ -176,6 +176,17 @@ impl<S: Stages> ChunkGenerator for Scheduler<S> {
         self.shared.stages.origin()
     }
 
+    /// Lit chunks, made after whatever a request wants and kept in the cache.
+    fn prepare(&self, positions: &[ChunkPos]) {
+        let mut graph = self.shared.lock();
+        for position in positions {
+            graph.prepare(*position);
+        }
+        if graph.has_ready() {
+            self.shared.work.notify_all();
+        }
+    }
+
     fn request(&self, position: ChunkPos, done: Done) -> Wanted {
         self.ask(Key::Lit(position), done)
     }

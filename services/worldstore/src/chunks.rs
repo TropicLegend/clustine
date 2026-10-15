@@ -25,7 +25,7 @@ use clustine_format::{ChunkFile, FormatError, StateFile};
 use clustine_rpc::{Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
 use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::disk::{Disk, parent, temporary};
 use crate::local::Meta;
@@ -45,6 +45,10 @@ const DIMENSION: &str = "overworld";
 pub(crate) trait Chunks: Send {
     /// The stored chunk, or `None` if it was never stored.
     fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError>;
+    /// Whether a chunk is stored at `position`, as [`Chunks::load`] would find it.
+    fn has(&mut self, position: ChunkPos) -> Result<bool, StoreError> {
+        Ok(self.load(position)?.is_some())
+    }
     /// Stores the chunk, so that it is what is loaded from now on. It need not be
     /// durable before [`Chunks::sync`]. `tick` and `epoch` are those of the region
     /// that saves it, for whoever looks at what is stored.
@@ -225,6 +229,12 @@ impl FileChunks {
 }
 
 impl Chunks for FileChunks {
+    /// Without reading the file: a store that starts asks it of the chunks around the
+    /// spawn.
+    fn has(&mut self, position: ChunkPos) -> Result<bool, StoreError> {
+        Ok(self.pending.contains_key(&position) || self.disk.exists(&self.chunk_path(position))?)
+    }
+
     fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
         // What was saved is what is loaded from then on, also while no file has it.
         if let Some(saved) = self.pending.get(&position) {
@@ -413,6 +423,10 @@ pub(crate) enum Job {
     /// Something the thread waits for may have come: an answer of the generator, or
     /// the loss of a handle whose loads are under way. Nothing to do but look.
     Wake,
+    /// Has the generator make ahead the chunks within `radius` of `around` that are not
+    /// stored, nearest first: the spawn's, when the store starts (T8f of
+    /// `docs/groundwork/t8-plan.md`). Nobody is answered.
+    Prepare { around: ChunkPos, radius: i32 },
     /// The commit thread has ended: nothing will be given any more.
     End,
 }
@@ -563,7 +577,9 @@ struct Before {
 impl Before {
     fn add(&mut self, entry: &Entry) {
         let (peer, named): (&Peer, Vec<ChunkPos>) = match entry {
-            Entry::Given(Job::Barrier { .. } | Job::Wake | Job::End) => return,
+            Entry::Given(Job::Barrier { .. } | Job::Wake | Job::End | Job::Prepare { .. }) => {
+                return;
+            }
             Entry::Given(Job::Fold { .. }) => {
                 self.any = true;
                 self.fold = true;
@@ -600,7 +616,7 @@ impl Before {
                 of(peer) || chunks.iter().any(|chunk| self.named.contains(chunk))
             }
             Job::Restore { .. } | Job::Fold { .. } | Job::Barrier { .. } => self.any,
-            Job::Wake | Job::End => false,
+            Job::Wake | Job::End | Job::Prepare { .. } => false,
         }
     }
 }
@@ -674,10 +690,34 @@ impl ChunkService {
             match job {
                 Job::Wake => {}
                 Job::End => ending = true,
+                Job::Prepare { around, radius } => self.prepare(around, radius),
                 job => self.give(job),
             }
             self.advance();
         }
+    }
+
+    /// See [`Job::Prepare`]. A chunk that is stored is read from its file when it is
+    /// asked for, so making it would only keep the generator from what is asked; one
+    /// whose file cannot be looked at is left to the load that asks for it.
+    fn prepare(&mut self, around: ChunkPos, radius: i32) {
+        let mut area: Vec<ChunkPos> = (-radius..=radius)
+            .flat_map(|x| (-radius..=radius).map(move |z| (x, z)))
+            .map(|(x, z)| ChunkPos::new(around.x + x, around.z + z))
+            .collect();
+        let distance = |chunk: &ChunkPos| {
+            let (x, z) = (i64::from(chunk.x - around.x), i64::from(chunk.z - around.z));
+            (x * x + z * z, chunk.x, chunk.z)
+        };
+        area.sort_by_key(distance);
+        area.retain(|position| matches!(self.chunks.has(*position), Ok(false)));
+        info!(
+            x = around.x,
+            z = around.z,
+            chunks = area.len(),
+            "the chunks around the spawn that are not stored are made ahead"
+        );
+        self.generator.prepare(&area);
     }
 
     fn give(&mut self, job: Job) {
@@ -1164,7 +1204,7 @@ impl ChunkService {
                 let chunks = if sync { self.sync() } else { Ok(()) };
                 let _ = reply_to.send(Message::Passed { answer, chunks });
             }
-            Job::Load { .. } | Job::Restore { .. } | Job::Wake | Job::End => {
+            Job::Load { .. } | Job::Restore { .. } | Job::Wake | Job::End | Job::Prepare { .. } => {
                 unreachable!("begun or handled elsewhere")
             }
         }

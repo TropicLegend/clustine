@@ -76,7 +76,7 @@ use clustine_region::RegionId;
 use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest};
 use clustine_world::{BlockPos, ChunkGenerator, ChunkPos};
 
-use crate::chunks::{ChunkService, Chunks, FileChunks, Jobs, MemoryChunks};
+use crate::chunks::{ChunkService, Chunks, FileChunks, Job, Jobs, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk};
 use crate::lanes::Lanes;
 pub use crate::table::{Division, NotAscending, Pins};
@@ -732,6 +732,10 @@ fn start(
     begin(disk, root, chunks, generator, pins, spawn)
 }
 
+/// How far around the spawn's chunk a store has the chunks made when it starts: the
+/// view distance an edge grants by default.
+const SPAWN_AREA: i32 = 8;
+
 /// Starts the threads of a store that keeps its log and region files on `disk` under
 /// `root`, and its chunks in `chunks`, for a world pinned as `pins` says,
 /// whose spawn is `spawn` and its chunk the home chunk.
@@ -759,7 +763,15 @@ fn begin(
     thread::Builder::new()
         .name("worldstore-chunks".to_owned())
         .spawn(move || service.run(queued))?;
+    let prepare = jobs.clone();
     let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?;
+    // The chunks a first player sees, made ahead on the generator's pool while nobody
+    // is there; a region that asks for one meanwhile waits for it as for any other.
+    // Chunks are stored only once a region was handed them, so this is at every start.
+    let _ = prepare.send(Job::Prepare {
+        around: spawn.chunk(),
+        radius: SPAWN_AREA,
+    });
     let (messages, received) = mpsc::channel();
     thread::Builder::new()
         .name("worldstore".to_owned())

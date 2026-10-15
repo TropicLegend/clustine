@@ -635,6 +635,12 @@ pub trait ChunkGenerator: Send + Sync {
         crate::spawn::place_to_stand(self.origin(), |position| self.generate(position))
     }
 
+    /// Makes these chunks ahead of any request, in this order, where the generator
+    /// keeps what it makes for a while: what a later request costs changes, never what
+    /// it gets. A world store asks it for the chunks around the spawn when it starts,
+    /// so that the first player to enter does not wait for them. By default nothing.
+    fn prepare(&self, _positions: &[ChunkPos]) {}
+
     /// Has `done` called once with the chunk, on any thread, perhaps before this
     /// returns. After the [`Wanted`] is dropped, `done` may never be called.
     ///

@@ -369,6 +369,71 @@ mod tests {
         }
     }
 
+    /// The flat world, which notes what a store asks it to make ahead.
+    #[derive(Default)]
+    struct Preparing {
+        asked: std::sync::Mutex<Vec<Vec<ChunkPos>>>,
+    }
+
+    impl ChunkGenerator for Preparing {
+        fn generate(&self, position: ChunkPos) -> Chunk {
+            FlatGenerator::classic().generate(position)
+        }
+
+        fn settings(&self) -> GeneratorSettings {
+            FlatGenerator::classic().settings()
+        }
+
+        fn prepare(&self, positions: &[ChunkPos]) {
+            self.asked.lock().unwrap().push(positions.to_vec());
+        }
+    }
+
+    #[test]
+    fn a_store_that_starts_has_the_chunks_around_the_spawn_made_ahead_unless_stored() {
+        let directory = tempfile::tempdir().unwrap();
+        let generator = Arc::new(Preparing::default());
+        let start = || {
+            let store =
+                Store::local_divided(directory.path(), generator.clone(), crate::Pins::none());
+            let store = store.unwrap();
+            // The chunk thread takes the store's jobs in order, so what it was asked
+            // when the store started is done once the store is at rest.
+            store.flush().unwrap();
+            store
+        };
+        let distance = |chunk: &ChunkPos| i64::from(chunk.x).pow(2) + i64::from(chunk.z).pow(2);
+
+        let store = start();
+        let first = generator.asked.lock().unwrap().concat();
+        assert_eq!(first.len(), 17 * 17, "a view of 8 around the spawn's chunk");
+        assert_eq!(first[0], ChunkPos::new(0, 0));
+        assert!(
+            first
+                .windows(2)
+                .all(|pair| distance(&pair[0]) <= distance(&pair[1]))
+        );
+        assert!(
+            first
+                .iter()
+                .all(|chunk| chunk.x.abs() <= 8 && chunk.z.abs() <= 8)
+        );
+
+        // The home chunk is stored, and is read from its file from then on: the next
+        // start does not have it made.
+        let handle = open(&store, hello(0, 1));
+        crate::tests::save(&handle, ChunkPos::new(0, 0), &crate::tests::edited());
+        handle.flush();
+        drop(handle);
+        store.flush().unwrap();
+        drop(store);
+        generator.asked.lock().unwrap().clear();
+        drop(start());
+        let second = generator.asked.lock().unwrap().concat();
+        assert_eq!(second.len(), 17 * 17 - 1);
+        assert!(!second.contains(&ChunkPos::new(0, 0)));
+    }
+
     #[test]
     fn a_server_with_an_older_generator_is_refused_with_the_records_sentence() {
         let directory = tempfile::tempdir().unwrap();
