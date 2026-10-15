@@ -343,6 +343,19 @@ fn ints3(value: Option<&Nbt>, what: &str) -> Result<[i32; 3], String> {
     }
 }
 
+impl TemplateLibrary {
+    /// A library of templates already read, each by its name with or without
+    /// `minecraft:`: for the tests of what places templates, which make theirs by hand.
+    pub fn from_templates(templates: impl IntoIterator<Item = (String, TemplateBlocks)>) -> Self {
+        Self {
+            templates: templates
+                .into_iter()
+                .map(|(name, template)| (plain_name(&name).to_string(), template))
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::io::Write as _;
