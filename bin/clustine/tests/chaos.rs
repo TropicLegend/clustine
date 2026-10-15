@@ -34,7 +34,7 @@ use clustine_data::blocks;
 use clustine_protocol::packets::play::face;
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
-use clustine_world::{ChunkGenerator, Vec3};
+use clustine_world::{BlockPos, ChunkGenerator, ChunkPos, Vec3};
 use clustine_worldgen::TerrainGenerator;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
@@ -185,7 +185,9 @@ impl Chaos {
     }
 
     /// The same on the land of the seed `land`, if one is given, rather than the flat
-    /// world. The bots enter where the generator says a newcomer enters.
+    /// world. The bots enter at the world's spawn, which the game puts where the
+    /// climate suits it, and the boundaries, `west`, `east` and the lanes are placed
+    /// as far from the spawn's chunk as they are from the origin in the flat world.
     async fn start_on<'a>(
         test: &str,
         world: impl Into<World<'a>>,
@@ -195,10 +197,16 @@ impl Chaos {
         east: f64,
     ) -> Self {
         let world = world.into();
-        let boundaries: &[i32] = match world {
-            World::Pinned(boundaries) => boundaries,
-            World::Following => &[],
+        let spawn = land.map(|land| TerrainGenerator::new(land as i64).spawn());
+        let shift = spawn.map_or(ChunkPos::new(0, 0), BlockPos::chunk);
+        let boundaries: Vec<i32> = match world {
+            World::Pinned(boundaries) => boundaries.iter().map(|x| x + shift.x).collect(),
+            World::Following => Vec::new(),
         };
+        let (west, east) = (
+            west + f64::from(16 * shift.x),
+            east + f64::from(16 * shift.x),
+        );
         let follows = matches!(world, World::Following);
         let turn = turn().await;
         let seed = seed();
@@ -220,7 +228,6 @@ impl Chaos {
         if let Some(land) = land {
             let seed = format!("--seed={land}");
             cluster.store_arguments.push(seed.clone());
-            cluster.coordinator_arguments.push(seed.clone());
             cluster.edge_arguments.push(seed);
         }
         cluster.start().await;
@@ -234,10 +241,10 @@ impl Chaos {
             east,
             lines: lines.clone(),
             seed,
-            world: match land {
+            world: match spawn {
                 None => BotWorld::clustine(),
-                Some(land) => {
-                    let spawn = Vec3::bottom_centre_of(TerrainGenerator::new(land as i64).spawn());
+                Some(spawn) => {
+                    let spawn = Vec3::bottom_centre_of(spawn);
                     BotWorld {
                         spawn: (spawn.x, spawn.y, spawn.z),
                         ..BotWorld::clustine()
@@ -246,6 +253,7 @@ impl Chaos {
             },
             ..Ledger::default()
         };
+        scenario.first_lane += 16 * shift.z;
         if follows {
             scenario.lane_spacing = following::LANE_TO_LANE;
             scenario.to_the_lane = following::TO_THE_LANE;

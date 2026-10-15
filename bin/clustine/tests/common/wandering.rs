@@ -772,7 +772,6 @@ impl Wanders {
             if let Some(land) = setup.land {
                 let seed = format!("--seed={land}");
                 cluster.store_arguments.push(seed.clone());
-                cluster.coordinator_arguments.push(seed.clone());
                 cluster.edge_arguments.push(seed);
             }
             cluster.lease_seconds = setup.lease;

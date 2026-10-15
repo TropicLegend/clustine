@@ -1389,7 +1389,11 @@ On the land of a seed the crowd waited about twice what it waits on the flat wor
 after a split or a merge the edge reads and compares about 1,150 unchanged
 snapshots, which on land was checked block by block. Compared and read by palette
 instead, the crowd on land waits at most 0.20 s at a split and 0.25 s at a merge, as
-on the flat world.
+on the flat world. These were measured with players entering on the column at the
+origin, before T8 moved a seed's spawn; on seed 13579 that is 100 blocks from where
+they enter now. The tests that measure on land now place their pins and lanes
+relative to the spawn's chunk (`bin/clustine/tests/chaos.rs`), but for the crowd's
+lanes (`crowds.rs`), which stay near the origin: a walk from the spawn first.
 
 **Placing, using and where a new player stands: W6** (2026-10-14;
 [plan](groundwork/w6-plan.md), reviewed twice before it was built). A click with the
@@ -1429,7 +1433,8 @@ clustine` (the flat world), or with `--seed 13579`, in creative mode:
    plan's phase B brings.
 5. A water bucket on the ground and on a slab (the slab is waterlogged); an empty
    bucket on the water takes it back. A lily pad on water. A poppy into a flower pot.
-6. Build a tower at 0, 0 and join with a new player name: they stand on top of it.
+6. Build a tower on the spawn column (0, 0 in the flat world, -96, 32 with
+   `--seed 13579`) and join with a new player name: they stand on top of it.
 
 **What is expected to be missing after W6**, named in the plan's section 7: a block
 beside one you place does not change in turn (fences and panes join one way, chests
@@ -1450,9 +1455,11 @@ and, to compare, the official server on the same seed with structures off
 (`level-seed=13579` and `generate-structures=false` in `server.properties`, a new
 world), both in creative mode. Press F3 for the coordinates and fly:
 
-1. You enter at 0, 63, 0 on the sea beside a coast, within half a second, and
-   the land fills in around you within about a second, nearest first. Double-tap
-   jump to fly.
+1. You enter at -95.5, 66, 32.5 on dry ground near a coast, where the official
+   server puts the spawn of a new world of this seed (since T8; the official world's
+   is the same block, -96, 66, 32), within half a second, and the land around you is
+   there at once: the world store made it when it started (T8f). A compass points
+   there. Double-tap jump to fly.
 2. **The same land at the same coordinates**: the coast at the origin, the
    mountains, rivers, oceans and beaches around it, the same biome in F3 at the same
    place. Fly a few hundred blocks in any direction and compare peaks and shores.
