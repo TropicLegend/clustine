@@ -50,6 +50,8 @@ mod rounds;
 #[cfg(test)]
 mod scenarios;
 #[cfg(test)]
+mod spawn_kept;
+#[cfg(test)]
 mod stays;
 #[cfg(test)]
 mod stays_kill;
