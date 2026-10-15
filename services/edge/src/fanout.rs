@@ -107,6 +107,12 @@ pub(crate) enum Command {
         player: PlayerId,
         chunks_per_tick: f32,
     },
+    /// The client asked for another view distance in play.
+    ViewDistance {
+        session: SessionId,
+        player: PlayerId,
+        requested: i32,
+    },
     /// The player did something that the region they are in has to know.
     Input {
         session: SessionId,
@@ -1351,9 +1357,8 @@ impl Fanout {
                     put_out(&earlier.outbound);
                     self.remove_player(player).await;
                 }
-                let view_distance = requested_view_distance
-                    .unwrap_or(self.config.view_distance)
-                    .clamp(2, self.config.view_distance);
+                let view_distance =
+                    self.granted_view_distance(requested_view_distance.unwrap_or(i32::MAX));
                 self.players.insert(
                     player,
                     PlayerView {
@@ -1454,6 +1459,44 @@ impl Fanout {
                     self.send_chunks(player).await;
                 }
             }
+            Command::ViewDistance {
+                session,
+                player,
+                requested,
+            } => {
+                if self.session_matches(player, session) {
+                    self.change_view_distance(player, requested).await;
+                }
+            }
+        }
+    }
+
+    /// The view distance a client that asks for `requested` is granted: what it asks
+    /// for, within what the server grants anyone, as on the official server.
+    fn granted_view_distance(&self, requested: i32) -> i32 {
+        requested.clamp(2, self.config.view_distance)
+    }
+
+    /// Grows or shrinks a player's view to what their client now asks for, as a move
+    /// does: the chunks that came into view are asked for and sent, and those that left
+    /// it are forgotten. A player who is not in the world yet is only noted; their view
+    /// is laid out when they enter.
+    async fn change_view_distance(&mut self, player: PlayerId, requested: i32) {
+        let granted = self.granted_view_distance(requested);
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        if view.view_distance == granted {
+            return;
+        }
+        view.view_distance = granted;
+        if view.wanted.is_empty() {
+            return;
+        }
+        let center = view.center;
+        let packets = self.reshape_view(player, center).await;
+        if self.send_to_player(player, packets).await {
+            self.send_chunks(player).await;
         }
     }
 
@@ -2787,10 +2830,22 @@ impl Fanout {
     /// Returns what the client is to be sent for it, which the caller sends; `None` if
     /// nothing changed.
     async fn shift_view(&mut self, player: PlayerId, center: ChunkPos) -> Option<Vec<Bytes>> {
-        let view = self.players.get_mut(&player)?;
+        let view = self.players.get(&player)?;
         if view.center == center && !view.wanted.is_empty() {
             return None;
         }
+        Some(self.reshape_view(player, center).await)
+    }
+
+    /// Lays out a player's view around `center` at their view distance, whether or not
+    /// it changed: the chunks that came into it are asked of the player's region, and
+    /// those that left it are let go. Returns what the client is to be sent for it,
+    /// which the caller sends.
+    async fn reshape_view(&mut self, player: PlayerId, center: ChunkPos) -> Vec<Bytes> {
+        let view = self
+            .players
+            .get_mut(&player)
+            .expect("a view is reshaped only for a player the edge has");
         let wanted = view_area(center, view.view_distance);
         let mut packets = vec![encoded(&SetCenterChunk {
             chunk_x: center.x,
@@ -2863,7 +2918,7 @@ impl Fanout {
             self.want(region, chunk);
         }
         self.flush_asking().await;
-        Some(packets)
+        packets
     }
 
     /// Takes in a snapshot of a chunk: the chunk as a region has it, and the entities in

@@ -2,7 +2,9 @@
 //!
 //! Only the packets Clustine uses are modelled; the rest decode as `Unhandled`.
 
-use super::configuration::{Disconnect as ConfigurationDisconnect, empty_packet, keep_alive};
+use super::configuration::{
+    ClientInformation, Disconnect as ConfigurationDisconnect, empty_packet, keep_alive,
+};
 use uuid::Uuid;
 
 use super::login::{MAX_NAME_LENGTH, ProfileProperty};
@@ -426,6 +428,31 @@ empty_packet!(
     PlayerLoaded,
     serverbound::PLAYER_LOADED
 );
+
+/// The settings from the client's options screen, sent again in play whenever the
+/// player changes one of them, such as the render distance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerboundClientInformation {
+    pub information: ClientInformation,
+}
+
+impl Packet for ServerboundClientInformation {
+    const ID: i32 = serverbound::CLIENT_INFORMATION;
+}
+
+impl Encode for ServerboundClientInformation {
+    fn encode(&self, w: &mut Writer) {
+        self.information.encode_fields(w);
+    }
+}
+
+impl Decode for ServerboundClientInformation {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            information: ClientInformation::decode_fields(r)?,
+        })
+    }
+}
 
 /// Ends the connection with a message shown to the player.
 #[derive(Debug, Clone, PartialEq)]
@@ -1614,6 +1641,7 @@ packet_set! {
         ServerboundKeepAlive,
         ClientTickEnd,
         ChunkBatchReceived,
+        ServerboundClientInformation,
         SetPlayerPosition,
         SetPlayerPositionAndRotation,
         SetPlayerRotation,
@@ -1798,6 +1826,23 @@ mod tests {
         );
         assert_round_trip(ClientTickEnd, Set::decode, Set::ClientTickEnd);
         assert_round_trip(PlayerLoaded, Set::decode, Set::PlayerLoaded);
+        assert_round_trip(
+            ServerboundClientInformation {
+                information: ClientInformation {
+                    locale: "en_gb".to_owned(),
+                    view_distance: 5,
+                    chat_mode: 0,
+                    chat_colors: true,
+                    displayed_skin_parts: 0x7F,
+                    main_hand: 1,
+                    text_filtering: false,
+                    allow_server_listing: true,
+                    particle_status: 0,
+                },
+            },
+            Set::decode,
+            Set::ServerboundClientInformation,
+        );
     }
 
     #[test]

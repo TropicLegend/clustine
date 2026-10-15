@@ -118,6 +118,18 @@ async fn pump(
                             return Err(ConnectionError::ShuttingDown);
                         }
                     }
+                    ServerboundPlay::ServerboundClientInformation(packet) => {
+                        // Of the settings only the render distance matters to the
+                        // server, and a player changes it in play as often as not.
+                        let command = Command::ViewDistance {
+                            session: client.session,
+                            player: client.player,
+                            requested: i32::from(packet.information.view_distance),
+                        };
+                        if shared.fanout.send(command).await.is_err() {
+                            return Err(ConnectionError::ShuttingDown);
+                        }
+                    }
                     ServerboundPlay::ConfirmTeleportation(confirmation) => {
                         // Only the teleport sent last counts; an older id changes nothing.
                         let _ = client.awaiting_teleport.compare_exchange(
