@@ -41,6 +41,7 @@ The files that were adapted say so at their head.
 
 A crate that holds adapted code has a `NOTICE` of its own. At present that is:
 
+- `crates/clustine-blocks`
 - `crates/clustine-noise`
 - `crates/clustine-sim` (the module `placement`: `src/placement/`)
 - `crates/clustine-structures`

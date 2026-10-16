@@ -239,6 +239,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "clustine-blocks"
+version = "0.0.0"
+dependencies = [
+ "clustine-data",
+ "clustine-world",
+]
+
+[[package]]
 name = "clustine-botswarm"
 version = "0.0.0"
 dependencies = [
@@ -311,6 +319,7 @@ dependencies = [
 name = "clustine-features"
 version = "0.0.0"
 dependencies = [
+ "clustine-blocks",
  "clustine-data",
  "clustine-noise",
  "clustine-protocol",
@@ -397,6 +406,7 @@ dependencies = [
 name = "clustine-sim"
 version = "0.0.0"
 dependencies = [
+ "clustine-blocks",
  "clustine-data",
  "clustine-noise",
  "clustine-world",

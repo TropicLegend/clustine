@@ -228,6 +228,31 @@ impl<'a> Level<'a> {
     }
 }
 
+/// The rules of blocks (`updateShape`, `canSurvive`) read a feature run's world as the
+/// game's `WorldGenRegion` offers it, and take generation's side where the copies of
+/// the rules disagreed.
+impl clustine_blocks::BlockView for Level<'_> {
+    fn block(&mut self, at: BlockPos) -> BlockState {
+        Level::block(self, at)
+    }
+
+    fn raw_brightness(&mut self, at: BlockPos) -> Option<u8> {
+        Some(Level::raw_brightness(self, at))
+    }
+
+    fn schedule_block_tick(&mut self, at: BlockPos, block: u16, delay: i32) {
+        Level::schedule_block_tick(self, at, block, delay);
+    }
+
+    fn schedule_fluid_tick(&mut self, at: BlockPos, fluid: u8, delay: i32) {
+        Level::schedule_fluid_tick(self, at, fluid, delay);
+    }
+
+    fn rules(&self) -> clustine_blocks::Rules {
+        clustine_blocks::Rules::Generation
+    }
+}
+
 /// A tick of the game's normal priority, the one `scheduleTick` without a priority
 /// gives, as a chunk being generated keeps it: without the delay it was asked for
 /// (`ProtoChunkTicks.schedule` saves every tick with a delay of nought), so that it

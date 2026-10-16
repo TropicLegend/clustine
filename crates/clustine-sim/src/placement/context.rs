@@ -43,6 +43,33 @@ impl<'a> World<'a> {
     }
 }
 
+/// The blocks of a placement as the shared rules of blocks (`clustine-blocks`) read
+/// them: a block only looked at in a chunk the region cannot see is air, there is no
+/// light (the light a mushroom needs is not judged, section 4.3), and the placing
+/// side is taken where the rules' former copies disagreed.
+pub(crate) struct View<'w, 'a>(pub(crate) &'w World<'a>);
+
+impl clustine_blocks::BlockView for View<'_, '_> {
+    fn block(&mut self, at: BlockPos) -> BlockState {
+        self.0.get(at)
+    }
+
+    fn raw_brightness(&mut self, _at: BlockPos) -> Option<u8> {
+        None
+    }
+
+    // Placing takes a block's shape from its neighbours and schedules nothing: the
+    // neighbours do not change in turn (section 4.4), and a placed block's ticks wait
+    // for phase B's updates.
+    fn schedule_block_tick(&mut self, _at: BlockPos, _block: u16, _delay: i32) {}
+
+    fn schedule_fluid_tick(&mut self, _at: BlockPos, _fluid: u8, _delay: i32) {}
+
+    fn rules(&self) -> clustine_blocks::Rules {
+        clustine_blocks::Rules::Placing
+    }
+}
+
 /// One placement as vanilla's `BlockPlaceContext` sees it.
 pub(crate) struct Context<'a> {
     pub(crate) world: World<'a>,

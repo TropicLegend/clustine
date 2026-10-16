@@ -9,10 +9,10 @@ use clustine_data::Face;
 use clustine_world::BlockPos;
 
 use super::common::Placement;
-use super::shape::{leaf_distance, update_shape};
 use crate::blocks::relative;
 use crate::context::Level;
 use crate::java_set::JavaSet;
+use clustine_blocks::{leaf_distance, update_shape};
 
 /// Leaves this far from a log or further are not reached.
 const MAX_DISTANCE: usize = 7;

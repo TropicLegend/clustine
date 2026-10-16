@@ -9,12 +9,12 @@ use clustine_data::Face as Dir;
 use clustine_data::{BlockClass, BlockState, blocks};
 use clustine_world::BlockPos;
 
-use super::connect;
-use super::context::Context;
+use super::context::{Context, View};
 use super::data;
 use super::geometry::{self, DirExt, HORIZONTAL};
 use super::replace::{self, can_be_replaced};
 use super::survive::{self, can_survive, facing};
+use clustine_blocks::connect;
 
 /// How a block is placed, by its class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +217,7 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
             let top = face == Dir::Down || face != Dir::Up && context.cursor_height() > 0.5;
             let state = set(block, "facing", horizontal.name());
             let state = set(state, "half", if top { "top" } else { "bottom" });
-            connect::stairs(state, target, world)
+            connect::stairs(state, target, &mut View(world))
         }
         Rule::Slab => {
             if data::same_block(at_target, block) {
@@ -259,16 +259,16 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
             data::set_flag(data::set_flag(state, "open", false), "powered", false)
         }
         Rule::FenceGate => {
-            let in_wall = connect::gate_in_wall(target, horizontal.axis(), world);
+            let in_wall = connect::gate_in_wall(target, horizontal, &mut View(world));
             let state = set(block, "facing", horizontal.name());
             let state = data::set_flag(state, "open", false);
             let state = data::set_flag(state, "powered", false);
             data::set_flag(state, "in_wall", in_wall)
         }
-        Rule::Fence => connect::fence(block, target, world),
-        Rule::Pane => connect::pane(block, target, world),
-        Rule::Wall => connect::wall(block, target, world),
-        Rule::RedstoneWire => connect::redstone_wire(block, target, world),
+        Rule::Fence => connect::fence(block, target, &mut View(world)),
+        Rule::Pane => connect::pane(block, target, &mut View(world)),
+        Rule::Wall => connect::wall(block, target, &mut View(world)),
+        Rule::RedstoneWire => connect::redstone_wire(block, target, &mut View(world)),
         Rule::Rail => {
             let shape = if horizontal.axis() == geometry::Axis::X {
                 "east_west"

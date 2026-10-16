@@ -14,12 +14,12 @@ use clustine_world::generation::Neighbourhood;
 use clustine_worldgen_data::feature::{self as data, Data};
 
 use crate::context::Level;
-use crate::features::trees::shape::update_shape;
 use crate::reader::{DataError, Read, Reader};
 use crate::settings::FeatureSettings;
+use clustine_blocks::update_shape;
 
 /// The shapes a template's blocks take beside their neighbours where its shape is not
-/// known (`updateShapeAtEdge`), by the features' port of `updateShape`: the one the
+/// known (`updateShapeAtEdge`), by `clustine-blocks`' `updateShape`: the one the
 /// trees' edges use, so that gravel beside a fossil or a path under a tree's edge
 /// schedule their ticks as the game's do.
 pub struct FeatureShapes<'s> {

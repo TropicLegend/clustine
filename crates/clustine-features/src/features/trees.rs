@@ -15,7 +15,6 @@ pub mod huge_mushroom;
 pub mod leaves;
 pub mod root_system;
 pub mod roots;
-pub mod shape;
 pub mod size;
 pub mod tree;
 pub mod trunk;

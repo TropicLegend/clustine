@@ -8,7 +8,6 @@
 //! belongs to and passes a placement on when it is another's (section 4.6).
 
 mod bucket;
-mod connect;
 mod context;
 mod data;
 mod geometry;

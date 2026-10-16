@@ -44,7 +44,6 @@ pub(crate) trait DirExt: Sized {
     fn counter_clockwise(self) -> Self;
     /// The value of a `facing` property.
     fn name(self) -> &'static str;
-    fn from_name(name: &str) -> Option<Self>;
 }
 
 impl DirExt for Dir {
@@ -105,10 +104,6 @@ impl DirExt for Dir {
             Dir::West => "west",
             Dir::East => "east",
         }
-    }
-
-    fn from_name(name: &str) -> Option<Dir> {
-        Dir::ALL.into_iter().find(|dir| dir.name() == name)
     }
 }
 
@@ -229,8 +224,6 @@ pub(crate) fn segment_direction(segment: u8) -> Option<Dir> {
         _ => None,
     }
 }
-
-pub(crate) use clustine_data::faces::{face_covers, face_full};
 
 /// The boxes of a shape moved to the block at `pos`.
 pub(crate) fn moved(shape: clustine_data::Shape, pos: BlockPos) -> Vec<[f64; 6]> {

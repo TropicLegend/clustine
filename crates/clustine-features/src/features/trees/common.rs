@@ -11,7 +11,7 @@ use clustine_data::{BlockState, Face, blocks};
 use clustine_noise::Random;
 use clustine_world::BlockPos;
 
-use crate::blocks::{block_id, block_tag};
+use crate::blocks::block_tag;
 use crate::context::Level;
 use crate::java_set::JavaSet;
 
@@ -56,13 +56,6 @@ tag!(
     REPLACEABLE_BY_MUSHROOMS,
     "minecraft:replaceable_by_mushrooms"
 );
-tag!(
-    PREVENTS_NEARBY_LEAF_DECAY,
-    "minecraft:prevents_nearby_leaf_decay"
-);
-tag!(JUNGLE_LOGS, "minecraft:jungle_logs");
-tag!(SNOW, "minecraft:snow");
-tag!(MAINTAINS_FARMLAND, "minecraft:maintains_farmland");
 
 /// The horizontal directions in the game's order (`Direction.Plane.HORIZONTAL`).
 pub const HORIZONTAL: [Face; 4] = [Face::North, Face::East, Face::South, Face::West];
@@ -156,11 +149,6 @@ pub fn vine(face: Face) -> BlockState {
 
 pub fn is_block(state: BlockState, block: BlockState) -> bool {
     state.block_id().is_some() && state.block_id() == block.block_id()
-}
-
-/// The id of a block for a tick of it.
-pub fn tick_id(state: BlockState) -> u16 {
-    block_id(state) as u16
 }
 
 /// The blocks a tree has placed, by the setter that placed them: the game's four

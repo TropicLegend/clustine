@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 clustine = { path = "bin/clustine" }
+clustine-blocks = { path = "crates/clustine-blocks" }
 clustine-botswarm = { path = "tools/botswarm" }
 clustine-coordinator = { path = "services/coordinator" }
 clustine-data = { path = "crates/clustine-data" }
@@ -83,6 +84,10 @@ opt-level = 3
 # A feature run places a chunk's trees, ores and plants, and one finished chunk needs
 # 94 runs (ADR-0021, section 2).
 [profile.dev.package.clustine-features]
+opt-level = 3
+
+# The features ask the rules of blocks at every edge of what they place.
+[profile.dev.package.clustine-blocks]
 opt-level = 3
 
 # A structure asks the terrain for the ground at many columns before it starts, and

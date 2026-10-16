@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clustine-blocks.workspace = true
 clustine-data.workspace = true
 clustine-noise.workspace = true
 clustine-structures.workspace = true

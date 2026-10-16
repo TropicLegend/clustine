@@ -48,7 +48,7 @@ creating more separate servers.
 
 | Path | Contents |
 |---|---|
-| `crates/` | Shared libraries: protocol, game data, world model, world format, simulation, regions and who runs them, RPC; light (`clustine-light`); terrain generation (`clustine-noise`, `clustine-terrain`, `clustine-structures`, and `clustine-worldgen-data`, emitted from the game's data) |
+| `crates/` | Shared libraries: protocol, game data, world model, world format, simulation, regions and who runs them, RPC; light (`clustine-light`); the rules of blocks the simulation and generation share (`clustine-blocks`); terrain generation (`clustine-noise`, `clustine-terrain`, `clustine-structures`, and `clustine-worldgen-data`, emitted from the game's data) |
 | `services/` | One crate per service: edge, coordinator, worker, worldstore, worldgen (the generator and its scheduler); `playerdata` and `operator` are empty so far |
 | `bin/clustine` | Single-binary mode running every service in one process |
 | `tools/` | Development tools: the `botswarm` load-test harness, the `datagen` table generator, and `check.sh`, which runs every check CI runs |

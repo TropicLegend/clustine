@@ -1,25 +1,29 @@
 // Adapted from the `update_shape` of SteelMC's block behaviours under
 // `steel-core/src/behavior/blocks/` (leaves, liquids, vegetation, double plants, vines,
-// cocoa, hanging moss and roots, snowy dirt, mushroom blocks).
+// cocoa, hanging moss and roots, snowy dirt, mushroom blocks, fences, bars, walls,
+// fence gates, stairs, redstone wire), by way of clustine-features'
+// `src/features/trees/shape.rs`.
 
-//! `BlockState.updateShape` for the blocks found at the edge of a tree: what a block
-//! becomes, and the ticks it asks for, when its neighbour on one side is another.
+//! `BlockState.updateShape`: what a block becomes, and the ticks it asks for, when its
+//! neighbour on one side is another.
 //!
-//! A tree ends by updating the shapes across the faces of all it placed
-//! (`StructureTemplate.updateShapeAtEdge`), so what grows or flows beside a tree
+//! World generation asks it across the faces of all a tree or a template placed
+//! (`StructureTemplate.updateShapeAtEdge`), so what grows, flows or stands beside them
 //! answers to it: leaves and water ask for ticks, a plant that lost its ground or its
-//! other half goes. The blocks ported are those that stand beside trees in the
-//! overworld; any other keeps its state and asks for nothing, which the judge would
-//! show as a missing tick or a block that should have gone.
+//! other half goes, a fence joins the log beside it. Any block whose rule is not ported
+//! keeps its state and asks for nothing, which generation's judge would show as a
+//! missing tick or a block that should have changed.
 
-use clustine_data::{BlockClass, BlockState, Face, blocks};
+use clustine_data::{BlockClass, BlockState, Face, SupportType, blocks};
 use clustine_world::BlockPos;
 
-use super::common::{
-    JUNGLE_LOGS, MAINTAINS_FARMLAND, PREVENTS_NEARBY_LEAF_DECAY, SNOW, is_block, tick_id,
+use crate::BlockView;
+use crate::connect;
+use crate::data::{
+    HORIZONTAL, JUNGLE_LOGS, MAINTAINS_FARMLAND, PREVENTS_NEARBY_LEAF_DECAY, SNOW, axis, clockwise,
+    face_name, facing, fluid_id, in_tag, is_block, is_class, is_horizontal, relative, same_block,
+    set_flag, tick_id,
 };
-use crate::blocks::{face_name, face_named, fluid_id, is_class, relative};
-use crate::context::Level;
 use crate::survive::{can_survive, multiface_can_attach, sturdy};
 
 /// Still and flowing water, still and flowing lava, by the game's fluid ids.
@@ -48,8 +52,8 @@ pub fn leaf_distance(state: BlockState) -> Option<i32> {
 
 /// What `state` at `pos` becomes when its neighbour towards `direction` is
 /// `neighbour`, with the ticks it schedules.
-pub fn update_shape(
-    level: &mut Level<'_>,
+pub fn update_shape<V: BlockView + ?Sized>(
+    view: &mut V,
     state: BlockState,
     pos: BlockPos,
     direction: Face,
@@ -61,13 +65,13 @@ pub fn update_shape(
     // A waterlogged block lets its water flow on (`SimpleWaterloggedBlock`'s blocks
     // all do this first).
     if state.property("waterlogged") == Some("true") {
-        level.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
+        view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
     }
     // A block that falls looks again whether it is held up once something beside it
     // changes (`FallingBlock.updateShape`, and suspicious sand and gravel's
     // `BrushableBlock.updateShape`), however it is held up now.
     if is_class(state, BlockClass::FallingBlock) || is_class(state, BlockClass::BrushableBlock) {
-        level.schedule_block_tick(pos, tick_id(state), 2);
+        view.schedule_block_tick(pos, tick_id(state), 2);
         return state;
     }
     if is_class(state, BlockClass::LeavesBlock) {
@@ -76,7 +80,7 @@ pub fn update_shape(
             .property("distance")
             .and_then(|d| d.parse::<i32>().ok());
         if distance != 1 || own != Some(distance) {
-            level.schedule_block_tick(pos, tick_id(state), 1);
+            view.schedule_block_tick(pos, tick_id(state), 1);
         }
         return state;
     }
@@ -84,7 +88,7 @@ pub fn update_shape(
         let source = |state: BlockState| state.props().fluid().is_some_and(|fluid| fluid.source);
         if source(state) || source(neighbour) {
             let fluid = fluid_id(state);
-            level.schedule_fluid_tick(pos, fluid, fluid_delay(fluid));
+            view.schedule_fluid_tick(pos, fluid, fluid_delay(fluid));
         }
         return state;
     }
@@ -93,14 +97,14 @@ pub fn update_shape(
     // path, and what keeps farmland (crops, stems) on farmland.
     if is_class(state, BlockClass::PathBlock) || is_class(state, BlockClass::FarmlandBlock) {
         if direction == Face::Up {
-            let above = level.block(relative(pos, Face::Up));
+            let above = view.block(relative(pos, Face::Up));
             let kept = if is_class(state, BlockClass::PathBlock) {
                 is_class(above, BlockClass::FenceGateBlock)
             } else {
                 MAINTAINS_FARMLAND.contains(above)
             };
             if above.props().is_solid() && !kept {
-                level.schedule_block_tick(pos, tick_id(state), 1);
+                view.schedule_block_tick(pos, tick_id(state), 1);
             }
         }
         return state;
@@ -117,22 +121,22 @@ pub fn update_shape(
         return state;
     }
     if is_class(state, BlockClass::VineBlock) {
-        return vine(level, state, pos, direction);
+        return vine(view, state, pos, direction);
     }
     if is_class(state, BlockClass::CocoaBlock) {
-        let facing = state.property("facing").and_then(face_named);
-        if facing == Some(direction) && !JUNGLE_LOGS.contains(level.block(relative(pos, direction)))
+        if facing(state) == Some(direction)
+            && !JUNGLE_LOGS.contains(view.block(relative(pos, direction)))
         {
             return blocks::AIR;
         }
         return state;
     }
     if is_class(state, BlockClass::HangingMossBlock) {
-        let above = level.block(relative(pos, Face::Up));
+        let above = view.block(relative(pos, Face::Up));
         if !(multiface_can_attach(above, Face::Up) || is_block(above, state)) {
-            level.schedule_block_tick(pos, tick_id(state), 1);
+            view.schedule_block_tick(pos, tick_id(state), 1);
         }
-        let below = level.block(relative(pos, Face::Down));
+        let below = view.block(relative(pos, Face::Down));
         let tip = if is_block(below, state) {
             "false"
         } else {
@@ -141,8 +145,8 @@ pub fn update_shape(
         return state.with_property("tip", tip).unwrap_or(state);
     }
     if is_class(state, BlockClass::HangingRootsBlock) {
-        let above = level.block(relative(pos, Face::Up));
-        if direction == Face::Up && !sturdy(above, Face::Down, clustine_data::SupportType::Full) {
+        let above = view.block(relative(pos, Face::Up));
+        if direction == Face::Up && !sturdy(above, Face::Down, SupportType::Full) {
             return blocks::AIR;
         }
         return state;
@@ -156,16 +160,16 @@ pub fn update_shape(
         return state;
     }
     if is_class(state, BlockClass::SugarCaneBlock) || is_class(state, BlockClass::CactusBlock) {
-        if !can_survive(state, pos, level) {
-            level.schedule_block_tick(pos, tick_id(state), 1);
+        if !can_survive(state, pos, view) {
+            view.schedule_block_tick(pos, tick_id(state), 1);
         }
         return state;
     }
     if is_class(state, BlockClass::MangrovePropaguleBlock) {
-        if direction == Face::Up && !can_survive(state, pos, level) {
+        if direction == Face::Up && !can_survive(state, pos, view) {
             return blocks::AIR;
         }
-        return vegetation(level, state, pos);
+        return vegetation(view, state, pos);
     }
     if is_class(state, BlockClass::DoublePlantBlock) {
         let lower = state.property("half") == Some("lower");
@@ -175,29 +179,29 @@ pub fn update_shape(
         if vertical && lower == (direction == Face::Up) && !other_half {
             return blocks::AIR;
         }
-        if lower && direction == Face::Down && !can_survive(state, pos, level) {
+        if lower && direction == Face::Down && !can_survive(state, pos, view) {
             return blocks::AIR;
         }
-        return vegetation(level, state, pos);
+        return vegetation(view, state, pos);
     }
     if is_class(state, BlockClass::SeagrassBlock) {
-        let updated = vegetation(level, state, pos);
+        let updated = vegetation(view, state, pos);
         if !updated.props().is_air() {
-            level.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
+            view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
         }
         return updated;
     }
     // A creaking heart looks again at its logs whenever something beside it changes
     // (`CreakingHeartBlock.updateShape`).
     if is_class(state, BlockClass::CreakingHeartBlock) {
-        level.schedule_block_tick(pos, tick_id(state), 1);
+        view.schedule_block_tick(pos, tick_id(state), 1);
         return state;
     }
     // A bamboo stalk that cannot stay falls by a tick, and one under an older stalk
     // takes the next age (`BambooStalkBlock.updateShape`).
     if is_class(state, BlockClass::BambooStalkBlock) {
-        if !can_survive(state, pos, level) {
-            level.schedule_block_tick(pos, tick_id(state), 1);
+        if !can_survive(state, pos, view) {
+            view.schedule_block_tick(pos, tick_id(state), 1);
         }
         let age = |state: BlockState| state.property("age").and_then(|age| age.parse::<u8>().ok());
         if direction == Face::Up
@@ -210,26 +214,95 @@ pub fn update_shape(
         return state;
     }
     if is_class(state, BlockClass::MossyCarpetBlock) {
-        return mossy_carpet(level, state, pos);
+        return mossy_carpet(view, state, pos);
     }
     if is_class(state, BlockClass::VegetationBlock)
         || is_class(state, BlockClass::CarpetBlock)
         || is_class(state, BlockClass::SnowLayerBlock)
     {
-        return vegetation(level, state, pos);
+        return vegetation(view, state, pos);
+    }
+    connections(view, state, pos, direction, neighbour)
+}
+
+/// The cases of blocks that join their neighbours: a side of a fence, a pane or bars
+/// set by the neighbour on it (`FenceBlock.updateShape`, `IronBarsBlock.updateShape`),
+/// a wall's side or its post (`WallBlock.updateShape`), a fence gate in a wall
+/// (`FenceGateBlock.updateShape`), stairs' corners (`StairBlock.updateShape`) and
+/// redstone wire (`RedStoneWireBlock.updateShape`). The tests are those the blocks are
+/// placed by.
+fn connections<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+    direction: Face,
+    neighbour: BlockState,
+) -> BlockState {
+    let horizontal = is_horizontal(direction);
+    if is_class(state, BlockClass::FenceBlock) {
+        if horizontal {
+            let joins = connect::fence_joins(state, direction, neighbour);
+            return set_flag(state, face_name(direction), joins);
+        }
+        return state;
+    }
+    if is_class(state, BlockClass::IronBarsBlock) {
+        if horizontal {
+            let joins = connect::pane_joins(direction, neighbour);
+            return set_flag(state, face_name(direction), joins);
+        }
+        return state;
+    }
+    if is_class(state, BlockClass::WallBlock) {
+        return match direction {
+            Face::Down => state,
+            // The block above decides which sides are tall and whether the post rises.
+            Face::Up => connect::wall_with(state, connect::wall_joined(state), neighbour),
+            side => {
+                let mut joins = connect::wall_joined(state);
+                for (joined, towards) in joins.iter_mut().zip(HORIZONTAL) {
+                    if towards == side {
+                        *joined = connect::wall_joins(side, neighbour);
+                    }
+                }
+                let above = view.block(relative(pos, Face::Up));
+                connect::wall_with(state, joins, above)
+            }
+        };
+    }
+    if is_class(state, BlockClass::FenceGateBlock) {
+        // Only a neighbour on either end of the gate, across its facing, changes it.
+        if facing(state).is_some_and(|gate| axis(clockwise(gate)) == axis(direction)) {
+            let other_end = view.block(relative(pos, direction.opposite()));
+            let in_wall =
+                in_tag(neighbour, "minecraft:walls") || in_tag(other_end, "minecraft:walls");
+            return set_flag(state, "in_wall", in_wall);
+        }
+        return state;
+    }
+    if is_class(state, BlockClass::StairBlock) {
+        if horizontal {
+            return connect::stairs(state, pos, view);
+        }
+        return state;
+    }
+    if same_block(state, blocks::REDSTONE_WIRE) {
+        return connect::redstone_wire_shape(state, pos, direction, neighbour, view);
     }
     state
 }
 
-/// `VegetationBlock.updateShape`, and the carpet's and the snow's: gone where it can
-/// no longer stay.
 /// `MossyCarpetBlock.updateShape`: gone where it cannot stay (a carpet with a base on
 /// nothing; one without on anything but a carpet with a base), else its sides as
 /// `getUpdatedState` makes them without creating new ones but where it has a base,
 /// and gone where it is left without a base and without sides.
-fn mossy_carpet(level: &mut Level<'_>, state: BlockState, pos: BlockPos) -> BlockState {
+fn mossy_carpet<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+) -> BlockState {
     let base = state.property("bottom") == Some("true");
-    let below = level.block(relative(pos, Face::Down));
+    let below = view.block(relative(pos, Face::Down));
     let stays = if base {
         !below.props().is_air()
     } else {
@@ -238,16 +311,66 @@ fn mossy_carpet(level: &mut Level<'_>, state: BlockState, pos: BlockPos) -> Bloc
     if !stays {
         return blocks::AIR;
     }
-    let updated = crate::features::frame::simple_block::mossy_updated(state, level, pos, false);
+    let updated = mossy_carpet_updated(state, view, pos, false);
     let has_faces = base
-        || ["north", "east", "south", "west"]
+        || HORIZONTAL
             .iter()
-            .any(|side| updated.property(side) != Some("none"));
+            .any(|side| updated.property(face_name(*side)) != Some("none"));
     if has_faces { updated } else { blocks::AIR }
 }
 
-fn vegetation(level: &mut Level<'_>, state: BlockState, pos: BlockPos) -> BlockState {
-    if can_survive(state, pos, level) {
+/// `MossyCarpetBlock.getUpdatedState`: each side low where it can hold on to the block
+/// beside it (new sides only where `create_sides` or the carpet has a base), tall
+/// under a carpet without a base that has that side, and none where the carpet below
+/// without a base has none.
+pub fn mossy_carpet_updated<V: BlockView + ?Sized>(
+    mut state: BlockState,
+    view: &mut V,
+    pos: BlockPos,
+    create_sides: bool,
+) -> BlockState {
+    let base = state.property("bottom") == Some("true");
+    let create_sides = create_sides || base;
+    let mut above: Option<BlockState> = None;
+    let mut below: Option<BlockState> = None;
+    for face in HORIZONTAL {
+        let name = face_name(face);
+        let attaches = multiface_can_attach(view.block(relative(pos, face)), face);
+        let mut side = if attaches {
+            if create_sides {
+                "low"
+            } else {
+                state.property(name).unwrap_or("none")
+            }
+        } else {
+            "none"
+        };
+        if side == "low" {
+            let above = *above.get_or_insert_with(|| view.block(relative(pos, Face::Up)));
+            if same_block(above, blocks::PALE_MOSS_CARPET)
+                && above.property(name) != Some("none")
+                && above.property("bottom") == Some("false")
+            {
+                side = "tall";
+            }
+            if !base {
+                let below = *below.get_or_insert_with(|| view.block(relative(pos, Face::Down)));
+                if same_block(below, blocks::PALE_MOSS_CARPET)
+                    && below.property(name) == Some("none")
+                {
+                    side = "none";
+                }
+            }
+        }
+        state = state.with_property(name, side).unwrap_or(state);
+    }
+    state
+}
+
+/// `VegetationBlock.updateShape`, and the carpet's and the snow's: gone where it can
+/// no longer stay.
+fn vegetation<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos: BlockPos) -> BlockState {
+    if can_survive(state, pos, view) {
         state
     } else {
         blocks::AIR
@@ -256,8 +379,8 @@ fn vegetation(level: &mut Level<'_>, state: BlockState, pos: BlockPos) -> BlockS
 
 /// `VineBlock.updateShape`: each side kept where it still holds on, or where the
 /// vine above holds on that side; gone with no side left.
-fn vine(
-    level: &mut Level<'_>,
+fn vine<V: BlockView + ?Sized>(
+    view: &mut V,
     mut state: BlockState,
     pos: BlockPos,
     direction: Face,
@@ -268,20 +391,20 @@ fn vine(
     let above_pos = relative(pos, Face::Up);
     if state.property("up") == Some("true") {
         // The game asks this of the block above as a neighbour below it.
-        let up = multiface_can_attach(level.block(above_pos), Face::Down);
+        let up = multiface_can_attach(view.block(above_pos), Face::Down);
         state = state
             .with_property("up", if up { "true" } else { "false" })
             .unwrap_or(state);
     }
     let mut above: Option<BlockState> = None;
-    for face in super::common::HORIZONTAL {
+    for face in HORIZONTAL {
         let name = face_name(face);
         if state.property(name) != Some("true") {
             continue;
         }
-        let mut holds = multiface_can_attach(level.block(relative(pos, face)), face);
+        let mut holds = multiface_can_attach(view.block(relative(pos, face)), face);
         if !holds {
-            let above = *above.get_or_insert_with(|| level.block(above_pos));
+            let above = *above.get_or_insert_with(|| view.block(above_pos));
             holds = is_block(above, blocks::VINE) && above.property(name) == Some("true");
         }
         state = state

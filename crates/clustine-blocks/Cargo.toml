@@ -1,0 +1,12 @@
+[package]
+name = "clustine-blocks"
+description = "How a block takes its shape from its neighbours and whether it can stay where it is (`updateShape`, `canSurvive`): one set of rules for the simulation and world generation (ADR-0024, section 7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clustine-data.workspace = true
+clustine-world.workspace = true

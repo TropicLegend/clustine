@@ -4,6 +4,7 @@
 //! (`SimpleBlockFeature`). A two-block plant places both halves, the pale moss carpet
 //! its carpet and what grows on top, and the block may be given a tick.
 
+use clustine_blocks::mossy_carpet_updated;
 use clustine_data::{BlockClass, BlockState, Face, blocks};
 use clustine_noise::Random;
 use clustine_world::BlockPos;
@@ -13,7 +14,7 @@ use crate::context::{Context, Level};
 use crate::feature::Feature;
 use crate::providers::Provider;
 use crate::reader::{Read, Reader};
-use crate::survive::{can_survive, multiface_can_attach};
+use crate::survive::can_survive;
 
 #[derive(Debug)]
 pub struct SimpleBlock {
@@ -101,59 +102,14 @@ fn with_water_of(level: &mut Level<'_>, pos: BlockPos, state: BlockState) -> Blo
 /// from the region's random source, where any stays.
 fn place_mossy_carpet(level: &mut Level<'_>, pos: BlockPos, seed: i64, legacy: bool) {
     let carpet = blocks::PALE_MOSS_CARPET;
-    let adjusted = mossy_updated(carpet, level, pos, true);
+    let adjusted = mossy_carpet_updated(carpet, level, pos, true);
     level.set_block(pos, adjusted);
     let topper = mossy_topper(level, pos, seed, legacy);
     if !topper.props().is_air() {
         level.set_block(relative(pos, Face::Up), topper);
-        let bottom = mossy_updated(adjusted, level, pos, true);
+        let bottom = mossy_carpet_updated(adjusted, level, pos, true);
         level.set_block(pos, bottom);
     }
-}
-
-/// `MossyCarpetBlock.getUpdatedState`.
-pub(crate) fn mossy_updated(
-    mut state: BlockState,
-    level: &mut Level<'_>,
-    pos: BlockPos,
-    create_sides: bool,
-) -> BlockState {
-    let base = state.property("bottom") == Some("true");
-    let create_sides = create_sides || base;
-    let mut above: Option<BlockState> = None;
-    let mut below: Option<BlockState> = None;
-    for face in HORIZONTAL {
-        let name = face_name(face);
-        let attaches = multiface_can_attach(level.block(relative(pos, face)), face);
-        let mut side = if attaches {
-            if create_sides {
-                "low"
-            } else {
-                state.property(name).unwrap_or("none")
-            }
-        } else {
-            "none"
-        };
-        if side == "low" {
-            let above = *above.get_or_insert_with(|| level.block(relative(pos, Face::Up)));
-            if same_block(above, blocks::PALE_MOSS_CARPET)
-                && above.property(name) != Some("none")
-                && above.property("bottom") == Some("false")
-            {
-                side = "tall";
-            }
-            if !base {
-                let below = *below.get_or_insert_with(|| level.block(relative(pos, Face::Down)));
-                if same_block(below, blocks::PALE_MOSS_CARPET)
-                    && below.property(name) == Some("none")
-                {
-                    side = "none";
-                }
-            }
-        }
-        state = state.with_property(name, side).unwrap_or(state);
-    }
-    state
 }
 
 /// `MossyCarpetBlock.createTopperWithSideChance`.
@@ -168,7 +124,7 @@ fn mossy_topper(level: &mut Level<'_>, pos: BlockPos, seed: i64, legacy: bool) -
     let no_base = blocks::PALE_MOSS_CARPET
         .with_property("bottom", "false")
         .expect("the pale moss carpet has a bottom");
-    let mut topper = mossy_updated(no_base, level, above_pos, true);
+    let mut topper = mossy_carpet_updated(no_base, level, above_pos, true);
     for face in HORIZONTAL {
         let name = face_name(face);
         if topper.property(name) != Some("none") && !level.region_random(seed, legacy).next_bool() {
