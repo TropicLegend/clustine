@@ -123,17 +123,18 @@ impl Region {
             let block = clustine_blocks::data::tick_id(state);
             self.schedule_tick(pos, Ticked::Block(block), 2, 0);
         }
-        // Fire's and coral's `onPlace` schedule their ticks.
-        self.fire_on_place(pos, state);
+        // Fire's and coral's `onPlace` schedule their ticks, and fire that cannot stay
+        // goes there and then.
+        self.fire_on_place(pos, state, old, output);
         // `LiquidBlock.onPlace`: lava that meets water becomes stone of some kind there
         // and then; any other liquid looks again in its fluid's time.
         if is_class(state, BlockClass::LiquidBlock) {
             self.liquid_told(pos, state, output);
-            // `Level.setBlock` tells nobody of a block that `onPlace` changed again: the
-            // change it made has told them.
-            if self.block(pos) != Some(state) {
-                return true;
-            }
+        }
+        // `Level.setBlock` tells nobody of a block that `onPlace` changed again: the
+        // change it made has told them.
+        if self.block(pos) != Some(state) {
+            return true;
         }
         if flags & UPDATE_NEIGHBORS != 0 {
             self.add_and_run(

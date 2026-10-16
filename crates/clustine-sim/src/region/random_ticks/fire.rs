@@ -132,8 +132,20 @@ impl Region {
     /// `BaseFireBlock.onPlace` also removes fire that cannot stay; this has neither the
     /// state that was there nor the tick's output to do so, so the rules here that place
     /// fire do it after (`place_fire`).
-    pub(crate) fn fire_on_place(&mut self, pos: BlockPos, state: BlockState) {
+    pub(crate) fn fire_on_place(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        old: BlockState,
+        output: &mut TickOutput,
+    ) {
         use BlockClass as C;
+        // `BaseFireBlock.onPlace`: fire that cannot stay where it is set goes, unless
+        // it was fire there before (an age set anew).
+        let fire = is_class(state, C::BaseFireBlock);
+        if fire && !is_block(old, state) && !can_survive(state, pos, &mut RegionView(self)) {
+            self.remove_block(pos, output);
+        }
         if is_class(state, C::FireBlock) {
             let delay = fire_tick_delay(&mut self.next_draw());
             self.schedule_tick(pos, Ticked::Block(tick_id(state)), delay, 0);
@@ -306,27 +318,25 @@ impl Region {
             .is_some_and(|block| IGNITED_BY_LAVA.binary_search(&block.name).is_ok())
     }
 
-    /// Sets fire with `flags`, and removes it again where it cannot stay, as
-    /// `BaseFireBlock.onPlace` does unless the block there was fire already.
+    /// Sets fire with `flags`. Where it cannot stay it goes in its own `onPlace`
+    /// ([`Region::fire_on_place`]), unless the block there was fire already.
     fn place_fire(&mut self, pos: BlockPos, fire: BlockState, flags: u32, output: &mut TickOutput) {
-        let Some(old) = self.block(pos) else {
-            return;
-        };
-        if !self.set_block_updated(pos, fire, flags, UPDATE_LIMIT, output) {
-            return;
-        }
-        if is_block(old, fire) || self.block(pos) != Some(fire) {
-            return;
-        }
-        if !can_survive(fire, pos, &mut RegionView(self)) {
-            self.remove_block(pos, output);
-        }
+        self.set_block_updated(pos, fire, flags, UPDATE_LIMIT, output);
     }
 
     /// `Level.removeBlock` of fire or of a block that burnt: what is left is air, since
     /// neither holds water (a waterlogged block does not burn).
     fn remove_block(&mut self, pos: BlockPos, output: &mut TickOutput) {
         self.set_block_updated(pos, blocks::AIR, UPDATE_ALL, UPDATE_LIMIT, output);
+    }
+
+    /// What a coral block that a player places does (`CoralBlock.getStateForPlacement`):
+    /// out of water it dies in 60 to 99 ticks.
+    pub(crate) fn coral_block_placed(&mut self, pos: BlockPos, state: BlockState) {
+        if is_class(state, BlockClass::CoralBlock) && !self.water_beside(pos) {
+            let delay = 60 + self.next_draw().next_int(40) as i32;
+            self.schedule_tick(pos, Ticked::Block(tick_id(state)), delay, 0);
+        }
     }
 
     /// `CoralBlock.scanForWater`: water on any side.

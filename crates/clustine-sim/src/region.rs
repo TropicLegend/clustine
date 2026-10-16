@@ -1484,6 +1484,9 @@ impl Region {
         for (position, state) in changes {
             let before = self.block(*position);
             self.set_block(*position, *state, output);
+            if before != Some(*state) {
+                self.coral_block_placed(*position, *state);
+            }
             // A bucket that waterlogs a block gives the water its tick
             // (`SimpleWaterloggedBlock.placeLiquid`); the block's neighbours, told of the
             // change, are what else would.

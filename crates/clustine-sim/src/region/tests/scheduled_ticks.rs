@@ -1408,3 +1408,28 @@ fn a_chorus_plant_joins_a_flower_beside_it() {
         Some("true")
     );
 }
+
+/// A coral block a player places out of water dies within 60 to 99 ticks
+/// (`CoralBlock.getStateForPlacement`), without a neighbour changing.
+#[test]
+fn a_coral_block_placed_on_land_dies_within_a_hundred_ticks() {
+    let pos = at(5, -60, 5);
+    let (mut region, _) = ticking_with(&[], &[]);
+    let mut output = TickOutput::default();
+    let coral = named("minecraft:tube_coral_block", &[]);
+    assert!(region.change_all(&[(pos, coral)], &mut output));
+    let mut died = None;
+    for tick in 1..=100 {
+        idle_tick(&mut region);
+        if block_at(&region, pos) != Some(coral) {
+            died = Some(tick);
+            break;
+        }
+    }
+    let died = died.expect("it died");
+    assert!((60..=100).contains(&died), "{died}");
+    assert_eq!(
+        block_at(&region, pos),
+        Some(named("minecraft:dead_tube_coral_block", &[]))
+    );
+}
