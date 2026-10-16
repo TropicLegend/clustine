@@ -188,6 +188,26 @@ impl Region {
         if is_class(state, BlockClass::DoorBlock) || is_class(state, BlockClass::DoublePlantBlock) {
             self.prevent_drop_from_bottom_part(pos, state, player, output);
         }
+        // `AbstractBedBlock.playerWillDestroy`: a bed broken at its foot in creative
+        // loses its head first, without a drop, as others see.
+        if is_class(state, BlockClass::AbstractBedBlock)
+            && state.property("part") == Some("foot")
+            && let Some(towards) = clustine_blocks::growth::bed_other_half(state)
+        {
+            let head_pos = relative(pos, towards);
+            if let Some(head) = self.block(head_pos)
+                && same_block(head, state)
+                && head.property("part") == Some("head")
+            {
+                let flags = UPDATE_SUPPRESS_DROPS | UPDATE_CLIENTS | UPDATE_NEIGHBORS;
+                self.set_block_updated(head_pos, blocks::AIR, flags, UPDATE_LIMIT, output);
+                output.events.push(RegionEvent::BlockDestroyed {
+                    position: head_pos,
+                    state: head,
+                    breaker: player,
+                });
+            }
+        }
         output.events.push(RegionEvent::BlockDestroyed {
             position: pos,
             state,

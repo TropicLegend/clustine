@@ -1575,6 +1575,19 @@ fn breaking_cases() -> Vec<Case> {
             &[O, ABOVE],
         )
         .setup([put(OAK_DOOR, O)]),
+        // Placed looking north: the foot at the origin, the head north of it.
+        case(
+            "a bed broken at its foot goes whole",
+            dig(O),
+            &[O, (0, 0, -1)],
+        )
+        .setup([put(RED_BED, O)]),
+        case(
+            "a bed broken at its head goes whole",
+            dig((0, 0, -1)),
+            &[O, (0, 0, -1)],
+        )
+        .setup([put(RED_BED, O)]),
         case(
             "a door broken at its upper half goes whole",
             dig(ABOVE),

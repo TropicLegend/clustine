@@ -4,7 +4,8 @@
 //! (`GrowingPlantHeadBlock` and `GrowingPlantBodyBlock.updateShape`); a pointed
 //! dripstone or a sulfur spike takes its thickness from those beside it
 //! (`SpeleothemBlock.updateShape`); a chorus plant joins what is beside it
-//! (`ChorusPlantBlock.updateShape`). Read from the 26.3 jar's classes.
+//! (`ChorusPlantBlock.updateShape`); and a bed's half goes with the other
+//! (`AbstractBedBlock.updateShape`). Read from the 26.3 jar's classes.
 //!
 //! Only the simulation asks these: generation places these blocks with their shapes,
 //! and its judge compares it with the official server as it is.
@@ -29,6 +30,9 @@ pub fn update_shape<V: BlockView + ?Sized>(
     }
     if is_class(state, BlockClass::SpeleothemBlock) {
         return Some(speleothem_shape(view, state, pos, direction));
+    }
+    if is_class(state, BlockClass::AbstractBedBlock) {
+        return Some(bed_shape(state, direction, neighbour));
     }
     if is_class(state, BlockClass::ChorusPlantBlock) {
         // Its `canSurvive` is not ported, so the tick it schedules where it cannot
@@ -141,6 +145,29 @@ impl GrowingPlant {
 
     fn body_from_head(self, head: BlockState) -> BlockState {
         keep_berries(head, self.body_block())
+    }
+}
+
+/// `AbstractBedBlock.updateShape`: a half whose other half is gone goes too, and one
+/// whose other half is there shares whether the bed is taken.
+fn bed_shape(state: BlockState, direction: Face, neighbour: BlockState) -> BlockState {
+    if Some(direction) != bed_other_half(state) {
+        return state;
+    }
+    if same_block(neighbour, state) && neighbour.property("part") != state.property("part") {
+        let occupied = neighbour.property("occupied").unwrap_or("false");
+        return state.with_property("occupied", occupied).unwrap_or(state);
+    }
+    clustine_data::blocks::AIR
+}
+
+/// `AbstractBedBlock.getNeighbourDirection`: the way to a bed's other half, the way it
+/// faces from its foot and back from its head.
+pub fn bed_other_half(state: BlockState) -> Option<Face> {
+    let facing = crate::data::facing(state)?;
+    match state.property("part")? {
+        "foot" => Some(facing),
+        _ => Some(opposite(facing)),
     }
 }
 
