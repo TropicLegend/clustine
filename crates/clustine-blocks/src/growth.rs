@@ -10,8 +10,10 @@
 //! (`ChestBlock.updateShape`, `CopperChestBlock.updateShape`). Read from the 26.3 jar's
 //! classes.
 //!
-//! Only the simulation asks these: generation places these blocks with their shapes,
-//! and its judge compares it with the official server as it is.
+//! Generation asks these as well, where a template's edge meets what is beside it
+//! (`updateShapeAtEdge`): kelp there schedules its water, as the game's does. Its
+//! `next_int` answers nought, where the game draws the age of a body that becomes a
+//! head; the judge would show that as a difference in blocks.
 
 use clustine_data::{BlockClass, BlockState, Face, SupportType};
 use clustine_world::BlockPos;

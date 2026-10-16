@@ -78,10 +78,9 @@ pub fn update_shape<V: BlockView + ?Sized>(
     if state.property("waterlogged") == Some("true") {
         view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
     }
-    // What grows takes its shape as it grows, in the simulation (`growth.rs`).
-    if view.rules() == crate::Rules::Placing
-        && let Some(grown) = crate::growth::update_shape(view, state, pos, direction, neighbour)
-    {
+    // What grows takes its shape as it grows (`growth.rs`). Generation asks too: kelp
+    // beside the edge of a structure schedules its water there, as the game's does.
+    if let Some(grown) = crate::growth::update_shape(view, state, pos, direction, neighbour) {
         return grown;
     }
     // Concrete powder that water touches hardens (`ConcretePowderBlock.updateShape`).
