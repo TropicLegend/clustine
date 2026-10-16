@@ -846,6 +846,15 @@ pub struct RegionRunner {
     crowds: Crowds,
     /// Loaded chunks that have changed since they were loaded or last stored.
     unsaved: BTreeSet<ChunkPos>,
+    /// Loaded chunks that ticked with ticks pending in the last tick and have not been
+    /// saved since ([`TickOutput::ticks_pending`]). What is kept of a tick is the delay
+    /// left, so their saved forms age with every tick without a commit; they are saved
+    /// as unsaved chunks are only where a stop is near, since a checkpoint while the
+    /// region ticks would write them all again each time
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+    ///
+    /// [`TickOutput::ticks_pending`]: clustine_sim::api::TickOutput::ticks_pending
+    ageing: BTreeSet<ChunkPos>,
     /// How many ticks pass between two checkpoints.
     checkpoint_interval: u64,
     /// How many ticks an edge may be without a link before it is gone.
@@ -1043,6 +1052,7 @@ impl RegionRunner {
             loads: BTreeMap::new(),
             crowds: Crowds::new(),
             unsaved: BTreeSet::new(),
+            ageing: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             gone_after: DEFAULT_GONE_AFTER,
             warm: BTreeMap::new(),
@@ -1309,7 +1319,7 @@ impl RegionRunner {
              the region stops ticking"
         );
         self.note_the_stop();
-        self.checkpoint();
+        self.checkpoint_at_stop();
         self.ask_for_flush();
         self.phase = Phase::Settling;
         true
@@ -1321,7 +1331,8 @@ impl RegionRunner {
     /// saved beforehand.
     fn little_since_prepared(&self) -> bool {
         let since = self.region.tick_number().saturating_sub(self.prepared_at);
-        self.unsaved.len() <= self.few_unsaved || since <= self.fresh_for
+        let unsaved = self.unsaved.union(&self.ageing).count();
+        unsaved <= self.few_unsaved || since <= self.fresh_for
     }
 
     /// Whether the region has stopped ticking for a release, a merge or a split, and
@@ -2341,6 +2352,7 @@ impl RegionRunner {
             .filter(|position| self.region.chunk(**position).is_some())
             .map(|position| (*position, self.region.scheduled_ticks(*position)))
             .collect();
+        self.ageing = output.ticks_pending.iter().copied().collect();
         let unchanged =
             changes.is_empty() && ticks.is_empty() && output.delta.changes_only_the_tick();
         let needs_commit = !(unchanged && output.stays.is_empty());
@@ -2613,9 +2625,11 @@ impl RegionRunner {
         progress
     }
 
-    /// Hands the chunk at `position` to the store if it has unsaved changes.
+    /// Hands the chunk at `position` to the store if it has unsaved changes or ticks
+    /// that aged since it was saved.
     fn save(&mut self, position: ChunkPos) {
-        if self.unsaved.remove(&position)
+        let ageing = self.ageing.remove(&position);
+        if (self.unsaved.remove(&position) || ageing)
             && let Some(chunk) = self.region.saved_chunk(position)
         {
             // The commit of the region's last tick has been sent, which the store has
@@ -2638,6 +2652,14 @@ impl RegionRunner {
             tick: self.region.tick_number(),
             state: stored(&self.region.state()),
         });
+    }
+
+    /// The checkpoint at which the region stops ticking: the chunks with ageing ticks
+    /// are saved too, so that the store has every tick's delay left as the region
+    /// leaves it, which a merge or a split hands on and a resume starts from.
+    fn checkpoint_at_stop(&mut self) {
+        self.unsaved.append(&mut self.ageing);
+        self.checkpoint();
     }
 
     /// Ticks 20 times per second until `stop` is set, then stores what has not been
@@ -2735,7 +2757,7 @@ impl RegionRunner {
             self.end(Ended::Abandoned);
             return Ended::Abandoned;
         }
-        self.checkpoint();
+        self.checkpoint_at_stop();
         self.store.flush();
         if self.store.is_lost() {
             self.give_up();

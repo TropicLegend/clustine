@@ -673,6 +673,38 @@ fn the_chunks_whose_ticks_changed_are_named_in_ascending_order() {
     assert_eq!(idle_tick(&mut region).ticks_changed, []);
 }
 
+/// The chunks that tick with ticks pending are named in every tick, ascending, since
+/// their saved forms age; a chunk that keeps ticks without ticking is not, nor is a
+/// chunk that ticks with none.
+#[test]
+fn the_chunks_that_tick_with_ticks_pending_are_named_in_every_tick() {
+    let (west, east, edge) = (
+        ChunkPos::new(0, 0),
+        ChunkPos::new(1, 0),
+        ChunkPos::new(2, 0),
+    );
+    let (here, there, beyond) = (at(5, -55, 5), at(21, -55, 5), at(37, -55, 5));
+    let sand = |chunk, position| {
+        (
+            chunk,
+            floor_of(
+                chunk,
+                &[(position, blocks::SAND)],
+                &[kept(position, blocks::SAND, 5, 0)],
+            ),
+        )
+    };
+    let given = vec![sand(east, there), sand(edge, beyond), sand(west, here)];
+    // West and east tick; the edge, at x 2, has no neighbours to its east.
+    let (mut region, _) = loaded_with(&chunks((-1, 2), (-1, 1)), given);
+    for _ in 0..3 {
+        let output = idle_tick(&mut region);
+        assert_eq!(output.ticks_changed, []);
+        assert_eq!(output.ticks_pending, [west, east]);
+    }
+    assert_eq!(idle_tick(&mut ticking_floor_with(&[])).ticks_pending, []);
+}
+
 /// A tick scheduled by a player's dig names the chunk in that tick.
 #[test]
 fn a_scheduled_tick_names_its_chunk() {

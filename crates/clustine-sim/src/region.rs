@@ -571,6 +571,7 @@ impl Region {
 
         output.stays = self.notes(first, let_go);
         output.ticks_changed = self.ticks_changed();
+        output.ticks_pending = self.ticks_pending();
         output.delta = self.take_delta();
         output
     }

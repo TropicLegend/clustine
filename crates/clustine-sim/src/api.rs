@@ -785,6 +785,12 @@ pub struct TickOutput {
     /// into it. They are to be saved as chunks whose blocks changed are
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
     pub ticks_changed: Vec<ChunkPos>,
+    /// Chunks the region ticks with scheduled ticks pending at the end of this tick, in
+    /// ascending order. Their saved forms change with every tick, since what is kept is
+    /// the delay left, without anything being committed; so where a stop is near they
+    /// are to be saved as unsaved chunks are
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+    pub ticks_pending: Vec<ChunkPos>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,
     /// What the region says to the world store of stays in this tick, in the order of

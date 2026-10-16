@@ -127,6 +127,17 @@ impl Region {
         self.ticks.changed.iter().copied().collect()
     }
 
+    /// The chunks that tick with ticks pending, ascending. Only a chunk that ticks has
+    /// its ticks in the queues.
+    pub(crate) fn ticks_pending(&self) -> Vec<ChunkPos> {
+        let queued = self.ticks.blocks.pending.iter();
+        let chunks: BTreeSet<ChunkPos> = queued
+            .chain(self.ticks.fluids.pending.iter())
+            .map(|(pos, _)| pos.chunk())
+            .collect();
+        chunks.into_iter().collect()
+    }
+
     /// The next order in this tick.
     fn next_order(&mut self) -> u64 {
         self.ticks.counted += 1;
