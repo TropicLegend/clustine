@@ -319,6 +319,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         deltas,
         issued,
         spawn,
+        world,
     } = restored;
     stream.set_write_timeout(Some(patience))?;
     let accepted = StoreWelcome::Accepted {
@@ -326,6 +327,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         pinned,
         issued,
         spawn,
+        world,
     };
     wire::blocking::write(&mut &*stream, &accepted)?;
     for part in Parts::new(state, deltas, &held, PART_BYTES) {
@@ -459,6 +461,7 @@ impl Arriving {
         pinned: Vec<ChunkArea>,
         issued: EntityId,
         spawn: BlockPos,
+        world: u64,
     ) -> Self {
         Self {
             restored: Restored {
@@ -469,6 +472,7 @@ impl Arriving {
                 deltas: Vec::new(),
                 issued,
                 spawn,
+                world,
             },
             cut: None,
             held: false,
@@ -672,13 +676,14 @@ fn welcomed(
     stream: &mut &TcpStream,
     hello: RegionHello,
 ) -> io::Result<Option<Result<Restored, StoreError>>> {
-    let (entity_ids, pinned, issued, spawn) = match wire::blocking::read(stream)? {
+    let (entity_ids, pinned, issued, spawn, world) = match wire::blocking::read(stream)? {
         Some(StoreWelcome::Accepted {
             entity_ids,
             pinned,
             issued,
             spawn,
-        }) => (entity_ids, pinned, issued, spawn),
+            world,
+        }) => (entity_ids, pinned, issued, spawn, world),
         Some(StoreWelcome::EpochRefused { seen }) => {
             return Ok(Some(Err(StoreError::EpochRefused {
                 region: hello.region,
@@ -697,7 +702,7 @@ fn welcomed(
         }
         None => return Ok(None),
     };
-    let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn);
+    let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, world);
     loop {
         let Some(part) = wire::blocking::read(stream)? else {
             return Err(io::Error::new(
@@ -954,6 +959,7 @@ mod tests {
                 state: delta(6),
             }],
             issued: EntityId(0),
+            world: crate::world_number(&generator().settings().identity),
         };
         let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
         assert_eq!(restored, expected);
@@ -1486,6 +1492,7 @@ mod tests {
                 entity_ids: EntityIds::block(0).unwrap(),
                 pinned: Vec::new(),
                 issued: EntityId(0),
+                world: 0,
             };
             wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
@@ -1650,7 +1657,8 @@ mod tests {
 
     /// Puts together what [`Parts`] made.
     fn together(entity_ids: EntityIds, parts: Vec<RestoredPart>) -> io::Result<Restored> {
-        let mut arriving = Arriving::new(entity_ids, Vec::new(), EntityId(0), crate::tests::SPAWN);
+        let mut arriving =
+            Arriving::new(entity_ids, Vec::new(), EntityId(0), crate::tests::SPAWN, 0);
         let mut parts = parts.into_iter();
         loop {
             let part = parts.next().expect("the last part ends them");
@@ -1685,6 +1693,7 @@ mod tests {
                 .map(|(tick, length)| tick_state(tick, *length))
                 .collect(),
             issued: EntityId(0),
+            world: 0,
         };
         // Next to nothing thousands of times over, with and without bytes at all.
         let tiny: Vec<usize> = (0..3000).map(|index| index % 5).collect();
@@ -1891,6 +1900,7 @@ mod tests {
                 state: vec![1, 2, 1, 2],
             }],
             issued: EntityId(0),
+            world: 0,
         };
         assert_eq!(together(entity_ids, parts).unwrap(), expected);
     }
@@ -2078,6 +2088,7 @@ mod tests {
                     entity_ids: expected.entity_ids,
                     pinned: expected.pinned.clone(),
                     issued: EntityId(0),
+                    world: crate::world_number(&generator().settings().identity),
                 };
                 assert_eq!(welcome, Some(accepted));
                 for _ in 0..parts {
@@ -2119,6 +2130,7 @@ mod tests {
                 state: vec![0; 4 * LIMIT],
             }],
             issued: EntityId(0),
+            world: 0,
         };
         let error = welcome(&stream, Duration::from_millis(300), restored).unwrap_err();
         // Which of the two a write that ran out of time reports depends on the system.

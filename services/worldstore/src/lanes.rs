@@ -84,6 +84,8 @@ pub(crate) struct Lanes {
     table: Table,
     /// The world's spawn ([`Restored::spawn`]). The table's home chunk is its chunk.
     spawn: BlockPos,
+    /// The world's number ([`Restored::world`]).
+    world: u64,
     /// A lane for every living region, and for no other.
     regions: BTreeMap<RegionId, Lane>,
     /// The last segment of the log that has a record which changes the table and is not
@@ -233,6 +235,12 @@ impl Lanes {
     ///
     /// The thread for chunks has to be running: a world that was divided otherwise has
     /// what its regions committed put into the stored chunks.
+    /// The lanes of a world whose number is `world` ([`Restored::world`]).
+    pub(crate) fn of_world(mut self, world: u64) -> Self {
+        self.world = world;
+        self
+    }
+
     pub(crate) fn load(
         disk: Arc<dyn Disk>,
         root: &Path,
@@ -499,6 +507,7 @@ impl Lanes {
             // Where there is none, this one stands in until the table is written below.
             table: stored.unwrap_or_else(|| Table::made_from(told, 0, 0)),
             spawn,
+            world: 0,
             regions,
             table_last,
             players,
@@ -1507,6 +1516,7 @@ impl Lanes {
             pinned: self.table.pinned(region).to_vec(),
             issued: EntityId(highest),
             spawn: self.spawn,
+            world: self.world,
         };
         let opened = Opened {
             session,

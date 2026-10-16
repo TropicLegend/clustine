@@ -17,6 +17,7 @@ use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
 mod fluids;
+mod random_ticks;
 mod reshape;
 mod ticks;
 mod updates;
@@ -40,6 +41,10 @@ pub struct RegionConfig {
     /// below it counts as no place: such a player enters at the spawn point, with what
     /// they held. See section 4 of the same record.
     pub lowest_y: i32,
+    /// What random ticks are drawn from, besides the chunk, the section and the tick:
+    /// the world's own, so that two worlds differ
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
+    pub seed: u64,
 }
 
 /// What the world store says of a region's chunks when the region is opened.
@@ -547,6 +552,7 @@ impl Region {
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
+        self.run_random_ticks(&mut output);
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
         // they stay, and the answer decides.
@@ -1981,6 +1987,7 @@ mod tests {
             starting_hotbar: hotbar(),
             return_after: 0,
             lowest_y: -64,
+            seed: 0,
         }
     }
 

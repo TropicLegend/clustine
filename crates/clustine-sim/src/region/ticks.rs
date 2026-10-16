@@ -134,6 +134,11 @@ impl Region {
         self.ticks.changed.iter().copied().collect()
     }
 
+    /// The chunks the region ticks, ascending.
+    pub(crate) fn ticking_chunks(&self) -> Vec<ChunkPos> {
+        self.ticks.ticking.iter().copied().collect()
+    }
+
     /// Notes that the seam entries of `chunk` changed in this tick.
     pub(crate) fn ticks_seams_changed(&mut self, chunk: ChunkPos) {
         self.ticks.seams_changed.insert(chunk);

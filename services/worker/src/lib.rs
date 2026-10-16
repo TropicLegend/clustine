@@ -990,14 +990,16 @@ pub struct RegionSettings {
 }
 
 impl RegionSettings {
-    /// The configuration of a region of the world whose spawn is the block `spawn`:
-    /// players enter in the middle of it.
-    pub fn with_spawn(self, spawn: BlockPos) -> RegionConfig {
+    /// The configuration of a region of the world whose spawn is the block `spawn` and
+    /// whose number is `world`: players enter in the middle of the spawn, and random
+    /// ticks are drawn from the number.
+    pub fn with_spawn(self, spawn: BlockPos, world: u64) -> RegionConfig {
         RegionConfig {
             spawn: Vec3::bottom_centre_of(spawn),
             starting_hotbar: self.starting_hotbar,
             return_after: self.return_after,
             lowest_y: self.lowest_y,
+            seed: world,
         }
     }
 }
@@ -1018,7 +1020,7 @@ impl RegionRunner {
     ) -> Result<Self, RestoreError> {
         let holdings = holdings(&restored);
         let rings = settings.rings;
-        let config = settings.with_spawn(restored.spawn);
+        let config = settings.with_spawn(restored.spawn, restored.world);
         let state = restored_state(restored)?;
         let mut runner =
             Self::with_store(Region::restore(config, state, holdings), Box::new(store));
@@ -4460,7 +4462,13 @@ mod tests {
     /// What [`settings`] makes of a region of the flat world, whose spawn [`SPAWN`]
     /// is the middle of.
     fn config(return_after: u64) -> RegionConfig {
-        settings(return_after).with_spawn(BlockPos::new(0, -60, 0))
+        settings(return_after).with_spawn(BlockPos::new(0, -60, 0), flat_world())
+    }
+
+    /// The number the store gives the classic flat world.
+    fn flat_world() -> u64 {
+        use clustine_world::ChunkGenerator as _;
+        clustine_worldstore::world_number(&FlatGenerator::classic().settings().identity)
     }
 
     /// A store of a flat world that is one region and only lasts as long as the store.
@@ -4523,7 +4531,7 @@ mod tests {
     ) -> (RegionRunner, Arc<GateControl>) {
         let (inner, restored) = store.open_region(hello).unwrap();
         let rings = settings.rings;
-        let config = settings.with_spawn(restored.spawn);
+        let config = settings.with_spawn(restored.spawn, restored.world);
         let control = Arc::new(GateControl::default());
 
         let gate = Gate {
@@ -7091,6 +7099,7 @@ mod tests {
             state,
             deltas,
             issued: EntityId(0),
+            world: 0,
         };
         // Of this build by its first two bytes, and nothing postcard can read behind.
         let unreadable = |tick| clustine_rpc::TickState {
@@ -7442,6 +7451,7 @@ mod tests {
             state,
             deltas,
             issued: EntityId(0),
+            world: 0,
         };
         let (state, delta) = a_state_and_a_delta();
         let item = |tick, state| clustine_rpc::TickState { tick, state };

@@ -65,6 +65,7 @@ fn config(spawn: Vec3) -> RegionConfig {
         starting_hotbar: starting_hotbar(),
         return_after: 0,
         lowest_y: -64,
+        seed: 0,
     }
 }
 

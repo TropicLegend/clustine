@@ -938,6 +938,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             held: vec![(MERGED, 5)],
             pinned: vec![west],
             issued: EntityId(0),
+            world: crate::world_number(&generator().settings().identity),
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -947,6 +948,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             held: Vec::new(),
             pinned: vec![east],
             issued: EntityId(0),
+            world: crate::world_number(&generator().settings().identity),
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -956,6 +958,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             held: vec![(PART[0], 2), (PART[1], 2)],
             pinned: Vec::new(),
             issued: EntityId(0),
+            world: crate::world_number(&generator().settings().identity),
         },
     ];
     let mut handles = Vec::new();

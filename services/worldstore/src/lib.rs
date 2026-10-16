@@ -748,6 +748,15 @@ fn start(
     begin(disk, root, chunks, generator, pins, spawn)
 }
 
+/// The world's number ([`clustine_rpc::messages::Restored::world`]): FNV-1a of what
+/// decides the generator's output, which names the seed of a world that has one, so
+/// that it is the same at every start and differs between worlds.
+pub fn world_number(identity: &str) -> u64 {
+    identity.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
 /// How far around the spawn's chunk a store has the chunks made when it starts: the
 /// view distance an edge grants by default, and two, for the chunks a client is sent one
 /// beyond its view and the ring a region loads around them, whose neighbours a chunk's
@@ -771,6 +780,7 @@ fn begin(
     spawn: BlockPos,
 ) -> Result<Store, StoreError> {
     let division = pins.with_home(spawn.chunk());
+    let world = world_number(&generator.settings().identity);
     let (jobs, queued) = mpsc::channel();
     let service = ChunkService::new(
         chunks,
@@ -783,7 +793,7 @@ fn begin(
         .name("worldstore-chunks".to_owned())
         .spawn(move || service.run(queued))?;
     let prepare = jobs.clone();
-    let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?;
+    let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?.of_world(world);
     // The chunks a first player sees, made ahead on the generator's pool while nobody
     // is there; a region that asks for one meanwhile waits for it as for any other.
     // Chunks are stored only once a region was handed them, so this is at every start.

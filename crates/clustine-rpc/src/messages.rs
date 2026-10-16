@@ -551,6 +551,10 @@ pub struct Restored {
     /// for the first time, as the world keeps it from when it was made. Its chunk is
     /// the home chunk, which the region that holds it never gives back.
     pub spawn: BlockPos,
+    /// What the world's random ticks are drawn from: a number of the world's own, the
+    /// same at every opening, so that two worlds differ
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
+    pub world: u64,
 }
 
 impl Restored {
@@ -600,6 +604,8 @@ pub enum StoreWelcome {
         issued: EntityId,
         /// [`Restored::spawn`].
         spawn: BlockPos,
+        /// [`Restored::world`].
+        world: u64,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.

@@ -97,6 +97,7 @@ fn config() -> RegionConfig {
         // Nothing is given back in these tests.
         return_after: 1_000_000,
         lowest_y: LOWEST_Y,
+        seed: 0,
     }
 }
 

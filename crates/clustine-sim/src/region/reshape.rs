@@ -428,6 +428,7 @@ mod tests {
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
             lowest_y: -64,
+            seed: 0,
         }
     }
 

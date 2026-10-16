@@ -502,6 +502,7 @@ mod tests {
             ],
             issued: EntityId(0),
             spawn: BlockPos::new(-1, 320, 29_999_999),
+            world: 0,
         };
         assert_eq!(restored.tick(), 9);
         let welcomes = [
@@ -510,6 +511,7 @@ mod tests {
                 pinned: restored.pinned.clone(),
                 issued: EntityId(i32::MAX),
                 spawn: BlockPos::new(0, -60, 0),
+                world: 0,
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Absorbed {
@@ -605,6 +607,7 @@ mod tests {
             deltas: Vec::new(),
             issued: EntityId(0),
             spawn: BlockPos::new(-1, 320, 29_999_999),
+            world: 0,
         };
         assert_eq!(fresh.tick(), 0);
         fresh.state = Some(TickState {
@@ -705,6 +708,7 @@ mod tests {
                 pinned: Vec::new(),
                 issued,
                 spawn: BlockPos::new(-90, 64, 32),
+                world: 0,
             });
             round_trip(Restored {
                 held: Vec::new(),
@@ -714,6 +718,7 @@ mod tests {
                 deltas: Vec::new(),
                 issued,
                 spawn: BlockPos::new(-90, 64, 32),
+                world: 0,
             });
         }
     }

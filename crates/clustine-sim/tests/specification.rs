@@ -60,6 +60,7 @@ fn config_a() -> RegionConfig {
         starting_hotbar: hotbar(),
         return_after: 0,
         lowest_y: -64,
+        seed: 0,
     }
 }
 
@@ -82,6 +83,7 @@ fn config_b() -> RegionConfig {
         starting_hotbar: hotbar(),
         return_after: 0,
         lowest_y: -64,
+        seed: 0,
     }
 }
 

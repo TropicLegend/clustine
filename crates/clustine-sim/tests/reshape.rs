@@ -112,6 +112,7 @@ fn config(return_after: u64) -> RegionConfig {
         starting_hotbar: hotbar(),
         return_after,
         lowest_y: -64,
+        seed: 0,
     }
 }
 
@@ -4829,6 +4830,7 @@ fn run_config() -> RegionConfig {
         starting_hotbar: hotbar(),
         return_after: 0,
         lowest_y: -64,
+        seed: 0,
     }
 }
 

@@ -94,6 +94,7 @@ fn config(return_after: u64) -> RegionConfig {
         starting_hotbar: hotbar(),
         return_after,
         lowest_y: -64,
+        seed: 0,
     }
 }
 
