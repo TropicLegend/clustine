@@ -8,11 +8,14 @@
 //! the judge leaves out the chunks such a structure reaches.
 
 mod buried_treasure;
+mod code_piece;
 mod igloo;
 mod jigsaw;
+mod mineshaft;
 mod ocean_ruin;
 mod ruined_portal;
 mod shipwreck;
+mod stronghold;
 mod template_piece;
 #[cfg(test)]
 mod template_tests;
@@ -69,6 +72,8 @@ pub fn built(structure: usize) -> bool {
             | Kind::OceanRuin { .. }
             | Kind::RuinedPortal { .. }
             | Kind::BuriedTreasure
+            | Kind::Mineshaft { .. }
+            | Kind::Stronghold
     )
 }
 
@@ -101,6 +106,12 @@ pub(crate) fn place_piece(
         },
         StructurePiecePayload::Procedural(ProceduralPieceData::BuriedTreasure) => {
             return buried_treasure::place(placing, piece, state);
+        }
+        StructurePiecePayload::Procedural(ProceduralPieceData::Mineshaft(data)) => {
+            return mineshaft::place(placing, piece, data, state);
+        }
+        StructurePiecePayload::Procedural(ProceduralPieceData::Stronghold(data)) => {
+            return stronghold::place(placing, piece, data, state);
         }
         StructurePiecePayload::Procedural(_) => {}
     }
