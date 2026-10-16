@@ -1067,6 +1067,272 @@ mod tests {
         }
     }
 
+    // Tests of the commit with the ticks of chunks (ADR-0024, section 4, "The format"),
+    // written from the record by someone who did not write the code.
+
+    /// A tick as a chunk keeps it, of a block or of a fluid.
+    fn kept_tick(x: u8, y: i16, z: u8, of: Ticked, delay: i32, priority: i8) -> ScheduledTick {
+        ScheduledTick {
+            at: InChunk { y, z, x },
+            of,
+            delay,
+            priority,
+        }
+    }
+
+    /// The ticks of three chunks: one with ticks of both queues, one whose list became
+    /// empty in the tick, and one with a tick of delay 0 scheduled in the tick, which is
+    /// kept as −1.
+    fn ticks_of_three_chunks() -> Vec<(ChunkPos, Vec<ScheduledTick>)> {
+        vec![
+            (
+                ChunkPos::new(-4, 2),
+                vec![
+                    kept_tick(0, -64, 15, Ticked::Block(200), -1, 0),
+                    kept_tick(7, 0, 7, Ticked::Fluid(2), 5, -3),
+                    kept_tick(15, 319, 0, Ticked::Block(u16::MAX), i32::MAX, i8::MIN),
+                ],
+            ),
+            (ChunkPos::new(-1, 0), Vec::new()),
+            (
+                ChunkPos::new(30_000, -30_000),
+                vec![kept_tick(3, -61, 4, Ticked::Block(1), -1, i8::MAX)],
+            ),
+        ]
+    }
+
+    /// A commit of `tick` with these ticks, without notes of stays.
+    fn commit_with_ticks(tick: u64, ticks: Vec<(ChunkPos, Vec<ScheduledTick>)>) -> LogRecord {
+        LogRecord::Commit {
+            region: 6,
+            tick,
+            epoch: 2,
+            changes: vec![
+                (BlockPos::new(-60, -61, 40), blocks::AIR),
+                (BlockPos::new(-60, -60, 40), blocks::SAND),
+            ],
+            state: b"a delta".to_vec(),
+            stays: Vec::new(),
+            ticks,
+        }
+    }
+
+    /// The ticks of several chunks are read back as they were written: every field of
+    /// every tick, the order of the chunks and of each chunk's list, a list that is
+    /// empty, and delays of −1.
+    #[test]
+    fn a_commit_with_the_ticks_of_several_chunks_with_an_empty_list_and_negative_delays_round_trips()
+     {
+        let record = commit_with_ticks(12, ticks_of_three_chunks());
+        let bytes = record.encode();
+        assert_eq!(bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + 2], [2, 9]);
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+    }
+
+    /// A list that became empty is committed as empty (section 4): a commit whose only
+    /// ticks are one empty list is still a commit with ticks, and that list is read
+    /// back. Written as a commit without ticks, the chunk's ticks would not be cleared
+    /// when the commit is replayed.
+    #[test]
+    fn a_commit_whose_only_ticks_are_an_empty_list_keeps_that_list() {
+        let record = commit_with_ticks(3, vec![(ChunkPos::new(0, 0), Vec::new())]);
+        let bytes = record.encode();
+        assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+    }
+
+    /// The commit with ticks is the commit of kind 2 with the notes of stays and the
+    /// ticks after it, as the table at the top of this file says: what comes before
+    /// the notes is written as in a commit without ticks, and a commit without notes
+    /// says that it has none.
+    #[test]
+    fn a_commit_with_ticks_has_the_fields_of_a_commit_without_them_first() {
+        let with = commit_with_ticks(12, ticks_of_three_chunks());
+        let LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            ..
+        } = with.clone()
+        else {
+            unreachable!()
+        };
+        let without = LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            stays: Vec::new(),
+            ticks: Vec::new(),
+        };
+        let with = with.encode()[FRAME_HEADER_LENGTH..].to_vec();
+        let without = without.encode()[FRAME_HEADER_LENGTH..].to_vec();
+        assert_eq!(without[..2], [2, 2]);
+        assert_eq!(with[..2], [2, 9]);
+        assert_eq!(with[2..without.len()], without[2..]);
+        // No notes.
+        assert_eq!(with[without.len()..without.len() + 4], [0, 0, 0, 0]);
+        // Three chunks.
+        assert_eq!(with[without.len() + 4..without.len() + 8], [0, 0, 0, 3]);
+    }
+
+    /// A commit with ticks and notes of stays keeps both.
+    #[test]
+    fn a_commit_with_ticks_and_notes_of_stays_keeps_both() {
+        let LogRecord::Commit { stays, .. } = commit_with_stays() else {
+            unreachable!()
+        };
+        let LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            ticks,
+            ..
+        } = commit_with_ticks(12, ticks_of_three_chunks())
+        else {
+            unreachable!()
+        };
+        let record = LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            stays,
+            ticks,
+        };
+        let bytes = record.encode();
+        assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+    }
+
+    /// A commit without ticks is written byte for byte as it was before there were
+    /// any, with notes of stays or without: the known answers of kinds 2 and 8.
+    #[test]
+    fn a_commit_without_ticks_is_written_byte_for_byte_as_before() {
+        let plain = LogRecord::Commit {
+            region: 4,
+            tick: 2,
+            epoch: 1,
+            changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+            state: vec![7, 8],
+            stays: Vec::new(),
+            ticks: Vec::new(),
+        };
+        let payload = [
+            2, 2, // version, kind
+            0, 0, 0, 4, // region
+            0, 0, 0, 0, 0, 0, 0, 2, // tick
+            0, 0, 0, 0, 0, 0, 0, 1, // epoch
+            0, 0, 0, 1, // one change
+            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9, // the change
+            0, 0, 0, 2, 7, 8, // the state
+        ];
+        assert_eq!(plain.encode(), frame(&payload));
+        // The notes of the commit with stays follow its state directly, as in kind 8.
+        let bytes = commit_with_stays().encode();
+        assert_eq!(bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + 2], [2, 8]);
+        assert_eq!(
+            bytes[FRAME_HEADER_LENGTH + 26..FRAME_HEADER_LENGTH + 36],
+            [0, 0, 0, 2, 7, 8, 0, 0, 0, 2]
+        );
+    }
+
+    /// A log written before there were commits with ticks, of records of kinds 1, 2,
+    /// 3 and 8 in bytes as they were written then, is read as it was, its commits
+    /// without ticks; and a commit with ticks appended to it is read after them.
+    #[test]
+    fn an_older_log_without_commits_with_ticks_reads_unchanged() {
+        let changes = [
+            2, 1, // version, kind
+            0, 0, 0, 0, 0, 0, 0, 2, // tick
+            0, 0, 0, 0, 0, 0, 0, 1, // epoch
+            0, 0, 0, 1, // one change
+            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9,
+        ];
+        let commit = [
+            2, 2, // version, kind
+            0, 0, 0, 4, // region
+            0, 0, 0, 0, 0, 0, 0, 2, // tick
+            0, 0, 0, 0, 0, 0, 0, 1, // epoch
+            0, 0, 0, 1, // one change
+            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9, // the change
+            0, 0, 0, 2, 7, 8, // the state
+        ];
+        let opened = [
+            2, 3, // version, kind
+            0, 0, 0, 4, // region
+            0, 0, 0, 0, 0, 0, 0, 9, // epoch
+            0, 0, 0, 0, 0, 0, 1, 44, // restored
+        ];
+        let mut log = frame(&changes);
+        log.extend(frame(&commit));
+        log.extend(commit_with_stays().encode());
+        log.extend(frame(&opened));
+        let older = vec![
+            LogRecord::Changes {
+                tick: 2,
+                epoch: 1,
+                changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+            },
+            LogRecord::Commit {
+                region: 4,
+                tick: 2,
+                epoch: 1,
+                changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+                state: vec![7, 8],
+                stays: Vec::new(),
+                ticks: Vec::new(),
+            },
+            commit_with_stays(),
+            LogRecord::Opened {
+                region: 4,
+                epoch: 9,
+                restored: 300,
+            },
+        ];
+        assert_eq!(read_log(&log), Ok((older.clone(), log.len())));
+
+        let newer = commit_with_ticks(3, ticks_of_three_chunks());
+        log.extend(newer.encode());
+        let mut all = older;
+        all.push(newer);
+        assert_eq!(read_log(&log), Ok((all, log.len())));
+    }
+
+    /// A commit with ticks is cut off and damaged like any other record: what is left
+    /// of it is not read, and what came before it is.
+    #[test]
+    fn a_commit_with_ticks_cut_off_or_damaged_anywhere_ends_the_log() {
+        let first = record(1, 2);
+        let mut log = first.encode();
+        let start = log.len();
+        let with_ticks = commit_with_ticks(2, ticks_of_three_chunks());
+        log.extend_from_slice(&with_ticks.encode());
+        for length in start..log.len() {
+            assert_eq!(
+                read_log(&log[..length]),
+                Ok((vec![first.clone()], start)),
+                "cut at {length}"
+            );
+        }
+        for index in start..log.len() {
+            let mut damaged = log.clone();
+            damaged[index] ^= 0x10;
+            assert_eq!(
+                read_log(&damaged),
+                Ok((vec![first.clone()], start)),
+                "byte {index}"
+            );
+        }
+        assert_eq!(read_log(&log), Ok((vec![first, with_ticks], log.len())));
+    }
+
     /// What the store compares a record with before it writes it.
     #[test]
     fn a_record_longer_than_the_limit_is_read_as_cut_off() {
@@ -1356,6 +1622,27 @@ mod tests {
         prop::collection::vec(stay, 0..20)
     }
 
+    fn scheduled_ticks() -> impl Strategy<Value = ScheduledTick> {
+        let of = prop_oneof![
+            any::<u16>().prop_map(Ticked::Block),
+            any::<u8>().prop_map(Ticked::Fluid),
+        ];
+        (
+            0..16_u8,
+            any::<i16>(),
+            0..16_u8,
+            of,
+            any::<i32>(),
+            any::<i8>(),
+        )
+            .prop_map(|(x, y, z, of, delay, priority)| ScheduledTick {
+                at: InChunk { y, z, x },
+                of,
+                delay,
+                priority,
+            })
+    }
+
     fn chunks() -> impl Strategy<Value = Vec<ChunkPos>> {
         prop::collection::vec(
             (any::<i32>(), any::<i32>()).prop_map(|(x, z)| ChunkPos::new(x, z)),
@@ -1427,6 +1714,34 @@ mod tests {
             let mut bytes = commit.encode();
             bytes.extend(opened.encode());
             prop_assert_eq!(read_log(&bytes), Ok((vec![commit, opened], bytes.len())));
+        }
+
+        /// Commits with the ticks of any chunks, of any number, are read back as they
+        /// were written.
+        #[test]
+        fn commits_with_ticks_round_trip(
+            tick: u64,
+            ticks in prop::collection::vec(
+                (
+                    (any::<i32>(), any::<i32>()).prop_map(|(x, z)| ChunkPos::new(x, z)),
+                    prop::collection::vec(scheduled_ticks(), 0..20),
+                ),
+                1..10,
+            ),
+            stays in stays(),
+        ) {
+            let commit = LogRecord::Commit {
+                region: 1,
+                tick,
+                epoch: 3,
+                changes: Vec::new(),
+                state: Vec::new(),
+                stays,
+                ticks,
+            };
+            let bytes = commit.encode();
+            prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
+            prop_assert_eq!(read_log(&bytes), Ok((vec![commit], bytes.len())));
         }
 
         #[test]

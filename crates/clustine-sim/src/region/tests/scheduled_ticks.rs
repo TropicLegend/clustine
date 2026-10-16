@@ -781,6 +781,50 @@ fn a_region_restored_from_its_saved_chunks_runs_their_ticks_as_the_original_does
     assert_eq!(fell, [lower, gravel, upper]);
 }
 
+/// What step B4c commits of a chunk's ticks is what its saved form keeps: the delays
+/// left at the end of the tick, in queue order; and a chunk that is not loaded has
+/// none. Once the chunk's last tick has run it is named no more among those that tick
+/// with ticks pending, and its ticks are empty.
+#[test]
+fn the_scheduled_ticks_of_a_chunk_are_those_its_saved_form_keeps() {
+    let origin = ChunkPos::new(0, 0);
+    let (a, b) = (at(5, -60, 5), at(6, -60, 5));
+    let (mut region, _) = ticking_with(
+        &[(a, blocks::SAND), (b, blocks::SAND)],
+        &[kept(b, blocks::SAND, 3, 0), kept(a, blocks::SAND, 1, 0)],
+    );
+    let saved = |region: &Region| region.saved_chunk(origin).unwrap().ticks().to_vec();
+    // Written at the end of L, the tick the chunk started ticking in.
+    assert_eq!(
+        region.scheduled_ticks(origin),
+        [kept(a, blocks::SAND, 0, 0), kept(b, blocks::SAND, 2, 0)]
+    );
+    assert_eq!(region.scheduled_ticks(origin), saved(&region));
+    assert_eq!(region.scheduled_ticks(ChunkPos::new(9, 9)), []);
+
+    // a runs in L + 1, b is left; b runs in L + 3, and the chunk has none.
+    let output = idle_tick(&mut region);
+    assert_eq!(output.ticks_changed, [origin]);
+    assert_eq!(output.ticks_pending, [origin]);
+    assert_eq!(
+        region.scheduled_ticks(origin),
+        [kept(b, blocks::SAND, 1, 0)]
+    );
+    assert_eq!(region.scheduled_ticks(origin), saved(&region));
+    let output = idle_tick(&mut region);
+    assert_eq!(output.ticks_changed, []);
+    assert_eq!(output.ticks_pending, [origin]);
+    assert_eq!(
+        region.scheduled_ticks(origin),
+        [kept(b, blocks::SAND, 0, 0)]
+    );
+    let output = idle_tick(&mut region);
+    assert_eq!(output.ticks_changed, [origin]);
+    assert_eq!(output.ticks_pending, []);
+    assert_eq!(region.scheduled_ticks(origin), []);
+    assert_eq!(saved(&region), []);
+}
+
 /// A tick scheduled by a player's dig names the chunk in that tick.
 #[test]
 fn a_scheduled_tick_names_its_chunk() {

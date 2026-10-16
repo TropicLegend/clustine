@@ -4101,6 +4101,19 @@ mod tests {
         commits: Mutex<Vec<u64>>,
         /// How many flushes were asked for.
         flushes: AtomicU64,
+        /// The commits asked for that carried the ticks of chunks, in that order.
+        ticked: Mutex<Vec<TickedCommit>>,
+        /// The saves asked for, in that order: the chunk, the tick and what was saved.
+        saved: Mutex<Vec<(ChunkPos, u64, Chunk)>>,
+    }
+
+    /// A commit that carried the ticks of chunks, as [`GateControl`] notes it: its
+    /// tick, how many block changes it had, and the ticks.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TickedCommit {
+        tick: u64,
+        changes: usize,
+        ticks: Vec<(ChunkPos, Vec<clustine_world::ScheduledTick>)>,
     }
 
     impl GateControl {
@@ -4275,6 +4288,29 @@ mod tests {
                     let mut noted = self.control.noted.lock().unwrap();
                     noted.push((*tick, stays.clone()));
                 }
+            }
+            if let StoreRequest::Commit {
+                tick,
+                changes,
+                ticks,
+                ..
+            } = &request
+                && !ticks.is_empty()
+            {
+                self.control.ticked.lock().unwrap().push(TickedCommit {
+                    tick: *tick,
+                    changes: changes.len(),
+                    ticks: ticks.clone(),
+                });
+            }
+            if let StoreRequest::Save {
+                position,
+                tick,
+                chunk,
+            } = &request
+            {
+                let saved = (*position, *tick, chunk.clone());
+                self.control.saved.lock().unwrap().push(saved);
             }
             if request == StoreRequest::Flush {
                 self.control.flushes.fetch_add(1, Ordering::SeqCst);
@@ -14586,5 +14622,6 @@ mod tests {
     }
 
     mod generation;
+    mod scheduled_ticks;
     mod stays;
 }

@@ -44,6 +44,8 @@ mod kill_unpinned;
 #[cfg(test)]
 mod regions;
 #[cfg(test)]
+mod replayed_ticks;
+#[cfg(test)]
 mod rest;
 #[cfg(test)]
 mod rounds;

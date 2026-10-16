@@ -339,3 +339,8 @@ holdings change.
   refused, where the game places dirt; only a player in creative can try it.
 - A commit with ticks makes the chunk no longer as generated in the store's replays,
   as a commit with blocks does.
+- Counting the chunks whose ticks age in `FEW_UNSAVED`, as section 4 has it, adds a
+  checkpoint and a wait for its flush to a merge of a region with more than eight such
+  chunks, and does not shorten the stop: they age again in every tick, and only the
+  stop's checkpoint saves them. B8 measures a merge's pause with and without the count
+  and keeps it only if it pays.

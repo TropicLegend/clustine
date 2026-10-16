@@ -1502,3 +1502,111 @@ fn a_restore_over_a_chunk_the_generator_fails_for_leaves_it_out() {
     assert_eq!(answer(&new), generating(A));
     assert_eq!(answer(&new), StoreReply::Unreadable { position: A });
 }
+
+// ADR-0024, section 4 ("The store"), written from the record by someone who did not
+// write the code: a commit's scheduled ticks put into a chunk the store holds only as
+// generated. Such a chunk is made and then has them applied, as with block changes,
+// and is no longer as generated, so that the remaking of a chunk whose generation
+// failed does not lose them.
+
+/// One tick of a block in the chunk, with `delay` left.
+fn kept_ticks(delay: i32) -> Vec<clustine_world::ScheduledTick> {
+    vec![clustine_world::ScheduledTick {
+        at: clustine_world::InChunk::new(3, -60, 4),
+        of: clustine_world::Ticked::Block(42),
+        delay,
+        priority: 0,
+    }]
+}
+
+/// Commits `tick` with no block changes, and with `ticks` as the ticks of chunks.
+fn commit_ticks(
+    handle: &StoreHandle,
+    tick: u64,
+    ticks: Vec<(ChunkPos, Vec<clustine_world::ScheduledTick>)>,
+) {
+    handle.request(StoreRequest::Commit {
+        tick,
+        changes: Vec::new(),
+        state: whole("delta", tick),
+        stays: Vec::new(),
+        ticks,
+    });
+}
+
+/// `chunk` with `ticks` kept, no longer as generated and so without a failure.
+fn with_ticks(chunk: &Chunk, ticks: Vec<clustine_world::ScheduledTick>) -> Chunk {
+    let mut chunk = chunk.clone();
+    chunk.set_ticks(ticks);
+    chunk.mark_generated(0, false);
+    chunk
+}
+
+/// A restore whose commits carry the ticks of a chunk that was handed out and never
+/// durable, and of one that was never asked for: on the same store and after a crash,
+/// each is made and then has its ticks, and is stored so, no longer as generated.
+#[test]
+fn a_restore_makes_a_chunk_held_only_as_generated_and_then_gives_it_the_committed_ticks() {
+    let (store, control, disk) = fresh();
+    let x = open(&store, hello(EAST, 1));
+    generated(&x, A);
+    commit_ticks(&x, 1, vec![(A, kept_ticks(4)), (B, kept_ticks(-1))]);
+    committed(&x, 1);
+    let crashed = Arc::new(disk.crashed(Survival::Nothing));
+    assert_eq!(stored(&crashed, A), None);
+    assert_eq!(stored(&crashed, B), None);
+
+    let new = open(&store, hello(EAST, 2));
+    flushed(&new);
+    for (position, delay) in [(A, 4), (B, -1)] {
+        let chunk = stored(&disk, position).expect("the restored chunk is durable");
+        let made = made(position, VERSION, false);
+        assert_eq!(chunk, with_ticks(&made, kept_ticks(delay)), "{position:?}");
+        assert_eq!(chunk.generated(), 0, "{position:?}");
+    }
+    assert_eq!((control.entered(A), control.entered(B)), (1, 1));
+
+    let (toy, control) = toy_of(VERSION);
+    let store = store_on(&crashed, toy);
+    let (new, restored) = store.open_region(hello(EAST, 2)).unwrap();
+    assert_eq!(ticks(&restored), [1]);
+    flushed(&new);
+    for (position, delay) in [(A, 4), (B, -1)] {
+        let chunk = stored(&crashed, position).expect("the restored chunk is durable");
+        let made = made(position, VERSION, false);
+        assert_eq!(chunk, with_ticks(&made, kept_ticks(delay)), "{position:?}");
+    }
+    assert_eq!((control.entered(A), control.entered(B)), (1, 1));
+}
+
+/// A chunk stored as generated "with a failure", whose ticks a commit carries, is
+/// stored by the restore with the ticks and no longer as generated; so a newer
+/// generator does not make it again, and the ticks are kept. The record found this
+/// while it was built ("Found while building").
+#[test]
+fn a_chunk_given_ticks_by_a_restore_is_no_longer_as_generated_and_is_not_made_again() {
+    let (disk, chunk) = marked_world(true, false);
+    let (toy, control) = toy_of(1);
+    let store = store_on(&disk, toy);
+    let x = open(&store, hello(EAST, 2));
+    commit_ticks(&x, 1, vec![(A, kept_ticks(7))]);
+    committed(&x, 1);
+    let y = open(&store, hello(EAST, 3));
+    flushed(&y);
+    let kept = with_ticks(&chunk, kept_ticks(7));
+    let now = stored(&disk, A).expect("the restored chunk is durable");
+    assert_eq!(now, kept);
+    assert_eq!((now.generated(), now.with_failure()), (0, false));
+    load(&y, A);
+    assert_eq!(answer(&y), loaded(A, kept.clone()));
+    store.close().unwrap();
+    drop((x, y, store));
+    control.wait_gone();
+
+    let (toy, control) = toy_of(2);
+    let store = store_on(&disk, toy);
+    let z = open(&store, hello(EAST, 4));
+    load(&z, A);
+    assert_eq!(answer(&z), loaded(A, kept));
+    assert_eq!(control.entered(A), 0);
+}
