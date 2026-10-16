@@ -19,28 +19,34 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-15)
+## Where the work stands (2026-10-16)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
 
 **What a player has.** A creative world, flat or with `--seed` the game's overworld
-for that seed: its biomes, the shape of its land, its surface, caves and ravines, and
-everything the game's features place, trees, grass, flowers, ores, lakes, springs,
-geodes, dripstone and sculk, block for block what the game makes before it builds
-structures, with the ground levelled where they will stand. Light as the game's, also after
-blocks change. Placing and using blocks by vanilla's rules: facing, halves,
-connections to neighbours as placed, waterlogging, doors, trapdoors, fence gates,
-flower pots, buckets and lily pads. A player who leaves comes back where they left,
-looking the same way, flying or not, with the same hotbar. The world runs in regions
-that follow their players across several workers; a worker or the world store can
-die without anyone being disconnected or losing what they were shown.
+for that seed: its biomes, the shape of its land, its surface, caves and ravines,
+everything the game's features place (trees, grass, flowers, ores, lakes, springs,
+geodes, dripstone, sculk) and its structures' buildings, block for block what the game
+makes, the land settled as the game settles it before it is first shown. Light as the
+game's, also after blocks change. Placing and using blocks by vanilla's rules. Blocks
+that behave (phase B, [ADR-0024](adr/0024-block-behaviour-in-a-region.md)): what a
+block rests on or hangs from going takes it along, fences and walls join as their
+neighbours change, sand and gravel fall (landing at once), water and lava flow as the
+game's and make obsidian, cobblestone, stone and basalt where they meet, blocks are
+waterlogged and concrete powder hardens; leaves of a felled tree decay, sugar cane,
+cactus, kelp and vines grow, copper weathers, amethyst and dripstone grow, farmland
+dries, fire burns and spreads and lava sets it, coral dies out of water. A player who
+leaves comes back where they left. The world runs in regions that follow their players
+across several workers; a worker or the world store can die without anyone being
+disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: structures' buildings
-(phase S of the terrain plan); water and lava that flow, so a spring stands as one
-block, sand that falls, and blocks beside a placed or broken one that change in turn
-(phase B); animals and monsters; the Nether and the
-End (phase D); survival mode, inventories beyond the hotbar, and crafting.
+**What a player will miss within minutes**, all of it planned: animals, monsters and
+items lying in the world (entities, below); what needs light, crops and saplings
+growing, grass spreading, ice and snow melting (light in the simulation); redstone;
+where two regions meet, water and updates wait at the border until one region has both
+sides (seamless borders, below); the Nether and the End; survival mode, inventories
+beyond the hotbar, and crafting.
 
 **Built since M3:**
 
@@ -55,20 +61,44 @@ End (phase D); survival mode, inventories beyond the hotbar, and crafting.
   [ADR-0022](adr/0022-what-a-chunk-carries.md)); generation on a pool with what it made
   stored (W5, [ADR-0021](adr/0021-generation-is-a-function.md)); placing and using
   (W6, [plan](groundwork/w6-plan.md)); noise, routers, biomes, the fill, the surface,
-  the carvers and the structures' starts (T1 to T7), each judged against the game's
-  own classes; a new world's spawn chosen as the game chooses it, kept in the world's
-  `meta`, the land around it made as the store starts, and the regions' ticks measured
-  while a first view is made (T8, [plan](groundwork/t8-plan.md)); the overworld's
-  features in ADR-0021's order of runs, judged against the game's own server over an
-  area of every overworld biome on two seeds, and served (F0 to F6,
-  [plan](groundwork/f-plan.md)). Not built: W4 (serving a world the official server
-  made), the Nether's and the End's features (F7, with D) and F8.
+  the carvers and the structures' starts (T1 to T7); a new world's spawn (T8,
+  [plan](groundwork/t8-plan.md)); the overworld's features (F0 to F6,
+  [plan](groundwork/f-plan.md)); the structures' buildings (S0 to S2,
+  [plan](groundwork/s-plan.md)), each judged against the game's own server. Not built:
+  W4 (serving a world the official server made), the Nether's and the End's features
+  (F7, with D), F8 and S3.
+- *Block behaviour* (phase B, [plan](groundwork/b-plan.md),
+  [ADR-0024](adr/0024-block-behaviour-in-a-region.md)): B1 to B7, on the branch
+  `b3-work` until its full check passes. The updates of a change (B3), scheduled ticks
+  that are durable and survive merges, splits and crashes, the ring of chunks a region
+  loads around its views and the wider merge distance (B4), fluids (B5),
+  post-processing, settled first snapshots and seam entries at borders (B6), random
+  ticks, fire and coral (B7). Each judged against the game's classes and, where a
+  settled result can be compared, against the official server (`placing_oracle.rs`).
 
-**Under way:** the structures' blocks (S, [plan](groundwork/s-plan.md)) and block
-behaviour (B, [plan](groundwork/b-plan.md), [ADR-0024](adr/0024-block-behaviour-in-a-region.md))
-side by side. S0 is built: the runs place each step's structures before its features,
-by stubs, and the judge of features runs with structures on, comparing the chunks no
-unbuilt structure reaches. B's record is under its third review; nothing of B is built.
+**Under way:** B8, the measurements of phase B on the real disk (commits with water
+flowing, random ticks over a full view, a flight over new land, a merge's pause) and
+the parity matrix; then S3. The judge of features found three areas of seed 12345
+that differ (an iceberg; water ticks at chunk edges in two areas), being looked into.
+
+**What to try with a real client, phase B** (`cargo run --release -p clustine --
+--seed 3`):
+
+1. Pour water on flat ground: it spreads seven blocks, one level lower each block,
+   and runs towards a hole within four blocks. Take the source away: it dries up.
+2. Pour lava beside a pond: the lava hisses, and its source becomes obsidian, the
+   flow cobblestone, lava flowing down onto water stone.
+3. Break the stone under sand: it falls at once. Break the block under a torch, a
+   ladder or a door: they go with it, and others nearby see the block break.
+4. Cut down the log of a tree: within a few minutes its leaves are gone.
+5. Plant sugar cane by water, or put kelp in the sea: they grow. Fire on netherrack
+   stays; fire beside planks spreads and burns them.
+6. Place a coral block on land: within five seconds it is dead coral.
+7. Fly far out and back: new land is shown settled, as the game shows it, and does
+   not rearrange itself as it appears (water at a cave's mouth may then flow on, as in
+   the game).
+
+What to say if it is not so: which step, what was seen, and the log.
 
 **Next, in the order agreed on 2026-10-15** (the owner: "try to follow the roadmap and
 try to accomplish vanilla parity"):
