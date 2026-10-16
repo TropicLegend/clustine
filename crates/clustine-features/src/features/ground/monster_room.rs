@@ -148,7 +148,7 @@ pub fn spawner_data(mob: &str) -> clustine_world::BlockEntity {
 
 /// Whether the block at `pos` keeps a block entity of the type of `state`'s block:
 /// what the game's `getBlockEntity(pos) instanceof ...` finds.
-fn keeps_entity_of(level: &mut Level<'_>, pos: BlockPos, state: BlockState) -> bool {
+pub(crate) fn keeps_entity_of(level: &mut Level<'_>, pos: BlockPos, state: BlockState) -> bool {
     let kind = state.block_info().and_then(|info| info.block_entity_type);
     kind.is_some() && level.block_entity(pos).map(|entity| entity.kind) == kind
 }

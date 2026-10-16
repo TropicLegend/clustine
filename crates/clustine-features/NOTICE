@@ -14,7 +14,14 @@ classes do otherwise put right, each file saying which: src/structures/jigsaw.rs
 (pool_element.rs); src/structures/template_piece.rs, src/structures/shipwreck.rs,
 src/structures/igloo.rs and src/structures/ocean_ruin.rs (template_piece.rs and
 template_processors.rs); src/structures/ruined_portal.rs (ruined_portal.rs and
-template_processors.rs); src/structures/buried_treasure.rs (buried_treasure.rs).
+template_processors.rs); src/structures/buried_treasure.rs (buried_treasure.rs);
+src/structures/code_piece.rs, src/structures/mineshaft.rs and
+src/structures/stronghold.rs (mod.rs, mineshaft.rs and stronghold.rs);
+src/structures/scattered.rs, src/structures/desert_pyramid.rs,
+src/structures/jungle_temple.rs, src/structures/swamp_hut.rs,
+src/structures/ocean_monument.rs and src/structures/ocean_monument/rooms.rs
+(scattered_feature.rs, desert_pyramid.rs, jungle_temple.rs, swamp_hut.rs and
+ocean_monument/); src/structures/woodland_mansion.rs (template_piece.rs).
 
 The data the crate computes with is Mojang's, from `clustine-worldgen-data`; see
 NOTICE.md at the root of the repository. No block of a structure template is in

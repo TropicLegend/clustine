@@ -9,13 +9,18 @@
 
 mod buried_treasure;
 mod code_piece;
+mod desert_pyramid;
 mod igloo;
 mod jigsaw;
+mod jungle_temple;
 mod mineshaft;
+mod ocean_monument;
 mod ocean_ruin;
 mod ruined_portal;
+mod scattered;
 mod shipwreck;
 mod stronghold;
+mod swamp_hut;
 mod template_piece;
 #[cfg(test)]
 mod template_tests;
@@ -74,6 +79,10 @@ pub fn built(structure: usize) -> bool {
             | Kind::BuriedTreasure
             | Kind::Mineshaft { .. }
             | Kind::Stronghold
+            | Kind::OceanMonument
+            | Kind::DesertPyramid
+            | Kind::JungleTemple
+            | Kind::SwampHut
     )
 }
 
@@ -113,6 +122,18 @@ pub(crate) fn place_piece(
         StructurePiecePayload::Procedural(ProceduralPieceData::Stronghold(data)) => {
             return stronghold::place(placing, piece, data, state);
         }
+        StructurePiecePayload::Procedural(ProceduralPieceData::OceanMonument(data)) => {
+            ocean_monument::place(placing, piece, data);
+        }
+        StructurePiecePayload::Procedural(ProceduralPieceData::DesertPyramid(_)) => {
+            return desert_pyramid::place(placing, piece, state);
+        }
+        StructurePiecePayload::Procedural(ProceduralPieceData::JungleTemple(_)) => {
+            return jungle_temple::place(placing, piece, state);
+        }
+        StructurePiecePayload::Procedural(ProceduralPieceData::SwampHut(_)) => {
+            return swamp_hut::place(placing, piece, state);
+        }
         StructurePiecePayload::Procedural(_) => {}
     }
     state
@@ -120,4 +141,8 @@ pub(crate) fn place_piece(
 
 /// The start's `afterPlace`, once its pieces are placed: only the desert pyramid's and
 /// the woodland mansion's do anything.
-pub(crate) fn after_place(_placing: &mut Placing<'_, '_, '_>, _start: &Start) {}
+pub(crate) fn after_place(placing: &mut Placing<'_, '_, '_>, start: &Start) {
+    if let Kind::DesertPyramid = start.data().kind {
+        desert_pyramid::after_place(placing, start);
+    }
+}
