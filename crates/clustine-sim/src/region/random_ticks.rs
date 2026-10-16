@@ -55,6 +55,18 @@ impl Random {
         z ^ (z >> 31)
     }
 
+    /// `nextFloat`: from 0 up to 1.
+    #[allow(dead_code, reason = "the rules that draw a float use it")]
+    pub(crate) fn next_float(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    /// `nextDouble`: from 0 up to 1.
+    #[allow(dead_code, reason = "the rules that draw a double use it")]
+    pub(crate) fn next_double(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
     /// `nextInt(bound)`: from 0 up to `bound`, which is at least 1, each as likely.
     pub(crate) fn next_int(&mut self, bound: u32) -> u32 {
         // Lemire's multiply and shift, with the rejection that makes it exact.
