@@ -351,3 +351,10 @@ holdings change.
   neighbour is on its way that would let it tick: held and being loaded or made,
   being claimed, or not yet claimed and wanted as a viewer's. A guest's ring outside
   a pinned area never claims, and is not waited for.
+- With the ring, chunks a split's part is asked for that nobody held are rare: a
+  sprinter's next chunks are the ring's, and go with the part. W11 of the wanderer
+  tests (ADR-0017, section 9.6) no longer needs to meet one; the worker's own tests
+  take such chunks for a part's.
+- A merge or a split began the region anew without tickets but kept the runner's
+  rings, so rings were not handed in again around players who did not move; found by
+  the recalibration of the wanderer tests, and fixed.

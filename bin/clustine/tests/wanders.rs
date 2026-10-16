@@ -11,11 +11,12 @@
 //! world is divided, an edge with a view distance of 2 and a coordinator that is told
 //! that view distance, a rest of 5 s and nothing else: it reshapes by itself because
 //! that is what a coordinator does when told nothing, with the distances the rule
-//! gives, 10 and 18 chunks. With a view distance of 2 a client is sent the 7 by 7
-//! chunks around its own, so a lone player's region holds exactly those once its
-//! trail is given back. Some scenarios run on the single process as well: a `Server`
-//! in the test's own process, of which the list and the bots are all there is to look
-//! at, or a server process whose log is read.
+//! gives, 12 and 20 chunks. With a view distance of 2 a client is sent the 7 by 7
+//! chunks around its own, and a region loads and claims a ring of chunks around
+//! those (ADR-0024, section 2), so a lone player's region holds exactly the 9 by 9
+//! chunks around its player once its trail is given back. Some scenarios run on the
+//! single process as well: a `Server` in the test's own process, of which the list
+//! and the bots are all there is to look at, or a server process whose log is read.
 //!
 //! **The players** are groups, each a ledger scenario of the bots: `A`, two bots on
 //! the lanes z = 0 and 4, and `B`, one on z = 8, all in the row of chunks z = 0; and
@@ -27,6 +28,11 @@
 //! else, the test stays, marked `#[ignore = "finding: …"]`, with the sequence, what
 //! the record says and what happened above it; and where a scenario could not be
 //! written as the record has it, the test says what it does instead.
+//!
+//! The record's figures are those of its time: the distances have grown by two
+//! since, and a region's land by the ring it loads (ADR-0024, section 2). The
+//! figures here follow the constants below, and where a comment names a chunk it is
+//! the one that follows from them now.
 //!
 //! Every test prints its seed; `CLUSTINE_WANDERS_SEED` runs one again.
 //! `CLUSTINE_WANDERS_ROUNDS` sets how many rounds the tests of rounds do,
@@ -61,11 +67,16 @@ const VIEW: i32 = 2;
 
 /// The distances that follow from it, in chunks: regions whose players are this near
 /// are merged, and players of one region further apart than the second are split.
-const MERGE_DISTANCE: i32 = 10;
-const SPLIT_DISTANCE: i32 = 18;
+/// They are the coordinator's defaults, `2 * VIEW + 8` and `2 * VIEW + 16`
+/// (`Policy::for_view_distance`).
+const MERGE_DISTANCE: i32 = 2 * VIEW + 8;
+const SPLIT_DISTANCE: i32 = 2 * VIEW + 16;
 
-/// How far a client with that view distance is sent chunks along an axis.
-const REACH: i32 = VIEW + 1;
+/// How far a region's land reaches from a player along an axis. A client with that
+/// view distance is sent the chunks up to `VIEW + 1` away, and the region loads a ring
+/// one chunk further around them, which it claims as it claims a viewer's chunks
+/// (ADR-0024, section 2): so its `bounds` reach `VIEW + 2` chunks from a player.
+const REACH: i32 = VIEW + 2;
 
 /// How long the coordinator leaves a region alone after anything it did to it, and
 /// how long a region has to be without players before it is absorbed: three rests.
@@ -81,6 +92,12 @@ const GIVEN_BACK: Duration = Duration::from_secs(35);
 const OUT: i32 = SPLIT_DISTANCE + 1;
 const FAR: i32 = 40;
 const BACK: i32 = 8;
+
+/// The first chunk of the row that is nearer to chunk `OUT` than to the chunk players
+/// enter in. When a group in chunk `OUT` is split off a region whose players stay in
+/// that chunk, what the region holds is the part's from here east and stays the
+/// region's west of here.
+const HALFWAY: i32 = OUT / 2 + 1;
 
 /// Blocks a tick of the group that goes: ten blocks a second, the pace of the
 /// wanderer of W10, so that a round is walked in minutes. And of a wanderer on foot.
@@ -131,7 +148,7 @@ fn middle_of(x: i32, z: i32) -> (f64, f64) {
 
 /// Where a wanderer walks to who is to be in the chunk at `x` of the row z = 0 and
 /// comes from where players enter: along the block row they enter in, on which
-/// nobody builds. A straight walk to the middle of chunk 19 leads through the plot
+/// nobody builds. A straight walk to the middle of chunk 21 leads through the plot
 /// of the first bot of `A`, and a block that `A` places where the wanderer's body is
 /// at that tick is acknowledged and not placed, as in the game: one run in thirty
 /// or so failed for it.
@@ -342,22 +359,23 @@ impl Wanders {
         ));
     }
 
-    /// W1, step 1. `B` is sent to chunk 19, beyond the split distance from `A` and
+    /// W1, step 1. `B` is sent to chunk 21, beyond the split distance from `A` and
     /// from the chunk players enter in. Exactly one split is begun, of region 0, with
-    /// one group, and not before `B` has been in chunk 19; it ends with the id the
+    /// one group, and not before `B` has been in chunk 21; it ends with the id the
     /// list named as its next. The part is pinned to nothing and holds what `B` sees
-    /// and the near end of its trail; region 0 holds nothing east of chunk 9. In a
-    /// cluster the part is moved to the other worker once, a rest or more after the
-    /// split ended, and region 0 is not. Returns the part.
+    /// and the near end of its trail; region 0 holds nothing east of chunk 10, the
+    /// last that is nearer to `A` than to `B`. In a cluster the part is moved to the
+    /// other worker once, a rest or more after the split ended, and region 0 is not.
+    /// Returns the part.
     async fn b_is_split_off(&mut self) -> Region {
         let what = format!("to chunk {OUT}");
         self.b_is_split_off_between(within(OUT), &what).await
     }
 
     /// The same for a `B` that is sent to walk up and down `between` two x
-    /// coordinates whose east end is in chunk 19. Of where the part's land ends in
+    /// coordinates whose east end is in chunk 21. Of where the part's land ends in
     /// the east and begins in the west the record says what it says for a `B` that
-    /// stands in chunk 19, and only that `B` is held to it.
+    /// stands in chunk 21, and only that `B` is held to it.
     async fn b_is_split_off_between(&mut self, between: (f64, f64), what: &str) -> Region {
         let stands = between == within(OUT);
         let before = self.list().await;
@@ -375,25 +393,25 @@ impl Wanders {
         self.arrives("B").await;
         for list in [&first, &list] {
             let (home, theirs) = (bounds(list, 0), bounds(list, part));
-            // A `B` that walks up and down is in chunk 18 or 19 when it goes, and
-            // sees chunk 18 from wherever it walks.
+            // A `B` that walks up and down is in chunk 20 or 21 when it goes, and
+            // sees chunk 20 from wherever it walks.
             let near = if stands { OUT } else { OUT - 1 };
             let as_told = living(list) == [0, part]
                 && list.next.0 == part + 1
                 && info(list, part).is_some_and(|info| info.pinned.is_empty())
                 && has_chunk(theirs, near, 0)
                 && theirs.is_some_and(|theirs| {
-                    !stands || (theirs.min.x >= MERGE_DISTANCE && theirs.max.x <= OUT + REACH)
+                    !stands || (theirs.min.x >= HALFWAY && theirs.max.x <= OUT + REACH)
                 })
                 && has_chunk(home, 0, 0)
-                && home.is_some_and(|home| home.max.x < MERGE_DISTANCE);
+                && home.is_some_and(|home| home.max.x < HALFWAY);
             if !as_told {
                 self.fail(&format!(
                     "after the split the list was to have region 0, with chunk 0 and nothing \
                      east of chunk {}, and region {part}, pinned to nothing, with chunk {near} \
-                     and, if B stands, nothing west of chunk {MERGE_DISTANCE} or east of chunk \
+                     and, if B stands, nothing west of chunk {HALFWAY} or east of chunk \
                      {}: {list:?}",
-                    MERGE_DISTANCE - 1,
+                    HALFWAY - 1,
                     OUT + REACH
                 ));
             }
@@ -479,7 +497,7 @@ impl Wanders {
     }
 
     /// `B` has arrived in chunk 40, in the part. It walks up and down there for
-    /// 35 s, and then the part holds exactly the 7 by 7 chunks around `B` and region
+    /// 35 s, and then the part holds exactly the 9 by 9 chunks around `B` and region
     /// 0 those around the chunk players enter in.
     ///
     /// The 35 s are bounded as `follows.rs` bounds such things, by the rounds `B`
@@ -514,7 +532,7 @@ impl Wanders {
 
     /// W1, step 2. `B` is sent to chunk 40. Nothing is begun, by the distances or for
     /// an empty region, from when `B` is sent until 35 s after it has arrived; then
-    /// the part holds exactly the 7 by 7 chunks around `B` and region 0 those around
+    /// the part holds exactly the 9 by 9 chunks around `B` and region 0 those around
     /// the chunk players enter in. At every reading of the list in between, region
     /// 0's `bounds` end west of where the part's begin and their east end never moves
     /// east.
@@ -528,8 +546,8 @@ impl Wanders {
     }
 
     /// W1, step 3. `B` is sent to chunk 8. Exactly one merge is begun, by the
-    /// distances, of the part into region 0 with a gap of 10 or less, and not before
-    /// `B` has been in chunk 10; it ends well, and the list has region 0 alone.
+    /// distances, of the part into region 0 with a gap of 12 or less, and not before
+    /// `B` has been in chunk 12; it ends well, and the list has region 0 alone.
     async fn b_comes_back(&mut self, part: Region) {
         let what = format!("to chunk {BACK}");
         self.b_comes_back_between(part, within(BACK), &what).await;
@@ -682,7 +700,7 @@ fn visitors(address: String, over: Arc<AtomicBool>) -> JoinHandle<Vec<Visit>> {
 }
 
 /// W1 on whatever serves the world: `A` and `B` settle in the chunk players enter
-/// in, and then, in rounds, `B` is split off at chunk 19, walks on to chunk 40 and
+/// in, and then, in rounds, `B` is split off at chunk 21, walks on to chunk 40 and
 /// comes back to chunk 8, where it is merged into region 0 again. With `visited`,
 /// which is W4, somebody joins every three seconds all the while, builds beside
 /// where players enter and leaves.
@@ -690,10 +708,10 @@ fn visitors(address: String, over: Arc<AtomicBool>) -> JoinHandle<Vec<Visit>> {
 /// One thing is done here that the record does not say: at the end of a round `B`
 /// walks up and down in chunk 8 for 35 s before it is sent out again. The merge
 /// leaves region 0 with the trail `B` came back along, which reaches east of chunk
-/// 22 and is region 0's for thirty seconds more (section 3.2); a `B` that is split
+/// 25 and is region 0's for thirty seconds more (section 3.2); a `B` that is split
 /// off before that takes what is left of the trail along, and its part does not "end
-/// at x = 22 or west of it" as step 1 says. With the wait every round begins as the
-/// first does.
+/// at x = 25 or west of it" as step 1 says (the record's 22, with the distances and
+/// the reach of its time). With the wait every round begins as the first does.
 async fn apart_on_and_back(mut wanders: Wanders, visited: bool) {
     wanders.a_settles().await;
     wanders.b_settles().await;
@@ -821,12 +839,12 @@ async fn players_join_at_the_spawn_point_while_a_group_is_split_off_and_merged()
 }
 
 /// W2 on whatever serves the world. `A` stands in chunk 0. `B` walks between the
-/// chunks 9 and 11 for a minute: nothing is begun, as they are one region. `B` is
-/// sent to chunk 19 and is split off. `B` walks between the chunks 9 and 11 for a
-/// minute: one merge, when `B` has been within 10 chunks, and nothing after it. `B`
-/// walks between the chunks 17 and 19 for a minute: one split, in chunk 19, and
-/// nothing after it. In all: a split, a merge, a split, in that order, and the moves
-/// of parts.
+/// chunks 11 and 13, around the merge distance, for a minute: nothing is begun, as
+/// they are one region. `B` is sent to chunk 21 and is split off. `B` walks between
+/// the chunks 11 and 13 for a minute: one merge, when `B` has been within 12 chunks,
+/// and nothing after it. `B` walks between the chunks 19 and 21, around the split
+/// distance, for a minute: one split, in chunk 21, and nothing after it. In all: a
+/// split, a merge, a split, in that order, and the moves of parts.
 ///
 /// "For a minute" is bounded by the rounds `B` walks, as many as are a minute of its
 /// steps; each takes it through every distance its walk has.
@@ -836,7 +854,10 @@ async fn along_the_rim(mut wanders: Wanders) {
     wanders.b_settles().await;
     wanders.region_0_is_alone("at the start").await;
 
-    wanders.walks("B", between(9, 11), "to walk between the chunks 9 and 11");
+    let (rim_west, rim_east) = (MERGE_DISTANCE - 1, MERGE_DISTANCE + 1);
+    let rim = between(rim_west, rim_east);
+    let to_the_rim = format!("to walk between the chunks {rim_west} and {rim_east}");
+    wanders.walks("B", rim, &to_the_rim);
     wanders.arrives("B").await;
     wanders.walks_for("B", a_minute).await;
     let alone = "while B walked along the rim in it";
@@ -848,21 +869,23 @@ async fn along_the_rim(mut wanders: Wanders) {
 
     let part = wanders.b_is_split_off().await;
     // One thing more than the record says: `B` stands for 35 s before it walks back,
-    // until region 0 has given back what it kept of the trail `B` came along. A `B`
-    // that turned round at once would see that land from chunk 12 on and walk into
-    // it in chunk 9, and whether the merge is made before that is a matter of
-    // tenths of a second: if not, `B` is region 0's player by a hand-over, and there
-    // is no merge (N3).
+    // until region 0 has given back what it kept of the trail `B` came along. That
+    // land reaches east to chunk 10 (`HALFWAY - 1`); a `B` that turned round at once
+    // would see it from chunk 13 on (`VIEW + 1` further east), before the merge at
+    // chunk 12, and walk into it in chunk 10, and whether the merge is made before
+    // that is a matter of tenths of a second: if not, `B` is region 0's player by a
+    // hand-over, and there is no merge (N3).
     wanders.walks_for("B", GIVEN_BACK).await;
-    let back = "to walk between the chunks 9 and 11";
-    wanders
-        .b_comes_back_between(part, between(9, 11), back)
-        .await;
+    wanders.b_comes_back_between(part, rim, &to_the_rim).await;
     wanders.walks_for("B", a_minute).await;
     wanders.region_0_is_alone("after the merge").await;
 
-    let again = "to walk between the chunks 17 and 19";
-    let second = wanders.b_is_split_off_between(between(17, 19), again).await;
+    let beyond_the_rim = between(SPLIT_DISTANCE - 1, OUT);
+    let again = format!(
+        "to walk between the chunks {} and {OUT}",
+        SPLIT_DISTANCE - 1
+    );
+    let second = wanders.b_is_split_off_between(beyond_the_rim, &again).await;
     wanders.walks_for("B", a_minute).await;
     let list = wanders.whole().await;
     if living(&list) != [0, second] || list.next.0 != second + 1 {
@@ -875,7 +898,7 @@ async fn along_the_rim(mut wanders: Wanders) {
     let what = "a split, a merge and a split, in that order";
     wanders.has_begun(0, what, &[&split, &merge, &split]);
     wanders.is_in("A", 0);
-    wanders.is_between("B", between(17, 19));
+    wanders.is_between("B", beyond_the_rim);
     wanders.finish().await;
 }
 
@@ -898,10 +921,10 @@ async fn a_group_that_walks_along_the_rim_is_split_and_merged_once_each_time_in_
 }
 
 /// W3 on whatever serves the world. `A` stands in chunk 0. A wanderer walks to chunk
-/// (19, 0), is split off into region 1 and leaves the game. No absorption is begun,
+/// (21, 0), is split off into region 1 and leaves the game. No absorption is begun,
 /// and the list keeps regions 0 and 1; region 1 holds nothing 35 s after it last
 /// began to run, which in a cluster is when the worker it was moved to restored it,
-/// and no later than 50 s after the split. A second wanderer walks to chunk (-19,
+/// and no later than 50 s after the split. A second wanderer walks to chunk (-21,
 /// 0), is split off into region 2 and leaves. Fifteen seconds and no more than
 /// thirty later region 1 absorbs region 2, and no bot of `A` waits longer for it
 /// than it waits when nothing happens. Then `A` ends and leaves: region 0 absorbs
@@ -1095,9 +1118,9 @@ async fn regions_that_their_players_left_give_their_land_back_and_are_absorbed_i
     regions_that_are_left(wanders).await;
 }
 
-/// W3b. Two parts meet. One wanderer walks to chunk (19, 0) and is region 1; another
-/// walks to (0, 19) and is region 2, then to (19, 19), then towards (19, 0), as far
-/// as (19, 8). When it has been within 10 chunks of the first, the two regions are
+/// W3b. Two parts meet. One wanderer walks to chunk (21, 0) and is region 1; another
+/// walks to (0, 21) and is region 2, then to (21, 21), then towards (21, 0), as far
+/// as (21, 8). When it has been within 12 chunks of the first, the two regions are
 /// merged with region 1 as the survivor, which has as many players and the lower id,
 /// and region 0 is in no merge.
 #[tokio::test(flavor = "multi_thread")]
@@ -1139,10 +1162,11 @@ async fn two_parts_whose_players_meet_are_merged_and_the_home_region_is_in_no_me
 
     let (x, z) = middle_of(OUT, BACK);
     wanders.wanderers[second].walks_to(x, z, ON_FOOT);
-    let within_ten = f64::from(16 * (MERGE_DISTANCE + 1));
+    let within_the_merge_distance = f64::from(16 * (MERGE_DISTANCE + 1));
+    let what = format!("the second wanderer has been within {MERGE_DISTANCE} chunks");
     wanders
-        .until("the second wanderer has been within 10 chunks", |wanders| {
-            wanders.wanderers[second].noted().z < within_ten
+        .until(&what, |wanders| {
+            wanders.wanderers[second].noted().z < within_the_merge_distance
         })
         .await;
     let entered = wanders.now_at();
@@ -1180,13 +1204,15 @@ async fn two_parts_whose_players_meet_are_merged_and_the_home_region_is_in_no_me
     if of_home {
         wanders.fail("region 0 was to be in no merge");
     }
-    // Neither of them ever saw the other's land: they were merged four chunks before.
+    // Neither of them ever saw the other's land: one sees the other's when they are
+    // `VIEW + 1 + REACH` chunks apart, 7, and they were merged at 12, five chunks
+    // before.
     wanders.nobody_was_handed_over(from, "while two parts met");
     wanders.finish().await;
 }
 
 /// W5. A worker dies with a part that has just grown (N9). `B` is split off at chunk
-/// 19 and its region moved. `B` is sent to chunk 40; when it has been in chunk 30,
+/// 21 and its region moved. `B` is sent to chunk 40; when it has been in chunk 30,
 /// the worker that runs its region is killed and not started again. The region runs
 /// again, on the other worker, within twice the lease and 5 s; `B` arrives; nobody
 /// is disconnected; the regions hold what W1 has them hold 35 s after `B` has
@@ -1271,7 +1297,7 @@ async fn a_part_grows_on_when_the_store_was_away_for_three_seconds() {
 }
 
 /// W8. A coordinator anew, the store away, a worker dead (N13). `B` is split off at
-/// chunk 19 and its region moved. The coordinator, the store and the worker of
+/// chunk 21 and its region moved. The coordinator, the store and the worker of
 /// `B`'s region are killed. The coordinator is started; three seconds later the
 /// store. `B`'s region is in the routing table again, with a worker, within the
 /// lease and 5 s of the store's start, and `B` is not disconnected.
@@ -1490,18 +1516,18 @@ impl Wanders {
         }
     }
 
-    /// The part `B` is in when it stands in chunk 19 by itself, by `list`: a region
+    /// The part `B` is in when it stands in chunk 21 by itself, by `list`: a region
     /// other than region 0 whose `bounds` have that chunk, while region 0 holds
-    /// nothing east of chunk 9. Of several, as when a part that `B` was handed back
+    /// nothing east of chunk 10. Of several, as when a part that `B` was handed back
     /// out of still holds its land, the one that was made last.
     fn part_of_b(list: &RegionList) -> Option<Region> {
         let home = bounds(list, 0)?;
         let parts = living(list).into_iter().filter(|region| *region != 0);
         let theirs = parts.filter(|part| has_chunk(bounds(list, *part), OUT, 0));
-        theirs.max().filter(|_| home.max.x < MERGE_DISTANCE)
+        theirs.max().filter(|_| home.max.x < HALFWAY)
     }
 
-    /// W1's step 1 with a process killed in the middle: `B` is sent to chunk 19, the
+    /// W1's step 1 with a process killed in the middle: `B` is sent to chunk 21, the
     /// coordinator splits it off region 0 by itself, and `harm` is done at a logged
     /// moment of that split which the seed chooses. Fails unless every region runs
     /// again in time, the split is whole or not at all by the list, and afterwards,
@@ -1544,8 +1570,11 @@ impl Wanders {
         ));
 
         let waiting = Instant::now();
-        let what = "B is in a part of its own, and region 0 holds nothing east of chunk 9";
-        self.until_the_list_within(AGAIN, what, |list| Self::part_of_b(list).is_some())
+        let what = format!(
+            "B is in a part of its own, and region 0 holds nothing east of chunk {}",
+            HALFWAY - 1
+        );
+        self.until_the_list_within(AGAIN, &what, |list| Self::part_of_b(list).is_some())
             .await;
         self.settled().await;
         self.arrives("B").await;
@@ -1685,7 +1714,7 @@ async fn regions_follow_a_group_when_the_coordinator_or_the_store_is_killed_in_t
     .await;
 }
 
-/// How many lone players W9 has, and how far apart their lanes are: 19 chunks, more
+/// How many lone players W9 has, and how far apart their lanes are: 21 chunks, more
 /// than the split distance.
 const LONE: i32 = 11;
 const APART: i32 = 16 * OUT;
@@ -1707,9 +1736,9 @@ fn regions_of_their_own(list: &RegionList, theirs: &[i32]) -> Option<Vec<Region>
     Some(regions)
 }
 
-/// W9. Lone players (N11). One ledger of eleven bots on lanes 19 chunks apart, the
+/// W9. Lone players (N11). One ledger of eleven bots on lanes 21 chunks apart, the
 /// middle one on z = 0, all in the column of chunks x = 0: ten of them are more
-/// than 18 chunks from the home chunk and from each other. Within three minutes of
+/// than 20 chunks from the home chunk and from each other. Within three minutes of
 /// the last one's arrival the list has eleven regions, each bot's chunk in the
 /// `bounds` of a region of its own, and the two workers run six and five; nobody was
 /// stood still more than once in a rest but by a move. Then they end: within three
@@ -1720,7 +1749,7 @@ fn regions_of_their_own(list: &RegionList, theirs: &[i32]) -> Option<Vec<Region>
 /// those was the bot's region until the split that made the next. Every merge and
 /// split of a bot's region in its time counts for the bot.
 ///
-/// The farthest lane is 1520 blocks from where players enter, and the bots, and
+/// The farthest lane is 1680 blocks from where players enter, and the bots, and
 /// their auditors after them, go there at `to_the_lane` blocks a tick.
 async fn lone_players(test: &str, to_the_lane: f64) {
     let mut wanders = Wanders::cluster(test, world(None)).await;
@@ -1835,7 +1864,7 @@ async fn lone_players(test: &str, to_the_lane: f64) {
     }
     wanders.nobody_waited_too_long(arrived);
 
-    // A lone player's region holds exactly the 7 by 7 chunks around its player once
+    // A lone player's region holds exactly the 9 by 9 chunks around its player once
     // its trail is given back: eleven islands, 35 s later by the bots' own steps.
     wanders.walks_for("L", GIVEN_BACK).await;
     let list = wanders.whole().await;
@@ -1857,7 +1886,7 @@ async fn lone_players(test: &str, to_the_lane: f64) {
             .collect();
         wanders.fail(&format!(
             "35 s after every lone player had a region of its own, each of the regions \
-             {regions:?} was to hold exactly the 7 by 7 chunks around its player, who \
+             {regions:?} was to hold exactly the 9 by 9 chunks around its player, who \
              stand in the chunks x = 0, z = {theirs:?}; they hold, as x and z from and \
              to: {held:?}"
         ));
@@ -1945,7 +1974,7 @@ async fn lone_players_who_flew_to_their_lanes_with_rockets_come_to_a_region_each
     lone_players("lone players, with rockets", 1.7).await;
 }
 
-/// The chunk (49, 0), thirty chunks beyond where a wanderer is split off.
+/// The chunk (51, 0), thirty chunks beyond where a wanderer is split off.
 const BEYOND: i32 = OUT + 30;
 
 impl Wanders {
@@ -1974,10 +2003,10 @@ impl Wanders {
 
 /// W10 on a cluster or on a server process (N17). `A` stands in chunk 0. In each of
 /// three rounds a wanderer joins and walks straight from where players enter to the
-/// middle of chunk (49, 0), at half a block a tick, through its own split, and stays
+/// middle of chunk (51, 0), at half a block a tick, through its own split, and stays
 /// for 40 s. From its join to the end exactly one split is begun, of region 0, and
 /// nothing else; nobody is handed over; nothing of region 0 lies ahead of the
-/// wanderer at any reading of the list; the part ends as the 7 by 7 chunks around
+/// wanderer at any reading of the list; the part ends as the 9 by 9 chunks around
 /// the wanderer; no bot of `A` waited longer than it waits when nothing happens, but
 /// once; and region 0 stood still once, with three players.
 ///
@@ -1997,9 +2026,10 @@ async fn straight_on_on_foot(mut wanders: Wanders) {
         let (x, z) = middle_of(BEYOND, 0);
         wanders.wanderers[wanderer].walks_to(x, z, ON_FOOT);
         wanders
-            .until("the wanderer has been in chunk 19", |wanders| {
-                wanders.wanderers[wanderer].noted().east >= OUT
-            })
+            .until(
+                &format!("the wanderer has been in chunk {OUT}"),
+                |wanders| wanders.wanderers[wanderer].noted().east >= OUT,
+            )
             .await;
         let entered = wanders.now_at();
         wanders
@@ -2102,7 +2132,7 @@ type Caught = Result<(Region, f64, SplitOff), String>;
 /// W11 on a cluster or on a server process (N17): the scenario that meets the two
 /// ticks of section 3.6 on purpose. `A` stands in chunk 0. Eight wanderers stand on
 /// lanes seven chunks apart, near enough for all eight and the home chunk to be one
-/// group, and are sent together, in the same turn of the test, to chunk 49 on their
+/// group, and are sent together, in the same turn of the test, to chunk 51 on their
 /// lanes at a sprint. They arrive and stay for 40 s.
 ///
 /// **A round counts** if the first split of region 0 that is begun in it ended with
@@ -2111,17 +2141,18 @@ type Caught = Result<(Region, f64, SplitOff), String>;
 /// their 40 s: no second split is begun, and no merge and no absorption that names
 /// region 0 or the part; no worker logs a hand-over; from the end of the split on,
 /// region 0's east end never moves east at any reading of the list, and at the end
-/// the part holds x = 46 to 52 and z = -31 to 24; no bot of `A` waited longer than
+/// the part holds x = 47 to 55 and z = -32 to 25; no bot of `A` waited longer than
 /// it waits when nothing happens, but once. Of a round that does not count, in which
 /// those who were not caught are region 0's own players far out and what follows is
 /// ADR-0016's and right, only that nobody was disconnected and that no wait was
 /// longer than 5 s.
 ///
 /// **And the run has to have met what it is for**: over the rounds that count, the
-/// worker's line of the split has been written at least once with `waited` above 0,
-/// and the line `chunks asked for players who went are taken for the part's` at
-/// least once with `free` above 0. Rounds until three have counted and both lines
-/// were seen, twelve at most; a run that ends without fails as not having tested.
+/// worker's line of the split has been written at least once with `waited` above 0.
+/// Rounds until three have counted and the line was seen, twelve at most; a run that
+/// ends without fails as not having tested. How often the line `chunks asked for
+/// players who went are taken for the part's` had `free` above 0 is said: since the
+/// ring a sprinter's next chunks go with the part, and it seldom is.
 async fn straight_on_at_a_sprint(mut wanders: Wanders) {
     wanders.a_settles().await;
     if wanders.has_a_list() {
@@ -2131,7 +2162,7 @@ async fn straight_on_at_a_sprint(mut wanders: Wanders) {
     let (mut counted, mut with_waited, mut with_free) = (0, 0, 0);
     let mut not_counted: Vec<String> = Vec::new();
     let mut round = 0;
-    while round < 12 && !(counted >= 3 && with_waited > 0 && with_free > 0) {
+    while round < 12 && !(counted >= 3 && with_waited > 0) {
         round += 1;
         let joined = wanders.now_at();
         let mut eight = Vec::new();
@@ -2259,7 +2290,11 @@ async fn straight_on_at_a_sprint(mut wanders: Wanders) {
          part's; the rounds that did not count: {not_counted:?}"
     );
     wanders.note(met.clone());
-    if counted < 3 || with_waited == 0 || with_free == 0 {
+    // Chunks nobody held are said, and not asked for: since the ring (ADR-0024,
+    // section 2) a region holds one chunk beyond what its players are sent, and a
+    // sprinter's next chunks are in the ring, and go with the part, well before the
+    // split. The worker's own tests take chunks nobody held for a part's.
+    if counted < 3 || with_waited == 0 {
         wanders.fail(&format!("the run did not test what it is for: {met}"));
     }
     wanders.finish().await;
@@ -2317,7 +2352,7 @@ fn processor_seconds(pid: u32) -> Option<f64> {
 
 /// After a region was absorbed the edge is as idle as before: with two players who
 /// stand in one chunk it uses a small part of a processor. A wanderer is split off
-/// at chunk 19 and walks back to chunk 8, where its region is merged into region 0,
+/// at chunk 21 and walks back to chunk 8, where its region is merged into region 0,
 /// and leaves; then the edge's use of the processor is measured over twenty seconds
 /// of the steps of `A`.
 #[tokio::test(flavor = "multi_thread")]
