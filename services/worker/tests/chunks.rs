@@ -4201,6 +4201,14 @@ fn a_link_that_ends_while_it_is_held_behind_its_hello_leaves_no_ticket_behind() 
             // Whether the join was applied is up to how far the store had come; what
             // is not up to it is that the chunks were let go of.
             ticks(&mut runner, &mut [], 3);
+            // The home chunk is loaded whenever it is held, which a slow store answers
+            // later than three ticks; nothing else is to be loaded once it is.
+            run_until(
+                &mut runner,
+                &mut [],
+                "the home chunk loaded",
+                |runner, _| runner.region().chunk(HOME).is_some(),
+            );
             assert!(nothing_loaded_but_home(&runner));
         }
     }
