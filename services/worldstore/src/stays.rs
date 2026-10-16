@@ -89,6 +89,8 @@ pub(crate) fn commit(handle: &StoreHandle, tick: u64, stays: Vec<StayNote>) {
         ticks: Vec::new(),
         marks_taken: Vec::new(),
         seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
     });
 }
 
@@ -927,6 +929,8 @@ fn a_commit_that_an_opening_passes_over_leaves_no_note() {
         ticks: Vec::new(),
         marks_taken: Vec::new(),
         seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
     };
     let world = |restored: u64| {
         let disk = Arc::new(MemoryDisk::default());

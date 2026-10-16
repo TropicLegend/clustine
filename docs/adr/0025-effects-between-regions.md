@@ -430,6 +430,35 @@ coupled pair's pace on the disk without its cache if the owner's machine can be
 measured so, `COUPLING_PATIENCE`, and the store's load along a busy border. E3 and E5
 are not delegated.
 
+## Found while building
+
+E2, the shared types (2026-10-16):
+
+- **A sequence is a record's place in the log, not a group's.** The log marks no group
+  boundaries, so a group's position could not be found again after a restart. An
+  effect's sequence is the place of the record that carries it (its segment and its
+  offset in it, increasing), and its number that and its index in the record; a mark
+  says the place of a group's last record. Section 2's order is unchanged by this.
+- **An effect is converted, or left out, as its commit is appended.** Records are
+  applied in log order, so the use and the offsets "in force at its record" are those
+  of the commit thread when it appends the record. The commit's record keeps each
+  effect with when it is due (log kind 10), so that a restart files it again without
+  the offsets of that time; an effect whose chunk nobody uses then is not written at
+  all. Effects dropped later (a chunk's use ending) are a record of their own (kind 11),
+  since use is not in the log and a restart would otherwise take them for kept;
+  effects written forward are kind 12, with their numbers and when they are due.
+- **A coupled effect's due tick counts in its holder's ticks.** Where the use of its
+  chunk moves to another region before it is taken (a merge, a split, a return and
+  another's claim), it counts from its taking instead.
+- **Couplings are kept in their file, not in log records.** `regions/couplings` (the
+  region's offset, couplings, handshakes under way, regions given up; format in
+  `clustine-format`, kind 5 of the store's files) is rewritten in the group that
+  changes it, as the table is; since effects are written already converted, nothing
+  replayed needs the couplings of an earlier time.
+- `Restored` carries the chunks in use as one more item of its parts, behind the
+  grants; the couplings, handshakes and whether the region is given up travel in the
+  welcome.
+
 ## Review
 
 **First review of this record (2026-10-16): not ready.** Its findings, worked in:

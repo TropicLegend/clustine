@@ -23,6 +23,9 @@
 //! | 7 | [`LogRecord::Split`] | region u32, epoch u64, tick u64, state bytes, part u32, part epoch u64, chunks, part state bytes |
 //! | 8 | [`LogRecord::Commit`] with stay notes | the fields of kind 2, stays |
 //! | 9 | [`LogRecord::Commit`] with records of chunks | the fields of kind 2, stays (whose count may be 0), ticks, marks taken (chunks), seams |
+//! | 10 | [`LogRecord::Commit`] with effects | the fields of kind 9, whose counts may all be 0, effects, taken |
+//! | 11 | [`LogRecord::EffectsDropped`] | numbers |
+//! | 12 | [`LogRecord::EffectsForward`] | filed effects |
 //!
 //! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
 //! u16 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z;
@@ -37,6 +40,14 @@
 //! (`docs/adr/0024-block-behaviour-in-a-region.md`, sections 4 to 6), whatever its
 //! notes. `seams` is a count of chunks (u32), followed per chunk by i32 x, i32 z and the
 //! chunk's entries whole, as `seams.rs` writes them.
+//! A commit is written as kind 10 if it carries effects or takes any
+//! (`docs/adr/0025-effects-between-regions.md`, sections 4 and 5), whatever else it
+//! carries: `effects` are those the store keeps of what the tick made, each with when it
+//! is due, numbered by the record's sequence and their place in it, and `taken` the
+//! numbers of the effects the tick took. Kind 11 says that effects untaken were dropped,
+//! and kind 12 carries untaken effects forward out of a segment that is let go, with
+//! their numbers. `effects`, `numbers` and `filed effects` are as `effects.rs` writes
+//! them.
 //! `ticks` is a count of chunks (u32), followed per chunk by i32 x, i32 z and a count of
 //! ticks (u32), and per tick by u8 x, i16 y and u8 z within the chunk, u8 1 for a block
 //! and 2 for a fluid, u16 its id, i32 the delay left and i8 the priority: the chunk's
@@ -71,7 +82,9 @@
 //! reports how many bytes were valid.
 
 use clustine_data::BlockState;
-use clustine_world::{BlockPos, ChunkPos, InChunk, ScheduledTick, Seam, Ticked};
+use clustine_world::{
+    BlockPos, ChunkPos, Due, Effect, EffectId, FiledEffect, InChunk, ScheduledTick, Seam, Ticked,
+};
 
 use crate::bytes::Input;
 use crate::{FORMAT_VERSION, FormatError};
@@ -85,6 +98,9 @@ const KIND_ABSORBED: u8 = 6;
 const KIND_SPLIT: u8 = 7;
 const KIND_COMMIT_WITH_STAYS: u8 = 8;
 const KIND_COMMIT_WITH_TICKS: u8 = 9;
+const KIND_COMMIT_WITH_EFFECTS: u8 = 10;
+const KIND_EFFECTS_DROPPED: u8 = 11;
+const KIND_EFFECTS_FORWARD: u8 = 12;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -200,7 +216,19 @@ pub enum LogRecord {
         /// The seam entries of each chunk whose entries changed in the tick, whole, in
         /// ascending order of the chunks.
         seams: Vec<(ChunkPos, Vec<Seam>)>,
+        /// The effects of the tick that the store keeps, each with when it is due, in
+        /// the order the tick made them. Their numbers are the record's sequence and
+        /// their index here.
+        effects: Vec<(Effect, Due)>,
+        /// The numbers of the effects the tick took, ascending.
+        taken: Vec<EffectId>,
     },
+    /// The effects of these numbers were dropped untaken: the chunk they act on stopped
+    /// being used (`docs/adr/0025-effects-between-regions.md`, section 5).
+    EffectsDropped { ids: Vec<EffectId> },
+    /// Untaken effects written again, with their numbers, so that the segment they were
+    /// first written in can be let go (the same record, section 5).
+    EffectsForward { effects: Vec<FiledEffect> },
     /// The region was opened by an owner with `epoch` and restored up to tick
     /// `restored`. A record of the region that comes before this one with a later tick
     /// is not part of the region's history: the owner that opened it here did not read
@@ -273,9 +301,15 @@ impl LogRecord {
                 ticks,
                 marks_taken,
                 seams,
+                effects,
+                taken,
             } => {
-                let records = !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
-                payload.push(if records {
+                let effected = !effects.is_empty() || !taken.is_empty();
+                let records =
+                    effected || !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
+                payload.push(if effected {
+                    KIND_COMMIT_WITH_EFFECTS
+                } else if records {
                     KIND_COMMIT_WITH_TICKS
                 } else if stays.is_empty() {
                     KIND_COMMIT
@@ -296,6 +330,10 @@ impl LogRecord {
                         payload.extend_from_slice(&chunk.x.to_be_bytes());
                         payload.extend_from_slice(&chunk.z.to_be_bytes());
                         crate::seams::put_seams(&mut payload, of_chunk);
+                    }
+                    if effected {
+                        crate::effects::put_effects(&mut payload, effects);
+                        crate::effects::put_ids(&mut payload, taken);
                     }
                 } else if !stays.is_empty() {
                     put_stays(&mut payload, stays);
@@ -360,6 +398,14 @@ impl LogRecord {
                 put_chunks(&mut payload, chunks);
                 put_bytes(&mut payload, part_state);
             }
+            Self::EffectsDropped { ids } => {
+                payload.push(KIND_EFFECTS_DROPPED);
+                crate::effects::put_ids(&mut payload, ids);
+            }
+            Self::EffectsForward { effects } => {
+                payload.push(KIND_EFFECTS_FORWARD);
+                crate::effects::put_filed(&mut payload, effects);
+            }
         }
         frame(&payload)
     }
@@ -386,6 +432,8 @@ impl LogRecord {
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
                 seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
             },
             KIND_COMMIT_WITH_STAYS => Self::Commit {
                 region: input.u32()?,
@@ -397,8 +445,10 @@ impl LogRecord {
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
                 seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
             },
-            KIND_COMMIT_WITH_TICKS => {
+            kind @ (KIND_COMMIT_WITH_TICKS | KIND_COMMIT_WITH_EFFECTS) => {
                 let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
                 let changes = take_changes(&mut input)?;
                 let state = take_bytes(&mut input)?;
@@ -417,9 +467,22 @@ impl LogRecord {
                     let chunk = ChunkPos::new(input.i32()?, input.i32()?);
                     seams.push((chunk, crate::seams::take_seams(&mut input)?));
                 }
-                if ticks.is_empty() && marks_taken.is_empty() && seams.is_empty() {
-                    // A commit without records of chunks is of another kind, so that one
-                    // commit has one form.
+                let (effects, taken) = if kind == KIND_COMMIT_WITH_EFFECTS {
+                    let effects = crate::effects::take_effects(&mut input)?;
+                    (effects, crate::effects::take_ids(&mut input)?)
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                // A commit is written in one form only: without effects as kind 9, and
+                // without records of chunks as kind 2 or 8.
+                if kind == KIND_COMMIT_WITH_EFFECTS && effects.is_empty() && taken.is_empty() {
+                    return Err(FormatError::Corrupt("a commit with effects that has none"));
+                }
+                if kind == KIND_COMMIT_WITH_TICKS
+                    && ticks.is_empty()
+                    && marks_taken.is_empty()
+                    && seams.is_empty()
+                {
                     return Err(FormatError::Corrupt(
                         "a commit with records of chunks that has none",
                     ));
@@ -434,6 +497,8 @@ impl LogRecord {
                     ticks,
                     marks_taken,
                     seams,
+                    effects,
+                    taken,
                 }
             }
             KIND_OPENED => Self::Opened {
@@ -466,6 +531,12 @@ impl LogRecord {
                 part_epoch: input.u64()?,
                 chunks: take_chunks(&mut input)?,
                 part_state: take_bytes(&mut input)?,
+            },
+            KIND_EFFECTS_DROPPED => Self::EffectsDropped {
+                ids: crate::effects::take_ids(&mut input)?,
+            },
+            KIND_EFFECTS_FORWARD => Self::EffectsForward {
+                effects: crate::effects::take_filed(&mut input)?,
             },
             _ => return Err(FormatError::Corrupt("record kind")),
         };
@@ -763,6 +834,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         }
     }
 
@@ -778,6 +851,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         };
         let bytes = record.encode();
         let payload = [
@@ -1023,10 +1098,10 @@ mod tests {
 
     #[test]
     fn a_record_of_regions_that_checks_out_but_makes_no_sense_is_an_error() {
-        // Kinds there are none of. 8 and 9 were among them until a commit with stay
-        // notes, and one with the ticks of chunks, became kinds of their own; 10
-        // stands in for them.
-        for kind in [0, 10, 255] {
+        // Kinds there are none of. 8 to 12 were among them until a commit with stay
+        // notes, one with the ticks of chunks, one with effects and the store's
+        // records of effects became kinds of their own; 13 stands in for them.
+        for kind in [0, 13, 255] {
             assert_eq!(
                 read_log(&frame(&[2, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -1102,6 +1177,8 @@ mod tests {
                 ticks: ticks.clone(),
                 marks_taken: Vec::new(),
                 seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
             };
             let bytes = record.encode();
             assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_TICKS);
@@ -1158,6 +1235,8 @@ mod tests {
             ticks,
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         }
     }
 
@@ -1213,6 +1292,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         };
         let with = with.encode()[FRAME_HEADER_LENGTH..].to_vec();
         let without = without.encode()[FRAME_HEADER_LENGTH..].to_vec();
@@ -1253,6 +1334,8 @@ mod tests {
             ticks,
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
@@ -1273,6 +1356,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         };
         let payload = [
             2, 2, // version, kind
@@ -1340,6 +1425,8 @@ mod tests {
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
                 seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
             },
             commit_with_stays(),
             LogRecord::Opened {
@@ -1450,6 +1537,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         }
     }
 
@@ -1516,6 +1605,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         };
         let bytes = without.encode();
         assert_eq!(bytes[8..10], [2, KIND_COMMIT]);
@@ -1637,6 +1728,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
@@ -1769,6 +1862,8 @@ mod tests {
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
                 seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
             };
             let opened = LogRecord::Opened { region, epoch, restored };
             let mut bytes = commit.encode();
@@ -1800,6 +1895,8 @@ mod tests {
                 ticks,
                 marks_taken: Vec::new(),
                 seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
             };
             let bytes = commit.encode();
             prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);

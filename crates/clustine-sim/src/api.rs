@@ -4,7 +4,10 @@
 //! serialisable and free of anything specific to the Minecraft protocol.
 
 use clustine_data::BlockState;
-use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3};
+use clustine_world::{
+    BlockPos, Chunk, ChunkPos, EdgeId, Effect, EffectId, EntityId, FiledEffect, PlayerId, RegionId,
+    Vec3,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::placement::Click;
@@ -558,6 +561,24 @@ pub struct TickInputs {
     /// hold them, and to claim again if it wants them. A belief that has changed since
     /// is left alone: it is newer than the doubt.
     pub unbelieve: Vec<(ChunkPos, RegionId)>,
+    /// Border copies of chunks of other regions' land, or of land nobody holds, as
+    /// their bases: read like loaded chunks, never written, ticked or saved
+    /// (`docs/adr/0025-effects-between-regions.md`, section 3). The runner hands a base
+    /// in only once its chunk is used by nobody or by a region coupled to this one
+    /// (section 8 of the same record). Applied with the chunks, before the region
+    /// works out which chunks tick.
+    pub copy_bases: Vec<(ChunkPos, Chunk)>,
+    /// The block changes of later commits in copied chunks, in the order the store
+    /// sent them, applied after the bases.
+    pub copy_updates: Vec<(ChunkPos, Vec<(BlockPos, BlockState)>)>,
+    /// Copies the region no longer has: gone from its tickets' reach, withdrawn
+    /// because their chunk came to be used by a region not coupled to this one, or
+    /// loaded as the region's own.
+    pub copies_withdrawn: Vec<ChunkPos>,
+    /// Effects for chunks the region has loaded, ready by the rule of the same record's
+    /// section 5, in the order of their numbers. Run where seam entries run, after the
+    /// inputs and the reckoning of which chunks tick.
+    pub effects: Vec<FiledEffect>,
     /// The world store's answers to the region's [`StayNote::Entering`] notes, in the
     /// order they came. An answer is taken only for the very stay the region still
     /// holds as entering for the player, and passed over otherwise. Whatever the case,
@@ -802,6 +823,15 @@ pub struct TickOutput {
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5). They are to be
     /// committed and saved as chunks whose blocks changed are.
     pub seams_changed: Vec<ChunkPos>,
+    /// What the tick did in chunks the region does not have loaded and does not hold
+    /// or ask for, in the order it did them
+    /// (`docs/adr/0025-effects-between-regions.md`, section 4). They are to be
+    /// committed with the tick's commit.
+    pub effects: Vec<Effect>,
+    /// The effects the tick took, ran or kept as seam entries, ascending (the same
+    /// record, section 5). A tick that takes any is to be committed whatever else it
+    /// changed.
+    pub taken: Vec<EffectId>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,
     /// What the region says to the world store of stays in this tick, in the order of

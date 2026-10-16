@@ -97,6 +97,8 @@ fn commit(
         ticks: Vec::new(),
         marks_taken,
         seams,
+        effects: Vec::new(),
+        taken: Vec::new(),
     });
 }
 

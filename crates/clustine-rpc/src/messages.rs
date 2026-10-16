@@ -7,8 +7,8 @@ use clustine_sim::api::{
     PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote,
 };
 use clustine_world::{
-    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, ScheduledTick,
-    Seam,
+    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityId, EntityIds,
+    FiledEffect, PlayerId, ScheduledTick, Seam,
 };
 use serde::{Deserialize, Serialize};
 
@@ -342,6 +342,13 @@ pub enum StoreRequest {
         /// The seam entries of each chunk whose entries changed in the tick, whole
         /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5).
         seams: Vec<(ChunkPos, Vec<Seam>)>,
+        /// What the tick did in chunks the region does not have loaded, made in `tick`,
+        /// in the order the tick made them, each kept once as
+        /// [`Effect::key`] says (`docs/adr/0025-effects-between-regions.md`, section 4).
+        effects: Vec<Effect>,
+        /// The effects the tick took, ran or kept as seam entries, ascending
+        /// (the same record, section 5).
+        taken: Vec<EffectId>,
     },
     /// `state` is the region's whole state after `tick`, and every change committed up
     /// to `tick` is contained in a chunk saved before this request. Once those saves are
@@ -396,6 +403,31 @@ pub enum StoreRequest {
         /// another with [`Decline::NotNext`].
         region: RegionId,
     },
+    /// The region wants border copies of `wanted` from now on and no longer of `gone`
+    /// (`docs/adr/0025-effects-between-regions.md`, section 3). A copy is based with a
+    /// [`StoreReply::CopyBase`] and kept up to date with [`StoreReply::CopyUpdate`]s on
+    /// the region's stream. A copy wanted again after a gap in its updates is based
+    /// anew.
+    Copies {
+        wanted: Vec<ChunkPos>,
+        gone: Vec<ChunkPos>,
+    },
+    /// The copies in `begins` have come to be beside a chunk that would tick with its
+    /// copies handed in, and those in `ends` are so no longer: whom the region needs to
+    /// be coupled to (the same record, section 8).
+    Beside {
+        begins: Vec<ChunkPos>,
+        ends: Vec<ChunkPos>,
+    },
+    /// The region has stopped having these held chunks loaded or warm, and their use by
+    /// it ends; effects still untaken for them are dropped (the same record, section 5).
+    Dropped { chunks: Vec<ChunkPos> },
+    /// The answer to [`StoreReply::CoupleWith`]: the region holds `tick`, its next tick
+    /// not yet run, until the handshake with `partner` ends (the same record, section 8).
+    JoinsAt { partner: RegionId, tick: u64 },
+    /// End every coupling of the region: it is preparing for a merge or a split, or is
+    /// released for a move (the same record, section 8).
+    EndCouplings,
 }
 
 /// What a split makes a new region of.
@@ -454,6 +486,11 @@ pub enum StoreReply {
         absorbed: RegionId,
         chunks: Vec<ChunkPos>,
         pinned: Vec<ChunkArea>,
+        /// The chunks the absorbed region used, whose use is this region's now, in
+        /// ascending order: the runner times those it has not in memory and says
+        /// [`StoreRequest::Dropped`] of those it does not load within `WARM_FOR`
+        /// (`docs/adr/0025-effects-between-regions.md`, section 5).
+        in_use: Vec<ChunkPos>,
     },
     /// The split asked for with [`StoreRequest::SplitCommit`] has happened, and
     /// `region` is the new region, the one the request named. It is not opened by the
@@ -492,6 +529,111 @@ pub enum StoreReply {
     Dead {
         stays: Vec<(PlayerId, EntityId, u32)>,
     },
+    /// On the region's stream (`docs/adr/0025-effects-between-regions.md`, section 2):
+    /// effects for chunks it uses, in the order the store filed them.
+    Effects {
+        effects: Vec<FiledEffect>,
+    },
+    /// On the stream: the committed form of `position`, which the region copies, as of
+    /// the group of `sequence`; `last_change` is the sequence of the chunk's last change
+    /// up to it. No chunk where the stored chunk cannot be read: the copy counts as
+    /// absent.
+    CopyBase {
+        position: ChunkPos,
+        sequence: u64,
+        last_change: u64,
+        chunk: Option<Chunk>,
+        used: CopyUse,
+    },
+    /// On the stream: the block changes of a commit in a chunk the region copies, made
+    /// durable in the group of `sequence`. `previous` is the sequence of the chunk's
+    /// change before, so that a gap shows.
+    CopyUpdate {
+        position: ChunkPos,
+        sequence: u64,
+        previous: u64,
+        changes: Vec<(BlockPos, BlockState)>,
+    },
+    /// On the stream: who uses a chunk the region copies now (section 8 of the same
+    /// record: a copy whose chunk comes to be used by a region not coupled to this one
+    /// is withdrawn from the sim until they are).
+    CopyUsed {
+        position: ChunkPos,
+        used: CopyUse,
+    },
+    /// On the stream: couple with `partner` (section 8): answer with
+    /// [`StoreRequest::JoinsAt`], naming the next tick not yet run, and hold it until
+    /// [`StoreReply::Coupled`] or [`StoreReply::HandshakeOff`].
+    CoupleWith {
+        partner: RegionId,
+    },
+    /// On the stream: the region is coupled with `partner`; its border time is its
+    /// tick plus `offset`, which holds until [`StoreReply::Shifted`] says otherwise.
+    Coupled {
+        partner: RegionId,
+        offset: i64,
+    },
+    /// On the stream: the handshake with `partner` is called off; the held tick runs.
+    HandshakeOff {
+        partner: RegionId,
+    },
+    /// On the stream: the region's offset is now `offset`, by a coupling that joined
+    /// two groups of coupled regions.
+    Shifted {
+        offset: i64,
+    },
+    /// On the stream: the coupling with `partner` has ended.
+    Uncoupled {
+        partner: RegionId,
+        why: Uncoupling,
+    },
+    /// On the stream: `partner` is durable through border time `through`. Its effects
+    /// up to that border time are before this on the stream.
+    Progress {
+        partner: RegionId,
+        through: u64,
+    },
+    /// On the stream: everything the store has for the region up to the group of
+    /// `through` is before this.
+    Mark {
+        through: u64,
+    },
+}
+
+/// Who uses a chunk another region copies, as far as that region needs to know
+/// (`docs/adr/0025-effects-between-regions.md`, sections 3 and 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CopyUse {
+    /// Nobody: the copy may be handed to the sim.
+    Nobody,
+    /// A region coupled to the copying one: the copy may be handed to the sim.
+    Coupled(RegionId),
+    /// A region not coupled to the copying one: the copy waits, or is withdrawn.
+    Uncoupled(RegionId),
+}
+
+/// Why a coupling ended (`docs/adr/0025-effects-between-regions.md`, section 8). After
+/// [`Uncoupling::Unneeded`] the copies of chunks the former partner uses are withdrawn;
+/// after the others they stay handed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Uncoupling {
+    /// Neither region needed it for `COUPLING_GRACE`.
+    Unneeded,
+    /// One of the two was given up, as stalled or slow.
+    GivenUp { region: RegionId },
+    /// One of the two is preparing for a merge or a split, or is being moved.
+    Reshaping { region: RegionId },
+    /// One of the two lost its owner: its handle closed, another owner's hello replaced
+    /// it, or the log failed.
+    OwnerLost { region: RegionId },
+}
+
+/// A coupling as [`Restored`] carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Coupling {
+    pub partner: RegionId,
+    /// The border time the partner is durable through, if it has said any.
+    pub through: Option<u64>,
 }
 
 /// Why the world store did not do a merge or a split. See ADR-0011, section 7.
@@ -555,6 +697,19 @@ pub struct Restored {
     /// same at every opening, so that two worlds differ
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
     pub world: u64,
+    /// The chunks the region uses, in ascending order: the runner times those it does
+    /// not load again (`docs/adr/0025-effects-between-regions.md`, section 5).
+    pub in_use: Vec<ChunkPos>,
+    /// The region's offset to border time, if it is coupled to any region, and its
+    /// couplings (section 8 of the same record).
+    pub offset: Option<i64>,
+    pub couplings: Vec<Coupling>,
+    /// The partners of handshakes under way, for which the region holds the tick
+    /// `held_tick`, which it named in its `JoinsAt`; empty and none if there are none.
+    pub handshakes: Vec<RegionId>,
+    pub held_tick: Option<u64>,
+    /// Whether the region is given up, and must earn its couplings back.
+    pub given_up: bool,
 }
 
 impl Restored {
@@ -606,6 +761,16 @@ pub enum StoreWelcome {
         spawn: BlockPos,
         /// [`Restored::world`].
         world: u64,
+        /// [`Restored::offset`].
+        offset: Option<i64>,
+        /// [`Restored::couplings`].
+        couplings: Vec<Coupling>,
+        /// [`Restored::handshakes`].
+        handshakes: Vec<RegionId>,
+        /// [`Restored::held_tick`].
+        held_tick: Option<u64>,
+        /// [`Restored::given_up`].
+        given_up: bool,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.
@@ -619,8 +784,8 @@ pub enum StoreWelcome {
 
 /// Some of the state, the deltas and the grants of a [`Restored`], as they follow a
 /// [`StoreWelcome::Accepted`]. The pieces of all parts, in the order they are sent, are
-/// the state if there is one, then the deltas in the order of their ticks, and then
-/// the grants if there are any.
+/// the state if there is one, then the deltas in the order of their ticks, then the
+/// grants if there are any, and then the chunks in use if there are any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoredPart {
     pub pieces: Vec<RestoredPiece>,
@@ -652,6 +817,9 @@ pub enum RestoredItem {
     /// [`Restored::held`], as [`held_bytes`] makes bytes of it, with a tick of 0. Left
     /// out if the region was granted nothing.
     Held,
+    /// [`Restored::in_use`], as [`in_use_bytes`] makes bytes of it, with a tick of 0.
+    /// Left out if the region uses no chunk.
+    InUse,
 }
 
 /// [`Restored::held`] as the bytes of a [`RestoredItem::Held`]: its postcard.
@@ -661,6 +829,16 @@ pub fn held_bytes(held: &[(ChunkPos, u64)]) -> Vec<u8> {
 
 /// What [`held_bytes`] made bytes of, or `None` if `bytes` are not that.
 pub fn held_from_bytes(bytes: &[u8]) -> Option<Vec<(ChunkPos, u64)>> {
+    postcard::from_bytes(bytes).ok()
+}
+
+/// [`Restored::in_use`] as the bytes of a [`RestoredItem::InUse`]: its postcard.
+pub fn in_use_bytes(in_use: &[ChunkPos]) -> Vec<u8> {
+    postcard::to_stdvec(in_use).expect("positions are serialisable")
+}
+
+/// What [`in_use_bytes`] made bytes of, or `None` if `bytes` are not that.
+pub fn in_use_from_bytes(bytes: &[u8]) -> Option<Vec<ChunkPos>> {
     postcard::from_bytes(bytes).ok()
 }
 

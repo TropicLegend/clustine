@@ -2227,6 +2227,7 @@ fn a_merge_that_may_not_be_is_declined_with_its_reason_and_changes_nothing() {
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
 }
@@ -2319,6 +2320,7 @@ fn a_merge_with_several_reasons_against_it_is_declined_for_the_first_of_them() {
             absorbed: RegionId(1),
             chunks: vec![],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
 }
@@ -2355,6 +2357,7 @@ fn a_merge_gives_the_survivor_everything_the_absorbed_region_had() {
             absorbed: RegionId(1),
             chunks: vec![FREE, FREE_TOO],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     assert!(east.is_lost());
@@ -2457,6 +2460,7 @@ fn a_hello_for_an_absorbed_region_is_refused_over_a_connection_with_the_survivor
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
 
@@ -2491,6 +2495,7 @@ fn commits_after_a_merge_are_deltas_on_the_merged_state_until_a_checkpoint() {
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     // What came with the merge is held from its tick, or from the beginning: changes
@@ -2585,6 +2590,7 @@ fn a_checkpoint_with_the_tick_of_a_merge_or_a_split_is_not_put_in_place() {
             absorbed: RegionId(1),
             chunks: vec![],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     checkpoint(&west, 5, "impostor");
@@ -2655,6 +2661,7 @@ fn a_checkpoint_of_the_survivor_under_way_when_the_merge_is_written_is_not_put_i
             absorbed: RegionId(1),
             chunks: vec![],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     gate.let_go();
@@ -2691,6 +2698,7 @@ fn a_checkpoint_of_the_absorbed_region_under_way_when_the_merge_is_written_is_no
             absorbed: RegionId(1),
             chunks: vec![],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     assert!(east.is_lost());
@@ -3297,6 +3305,7 @@ fn a_chunk_that_is_being_returned_when_its_region_is_absorbed_goes_to_the_surviv
                 absorbed: RegionId(1),
                 chunks: vec![FREE, FREE_TOO],
                 pinned: vec![east_area()],
+                in_use: Vec::new(),
             },
             "{stop:?}"
         );
@@ -3391,6 +3400,7 @@ fn a_part_absorbed_by_the_pinned_region_it_was_split_off_is_among_what_that_was_
             absorbed: RegionId(3),
             chunks: vec![WEST, WEST_TOO],
             pinned: vec![],
+            in_use: Vec::new(),
         }
     );
     assert!(part.is_lost());
@@ -3445,6 +3455,7 @@ fn the_id_of_an_absorbed_region_is_not_given_to_the_next_part() {
                 absorbed: RegionId(3),
                 chunks: vec![WEST],
                 pinned: vec![],
+                in_use: Vec::new(),
             }
         );
         if checkpointed {
@@ -3484,6 +3495,7 @@ fn the_id_of_an_absorbed_pinned_region_is_not_given_to_the_next_part() {
             absorbed: RegionId(1),
             chunks: vec![],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     west.flush();
@@ -3608,6 +3620,7 @@ fn merged_and_split() -> (Arc<MemoryDisk>, [Restored; 2]) {
             absorbed: RegionId(1),
             chunks: vec![FREE_TOO],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     log(
@@ -4092,6 +4105,7 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
             absorbed: RegionId(3),
             chunks: vec![WEST, FREE],
             pinned: vec![],
+            in_use: Vec::new(),
         }
     );
     // The home region, which is pinned to nothing, absorbs the western one.
@@ -4101,6 +4115,7 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
             absorbed: RegionId(0),
             chunks: vec![WEST, FREE],
             pinned: vec![west_area()],
+            in_use: Vec::new(),
         }
     );
     assert!(west.is_lost() && part.is_lost());
@@ -4169,6 +4184,7 @@ fn the_entity_ids_of_an_absorbed_region_are_not_issued_again() {
             absorbed: RegionId(1),
             chunks: vec![],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     west.flush();
@@ -4373,6 +4389,7 @@ fn what_was_claimed_just_before_a_merge_or_a_split_is_part_of_it() {
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
+            in_use: Vec::new(),
         }
     );
     assert_eq!(answers_until_lost(&east), [claimed(FREE)]);
@@ -4539,6 +4556,7 @@ fn the_store_forgets_all_but_the_latest_4096_absorbed_regions() {
                 absorbed: RegionId(part),
                 chunks: vec![WEST],
                 pinned: vec![],
+                in_use: Vec::new(),
             }
         );
     }
@@ -4837,6 +4855,7 @@ fn a_merge_or_a_split_whose_record_was_cut_off_has_not_happened() {
                 absorbed: RegionId(1),
                 chunks: vec![FREE],
                 pinned: vec![east_area()],
+                in_use: Vec::new(),
             };
             assert_eq!(merge(&west, 1, 50, 1), absorbed, "{case}");
             assert_eq!(split(&west, 2, &[FREE], 1, 3), parted(3), "{case}");

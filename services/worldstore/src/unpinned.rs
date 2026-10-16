@@ -661,6 +661,7 @@ fn life(store: &Store) -> Built {
         absorbed: RegionId(1),
         chunks: vec![LEFT, GROWN, EAST, EAST_TOO],
         pinned: Vec::new(),
+        in_use: Vec::new(),
     };
     assert_eq!(absorb(&home, 1, 4, 4), merged);
     assert!(part.is_lost());

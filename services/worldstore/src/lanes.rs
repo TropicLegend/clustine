@@ -470,6 +470,10 @@ impl Lanes {
                             table_last = Some(segment);
                         }
                     }
+                    // Kept and dropped from step E3 of
+                    // `docs/adr/0025-effects-between-regions.md`; no store writes them
+                    // before.
+                    LogRecord::EffectsDropped { .. } | LogRecord::EffectsForward { .. } => {}
                 }
             }
             log.segments.insert(segment);
@@ -755,6 +759,11 @@ impl Lanes {
                 ticks,
                 marks_taken,
                 seams,
+                // Filed, taken and kept in the log from step E3 of
+                // `docs/adr/0025-effects-between-regions.md`; until then no sim makes
+                // effects, and none is taken.
+                effects: _,
+                taken: _,
             } => {
                 let region = session.region;
                 // The notes are in the commit's own record, so that the two are on
@@ -770,6 +779,10 @@ impl Lanes {
                     ticks,
                     marks_taken,
                     seams,
+                    // Filed with when each is due, and the takings, from step E3 of
+                    // `docs/adr/0025-effects-between-regions.md`.
+                    effects: Vec::new(),
+                    taken: Vec::new(),
                 }
                 .encode();
                 self.group.regions.insert(region);
@@ -973,6 +986,15 @@ impl Lanes {
             }
             // Taken above, before the lane was looked up.
             StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. } => return,
+            // Copies, use and couplings are the store's from step E3 of
+            // `docs/adr/0025-effects-between-regions.md`; until then no runner asks for
+            // them, and one that did would find its copies never based and nobody
+            // coupled to it, which leaves it as it is today.
+            StoreRequest::Copies { .. }
+            | StoreRequest::Beside { .. }
+            | StoreRequest::Dropped { .. }
+            | StoreRequest::JoinsAt { .. }
+            | StoreRequest::EndCouplings => return,
         };
         if owner.unsynced.is_empty() && owner.held.is_empty() {
             let _ = self.jobs.send(job);
@@ -1517,6 +1539,14 @@ impl Lanes {
             issued: EntityId(highest),
             spawn: self.spawn,
             world: self.world,
+            // Kept by the store from step E3 of
+            // `docs/adr/0025-effects-between-regions.md`.
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         let opened = Opened {
             session,
@@ -1601,6 +1631,9 @@ impl Lanes {
             absorbed,
             chunks,
             pinned,
+            // Moved with the holding from step E3 of
+            // `docs/adr/0025-effects-between-regions.md`.
+            in_use: Vec::new(),
         });
     }
 

@@ -141,6 +141,8 @@ pub(crate) fn log(store: &StoreHandle, tick: u64, changes: &[(i32, i32, i32, Blo
         ticks: Vec::new(),
         marks_taken: Vec::new(),
         seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
     });
 }
 
@@ -575,6 +577,8 @@ fn commits_carry_the_region_and_the_epoch_of_the_owner() {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         },
     ];
     assert_eq!(logged(directory.path()), expected);

@@ -527,6 +527,8 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
         ticks: Vec::new(),
         marks_taken: Vec::new(),
         seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
     };
     let opened = |region, epoch| LogRecord::Opened {
         region,
@@ -1593,6 +1595,7 @@ fn a_merge_that_may_not_be_is_declined_with_its_reason() {
         absorbed: RegionId(1),
         chunks: Vec::new(),
         pinned: gap().pinned[1..].to_vec(),
+        in_use: Vec::new(),
     };
     assert_eq!(absorb(&survivor, 1, 5, 8), done);
 }
@@ -1618,6 +1621,7 @@ fn a_merge_gives_the_survivor_all_the_absorbed_region_had() {
         absorbed: RegionId(1),
         chunks: vec![FREE],
         pinned: gap().pinned[1..].to_vec(),
+        in_use: Vec::new(),
     };
     assert_eq!(absorb(&survivor, 1, 3, 10), done);
     // The other region is none any more: its handle is lost, and nobody opens it.
@@ -2090,6 +2094,7 @@ fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
         absorbed: RegionId(3),
         chunks: vec![second],
         pinned: Vec::new(),
+        in_use: Vec::new(),
     };
     assert_eq!(absorb(&pinned, 3, 1, 6), merged);
     assert_eq!(load(&pinned, second), generator().generate(second));
@@ -2299,6 +2304,7 @@ fn absorbed_with(reply: StoreReply) -> (u32, Vec<ChunkPos>, Ends) {
             absorbed,
             chunks,
             pinned,
+            in_use: _,
         } => (absorbed.0, chunks, in_order(&pinned)),
         other => panic!("expected the answer to a merge, got {other:?}"),
     }

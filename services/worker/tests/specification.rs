@@ -5265,6 +5265,8 @@ fn store_by_hand(
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         });
     }
     handle.flush();

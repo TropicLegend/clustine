@@ -710,6 +710,7 @@ fn a_merge_does_not_wait_for_another_regions_chunk_being_generated() {
         absorbed: RegionId(EAST),
         chunks: Vec::new(),
         pinned: gap().pinned[1..].to_vec(),
+        in_use: Vec::new(),
     };
     assert_eq!(answer(&survivor), done);
     quiet(&x);
@@ -1533,6 +1534,8 @@ fn commit_ticks(
         ticks,
         marks_taken: Vec::new(),
         seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
     });
 }
 

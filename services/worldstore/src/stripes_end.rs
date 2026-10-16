@@ -826,6 +826,7 @@ fn lives_on_stripes(store: &Store) -> Before {
         absorbed: RegionId(3),
         chunks: vec![MERGED],
         pinned: Vec::new(),
+        in_use: Vec::new(),
     };
     assert_eq!(absorb(&west, 3, 6, 5), absorbed);
 
@@ -939,6 +940,12 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             pinned: vec![west],
             issued: EntityId(0),
             world: crate::world_number(&generator().settings().identity),
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -949,6 +956,12 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             pinned: vec![east],
             issued: EntityId(0),
             world: crate::world_number(&generator().settings().identity),
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -959,6 +972,12 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             pinned: Vec::new(),
             issued: EntityId(0),
             world: crate::world_number(&generator().settings().identity),
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         },
     ];
     let mut handles = Vec::new();

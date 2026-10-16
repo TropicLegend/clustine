@@ -81,6 +81,8 @@ fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState
         ticks: Vec::new(),
         marks_taken: Vec::new(),
         seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
     });
 }
 

@@ -15,6 +15,7 @@
 
 mod bytes;
 mod chunk;
+mod effects;
 mod log;
 mod region;
 mod seams;
@@ -24,7 +25,10 @@ pub use log::{
     HOTBAR_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, read_log,
     read_log_with_offsets,
 };
-pub use region::{PlayerRecord, PlayersFile, RegionFile, StateFile, TableFile, TableRegion};
+pub use region::{
+    CoupledRegion, CouplingsFile, Handshake, PlayerRecord, PlayersFile, RegionFile, StateFile,
+    TableFile, TableRegion,
+};
 
 /// The version of the encodings in this crate. It is written into everything stored:
 /// the first byte of every file and of every record of the log. A world says in its

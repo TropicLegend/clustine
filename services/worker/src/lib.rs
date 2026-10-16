@@ -1457,6 +1457,20 @@ impl RegionRunner {
                         error!(?reply, "the world store answered what was not asked");
                     }
                 }
+                // The region's stream: effects, copies and couplings, which the runner
+                // takes from step E5 of `docs/adr/0025-effects-between-regions.md`. No
+                // store sends them before step E3, nor before the runner asks.
+                StoreReply::Effects { .. }
+                | StoreReply::CopyBase { .. }
+                | StoreReply::CopyUpdate { .. }
+                | StoreReply::CopyUsed { .. }
+                | StoreReply::CoupleWith { .. }
+                | StoreReply::Coupled { .. }
+                | StoreReply::HandshakeOff { .. }
+                | StoreReply::Shifted { .. }
+                | StoreReply::Uncoupled { .. }
+                | StoreReply::Progress { .. }
+                | StoreReply::Mark { .. } => {}
             }
         }
         // Looked at after the answers: a handle that is lost has none, so nothing
@@ -1871,6 +1885,9 @@ impl RegionRunner {
                     absorbed,
                     chunks,
                     pinned,
+                    // Timed by the runner from step E5 of
+                    // `docs/adr/0025-effects-between-regions.md`.
+                    in_use: _,
                 },
                 Plan::Absorb {
                     state: Some(state), ..
@@ -2399,6 +2416,8 @@ impl RegionRunner {
                 ticks,
                 marks_taken,
                 seams,
+                effects: Vec::new(),
+                taken: Vec::new(),
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -4358,6 +4377,9 @@ mod tests {
         Absorb(u64),
         /// A split, with its tick and the id it names for the new region.
         Split(u64, RegionId),
+        /// Something of phase E (copies, use and couplings), which no runner asks for
+        /// yet.
+        EffectsBetweenRegions,
     }
 
     impl Asked {
@@ -4372,6 +4394,11 @@ mod tests {
                 StoreRequest::Flush => Self::Flush,
                 StoreRequest::AbsorbCommit { tick, .. } => Self::Absorb(*tick),
                 StoreRequest::SplitCommit { tick, region, .. } => Self::Split(*tick, *region),
+                StoreRequest::Copies { .. }
+                | StoreRequest::Beside { .. }
+                | StoreRequest::Dropped { .. }
+                | StoreRequest::JoinsAt { .. }
+                | StoreRequest::EndCouplings => Self::EffectsBetweenRegions,
             }
         }
     }
@@ -7106,6 +7133,12 @@ mod tests {
             deltas,
             issued: EntityId(0),
             world: 0,
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         // Of this build by its first two bytes, and nothing postcard can read behind.
         let unreadable = |tick| clustine_rpc::TickState {
@@ -7458,6 +7491,12 @@ mod tests {
             deltas,
             issued: EntityId(0),
             world: 0,
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         let (state, delta) = a_state_and_a_delta();
         let item = |tick, state| clustine_rpc::TickState { tick, state };

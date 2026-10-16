@@ -215,11 +215,13 @@ mod tests {
                 absorbed: region,
                 chunks: chunks.clone(),
                 pinned: areas.clone(),
+                in_use: Vec::new(),
             },
             StoreReply::Absorbed {
                 absorbed: region,
                 chunks: Vec::new(),
                 pinned: Vec::new(),
+                in_use: Vec::new(),
             },
             StoreReply::Split { region },
             StoreReply::Declined {
@@ -503,6 +505,12 @@ mod tests {
             issued: EntityId(0),
             spawn: BlockPos::new(-1, 320, 29_999_999),
             world: 0,
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         assert_eq!(restored.tick(), 9);
         let welcomes = [
@@ -512,6 +520,11 @@ mod tests {
                 issued: EntityId(i32::MAX),
                 spawn: BlockPos::new(0, -60, 0),
                 world: 0,
+                offset: None,
+                couplings: Vec::new(),
+                handshakes: Vec::new(),
+                held_tick: None,
+                given_up: false,
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Absorbed {
@@ -533,6 +546,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -608,6 +623,12 @@ mod tests {
             issued: EntityId(0),
             spawn: BlockPos::new(-1, 320, 29_999_999),
             world: 0,
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         assert_eq!(fresh.tick(), 0);
         fresh.state = Some(TickState {
@@ -675,6 +696,8 @@ mod tests {
             ticks: Vec::new(),
             marks_taken: Vec::new(),
             seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
         });
         for reply in [
             StoreReply::Enter {
@@ -709,6 +732,11 @@ mod tests {
                 issued,
                 spawn: BlockPos::new(-90, 64, 32),
                 world: 0,
+                offset: None,
+                couplings: Vec::new(),
+                handshakes: Vec::new(),
+                held_tick: None,
+                given_up: false,
             });
             round_trip(Restored {
                 held: Vec::new(),
@@ -719,6 +747,12 @@ mod tests {
                 issued,
                 spawn: BlockPos::new(-90, 64, 32),
                 world: 0,
+                in_use: Vec::new(),
+                offset: None,
+                couplings: Vec::new(),
+                handshakes: Vec::new(),
+                held_tick: None,
+                given_up: false,
             });
         }
     }
@@ -775,5 +809,152 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// What phase E adds to the messages of the world store
+    /// (`docs/adr/0025-effects-between-regions.md`): effects and takings in a commit,
+    /// the requests for copies, use and couplings, and the region's stream.
+    #[test]
+    fn what_regions_say_of_effects_copies_and_couplings_round_trips() {
+        use clustine_data::blocks;
+        use clustine_world::{
+            BlockPos, ChunkPos, Due, Effect, EffectId, Effected, FiledEffect, SeamKind, Ticked,
+        };
+
+        use crate::{CopyUse, StoreReply, StoreRequest, Uncoupling};
+
+        let at = BlockPos::new(-17, 70, 33);
+        let effects = vec![
+            Effect {
+                at,
+                what: Effected::Update {
+                    direction: 3,
+                    kind: SeamKind::Shape,
+                    source: blocks::AIR,
+                    flags: 3,
+                    depth: 510,
+                },
+            },
+            Effect {
+                at,
+                what: Effected::Tick {
+                    of: Ticked::Fluid(2),
+                    delay: 5,
+                    priority: 0,
+                },
+            },
+            Effect {
+                at,
+                what: Effected::Spread {
+                    direction: 4,
+                    source: blocks::WATER,
+                },
+            },
+            Effect {
+                at,
+                what: Effected::SetIf {
+                    expected: blocks::OAK_PLANKS,
+                    state: blocks::FIRE,
+                },
+            },
+        ];
+        let id = |sequence, index| EffectId { sequence, index };
+        round_trip(StoreRequest::Commit {
+            tick: 9,
+            changes: Vec::new(),
+            state: vec![1],
+            stays: Vec::new(),
+            ticks: Vec::new(),
+            marks_taken: Vec::new(),
+            seams: Vec::new(),
+            effects: effects.clone(),
+            taken: vec![id(4, 0), id(4, 2)],
+        });
+        let (one, two) = (ChunkPos::new(-2, 2), ChunkPos::new(-1, 2));
+        for request in [
+            StoreRequest::Copies {
+                wanted: vec![one, two],
+                gone: vec![ChunkPos::new(5, 5)],
+            },
+            StoreRequest::Beside {
+                begins: vec![one],
+                ends: Vec::new(),
+            },
+            StoreRequest::Dropped { chunks: vec![two] },
+            StoreRequest::JoinsAt {
+                partner: RegionId(4),
+                tick: u64::MAX,
+            },
+            StoreRequest::EndCouplings,
+        ] {
+            round_trip(request);
+        }
+        let filed: Vec<FiledEffect> = effects
+            .iter()
+            .enumerate()
+            .map(|(index, effect)| FiledEffect {
+                id: id(8, index as u32),
+                effect: *effect,
+                due: if index == 1 {
+                    Due::At { tick: 12_345 }
+                } else {
+                    Due::FromTaking
+                },
+            })
+            .collect();
+        for reply in [
+            StoreReply::Effects { effects: filed },
+            StoreReply::CopyBase {
+                position: one,
+                sequence: 40,
+                last_change: 31,
+                chunk: None,
+                used: CopyUse::Uncoupled(RegionId(2)),
+            },
+            StoreReply::CopyUpdate {
+                position: one,
+                sequence: 41,
+                previous: 31,
+                changes: vec![(at, blocks::STONE)],
+            },
+            StoreReply::CopyUsed {
+                position: two,
+                used: CopyUse::Coupled(RegionId(2)),
+            },
+            StoreReply::CopyUsed {
+                position: two,
+                used: CopyUse::Nobody,
+            },
+            StoreReply::CoupleWith {
+                partner: RegionId(2),
+            },
+            StoreReply::Coupled {
+                partner: RegionId(2),
+                offset: -1_000,
+            },
+            StoreReply::HandshakeOff {
+                partner: RegionId(2),
+            },
+            StoreReply::Shifted { offset: i64::MIN },
+            StoreReply::Uncoupled {
+                partner: RegionId(2),
+                why: Uncoupling::GivenUp {
+                    region: RegionId(2),
+                },
+            },
+            StoreReply::Progress {
+                partner: RegionId(2),
+                through: 77,
+            },
+            StoreReply::Mark { through: 41 },
+            StoreReply::Absorbed {
+                absorbed: RegionId(5),
+                chunks: vec![one],
+                pinned: Vec::new(),
+                in_use: vec![one, two],
+            },
+        ] {
+            round_trip(reply);
+        }
     }
 }

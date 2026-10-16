@@ -67,6 +67,8 @@ fn commit(
         ticks,
         marks_taken: Vec::new(),
         seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
     });
 }
 

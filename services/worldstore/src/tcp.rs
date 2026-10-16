@@ -30,7 +30,8 @@ use std::time::Duration;
 
 use clustine_rpc::{
     RegionHello, RegionList, Restored, RestoredItem, RestoredPart, RestoredPiece, StoreHello,
-    StoreReply, StoreRequest, StoreWelcome, TickState, held_bytes, held_from_bytes, wire,
+    StoreReply, StoreRequest, StoreWelcome, TickState, held_bytes, held_from_bytes, in_use_bytes,
+    in_use_from_bytes, wire,
 };
 use clustine_world::{BlockPos, ChunkArea, ChunkPos, EntityId, EntityIds};
 use tracing::{info, warn};
@@ -320,6 +321,12 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         issued,
         spawn,
         world,
+        in_use,
+        offset,
+        couplings,
+        handshakes,
+        held_tick,
+        given_up,
     } = restored;
     stream.set_write_timeout(Some(patience))?;
     let accepted = StoreWelcome::Accepted {
@@ -328,9 +335,14 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         issued,
         spawn,
         world,
+        offset,
+        couplings,
+        handshakes,
+        held_tick,
+        given_up,
     };
     wire::blocking::write(&mut &*stream, &accepted)?;
-    for part in Parts::new(state, deltas, &held, PART_BYTES) {
+    for part in Parts::new(state, deltas, &held, &in_use, PART_BYTES) {
         wire::blocking::write(&mut &*stream, &part)?;
     }
     // Answers wait for as long as the owner takes to read them.
@@ -344,12 +356,15 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
 /// the number of pieces: one delta can be large, and thousands can be next to nothing.
 /// A state or delta that does not fit what is left of a part is cut there and goes on in
 /// the next, so that nothing is too large to be sent. The grants are sent like a state,
-/// as the bytes [`held_bytes`] makes of them, behind the deltas.
+/// as the bytes [`held_bytes`] makes of them, behind the deltas, and the chunks in use
+/// likewise behind the grants.
 struct Parts {
     state: Option<TickState>,
     deltas: std::vec::IntoIter<TickState>,
     /// The grants as they are sent, if there are any and they have not been taken yet.
     held: Option<TickState>,
+    /// The chunks in use as they are sent, the same way.
+    in_use: Option<TickState>,
     /// What has been taken from the two and is not sent in full, with the number of its
     /// bytes that are.
     cut: Option<(RestoredItem, TickState, usize)>,
@@ -363,16 +378,22 @@ impl Parts {
         state: Option<TickState>,
         deltas: Vec<TickState>,
         held: &[(ChunkPos, u64)],
+        in_use: &[ChunkPos],
         room: usize,
     ) -> Self {
         let held = (!held.is_empty()).then(|| TickState {
             tick: 0,
             state: held_bytes(held),
         });
+        let in_use = (!in_use.is_empty()).then(|| TickState {
+            tick: 0,
+            state: in_use_bytes(in_use),
+        });
         Self {
             state,
             deltas: deltas.into_iter(),
             held,
+            in_use,
             cut: None,
             // A part has room for a byte at least, or nothing would ever be sent.
             room: room.max(PIECE_OVERHEAD + 1),
@@ -391,8 +412,11 @@ impl Parts {
         if let Some(delta) = self.deltas.next() {
             return Some((RestoredItem::Delta, delta, 0));
         }
-        let held = self.held.take()?;
-        Some((RestoredItem::Held, held, 0))
+        if let Some(held) = self.held.take() {
+            return Some((RestoredItem::Held, held, 0));
+        }
+        let in_use = self.in_use.take()?;
+        Some((RestoredItem::InUse, in_use, 0))
     }
 }
 
@@ -449,10 +473,13 @@ impl Iterator for Parts {
 /// A [`Restored`] that is being put together from the parts it arrives in.
 struct Arriving {
     restored: Restored,
-    /// The state, the delta or the grants whose pieces have not all arrived.
+    /// The state, the delta, the grants or the chunks in use whose pieces have not all
+    /// arrived.
     cut: Option<(RestoredItem, TickState)>,
-    /// Whether the grants have arrived, which nothing follows.
+    /// Whether the grants have arrived, which only the chunks in use follow.
     held: bool,
+    /// Whether the chunks in use have arrived, which nothing follows.
+    in_use: bool,
 }
 
 impl Arriving {
@@ -473,9 +500,16 @@ impl Arriving {
                 issued,
                 spawn,
                 world,
+                in_use: Vec::new(),
+                offset: None,
+                couplings: Vec::new(),
+                handshakes: Vec::new(),
+                held_tick: None,
+                given_up: false,
             },
             cut: None,
             held: false,
+            in_use: false,
         }
     }
 
@@ -505,7 +539,10 @@ impl Arriving {
                 self.cut = Some((of, state));
                 continue;
             }
-            if self.held {
+            if self.in_use {
+                return Err(misfit("something behind the chunks the region uses"));
+            }
+            if self.held && of != RestoredItem::InUse {
                 return Err(misfit("something behind the chunks the region holds"));
             }
             match of {
@@ -520,6 +557,11 @@ impl Arriving {
                     self.restored.held = held_from_bytes(&state.state)
                         .ok_or_else(|| misfit("chunks the region holds that cannot be read"))?;
                     self.held = true;
+                }
+                RestoredItem::InUse => {
+                    self.restored.in_use = in_use_from_bytes(&state.state)
+                        .ok_or_else(|| misfit("chunks the region uses that cannot be read"))?;
+                    self.in_use = true;
                 }
             }
         }
@@ -676,14 +718,28 @@ fn welcomed(
     stream: &mut &TcpStream,
     hello: RegionHello,
 ) -> io::Result<Option<Result<Restored, StoreError>>> {
-    let (entity_ids, pinned, issued, spawn, world) = match wire::blocking::read(stream)? {
+    let mut arriving = match wire::blocking::read(stream)? {
         Some(StoreWelcome::Accepted {
             entity_ids,
             pinned,
             issued,
             spawn,
             world,
-        }) => (entity_ids, pinned, issued, spawn, world),
+            offset,
+            couplings,
+            handshakes,
+            held_tick,
+            given_up,
+        }) => {
+            let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, world);
+            let restored = &mut arriving.restored;
+            restored.offset = offset;
+            restored.couplings = couplings;
+            restored.handshakes = handshakes;
+            restored.held_tick = held_tick;
+            restored.given_up = given_up;
+            arriving
+        }
         Some(StoreWelcome::EpochRefused { seen }) => {
             return Ok(Some(Err(StoreError::EpochRefused {
                 region: hello.region,
@@ -702,7 +758,6 @@ fn welcomed(
         }
         None => return Ok(None),
     };
-    let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, world);
     loop {
         let Some(part) = wire::blocking::read(stream)? else {
             return Err(io::Error::new(
@@ -960,6 +1015,12 @@ mod tests {
             }],
             issued: EntityId(0),
             world: crate::world_number(&generator().settings().identity),
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
         assert_eq!(restored, expected);
@@ -1493,6 +1554,11 @@ mod tests {
                 pinned: Vec::new(),
                 issued: EntityId(0),
                 world: 0,
+                offset: None,
+                couplings: Vec::new(),
+                handshakes: Vec::new(),
+                held_tick: None,
+                given_up: false,
             };
             wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
@@ -1631,6 +1697,8 @@ mod tests {
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
                 seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
             });
         }
         committed(&owner, tick);
@@ -1694,6 +1762,12 @@ mod tests {
                 .collect(),
             issued: EntityId(0),
             world: 0,
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         // Next to nothing thousands of times over, with and without bytes at all.
         let tiny: Vec<usize> = (0..3000).map(|index| index % 5).collect();
@@ -1713,7 +1787,7 @@ mod tests {
         for room in [0, 30, 100, 1000, PART_BYTES] {
             for case in &cases {
                 let parts: Vec<_> =
-                    Parts::new(case.state.clone(), case.deltas.clone(), &[], room).collect();
+                    Parts::new(case.state.clone(), case.deltas.clone(), &[], &[], room).collect();
                 let room = room.max(PIECE_OVERHEAD + 1);
                 for (index, part) in parts.iter().enumerate() {
                     // Besides what is counted, a part has its length, the number of its
@@ -1740,8 +1814,14 @@ mod tests {
         // The same with what goes into a message as it is served: a state and a delta
         // of several parts each.
         let large = restored(Some(3 * PART_BYTES + 5), &[3, 5 * PART_BYTES / 2, 0]);
-        let parts: Vec<_> =
-            Parts::new(large.state.clone(), large.deltas.clone(), &[], PART_BYTES).collect();
+        let parts: Vec<_> = Parts::new(
+            large.state.clone(),
+            large.deltas.clone(),
+            &[],
+            &[],
+            PART_BYTES,
+        )
+        .collect();
         assert!(parts.len() > 5);
         for part in &parts {
             assert!(sent_length(part) <= PART_BYTES + 16);
@@ -1764,7 +1844,7 @@ mod tests {
         for (state, deltas) in [(None, Vec::new()), with_states] {
             for room in [30, 100, 1000, PART_BYTES] {
                 let parts: Vec<_> =
-                    Parts::new(state.clone(), deltas.clone(), &held, room).collect();
+                    Parts::new(state.clone(), deltas.clone(), &held, &[], room).collect();
                 for part in &parts {
                     assert!(sent_length(part) <= room.max(PIECE_OVERHEAD + 1) + 16);
                 }
@@ -1786,7 +1866,7 @@ mod tests {
             }
         }
         // A region that was granted nothing is sent no such item.
-        let parts: Vec<_> = Parts::new(None, Vec::new(), &[], 100).collect();
+        let parts: Vec<_> = Parts::new(None, Vec::new(), &[], &[], 100).collect();
         let nothing = RestoredPart {
             pieces: Vec::new(),
             last: true,
@@ -1901,6 +1981,12 @@ mod tests {
             }],
             issued: EntityId(0),
             world: 0,
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         assert_eq!(together(entity_ids, parts).unwrap(), expected);
     }
@@ -2089,6 +2175,11 @@ mod tests {
                     pinned: expected.pinned.clone(),
                     issued: EntityId(0),
                     world: crate::world_number(&generator().settings().identity),
+                    offset: None,
+                    couplings: Vec::new(),
+                    handshakes: Vec::new(),
+                    held_tick: None,
+                    given_up: false,
                 };
                 assert_eq!(welcome, Some(accepted));
                 for _ in 0..parts {
@@ -2131,6 +2222,12 @@ mod tests {
             }],
             issued: EntityId(0),
             world: 0,
+            in_use: Vec::new(),
+            offset: None,
+            couplings: Vec::new(),
+            handshakes: Vec::new(),
+            held_tick: None,
+            given_up: false,
         };
         let error = welcome(&stream, Duration::from_millis(300), restored).unwrap_err();
         // Which of the two a write that ran out of time reports depends on the system.
@@ -2139,5 +2236,103 @@ mod tests {
             "{error}"
         );
         drop(deaf);
+    }
+
+    /// The chunks a region uses follow its grants as one more item, and nothing follows
+    /// them (`docs/adr/0025-effects-between-regions.md`, section 5).
+    #[test]
+    fn the_chunks_a_region_uses_are_sent_in_parts_behind_its_grants() {
+        let entity_ids = EntityIds::block(2).unwrap();
+        let held: Vec<(ChunkPos, u64)> = (0..300).map(|z| (ChunkPos::new(1, z), 5)).collect();
+        let in_use: Vec<ChunkPos> = (0..700).map(|z| ChunkPos::new(-9, z)).collect();
+        for granted in [&held[..], &[]] {
+            for room in [30, 100, 1000, PART_BYTES] {
+                let parts: Vec<_> =
+                    Parts::new(Some(tick_state(7, 40)), Vec::new(), granted, &in_use, room)
+                        .collect();
+                let items: Vec<RestoredItem> = parts
+                    .iter()
+                    .flat_map(|part| part.pieces.iter().map(|piece| piece.of))
+                    .collect();
+                let first = items
+                    .iter()
+                    .position(|of| *of == RestoredItem::InUse)
+                    .expect("the chunks in use are sent");
+                assert!(items[first..].iter().all(|of| *of == RestoredItem::InUse));
+                let restored = together(entity_ids, parts).unwrap();
+                assert_eq!(restored.held, granted);
+                assert_eq!(restored.in_use, in_use);
+            }
+        }
+
+        // Grants behind the chunks in use, and those twice, do not fit together.
+        let piece = |of, bytes: Vec<u8>| RestoredPiece {
+            of,
+            tick: 0,
+            bytes,
+            complete: true,
+        };
+        let used = in_use_bytes(&in_use[..3]);
+        for pieces in [
+            vec![
+                piece(RestoredItem::InUse, used.clone()),
+                piece(RestoredItem::Held, held_bytes(&held[..1])),
+            ],
+            vec![
+                piece(RestoredItem::InUse, used.clone()),
+                piece(RestoredItem::InUse, used),
+            ],
+        ] {
+            let part = RestoredPart { pieces, last: true };
+            assert!(together(entity_ids, vec![part]).is_err());
+        }
+    }
+
+    /// A region's couplings, handshakes and whether it is given up travel with the
+    /// welcome, and the chunks it uses in its parts, over a real connection.
+    #[test]
+    fn a_welcome_carries_what_the_store_has_of_a_regions_couplings() {
+        use crate::tests::hello;
+        use clustine_rpc::Coupling;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let restored = Restored {
+            spawn: crate::tests::SPAWN,
+            held: vec![(ChunkPos::new(0, 0), 3)],
+            pinned: Vec::new(),
+            entity_ids: EntityIds::block(1).unwrap(),
+            state: Some(TickState {
+                tick: 4,
+                state: vec![9; 10],
+            }),
+            deltas: Vec::new(),
+            issued: EntityId(0),
+            world: 77,
+            in_use: vec![ChunkPos::new(0, 0), ChunkPos::new(0, 1)],
+            offset: Some(-12_000),
+            couplings: vec![
+                Coupling {
+                    partner: RegionId(2),
+                    through: Some(900),
+                },
+                Coupling {
+                    partner: RegionId(5),
+                    through: None,
+                },
+            ],
+            handshakes: vec![RegionId(8)],
+            held_tick: Some(4_001),
+            given_up: true,
+        };
+        let sent = restored.clone();
+        let store = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            welcome(&stream, Duration::from_secs(5), sent).unwrap();
+        });
+        let stream = TcpStream::connect(address).unwrap();
+        let arrived = welcomed(&mut &stream, hello(1, 1)).unwrap();
+        store.join().unwrap();
+        assert_eq!(arrived.map(Result::ok), Some(Some(restored)));
     }
 }

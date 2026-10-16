@@ -62,7 +62,26 @@
 //! | … the place, if it has one, as in a stay note of the log | |
 //! | CRC-32 of everything before | u32 |
 //!
-//! All integers are big-endian. All four are written whole under a temporary name and
+//! The couplings' file is what the store keeps of the lockstep of regions whose border
+//! ticks: each region's offset to border time, the couplings, the handshakes under way
+//! and the regions given up, whole, rewritten in the group that changes any of it. See
+//! `docs/adr/0025-effects-between-regions.md`, section 8.
+//!
+//! | Field | Type |
+//! |---|---|
+//! | Format version | u8 |
+//! | Kind | u8, 5 for the couplings' file |
+//! | Regions, ascending by id: count, then per region | u32 |
+//! | … id | u32 |
+//! | … has an offset, then the offset | u8 0 or 1, i64 |
+//! | … given up | u8 0 or 1 |
+//! | Couplings, ascending, the lower id first: count, then per pair | u32, (u32, u32)… |
+//! | Handshakes, ascending, the lower id first: count, then per handshake | u32 |
+//! | … the two regions | u32, u32 |
+//! | … the tick each joins at, if it has said: flag and tick, for each | u8, u64, u8, u64 |
+//! | CRC-32 of everything before | u32 |
+//!
+//! All integers are big-endian. All five are written whole under a temporary name and
 //! renamed, so a reader never sees half of one; the checksum is for damage.
 
 use clustine_world::{ChunkArea, ChunkPos, EntityId, EntityIds};
@@ -75,6 +94,7 @@ const KIND_REGION: u8 = 1;
 const KIND_STATE: u8 = 2;
 const KIND_TABLE: u8 = 3;
 const KIND_PLAYERS: u8 = 4;
+const KIND_COUPLINGS: u8 = 5;
 
 /// Bytes a player's record takes in a players' file at the least.
 const RECORD_LENGTH: usize = 25;
@@ -344,6 +364,142 @@ impl PlayersFile {
             issued,
             records,
         })
+    }
+}
+
+/// What the world store keeps of couplings (`docs/adr/0025-effects-between-regions.md`,
+/// section 8).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CouplingsFile {
+    /// Regions with an offset or given up, ascending by id.
+    pub regions: Vec<CoupledRegion>,
+    /// Pairs of coupled regions, the lower id first, ascending.
+    pub couplings: Vec<(u32, u32)>,
+    /// Handshakes under way, ascending by their pairs.
+    pub handshakes: Vec<Handshake>,
+}
+
+/// A region as the couplings' file keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoupledRegion {
+    pub region: u32,
+    /// Its tick plus this is its border time; none if it is coupled to nobody.
+    pub offset: Option<i64>,
+    /// Given up as stalled or slow, so that it has to earn a coupling back.
+    pub given_up: bool,
+}
+
+/// A handshake under way between `low` and `high` (the lower id first), with the tick
+/// each said it joins at, if it has said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Handshake {
+    pub low: u32,
+    pub high: u32,
+    pub low_joins: Option<u64>,
+    pub high_joins: Option<u64>,
+}
+
+impl CouplingsFile {
+    /// The file. Its lists are written in the order they are given in, which has to be
+    /// ascending for the file to be read again.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = vec![FORMAT_VERSION, KIND_COUPLINGS];
+        out.extend_from_slice(&(self.regions.len() as u32).to_be_bytes());
+        for region in &self.regions {
+            out.extend_from_slice(&region.region.to_be_bytes());
+            match region.offset {
+                None => out.extend_from_slice(&[0; 9]),
+                Some(offset) => {
+                    out.push(1);
+                    out.extend_from_slice(&offset.to_be_bytes());
+                }
+            }
+            out.push(u8::from(region.given_up));
+        }
+        out.extend_from_slice(&(self.couplings.len() as u32).to_be_bytes());
+        for (low, high) in &self.couplings {
+            out.extend_from_slice(&low.to_be_bytes());
+            out.extend_from_slice(&high.to_be_bytes());
+        }
+        out.extend_from_slice(&(self.handshakes.len() as u32).to_be_bytes());
+        for handshake in &self.handshakes {
+            out.extend_from_slice(&handshake.low.to_be_bytes());
+            out.extend_from_slice(&handshake.high.to_be_bytes());
+            for joins in [handshake.low_joins, handshake.high_joins] {
+                out.push(u8::from(joins.is_some()));
+                out.extend_from_slice(&joins.unwrap_or(0).to_be_bytes());
+            }
+        }
+        seal(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
+        let mut input = opened(bytes, KIND_COUPLINGS)?;
+        let count = input.u32()? as usize;
+        // A forged count must not reserve more than the file can hold.
+        let mut regions: Vec<CoupledRegion> = Vec::with_capacity(count.min(input.0.len() / 14));
+        for _ in 0..count {
+            let region = input.u32()?;
+            if regions.last().is_some_and(|before| before.region >= region) {
+                return Err(FormatError::Corrupt("coupled regions out of order"));
+            }
+            let has = take_flag(&mut input, "whether a region has an offset")?;
+            let offset = input.u64()? as i64;
+            let given_up = take_flag(&mut input, "whether a region is given up")?;
+            regions.push(CoupledRegion {
+                region,
+                offset: has.then_some(offset),
+                given_up,
+            });
+        }
+        let count = input.u32()? as usize;
+        let mut couplings: Vec<(u32, u32)> =
+            Vec::with_capacity(count.min(input.0.len() / PAIR_LENGTH));
+        for _ in 0..count {
+            let pair = (input.u32()?, input.u32()?);
+            if pair.0 >= pair.1 || couplings.last().is_some_and(|before| *before >= pair) {
+                return Err(FormatError::Corrupt("couplings out of order"));
+            }
+            couplings.push(pair);
+        }
+        let count = input.u32()? as usize;
+        let mut handshakes: Vec<Handshake> = Vec::with_capacity(count.min(input.0.len() / 26));
+        for _ in 0..count {
+            let (low, high) = (input.u32()?, input.u32()?);
+            if low >= high
+                || handshakes
+                    .last()
+                    .is_some_and(|before| (before.low, before.high) >= (low, high))
+            {
+                return Err(FormatError::Corrupt("handshakes out of order"));
+            }
+            let mut joins = [None; 2];
+            for said in &mut joins {
+                let has = take_flag(&mut input, "whether a region has said its tick")?;
+                let tick = input.u64()?;
+                *said = has.then_some(tick);
+            }
+            handshakes.push(Handshake {
+                low,
+                high,
+                low_joins: joins[0],
+                high_joins: joins[1],
+            });
+        }
+        input.finish()?;
+        Ok(Self {
+            regions,
+            couplings,
+            handshakes,
+        })
+    }
+}
+
+fn take_flag(input: &mut Input<'_>, what: &'static str) -> Result<bool, FormatError> {
+    match input.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(FormatError::Corrupt(what)),
     }
 }
 
