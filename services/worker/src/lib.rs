@@ -5707,10 +5707,18 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-            let changed = [RegionEvent::BlockChanged {
-                position: block,
-                state: clustine_data::blocks::AIR,
-            }];
+            // The block breaks for every client but the breaker's, then changes.
+            let changed = [
+                RegionEvent::BlockDestroyed {
+                    position: block,
+                    state: clustine_data::blocks::GRASS_BLOCK,
+                    breaker: Some(other_player()),
+                },
+                RegionEvent::BlockChanged {
+                    position: block,
+                    state: clustine_data::blocks::AIR,
+                },
+            ];
             assert_eq!(events(step_for(&mut runner, &mut other)), changed);
             assert_eq!(
                 step_for(&mut runner, &mut other),

@@ -1455,6 +1455,48 @@ impl Encode for BlockUpdate {
     }
 }
 
+/// Something clients show at a place (`ClientboundLevelEventPacket`): a sound, bits,
+/// smoke. `data` says more, as the event needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelEvent {
+    pub event: i32,
+    pub position: Position,
+    pub data: i32,
+    /// Heard everywhere rather than near the place (the wither's spawn, the dragon's
+    /// death).
+    pub global: bool,
+}
+
+/// The events of [`LevelEvent`] the server sends.
+pub mod level_event {
+    /// A block broke: its sound and its bits, `data` being its state's id.
+    pub const BLOCK_BROKEN: i32 = 2001;
+}
+
+impl Packet for LevelEvent {
+    const ID: i32 = clientbound::LEVEL_EVENT;
+}
+
+impl Encode for LevelEvent {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i32(self.event);
+        w.put_position(self.position);
+        w.put_i32(self.data);
+        w.put_bool(self.global);
+    }
+}
+
+impl Decode for LevelEvent {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            event: r.i32()?,
+            position: r.position()?,
+            data: r.i32()?,
+            global: r.bool()?,
+        })
+    }
+}
+
 impl Decode for BlockUpdate {
     fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
@@ -1681,6 +1723,7 @@ packet_set! {
         RemoveEntities,
         AcknowledgeBlockChange,
         BlockUpdate,
+        LevelEvent,
         SetContainerContent,
         SetHeldSlot,
     }
@@ -1723,6 +1766,20 @@ mod tests {
     fn clientbound_packets_round_trip() {
         use ClientboundPlay as Set;
         assert_round_trip(login(), Set::decode, Set::Login);
+        assert_round_trip(
+            LevelEvent {
+                event: level_event::BLOCK_BROKEN,
+                position: Position {
+                    x: -3,
+                    y: 70,
+                    z: 12,
+                },
+                data: 1,
+                global: false,
+            },
+            Set::decode,
+            Set::LevelEvent,
+        );
         assert_round_trip(
             Login {
                 previous_game_mode: Some(game_mode::SURVIVAL),

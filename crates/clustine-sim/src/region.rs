@@ -17,6 +17,7 @@ use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
 mod reshape;
+mod updates;
 
 pub use reshape::{NoSplit, Part, Sides, Splitting};
 
@@ -238,6 +239,9 @@ pub struct Region {
     /// region that is run on from memory as in one that another worker restores.
     unnamed: bool,
     journal: Journal,
+    /// What one change of a block makes in turn while it runs; empty between changes,
+    /// and no part of the state.
+    updater: updates::Updater,
 }
 
 impl Region {
@@ -279,6 +283,7 @@ impl Region {
             next_entity_id: state.next_entity_id,
             land,
             chunks: BTreeMap::new(),
+            updater: updates::Updater::default(),
             tickets: BTreeMap::new(),
             requested: BTreeSet::new(),
             players,
@@ -1252,7 +1257,7 @@ impl Region {
                 // Acknowledged whatever comes of it, so the client stops guessing.
                 player.acknowledge(sequence);
                 if player.can_reach(position) {
-                    self.break_block(position, output);
+                    self.break_by_player(position, Some(id), output);
                 }
             }
             PlayerInput::UseItemOn {
@@ -1427,7 +1432,7 @@ impl Region {
         // A block of a held chunk that is not loaded is not there.
         match action.step {
             RemoteStep::Break { position } => {
-                self.break_block(position, output);
+                self.break_by_player(position, Some(action.player), output);
                 done
             }
             RemoteStep::PlaceAgainst {
@@ -1476,13 +1481,6 @@ impl Region {
             .is_some_and(|state| state != blocks::AIR)
     }
 
-    /// Breaks the block at `position`, if there is one.
-    fn break_block(&mut self, position: BlockPos, output: &mut TickOutput) {
-        if self.is_block(position) {
-            self.set_block(position, blocks::AIR, output);
-        }
-    }
-
     /// Places `block` at `target` if the spot is free and nobody stands in it: no player
     /// of this region, and not the one who places it from another region with their
     /// feet at `placer`.
@@ -1508,18 +1506,6 @@ impl Region {
     fn block(&self, position: BlockPos) -> Option<BlockState> {
         let (x, z) = position.in_chunk();
         self.chunks.get(&position.chunk())?.get(x, position.y, z)
-    }
-
-    /// Changes a block of a loaded chunk and reports it.
-    fn set_block(&mut self, position: BlockPos, state: BlockState, output: &mut TickOutput) {
-        let (x, z) = position.in_chunk();
-        if let Some(chunk) = self.chunks.get_mut(&position.chunk())
-            && chunk.set(x, position.y, z, state).is_some()
-        {
-            output
-                .events
-                .push(RegionEvent::BlockChanged { position, state });
-        }
     }
 
     /// The first thing of a tick: what the store answered, the subscriptions that began
@@ -3065,6 +3051,139 @@ mod tests {
         region
     }
 
+    /// The changes of blocks a tick reports, without what clients show of a block
+    /// breaking, for the tests about what changed.
+    fn block_changes(output: &TickOutput) -> Vec<RegionEvent> {
+        output
+            .events
+            .iter()
+            .filter(|event| !matches!(event, RegionEvent::BlockDestroyed { .. }))
+            .cloned()
+            .collect()
+    }
+
+    /// A region where player 1 stands on the floor of [`floor`] with `blocks` set on
+    /// it.
+    fn on_floor_with(blocks: &[(BlockPos, BlockState)]) -> Region {
+        let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
+        let origin = ChunkPos::new(0, 0);
+        let mut chunk = floor();
+        for (at, state) in blocks {
+            chunk.set(at.x as usize, at.y, at.z as usize, *state);
+        }
+        region.tick(&tickets(vec![origin], vec![]));
+        region.tick(&TickInputs {
+            chunks_loaded: vec![(origin, chunk)],
+            ..TickInputs::default()
+        });
+        region
+    }
+
+    #[test]
+    fn a_torch_goes_with_the_block_it_stands_on_and_is_seen_breaking_by_all() {
+        let torch = BlockPos::new(2, -60, 3);
+        let mut region = on_floor_with(&[(torch, blocks::TORCH)]);
+        let output = region.tick(&moves(vec![dig(1, 2, -61, 3, 1)]));
+        assert_eq!(
+            block_changes(&output),
+            [
+                RegionEvent::BlockChanged {
+                    position: BlockPos::new(2, -61, 3),
+                    state: blocks::AIR,
+                },
+                RegionEvent::BlockChanged {
+                    position: torch,
+                    state: blocks::AIR,
+                },
+            ]
+        );
+        // The torch breaks for every client, the digger's too, which knows only of
+        // the block it dug.
+        assert!(output.events.contains(&RegionEvent::BlockDestroyed {
+            position: torch,
+            state: blocks::TORCH,
+            breaker: None,
+        }));
+    }
+
+    #[test]
+    fn the_upper_half_of_a_door_goes_with_its_lower_half() {
+        let door = |half: &str| {
+            blocks::OAK_DOOR
+                .with_property("half", half)
+                .expect("a door has halves")
+        };
+        let (lower, upper) = (BlockPos::new(2, -60, 3), BlockPos::new(2, -59, 3));
+        let mut region = on_floor_with(&[(lower, door("lower")), (upper, door("upper"))]);
+        let output = region.tick(&moves(vec![dig(1, 2, -60, 3, 1)]));
+        let changed: Vec<_> = block_changes(&output)
+            .into_iter()
+            .map(|event| match event {
+                RegionEvent::BlockChanged { position, state } => (position, state),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(changed, [(lower, blocks::AIR), (upper, blocks::AIR)]);
+    }
+
+    #[test]
+    fn a_door_broken_at_its_upper_half_loses_its_lower_half_first() {
+        let door = |half: &str| {
+            blocks::OAK_DOOR
+                .with_property("half", half)
+                .expect("a door has halves")
+        };
+        let (lower, upper) = (BlockPos::new(2, -60, 3), BlockPos::new(2, -59, 3));
+        let mut region = on_floor_with(&[(lower, door("lower")), (upper, door("upper"))]);
+        let output = region.tick(&moves(vec![dig(1, 2, -59, 3, 1)]));
+        let changed: Vec<_> = block_changes(&output)
+            .into_iter()
+            .map(|event| match event {
+                RegionEvent::BlockChanged { position, .. } => position,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(changed, [lower, upper]);
+        // Both halves break for the others, neither for the player who broke them.
+        let destroyed = output
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(event, RegionEvent::BlockDestroyed { breaker: Some(by), .. } if *by == player(1))
+            })
+            .count();
+        assert_eq!(destroyed, 2);
+    }
+
+    #[test]
+    fn a_fence_lets_go_of_a_block_beside_it_when_the_block_is_broken() {
+        let fence = BlockPos::new(2, -60, 3);
+        let joined = blocks::OAK_FENCE
+            .with_property("east", "true")
+            .expect("a fence has sides");
+        let mut region =
+            on_floor_with(&[(fence, joined), (BlockPos::new(3, -60, 3), blocks::STONE)]);
+        let output = region.tick(&moves(vec![dig(1, 3, -60, 3, 1)]));
+        assert!(block_changes(&output).contains(&RegionEvent::BlockChanged {
+            position: fence,
+            state: blocks::OAK_FENCE,
+        }));
+    }
+
+    #[test]
+    fn a_dug_block_is_shown_breaking_to_others_than_the_digger() {
+        let mut region = on_floor(&[1]);
+        let output = region.tick(&moves(vec![dig(1, 2, -61, 3, 7)]));
+        assert_eq!(
+            output.events[0],
+            RegionEvent::BlockDestroyed {
+                position: BlockPos::new(2, -61, 3),
+                state: blocks::STONE,
+                breaker: Some(player(1)),
+            }
+        );
+    }
+
     fn acknowledged(number: u128, sequence: i32) -> (PlayerId, PlayerEvent) {
         (player(number), PlayerEvent::Acknowledged { sequence })
     }
@@ -3074,13 +3193,13 @@ mod tests {
         let mut region = on_floor(&[1]);
         let output = region.tick(&moves(vec![dig(1, 2, -61, 3, 7)]));
         assert_eq!(
-            output.events,
+            block_changes(&output),
             [RegionEvent::BlockChanged {
                 position: BlockPos::new(2, -61, 3),
                 state: blocks::AIR,
             }]
         );
-        assert_eq!(output.events[0].chunks(), [ChunkPos::new(0, 0); 2]);
+        assert_eq!(block_changes(&output)[0].chunks(), [ChunkPos::new(0, 0); 2]);
         assert_eq!(told(&output), [acknowledged(1, 7)]);
 
         let chunk = region.chunk(ChunkPos::new(0, 0)).unwrap();
@@ -3120,7 +3239,7 @@ mod tests {
         // horizontally and about 1.6 below: just within 6. The one at x = 7 is not.
         let output = region.tick(&moves(vec![dig(1, 7, -61, 0, 1), dig(1, 6, -61, 0, 2)]));
         assert_eq!(
-            output.events,
+            block_changes(&output),
             [RegionEvent::BlockChanged {
                 position: BlockPos::new(6, -61, 0),
                 state: blocks::AIR,
@@ -3137,7 +3256,7 @@ mod tests {
             dig(1, 0, -61, 1, 6),
             dig(1, 0, -61, 2, 4),
         ]));
-        assert_eq!(output.events.len(), 4);
+        assert_eq!(block_changes(&output).len(), 4);
         assert_eq!(told(&output), [acknowledged(1, 6), acknowledged(2, 3)]);
         // Nothing is acknowledged in a tick without such input.
         assert!(region.tick(&TickInputs::default()).player_events.is_empty());
@@ -3147,7 +3266,7 @@ mod tests {
     fn a_block_cannot_be_broken_twice() {
         let mut region = on_floor(&[1, 2]);
         let output = region.tick(&moves(vec![dig(1, 0, -61, 0, 1), dig(2, 0, -61, 0, 1)]));
-        assert_eq!(output.events.len(), 1);
+        assert_eq!(block_changes(&output).len(), 1);
         assert_eq!(told(&output).len(), 2);
     }
 
@@ -3295,7 +3414,7 @@ mod tests {
         let mut region = on_floor(&[1]);
         region.tick(&moves(vec![place(1, 2, -61, 0, Face::Top)]));
         let output = region.tick(&moves(vec![dig(1, 2, -60, 0, 2)]));
-        assert_eq!(output.events, [changed(2, -60, 0, blocks::AIR)]);
+        assert_eq!(block_changes(&output), [changed(2, -60, 0, blocks::AIR)]);
         assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
     }
 
@@ -3880,7 +3999,7 @@ mod tests {
         };
         // Those watching see the step, and nothing tells them that the entity is gone.
         assert_eq!(
-            output.events,
+            block_changes(&output),
             [
                 changed(2, -61, 3, blocks::AIR),
                 RegionEvent::EntityMoved {
@@ -3925,7 +4044,11 @@ mod tests {
             inputs: vec![with_number(8, walk(1, 1.5, 0.5))],
             ..TickInputs::default()
         });
-        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(
+            block_changes(&output).is_empty(),
+            "{:?}",
+            block_changes(&output)
+        );
         assert!(told(&output).is_empty());
     }
 
@@ -4828,7 +4951,7 @@ mod tests {
             assert!(requests(output).is_empty());
         }
         assert_eq!(
-            outputs.map(|output| output.events),
+            outputs.map(|output| block_changes(&output)),
             changes.clone().map(|change| [change])
         );
 
@@ -4845,7 +4968,11 @@ mod tests {
             ),
         ];
         for output in &outputs {
-            assert!(output.events.is_empty(), "{:?}", output.events);
+            assert!(
+                block_changes(output).is_empty(),
+                "{:?}",
+                block_changes(output)
+            );
             assert!(told(output).is_empty(), "tick {}", output.tick);
         }
         assert_eq!(
@@ -4860,7 +4987,7 @@ mod tests {
         let mut west = west_with_floor();
         for ((request, change), sequence) in asked.into_iter().zip(changes).zip(1..) {
             let output = west.tick(&remotely(vec![request]));
-            assert_eq!(output.events, [change]);
+            assert_eq!(block_changes(&output), [change]);
             assert_eq!(outcomes(&output), [done(1, sequence)]);
         }
         assert_eq!(west.chunk(WEST_CHUNK), whole.chunk(WEST_CHUNK));
@@ -4882,7 +5009,11 @@ mod tests {
             let output = region.tick(&moves(vec![dig(1, x, y, 2, sequence)]));
             assert_eq!(requests(&output), [remote(1, sequence, break_at(x, y, 2))]);
             assert_eq!(asked_of(&output), [Some(WEST_REGION)]);
-            assert!(output.events.is_empty(), "{:?}", output.events);
+            assert!(
+                block_changes(&output).is_empty(),
+                "{:?}",
+                block_changes(&output)
+            );
             // The player is not told that it was handled: it has not been.
             assert!(told(&output).is_empty(), "sequence {sequence}");
         }
@@ -4902,13 +5033,17 @@ mod tests {
         // One block further out is out of reach, which this region can tell.
         let output = region.tick(&moves(vec![dig(1, -6, -61, 2, 5)]));
         assert!(requests(&output).is_empty());
-        assert!(output.events.is_empty(), "{:?}", output.events);
+        assert!(
+            block_changes(&output).is_empty(),
+            "{:?}",
+            block_changes(&output)
+        );
         assert_eq!(told(&output), [acknowledged(1, 5)]);
 
         // And a block of its own it breaks as ever, at the line as anywhere.
         let output = region.tick(&moves(vec![dig(1, 0, -61, 2, 6)]));
         assert!(requests(&output).is_empty());
-        assert_eq!(output.events, [changed(0, -61, 2, blocks::AIR)]);
+        assert_eq!(block_changes(&output), [changed(0, -61, 2, blocks::AIR)]);
         assert_eq!(told(&output), [acknowledged(1, 6)]);
         assert_eq!(region.loaded_chunk_count(), 1);
     }
@@ -5110,7 +5245,7 @@ mod tests {
             ]
         );
         assert_eq!(asked_of(&output), [Some(WEST_REGION); 4]);
-        assert_eq!(output.events, [changed(3, -61, 2, blocks::AIR)]);
+        assert_eq!(block_changes(&output), [changed(3, -61, 2, blocks::AIR)]);
         assert_eq!(told(&output), [acknowledged(1, 2)]);
     }
 
@@ -5337,7 +5472,7 @@ mod tests {
             ..remote(1, 7, break_at(-2, -61, 3))
         };
         let output = region.tick(&remotely(vec![action]));
-        assert_eq!(output.events, [changed(-2, -61, 3, blocks::AIR)]);
+        assert_eq!(block_changes(&output), [changed(-2, -61, 3, blocks::AIR)]);
         let done = Durable::RemoteDone {
             player: player(1),
             entity: EntityId(4711),
@@ -5370,7 +5505,7 @@ mod tests {
     fn a_remote_break_removes_the_block_and_is_reported_as_done() {
         let mut region = west_with_floor();
         let output = region.tick(&remotely(vec![remote(1, 7, break_at(-2, -61, 3))]));
-        assert_eq!(output.events, [changed(-2, -61, 3, blocks::AIR)]);
+        assert_eq!(block_changes(&output), [changed(-2, -61, 3, blocks::AIR)]);
         assert_eq!(outcomes(&output), [done(1, 7)]);
         let chunk = region.chunk(WEST_CHUNK).unwrap();
         assert_eq!(chunk.get(14, -61, 3), Some(blocks::AIR));
@@ -5389,7 +5524,11 @@ mod tests {
         let before = region.chunk(WEST_CHUNK).cloned();
         for (sequence, step) in (8..).zip(nothing) {
             let output = region.tick(&remotely(vec![remote(1, sequence, step.clone())]));
-            assert!(output.events.is_empty(), "{step:?}: {:?}", output.events);
+            assert!(
+                block_changes(&output).is_empty(),
+                "{step:?}: {:?}",
+                block_changes(&output)
+            );
             // Done all the same.
             assert_eq!(outcomes(&output), [done(1, sequence)], "{step:?}");
         }
@@ -5663,7 +5802,7 @@ mod tests {
             remote(2, 11, break_at(-5, -60, 2)),
         ]));
         assert_eq!(
-            output.events,
+            block_changes(&output),
             [
                 changed(-2, -60, 2, blocks::STONE),
                 changed(-2, -60, 2, blocks::AIR),
@@ -5704,7 +5843,7 @@ mod tests {
             )],
             ..TickInputs::default()
         });
-        assert!(!output.events.iter().any(is_block_change));
+        assert!(!block_changes(&output).iter().any(is_block_change));
         assert_eq!(outcomes(&output), [done(1, 1)]);
 
         // What the region's own players do in the tick comes after. The player breaks
@@ -5718,7 +5857,7 @@ mod tests {
             ..TickInputs::default()
         });
         assert_eq!(
-            output.events,
+            block_changes(&output),
             [
                 changed(-3, -60, 2, blocks::STONE),
                 changed(-3, -60, 2, blocks::AIR),
@@ -5733,7 +5872,7 @@ mod tests {
             ..TickInputs::default()
         });
         assert_eq!(
-            output.events,
+            block_changes(&output),
             [
                 changed(-3, -61, 2, blocks::AIR),
                 changed(-3, -61, 2, blocks::GLASS),
@@ -5748,7 +5887,7 @@ mod tests {
             inputs: vec![as_entity(77, walk(2, -5.5, 4.5))],
             ..TickInputs::default()
         });
-        assert!(output.events.contains(&changed(-6, -60, 4, blocks::STONE)));
+        assert!(block_changes(&output).contains(&changed(-6, -60, 4, blocks::STONE)));
 
         // A player who leaves in this tick is in the way no longer.
         let output = region.tick(&TickInputs {
@@ -5759,7 +5898,7 @@ mod tests {
             )],
             ..TickInputs::default()
         });
-        assert!(output.events.contains(&changed(-6, -59, 4, blocks::STONE)));
+        assert!(block_changes(&output).contains(&changed(-6, -59, 4, blocks::STONE)));
     }
 
     #[test]
@@ -5775,7 +5914,7 @@ mod tests {
                 place_against(-1, -61, 2, Face::East, blocks::STONE, FEET),
             ),
         ]));
-        assert_eq!(output.events.len(), 2);
+        assert_eq!(block_changes(&output).len(), 2);
         assert!(told(&output).is_empty());
 
         // They may have walked over while the action was on its way. It is reported as
@@ -5792,7 +5931,7 @@ mod tests {
             inputs: vec![as_entity(77, dig(1, -3, -61, 1, 11))],
             ..TickInputs::default()
         });
-        assert_eq!(output.events.len(), 2);
+        assert_eq!(block_changes(&output).len(), 2);
         assert_eq!(outcomes(&output), [done(1, 12)]);
         assert_eq!(told(&output), [acknowledged(1, 11)]);
     }

@@ -23,10 +23,11 @@ use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, BlockUpdate, ChunkBatchFinished, ChunkBatchStart, Disconnect,
-    GameEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
-    PositionPath, RemoveEntities, SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition,
-    SetHeadRotation, SetHeldSlot, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition,
-    UnloadChunk, abilities, angle, game_event, game_mode, inventory, player_info,
+    GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
+    PlayerInfoUpdate, PositionPath, RemoveEntities, SetCenterChunk, SetContainerContent,
+    SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, SpawnEntity, SyncEntityPosition,
+    SynchronizePlayerPosition, UnloadChunk, abilities, angle, game_event, game_mode, inventory,
+    level_event, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -2522,6 +2523,13 @@ impl Fanout {
             RegionEvent::BlockChanged { position, state } => {
                 self.change_block(position, state).await;
             }
+            RegionEvent::BlockDestroyed {
+                position,
+                state,
+                breaker,
+            } => {
+                self.show_broken(position, state, breaker).await;
+            }
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
                     return;
@@ -3596,6 +3604,54 @@ impl Fanout {
             .map(|(player, _)| *player)
             .collect();
         for player in viewers {
+            self.send_to_player(player, [packet.clone()]).await;
+        }
+    }
+
+    /// Shows a block breaking, with its sound and bits, to the players near it who have
+    /// its chunk, but the one who broke it, whose client shows it already: the game
+    /// sends the event to players within 64 blocks (`PlayerList.broadcast`).
+    async fn show_broken(
+        &mut self,
+        position: BlockPos,
+        state: BlockState,
+        breaker: Option<PlayerId>,
+    ) {
+        const HEARD_WITHIN: f64 = 64.0;
+        let chunk = position.chunk();
+        let packet = encoded(&LevelEvent {
+            event: level_event::BLOCK_BROKEN,
+            position: Position {
+                x: position.x,
+                y: position.y,
+                z: position.z,
+            },
+            data: state.0.into(),
+            global: false,
+        });
+        let (x, y, z) = (
+            f64::from(position.x) + 0.5,
+            f64::from(position.y) + 0.5,
+            f64::from(position.z) + 0.5,
+        );
+        let near: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(player, view)| {
+                Some(**player) != breaker
+                    && (view.sent.contains(&chunk) || view.replace.contains(&chunk))
+                    && view
+                        .entity
+                        .and_then(|entity| self.entities.get(&entity))
+                        .is_some_and(|shown| {
+                            let at = shown.state.pose.position;
+                            let (dx, dy, dz) = (at.x - x, at.y - y, at.z - z);
+                            dx * dx + dy * dy + dz * dz < HEARD_WITHIN * HEARD_WITHIN
+                        })
+            })
+            .map(|(player, _)| *player)
+            .collect();
+        for player in near {
             self.send_to_player(player, [packet.clone()]).await;
         }
     }

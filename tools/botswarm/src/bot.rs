@@ -1427,6 +1427,7 @@ impl Bot {
             ClientboundPlay::Login(_) => bail!("received a second login packet"),
             ClientboundPlay::ChunkBatchStart(_)
             | ClientboundPlay::GameEvent(_)
+            | ClientboundPlay::LevelEvent(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)

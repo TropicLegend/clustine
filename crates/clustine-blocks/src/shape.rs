@@ -62,6 +62,10 @@ pub fn update_shape<V: BlockView + ?Sized>(
     if state.block_info().is_none() {
         return state;
     }
+    // A block whose support went goes, before its water is scheduled.
+    if let Some(gone) = crate::support::without_support(view, state, pos, direction) {
+        return gone;
+    }
     // A waterlogged block lets its water flow on (`SimpleWaterloggedBlock`'s blocks
     // all do this first).
     if state.property("waterlogged") == Some("true") {

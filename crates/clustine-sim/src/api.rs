@@ -686,6 +686,14 @@ pub enum RegionEvent {
         position: BlockPos,
         state: BlockState,
     },
+    /// A block broke, which clients show with its sound and bits (the game's level
+    /// event 2001). The block itself changes by a [`Self::BlockChanged`] beside it.
+    /// `breaker` is the player who broke it, whose client shows it already.
+    BlockDestroyed {
+        position: BlockPos,
+        state: BlockState,
+        breaker: Option<PlayerId>,
+    },
     /// An entity has a new pose. At most one per entity and tick.
     EntityMoved {
         entity: EntityId,
@@ -702,7 +710,9 @@ impl RegionEvent {
         match self {
             Self::EntitySpawned(state) => [state.chunk(); 2],
             Self::EntityRemoved { chunk, .. } => [*chunk; 2],
-            Self::BlockChanged { position, .. } => [position.chunk(); 2],
+            Self::BlockChanged { position, .. } | Self::BlockDestroyed { position, .. } => {
+                [position.chunk(); 2]
+            }
             Self::EntityMoved {
                 pose,
                 previous_chunk,

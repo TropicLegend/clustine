@@ -11,6 +11,7 @@
 pub mod connect;
 pub mod data;
 pub mod shape;
+pub mod support;
 pub mod survive;
 #[cfg(test)]
 mod tests;

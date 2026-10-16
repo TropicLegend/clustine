@@ -902,6 +902,9 @@ impl Witness {
                         RegionEvent::BlockChanged { position, state } => {
                             self.blocks.insert(*position, *state);
                         }
+                        // What a client shows of a block breaking; the block itself
+                        // comes as a change.
+                        RegionEvent::BlockDestroyed { .. } => {}
                         RegionEvent::EntityMoved { entity, pose, .. } => {
                             self.entities.insert(*entity, *pose);
                         }
