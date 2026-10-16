@@ -6441,6 +6441,8 @@ mod scenarios {
     use super::*;
     use crate::Relinks;
 
+    mod block_destroyed;
+
     /// The flat world's spawn, which these tests' edges tell their clients.
     const FLAT_SPAWN: BlockPos = BlockPos::new(0, -60, 0);
 
@@ -7196,6 +7198,8 @@ mod scenarios {
         centres: Vec<ChunkPos>,
         /// How many packets it has taken, of whatever kind.
         taken: usize,
+        /// Every level event it was told of (a block breaking), in order.
+        level_events: Vec<LevelEvent>,
     }
 
     /// Something a client was told that changes whom it shows or lists.
@@ -7229,6 +7233,7 @@ mod scenarios {
                 told: Vec::new(),
                 centres: Vec::new(),
                 taken: 0,
+                level_events: Vec::new(),
             }
         }
 
@@ -7292,6 +7297,7 @@ mod scenarios {
                     self.acknowledged.push(acknowledged.sequence);
                 }
                 ClientboundPlay::ChunkBatchFinished(_) => self.batches += 1,
+                ClientboundPlay::LevelEvent(event) => self.level_events.push(event),
                 ClientboundPlay::Disconnect(disconnect) => {
                     self.disconnected = Some(format!("{:?}", disconnect.reason));
                 }
