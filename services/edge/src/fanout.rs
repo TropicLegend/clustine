@@ -3611,6 +3611,7 @@ impl Fanout {
                     entry.changed = moment;
                     entry.marked_since.get_or_insert(now);
                     self.marked.insert(at);
+                    figures::count(&FIGURES.relit);
                     self.requeue(at);
                 }
             }

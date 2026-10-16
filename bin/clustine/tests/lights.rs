@@ -79,7 +79,9 @@ const EVERY_CHANGE: Duration = Duration::from_millis(250);
 /// The phase every bot waits for to leave.
 const END: u32 = u32::MAX;
 
-/// How many jobs a join may cost beyond the chunks it was sent. A chunk is lit once
+/// How many jobs a join may cost beyond the chunks it was sent and those lit again for
+/// a change of a block that light sees, which the land's own ticks make as it starts
+/// ticking (water from a spring that flows, as in the game). A chunk is lit once
 /// for those who wait for it, and again only when a neighbour comes after its job
 /// was dispatched, which in a join comes of generation that is slower than the hold:
 /// the edge sends the chunk with the light it could make and lights it anew when
@@ -714,12 +716,15 @@ fn nobody_dropped(row: &mut Row, stretch: &Stretch, bots: &Bots) {
     }
 }
 
-/// What a join of one view checks: no more jobs than the chunks sent and [`SLACK`].
+/// What a join of one view checks: no more jobs than the chunks sent, those lit again
+/// for a change of a block, and [`SLACK`].
 fn jobs_within_the_chunks_sent(row: &mut Row, stretch: &Stretch) {
     let (jobs, chunks) = (stretch.grew("jobs"), stretch.grew("chunks"));
-    if jobs > chunks + SLACK {
+    let relit = stretch.grew("relit");
+    if jobs > chunks + relit + SLACK {
         row.fails(format!(
-            "{jobs} jobs for {chunks} chunks sent: more than {SLACK} beyond them"
+            "{jobs} jobs for {chunks} chunks sent and {relit} lit again for changes: more \
+             than {SLACK} beyond them"
         ));
     }
 }
@@ -1055,10 +1060,12 @@ async fn a_hundred_entering_in_one_place(asked: &Asked) -> Row {
     nobody_dropped(&mut row, &stretch, &bots);
     let jobs = stretch.grew("jobs");
     let view = asked.view_chunks();
+    let relit = stretch.grew("relit");
     // Jobs are a chunk's and not a player's: a hundred cost what one does.
-    if jobs > view + SLACK {
+    if jobs > view + relit + SLACK {
         row.fails(format!(
-            "{jobs} jobs for a view of {view} chunks: more than {SLACK} beyond them"
+            "{jobs} jobs for a view of {view} chunks and {relit} lit again for changes: \
+             more than {SLACK} beyond them"
         ));
     }
     let longest = stretch.longest("longest_turn_us");

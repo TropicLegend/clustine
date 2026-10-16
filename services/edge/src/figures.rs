@@ -47,6 +47,9 @@ pub(crate) struct Figures {
     pub(crate) longest_unsent_nanos: AtomicU64,
     /// Players dropped because their queue was full.
     pub(crate) dropped: AtomicU64,
+    /// Chunks marked to be lit again because a block light sees changed in them or
+    /// beside them: a chunk lit again for a reason.
+    pub(crate) relit: AtomicU64,
 }
 
 /// The process's figures.
@@ -67,6 +70,7 @@ pub(crate) static FIGURES: Figures = Figures {
     packet_nanos: AtomicU64::new(0),
     longest_unsent_nanos: AtomicU64::new(0),
     dropped: AtomicU64::new(0),
+    relit: AtomicU64::new(0),
 };
 
 /// Adds one to `counter`.
@@ -116,7 +120,7 @@ fn line() -> String {
     format!(
         "jobs {} taken {} failed {} thread_ms {} chunks {} updates {} update_bytes {} \
          compress_chunks_ms {} compress_updates_ms {} turns {} turn_ms {} longest_turn_us {} \
-         packets_made {} packet_ms {} longest_unsent_ms {} dropped {}",
+         packets_made {} packet_ms {} longest_unsent_ms {} dropped {} relit {}",
         get(&figures.jobs),
         get(&figures.taken),
         get(&figures.failed),
@@ -133,6 +137,7 @@ fn line() -> String {
         millis(&figures.packet_nanos),
         figures.longest_unsent_nanos.swap(0, Ordering::Relaxed) / 1_000_000,
         get(&figures.dropped),
+        get(&figures.relit),
     )
 }
 
