@@ -18,6 +18,8 @@
 
 use super::*;
 
+mod first_snapshot;
+
 /// Where an edge's player stands in these tests, and where a step takes them: both in
 /// the chunk at the origin, which is stored once the player has joined.
 const THERE: f64 = 3.0;

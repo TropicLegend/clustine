@@ -44,6 +44,8 @@ mod kill_unpinned;
 #[cfg(test)]
 mod regions;
 #[cfg(test)]
+mod replayed_marks_and_seams;
+#[cfg(test)]
 mod replayed_ticks;
 #[cfg(test)]
 mod rest;
