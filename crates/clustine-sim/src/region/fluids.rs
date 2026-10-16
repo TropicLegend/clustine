@@ -9,13 +9,14 @@
 //! the world yet); lava's random ticks, which set fire, wait for step B7; a bubble column
 //! does not form in water over soul sand or magma.
 
+use clustine_blocks::BlockView;
 use clustine_blocks::data::{has_water, is_block, is_class, relative};
 use clustine_blocks::fluid::{
     self, FluidState, Kind, can_be_replaced_with, can_hold_specific_fluid, can_maybe_pass_through,
     is_container, is_water_hole, new_liquid, source_neighbour_count,
 };
 use clustine_data::{BlockClass, BlockState, Face, blocks};
-use clustine_world::{BlockPos, Ticked};
+use clustine_world::{BlockPos, Effect, Effected, Ticked};
 
 use super::Region;
 use super::updates::RegionView;
@@ -142,11 +143,61 @@ impl Region {
         }
         for (face, new) in fluid::spread(&mut RegionView(self), kind, pos, state) {
             let beside = relative(pos, face);
-            let Some(there) = self.block(beside) else {
+            // Across the line the holder runs the target's side whole, from the source
+            // as it is now (`docs/adr/0025-effects-between-regions.md`, section 4).
+            if self.sends_to(beside.chunk()) {
+                self.made.push(Effect {
+                    at: beside,
+                    what: Effected::Spread {
+                        direction: opposite(face) as u8,
+                        source: state,
+                    },
+                });
+                continue;
+            }
+            let Some(there) = self.own_block(beside) else {
                 continue;
             };
             self.spread_to(kind, beside, there, face, new, output);
         }
+    }
+
+    /// The target's side of `FlowingFluid.spreadTo` from a source in another region,
+    /// at `pos`, whose neighbour towards `towards` held `source` with its fluid
+    /// (`docs/adr/0025-effects-between-regions.md`, section 4): `canMaybePassThrough`,
+    /// `getNewLiquid`, `canHoldSpecificFluid` and `canBeReplacedWith` as the game's
+    /// `getSpread` asks them, reading `source` where they read the source's position and
+    /// what the region has elsewhere; then the spread itself.
+    pub(super) fn spread_received(
+        &mut self,
+        pos: BlockPos,
+        towards: Face,
+        source: BlockState,
+        output: &mut TickOutput,
+    ) {
+        let Some(target) = self.own_block(pos) else {
+            return;
+        };
+        let Some(kind) = FluidState::of(source).kind() else {
+            return;
+        };
+        let flow = opposite(towards);
+        if !can_maybe_pass_through(kind, source, flow, target) {
+            return;
+        }
+        let mut view = Carried {
+            region: self,
+            at: relative(pos, towards),
+            state: source,
+        };
+        let new = new_liquid(&mut view, kind, pos, target);
+        if !can_hold_specific_fluid(target, new.fluid) {
+            return;
+        }
+        if !can_be_replaced_with(&mut view, FluidState::of(target), pos, new.fluid, flow) {
+            return;
+        }
+        self.spread_to(kind, pos, target, flow, new, output);
     }
 
     /// `spreadTo`: lava flowing down into water turns a liquid block of it to stone;
@@ -250,6 +301,44 @@ impl Region {
     /// Lava's hiss and smoke (the game's level event 1501).
     fn fizz(&mut self, pos: BlockPos, output: &mut TickOutput) {
         output.events.push(RegionEvent::Fizzed { position: pos });
+    }
+}
+
+/// The region's blocks as the shared rules read them, but for one block that another
+/// region carried with its effect, read in place of the region's copy of it.
+struct Carried<'r> {
+    region: &'r mut Region,
+    at: BlockPos,
+    state: BlockState,
+}
+
+impl BlockView for Carried<'_> {
+    fn next_int(&mut self, bound: u32) -> u32 {
+        RegionView(self.region).next_int(bound)
+    }
+
+    fn block(&mut self, at: BlockPos) -> BlockState {
+        if at == self.at {
+            self.state
+        } else {
+            RegionView(self.region).block(at)
+        }
+    }
+
+    fn raw_brightness(&mut self, at: BlockPos) -> Option<u8> {
+        RegionView(self.region).raw_brightness(at)
+    }
+
+    fn schedule_block_tick(&mut self, at: BlockPos, block: u16, delay: i32) {
+        RegionView(self.region).schedule_block_tick(at, block, delay);
+    }
+
+    fn schedule_fluid_tick(&mut self, at: BlockPos, fluid: u8, delay: i32) {
+        RegionView(self.region).schedule_fluid_tick(at, fluid, delay);
+    }
+
+    fn rules(&self) -> clustine_blocks::Rules {
+        self.region.rules()
     }
 }
 

@@ -747,7 +747,7 @@ fn pinned_with(area: ChunkArea, ids: u32, chunks: Vec<(ChunkPos, Chunk)>) -> Reg
         pinned: vec![area],
     };
     let state = RegionState::new(EntityIds::block(ids).unwrap());
-    Region::restore_loaded(config(), state, holdings, &tickets, chunks)
+    Region::restore_loaded(config(), state, holdings, &tickets, chunks, Vec::new())
 }
 
 /// A break at the line between two regions reaches a torch of the other region: the
@@ -784,6 +784,12 @@ fn an_update_across_the_line_between_two_regions_waits_for_a_merge_and_is_made_t
     let mut east = pinned_with(EASTERN, 1, eastern_chunks);
     idle_tick(&mut west);
     idle_tick(&mut east);
+    // The western region has asked for the chunk across the line and had no answer, so
+    // the update waits as a seam entry in the chunk it came from; into a chunk it knew
+    // nothing of and did not want it would be an effect for the eastern region
+    // (ADR-0025, sections 4 and 6).
+    checked(&mut west, &tickets(vec![beyond], vec![]));
+    assert_eq!(west.knowledge(beyond), Knowledge::Asked);
 
     let mut scratch = TickOutput::default();
     west.set_block(wall, blocks::AIR, &mut scratch);

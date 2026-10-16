@@ -5,7 +5,8 @@ use std::mem;
 
 use clustine_data::{BlockState, ITEMS, blocks};
 use clustine_world::{
-    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId, Vec3,
+    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EntityId, EntityIds, PlayerId, RegionId,
+    Vec3,
 };
 
 use crate::api::{
@@ -245,6 +246,11 @@ pub struct Region {
     land: Land,
     /// The loaded chunks. Each is held and has a ticket.
     chunks: BTreeMap<ChunkPos, Chunk>,
+    /// The border copies of other regions' chunks, or of chunks nobody holds, that the
+    /// runner has handed in: read where a loaded chunk is read, and never written,
+    /// ticked, post-processed, saved, settled or shown
+    /// (`docs/adr/0025-effects-between-regions.md`, section 3). None is loaded.
+    copies: BTreeMap<ChunkPos, Chunk>,
     /// The subscriptions each chunk has, whatever the region knows of the chunk.
     tickets: BTreeMap<ChunkPos, Tickets>,
     /// Chunks that storage has been asked for but has not delivered. Each is held and
@@ -270,6 +276,14 @@ pub struct Region {
     /// How many streams the rules have drawn from outside random ticks in this tick
     /// ([`Region::next_draw`]); 0 between ticks.
     draws: u64,
+    /// The effects made so far, in the order made, which the tick hands out as
+    /// [`TickOutput::effects`]; no part of the state. Kept here rather than in the
+    /// tick's output because the rules schedule ticks through views that have none.
+    made: Vec<Effect>,
+    /// While the region does an effect from a coupled region: the region's tick the
+    /// effect was made in, from which the ticks it schedules count. `None` otherwise,
+    /// and between ticks; no part of the state.
+    made_in: Option<i64>,
 }
 
 impl Region {
@@ -289,6 +303,10 @@ impl Region {
     /// ([`TickOutput::stays`]), which answers for each that is dead or that may
     /// enter: whatever the store was about to say to the region before is lost with
     /// whoever ran it.
+    ///
+    /// It has no border copies either: the runner hands in again those it keeps, as
+    /// [`TickInputs::copy_bases`] of the first tick, as it hands in the warm chunks
+    /// after a merge or a split (`docs/adr/0025-effects-between-regions.md`, section 3).
     pub fn restore(config: RegionConfig, state: RegionState, holdings: Holdings) -> Self {
         let players = state
             .players
@@ -311,9 +329,12 @@ impl Region {
             next_entity_id: state.next_entity_id,
             land,
             chunks: BTreeMap::new(),
+            copies: BTreeMap::new(),
             updater: updates::Updater::default(),
             ticks: ticks::Ticks::default(),
             draws: 0,
+            made: Vec::new(),
+            made_in: None,
             tickets: BTreeMap::new(),
             requested: BTreeSet::new(),
             players,
@@ -333,12 +354,17 @@ impl Region {
     /// with each tick's delay left counted from it, so that it goes on as the region
     /// whose state and chunks were taken in the tick before
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+    ///
+    /// It starts with `copies` as its border copies, as if they had been handed in as
+    /// bases in the tick before (`docs/adr/0025-effects-between-regions.md`, section
+    /// 3), but for those of chunks it has loaded, which are not copied.
     pub fn restore_loaded(
         config: RegionConfig,
         state: RegionState,
         holdings: Holdings,
         tickets: &[(ChunkPos, Ticket)],
         chunks: Vec<(ChunkPos, Chunk)>,
+        copies: Vec<(ChunkPos, Chunk)>,
     ) -> Self {
         let mut region = Self::restore(config, state, holdings);
         for (position, kind) in tickets {
@@ -348,6 +374,11 @@ impl Region {
             let wanted = region.tickets.contains_key(&position) || position == region.land.home;
             if wanted && region.land.holds(position) {
                 region.chunks.insert(position, chunk);
+            }
+        }
+        for (position, copy) in copies {
+            if !region.chunks.contains_key(&position) {
+                region.copies.insert(position, copy);
             }
         }
         region
@@ -402,6 +433,17 @@ impl Region {
     /// The chunk at `position`, if it is loaded.
     pub fn chunk(&self, position: ChunkPos) -> Option<&Chunk> {
         self.chunks.get(&position)
+    }
+
+    /// The border copy of the chunk at `position`, as the region reads it, if it has
+    /// one (`docs/adr/0025-effects-between-regions.md`, section 3).
+    pub fn copy(&self, position: ChunkPos) -> Option<&Chunk> {
+        self.copies.get(&position)
+    }
+
+    /// The chunks the region has border copies of, ascending.
+    pub fn copied_chunks(&self) -> Vec<ChunkPos> {
+        self.copies.keys().copied().collect()
     }
 
     /// The scheduled ticks of a loaded chunk as they are to be committed or saved: the
@@ -553,7 +595,7 @@ impl Region {
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
         self.update_ticking();
-        self.run_seams(&mut output);
+        self.run_seams(&inputs.effects, &mut output);
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
@@ -627,6 +669,7 @@ impl Region {
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
+        output.effects = mem::take(&mut self.made);
         self.draws = 0;
         output.delta = self.take_delta();
         output
@@ -1322,7 +1365,7 @@ impl Region {
                 };
                 let sequence = *sequence;
                 let bodies = self.bodies(Some(id));
-                let used = placement::use_item(&item_use, &Loaded(&self.chunks), &bodies);
+                let used = placement::use_item(&item_use, &Readable(self), &bodies);
                 if let Some(used) = used
                     && self.change_all(&used.changes, output)
                     && let Some((slot, stack)) = used.hotbar
@@ -1420,7 +1463,7 @@ impl Region {
     fn click_here(&mut self, action: &RemoteAction, output: &mut TickOutput) -> Option<Durable> {
         let bodies = self.bodies(Some(action.player));
         let (click, target, replace_clicked, clicked) = match &action.step {
-            RemoteStep::UseOn { click } => match placement::click(click, &Loaded(&self.chunks)) {
+            RemoteStep::UseOn { click } => match placement::click(click, &Readable(self)) {
                 Clicked::Nothing => return None,
                 Clicked::Used(changes) => {
                     self.change_all(&changes, output);
@@ -1455,8 +1498,8 @@ impl Region {
                 to: at_target.holder(),
             });
         }
-        let loaded = Loaded(&self.chunks);
-        let placed = placement::place(click, target, replace_clicked, clicked, &loaded, &bodies);
+        let readable = Readable(self);
+        let placed = placement::place(click, target, replace_clicked, clicked, &readable, &bodies);
         if let Some(changes) = placed {
             self.change_all(&changes, output);
         }
@@ -1478,12 +1521,12 @@ impl Region {
     fn change_all(&mut self, changes: &[(BlockPos, BlockState)], output: &mut TickOutput) -> bool {
         if changes
             .iter()
-            .any(|(position, _)| self.block(*position).is_none())
+            .any(|(position, _)| self.own_block(*position).is_none())
         {
             return false;
         }
         for (position, state) in changes {
-            let before = self.block(*position);
+            let before = self.own_block(*position);
             self.set_block(*position, *state, output);
             if before != Some(*state) {
                 self.coral_block_placed(*position, *state);
@@ -1611,7 +1654,7 @@ impl Region {
         placer: Option<Vec3>,
         output: &mut TickOutput,
     ) {
-        if self.block(target) == Some(blocks::AIR)
+        if self.own_block(target) == Some(blocks::AIR)
             && !self
                 .players
                 .values()
@@ -1622,10 +1665,69 @@ impl Region {
         }
     }
 
-    /// The block at `position`, if its chunk is loaded and it is within the world.
+    /// The block at `position` as the rules read it, if its chunk is loaded or copied
+    /// and it is within the world: the one path by which every read of a block knows
+    /// both (`docs/adr/0025-effects-between-regions.md`, section 4). What is neither
+    /// is for the caller to read as air, as at the edge of the loaded land.
     fn block(&self, position: BlockPos) -> Option<BlockState> {
         let (x, z) = position.in_chunk();
+        self.readable_chunk(position.chunk())?.get(x, position.y, z)
+    }
+
+    /// Which of the shared rules the region's views follow.
+    fn rules(&self) -> clustine_blocks::Rules {
+        clustine_blocks::Rules::Placing
+    }
+
+    /// The chunk at `position` as the rules read it: loaded, or else copied.
+    fn readable_chunk(&self, position: ChunkPos) -> Option<&Chunk> {
+        self.chunks
+            .get(&position)
+            .or_else(|| self.copies.get(&position))
+    }
+
+    /// Whether the chunk at `position` is loaded or copied, so that the rules can
+    /// read it.
+    fn readable(&self, position: ChunkPos) -> bool {
+        self.chunks.contains_key(&position) || self.copies.contains_key(&position)
+    }
+
+    /// The block at `position` if its chunk is loaded, which is what the region may
+    /// change: a copy is read and never written.
+    fn own_block(&self, position: BlockPos) -> Option<BlockState> {
+        let (x, z) = position.in_chunk();
         self.chunks.get(&position.chunk())?.get(x, position.y, z)
+    }
+
+    /// Whether the region wants the chunk at `position`: a player stands in it, or it
+    /// has a viewer's ticket of either kind, or a guest's in a pinned area. What it
+    /// wants and does not know of it claims at the end of the tick
+    /// ([`Region::settle_chunks`]).
+    fn wants(&self, position: ChunkPos) -> bool {
+        let ticketed = self.tickets.get(&position).is_some_and(|tickets| {
+            tickets.as_viewer() || (tickets.as_guest() && self.land.is_pinned(position))
+        });
+        ticketed
+            || self
+                .players
+                .values()
+                .any(|player| player.chunk() == position)
+    }
+
+    /// Whether what the region's rules do to a block of the chunk at `position` is an
+    /// effect for the region that uses the chunk: the region has not loaded it, and it
+    /// is another's or unknown and not wanted. Into land the region holds or has asked
+    /// for an update waits as a seam entry instead
+    /// (`docs/adr/0025-effects-between-regions.md`, sections 4 and 6).
+    fn sends_to(&self, position: ChunkPos) -> bool {
+        if self.chunks.contains_key(&position) {
+            return false;
+        }
+        match self.land.knowledge(position) {
+            Knowledge::Foreign(_) => true,
+            Knowledge::Unknown => !self.wants(position),
+            Knowledge::Held | Knowledge::Asked => false,
+        }
     }
 
     /// The first thing of a tick: what the store answered, the subscriptions that began
@@ -1690,7 +1792,33 @@ impl Region {
                 && self.land.holds(*position)
             {
                 self.chunks.insert(*position, chunk.clone());
+                // A chunk the region loads is its own to read, and no longer copied.
+                self.copies.remove(position);
             }
+        }
+        // Border copies, with the chunks and before the region works out which chunks
+        // tick, so that a chunk beside them ticks in this very tick
+        // (`docs/adr/0025-effects-between-regions.md`, section 5, "In the tick"): the
+        // bases, then the later changes in the order the store sent them, then the
+        // copies withdrawn. A base of a chunk the region has loaded is not taken.
+        for (position, base) in &inputs.copy_bases {
+            if !self.chunks.contains_key(position) {
+                self.copies.insert(*position, base.clone());
+            }
+        }
+        for (position, changes) in &inputs.copy_updates {
+            let Some(copy) = self.copies.get_mut(position) else {
+                continue;
+            };
+            for (at, state) in changes {
+                if at.chunk() == *position {
+                    let (x, z) = at.in_chunk();
+                    copy.set(x, at.y, z, *state);
+                }
+            }
+        }
+        for position in &inputs.copies_withdrawn {
+            self.copies.remove(position);
         }
         // A chunk is loaded only when held: a ticket on any other loads nothing, and
         // when the chunk is granted it is asked of storage in that same tick. The home
@@ -1772,17 +1900,19 @@ impl Region {
     }
 }
 
-/// Whether the body of a player whose feet are at `feet` overlaps the block at `position`.
-/// The chunks a region has loaded, as the rules of placing read blocks.
-struct Loaded<'a>(&'a BTreeMap<ChunkPos, Chunk>);
+/// The chunks a region has loaded and copied, as the rules of placing read blocks: a
+/// placement beside the line reads its neighbours across it as the game would
+/// (`docs/adr/0025-effects-between-regions.md`, section 4). What is placed is changed
+/// only in loaded chunks ([`Region::change_all`]).
+struct Readable<'a>(&'a Region);
 
-impl placement::Blocks for Loaded<'_> {
+impl placement::Blocks for Readable<'_> {
     fn block(&self, at: BlockPos) -> Option<BlockState> {
-        let (x, z) = at.in_chunk();
-        self.0.get(&at.chunk())?.get(x, at.y, z)
+        self.0.block(at)
     }
 }
 
+/// Whether the body of a player whose feet are at `feet` overlaps the block at `position`.
 fn occupies(feet: Vec3, position: BlockPos) -> bool {
     let half = PLAYER_WIDTH / 2.0;
     let overlaps =
@@ -1953,6 +2083,7 @@ mod tests {
     use crate::api::{Face, PlayerJoin};
 
     mod block_updates;
+    mod effects;
     mod fluids;
     mod post_processing_and_seams;
     mod scheduled_ticks;

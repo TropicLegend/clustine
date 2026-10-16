@@ -133,7 +133,7 @@ impl Region {
 
     /// The lowest and the highest block of the world at `pos` (`getMinY`, `getMaxY`).
     fn plant_heights(&self, pos: BlockPos) -> Option<(i32, i32)> {
-        let chunk = self.chunks.get(&pos.chunk())?;
+        let chunk = self.readable_chunk(pos.chunk())?;
         let height = i32::try_from(chunk.height()).ok()?;
         Some((chunk.min_y(), chunk.min_y() + height - 1))
     }

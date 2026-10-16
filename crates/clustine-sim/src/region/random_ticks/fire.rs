@@ -274,7 +274,7 @@ impl Region {
                 let x = random.next_int(3) as i32 - 1;
                 let z = random.next_int(3) as i32 - 1;
                 at = at.offset(x, 1, z);
-                if !self.chunks.contains_key(&at.chunk()) {
+                if !self.readable(at.chunk()) {
                     return;
                 }
                 let here = self.read(at);
@@ -296,7 +296,7 @@ impl Region {
                 let x = random.next_int(3) as i32 - 1;
                 let z = random.next_int(3) as i32 - 1;
                 let at = pos.offset(x, 0, z);
-                if !self.chunks.contains_key(&at.chunk()) {
+                if !self.readable(at.chunk()) {
                     return;
                 }
                 let above = relative(at, Face::Up);
@@ -349,7 +349,7 @@ impl Region {
     /// Whether the biome at `pos` burns fire out faster (the environment attribute
     /// `increased_fire_burnout`).
     fn increased_fire_burnout(&self, pos: BlockPos) -> bool {
-        let Some(chunk) = self.chunks.get(&pos.chunk()) else {
+        let Some(chunk) = self.readable_chunk(pos.chunk()) else {
             return false;
         };
         let Ok(index) = usize::try_from((pos.y - chunk.min_y()).div_euclid(16)) else {

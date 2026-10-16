@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use clustine_blocks::data::is_class;
 use clustine_blocks::survive::can_survive;
 use clustine_data::{BLOCKS, BlockClass, BlockState, Face, blocks};
-use clustine_world::{BlockPos, Chunk, ChunkPos, InChunk, ScheduledTick, Ticked};
+use clustine_world::{BlockPos, Chunk, ChunkPos, Effect, Effected, InChunk, ScheduledTick, Ticked};
 
 use super::Region;
 use super::updates::RegionView;
@@ -168,12 +168,42 @@ impl Region {
 
     /// `scheduleTick`: a tick of `of` at `pos` in `delay` ticks. A chunk the region
     /// ticks has it in its queue; a loaded chunk that does not keeps it as the delay
-    /// left, as if written at the end of this tick; one not loaded does not get it.
+    /// left, as if written at the end of this tick. Into a chunk that is another
+    /// region's, or unknown and not wanted, it is an effect for whoever uses the chunk
+    /// (`docs/adr/0025-effects-between-regions.md`, section 4); any other chunk not
+    /// loaded does not get it.
+    ///
+    /// While the region does an effect another region made in its tick `m` (the
+    /// region's tick it was converted to), the delay counts from `m`, never to before
+    /// this tick, so that what it sets ticks when it would have in one region
+    /// (ADR-0025, "Found while building", E4).
     pub(crate) fn schedule_tick(&mut self, pos: BlockPos, of: Ticked, delay: i32, priority: i8) {
+        let now = self.tick as i64;
+        let due = (self.made_in.unwrap_or(now) + i64::from(delay)).max(now);
+        if self.sends_to(pos.chunk()) {
+            // The store counts a tick sent on from this region's tick.
+            let delay = i32::try_from(due - now).unwrap_or(i32::MAX);
+            self.made.push(Effect {
+                at: pos,
+                what: Effected::Tick {
+                    of,
+                    delay,
+                    priority,
+                },
+            });
+            return;
+        }
+        self.schedule_due(pos, of, due, priority);
+    }
+
+    /// A tick of `of` at `pos` due in the region's tick `due`: in the queue of a chunk
+    /// the region ticks, kept as the delay left in a loaded chunk that does not tick,
+    /// and nowhere in a chunk not loaded.
+    pub(crate) fn schedule_due(&mut self, pos: BlockPos, of: Ticked, due: i64, priority: i8) {
         let chunk = pos.chunk();
         if self.ticks.ticking.contains(&chunk) {
             let key = Key {
-                due: self.tick as i64 + i64::from(delay),
+                due,
                 priority,
                 class: 1,
                 order: self.next_order(),
@@ -202,7 +232,7 @@ impl Region {
         ticks.push(ScheduledTick {
             at,
             of,
-            delay: delay - 1,
+            delay: i32::try_from(due - self.tick as i64 - 1).unwrap_or(i32::MAX),
             priority,
         });
         loaded.set_ticks(ticks);
@@ -212,16 +242,26 @@ impl Region {
     /// Starts and stops ticking chunks as their neighbours are loaded and let go, in
     /// ascending position: the ticks of a chunk that starts are taken from it, the ticks
     /// of one that stops are written into it.
+    ///
+    /// A chunk with a viewer's or a guest's ticket ticks where each of its eight
+    /// neighbours is loaded or copied; a ring chunk only where they are all loaded, as
+    /// copies are taken beside the first and not beside the second
+    /// (`docs/adr/0025-effects-between-regions.md`, section 3).
     pub(crate) fn update_ticking(&mut self) {
         let should: BTreeSet<ChunkPos> = self
             .chunks
             .keys()
             .copied()
             .filter(|chunk| {
+                let beside_copies = self
+                    .tickets
+                    .get(chunk)
+                    .is_some_and(|tickets| tickets.viewers > 0 || tickets.guests > 0);
                 (-1..=1).all(|dx| {
                     (-1..=1).all(|dz| {
-                        self.chunks
-                            .contains_key(&ChunkPos::new(chunk.x + dx, chunk.z + dz))
+                        let neighbour = ChunkPos::new(chunk.x + dx, chunk.z + dz);
+                        self.chunks.contains_key(&neighbour)
+                            || (beside_copies && self.copies.contains_key(&neighbour))
                     })
                 })
             })

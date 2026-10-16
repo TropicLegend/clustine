@@ -709,7 +709,7 @@ fn the_chunks_that_tick_with_ticks_pending_are_named_in_every_tick() {
 
 /// The region `region` would be restored as from its state, its tickets and its
 /// loaded chunks' saved forms as of its last tick.
-fn restored(region: &Region) -> Region {
+pub(super) fn restored(region: &Region) -> Region {
     let mut tickets = Vec::new();
     for (position, counts) in &region.tickets {
         let kinds = [
@@ -741,12 +741,20 @@ fn restored(region: &Region) -> Region {
             (*position, saved)
         })
         .collect();
+    // Border copies are what the runner hands in, as the store has them: no part of
+    // the region's state or of its saved chunks.
+    let copies = region
+        .copies
+        .iter()
+        .map(|(position, copy)| (*position, copy.clone()))
+        .collect();
     Region::restore_loaded(
         region.config.clone(),
         region.state(),
         holdings,
         &tickets,
         chunks,
+        copies,
     )
 }
 

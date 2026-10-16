@@ -219,7 +219,8 @@ impl Region {
     /// it absorbed, as a belief in a region that went into that one earlier would stand
     /// against the store's table with nothing to doubt it. It has no ticket and no
     /// loaded chunk, the links being closed with this tick, and the time before a
-    /// chunk is given back starts anew.
+    /// chunk is given back starts anew. Nor has it border copies: the runner hands in
+    /// again those it keeps, as for any restore.
     pub fn take_absorbed(
         &mut self,
         state: RegionState,

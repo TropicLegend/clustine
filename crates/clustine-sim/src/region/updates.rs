@@ -4,21 +4,31 @@
 //! longer stay destroyed, all run as the game's `CollectingNeighborUpdater` runs them,
 //! depth first.
 //!
-//! What phase B's later steps bring is left out here, each where it would be:
+//! At the edge of what the region has (`docs/adr/0025-effects-between-regions.md`,
+//! sections 4 to 6):
 //!
-//! - an update that would reach a block whose chunk, or a neighbour's, this region
-//!   has not loaded is kept as a seam entry in the chunk of the block that changed,
-//!   and made once the region has them loaded (section 5);
-//! - `neighborChanged` only removes what can no longer stay (rails, repeaters and
-//!   comparators, redstone wire) and has a liquid look again; power waits for the
-//!   phase of redstone.
+//! - a set or an update that reaches a block of a chunk that is another region's, or
+//!   unknown and not wanted, is an effect for whoever uses the chunk;
+//! - an update that reaches a block of land the region holds or has asked for, whose
+//!   chunk or a neighbour's it can read neither loaded nor copied, is kept as a seam
+//!   entry in the chunk of the block that changed, and made once it can read them;
+//! - an update another region sent that cannot run yet is kept as a seam entry in its
+//!   own chunk, and a seam entry whose block comes to be another region's is sent on.
+//!
+//! `neighborChanged` only removes what can no longer stay (rails, repeaters and
+//! comparators, redstone wire) and has a liquid look again; power waits for the phase
+//! of redstone.
 
 use clustine_blocks::BlockView;
 use clustine_blocks::data::{is_class, same_block};
 use clustine_blocks::shape::update_shape;
 use clustine_blocks::survive::can_survive;
 use clustine_data::{BlockClass, BlockState, Face, blocks};
-use clustine_world::{BlockPos, ChunkPos, PlayerId, Seam, SeamKind, Ticked};
+use std::collections::{BTreeMap, BTreeSet};
+
+use clustine_world::{
+    BlockPos, ChunkPos, Due, Effect, Effected, FiledEffect, PlayerId, Seam, SeamKind, Ticked,
+};
 
 use super::Region;
 use crate::api::{RegionEvent, TickOutput};
@@ -90,7 +100,12 @@ pub(crate) struct Updater {
 impl Region {
     /// `Level.setBlock(pos, state, flags, depth)`: sets the block if its chunk is
     /// loaded and it changes, and makes the updates the flags ask for. Returns whether
-    /// the block changed.
+    /// the block changed here.
+    ///
+    /// A block the region reads in a copy, of a chunk that is another region's or
+    /// unknown and not wanted, is set by an effect, only if it is still what the rule
+    /// read there, with the updates of a set (the record, section 4). What the region
+    /// cannot read it does not set, as before.
     pub(crate) fn set_block_updated(
         &mut self,
         pos: BlockPos,
@@ -103,6 +118,19 @@ impl Region {
             return false;
         };
         if old == state {
+            return false;
+        }
+        if !self.chunks.contains_key(&pos.chunk()) {
+            if self.sends_to(pos.chunk()) {
+                self.made.push(Effect {
+                    at: pos,
+                    what: Effected::SetIf {
+                        expected: old,
+                        state,
+                        flags,
+                    },
+                });
+            }
             return false;
         }
         let (x, z) = pos.in_chunk();
@@ -203,12 +231,15 @@ impl Region {
                 && head.property("part") == Some("head")
             {
                 let flags = UPDATE_SUPPRESS_DROPS | UPDATE_CLIENTS | UPDATE_NEIGHBORS;
-                self.set_block_updated(head_pos, blocks::AIR, flags, UPDATE_LIMIT, output);
-                output.events.push(RegionEvent::BlockDestroyed {
-                    position: head_pos,
-                    state: head,
-                    breaker: player,
-                });
+                // A head across the line goes by an effect, and is seen breaking where
+                // it goes.
+                if self.set_block_updated(head_pos, blocks::AIR, flags, UPDATE_LIMIT, output) {
+                    output.events.push(RegionEvent::BlockDestroyed {
+                        position: head_pos,
+                        state: head,
+                        breaker: player,
+                    });
+                }
             }
         }
         output.events.push(RegionEvent::BlockDestroyed {
@@ -239,12 +270,13 @@ impl Region {
             return;
         }
         let flags = UPDATE_SUPPRESS_DROPS | UPDATE_CLIENTS | UPDATE_NEIGHBORS;
-        self.set_block_updated(below, fluid_block(lower), flags, UPDATE_LIMIT, output);
-        output.events.push(RegionEvent::BlockDestroyed {
-            position: below,
-            state: lower,
-            breaker: player,
-        });
+        if self.set_block_updated(below, fluid_block(lower), flags, UPDATE_LIMIT, output) {
+            output.events.push(RegionEvent::BlockDestroyed {
+                position: below,
+                state: lower,
+                breaker: player,
+            });
+        }
     }
 
     /// `CollectingNeighborUpdater.addAndRun`.
@@ -303,7 +335,7 @@ impl Region {
             } => self.shape_update(pos, direction, neighbour, flags, depth, output),
             Pending::Neighbours { source, next } => {
                 let target = relative(source, UPDATE_ORDER[next]);
-                if !self.loaded_around(target) {
+                if self.sends_to(target.chunk()) || !self.readable_around(target) {
                     let source_state = self.block(source).unwrap_or(blocks::AIR);
                     let seam = Seam {
                         at: target,
@@ -313,7 +345,7 @@ impl Region {
                         flags: UPDATE_NEIGHBORS,
                         depth: 0,
                     };
-                    self.keep_seam(source, seam);
+                    self.send_or_keep(source, seam);
                     return;
                 }
                 self.neighbour_changed(target, output);
@@ -331,7 +363,7 @@ impl Region {
         depth: i32,
         output: &mut TickOutput,
     ) {
-        if !self.loaded_around(pos) {
+        if self.sends_to(pos.chunk()) || !self.readable_around(pos) {
             let seam = Seam {
                 at: pos,
                 direction: direction as u8,
@@ -340,10 +372,10 @@ impl Region {
                 flags,
                 depth,
             };
-            self.keep_seam(relative(pos, direction), seam);
+            self.send_or_keep(relative(pos, direction), seam);
             return;
         }
-        let Some(old) = self.block(pos) else {
+        let Some(old) = self.own_block(pos) else {
             return;
         };
         let new = update_shape(&mut RegionView(self), old, pos, direction, neighbour);
@@ -393,10 +425,10 @@ impl Region {
     /// stay: rails, repeaters and comparators, redstone wire (`removeBlock`, without
     /// the bits of a broken block).
     fn neighbour_changed(&mut self, pos: BlockPos, output: &mut TickOutput) {
-        if !self.loaded_around(pos) {
+        if !self.readable_around(pos) {
             return;
         }
-        let Some(state) = self.block(pos) else {
+        let Some(state) = self.own_block(pos) else {
             return;
         };
         if is_class(state, BlockClass::LiquidBlock) {
@@ -427,9 +459,20 @@ impl Region {
         }
     }
 
-    /// Keeps `seam`, an update from the block at `source` that cannot be made, in the
-    /// chunk of that block, unless it reaches outside the world, where the game makes
-    /// nothing either.
+    /// An update from the block at `source` that cannot be made here: an effect where
+    /// its block is in a chunk that is another region's, or unknown and not wanted
+    /// (the record, section 4); otherwise a seam entry in the chunk of `source`.
+    fn send_or_keep(&mut self, source: BlockPos, seam: Seam) {
+        if self.sends_to(seam.at.chunk()) {
+            self.made.push(effect_of(seam));
+        } else {
+            self.keep_seam(source, seam);
+        }
+    }
+
+    /// Keeps `seam`, an update that cannot be made, in the chunk of the block at
+    /// `source` if the region has it loaded, unless it reaches outside the world, where
+    /// the game makes nothing either. A copy is never written, so this needs none.
     fn keep_seam(&mut self, source: BlockPos, seam: Seam) {
         let chunk = source.chunk();
         let Some(loaded) = self.chunks.get_mut(&chunk) else {
@@ -443,67 +486,199 @@ impl Region {
         self.ticks_seams_changed(chunk);
     }
 
-    /// Makes the seam entries whose blocks the region now has loaded with their
-    /// neighbours, those of each chunk in the order of their keys, the chunks in
-    /// ascending position, and forgets them (section 5 and 6a of the record). An
-    /// entry that cannot be made yet stays.
-    pub(crate) fn run_seams(&mut self, output: &mut TickOutput) {
-        let with_seams: Vec<ChunkPos> = self
+    /// Makes the seam entries and the effects other regions sent (`effects`, ready and
+    /// in the order of their numbers), chunk by chunk in ascending position: in each,
+    /// first its seam entries whose blocks the region can now read with their
+    /// neighbours, in the order of their keys, and then the effects for its blocks in
+    /// the order of their numbers (ADR-0024, section 6a; ADR-0025, section 5, "In the
+    /// tick"). An entry that cannot be made yet stays; one whose block has come to be
+    /// another region's is sent on as an effect (ADR-0025, section 6). Every effect
+    /// handed in is taken, in [`TickOutput::taken`].
+    pub(crate) fn run_seams(&mut self, effects: &[FiledEffect], output: &mut TickOutput) {
+        let mut received: BTreeMap<ChunkPos, Vec<FiledEffect>> = BTreeMap::new();
+        for filed in effects {
+            received
+                .entry(filed.effect.at.chunk())
+                .or_default()
+                .push(*filed);
+            output.taken.push(filed.id);
+        }
+        output.taken.sort();
+        let with_seams = self
             .chunks
             .iter()
             .filter(|(_, chunk)| !chunk.seams().is_empty())
-            .map(|(position, _)| *position)
-            .collect();
-        for chunk in with_seams {
-            let Some(seams) = self
-                .chunks
-                .get(&chunk)
-                .map(|loaded| loaded.seams().to_vec())
-            else {
-                continue;
-            };
-            let (ready, waiting): (Vec<Seam>, Vec<Seam>) = seams
-                .into_iter()
-                .partition(|seam| self.loaded_around(seam.at));
-            if ready.is_empty() {
-                continue;
+            .map(|(position, _)| *position);
+        let chunks: BTreeSet<ChunkPos> = with_seams.chain(received.keys().copied()).collect();
+        for chunk in chunks {
+            self.run_seams_of(chunk, output);
+            for filed in received.remove(&chunk).unwrap_or_default() {
+                self.run_effect(filed, output);
             }
-            if let Some(loaded) = self.chunks.get_mut(&chunk) {
-                loaded.set_seams(waiting);
+        }
+    }
+
+    /// The seam entries of `chunk` that can be made or are to be sent on.
+    fn run_seams_of(&mut self, chunk: ChunkPos, output: &mut TickOutput) {
+        let Some(seams) = self
+            .chunks
+            .get(&chunk)
+            .map(|loaded| loaded.seams().to_vec())
+        else {
+            return;
+        };
+        let mut waiting = Vec::new();
+        let mut taken = Vec::new();
+        for seam in seams {
+            // Land that is another's, or that was given back or never asked for and is
+            // not wanted: there the entry would otherwise wait for good (ADR-0025,
+            // "Found while building", E4).
+            let sent = self.sends_to(seam.at.chunk());
+            if sent || self.readable_around(seam.at) {
+                taken.push((seam, sent));
+            } else {
+                waiting.push(seam);
             }
-            self.ticks_seams_changed(chunk);
-            for seam in ready {
-                let direction = face_of(seam.direction);
-                match seam.kind {
-                    SeamKind::Shape => self.add_and_run(
-                        Pending::Shape {
-                            pos: seam.at,
-                            direction,
-                            neighbour: seam.source,
-                            flags: seam.flags,
-                            depth: seam.depth,
-                        },
-                        output,
-                    ),
-                    SeamKind::Neighbour => self.neighbour_changed(seam.at, output),
+        }
+        if taken.is_empty() {
+            return;
+        }
+        if let Some(loaded) = self.chunks.get_mut(&chunk) {
+            loaded.set_seams(waiting);
+        }
+        self.ticks_seams_changed(chunk);
+        for (seam, sent) in taken {
+            if sent {
+                self.made.push(effect_of(seam));
+            } else {
+                self.run_update(seam, output);
+            }
+        }
+    }
+
+    /// Makes the update a seam entry keeps, whose block and neighbours the region can
+    /// read.
+    fn run_update(&mut self, seam: Seam, output: &mut TickOutput) {
+        match seam.kind {
+            SeamKind::Shape => self.add_and_run(
+                Pending::Shape {
+                    pos: seam.at,
+                    direction: face_of(seam.direction),
+                    neighbour: seam.source,
+                    flags: seam.flags,
+                    depth: seam.depth,
+                },
+                output,
+            ),
+            SeamKind::Neighbour => self.neighbour_changed(seam.at, output),
+        }
+    }
+
+    /// Does what another region sent, by this region's rules (ADR-0025, sections 4 and
+    /// 5): an update where its block's six neighbours can be read, or else kept as a
+    /// seam entry in its block's chunk; a scheduled tick, due as the store converted
+    /// it, or at this tick if that has passed; the target's side of a fluid's spread;
+    /// a set, only where the block is still what the sender read. An effect for a chunk
+    /// the region has not loaded, which the runner does not hand in, does nothing.
+    fn run_effect(&mut self, filed: FiledEffect, output: &mut TickOutput) {
+        let at = filed.effect.at;
+        if !self.chunks.contains_key(&at.chunk()) {
+            return;
+        }
+        match filed.effect.what {
+            Effected::Update {
+                direction,
+                kind,
+                source,
+                flags,
+                depth,
+            } => {
+                let seam = Seam {
+                    at,
+                    direction,
+                    kind,
+                    source,
+                    flags,
+                    depth,
+                };
+                if self.readable_around(at) {
+                    self.made_in = made_in(filed.due);
+                    self.run_update(seam, output);
+                    self.made_in = None;
+                } else {
+                    self.keep_seam(at, seam);
+                }
+            }
+            Effected::Tick {
+                of,
+                delay,
+                priority,
+            } => {
+                let now = self.tick as i64;
+                let due = match filed.due {
+                    Due::At { tick } => i64::try_from(tick).unwrap_or(i64::MAX).max(now),
+                    Due::FromTaking => now + i64::from(delay),
+                };
+                self.schedule_due(at, of, due, priority);
+            }
+            Effected::Spread { direction, source } => {
+                self.made_in = made_in(filed.due);
+                self.spread_received(at, face_of(direction), source, output);
+                self.made_in = None;
+            }
+            Effected::SetIf {
+                expected,
+                state,
+                flags,
+            } => {
+                if self.own_block(at) == Some(expected) {
+                    self.made_in = made_in(filed.due);
+                    self.set_block_updated(at, state, flags, UPDATE_LIMIT, output);
+                    self.made_in = None;
                 }
             }
         }
     }
 
-    /// Whether the chunks of `pos` and of its six neighbours are loaded, so that an
-    /// update there reads only what the region has.
-    fn loaded_around(&self, pos: BlockPos) -> bool {
+    /// Whether the chunk of `pos` is loaded and those of its six neighbours are loaded
+    /// or copied, so that an update there changes only what the region has and reads
+    /// only what it can.
+    fn readable_around(&self, pos: BlockPos) -> bool {
         self.chunks.contains_key(&pos.chunk())
             && UPDATE_SHAPE_ORDER
                 .iter()
-                .all(|face| self.chunks.contains_key(&relative(pos, *face).chunk()))
+                .all(|face| self.readable(relative(pos, *face).chunk()))
     }
 }
 
-/// The region's loaded blocks as the shared rules read them, and where the ticks they
-/// schedule go. A block outside what is loaded reads as air; the updates are made only
-/// where the block and its six neighbours are loaded.
+/// The region's tick an effect handed in was made in, which the ticks its doing
+/// schedules count their delays from: for one from a coupled region, the tick the
+/// store converted it to (ADR-0025, "Found while building", E4); none for one from a
+/// region not coupled, whose ticks count from the taking.
+fn made_in(due: Due) -> Option<i64> {
+    match due {
+        Due::At { tick } => Some(i64::try_from(tick).unwrap_or(i64::MAX)),
+        Due::FromTaking => None,
+    }
+}
+
+/// The effect that makes the update `seam` keeps.
+fn effect_of(seam: Seam) -> Effect {
+    Effect {
+        at: seam.at,
+        what: Effected::Update {
+            direction: seam.direction,
+            kind: seam.kind,
+            source: seam.source,
+            flags: seam.flags,
+            depth: seam.depth,
+        },
+    }
+}
+
+/// The region's loaded and copied blocks as the shared rules read them, and where the
+/// ticks they schedule go. A block of neither reads as air; the updates are made only
+/// where the block is loaded and its six neighbours are loaded or copied.
 pub(super) struct RegionView<'r>(pub(super) &'r mut Region);
 
 impl BlockView for RegionView<'_> {
@@ -530,7 +705,7 @@ impl BlockView for RegionView<'_> {
     }
 
     fn rules(&self) -> clustine_blocks::Rules {
-        clustine_blocks::Rules::Placing
+        self.0.rules()
     }
 }
 
