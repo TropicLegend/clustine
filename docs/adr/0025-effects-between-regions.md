@@ -523,6 +523,30 @@ E4, the sim (2026-10-16), found by the author of the step:
   entry would otherwise wait for good.
 - `Knowledge` gained no copy; copies sit beside it in the region.
 
+E3c, couplings in the store (2026-10-16):
+
+- **A region joining a coupling counts as durable through the tick before the one it
+  named.** Uncoupled, it did not commit every tick, and each side would otherwise wait
+  for a commit of the other's last tick that never comes. Nothing it did before it
+  joined crosses coupled, so nothing is missed.
+- **A region with no coupling left has no offset**; its next coupling gives it one, as
+  a region never coupled.
+- **After a restart of the store** each region's progress is its highest tick in the
+  log, and every effect it makes from then on converts as coupled; the ticks named in
+  handshakes under way are in the file and count as above. Patience for those
+  handshakes counts from the start.
+- **A change of coupling does not resend `CopyUsed`.** The runner knows who uses each
+  copied chunk and is told `Coupled` and `Uncoupled`, and decides from those which
+  copies to hand in or withdraw.
+- **`Shifted` comes before the `Coupled` that caused it.** The runner adds the shift to
+  the progress it holds of its partners then, all of which were in the group that
+  shifted.
+- **A file of the couplings that cannot be written is said, and nothing more**: a
+  store that starts on the one before has couplings that were, which end by their
+  grace or their patience.
+- While any region is coupled, in a handshake or given up, the commit thread looks at
+  the time every 10 ms when nothing else wakes it.
+
 ## Review
 
 **First review of this record (2026-10-16): not ready.** Its findings, worked in:

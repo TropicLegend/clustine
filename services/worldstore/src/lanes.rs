@@ -42,12 +42,13 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::time::{Duration, Instant};
 
 use clustine_data::BlockState;
 use clustine_format::{
-    LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, PlayersFile, RegionFile,
-    StateFile, TableFile, read_log, read_log_with_offsets,
+    CouplingsFile, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, PlayersFile,
+    RegionFile, StateFile, TableFile, read_log, read_log_with_offsets,
 };
 use clustine_region::RegionId;
 use clustine_rpc::{
@@ -61,6 +62,7 @@ use tracing::{error, info, warn};
 
 use crate::chunks::{Job, Jobs, Listed, Replayed};
 use crate::copies::Copies;
+use crate::couplings::{Couplings, Said};
 use crate::disk::{Disk, replace};
 use crate::effects::{self, Filed, Kept, Uses, sequence};
 use crate::players::{self, Players, Taken, Undo};
@@ -82,6 +84,19 @@ const RECORD_CHUNKS: usize = 65_536;
 /// At most this many effects are dropped or written forward by one record of the log,
 /// for the same reason.
 const RECORD_EFFECTS: usize = 65_536;
+
+/// How often the commit thread looks at the time while regions are coupled or in a
+/// handshake, when nothing else wakes it.
+const COUPLING_LOOK: Duration = Duration::from_millis(10);
+
+/// The commit thread's clock: the time since the store started. Tests hand in one they
+/// move themselves.
+pub(crate) type Clock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+fn real_clock() -> Clock {
+    let start = Instant::now();
+    Arc::new(move || start.elapsed())
+}
 
 /// The commit thread.
 pub(crate) struct Lanes {
@@ -117,6 +132,10 @@ pub(crate) struct Lanes {
     /// Who copies which chunk (the same record, section 3). Not in the log: a region
     /// asks for its copies again after every hello.
     copies: Copies,
+    /// Lockstep between regions (the same record, section 8), kept in
+    /// `regions/couplings`.
+    couplings: Couplings,
+    clock: Clock,
     group: Group,
 }
 
@@ -228,6 +247,11 @@ struct Group {
     /// The copies asked for in the group, which are registered and based once it is
     /// durable, so that a base is current through a group.
     copies_wanted: Vec<(RegionId, ChunkPos)>,
+    /// The highest tick each region committed in the group, whose progress its
+    /// partners are told once the group is durable.
+    committed: BTreeMap<RegionId, u64>,
+    /// Whether the time is to be looked at, for the couplings.
+    looking: bool,
 }
 
 impl Group {
@@ -238,6 +262,15 @@ impl Group {
             && self.flushes.is_empty()
             && self.stream.is_empty()
             && self.copies_wanted.is_empty()
+            && self.committed.is_empty()
+            && !self.looking
+    }
+
+    /// Puts what the couplings said on the streams.
+    fn said(&mut self, said: Said) {
+        for (region, reply) in said.0 {
+            self.stream(region, Streamed::Reply(Box::new(reply)));
+        }
     }
 
     fn stream(&mut self, region: RegionId, streamed: Streamed) {
@@ -606,6 +639,8 @@ impl Lanes {
             uses: Uses::default(),
             filed,
             copies: Copies::default(),
+            couplings: Couplings::default(),
+            clock: real_clock(),
             group: Group::default(),
         };
         // What is left of the notes, in the order of the log and by the same rules as
@@ -666,7 +701,58 @@ impl Lanes {
         }
         lanes.align()?;
         lanes.begin_uses()?;
+        lanes.read_couplings()?;
         Ok(lanes)
+    }
+
+    /// Reads `regions/couplings`, if there is one: a restart of the store keeps
+    /// couplings (`docs/adr/0025-effects-between-regions.md`, section 8). Each region's
+    /// progress is its highest tick in the log.
+    fn read_couplings(&mut self) -> Result<(), StoreError> {
+        let path = self.regions_directory().join("couplings");
+        let Some(bytes) = self.disk.read(&path)? else {
+            return Ok(());
+        };
+        let mut file = CouplingsFile::decode(&bytes).map_err(|error| StoreError::Damaged {
+            path: path.clone(),
+            error,
+        })?;
+        let ticks = self
+            .regions
+            .iter()
+            .map(|(region, lane)| {
+                let live = lane.live.iter().map(|entry| entry.tick).max();
+                (*region, live.max(lane.whole_tick()).unwrap_or(0))
+            })
+            .collect();
+        // Regions the table no longer has are not coupled.
+        let table = &self.table;
+        file.regions
+            .retain(|region| table.has(RegionId(region.region)));
+        file.couplings
+            .retain(|(a, b)| table.has(RegionId(*a)) && table.has(RegionId(*b)));
+        file.handshakes
+            .retain(|shake| table.has(RegionId(shake.low)) && table.has(RegionId(shake.high)));
+        self.couplings = Couplings::from_file(file, ticks, (self.clock)());
+        Ok(())
+    }
+
+    /// Writes `regions/couplings` as the couplings are now. A failure is said and
+    /// nothing more: a store that starts on the file before has couplings that were,
+    /// which end by their grace or their patience.
+    fn write_couplings(&mut self) {
+        let path = self.regions_directory().join("couplings");
+        let written = replace(self.disk.as_ref(), &path, &self.couplings.file().encode())
+            .and_then(|()| self.disk.sync_directory(&self.regions_directory()));
+        if let Err(error) = written {
+            error!(%error, "the file of the couplings could not be written");
+        }
+    }
+
+    /// With `clock` for the commit thread's: tests move theirs themselves.
+    pub(crate) fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// After a start, every chunk a region holds by the table is in use by it, and so is
@@ -710,11 +796,28 @@ impl Lanes {
     }
 
     pub(crate) fn run(mut self, messages: Receiver<Message>) {
-        while let Ok(first) = messages.recv() {
-            self.handle(first);
-            for message in messages.try_iter().take(GROUP_LIMIT) {
-                self.handle(message);
+        loop {
+            // While regions are coupled or in a handshake, the time is looked at even
+            // when nobody asks for anything: a region that stopped asks for nothing.
+            let first = if self.couplings.has_timers() {
+                match messages.recv_timeout(COUPLING_LOOK) {
+                    Ok(message) => Some(message),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                match messages.recv() {
+                    Ok(message) => Some(message),
+                    Err(_) => return,
+                }
+            };
+            if let Some(first) = first {
+                self.handle(first);
+                for message in messages.try_iter().take(GROUP_LIMIT) {
+                    self.handle(message);
+                }
             }
+            self.group.looking |= self.couplings.has_timers();
             self.end_group();
         }
     }
@@ -733,6 +836,7 @@ impl Lanes {
                     && lane.current == Some(session.number)
                 {
                     lose(lane, &self.jobs);
+                    self.owner_lost(session.region);
                 }
             }
             Message::Checkpointed {
@@ -771,7 +875,7 @@ impl Lanes {
                         sequence,
                         last_change,
                         chunk,
-                        used: copy_use(&self.uses, position),
+                        used: copy_use(&self.uses, &self.couplings, session.region, position),
                     };
                     self.group
                         .stream(session.region, Streamed::Reply(Box::new(base)));
@@ -867,10 +971,23 @@ impl Lanes {
         // What the handle asked for before is done first, as far as it is up to this
         // thread: its commits answered and its saves passed on.
         self.end_group();
-        if let Some(lane) = self.regions.get_mut(&session.region) {
-            lane.owner
-                .take_if(|owner| owner.peer.session.number == session.number);
+        if let Some(lane) = self.regions.get_mut(&session.region)
+            && lane
+                .owner
+                .take_if(|owner| owner.peer.session.number == session.number)
+                .is_some()
+        {
+            self.owner_lost(session.region);
         }
+    }
+
+    /// The region has lost its owner: its couplings end at once, and its partners go on
+    /// without it (`docs/adr/0025-effects-between-regions.md`, section 8).
+    fn owner_lost(&mut self, region: RegionId) {
+        let mut said = Said::default();
+        let why = clustine_rpc::Uncoupling::OwnerLost { region };
+        self.couplings.end_all(region, why, &mut said);
+        self.group.said(said);
     }
 
     /// Does what the owner `session` asks for, if it still owns its region.
@@ -923,11 +1040,13 @@ impl Lanes {
                 // dropped as the game drops an update into a chunk that is not loaded
                 // (`docs/adr/0025-effects-between-regions.md`, section 5). Its use is
                 // that of now, which is that of its record in the log.
+                // When each is due is converted by the offsets in force now (section 8).
                 let effects: Vec<(Effect, Due, RegionId)> = effects
                     .into_iter()
                     .filter_map(|effect| {
                         let user = self.uses.user(effect.at.chunk())?;
-                        Some((effect, Due::FromTaking, user))
+                        let due = self.couplings.due(region, user, tick, &effect);
+                        Some((effect, due, user))
                     })
                     .collect();
                 // Only what is filed for a chunk the region uses: a number named twice,
@@ -1021,6 +1140,8 @@ impl Lanes {
                             length: record.len(),
                         });
                         owner.unsynced.push(StoreReply::Committed { tick });
+                        let highest = self.group.committed.entry(region).or_insert(tick);
+                        *highest = (*highest).max(tick);
                         lane.latest = lane.latest.max(tick);
                         lane.named = lane.named.max(tick);
                         if notes.is_empty() {
@@ -1093,7 +1214,13 @@ impl Lanes {
                 // it is loaded waits for it (`docs/adr/0025-effects-between-regions.md`,
                 // section 5).
                 if self.uses.begin(session.region, position) {
-                    tell_copiers(&self.uses, &self.copies, &mut self.group, position);
+                    tell_copiers(
+                        &self.uses,
+                        &self.couplings,
+                        &self.copies,
+                        &mut self.group,
+                        position,
+                    );
                 }
                 let job = Job::Load { position, peer };
                 if owner.held.is_empty() {
@@ -1178,7 +1305,13 @@ impl Lanes {
                 // Their use begins, also of a chunk whose return this calls off.
                 for chunk in &granted {
                     if self.uses.begin(region, *chunk) {
-                        tell_copiers(&self.uses, &self.copies, &mut self.group, *chunk);
+                        tell_copiers(
+                            &self.uses,
+                            &self.couplings,
+                            &self.copies,
+                            &mut self.group,
+                            *chunk,
+                        );
                     }
                 }
                 // Answered when the group ends, behind the commits asked for before:
@@ -1213,6 +1346,7 @@ impl Lanes {
                 let ended = end_uses(
                     &mut self.uses,
                     &mut self.filed,
+                    &self.couplings,
                     &self.copies,
                     &mut self.log,
                     &mut self.group,
@@ -1239,14 +1373,12 @@ impl Lanes {
             }
             // Taken above, before the lane was looked up.
             StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. } => return,
-            // Couplings are the store's from step E3c of
-            // `docs/adr/0025-effects-between-regions.md`; until then a runner that asks
-            // for one finds nobody coupled to it.
             StoreRequest::Dropped { chunks } => {
                 let region = session.region;
                 let ended = end_uses(
                     &mut self.uses,
                     &mut self.filed,
+                    &self.couplings,
                     &self.copies,
                     &mut self.log,
                     &mut self.group,
@@ -1270,9 +1402,21 @@ impl Lanes {
                 }
                 return;
             }
-            StoreRequest::Beside { .. }
-            | StoreRequest::JoinsAt { .. }
-            | StoreRequest::EndCouplings => {
+            StoreRequest::Beside { begins, ends } => {
+                self.couplings.beside(session.region, &begins, &ends);
+                // Looked at when the group ends, with the use as it is then.
+                self.group.looking = true;
+                return;
+            }
+            StoreRequest::JoinsAt { partner, tick } => {
+                self.couplings.joins_at(session.region, partner, tick);
+                self.group.looking = true;
+                return;
+            }
+            StoreRequest::EndCouplings => {
+                let mut said = Said::default();
+                self.couplings.reshaping(session.region, &mut said);
+                self.group.said(said);
                 return;
             }
         };
@@ -1352,6 +1496,24 @@ impl Lanes {
             for job in owner.held.drain(..) {
                 let _ = self.jobs.send(job);
             }
+        }
+        // What the couplings make of the group: partners' progress behind the effects
+        // of the same commits, couplings, handshakes, their ends and regions given up.
+        // The file is durable before any of it goes out.
+        let mut group = group;
+        let mut said = Said::default();
+        let now = (self.clock)();
+        let regions = &self.regions;
+        let has_owner = |region| {
+            regions
+                .get(&region)
+                .is_some_and(|lane: &Lane| lane.owner.is_some())
+        };
+        self.couplings
+            .turn(now, &group.committed, &self.uses, has_owner, &mut said);
+        group.said(said);
+        if self.couplings.take_changed() {
+            self.write_couplings();
         }
         // What the group filed goes on the streams, behind the answers, with a mark
         // through the group's last record (`docs/adr/0025-effects-between-regions.md`,
@@ -1482,6 +1644,10 @@ impl Lanes {
                     .retain(|entry| entry.segment != segment || entry.offset < durable);
             }
             lose(lane, &self.jobs);
+        }
+        let regions: Vec<RegionId> = self.regions.keys().copied().collect();
+        for region in regions {
+            self.owner_lost(region);
         }
     }
 
@@ -1857,13 +2023,23 @@ impl Lanes {
         // From here on the owner that was there, if any, gets nothing done and hears
         // nothing: its handle is lost, and its end of the replies is closed once the
         // thread for chunks is through with what it had asked for.
-        if let Some(replaced) = lane.owner.take() {
+        let replaced = lane.owner.take();
+        if let Some(replaced) = &replaced {
             replaced.peer.mark_lost();
             // Its loads that are being generated are let go of at once.
             let _ = self.jobs.send(Job::Wake);
             info!(%region, epoch, "the owner of a region was replaced");
         }
         lane.current = None;
+        // Couplings end with the owner replaced; those a region has without an owner
+        // come from the file, after a restart of the store, and are kept (section 8).
+        if replaced.is_some() {
+            self.owner_lost(region);
+        }
+        let now = (self.clock)();
+        self.couplings.opened(region, now);
+        let of_region = self.couplings.of_region(region);
+        let lane = self.regions.get_mut(&region).expect("made above");
 
         let state = match self.disk.read(&state_path)? {
             Some(bytes) => {
@@ -1962,13 +2138,11 @@ impl Lanes {
             spawn: self.spawn,
             world: self.world,
             in_use,
-            // Kept by the store from step E3c of
-            // `docs/adr/0025-effects-between-regions.md`.
-            offset: None,
-            couplings: Vec::new(),
-            handshakes: Vec::new(),
-            held_tick: None,
-            given_up: false,
+            offset: of_region.offset,
+            couplings: of_region.couplings,
+            handshakes: of_region.handshakes,
+            held_tick: of_region.held_tick,
+            given_up: of_region.given_up,
         };
         let opened = Opened {
             session,
@@ -2026,9 +2200,19 @@ impl Lanes {
         let in_use = self.uses.moved(absorbed, region, None);
         self.filed.count_from_taking(&in_use);
         for chunk in &in_use {
-            tell_copiers(&self.uses, &self.copies, &mut self.group, *chunk);
+            tell_copiers(
+                &self.uses,
+                &self.couplings,
+                &self.copies,
+                &mut self.group,
+                *chunk,
+            );
         }
         self.copies.forget(absorbed);
+        let mut said = Said::default();
+        self.couplings.gone(absorbed, &mut said);
+        self.couplings.reshaped(region);
+        self.group.said(said);
         if let Some(mut gone) = self.regions.remove(&absorbed) {
             // Its owner gets nothing done any more; what it had the thread for chunks
             // do is done before anything the survivor asks from now on.
@@ -2185,8 +2369,15 @@ impl Lanes {
         // effects.
         let moved = self.uses.moved(region, new, Some(&chunks));
         self.filed.count_from_taking(&moved);
+        self.couplings.reshaped(region);
         for chunk in &moved {
-            tell_copiers(&self.uses, &self.copies, &mut self.group, *chunk);
+            tell_copiers(
+                &self.uses,
+                &self.couplings,
+                &self.copies,
+                &mut self.group,
+                *chunk,
+            );
         }
         let lane = self
             .regions
@@ -2466,9 +2657,11 @@ fn replayed(
 /// Ends the use by `region` of those of `chunks` it uses, and drops what is filed for
 /// them, as a record of the group (`docs/adr/0025-effects-between-regions.md`,
 /// section 5). The caller fails the log if that cannot be written.
+#[allow(clippy::too_many_arguments)]
 fn end_uses(
     uses: &mut Uses,
     filed: &mut Filed,
+    couplings: &Couplings,
     copies: &Copies,
     log: &mut Log,
     group: &mut Group,
@@ -2480,7 +2673,7 @@ fn end_uses(
         if !uses.end(region, *chunk) {
             continue;
         }
-        tell_copiers(uses, copies, group, *chunk);
+        tell_copiers(uses, couplings, copies, group, *chunk);
         for id in filed.ids_of(*chunk) {
             if let Some(kept) = filed.remove(id) {
                 group.effects.push(effects::Undo::Removed(id, kept));
@@ -2498,18 +2691,20 @@ fn end_uses(
 
 /// Who uses a chunk, as a region that copies it is told
 /// (`docs/adr/0025-effects-between-regions.md`, section 8).
-fn copy_use(uses: &Uses, chunk: ChunkPos) -> CopyUse {
-    match uses.user(chunk) {
-        None => CopyUse::Nobody,
-        // Coupled regions are told so from step E3c.
-        Some(user) => CopyUse::Uncoupled(user),
-    }
+fn copy_use(uses: &Uses, couplings: &Couplings, copier: RegionId, chunk: ChunkPos) -> CopyUse {
+    couplings.copy_use(copier, uses.user(chunk))
 }
 
 /// Puts on the streams of the regions that copy `chunk` who uses it now.
-fn tell_copiers(uses: &Uses, copies: &Copies, group: &mut Group, chunk: ChunkPos) {
-    let used = copy_use(uses, chunk);
+fn tell_copiers(
+    uses: &Uses,
+    couplings: &Couplings,
+    copies: &Copies,
+    group: &mut Group,
+    chunk: ChunkPos,
+) {
     for copier in copies.copiers(chunk) {
+        let used = copy_use(uses, couplings, copier, chunk);
         let reply = StoreReply::CopyUsed {
             position: chunk,
             used,

@@ -27,6 +27,7 @@
 
 mod chunks;
 mod copies;
+mod couplings;
 mod disk;
 mod effects;
 mod lanes;
@@ -37,6 +38,8 @@ mod tcp;
 
 #[cfg(test)]
 mod copies_tests;
+#[cfg(test)]
+mod couplings_tests;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
@@ -761,10 +764,31 @@ fn start(
         division.home,
         "the test's home is not the spawn's"
     );
+    start_clocked(disk, root, chunks, generator, division, None)
+}
+
+/// [`start`] with a clock the test moves itself, for the couplings' grace and patience
+/// (`docs/adr/0025-effects-between-regions.md`, section 8).
+#[cfg(test)]
+fn start_clocked(
+    disk: Arc<dyn Disk>,
+    root: &Path,
+    chunks: Box<dyn Chunks>,
+    generator: Arc<dyn ChunkGenerator>,
+    division: &Division,
+    clock: Option<lanes::Clock>,
+) -> Result<Store, StoreError> {
+    let generator = Beginning::at(division.home, generator);
+    let spawn = generator.spawn();
+    assert_eq!(
+        spawn.chunk(),
+        division.home,
+        "the test's home is not the spawn's"
+    );
     let pins = Pins {
         areas: division.pinned.clone(),
     };
-    begin(disk, root, chunks, generator, pins, spawn)
+    begin_clocked(disk, root, chunks, generator, pins, spawn, clock)
 }
 
 /// The world's number ([`clustine_rpc::messages::Restored::world`]): FNV-1a of what
@@ -798,6 +822,19 @@ fn begin(
     pins: Pins,
     spawn: BlockPos,
 ) -> Result<Store, StoreError> {
+    begin_clocked(disk, root, chunks, generator, pins, spawn, None)
+}
+
+/// [`begin`], with the commit thread's clock if one is given.
+fn begin_clocked(
+    disk: Arc<dyn Disk>,
+    root: &Path,
+    chunks: Box<dyn Chunks>,
+    generator: Arc<dyn ChunkGenerator>,
+    pins: Pins,
+    spawn: BlockPos,
+    clock: Option<lanes::Clock>,
+) -> Result<Store, StoreError> {
     let division = pins.with_home(spawn.chunk());
     let world = world_number(&generator.settings().identity);
     let (jobs, queued) = mpsc::channel();
@@ -813,6 +850,10 @@ fn begin(
         .spawn(move || service.run(queued))?;
     let prepare = jobs.clone();
     let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?.of_world(world);
+    let lanes = match clock {
+        Some(clock) => lanes.with_clock(clock),
+        None => lanes,
+    };
     // The chunks a first player sees, made ahead on the generator's pool while nobody
     // is there; a region that asks for one meanwhile waits for it as for any other.
     // Chunks are stored only once a region was handed them, so this is at every start.
