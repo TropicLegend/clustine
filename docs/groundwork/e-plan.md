@@ -1,6 +1,6 @@
 # Phase E: effects between regions, planned
 
-Draft of 2026-10-16, revised the same day after two independent reviews (sections 8 and 9); to go to the owner with its questions, and to be reviewed again as ADR-0025. The record the owner asked for on
+Draft of 2026-10-16, revised the same day after two independent reviews (sections 8 and 9) and the owner's answers (section 6); the record ADR-0025 is written from it and reviewed again. The record the owner asked for on
 2026-10-15 (the answers to the [B plan](b-plan.md)'s first question): after phase B,
 updates and ticks are to be carried between regions, so that a border is seamless.
 Redstone (a phase of its own) comes after it and builds on it. Its decision record is
@@ -79,9 +79,10 @@ plan takes that to be seamless for a player (a flowing front is five ticks a blo
 a tick or two late is not seen); question 1 asks the owner.
 
 The game itself lets nothing happen in a chunk outside every player's simulation
-distance, and drops an update into a chunk that is not loaded. Here an effect whose
-target nobody has loaded **waits** for the chunk to be loaded, by whoever holds it then;
-it forces no load (section 4.4).
+distance, and drops an update into a chunk that is not loaded. So does Clustine: an
+effect whose target chunk nobody uses (has loaded, is loading, or takes from its warm
+copies) is **dropped**, as the owner answered (question 5); it forces no load
+(section 4.4).
 
 ## 4. The design proposed
 
@@ -167,17 +168,21 @@ positions along a chunk's edge.
   the holder has loaded, so that the commit makes it durable as phase B's seam entries
   are. Nothing waits at the head of a line, and nothing comes back. A tick that takes
   effects commits even if nothing else changed.
-- The worker ignores an effect for a chunk it no longer uses; the store keeps it, and
-  hands it to whoever uses the chunk next. A chunk returned and claimed by another,
-  or by the sender, goes with its effects; a chunk nobody holds keeps them until
-  somebody uses it. Resends after a hello, a merge or a split are of the effects of
-  chunks in use, and dropped by number where already taken.
+- **An effect whose chunk nobody uses is dropped**, as the game drops an update into a
+  chunk that is not loaded (question 5): when its group is durable and no holder uses
+  the chunk or is loading it, and when the chunk stops being used (a return, a
+  `Dropped`) with effects still untaken. The worker ignores an effect for a chunk it
+  no longer uses. A chunk being returned, which stays the holder's in the table until
+  its saves are durable, is not in use. Resends after a hello, a merge or a split are
+  of the effects of chunks in use, and dropped by number where already taken.
 - **Durable in the log with a retention reason of their own** (findings 6 of both
-  reviews): an effect is a record of the commit that made it, a taking is a record of
-  the commit that took it. Collection keeps a segment while it holds an untaken effect.
-  To free such a segment the store first writes its untaken effects forward, as records
-  of a group of their own, **synced**, and only then removes the segment; a failure of
-  that group cuts it off like any other. Records keep their numbers; after a restart
+  reviews): an effect is a record of the commit that made it, a taking or a dropping is
+  a record of the group that did it. Effects wait only while their chunk is in use and
+  the holder has not yet ticked, so this keeps a segment a few ticks longer as a rule.
+  Collection keeps a segment while it holds an untaken effect. Should one be held over
+  a segment's life (a holder that stands still), the store first writes its untaken
+  effects forward, as records of a group of their own, **synced**, and only then
+  removes the segment; a failure of that group cuts it off like any other. Records keep their numbers; after a restart
   the per-chunk counters continue above every number still in the log. A make-over
   (another division) re-files the effects of the commits it passes over before writing
   its `Opened` records. A group cut off takes its effects and takings with it, undone
@@ -251,11 +256,26 @@ fixed before anything else.
 5. **An effect into land nobody uses waits** in the store until somebody uses the
    chunk, and forces no load; the game drops such updates. It costs the store memory
    and the writing forward of what waits, a little for every chunk at the edge of where
-   players have been. Recommended: wait, and measure the cost in E7.
+   players have been. Recommended: wait, and measure the cost in E7. *Answered: drop,
+   as the game does.*
 6. **Copies of the neighbours' border chunks**, which ADR-0006 rejected as more than a
    boundary that goes away is worth. Pinned borders do not go away, and phase B gave a
    border more to carry. Recommended: take them, one chunk deep beside chunks with
    tickets, and only of committed forms.
+
+**Answered on 2026-10-16.** (1) The owner asked whether ticks could be synchronised
+only between neighbouring regions, where needed. Lockstep while a border is busy (each
+side waits for the other's last tick to be durable before its next) would make every
+crossing exactly one tick late and the same in every run, at the cost of a coupled
+pair ticking at the slower one's pace plus a commit and a round trip a tick, and a
+timeout when a neighbour's worker dies; equality with one region would need the pair
+to run its border work as one, which is a merge, which pins forbid. Answered: build
+phase E asynchronous as planned, and add lockstep for busy borders later if playing
+shows it is wanted; the sequences of 4.1 are what it would wait on. (2) Everything of
+phase B crosses, at all borders, redstone later with the limit named. (3) and (6)
+Copies of the neighbours' border chunks, through the store. (5) An effect into land
+nobody uses is dropped, as the game drops it (4.4). Question 4 was not asked apart from
+(6); the store is the channel.
 
 ## 7. Risks
 
@@ -263,7 +283,7 @@ fixed before anything else.
 |---|---|
 | The store's load along a busy pinned border (a river across the line) | E7 measures routing, bases and writing forward; effects deduplicated per target |
 | A busy holder's chunk makes bases costly | Listed on the commit thread, made on the thread for chunks; asked for again only on a gap or a restart |
-| Effects for land nobody uses keep log segments alive | Written forward, bounded per chunk by deduplication |
+| A holder that stands still keeps a log segment alive with effects untaken | Written forward, bounded per chunk by deduplication; effects into land nobody uses are dropped |
 | An effect lost, taken twice or run against an old copy | Numbered per chunk, taken as a set in the holder's commit, dropped by number; runs only when its copies are at its sequence |
 | More chunks tick with ticks pending, so more are saved at a stop | Measured again in E7 (B8: 20 to 40 a stop) |
 | A chunk that stops ticking when its copy goes writes its ticks into itself and takes them back ahead of newer ones | Named in the record; the same as any chunk that stops and starts |
