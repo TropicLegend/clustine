@@ -1433,3 +1433,55 @@ fn a_coral_block_placed_on_land_dies_within_a_hundred_ticks() {
         Some(named("minecraft:dead_tube_coral_block", &[]))
     );
 }
+
+/// The leaves of a felled tree are gone within the game's time: once the log goes,
+/// each leaf's tick sets its distance on to 7, and then a random tick removes it. A
+/// section has three positions drawn each tick, so each leaf is drawn about once in
+/// 4096 / 3 ticks; that all eight of these go within 15,000 ticks fails about once
+/// in a thousand runs of a stream that is fair, and that none goes within the first
+/// ten is near certain.
+#[test]
+fn the_leaves_of_a_felled_tree_are_gone_within_the_games_time() {
+    let log = at(8, -60, 8);
+    let oak_leaves = named("minecraft:oak_leaves", &[("distance", "1")]);
+    let around = [
+        at(7, -60, 8),
+        at(9, -60, 8),
+        at(8, -60, 7),
+        at(8, -60, 9),
+        at(7, -60, 7),
+        at(9, -60, 9),
+        at(7, -60, 9),
+        at(9, -60, 7),
+    ];
+    let mut placed: Vec<_> = around
+        .iter()
+        .map(|leaf| {
+            let distance = if leaf.x == 8 || leaf.z == 8 { "1" } else { "2" };
+            (
+                *leaf,
+                oak_leaves.with_property("distance", distance).unwrap(),
+            )
+        })
+        .collect();
+    placed.push((log, named("minecraft:oak_log", &[])));
+    let (mut region, _) = ticking_with(&placed, &[]);
+    let mut output = TickOutput::default();
+    region.set_block(log, blocks::AIR, &mut output);
+    let left = |region: &Region| {
+        around
+            .iter()
+            .filter(|leaf| block_at(region, **leaf) != Some(blocks::AIR))
+            .count()
+    };
+    for _ in 0..10 {
+        idle_tick(&mut region);
+    }
+    assert_eq!(left(&region), 8);
+    let mut ticks = 10;
+    while left(&region) > 0 && ticks < 15_000 {
+        idle_tick(&mut region);
+        ticks += 1;
+    }
+    assert_eq!(left(&region), 0, "after {ticks} ticks");
+}
