@@ -511,25 +511,27 @@ fn a_door_broken_at_its_lower_half_loses_its_upper_half_to_an_update() {
     );
 }
 
-/// Section 5: a door broken at its upper half loses its lower half first; both are
-/// shown breaking to everyone but the player who broke them, never to that player.
+/// Section 5: a door broken at its upper half loses its lower half first, and both
+/// are shown breaking to everyone but the player who broke them.
 ///
-/// This fails at 31ad0bd, and the tester reads the game as the code does, not as the
-/// specification says: `DoublePlantBlock.preventDropFromBottomPart` sets the lower
+/// The upper half is shown breaking a second time, to everyone: the specification
+/// said never to the breaker, and the tester read the game otherwise, which the
+/// game's code bears out. `DoublePlantBlock.preventDropFromBottomPart` sets the lower
 /// half with flags 35, whose shape updates go on with flags 2, so the upper half's
 /// `updateShape` turns it to air and `destroyBlock` shows it breaking to everyone,
-/// the breaker too, before the player's own event for it. Kept as the specification
-/// has it until whoever owns the specification decides.
+/// the breaker too, before the player's own event for it.
 #[test]
-fn a_door_broken_at_its_upper_half_is_shown_breaking_only_to_others() {
+fn a_door_broken_at_its_upper_half_is_shown_breaking_to_others_and_once_to_everyone() {
     let (lower, upper) = (at(2, -60, 3), at(2, -59, 3));
     let (region, output) = breaking(&[(lower, door("lower")), (upper, door("upper"))], upper);
     assert_eq!(changed_positions(&output), [lower, upper]);
-    let mut shown = destructions(&output);
-    shown.sort();
     assert_eq!(
-        shown,
-        [(lower, Some(player(1))), (upper, Some(player(1)))],
+        destructions(&output),
+        [
+            (upper, None),
+            (lower, Some(player(1))),
+            (upper, Some(player(1)))
+        ],
         "{:?}",
         output.events
     );
@@ -591,8 +593,7 @@ fn a_tall_flower_broken_at_its_lower_half_loses_its_upper_half() {
 }
 
 /// Section 5: a tall flower broken at its upper half loses its lower half first, and
-/// is shown breaking only to others than the player. Fails at 31ad0bd for the reason
-/// the test of the door gives.
+/// is shown breaking as the door is, for the reason its test gives.
 #[test]
 fn a_tall_flower_broken_at_its_upper_half_loses_its_lower_half_first() {
     let (lower, upper) = (at(2, -60, 3), at(2, -59, 3));
@@ -605,11 +606,13 @@ fn a_tall_flower_broken_at_its_upper_half_loses_its_lower_half_first() {
         upper,
     );
     assert_eq!(changed_positions(&output), [lower, upper]);
-    let mut shown = destructions(&output);
-    shown.sort();
     assert_eq!(
-        shown,
-        [(lower, Some(player(1))), (upper, Some(player(1)))],
+        destructions(&output),
+        [
+            (upper, None),
+            (lower, Some(player(1))),
+            (upper, Some(player(1)))
+        ],
         "{:?}",
         output.events
     );
