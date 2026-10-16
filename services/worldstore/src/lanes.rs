@@ -53,11 +53,14 @@ use clustine_rpc::{
     Decline, RegionHello, RegionList, Restored, SplitPart, StayNote, StoreReply, StoreRequest,
     TickState,
 };
-use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds, PlayerId};
+use clustine_world::{
+    BlockPos, ChunkPos, Due, Effect, EffectId, EntityId, EntityIds, FiledEffect, PlayerId,
+};
 use tracing::{error, info, warn};
 
 use crate::chunks::{Job, Jobs, Replayed};
 use crate::disk::{Disk, replace};
+use crate::effects::{self, Filed, Kept, Uses, sequence};
 use crate::players::{self, Players, Taken, Undo};
 use crate::table::{Division, Table};
 use crate::{Message, Opened, Peer, Session, StoreError};
@@ -73,6 +76,10 @@ const GROUP_LIMIT: usize = 4096;
 /// or a return of more takes several records, one behind the other in the same group:
 /// a record longer than the log's limit would hide itself and what follows it.
 const RECORD_CHUNKS: usize = 65_536;
+
+/// At most this many effects are dropped or written forward by one record of the log,
+/// for the same reason.
+const RECORD_EFFECTS: usize = 65_536;
 
 /// The commit thread.
 pub(crate) struct Lanes {
@@ -99,6 +106,12 @@ pub(crate) struct Lanes {
     next_block: u32,
     /// How many handles have been handed out.
     sessions: u64,
+    /// Which region uses which chunk (`docs/adr/0025-effects-between-regions.md`,
+    /// section 5). Not in the log: after a start every chunk a region holds by the
+    /// table is in use by it, which is more than was and so loses nothing.
+    uses: Uses,
+    /// The effects filed for chunks in use and not taken yet.
+    filed: Filed,
     group: Group,
 }
 
@@ -202,6 +215,12 @@ struct Group {
     /// is dead, which every region that has an owner is told once the group is
     /// durable (ADR-0020, section 5).
     dead: Vec<(PlayerId, EntityId, u32)>,
+    /// What the group did to the effects filed, which is taken back if the group
+    /// cannot be made durable.
+    effects: Vec<effects::Undo>,
+    /// The effects the group filed, by the region whose stream they go on once the
+    /// group is durable, in the order they were filed.
+    stream: BTreeMap<RegionId, Vec<EffectId>>,
 }
 
 impl Group {
@@ -326,7 +345,10 @@ impl Lanes {
             next: 1,
             floor: 0,
             unsettled: None,
+            last: 0,
         };
+        // The effects not taken yet, as the log has them.
+        let mut filed = Filed::default();
         let mut segments: Vec<u64> = disk
             .list(&log.directory)?
             .iter()
@@ -350,13 +372,40 @@ impl Lanes {
                 record,
             } in logged
             {
+                // A mark after a start says no less than what the log has.
+                log.last = sequence(segment, offset as u64);
                 match record {
                     LogRecord::Commit {
                         region,
                         tick,
                         stays,
+                        effects,
+                        taken,
                         ..
                     } => {
+                        // Whether or not the commit is part of its region's history
+                        // any more: its effects were filed when it was appended. Only a
+                        // make-over passes over commits that were answered, and it
+                        // writes their effects forward first; a commit that was never
+                        // answered and turned up after all is counted as one that was.
+                        let at = sequence(segment, offset as u64);
+                        for (index, (effect, due)) in effects.into_iter().enumerate() {
+                            let id = EffectId {
+                                sequence: at,
+                                index: index as u32,
+                            };
+                            filed.file(
+                                id,
+                                Kept {
+                                    effect,
+                                    due,
+                                    segment,
+                                },
+                            );
+                        }
+                        for id in taken {
+                            filed.remove(id);
+                        }
                         let lane = regions.entry(RegionId(region)).or_default();
                         if lane.state_tick.is_none_or(|state| tick > state) {
                             lane.live.push(Entry {
@@ -432,6 +481,8 @@ impl Lanes {
                             length,
                         };
                         regions.entry(RegionId(region)).or_default().whole(entry);
+                        // Who used the chunks before is not known here.
+                        filed.all_count_from_taking();
                         if let Some(table) = changed_by(&mut stored, segment)? {
                             table.absorb(RegionId(region), RegionId(absorbed), tick)?;
                             table_last = Some(segment);
@@ -452,6 +503,8 @@ impl Lanes {
                             length,
                         };
                         regions.entry(RegionId(region)).or_default().whole(entry);
+                        // Who used the chunks before is not known here.
+                        filed.all_count_from_taking();
                         let made = regions.entry(RegionId(part)).or_default();
                         made.whole(entry);
                         // The record has the new region's epoch until its file does,
@@ -470,10 +523,23 @@ impl Lanes {
                             table_last = Some(segment);
                         }
                     }
-                    // Kept and dropped from step E3 of
-                    // `docs/adr/0025-effects-between-regions.md`; no store writes them
-                    // before.
-                    LogRecord::EffectsDropped { .. } | LogRecord::EffectsForward { .. } => {}
+                    LogRecord::EffectsDropped { ids } => {
+                        for id in ids {
+                            filed.remove(id);
+                        }
+                    }
+                    LogRecord::EffectsForward { effects } => {
+                        for FiledEffect { id, effect, due } in effects {
+                            filed.file(
+                                id,
+                                Kept {
+                                    effect,
+                                    due,
+                                    segment,
+                                },
+                            );
+                        }
+                    }
                 }
             }
             log.segments.insert(segment);
@@ -517,6 +583,8 @@ impl Lanes {
             players,
             next_block,
             sessions: 0,
+            uses: Uses::default(),
+            filed,
             group: Group::default(),
         };
         // What is left of the notes, in the order of the log and by the same rules as
@@ -576,7 +644,46 @@ impl Lanes {
             lanes.disk.sync_directory(root)?;
         }
         lanes.align()?;
+        lanes.begin_uses()?;
         Ok(lanes)
+    }
+
+    /// After a start, every chunk a region holds by the table is in use by it, and so is
+    /// the chunk of every effect filed that a region holds: it was in use when the
+    /// effect was filed, and the region's runner says [`StoreRequest::Dropped`] of it
+    /// if it does not load it again. An effect whose chunk nobody holds is dropped, as
+    /// a record: the world may have been made over for another division.
+    fn begin_uses(&mut self) -> Result<(), StoreError> {
+        let regions: Vec<RegionId> = self.table.regions().collect();
+        for region in regions {
+            for (chunk, _) in self.table.grants(region) {
+                self.uses.begin(region, chunk);
+            }
+        }
+        let mut dropped = Vec::new();
+        for filed in self.filed.all() {
+            let chunk = filed.effect.at.chunk();
+            match self.table.holder(chunk) {
+                Some(holder) if self.uses.user(chunk).is_none() => self.uses.begin(holder, chunk),
+                Some(_) => {}
+                None => dropped.push(filed.id),
+            }
+        }
+        if dropped.is_empty() {
+            return Ok(());
+        }
+        for id in &dropped {
+            self.filed.remove(*id);
+        }
+        let written = dropped.chunks(RECORD_EFFECTS).try_for_each(|ids| {
+            let record = LogRecord::EffectsDropped { ids: ids.to_vec() };
+            self.log.append(&record.encode()).map(|_| ())
+        });
+        if let Err(error) = written.and_then(|()| self.log.sync()) {
+            self.fail_log();
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     pub(crate) fn run(mut self, messages: Receiver<Message>) {
@@ -759,13 +866,34 @@ impl Lanes {
                 ticks,
                 marks_taken,
                 seams,
-                // Filed, taken and kept in the log from step E3 of
-                // `docs/adr/0025-effects-between-regions.md`; until then no sim makes
-                // effects, and none is taken.
-                effects: _,
-                taken: _,
+                effects,
+                taken,
             } => {
                 let region = session.region;
+                // An effect is filed if its chunk is in use, and left out otherwise:
+                // dropped as the game drops an update into a chunk that is not loaded
+                // (`docs/adr/0025-effects-between-regions.md`, section 5). Its use is
+                // that of now, which is that of its record in the log.
+                let effects: Vec<(Effect, Due, RegionId)> = effects
+                    .into_iter()
+                    .filter_map(|effect| {
+                        let user = self.uses.user(effect.at.chunk())?;
+                        Some((effect, Due::FromTaking, user))
+                    })
+                    .collect();
+                // Only what is filed for a chunk the region uses: a number named twice,
+                // or of an effect dropped or moved to another region's chunk since, takes
+                // nothing.
+                let mut taken: Vec<EffectId> = taken
+                    .into_iter()
+                    .filter(|id| {
+                        self.filed.get(*id).is_some_and(|kept| {
+                            self.uses.user(kept.effect.at.chunk()) == Some(region)
+                        })
+                    })
+                    .collect();
+                taken.sort_unstable();
+                taken.dedup();
                 // The notes are in the commit's own record, so that the two are on
                 // disk together or not at all.
                 let notes: Vec<LoggedStay> = stays.iter().map(players::logged).collect();
@@ -779,15 +907,36 @@ impl Lanes {
                     ticks,
                     marks_taken,
                     seams,
-                    // Filed with when each is due, and the takings, from step E3 of
-                    // `docs/adr/0025-effects-between-regions.md`.
-                    effects: Vec::new(),
-                    taken: Vec::new(),
+                    effects: effects
+                        .iter()
+                        .map(|(effect, due, _)| (*effect, *due))
+                        .collect(),
+                    taken: taken.clone(),
                 }
                 .encode();
                 self.group.regions.insert(region);
                 match self.log.append(&record) {
                     Ok((segment, offset)) => {
+                        let at = sequence(segment, offset);
+                        for (index, (effect, due, user)) in effects.into_iter().enumerate() {
+                            let id = EffectId {
+                                sequence: at,
+                                index: index as u32,
+                            };
+                            let kept = Kept {
+                                effect,
+                                due,
+                                segment,
+                            };
+                            self.filed.file(id, kept);
+                            self.group.effects.push(effects::Undo::Filed(id));
+                            self.group.stream.entry(user).or_default().push(id);
+                        }
+                        for id in taken {
+                            if let Some(kept) = self.filed.remove(id) {
+                                self.group.effects.push(effects::Undo::Removed(id, kept));
+                            }
+                        }
                         lane.live.push(Entry {
                             tick,
                             segment,
@@ -863,6 +1012,10 @@ impl Lanes {
             // A load need not wait for commits, only for what was asked before it of the
             // same chunk, which may be held.
             StoreRequest::Load { position } => {
+                // Its use begins as the load is passed on, so that what is filed while
+                // it is loaded waits for it (`docs/adr/0025-effects-between-regions.md`,
+                // section 5).
+                self.uses.begin(session.region, position);
                 let job = Job::Load { position, peer };
                 if owner.held.is_empty() {
                     let _ = self.jobs.send(job);
@@ -943,6 +1096,10 @@ impl Lanes {
                     };
                     self.group.changed.push(change);
                 }
+                // Their use begins, also of a chunk whose return this calls off.
+                for chunk in &granted {
+                    self.uses.begin(region, *chunk);
+                }
                 // Answered when the group ends, behind the commits asked for before:
                 // also a claim that granted nothing anew may rest on a grant of this
                 // group.
@@ -971,6 +1128,20 @@ impl Lanes {
                 if returned.is_empty() {
                     return;
                 }
+                // A chunk being returned is not in use: what is filed for it is dropped.
+                let ended = end_uses(
+                    &mut self.uses,
+                    &mut self.filed,
+                    &mut self.log,
+                    &mut self.group,
+                    region,
+                    &returned,
+                );
+                if let Err(error) = ended {
+                    error!(%region, %error, "effects dropped could not be written to the log");
+                    self.fail_log();
+                    return;
+                }
                 lane.returns += 1;
                 let number = lane.returns;
                 for chunk in &returned {
@@ -986,13 +1157,27 @@ impl Lanes {
             }
             // Taken above, before the lane was looked up.
             StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. } => return,
-            // Copies, use and couplings are the store's from step E3 of
-            // `docs/adr/0025-effects-between-regions.md`; until then no runner asks for
-            // them, and one that did would find its copies never based and nobody
-            // coupled to it, which leaves it as it is today.
+            // Copies and couplings are the store's from steps E3b and E3c of
+            // `docs/adr/0025-effects-between-regions.md`; until then a runner that asks
+            // for them finds its copies never based and nobody coupled to it.
+            StoreRequest::Dropped { chunks } => {
+                let region = session.region;
+                let ended = end_uses(
+                    &mut self.uses,
+                    &mut self.filed,
+                    &mut self.log,
+                    &mut self.group,
+                    region,
+                    &chunks,
+                );
+                if let Err(error) = ended {
+                    error!(%region, %error, "effects dropped could not be written to the log");
+                    self.fail_log();
+                }
+                return;
+            }
             StoreRequest::Copies { .. }
             | StoreRequest::Beside { .. }
-            | StoreRequest::Dropped { .. }
             | StoreRequest::JoinsAt { .. }
             | StoreRequest::EndCouplings => return,
         };
@@ -1073,6 +1258,28 @@ impl Lanes {
                 let _ = self.jobs.send(job);
             }
         }
+        // What the group filed goes on the streams, behind the answers, with a mark
+        // through the group's last record (`docs/adr/0025-effects-between-regions.md`,
+        // section 2). Not what was taken or dropped since within the group.
+        let through = self.log.last;
+        for (region, ids) in group.stream {
+            let Some(owner) = self
+                .regions
+                .get(&region)
+                .and_then(|lane| lane.owner.as_ref())
+            else {
+                continue;
+            };
+            let effects: Vec<FiledEffect> = ids
+                .into_iter()
+                .filter_map(|id| self.filed.filed(id))
+                .filter(|filed| self.uses.user(filed.effect.at.chunk()) == Some(region))
+                .collect();
+            if !effects.is_empty() {
+                owner.peer.answer(StoreReply::Effects { effects });
+                owner.peer.answer(StoreReply::Mark { through });
+            }
+        }
         // The floors of the group are durable: every region that has an owner is
         // told of the stays that are dead by them, behind the group's own answers.
         // Whoever opens a region from now on does so after the floor is durable, and
@@ -1120,6 +1327,8 @@ impl Lanes {
         // is as it was before the group, a record the group made is gone, and so is
         // what it added to the ids that were given out. Nobody was told of any of it.
         self.players.undo(group.undo);
+        // So do the effects it filed, took and dropped. Use is not in the log, and stays.
+        self.filed.undo(group.effects);
         for lane in self.regions.values_mut() {
             if let Some((segment, durable)) = failed {
                 lane.live
@@ -1142,18 +1351,71 @@ impl Lanes {
 
     /// Removes the segments at the start of the log that hold nothing needed any more:
     /// no commit a region is restored with, nothing the table file does not have, and
-    /// no stay note the players' file does not have.
+    /// no stay note the players' file does not have. The effects not taken yet that
+    /// live in them are written forward first (`docs/adr/0025-effects-between-regions.md`,
+    /// section 5).
     fn collect(&mut self) {
         let needed = self.needed_by_lanes();
         let from = self.table.from;
         let table = self.table_last.map(|last| from..=last);
         let from = self.players.from;
         let players = self.players.last.map(|last| from..=last);
-        self.log.remove_while(|segment| {
+        let unneeded = |segment: u64| {
             !needed.contains(&segment)
                 && !table.as_ref().is_some_and(|kept| kept.contains(&segment))
                 && !players.as_ref().is_some_and(|kept| kept.contains(&segment))
+        };
+        let active = self.log.active.as_ref().map(|active| active.number);
+        let going = self
+            .log
+            .segments
+            .iter()
+            .copied()
+            .take_while(|segment| Some(*segment) != active && unneeded(*segment))
+            .last();
+        if let Some(last) = going {
+            let carried = self.filed.living_in(..=last);
+            if !carried.is_empty() && self.write_forward(carried).is_err() {
+                return;
+            }
+        }
+        let filed = &self.filed;
+        self.log
+            .remove_while(|segment| unneeded(segment) && !filed.lives_in(segment));
+    }
+
+    /// Writes the effects forward, as records of a group of their own, and makes them
+    /// durable: they live in the segment of those records from then on. A failure cuts
+    /// the group off like any other, after which every region has lost its owner.
+    fn write_forward(&mut self, carried: Vec<FiledEffect>) -> Result<(), ()> {
+        let mut segment = None;
+        let written = carried.chunks(RECORD_EFFECTS).try_for_each(|effects| {
+            let record = LogRecord::EffectsForward {
+                effects: effects.to_vec(),
+            };
+            let (at, _) = self.log.append(&record.encode())?;
+            segment = Some(at);
+            Ok(())
         });
+        if let Err(error) = written.and_then(|()| self.log.sync()) {
+            error!(%error, "effects could not be written forward in the log");
+            self.fail_log();
+            return Err(());
+        }
+        // A segment of its own, so that what keeps it is the effects alone.
+        self.log.close();
+        let segment = segment.expect("effects were written");
+        for FiledEffect { id, effect, due } in carried {
+            self.filed.file(
+                id,
+                Kept {
+                    effect,
+                    due,
+                    segment,
+                },
+            );
+        }
+        Ok(())
     }
 
     /// Writes the players' file, with `from` as the first segment of the log whose
@@ -1497,6 +1759,7 @@ impl Lanes {
             epoch,
             restored: restored_tick,
         };
+        let through = self.log.last;
         if let Err(error) = self.log.append(&opened.encode()) {
             self.fail_log();
             return Err(error.into());
@@ -1510,6 +1773,16 @@ impl Lanes {
         let (sender, replies) = mpsc::channel();
         let lost = Arc::new(AtomicBool::new(false));
         let peer = Arc::new(Peer::new(session, sender, Arc::clone(&lost), reply_to));
+        // The effects of the chunks the region uses go on its stream again: the runner
+        // drops those it has taken (`docs/adr/0025-effects-between-regions.md`,
+        // section 5). Everything the store has written before the record of the
+        // opening is durable.
+        let in_use = self.uses.of(region);
+        let resent = self.filed.for_chunks(&in_use);
+        if !resent.is_empty() {
+            peer.answer(StoreReply::Effects { effects: resent });
+            peer.answer(StoreReply::Mark { through });
+        }
         let lane = self.regions.get_mut(&region).expect("made above");
         lane.owner = Some(Owner {
             peer: Arc::clone(&peer),
@@ -1539,9 +1812,9 @@ impl Lanes {
             issued: EntityId(highest),
             spawn: self.spawn,
             world: self.world,
-            // Kept by the store from step E3 of
+            in_use,
+            // Kept by the store from step E3c of
             // `docs/adr/0025-effects-between-regions.md`.
-            in_use: Vec::new(),
             offset: None,
             couplings: Vec::new(),
             handshakes: Vec::new(),
@@ -1599,6 +1872,10 @@ impl Lanes {
             .absorb(region, absorbed, tick)
             .expect("two living regions, as was looked at above");
         self.table_last = Some(entry.segment);
+        // The use moves with the holding, and the effects not taken with it; a tick
+        // counted in the absorbed region's ticks counts from its taking now.
+        let in_use = self.uses.moved(absorbed, region, None);
+        self.filed.count_from_taking(&in_use);
         if let Some(mut gone) = self.regions.remove(&absorbed) {
             // Its owner gets nothing done any more; what it had the thread for chunks
             // do is done before anything the survivor asks from now on.
@@ -1631,10 +1908,16 @@ impl Lanes {
             absorbed,
             chunks,
             pinned,
-            // Moved with the holding from step E3 of
-            // `docs/adr/0025-effects-between-regions.md`.
-            in_use: Vec::new(),
+            in_use,
         });
+        // The survivor begins anew, and has its effects on its stream again.
+        let resent = self.filed.for_chunks(&self.uses.of(region));
+        if !resent.is_empty() {
+            peer.answer(StoreReply::Effects { effects: resent });
+            peer.answer(StoreReply::Mark {
+                through: self.log.last,
+            });
+        }
     }
 
     /// Whether the region `region` may absorb `absorbed` now, with the record made for
@@ -1745,6 +2028,10 @@ impl Lanes {
             .split(region, new, tick, &chunks)
             .expect("the next id and chunks the region holds, as was looked at above");
         self.table_last = Some(entry.segment);
+        // The part's hello lists the chunks whose use moved to it, and resends their
+        // effects.
+        let moved = self.uses.moved(region, new, Some(&chunks));
+        self.filed.count_from_taking(&moved);
         let lane = self
             .regions
             .get_mut(&region)
@@ -2020,6 +2307,37 @@ fn replayed(
     })
 }
 
+/// Ends the use by `region` of those of `chunks` it uses, and drops what is filed for
+/// them, as a record of the group (`docs/adr/0025-effects-between-regions.md`,
+/// section 5). The caller fails the log if that cannot be written.
+fn end_uses(
+    uses: &mut Uses,
+    filed: &mut Filed,
+    log: &mut Log,
+    group: &mut Group,
+    region: RegionId,
+    chunks: &[ChunkPos],
+) -> io::Result<()> {
+    let mut dropped = Vec::new();
+    for chunk in chunks {
+        if !uses.end(region, *chunk) {
+            continue;
+        }
+        for id in filed.ids_of(*chunk) {
+            if let Some(kept) = filed.remove(id) {
+                group.effects.push(effects::Undo::Removed(id, kept));
+                dropped.push(id);
+            }
+        }
+    }
+    dropped.sort_unstable();
+    for ids in dropped.chunks(RECORD_EFFECTS) {
+        let record = LogRecord::EffectsDropped { ids: ids.to_vec() };
+        log.append(&record.encode())?;
+    }
+    Ok(())
+}
+
 /// The block of entity ids of a region that has none.
 const NO_ENTITY_IDS: EntityIds = EntityIds {
     first: EntityId(0),
@@ -2059,6 +2377,9 @@ struct Log {
     /// The segment a write or a sync of which failed, and how much of it is good, for as
     /// long as cutting it back to that is not durable.
     unsettled: Option<(u64, u64)>,
+    /// The sequence of the last record appended: once the log is synced, everything
+    /// up to it is durable, which a mark on a stream says.
+    last: u64,
 }
 
 struct Active {
@@ -2111,6 +2432,7 @@ impl Log {
         self.disk
             .append(&segment_path(&self.directory, active.number), record)?;
         active.written += record.len() as u64;
+        self.last = sequence(active.number, offset);
         Ok((active.number, offset))
     }
 

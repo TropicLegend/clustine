@@ -2227,7 +2227,7 @@ fn a_merge_that_may_not_be_is_declined_with_its_reason_and_changes_nothing() {
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
-            in_use: Vec::new(),
+            in_use: vec![ChunkPos::new(5, 5)],
         }
     );
 }
@@ -2357,7 +2357,7 @@ fn a_merge_gives_the_survivor_everything_the_absorbed_region_had() {
             absorbed: RegionId(1),
             chunks: vec![FREE, FREE_TOO],
             pinned: vec![east_area()],
-            in_use: Vec::new(),
+            in_use: vec![ChunkPos::new(5, 5), ChunkPos::new(6, 5)],
         }
     );
     assert!(east.is_lost());
@@ -2460,7 +2460,7 @@ fn a_hello_for_an_absorbed_region_is_refused_over_a_connection_with_the_survivor
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
-            in_use: Vec::new(),
+            in_use: vec![ChunkPos::new(5, 5)],
         }
     );
 
@@ -2495,7 +2495,7 @@ fn commits_after_a_merge_are_deltas_on_the_merged_state_until_a_checkpoint() {
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
-            in_use: Vec::new(),
+            in_use: vec![ChunkPos::new(5, 5)],
         }
     );
     // What came with the merge is held from its tick, or from the beginning: changes
@@ -3305,7 +3305,7 @@ fn a_chunk_that_is_being_returned_when_its_region_is_absorbed_goes_to_the_surviv
                 absorbed: RegionId(1),
                 chunks: vec![FREE, FREE_TOO],
                 pinned: vec![east_area()],
-                in_use: Vec::new(),
+                in_use: vec![ChunkPos::new(6, 5)],
             },
             "{stop:?}"
         );
@@ -3620,7 +3620,7 @@ fn merged_and_split() -> (Arc<MemoryDisk>, [Restored; 2]) {
             absorbed: RegionId(1),
             chunks: vec![FREE_TOO],
             pinned: vec![east_area()],
-            in_use: Vec::new(),
+            in_use: vec![ChunkPos::new(6, 5)],
         }
     );
     log(
@@ -4105,7 +4105,7 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
             absorbed: RegionId(3),
             chunks: vec![WEST, FREE],
             pinned: vec![],
-            in_use: Vec::new(),
+            in_use: vec![ChunkPos::new(5, 5)],
         }
     );
     // The home region, which is pinned to nothing, absorbs the western one.
@@ -4115,7 +4115,7 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
             absorbed: RegionId(0),
             chunks: vec![WEST, FREE],
             pinned: vec![west_area()],
-            in_use: Vec::new(),
+            in_use: vec![FREE],
         }
     );
     assert!(west.is_lost() && part.is_lost());
@@ -4389,7 +4389,7 @@ fn what_was_claimed_just_before_a_merge_or_a_split_is_part_of_it() {
             absorbed: RegionId(1),
             chunks: vec![FREE],
             pinned: vec![east_area()],
-            in_use: Vec::new(),
+            in_use: vec![ChunkPos::new(5, 5)],
         }
     );
     assert_eq!(answers_until_lost(&east), [claimed(FREE)]);
@@ -4855,7 +4855,7 @@ fn a_merge_or_a_split_whose_record_was_cut_off_has_not_happened() {
                 absorbed: RegionId(1),
                 chunks: vec![FREE],
                 pinned: vec![east_area()],
-                in_use: Vec::new(),
+                in_use: vec![FREE],
             };
             assert_eq!(merge(&west, 1, 50, 1), absorbed, "{case}");
             assert_eq!(split(&west, 2, &[FREE], 1, 3), parted(3), "{case}");

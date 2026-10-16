@@ -459,6 +459,31 @@ E2, the shared types (2026-10-16):
   grants; the couplings, handshakes and whether the region is given up travel in the
   welcome.
 
+E3a, the store's effects (2026-10-16):
+
+- **A load answered `Unreadable` ends no use in the store**: the thread for chunks
+  answers it, and has no way back to the commit thread's use. The runner says
+  `Dropped` of a chunk whose load was answered so, as of any held chunk it stops
+  having; effects filed meanwhile wait in the store until then. `Withdrawn` follows a
+  return, which ended the use already.
+- **A start puts in use the chunks of the effects it finds filed**, as well as every
+  chunk a region was granted: a region pinned to an area holds most of its chunks
+  without a grant, and the table cannot list them. An effect whose chunk nobody holds
+  at a start is dropped, as a record; that is the make-over's re-filing, together
+  with collection writing forward what is left in the segments the make-over lets go.
+- **A commit's effects count whatever passes over the commit later.** Only a make-over
+  passes over commits that were answered, and its collection writes their effects
+  forward first; a commit that was never answered and turns up after all counts as one
+  that was, for its effects and its takings, as it does for the region's history.
+- **A start does not know who used a chunk when a merge or a split was written**, so
+  every scheduled tick filed before such a record counts from its taking. It is then
+  late by its delay at most, and only after a restart of the store.
+- **A mark goes on a stream after a group that put something on it**, and after the
+  resend of a hello or a merge, through the last durable record. A group that has
+  nothing for a region tells it nothing.
+- **A commit's record holds all of its effects.** The runner keeps a commit within the
+  log's record limit, carrying effects beyond what fits in the next commit (E5).
+
 ## Review
 
 **First review of this record (2026-10-16): not ready.** Its findings, worked in:

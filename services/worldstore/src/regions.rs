@@ -1621,7 +1621,7 @@ fn a_merge_gives_the_survivor_all_the_absorbed_region_had() {
         absorbed: RegionId(1),
         chunks: vec![FREE],
         pinned: gap().pinned[1..].to_vec(),
-        in_use: Vec::new(),
+        in_use: vec![FREE],
     };
     assert_eq!(absorb(&survivor, 1, 3, 10), done);
     // The other region is none any more: its handle is lost, and nobody opens it.

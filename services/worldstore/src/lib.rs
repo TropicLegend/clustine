@@ -27,12 +27,15 @@
 
 mod chunks;
 mod disk;
+mod effects;
 mod lanes;
 mod local;
 mod players;
 mod table;
 mod tcp;
 
+#[cfg(test)]
+mod effects_tests;
 #[cfg(test)]
 mod generation_tests;
 #[cfg(test)]

@@ -940,7 +940,8 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             pinned: vec![west],
             issued: EntityId(0),
             world: crate::world_number(&generator().settings().identity),
-            in_use: Vec::new(),
+            // After a start every chunk a region was granted is in use by it.
+            in_use: vec![MERGED],
             offset: None,
             couplings: Vec::new(),
             handshakes: Vec::new(),
@@ -972,7 +973,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             pinned: Vec::new(),
             issued: EntityId(0),
             world: crate::world_number(&generator().settings().identity),
-            in_use: Vec::new(),
+            in_use: PART.to_vec(),
             offset: None,
             couplings: Vec::new(),
             handshakes: Vec::new(),
