@@ -979,11 +979,15 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                     match opened {
                         Ok((store, restored)) => {
                             let runner = match part {
-                                // What the store says of the region is not looked at:
-                                // it is what the record of the split has, which is
-                                // what the part in memory is, and the part has its
-                                // chunks at hand.
-                                Some(part) => RegionRunner::of_part(*part, store),
+                                // What the store says of the region is not looked at
+                                // otherwise: it is what the record of the split has,
+                                // which is what the part in memory is, and the part
+                                // has its chunks at hand.
+                                // Only its borders are: the chunks whose use
+                                // moved to it, and any couplings (ADR-0025).
+                                Some(part) => {
+                                    RegionRunner::of_part(*part, store).with_borders(&restored)
+                                }
                                 None => match RegionRunner::restore(held.settings.clone(), store, restored) {
                                     Ok(runner) => runner,
                                     Err(error) => {

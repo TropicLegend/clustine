@@ -66,6 +66,10 @@ use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Regi
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
 
+use crate::border::{Asks, Border};
+
+mod border;
+
 /// The length of a tick: 20 ticks per second.
 pub const TICK: Duration = Duration::from_millis(50);
 
@@ -928,6 +932,9 @@ pub struct RegionRunner {
     stopped: Option<Stopped>,
     /// The ticks that took longer than a tick has, for the log.
     slow: SlowTicks,
+    /// What the runner keeps of the region's borders: effects, copies, couplings and
+    /// use timers (`docs/adr/0025-effects-between-regions.md`).
+    border: Border,
 }
 
 /// Ticks that took longer than the [`TICK`] a tick has: the first is said in the log
@@ -1016,14 +1023,25 @@ impl RegionRunner {
     pub fn restore(
         settings: RegionSettings,
         store: StoreHandle,
-        restored: Restored,
+        mut restored: Restored,
     ) -> Result<Self, RestoreError> {
         let holdings = holdings(&restored);
         let rings = settings.rings;
         let config = settings.with_spawn(restored.spawn, restored.world);
+        let borders = Restored {
+            deltas: Vec::new(),
+            state: None,
+            in_use: mem::take(&mut restored.in_use),
+            couplings: mem::take(&mut restored.couplings),
+            handshakes: mem::take(&mut restored.handshakes),
+            held: Vec::new(),
+            pinned: Vec::new(),
+            ..restored
+        };
         let state = restored_state(restored)?;
         let mut runner =
-            Self::with_store(Region::restore(config, state, holdings), Box::new(store));
+            Self::with_store(Region::restore(config, state, holdings), Box::new(store))
+                .with_borders(&borders);
         runner.with_rings = rings;
         Ok(runner)
     }
@@ -1081,9 +1099,30 @@ impl RegionRunner {
             standstills: None,
             stopped: None,
             slow: SlowTicks::default(),
+            border: Border::default(),
         };
         runner.show_status();
         runner
+    }
+
+    /// The runner with what the store said of the region's borders when it was opened:
+    /// its couplings, and the chunks it uses, each timed until the region loads it
+    /// (`docs/adr/0025-effects-between-regions.md`, sections 5 and 8). [`RegionRunner::
+    /// restore`] does this itself; the runner of a split's part is given it here.
+    pub fn with_borders(mut self, restored: &Restored) -> Self {
+        let warm = self.warm.keys().copied().collect::<Vec<_>>();
+        self.border = Border::opened(
+            restored.offset,
+            &restored.couplings,
+            &restored.handshakes,
+            restored.held_tick,
+            restored.given_up,
+        );
+        let tick = self.region.tick_number();
+        self.border.time(restored.in_use.iter().copied(), tick);
+        // Warm chunks are timed as well: they count as loaded until they go.
+        self.border.time(warm, tick);
+        self
     }
 
     /// A runner for the region a split has made, of which `store` is the handle its
@@ -1102,6 +1141,8 @@ impl RegionRunner {
         let since = runner.region.tick_number();
         let warm = |(position, chunk)| (position, Warm { chunk, since });
         runner.warm = part.chunks.into_iter().map(warm).collect();
+        let warm: Vec<ChunkPos> = runner.warm.keys().copied().collect();
+        runner.border.time(warm, since);
         runner
     }
 
@@ -1263,7 +1304,7 @@ impl RegionRunner {
             return;
         }
         self.publish_committed();
-        if self.pending.len() < MAX_TICKS_AHEAD {
+        if self.pending.len() < MAX_TICKS_AHEAD && !self.held_by_partners() {
             let started = Instant::now();
             self.tick();
             let tick = self.region.tick_number();
@@ -1272,6 +1313,12 @@ impl RegionRunner {
             // A tick that changed nothing has nothing to wait for.
             self.publish_committed();
         }
+    }
+
+    /// Whether the next tick waits for the region's partners, or for a handshake
+    /// (`docs/adr/0025-effects-between-regions.md`, section 8).
+    fn held_by_partners(&self) -> bool {
+        !self.border.may_tick(self.region.tick_number() + 1)
     }
 
     /// Stops the region's ticking for the release, the merge or the split it prepares,
@@ -1367,6 +1414,12 @@ impl RegionRunner {
                     error!(?position, "a chunk cannot be read from the world store");
                     self.generating.remove(&position);
                     if self.answers_the_latest_load(position) {
+                        // Its use ends: the store does not end it by itself ("Found
+                        // while building", E3a, of ADR-0025).
+                        self.store.request(StoreRequest::Dropped {
+                            chunks: vec![position],
+                        });
+                        self.border.drop_effects_of(&BTreeSet::from([position]));
                         self.unreadable.insert(position);
                         for link in self.links.values_mut() {
                             link.hold.remove(&position);
@@ -1457,10 +1510,10 @@ impl RegionRunner {
                         error!(?reply, "the world store answered what was not asked");
                     }
                 }
-                // The region's stream: effects, copies and couplings, which the runner
-                // takes from step E5 of `docs/adr/0025-effects-between-regions.md`. No
-                // store sends them before step E3, nor before the runner asks.
-                StoreReply::Effects { .. }
+                // The region's stream: effects, copies and couplings
+                // (`docs/adr/0025-effects-between-regions.md`), kept until a tick can
+                // use them. A handshake is answered at once, with the next tick.
+                reply @ (StoreReply::Effects { .. }
                 | StoreReply::CopyBase { .. }
                 | StoreReply::CopyUpdate { .. }
                 | StoreReply::CopyUsed { .. }
@@ -1470,7 +1523,20 @@ impl RegionRunner {
                 | StoreReply::Shifted { .. }
                 | StoreReply::Uncoupled { .. }
                 | StoreReply::Progress { .. }
-                | StoreReply::Mark { .. } => {}
+                | StoreReply::Mark { .. }) => {
+                    let mut asks = Asks::default();
+                    let next = self.region.tick_number() + 1;
+                    self.border.take(reply, next, &mut asks);
+                    if !asks.rebase.is_empty() {
+                        self.store.request(StoreRequest::Copies {
+                            wanted: asks.rebase,
+                            gone: Vec::new(),
+                        });
+                    }
+                    for (partner, tick) in asks.joins {
+                        self.store.request(StoreRequest::JoinsAt { partner, tick });
+                    }
+                }
             }
         }
         // Looked at after the answers: a handle that is lost has none, so nothing
@@ -1583,6 +1649,7 @@ impl RegionRunner {
         self.ask_for_flush();
         self.checkpointed = true;
         self.phase = Phase::Preparing;
+        self.store.request(StoreRequest::EndCouplings);
     }
 
     /// How the runner ended, or `None` if it has not. One that has ended ticks no more,
@@ -1717,6 +1784,8 @@ impl RegionRunner {
             );
         }
         self.phase = Phase::Preparing;
+        // Its partners go on without it from here (section 8).
+        self.store.request(StoreRequest::EndCouplings);
     }
 
     /// Where the runner is with a release, a merge or a split; `None` while it only
@@ -1885,9 +1954,7 @@ impl RegionRunner {
                     absorbed,
                     chunks,
                     pinned,
-                    // Timed by the runner from step E5 of
-                    // `docs/adr/0025-effects-between-regions.md`.
-                    in_use: _,
+                    in_use,
                 },
                 Plan::Absorb {
                     state: Some(state), ..
@@ -1899,6 +1966,9 @@ impl RegionRunner {
                 let held: Vec<ChunkPos> = chunks.into_iter().chain(granted).collect();
                 let loaded = self.region.take_absorbed(state, &held, &pinned);
                 self.begin_anew(loaded.into_iter().chain(delivered));
+                // The absorbed region's chunks in use are this one's now, and timed.
+                let tick = self.region.tick_number();
+                self.border.time(in_use, tick);
                 // The region that made those splits may be the one that was absorbed
                 // or one that has grown: where their lines were says nothing any more.
                 self.parted.clear();
@@ -2076,6 +2146,11 @@ impl RegionRunner {
         let region = &self.region;
         self.warm
             .retain(|position, _| region.knowledge(*position) == Knowledge::Held);
+        // The sim has no copies now and is handed them again; its warm chunks count as
+        // loaded until they go.
+        self.border.began_anew(self.region.loaded_chunks());
+        let warm: Vec<ChunkPos> = self.warm.keys().copied().collect();
+        self.border.time(warm, state.tick);
         self.phase = Phase::Running;
         self.show_status();
     }
@@ -2301,6 +2376,17 @@ impl RegionRunner {
             .collect();
 
         self.update_rings();
+        // The borders: the copies wanted, asked for and given up, and what of them and of
+        // the effects received the tick is given (`docs/adr/0025-effects-between-
+        // regions.md`, sections 3 and 5).
+        let (wanted, gone, withdrawn) = self.border.want(&self.region.border_chunks());
+        if !wanted.is_empty() || !gone.is_empty() {
+            self.store.request(StoreRequest::Copies { wanted, gone });
+        }
+        self.inputs.copies_withdrawn.extend(withdrawn);
+        let region = &self.region;
+        self.border
+            .inputs(&mut self.inputs, |chunk| region.chunk(chunk).is_some());
         // What is collected from here on is for the tick after this one.
         let inputs = mem::take(&mut self.inputs);
         self.discards.clear();
@@ -2344,6 +2430,7 @@ impl RegionRunner {
                 continue;
             }
             *self.loads.entry(position).or_default() += 1;
+            self.border.loading(position);
             self.store.request(StoreRequest::Load { position });
         }
         // Another region can hold and change a chunk that is given back, and one that
@@ -2357,6 +2444,33 @@ impl RegionRunner {
         let tick = output.tick;
         self.warm
             .retain(|_, warm| tick.saturating_sub(warm.since) < WARM_FOR);
+        // The store is told of every held chunk the region stopped having loaded or
+        // warm, so that what is filed for it is dropped (section 5); a return ends the
+        // use by itself.
+        let warm = &self.warm;
+        let dropped = self.border.dropped(
+            self.region.loaded_chunks(),
+            &output.returns,
+            |chunk| warm.contains_key(&chunk),
+            tick,
+            WARM_FOR,
+        );
+        if !dropped.is_empty() {
+            self.border.drop_effects_of(&dropped);
+            self.store.request(StoreRequest::Dropped {
+                chunks: dropped.into_iter().collect(),
+            });
+        }
+        // What the tick made in other regions' land, and the copies beside a chunk that
+        // would tick, which is whom the region needs coupling with (section 8).
+        self.border.made(output.effects);
+        let region = &self.region;
+        let (begins, ends) = self.border.beside(&region.viewed_chunks(), |chunk| {
+            region.chunk(chunk).is_some()
+        });
+        if !begins.is_empty() || !ends.is_empty() {
+            self.store.request(StoreRequest::Beside { begins, ends });
+        }
         let changes: Vec<_> = output
             .events
             .iter()
@@ -2399,7 +2513,13 @@ impl RegionRunner {
             && marks_taken.is_empty()
             && seams.is_empty()
             && output.delta.changes_only_the_tick();
-        let needs_commit = !(unchanged && output.stays.is_empty());
+        // A tick that takes effects commits, so that the store drops them; one that made
+        // some commits them; and a coupled region commits every tick (section 8).
+        let taken = output.taken;
+        let needs_commit = !(unchanged && output.stays.is_empty())
+            || !taken.is_empty()
+            || self.border.has_made()
+            || self.border.commits_every_tick();
         if needs_commit {
             self.unsaved
                 .extend(changes.iter().map(|(position, _)| position.chunk()));
@@ -2416,8 +2536,8 @@ impl RegionRunner {
                 ticks,
                 marks_taken,
                 seams,
-                effects: Vec::new(),
-                taken: Vec::new(),
+                effects: self.border.take_for_commit(),
+                taken,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -2805,6 +2925,18 @@ impl RegionRunner {
             }
             self.take_orders();
             self.step();
+            // A tick held for the region's partners is tried again as their progress
+            // arrives, and keeps its deadline: it does not lose its slot (section 8).
+            while self.ended.is_none()
+                && !stop.load(Ordering::Relaxed)
+                && matches!(self.phase, Phase::Running | Phase::Preparing)
+                && self.pending.len() < MAX_TICKS_AHEAD
+                && self.held_by_partners()
+            {
+                thread::sleep(COMMIT_POLL);
+                self.take_orders();
+                self.step();
+            }
             if self.stands_still() {
                 // No tick is due meanwhile; all there is to do is to take the store's
                 // answers. A merge or a split that is through or off goes on ticking
@@ -4377,14 +4509,13 @@ mod tests {
         Absorb(u64),
         /// A split, with its tick and the id it names for the new region.
         Split(u64, RegionId),
-        /// Something of phase E (copies, use and couplings), which no runner asks for
-        /// yet.
-        EffectsBetweenRegions,
     }
 
     impl Asked {
-        fn of(request: &StoreRequest) -> Self {
-            match request {
+        /// None for what a runner asks of its borders (copies, use and couplings), which
+        /// these tests do not hold to an order; `tests/borders.rs` looks at those.
+        fn of(request: &StoreRequest) -> Option<Self> {
+            Some(match request {
                 StoreRequest::Load { position } => Self::Load(*position),
                 StoreRequest::Save { position, .. } => Self::Save(*position),
                 StoreRequest::Commit { tick, .. } => Self::Commit(*tick),
@@ -4398,14 +4529,16 @@ mod tests {
                 | StoreRequest::Beside { .. }
                 | StoreRequest::Dropped { .. }
                 | StoreRequest::JoinsAt { .. }
-                | StoreRequest::EndCouplings => Self::EffectsBetweenRegions,
-            }
+                | StoreRequest::EndCouplings => return None,
+            })
         }
     }
 
     impl RegionStore for Gate {
         fn request(&self, request: StoreRequest) {
-            self.control.asked.lock().unwrap().push(Asked::of(&request));
+            if let Some(asked) = Asked::of(&request) {
+                self.control.asked.lock().unwrap().push(asked);
+            }
             if let StoreRequest::Commit { tick, stays, .. } = &request {
                 self.control.commits.lock().unwrap().push(*tick);
                 if !stays.is_empty() {

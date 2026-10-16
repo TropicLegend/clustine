@@ -221,7 +221,7 @@ impl RegionStore for Making {
     fn request(&self, request: StoreRequest) {
         {
             let mut state = self.control.state();
-            state.asked.push(Asked::of(&request));
+            state.asked.extend(Asked::of(&request));
             // Section 7, rule 5: a return of a chunk whose load waits for the generator
             // takes that load out, and answers it `Withdrawn`.
             if let StoreRequest::Return { chunks } = &request {

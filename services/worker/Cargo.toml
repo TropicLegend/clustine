@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clustine-data.workspace = true
 clustine-region.workspace = true
 clustine-rpc.workspace = true
 clustine-sim.workspace = true
@@ -19,7 +20,6 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-clustine-data.workspace = true
 clustine-worldgen.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

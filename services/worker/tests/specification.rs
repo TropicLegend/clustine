@@ -185,6 +185,7 @@ impl World {
             match handle.try_reply() {
                 Some(StoreReply::Loaded { .. }) => waiting -= 1,
                 Some(StoreReply::Generating { .. } | StoreReply::Dead { .. }) => {}
+                Some(reply) if of_the_stream(&reply) => {}
                 Some(other) => panic!("expected a chunk, got {other:?}"),
                 None => thread::sleep(Duration::from_millis(1)),
             }
@@ -247,6 +248,7 @@ impl Neighbour {
                         return;
                     }
                 }
+                Some(reply) if of_the_stream(&reply) => {}
                 Some(other) => panic!("expected word of a new stay, got {other:?}"),
                 None => thread::sleep(Duration::from_millis(1)),
             }
@@ -6072,4 +6074,24 @@ fn a_checkpoint_replaces_what_was_dropped_in(mut world: World) {
         Some(entity)
     );
     assert_eq!(next.region().player_count(), 1);
+}
+
+/// Whether `reply` is of a region's stream (`docs/adr/0025-effects-between-regions.md`),
+/// which a region the test plays by hand passes over: it never couples, and keeps no
+/// copies.
+fn of_the_stream(reply: &StoreReply) -> bool {
+    matches!(
+        reply,
+        StoreReply::Effects { .. }
+            | StoreReply::CopyBase { .. }
+            | StoreReply::CopyUpdate { .. }
+            | StoreReply::CopyUsed { .. }
+            | StoreReply::CoupleWith { .. }
+            | StoreReply::Coupled { .. }
+            | StoreReply::HandshakeOff { .. }
+            | StoreReply::Shifted { .. }
+            | StoreReply::Uncoupled { .. }
+            | StoreReply::Progress { .. }
+            | StoreReply::Mark { .. }
+    )
 }

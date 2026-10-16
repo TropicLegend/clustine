@@ -373,6 +373,7 @@ impl Other {
     fn reply(&self) -> StoreReply {
         for _ in 0..30_000 {
             match self.handle.try_reply() {
+                Some(reply) if of_the_stream(&reply) => {}
                 Some(reply) => return reply,
                 None => thread::sleep(Duration::from_millis(1)),
             }
@@ -8082,4 +8083,24 @@ fn a_split_is_told_to_each_edge_that_has_a_player_in_the_part_and_to_no_other_in
         |_, links| links[0].closed,
     );
     assert_eq!(welcomed(&old.log), Welcome::Superseded);
+}
+
+/// Whether `reply` is of a region's stream (`docs/adr/0025-effects-between-regions.md`),
+/// which a region the test plays by hand passes over: it never couples, and keeps no
+/// copies.
+fn of_the_stream(reply: &StoreReply) -> bool {
+    matches!(
+        reply,
+        StoreReply::Effects { .. }
+            | StoreReply::CopyBase { .. }
+            | StoreReply::CopyUpdate { .. }
+            | StoreReply::CopyUsed { .. }
+            | StoreReply::CoupleWith { .. }
+            | StoreReply::Coupled { .. }
+            | StoreReply::HandshakeOff { .. }
+            | StoreReply::Shifted { .. }
+            | StoreReply::Uncoupled { .. }
+            | StoreReply::Progress { .. }
+            | StoreReply::Mark { .. }
+    )
 }

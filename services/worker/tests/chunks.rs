@@ -294,6 +294,7 @@ impl Other {
         for _ in 0..30_000 {
             match self.handle.try_reply() {
                 Some(StoreReply::Dead { .. }) => {}
+                Some(reply) if of_the_stream(&reply) => {}
                 Some(reply) => return reply,
                 None => thread::sleep(Duration::from_millis(1)),
             }
@@ -315,6 +316,7 @@ impl Other {
                         return;
                     }
                 }
+                Some(reply) if of_the_stream(&reply) => {}
                 Some(other) => panic!("expected word of a new stay, got {other:?}"),
                 None => thread::sleep(Duration::from_millis(1)),
             }
@@ -5206,7 +5208,7 @@ impl Flood {
     fn running(&mut self) -> bool {
         while let Some(reply) = self.western.handle.try_reply() {
             // Word that a chunk is being made is no answer: its chunk follows.
-            if matches!(reply, StoreReply::Generating { .. }) {
+            if matches!(reply, StoreReply::Generating { .. }) || of_the_stream(&reply) {
                 continue;
             }
             assert!(matches!(reply, StoreReply::Loaded { .. }), "{reply:?}");
@@ -6622,4 +6624,24 @@ fn a_falling_block_at_the_rim_of_a_view_falls_because_its_ring_ticks_in(rings: b
         assert_eq!(block_in(chunk, grass), blocks::AIR);
     }
     e.assert_answered(&[]);
+}
+
+/// Whether `reply` is of a region's stream (`docs/adr/0025-effects-between-regions.md`),
+/// which a region the test plays by hand passes over: it never couples, and keeps no
+/// copies.
+fn of_the_stream(reply: &StoreReply) -> bool {
+    matches!(
+        reply,
+        StoreReply::Effects { .. }
+            | StoreReply::CopyBase { .. }
+            | StoreReply::CopyUpdate { .. }
+            | StoreReply::CopyUsed { .. }
+            | StoreReply::CoupleWith { .. }
+            | StoreReply::Coupled { .. }
+            | StoreReply::HandshakeOff { .. }
+            | StoreReply::Shifted { .. }
+            | StoreReply::Uncoupled { .. }
+            | StoreReply::Progress { .. }
+            | StoreReply::Mark { .. }
+    )
 }

@@ -547,6 +547,27 @@ E3c, couplings in the store (2026-10-16):
 - While any region is coupled, in a handshake or given up, the commit thread looks at
   the time every 10 ms when nothing else wakes it.
 
+E5, the worker (2026-10-16):
+
+- **Land of an area a region is pinned to is its own** for effects, though it is
+  `Unknown` until claimed: an update there waits as a seam entry, as in land it holds,
+  and is not sent to a store that would drop it for want of a user. Only `Foreign`
+  land, and unknown land outside the region's areas that it does not want, is sent to.
+- **A tick held for partners keeps its deadline**: the runner tries it again every
+  millisecond as progress arrives, and goes on from the deadline it had.
+- **A runner keeps copies handed in after a coupling ended by a giving up, a lost owner
+  or a reshape**, of either side, until the two are coupled again; after an end for want
+  of need, and on `CopyUsed` naming a region it is not coupled to, it withdraws them.
+- **`CoupleWith` tells a runner given up that it has earned its coupling back**: the
+  store says nothing else when it is.
+- **The runner says `Dropped`** of every held chunk it stops having loaded that it does
+  not return in the same tick and does not hold warm, of every warm chunk when it goes,
+  of every chunk timed from `Restored`, an `Absorbed` or a split's part when it is not
+  loaded within `WARM_FOR`, and of a chunk whose load was answered `Unreadable`.
+- **A split's part is told its borders by its own `Restored`**: its runner is made from
+  the part in memory, and then given the chunks whose use moved to it and any
+  couplings (`RegionRunner::with_borders`).
+
 ## Review
 
 **First review of this record (2026-10-16): not ready.** Its findings, worked in:

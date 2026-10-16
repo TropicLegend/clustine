@@ -446,6 +446,44 @@ impl Region {
         self.copies.keys().copied().collect()
     }
 
+    /// The loaded chunks with a viewer's or a guest's ticket, ascending: those beside
+    /// which border copies are taken, and which tick with their copies
+    /// (`docs/adr/0025-effects-between-regions.md`, section 3).
+    pub fn viewed_chunks(&self) -> Vec<ChunkPos> {
+        self.chunks
+            .keys()
+            .copied()
+            .filter(|chunk| {
+                self.tickets
+                    .get(chunk)
+                    .is_some_and(|tickets| tickets.viewers > 0 || tickets.guests > 0)
+            })
+            .collect()
+    }
+
+    /// The chunks the region wants border copies of, ascending: those in the 3x3 of a
+    /// viewed chunk ([`Region::viewed_chunks`]) that are another region's, or unknown
+    /// and not wanted, and that it has not loaded (the same record, section 3).
+    pub fn border_chunks(&self) -> Vec<ChunkPos> {
+        let mut border = BTreeSet::new();
+        for chunk in self.viewed_chunks() {
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let neighbour = ChunkPos::new(chunk.x + dx, chunk.z + dz);
+                    if self.sends_to(neighbour) {
+                        border.insert(neighbour);
+                    }
+                }
+            }
+        }
+        border.into_iter().collect()
+    }
+
+    /// The chunks the region has loaded, ascending.
+    pub fn loaded_chunks(&self) -> Vec<ChunkPos> {
+        self.chunks.keys().copied().collect()
+    }
+
     /// The scheduled ticks of a loaded chunk as they are to be committed or saved: the
     /// delays left at the end of this tick, in queue order; none for a chunk not
     /// loaded.
@@ -1725,7 +1763,10 @@ impl Region {
         }
         match self.land.knowledge(position) {
             Knowledge::Foreign(_) => true,
-            Knowledge::Unknown => !self.wants(position),
+            // A chunk of an area the region is pinned to is its own until another is
+            // granted it, which it learns by claiming: what it does there waits for it
+            // as in land it holds (the same record, section 1).
+            Knowledge::Unknown => !self.wants(position) && !self.land.is_pinned(position),
             Knowledge::Held | Knowledge::Asked => false,
         }
     }
