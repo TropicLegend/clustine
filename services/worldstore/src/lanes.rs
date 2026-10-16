@@ -44,21 +44,23 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use clustine_data::BlockState;
 use clustine_format::{
     LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, PlayersFile, RegionFile,
     StateFile, TableFile, read_log, read_log_with_offsets,
 };
 use clustine_region::RegionId;
 use clustine_rpc::{
-    Decline, RegionHello, RegionList, Restored, SplitPart, StayNote, StoreReply, StoreRequest,
-    TickState,
+    CopyUse, Decline, RegionHello, RegionList, Restored, SplitPart, StayNote, StoreReply,
+    StoreRequest, TickState,
 };
 use clustine_world::{
     BlockPos, ChunkPos, Due, Effect, EffectId, EntityId, EntityIds, FiledEffect, PlayerId,
 };
 use tracing::{error, info, warn};
 
-use crate::chunks::{Job, Jobs, Replayed};
+use crate::chunks::{Job, Jobs, Listed, Replayed};
+use crate::copies::Copies;
 use crate::disk::{Disk, replace};
 use crate::effects::{self, Filed, Kept, Uses, sequence};
 use crate::players::{self, Players, Taken, Undo};
@@ -112,6 +114,9 @@ pub(crate) struct Lanes {
     uses: Uses,
     /// The effects filed for chunks in use and not taken yet.
     filed: Filed,
+    /// Who copies which chunk (the same record, section 3). Not in the log: a region
+    /// asks for its copies again after every hello.
+    copies: Copies,
     group: Group,
 }
 
@@ -218,9 +223,11 @@ struct Group {
     /// What the group did to the effects filed, which is taken back if the group
     /// cannot be made durable.
     effects: Vec<effects::Undo>,
-    /// The effects the group filed, by the region whose stream they go on once the
-    /// group is durable, in the order they were filed.
-    stream: BTreeMap<RegionId, Vec<EffectId>>,
+    /// What goes on each region's stream once the group is durable, in order.
+    stream: BTreeMap<RegionId, Vec<Streamed>>,
+    /// The copies asked for in the group, which are registered and based once it is
+    /// durable, so that a base is current through a group.
+    copies_wanted: Vec<(RegionId, ChunkPos)>,
 }
 
 impl Group {
@@ -229,7 +236,20 @@ impl Group {
             && self.changed.is_empty()
             && self.installs.is_empty()
             && self.flushes.is_empty()
+            && self.stream.is_empty()
+            && self.copies_wanted.is_empty()
     }
+
+    fn stream(&mut self, region: RegionId, streamed: Streamed) {
+        self.stream.entry(region).or_default().push(streamed);
+    }
+}
+
+/// Something for a region's stream.
+enum Streamed {
+    /// An effect filed, sent unless it was taken or dropped within the group.
+    Effect(EffectId),
+    Reply(Box<StoreReply>),
 }
 
 /// Something a group did to the table of regions.
@@ -585,6 +605,7 @@ impl Lanes {
             sessions: 0,
             uses: Uses::default(),
             filed,
+            copies: Copies::default(),
             group: Group::default(),
         };
         // What is left of the notes, in the order of the log and by the same rules as
@@ -664,7 +685,9 @@ impl Lanes {
         for filed in self.filed.all() {
             let chunk = filed.effect.at.chunk();
             match self.table.holder(chunk) {
-                Some(holder) if self.uses.user(chunk).is_none() => self.uses.begin(holder, chunk),
+                Some(holder) if self.uses.user(chunk).is_none() => {
+                    self.uses.begin(holder, chunk);
+                }
                 Some(_) => {}
                 None => dropped.push(filed.id),
             }
@@ -728,6 +751,32 @@ impl Lanes {
                 number,
                 chunks,
             } => self.returned(session, number, chunks),
+            Message::Copied {
+                session,
+                position,
+                sequence,
+                last_change,
+                chunk,
+            } => {
+                // On the stream as of now, with who uses the chunk now: what the store
+                // put on it since the base's group is before it, and the runner applies
+                // what is above the base's sequence.
+                let current = self
+                    .regions
+                    .get(&session.region)
+                    .is_some_and(|lane| lane.current == Some(session.number));
+                if current && self.copies.copies(session.region, position) {
+                    let base = StoreReply::CopyBase {
+                        position,
+                        sequence,
+                        last_change,
+                        chunk,
+                        used: copy_use(&self.uses, position),
+                    };
+                    self.group
+                        .stream(session.region, Streamed::Reply(Box::new(base)));
+                }
+            }
             Message::Regions { answer } => {
                 // The list has nothing that is not durable, and is not given while what
                 // a failed group left in the log could still come back.
@@ -894,6 +943,19 @@ impl Lanes {
                     .collect();
                 taken.sort_unstable();
                 taken.dedup();
+                // The block changes of chunks that others copy, by chunk: those the region
+                // holds from before the tick, as a replay puts in (section 3).
+                let mut updates: BTreeMap<ChunkPos, Vec<(BlockPos, BlockState)>> = BTreeMap::new();
+                for (position, block) in &changes {
+                    let chunk = position.chunk();
+                    let held = self
+                        .table
+                        .held_from(region, chunk)
+                        .is_some_and(|from| tick > from);
+                    if held && !self.copies.copiers(chunk).is_empty() {
+                        updates.entry(chunk).or_default().push((*position, *block));
+                    }
+                }
                 // The notes are in the commit's own record, so that the two are on
                 // disk together or not at all.
                 let notes: Vec<LoggedStay> = stays.iter().map(players::logged).collect();
@@ -930,11 +992,26 @@ impl Lanes {
                             };
                             self.filed.file(id, kept);
                             self.group.effects.push(effects::Undo::Filed(id));
-                            self.group.stream.entry(user).or_default().push(id);
+                            self.group.stream(user, Streamed::Effect(id));
                         }
                         for id in taken {
                             if let Some(kept) = self.filed.remove(id) {
                                 self.group.effects.push(effects::Undo::Removed(id, kept));
+                            }
+                        }
+                        for (chunk, changes) in updates {
+                            let previous = self
+                                .copies
+                                .changed(chunk, at)
+                                .expect("a chunk somebody copies has a chain");
+                            for copier in self.copies.copiers(chunk) {
+                                let update = StoreReply::CopyUpdate {
+                                    position: chunk,
+                                    sequence: at,
+                                    previous,
+                                    changes: changes.clone(),
+                                };
+                                self.group.stream(copier, Streamed::Reply(Box::new(update)));
                             }
                         }
                         lane.live.push(Entry {
@@ -1015,7 +1092,9 @@ impl Lanes {
                 // Its use begins as the load is passed on, so that what is filed while
                 // it is loaded waits for it (`docs/adr/0025-effects-between-regions.md`,
                 // section 5).
-                self.uses.begin(session.region, position);
+                if self.uses.begin(session.region, position) {
+                    tell_copiers(&self.uses, &self.copies, &mut self.group, position);
+                }
                 let job = Job::Load { position, peer };
                 if owner.held.is_empty() {
                     let _ = self.jobs.send(job);
@@ -1098,7 +1177,9 @@ impl Lanes {
                 }
                 // Their use begins, also of a chunk whose return this calls off.
                 for chunk in &granted {
-                    self.uses.begin(region, *chunk);
+                    if self.uses.begin(region, *chunk) {
+                        tell_copiers(&self.uses, &self.copies, &mut self.group, *chunk);
+                    }
                 }
                 // Answered when the group ends, behind the commits asked for before:
                 // also a claim that granted nothing anew may rest on a grant of this
@@ -1132,6 +1213,7 @@ impl Lanes {
                 let ended = end_uses(
                     &mut self.uses,
                     &mut self.filed,
+                    &self.copies,
                     &mut self.log,
                     &mut self.group,
                     region,
@@ -1157,14 +1239,15 @@ impl Lanes {
             }
             // Taken above, before the lane was looked up.
             StoreRequest::AbsorbCommit { .. } | StoreRequest::SplitCommit { .. } => return,
-            // Copies and couplings are the store's from steps E3b and E3c of
+            // Couplings are the store's from step E3c of
             // `docs/adr/0025-effects-between-regions.md`; until then a runner that asks
-            // for them finds its copies never based and nobody coupled to it.
+            // for one finds nobody coupled to it.
             StoreRequest::Dropped { chunks } => {
                 let region = session.region;
                 let ended = end_uses(
                     &mut self.uses,
                     &mut self.filed,
+                    &self.copies,
                     &mut self.log,
                     &mut self.group,
                     region,
@@ -1176,10 +1259,22 @@ impl Lanes {
                 }
                 return;
             }
-            StoreRequest::Copies { .. }
-            | StoreRequest::Beside { .. }
+            StoreRequest::Copies { wanted, gone } => {
+                let region = session.region;
+                for chunk in gone {
+                    self.copies.unregister(region, chunk);
+                }
+                // A copy wanted again, after a gap in its updates, is based anew.
+                for chunk in wanted {
+                    self.group.copies_wanted.push((region, chunk));
+                }
+                return;
+            }
+            StoreRequest::Beside { .. }
             | StoreRequest::JoinsAt { .. }
-            | StoreRequest::EndCouplings => return,
+            | StoreRequest::EndCouplings => {
+                return;
+            }
         };
         if owner.unsynced.is_empty() && owner.held.is_empty() {
             let _ = self.jobs.send(job);
@@ -1262,7 +1357,7 @@ impl Lanes {
         // through the group's last record (`docs/adr/0025-effects-between-regions.md`,
         // section 2). Not what was taken or dropped since within the group.
         let through = self.log.last;
-        for (region, ids) in group.stream {
+        for (region, streamed) in group.stream {
             let Some(owner) = self
                 .regions
                 .get(&region)
@@ -1270,15 +1365,67 @@ impl Lanes {
             else {
                 continue;
             };
-            let effects: Vec<FiledEffect> = ids
-                .into_iter()
-                .filter_map(|id| self.filed.filed(id))
-                .filter(|filed| self.uses.user(filed.effect.at.chunk()) == Some(region))
-                .collect();
+            let mut told = false;
+            let mut effects = Vec::new();
+            for item in streamed {
+                match item {
+                    Streamed::Effect(id) => {
+                        effects.extend(self.filed.filed(id).filter(|filed| {
+                            self.uses.user(filed.effect.at.chunk()) == Some(region)
+                        }))
+                    }
+                    Streamed::Reply(reply) => {
+                        if !effects.is_empty() {
+                            let effects = mem::take(&mut effects);
+                            owner.peer.answer(StoreReply::Effects { effects });
+                        }
+                        owner.peer.answer(*reply);
+                        told = true;
+                    }
+                }
+            }
             if !effects.is_empty() {
                 owner.peer.answer(StoreReply::Effects { effects });
+                told = true;
+            }
+            if told {
                 owner.peer.answer(StoreReply::Mark { through });
             }
+        }
+        // The copies asked for in the group are registered as of its end, and their
+        // bases made on the thread for chunks with the holder's commits up to it.
+        for (region, chunk) in group.copies_wanted {
+            let Some(peer) = self
+                .regions
+                .get(&region)
+                .and_then(|lane| lane.owner.as_ref())
+                .map(|owner| Arc::clone(&owner.peer))
+            else {
+                continue;
+            };
+            let last_change = self.copies.register(region, chunk, through);
+            let holder = self.table.holder(chunk);
+            let from = holder.and_then(|holder| self.table.held_from(holder, chunk));
+            let listed = holder
+                .and_then(|holder| self.regions.get(&holder))
+                .map_or_else(Vec::new, |lane| {
+                    lane.live
+                        .iter()
+                        .map(|entry| Listed {
+                            path: self.log.path(entry.segment),
+                            offset: entry.offset,
+                            length: entry.length,
+                        })
+                        .collect()
+                });
+            let _ = self.jobs.send(Job::Copy {
+                position: chunk,
+                listed,
+                from,
+                sequence: through,
+                last_change,
+                peer,
+            });
         }
         // The floors of the group are durable: every region that has an owner is
         // told of the stays that are dead by them, behind the group's own answers.
@@ -1773,6 +1920,8 @@ impl Lanes {
         let (sender, replies) = mpsc::channel();
         let lost = Arc::new(AtomicBool::new(false));
         let peer = Arc::new(Peer::new(session, sender, Arc::clone(&lost), reply_to));
+        // Whoever runs the region asks for its copies again (section 3).
+        self.copies.forget(region);
         // The effects of the chunks the region uses go on its stream again: the runner
         // drops those it has taken (`docs/adr/0025-effects-between-regions.md`,
         // section 5). Everything the store has written before the record of the
@@ -1876,6 +2025,10 @@ impl Lanes {
         // counted in the absorbed region's ticks counts from its taking now.
         let in_use = self.uses.moved(absorbed, region, None);
         self.filed.count_from_taking(&in_use);
+        for chunk in &in_use {
+            tell_copiers(&self.uses, &self.copies, &mut self.group, *chunk);
+        }
+        self.copies.forget(absorbed);
         if let Some(mut gone) = self.regions.remove(&absorbed) {
             // Its owner gets nothing done any more; what it had the thread for chunks
             // do is done before anything the survivor asks from now on.
@@ -2032,6 +2185,9 @@ impl Lanes {
         // effects.
         let moved = self.uses.moved(region, new, Some(&chunks));
         self.filed.count_from_taking(&moved);
+        for chunk in &moved {
+            tell_copiers(&self.uses, &self.copies, &mut self.group, *chunk);
+        }
         let lane = self
             .regions
             .get_mut(&region)
@@ -2313,6 +2469,7 @@ fn replayed(
 fn end_uses(
     uses: &mut Uses,
     filed: &mut Filed,
+    copies: &Copies,
     log: &mut Log,
     group: &mut Group,
     region: RegionId,
@@ -2323,6 +2480,7 @@ fn end_uses(
         if !uses.end(region, *chunk) {
             continue;
         }
+        tell_copiers(uses, copies, group, *chunk);
         for id in filed.ids_of(*chunk) {
             if let Some(kept) = filed.remove(id) {
                 group.effects.push(effects::Undo::Removed(id, kept));
@@ -2336,6 +2494,28 @@ fn end_uses(
         log.append(&record.encode())?;
     }
     Ok(())
+}
+
+/// Who uses a chunk, as a region that copies it is told
+/// (`docs/adr/0025-effects-between-regions.md`, section 8).
+fn copy_use(uses: &Uses, chunk: ChunkPos) -> CopyUse {
+    match uses.user(chunk) {
+        None => CopyUse::Nobody,
+        // Coupled regions are told so from step E3c.
+        Some(user) => CopyUse::Uncoupled(user),
+    }
+}
+
+/// Puts on the streams of the regions that copy `chunk` who uses it now.
+fn tell_copiers(uses: &Uses, copies: &Copies, group: &mut Group, chunk: ChunkPos) {
+    let used = copy_use(uses, chunk);
+    for copier in copies.copiers(chunk) {
+        let reply = StoreReply::CopyUsed {
+            position: chunk,
+            used,
+        };
+        group.stream(copier, Streamed::Reply(Box::new(reply)));
+    }
 }
 
 /// The block of entity ids of a region that has none.
@@ -2519,31 +2699,7 @@ impl Log {
     /// state.
     #[allow(clippy::type_complexity)]
     fn read(&self, entry: &Entry) -> Result<Option<(u64, Vec<Replayed>, Vec<u8>)>, StoreError> {
-        Ok(match self.record(entry)? {
-            Some(LogRecord::Commit {
-                tick,
-                changes,
-                state,
-                ticks,
-                marks_taken,
-                seams,
-                ..
-            }) => {
-                let blocks = changes
-                    .into_iter()
-                    .map(|(position, block)| Replayed::Block(position, block));
-                let ticks = ticks
-                    .into_iter()
-                    .map(|(chunk, ticks)| Replayed::Ticks(chunk, ticks));
-                let marks = marks_taken.into_iter().map(Replayed::MarksTaken);
-                let seams = seams
-                    .into_iter()
-                    .map(|(chunk, seams)| Replayed::Seams(chunk, seams));
-                let records = ticks.chain(marks).chain(seams);
-                Some((tick, blocks.chain(records).collect(), state))
-            }
-            _ => None,
-        })
+        Ok(self.record(entry)?.and_then(commit_changes))
     }
 
     /// Reads the whole state of `region` that the record of a merge or a split at
@@ -2599,6 +2755,36 @@ impl Log {
             self.segments.remove(&segment);
         }
     }
+}
+
+/// Of a commit's record: its tick, what it changed in chunks (its blocks, then the
+/// ticks of its chunks, then whose marks it took, then their seams) and its state.
+#[allow(clippy::type_complexity)]
+pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, Vec<u8>)> {
+    let LogRecord::Commit {
+        tick,
+        changes,
+        state,
+        ticks,
+        marks_taken,
+        seams,
+        ..
+    } = record
+    else {
+        return None;
+    };
+    let blocks = changes
+        .into_iter()
+        .map(|(position, block)| Replayed::Block(position, block));
+    let ticks = ticks
+        .into_iter()
+        .map(|(chunk, ticks)| Replayed::Ticks(chunk, ticks));
+    let marks = marks_taken.into_iter().map(Replayed::MarksTaken);
+    let seams = seams
+        .into_iter()
+        .map(|(chunk, seams)| Replayed::Seams(chunk, seams));
+    let records = ticks.chain(marks).chain(seams);
+    Some((tick, blocks.chain(records).collect(), state))
 }
 
 fn segment_path(directory: &Path, segment: u64) -> PathBuf {

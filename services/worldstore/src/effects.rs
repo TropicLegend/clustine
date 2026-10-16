@@ -32,15 +32,17 @@ pub(crate) struct Uses {
 }
 
 impl Uses {
-    /// `region` uses `chunk` from now on.
-    pub(crate) fn begin(&mut self, region: RegionId, chunk: ChunkPos) {
-        if let Some(before) = self.user.insert(chunk, region)
+    /// `region` uses `chunk` from now on. Whether its user changed.
+    pub(crate) fn begin(&mut self, region: RegionId, chunk: ChunkPos) -> bool {
+        let before = self.user.insert(chunk, region);
+        if let Some(before) = before
             && before != region
             && let Some(chunks) = self.chunks.get_mut(&before)
         {
             chunks.remove(&chunk);
         }
         self.chunks.entry(region).or_default().insert(chunk);
+        before != Some(region)
     }
 
     /// `region` does not use `chunk` any more. Whether it did.

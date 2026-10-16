@@ -26,6 +26,7 @@
 //! and [`regions`] reads its list of regions.
 
 mod chunks;
+mod copies;
 mod disk;
 mod effects;
 mod lanes;
@@ -34,6 +35,8 @@ mod players;
 mod table;
 mod tcp;
 
+#[cfg(test)]
+mod copies_tests;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
@@ -298,6 +301,16 @@ enum Message {
         session: Session,
         number: u64,
         chunks: Vec<ChunkPos>,
+    },
+    /// The thread for chunks has made the base of a copy of `position` that the region
+    /// of `session` asked for, or found the copy absent
+    /// (`docs/adr/0025-effects-between-regions.md`, section 3).
+    Copied {
+        session: Session,
+        position: ChunkPos,
+        sequence: u64,
+        last_change: u64,
+        chunk: Option<clustine_world::Chunk>,
     },
     /// Someone wants the list of regions.
     Regions {

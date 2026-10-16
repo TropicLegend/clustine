@@ -484,6 +484,26 @@ E3a, the store's effects (2026-10-16):
 - **A commit's record holds all of its effects.** The runner keeps a commit within the
   log's record limit, carrying effects beyond what fits in the next commit (E5).
 
+E3b, copies in the store (2026-10-16):
+
+- **A base comes on the stream from the commit thread**, not from the thread for
+  chunks: that thread makes it and hands it back, and the commit thread puts it on the
+  copier's stream with the chunk's use as of then. So a base never arrives behind a
+  newer `CopyUsed` with an older use; updates of commits after the base's group may
+  come before it, as section 3 has.
+- **A chain of updates is anchored where its chunk was first copied.** A base's
+  `last_change` is that anchor, or the chain's last update where the chunk is copied
+  by another region already; the store keeps no last change of chunks nobody copies.
+- **A hello forgets the copies of its region.** Whoever runs it asks for them again,
+  as for a restart (section 3); a split's part, which says hello, asks for those it
+  keeps from the region it was split off.
+- **Copy updates carry blocks only.** A base has the holder's scheduled ticks, seam
+  entries and marks replayed into it as a restore does, which the sim does not read in
+  a copy.
+- **A base reads the holder's commits on the thread for chunks.** A segment that
+  collection removed meanwhile followed a checkpoint of the holder, whose saves were
+  durable before it, and the stored chunk read after it has their blocks.
+
 ## Review
 
 **First review of this record (2026-10-16): not ready.** Its findings, worked in:

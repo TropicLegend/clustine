@@ -21,13 +21,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use clustine_data::BlockState;
-use clustine_format::{ChunkFile, FormatError, StateFile};
+use clustine_format::{ChunkFile, FormatError, StateFile, read_log};
 use clustine_rpc::{Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
 use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, ScheduledTick, Seam};
 use tracing::{error, info, warn};
 
 use crate::disk::{Disk, parent, temporary};
+use crate::lanes::commit_changes;
 use crate::local::Meta;
 use crate::{Message, Opened, Peer, StoreError};
 
@@ -423,12 +424,36 @@ pub(crate) enum Job {
     /// Something the thread waits for may have come: an answer of the generator, or
     /// the loss of a handle whose loads are under way. Nothing to do but look.
     Wake,
+    /// The base of a border copy (`docs/adr/0025-effects-between-regions.md`,
+    /// section 3): the chunk as its holder would load it, with the holder's commits
+    /// listed replayed into it in memory, handed back to the commit thread for the
+    /// copier's stream with [`Message::Copied`]. Nothing is stored or noted, and no
+    /// job of the copier's waits for it.
+    Copy {
+        position: ChunkPos,
+        /// The holder's commits in the log, in its order.
+        listed: Vec<Listed>,
+        /// The tick the holder holds the chunk from, whose commits after it are
+        /// replayed; none where nobody holds it.
+        from: Option<u64>,
+        sequence: u64,
+        last_change: u64,
+        peer: Arc<Peer>,
+    },
     /// Has the generator make ahead the chunks within `radius` of `around` that are not
     /// stored, nearest first: the spawn's, when the store starts (T8f of
     /// `docs/groundwork/t8-plan.md`). Nobody is answered.
     Prepare { around: ChunkPos, radius: i32 },
     /// The commit thread has ended: nothing will be given any more.
     End,
+}
+
+/// Where a commit is in the log, for the base of a copy.
+#[derive(Debug, Clone)]
+pub(crate) struct Listed {
+    pub(crate) path: PathBuf,
+    pub(crate) offset: u64,
+    pub(crate) length: usize,
 }
 
 /// The commit thread's way to the thread for chunks. When it goes, that thread is told
@@ -514,6 +539,20 @@ enum Entry {
     Loading(Loading),
     /// A restore that waits for the generator to make chunks its changes lie in.
     Restoring(Restoring),
+    /// The base of a copy whose chunk the generator is making.
+    Copying(Copying),
+}
+
+struct Copying {
+    position: ChunkPos,
+    changes: Vec<Replayed>,
+    sequence: u64,
+    last_change: u64,
+    peer: Arc<Peer>,
+    request: u64,
+    _wanted: Wanted,
+    /// As for a load: the stored chunk, where a newer generator makes it again.
+    stored: Option<Chunk>,
 }
 
 struct Loading {
@@ -550,6 +589,7 @@ impl Entry {
             Entry::Given(_) => false,
             Entry::Loading(loading) => loading.request == request,
             Entry::Restoring(restoring) => restoring.waiting.contains_key(&request),
+            Entry::Copying(copying) => copying.request == request,
         }
     }
 
@@ -585,6 +625,13 @@ impl Before {
                 self.fold = true;
                 return;
             }
+            // A copy holds back what names its chunk, and nothing of its handle: a
+            // region's saves and checkpoints do not wait for a base being made.
+            Entry::Given(Job::Copy { position, .. }) | Entry::Copying(Copying { position, .. }) => {
+                self.any = true;
+                self.named.insert(*position);
+                return;
+            }
             Entry::Given(Job::Load { position, peer } | Job::Save { position, peer, .. }) => {
                 (peer, vec![*position])
             }
@@ -609,7 +656,9 @@ impl Before {
         }
         let of = |peer: &Peer| self.handles.contains(&peer.session.number);
         match job {
-            Job::Load { position, .. } => self.named.contains(position),
+            Job::Load { position, .. } | Job::Copy { position, .. } => {
+                self.named.contains(position)
+            }
             Job::Save { position, peer, .. } => of(peer) || self.named.contains(position),
             Job::Checkpoint { peer, .. } | Job::Flush { peer } => of(peer),
             Job::Return { chunks, peer, .. } => {
@@ -757,7 +806,8 @@ impl ChunkService {
     fn take_out_lost(&mut self) {
         self.queue.retain(|entry| match entry {
             Entry::Loading(loading) => !loading.peer.is_lost(),
-            Entry::Given(Job::Load { peer, .. }) => !peer.is_lost(),
+            Entry::Copying(copying) => !copying.peer.is_lost(),
+            Entry::Given(Job::Load { peer, .. } | Job::Copy { peer, .. }) => !peer.is_lost(),
             _ => true,
         });
     }
@@ -797,6 +847,26 @@ impl ChunkService {
     fn begin(&mut self, index: usize, job: Job) {
         match job {
             Job::Load { position, peer } => self.load(index, position, peer),
+            Job::Copy {
+                position,
+                listed,
+                from,
+                sequence,
+                last_change,
+                peer,
+            } => {
+                let copying = Copying {
+                    position,
+                    changes: Vec::new(),
+                    sequence,
+                    last_change,
+                    peer,
+                    request: 0,
+                    _wanted: Wanted::nothing(),
+                    stored: None,
+                };
+                self.copy(index, copying, &listed, from);
+            }
             Job::Restore {
                 changes,
                 tick,
@@ -882,6 +952,78 @@ impl ChunkService {
         self.queue.insert(index, Entry::Loading(loading));
     }
 
+    /// Makes the base of a copy, as a load of its holder would find the chunk, or has
+    /// the generator make the chunk first. A stored chunk that cannot be read, or a
+    /// commit that cannot, makes the copy absent.
+    fn copy(&mut self, index: usize, mut copying: Copying, listed: &[Listed], from: Option<u64>) {
+        if copying.peer.is_lost() {
+            return;
+        }
+        let position = copying.position;
+        let changes = match from {
+            Some(from) => self.listed_changes(listed, position, from),
+            None => Ok(Vec::new()),
+        };
+        copying.changes = match changes {
+            Ok(changes) => changes,
+            Err(error) => {
+                error!(?position, %error, "the commits for the base of a copy cannot be read");
+                return copied(&copying, None);
+            }
+        };
+        copying.stored = match self.chunks.load(position) {
+            Ok(Some(chunk)) if !self.remakes(&chunk) => {
+                return copied(&copying, Some(chunk));
+            }
+            Ok(stored) => stored,
+            Err(error) => {
+                error!(?position, %error, "a stored chunk cannot be read for a copy");
+                return copied(&copying, None);
+            }
+        };
+        let (request, wanted) = self.request(position);
+        copying.request = request;
+        copying._wanted = wanted;
+        self.queue.insert(index, Entry::Copying(copying));
+    }
+
+    /// The changes to `position` of the commits listed, made after the tick `from`. A
+    /// segment that is gone was collected after a checkpoint of the holder, whose saves
+    /// were durable before it and so are in the stored chunk read after this.
+    fn listed_changes(
+        &self,
+        listed: &[Listed],
+        position: ChunkPos,
+        from: u64,
+    ) -> Result<Vec<Replayed>, StoreError> {
+        let mut changes = Vec::new();
+        for Listed {
+            path,
+            offset,
+            length,
+        } in listed
+        {
+            let bytes = match self.disk.read_at(path, *offset, *length) {
+                Ok(bytes) => bytes,
+                Err(_) if !self.disk.exists(path)? => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let (records, _) = read_log(&bytes)?;
+            let Some((tick, replayed, _)) = records.into_iter().next().and_then(commit_changes)
+            else {
+                continue;
+            };
+            if tick > from {
+                changes.extend(
+                    replayed
+                        .into_iter()
+                        .filter(|change| change.chunk() == position),
+                );
+            }
+        }
+        Ok(changes)
+    }
+
     /// Whether a stored chunk counts as not stored: an older generator failed in it,
     /// and nobody changed it since, which would have taken the mark (S8).
     fn remakes(&self, stored: &Chunk) -> bool {
@@ -915,6 +1057,17 @@ impl ChunkService {
             };
             match self.queue.remove(index) {
                 Some(Entry::Loading(loading)) => self.loaded(loading, made),
+                Some(Entry::Copying(copying)) => match made {
+                    Some(Ok(chunk)) => {
+                        self.chunks.handed(chunk.generated());
+                        copied(&copying, Some(chunk));
+                    }
+                    // As a load: a newer generator that fails leaves the older one's.
+                    _ => {
+                        let stored = copying.stored.clone();
+                        copied(&copying, stored);
+                    }
+                },
                 Some(Entry::Restoring(mut restoring)) => {
                     let (position, _wanted) = restoring
                         .waiting
@@ -1204,7 +1357,12 @@ impl ChunkService {
                 let chunks = if sync { self.sync() } else { Ok(()) };
                 let _ = reply_to.send(Message::Passed { answer, chunks });
             }
-            Job::Load { .. } | Job::Restore { .. } | Job::Wake | Job::End | Job::Prepare { .. } => {
+            Job::Load { .. }
+            | Job::Copy { .. }
+            | Job::Restore { .. }
+            | Job::Wake
+            | Job::End
+            | Job::Prepare { .. } => {
                 unreachable!("begun or handled elsewhere")
             }
         }
@@ -1258,6 +1416,24 @@ fn touched(changes: &[Replayed]) -> BTreeMap<ChunkPos, usize> {
     touched
 }
 
+/// Hands the base of a copy back to the commit thread, with the changes replayed into
+/// it, or none where the copy counts as absent.
+fn copied(copying: &Copying, chunk: Option<Chunk>) {
+    let chunk = chunk.map(|mut chunk| {
+        for change in &copying.changes {
+            put(&mut chunk, change);
+        }
+        chunk
+    });
+    copying.peer.send(Message::Copied {
+        session: copying.peer.session,
+        position: copying.position,
+        sequence: copying.sequence,
+        last_change: copying.last_change,
+        chunk,
+    });
+}
+
 /// Says that the changes to a chunk are not applied: the next checkpoint cuts them
 /// from the log, and they are gone then (ADR-0021, section 7, "Restore, in full").
 fn lost(position: ChunkPos, changes: usize, why: &dyn std::fmt::Display) {
@@ -1284,35 +1460,39 @@ fn apply(
     epoch: u64,
 ) -> Result<(), StoreError> {
     for change in changes {
-        let Some(chunk) = bases.get_mut(&change.chunk()) else {
-            continue;
-        };
-        match change {
-            Replayed::Block(position, state) => {
-                let (x, z) = position.in_chunk();
-                chunk.set(x, position.y, z, *state);
-            }
-            // The last list of a chunk wins, as the last change of a block does. A chunk
-            // whose ticks changed is no longer as generated, so that remaking one whose
-            // generation failed does not lose them.
-            Replayed::Ticks(_, ticks) => {
-                chunk.set_ticks(ticks.clone());
-                chunk.clear_generated();
-            }
-            Replayed::MarksTaken(_) => {
-                chunk.set_marks(Vec::new());
-                chunk.clear_generated();
-            }
-            Replayed::Seams(_, seams) => {
-                chunk.set_seams(seams.clone());
-                chunk.clear_generated();
-            }
+        if let Some(chunk) = bases.get_mut(&change.chunk()) {
+            put(chunk, change);
         }
     }
     for (position, chunk) in &bases {
         chunks.save(*position, tick, epoch, chunk)?;
     }
     Ok(())
+}
+
+/// Puts one replayed change into its chunk.
+fn put(chunk: &mut Chunk, change: &Replayed) {
+    match change {
+        Replayed::Block(position, state) => {
+            let (x, z) = position.in_chunk();
+            chunk.set(x, position.y, z, *state);
+        }
+        // The last list of a chunk wins, as the last change of a block does. A chunk
+        // whose ticks changed is no longer as generated, so that remaking one whose
+        // generation failed does not lose them.
+        Replayed::Ticks(_, ticks) => {
+            chunk.set_ticks(ticks.clone());
+            chunk.clear_generated();
+        }
+        Replayed::MarksTaken(_) => {
+            chunk.set_marks(Vec::new());
+            chunk.clear_generated();
+        }
+        Replayed::Seams(_, seams) => {
+            chunk.set_seams(seams.clone());
+            chunk.clear_generated();
+        }
+    }
 }
 
 /// The thread for chunks with a generator that answers when the test says so
