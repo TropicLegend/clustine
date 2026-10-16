@@ -151,6 +151,15 @@ fn class_rule(class: BlockClass) -> Option<Rule> {
 /// The state the block `block` (its default state) takes at the context's target, or
 /// `None` where its rule refuses. Survival and players in the way are judged after.
 pub(crate) fn state_for_placement(block: BlockState, context: &Context) -> Option<BlockState> {
+    // Concrete powder placed into or beside water is concrete at once
+    // (`ConcretePowderBlock.getStateForPlacement`).
+    if let Some(concrete) = clustine_blocks::fluid::concrete_of(block) {
+        let replaced = context.world.get(context.target);
+        let view = &mut super::context::View(&context.world);
+        if clustine_blocks::fluid::powder_hardens(view, context.target, replaced) {
+            return Some(concrete);
+        }
+    }
     let rule = rule_for(block);
     let state = rule_state(rule, block, context)?;
     // Every rule keeps the water of a source it is placed into (section 4.4), except a

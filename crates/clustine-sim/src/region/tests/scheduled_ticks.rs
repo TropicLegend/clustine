@@ -8,6 +8,8 @@
 //! "L" in a comment is the tick in which a test's chunks were loaded, and so the tick
 //! in which a chunk whose eight neighbours came with it starts ticking.
 
+use clustine_blocks::data::is_class;
+use clustine_data::BlockClass;
 use clustine_world::{ScheduledTick, Ticked};
 
 use super::*;
@@ -612,9 +614,11 @@ fn a_tick_of_delay_zero_kept_with_a_chunk_does_not_let_a_tick_scheduled_in_its_r
     assert_eq!(block_at(&region, at(5, -59, 5)), Some(blocks::SAND));
 }
 
-/// Fluid ticks wait in their own queue and never run in this step; they are kept.
+/// A fluid tick runs only where its block still holds exactly that fluid
+/// (`ServerLevel.tickFluid`): one of flowing water at a still source does nothing, and
+/// is gone once it has run.
 #[test]
-fn a_fluid_tick_is_kept_and_does_not_run() {
+fn a_tick_of_flowing_water_at_a_source_runs_and_does_nothing() {
     let origin = ChunkPos::new(0, 0);
     let water = at(5, -60, 5);
     let fluid = ScheduledTick {
@@ -630,9 +634,7 @@ fn a_fluid_tick_is_kept_and_does_not_run() {
         assert_eq!(block_changes(&output), []);
     }
     let saved = region.saved_chunk(origin).unwrap();
-    assert_eq!(saved.ticks().len(), 1, "{:?}", saved.ticks());
-    assert_eq!(saved.ticks()[0].at, in_chunk(water));
-    assert_eq!(saved.ticks()[0].of, Ticked::Fluid(1));
+    assert_eq!(saved.ticks(), []);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1098,4 +1100,116 @@ fn a_tick_of_any_other_block_does_nothing() {
         })
         .collect();
     assert_eq!(of_blocks, Vec::<&RegionEvent>::new());
+}
+
+// ---------------------------------------------------------------------------------------
+// F. Fluids (step B5)
+// ---------------------------------------------------------------------------------------
+
+/// A source's tick of still water, due at once.
+fn source_tick(position: BlockPos, fluid: u8) -> ScheduledTick {
+    ScheduledTick {
+        at: in_chunk(position),
+        of: Ticked::Fluid(fluid),
+        delay: 0,
+        priority: 0,
+    }
+}
+
+/// The level of the liquid block at `position`, or `None` where there is none.
+fn level_at(region: &Region, position: BlockPos) -> Option<u8> {
+    let state = block_at(region, position)?;
+    if !is_class(state, BlockClass::LiquidBlock) {
+        return None;
+    }
+    state.property("level").and_then(|level| level.parse().ok())
+}
+
+/// Water from a source on flat ground spreads seven blocks, one level lower with each
+/// block of the way (a diamond of `FlowingFluid.spreadToSides`), and no further.
+#[test]
+fn water_on_flat_ground_spreads_seven_blocks_one_level_at_a_time() {
+    let source = at(8, -60, 8);
+    let (mut region, _) = ticking_with(
+        &[(source, blocks::WATER)],
+        &[source_tick(source, clustine_blocks::fluid::WATER)],
+    );
+    for _ in 0..60 {
+        idle_tick(&mut region);
+    }
+    for x in -9..=9_i32 {
+        for z in -9..=9_i32 {
+            let position = at(8 + x, -60, 8 + z);
+            let distance = (x.abs() + z.abs()) as u8;
+            let expected = (distance <= 7).then_some(distance);
+            assert_eq!(level_at(&region, position), expected, "{x}, {z}");
+        }
+    }
+}
+
+/// Water looks up to four blocks for a way down and flows only towards the nearest.
+#[test]
+fn water_flows_only_towards_the_nearest_way_down() {
+    let source = at(8, -60, 8);
+    let hole = at(11, -61, 8);
+    let (mut region, _) = ticking_with(
+        &[(source, blocks::WATER), (hole, blocks::AIR)],
+        &[source_tick(source, clustine_blocks::fluid::WATER)],
+    );
+    for _ in 0..40 {
+        idle_tick(&mut region);
+    }
+    assert_eq!(level_at(&region, at(9, -60, 8)), Some(1));
+    assert_eq!(level_at(&region, at(10, -60, 8)), Some(2));
+    assert_eq!(level_at(&region, at(11, -60, 8)), Some(3));
+    // It falls into the hole, which fills with falling water.
+    assert_eq!(level_at(&region, hole), Some(8));
+    for beside in [at(7, -60, 8), at(8, -60, 7), at(8, -60, 9)] {
+        assert_eq!(level_at(&region, beside), None, "{beside:?}");
+    }
+}
+
+/// Two sources with a block between them on something solid make a third.
+#[test]
+fn water_between_two_sources_on_solid_ground_becomes_a_source() {
+    let (west, east) = (at(7, -60, 8), at(9, -60, 8));
+    let (mut region, _) = ticking_with(
+        &[(west, blocks::WATER), (east, blocks::WATER)],
+        &[
+            source_tick(west, clustine_blocks::fluid::WATER),
+            source_tick(east, clustine_blocks::fluid::WATER),
+        ],
+    );
+    for _ in 0..20 {
+        idle_tick(&mut region);
+    }
+    assert_eq!(level_at(&region, at(8, -60, 8)), Some(0));
+}
+
+/// Lava that flows next to water becomes cobblestone, and the hiss is heard.
+#[test]
+fn lava_meeting_water_becomes_cobblestone_or_obsidian() {
+    let lava = at(4, -60, 8);
+    let water = at(7, -60, 8);
+    let (mut region, _) = ticking_with(
+        &[(lava, blocks::LAVA), (water, blocks::WATER)],
+        &[source_tick(lava, clustine_blocks::fluid::LAVA)],
+    );
+    let mut fizzed = false;
+    for _ in 0..200 {
+        let output = idle_tick(&mut region);
+        fizzed |= output
+            .events
+            .iter()
+            .any(|event| matches!(event, RegionEvent::Fizzed { .. }));
+    }
+    assert!(fizzed);
+    // The lava flows east at level 2 and then 4, which water beside it hardens. The
+    // water had no tick of its own, and stays a source.
+    assert_eq!(
+        block_at(&region, at(5, -60, 8)),
+        blocks::LAVA.with_property("level", "2")
+    );
+    assert_eq!(block_at(&region, at(6, -60, 8)), Some(blocks::COBBLESTONE));
+    assert_eq!(block_at(&region, water), Some(blocks::WATER));
 }

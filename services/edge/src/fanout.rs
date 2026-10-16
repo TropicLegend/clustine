@@ -2528,7 +2528,13 @@ impl Fanout {
                 state,
                 breaker,
             } => {
-                self.show_broken(position, state, breaker).await;
+                let data = state.0.into();
+                self.show_near(position, level_event::BLOCK_BROKEN, data, breaker)
+                    .await;
+            }
+            RegionEvent::Fizzed { position } => {
+                self.show_near(position, level_event::LAVA_FIZZ, 0, None)
+                    .await;
             }
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
@@ -3608,25 +3614,27 @@ impl Fanout {
         }
     }
 
-    /// Shows a block breaking, with its sound and bits, to the players near it who have
-    /// its chunk, but the one who broke it, whose client shows it already: the game
-    /// sends the event to players within 64 blocks (`PlayerList.broadcast`).
-    async fn show_broken(
+    /// Shows the level event `event` at `position` (a block breaking, with its sound and
+    /// bits; lava's hiss) to the players near it who have its chunk, but `except`, the
+    /// one who broke the block, whose client shows it already: the game sends a level
+    /// event to players within 64 blocks (`PlayerList.broadcast`).
+    async fn show_near(
         &mut self,
         position: BlockPos,
-        state: BlockState,
-        breaker: Option<PlayerId>,
+        event: i32,
+        data: i32,
+        except: Option<PlayerId>,
     ) {
         const HEARD_WITHIN: f64 = 64.0;
         let chunk = position.chunk();
         let packet = encoded(&LevelEvent {
-            event: level_event::BLOCK_BROKEN,
+            event,
             position: Position {
                 x: position.x,
                 y: position.y,
                 z: position.z,
             },
-            data: state.0.into(),
+            data,
             global: false,
         });
         let (x, y, z) = (
@@ -3638,7 +3646,7 @@ impl Fanout {
             .players
             .iter()
             .filter(|(player, view)| {
-                Some(**player) != breaker
+                Some(**player) != except
                     && (view.sent.contains(&chunk) || view.replace.contains(&chunk))
                     && view
                         .entity

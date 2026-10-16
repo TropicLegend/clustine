@@ -8,9 +8,9 @@
 //!
 //! - an update that would reach a block whose chunk, or a neighbour's, this region
 //!   has not loaded is not made: B6 keeps it as a seam entry;
-//! - the ticks an update schedules are not kept: B4 keeps them;
 //! - `neighborChanged` only removes what can no longer stay (rails, repeaters and
-//!   comparators, redstone wire); power waits for the phase of redstone.
+//!   comparators, redstone wire) and has a liquid look again; power waits for the
+//!   phase of redstone.
 
 use clustine_blocks::BlockView;
 use clustine_blocks::data::{is_class, same_block};
@@ -121,6 +121,16 @@ impl Region {
         {
             let block = clustine_blocks::data::tick_id(state);
             self.schedule_tick(pos, Ticked::Block(block), 2, 0);
+        }
+        // `LiquidBlock.onPlace`: lava that meets water becomes stone of some kind there
+        // and then; any other liquid looks again in its fluid's time.
+        if is_class(state, BlockClass::LiquidBlock) {
+            self.liquid_told(pos, state, output);
+            // `Level.setBlock` tells nobody of a block that `onPlace` changed again: the
+            // change it made has told them.
+            if self.block(pos) != Some(state) {
+                return true;
+            }
         }
         if flags & UPDATE_NEIGHBORS != 0 {
             self.add_and_run(
@@ -334,11 +344,27 @@ impl Region {
         let Some(state) = self.block(pos) else {
             return;
         };
+        if is_class(state, BlockClass::LiquidBlock) {
+            self.liquid_told(pos, state, output);
+            return;
+        }
         let removable = is_class(state, BlockClass::BaseRailBlock)
             || is_class(state, BlockClass::DiodeBlock)
             || is_class(state, BlockClass::RedstoneWireBlock);
         if removable && !can_survive(state, pos, &mut RegionView(self)) {
             self.set_block(pos, fluid_block(state), output);
+        }
+    }
+
+    /// What a liquid block does when it is placed or its neighbour changes
+    /// (`LiquidBlock.onPlace`, `neighborChanged`): its fluid ticks in its own time,
+    /// unless lava met water and became something else.
+    fn liquid_told(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
+        if self.should_spread_liquid(pos, state, output) {
+            let held = clustine_blocks::fluid::FluidState::of(state);
+            if let Some(kind) = held.kind() {
+                self.schedule_tick(pos, Ticked::Fluid(held.fluid), kind.tick_delay(), 0);
+            }
         }
     }
 

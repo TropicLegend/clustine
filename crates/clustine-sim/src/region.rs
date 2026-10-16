@@ -16,6 +16,7 @@ use crate::api::{
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
+mod fluids;
 mod reshape;
 mod ticks;
 mod updates;
@@ -533,6 +534,7 @@ impl Region {
         // for B5.
         self.update_ticking();
         self.run_block_ticks(&mut output);
+        self.run_fluid_ticks(&mut output);
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
         // they stay, and the answer decides.
@@ -1456,7 +1458,25 @@ impl Region {
             return false;
         }
         for (position, state) in changes {
+            let before = self.block(*position);
             self.set_block(*position, *state, output);
+            // A bucket that waterlogs a block gives the water its tick
+            // (`SimpleWaterloggedBlock.placeLiquid`); the block's neighbours, told of the
+            // change, are what else would.
+            let waterlogged = |state: BlockState| state.property("waterlogged") == Some("true");
+            if before.is_some_and(|before| {
+                clustine_blocks::data::same_block(before, *state)
+                    && !waterlogged(before)
+                    && waterlogged(*state)
+            }) {
+                let water = clustine_blocks::fluid::Kind::Water;
+                self.schedule_tick(
+                    *position,
+                    clustine_world::Ticked::Fluid(water.source()),
+                    water.tick_delay(),
+                    0,
+                );
+            }
         }
         true
     }

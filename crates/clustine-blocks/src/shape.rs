@@ -71,6 +71,12 @@ pub fn update_shape<V: BlockView + ?Sized>(
     if state.property("waterlogged") == Some("true") {
         view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
     }
+    // Concrete powder that water touches hardens (`ConcretePowderBlock.updateShape`).
+    if let Some(concrete) = crate::fluid::concrete_of(state)
+        && crate::fluid::touches_water(view, pos)
+    {
+        return concrete;
+    }
     // A block that falls looks again whether it is held up once something beside it
     // changes (`FallingBlock.updateShape`, and suspicious sand and gravel's
     // `BrushableBlock.updateShape`), however it is held up now.

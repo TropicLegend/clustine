@@ -291,7 +291,7 @@ impl Region {
     }
 
     /// The due block ticks of this tick, collected before any runs, each run where its
-    /// block is still there (`LevelTicks.tick`). Fluid ticks wait for B5.
+    /// block is still there (`LevelTicks.tick`).
     pub(crate) fn run_block_ticks(&mut self, output: &mut TickOutput) {
         let due = self.ticks.blocks.take_due(self.tick as i64);
         self.ticks
@@ -309,6 +309,20 @@ impl Region {
                 continue;
             }
             self.block_tick(pos, state, output);
+        }
+    }
+
+    /// The due fluid ticks of this tick, collected before any runs, each run where its
+    /// fluid is still there; after the block ticks, as the game runs them.
+    pub(crate) fn run_fluid_ticks(&mut self, output: &mut TickOutput) {
+        let due = self.ticks.fluids.take_due(self.tick as i64);
+        self.ticks
+            .changed
+            .extend(due.iter().map(|(pos, _)| pos.chunk()));
+        for (pos, of) in due {
+            if let Ticked::Fluid(fluid) = of {
+                self.fluid_tick(pos, fluid, output);
+            }
         }
     }
 
@@ -378,6 +392,35 @@ impl Region {
         }
         self.set_block(pos, fluid_block(state), output);
         let mut y = below.y;
+        // Concrete powder stops in the first water it falls into, where it hardens
+        // (`FallingBlockEntity.tick`, `ConcretePowderBlock.onLand`).
+        if let Some(concrete) = clustine_blocks::fluid::concrete_of(state) {
+            loop {
+                let at = BlockPos::new(pos.x, y, pos.z);
+                let Some(here) = self.block(at) else {
+                    return;
+                };
+                if clustine_blocks::data::has_water(here) {
+                    if here.props().can_be_replaced()
+                        && can_survive(state, at, &mut RegionView(self))
+                    {
+                        self.set_block(at, state, output);
+                        self.set_block(at, concrete, output);
+                    }
+                    return;
+                }
+                let next = BlockPos::new(pos.x, y - 1, pos.z);
+                if y <= min_y
+                    || !self
+                        .block(next)
+                        .is_some_and(|b| b.props().collision_is_empty())
+                {
+                    break;
+                }
+                y -= 1;
+            }
+            y = below.y;
+        }
         // Down through what has nothing to stand on.
         while y > min_y {
             let at = BlockPos::new(pos.x, y - 1, pos.z);
@@ -409,6 +452,11 @@ impl Region {
             && !beneath_free
         {
             self.set_block(landing, state, output);
+            if let Some(concrete) = clustine_blocks::fluid::concrete_of(state)
+                && clustine_blocks::fluid::powder_hardens(&mut RegionView(self), landing, there)
+            {
+                self.set_block(landing, concrete, output);
+            }
         }
     }
 }

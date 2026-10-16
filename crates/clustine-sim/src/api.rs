@@ -701,6 +701,9 @@ pub enum RegionEvent {
         state: BlockState,
         breaker: Option<PlayerId>,
     },
+    /// Lava met water, or took the place of a block, which clients show with a hiss and
+    /// smoke (the game's level event 1501).
+    Fizzed { position: BlockPos },
     /// An entity has a new pose. At most one per entity and tick.
     EntityMoved {
         entity: EntityId,
@@ -717,9 +720,9 @@ impl RegionEvent {
         match self {
             Self::EntitySpawned(state) => [state.chunk(); 2],
             Self::EntityRemoved { chunk, .. } => [*chunk; 2],
-            Self::BlockChanged { position, .. } | Self::BlockDestroyed { position, .. } => {
-                [position.chunk(); 2]
-            }
+            Self::BlockChanged { position, .. }
+            | Self::BlockDestroyed { position, .. }
+            | Self::Fizzed { position } => [position.chunk(); 2],
             Self::EntityMoved {
                 pose,
                 previous_chunk,

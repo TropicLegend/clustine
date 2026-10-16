@@ -1471,6 +1471,8 @@ pub struct LevelEvent {
 pub mod level_event {
     /// A block broke: its sound and its bits, `data` being its state's id.
     pub const BLOCK_BROKEN: i32 = 2001;
+    /// Lava met water or took a block's place: a hiss and smoke, with no data.
+    pub const LAVA_FIZZ: i32 = 1501;
 }
 
 impl Packet for LevelEvent {
