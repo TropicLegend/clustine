@@ -16,7 +16,7 @@ use clustine_region::RegionId;
 use clustine_rpc::{CopyUse, Coupling, StoreReply, Uncoupling};
 use clustine_sim::api::TickInputs;
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, Effect, EffectId, EffectKey, Effected, FiledEffect,
+    BlockPos, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, FiledEffect,
 };
 
 /// At most this many ready effects go to one tick, the rest to the next (section 5).
@@ -333,8 +333,14 @@ impl Border {
 
     /// Fills what the coming tick is given of the borders: bases, updates and
     /// withdrawals of copies, and the ready effects, at most
-    /// [`MAX_EFFECTS_PER_TICK`]. `loaded` says whether the region has a chunk loaded.
-    pub(crate) fn inputs(&mut self, inputs: &mut TickInputs, loaded: impl Fn(ChunkPos) -> bool) {
+    /// [`MAX_EFFECTS_PER_TICK`]. `loaded` says whether the region has a chunk loaded, and
+    /// `next` is the tick the inputs are for.
+    pub(crate) fn inputs(
+        &mut self,
+        inputs: &mut TickInputs,
+        next: u64,
+        loaded: impl Fn(ChunkPos) -> bool,
+    ) {
         let positions: Vec<ChunkPos> = self.copies.keys().copied().collect();
         for position in positions {
             let handable = self.handable(&self.copies[&position]);
@@ -370,6 +376,15 @@ impl Border {
             .received
             .values()
             .filter(|filed| filed.id.sequence <= mark)
+            // A coupled effect is done at the border time after the one it was made in,
+            // also by a holder that runs behind its maker and could take it in the same
+            // one: so an update across a coupled line is exactly a tick late, however
+            // the two are scheduled (sections 1 and 8; found by E6). A scheduled tick is
+            // due when the store says.
+            .filter(|filed| match (filed.due, filed.effect.what) {
+                (_, Effected::Tick { .. }) | (Due::FromTaking, _) => true,
+                (Due::At { tick }, _) => next > tick,
+            })
             .filter(|filed| {
                 let chunk = filed.effect.at.chunk();
                 loaded(chunk)
@@ -484,12 +499,14 @@ impl Border {
         self.timers.remove(&chunk);
     }
 
-    /// After a tick: the chunks the region stopped having loaded, and those whose timer
-    /// ran out, which the store is told it dropped. `returned` and `warm` are not: a
-    /// return ends the use by itself, and a warm chunk counts as loaded.
+    /// After a tick: the chunks the region stopped having loaded, those it was handed
+    /// and did not take, and those whose timer ran out, which the store is told it
+    /// dropped. `returned` and `warm` are not: a return ends the use by itself, and a
+    /// warm chunk counts as loaded.
     pub(crate) fn dropped(
         &mut self,
         loaded: Vec<ChunkPos>,
+        delivered: &[ChunkPos],
         returned: &[ChunkPos],
         warm: impl Fn(ChunkPos) -> bool,
         tick: u64,
@@ -498,7 +515,9 @@ impl Border {
         let loaded: BTreeSet<ChunkPos> = loaded.into_iter().collect();
         let mut dropped: BTreeSet<ChunkPos> = self
             .loaded
-            .difference(&loaded)
+            .iter()
+            .chain(delivered)
+            .filter(|chunk| !loaded.contains(chunk))
             .copied()
             .filter(|chunk| !returned.contains(chunk) && !warm(*chunk))
             .collect();
@@ -536,7 +555,6 @@ impl Border {
 #[cfg(test)]
 mod tests {
     use clustine_data::blocks;
-    use clustine_world::Due;
 
     use super::*;
 
@@ -575,7 +593,7 @@ mod tests {
 
     fn inputs(border: &mut Border) -> TickInputs {
         let mut inputs = TickInputs::default();
-        border.inputs(&mut inputs, |_| true);
+        border.inputs(&mut inputs, 100, |_| true);
         inputs
     }
 
@@ -743,11 +761,13 @@ mod tests {
             ChunkPos::new(2, 0),
             ChunkPos::new(3, 0),
         );
-        border.dropped(vec![a, b, c], &[], |_| false, 1, 10);
+        let e = ChunkPos::new(4, 0);
+        border.dropped(vec![a, b, c], &[], &[], |_| false, 1, 10);
         border.time([d], 1);
-        let dropped = border.dropped(vec![], &[b], |chunk| chunk == c, 2, 10);
-        assert_eq!(dropped, BTreeSet::from([a]));
-        let dropped = border.dropped(vec![], &[], |_| false, 11, 10);
+        // `e` was handed to the tick and not taken.
+        let dropped = border.dropped(vec![], &[e], &[b], |chunk| chunk == c, 2, 10);
+        assert_eq!(dropped, BTreeSet::from([a, e]));
+        let dropped = border.dropped(vec![], &[], &[], |_| false, 11, 10);
         assert_eq!(dropped, BTreeSet::from([d]));
     }
 }

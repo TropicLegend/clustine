@@ -568,6 +568,30 @@ E5, the worker (2026-10-16):
   the part in memory, and then given the chunks whose use moved to it and any
   couplings (`RegionRunner::with_borders`).
 
+E6, tests from this record by someone who did not write the code (2026-10-16), found
+three defects, now mended:
+
+- **A slow region was never given up.** Each of its commits levelled it with its
+  partner for a moment, and the five seconds began again. A partner that waited within
+  the last second now counts as waiting.
+- **An update across a coupled line was sometimes on time**: a holder that ran behind
+  its maker took the effect at the border time it was made in, and the same world
+  played otherwise as the two runners were scheduled. A coupled effect other than a
+  scheduled tick is now taken only at a tick after the one it was made in, so an update
+  is always exactly one tick late.
+- **The use of a chunk could leak.** A return of land a region holds by being pinned,
+  which frees nothing, ended no use; and a chunk whose load came after the region
+  stopped wanting it, which the region does not take, was never said `Dropped`. A
+  return now ends the use of every chunk it names but the home chunk, and the runner
+  says `Dropped` of a chunk it was handed and did not take.
+
+What E6 found unclear: "on the tick it would in one region" means that the blocks past
+the one across the line change on the ticks they would in one region; that one is set
+a tick late, as an update is. The resend after a hello comes at the hello, and the
+runner keeps what it gets until the chunk is loaded. A hello after a restart of the
+store does not call off a handshake under way: section 8's call-off at a hello is of a
+hello that replaces an owner.
+
 ## Review
 
 **First review of this record (2026-10-16): not ready.** Its findings, worked in:

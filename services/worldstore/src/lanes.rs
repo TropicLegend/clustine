@@ -1327,6 +1327,17 @@ impl Lanes {
                 let region = session.region;
                 let mut returned = Vec::new();
                 let mut asked = BTreeSet::new();
+                // The region lets go of every chunk it names, also of one it holds by
+                // being pinned and was never granted, which no return frees: its use
+                // ends all the same (`docs/adr/0025-effects-between-regions.md`,
+                // section 5, and "Found while building", E6).
+                let mut let_go: Vec<ChunkPos> = chunks
+                    .iter()
+                    .copied()
+                    .filter(|chunk| *chunk != self.table.home_chunk)
+                    .collect();
+                let_go.sort_unstable();
+                let_go.dedup();
                 for chunk in chunks {
                     let granted = self.table.granted_from(region, chunk).is_some();
                     if !granted || chunk == self.table.home_chunk {
@@ -1339,9 +1350,6 @@ impl Lanes {
                         returned.push(chunk);
                     }
                 }
-                if returned.is_empty() {
-                    return;
-                }
                 // A chunk being returned is not in use: what is filed for it is dropped.
                 let ended = end_uses(
                     &mut self.uses,
@@ -1351,11 +1359,14 @@ impl Lanes {
                     &mut self.log,
                     &mut self.group,
                     region,
-                    &returned,
+                    &let_go,
                 );
                 if let Err(error) = ended {
                     error!(%region, %error, "effects dropped could not be written to the log");
                     self.fail_log();
+                    return;
+                }
+                if returned.is_empty() {
                     return;
                 }
                 lane.returns += 1;

@@ -41,6 +41,8 @@ mod copies_tests;
 #[cfg(test)]
 mod couplings_tests;
 #[cfg(test)]
+mod effects_by_the_record;
+#[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
 mod generation_tests;

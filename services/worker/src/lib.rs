@@ -2385,10 +2385,19 @@ impl RegionRunner {
         }
         self.inputs.copies_withdrawn.extend(withdrawn);
         let region = &self.region;
-        self.border
-            .inputs(&mut self.inputs, |chunk| region.chunk(chunk).is_some());
+        let next = region.tick_number() + 1;
+        self.border.inputs(&mut self.inputs, next, |chunk| {
+            region.chunk(chunk).is_some()
+        });
         // What is collected from here on is for the tick after this one.
         let inputs = mem::take(&mut self.inputs);
+        // A chunk handed in that the region does not take, since nothing wants it any
+        // more, is in use at the store from its load on: it is dropped after the tick.
+        let delivered: Vec<ChunkPos> = inputs
+            .chunks_loaded
+            .iter()
+            .map(|(position, _)| *position)
+            .collect();
         self.discards.clear();
         let output = self.region.tick(&inputs);
         for edge in self.edges.values_mut() {
@@ -2450,6 +2459,7 @@ impl RegionRunner {
         let warm = &self.warm;
         let dropped = self.border.dropped(
             self.region.loaded_chunks(),
+            &delivered,
             &output.returns,
             |chunk| warm.contains_key(&chunk),
             tick,

@@ -33,6 +33,9 @@ pub(crate) const COUPLING_PATIENCE: Duration = Duration::from_millis(250);
 pub(crate) const SLOW_PACE: u64 = 15;
 pub(crate) const SLOW_FOR: Duration = Duration::from_secs(5);
 
+/// How long ago a partner may have waited last for it still to count as waiting.
+const WAITED_LATELY: Duration = Duration::from_secs(1);
+
 type Pair = (RegionId, RegionId);
 
 /// The two regions in order, the lower first.
@@ -69,6 +72,8 @@ struct Pace {
     free_since: Option<Duration>,
     /// Since when a partner has waited on it, and its border time then.
     waited_on: Option<(Duration, i64)>,
+    /// When a partner last waited on it.
+    last_waited: Option<Duration>,
 }
 
 /// How a region given up earns its couplings back: since when it has been measured,
@@ -633,18 +638,28 @@ impl Couplings {
                 (false, _) => pace.free_since = None,
                 _ => {}
             }
-            match (waited_on, pace.waited_on) {
-                (false, _) => pace.waited_on = None,
-                (true, None) => pace.waited_on = Some((now, through)),
-                (true, Some((since, from))) if now.saturating_sub(since) >= SLOW_FOR => {
-                    let ticks = (through - from).max(0) as u64;
-                    if ticks < SLOW_PACE * SLOW_FOR.as_secs() {
-                        giving_up.insert(region);
-                    } else {
-                        pace.waited_on = Some((now, through));
-                    }
+            // A slow region levels with its partner each time it commits, and the
+            // partner waits again at once: so a partner that waited within the last
+            // second still counts as waiting (found by E6). One that has not waited for
+            // longer than that ends the measuring.
+            if waited_on {
+                pace.last_waited = Some(now);
+                pace.waited_on.get_or_insert((now, through));
+            } else if pace
+                .last_waited
+                .is_none_or(|last| now.saturating_sub(last) > WAITED_LATELY)
+            {
+                pace.waited_on = None;
+            }
+            if let Some((since, from)) = pace.waited_on
+                && now.saturating_sub(since) >= SLOW_FOR
+            {
+                let ticks = (through - from).max(0) as u64;
+                if ticks < SLOW_PACE * SLOW_FOR.as_secs() {
+                    giving_up.insert(region);
+                } else {
+                    pace.waited_on = Some((now, through));
                 }
-                _ => {}
             }
         }
         for region in giving_up {
