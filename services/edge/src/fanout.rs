@@ -24,10 +24,10 @@ use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, BlockUpdate, ChunkBatchFinished, ChunkBatchStart, Disconnect,
     GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, PositionPath, RemoveEntities, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, SpawnEntity, SyncEntityPosition,
-    SynchronizePlayerPosition, UnloadChunk, abilities, angle, game_event, game_mode, inventory,
-    level_event, player_info,
+    PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
+    SetContainerContent, SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, SpawnEntity,
+    SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk, abilities, angle, game_event,
+    game_mode, inventory, level_event, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -677,6 +677,10 @@ const ASK_AGAIN_EVERY: Duration = Duration::from_secs(1);
 /// What reaches the fan-out task from a link to a region: a message, or `None` when the
 /// link has ended.
 type FromLink = (RegionId, u64, Option<WorkerToEdge>);
+
+/// The blocks a tick changed, by chunk and section (its y in sections), each with its
+/// last state.
+type Changed = BTreeMap<(ChunkPos, i32), BTreeMap<BlockPos, BlockState>>;
 
 pub(crate) struct Fanout {
     config: FanoutConfig,
@@ -1562,9 +1566,26 @@ impl Fanout {
                 }
             }
             WorkerToEdge::TickDelta { events, .. } => {
+                // The changes of blocks of one tick go out together at its end, those of
+                // one section in one packet, as the game's `ChunkHolder.broadcastChanges`
+                // sends them: a tick can change thousands (the leaves of a forest set
+                // right as it is loaded), which one packet each would not fit in a
+                // client's queue.
+                let mut changed = Changed::new();
                 for event in events {
-                    self.handle_event(from, event).await;
+                    match event {
+                        RegionEvent::BlockChanged { position, state } => {
+                            if self.change_block(position, state) {
+                                changed
+                                    .entry((position.chunk(), position.y.div_euclid(16)))
+                                    .or_default()
+                                    .insert(position, state);
+                            }
+                        }
+                        event => self.handle_event(from, event).await,
+                    }
                 }
+                self.show_changes(changed).await;
             }
             // A region says these through its outbox, so that they reach the edge even
             // if the region's owner dies right after.
@@ -2521,7 +2542,11 @@ impl Fanout {
                 }
             }
             RegionEvent::BlockChanged { position, state } => {
-                self.change_block(position, state).await;
+                if self.change_block(position, state) {
+                    let section = (position.chunk(), position.y.div_euclid(16));
+                    let changed = Changed::from([(section, BTreeMap::from([(position, state)]))]);
+                    self.show_changes(changed).await;
+                }
             }
             RegionEvent::BlockDestroyed {
                 position,
@@ -3544,14 +3569,14 @@ impl Fanout {
     }
 
     /// Applies a block change to the replica and tells everyone who has the chunk.
-    async fn change_block(&mut self, position: BlockPos, state: BlockState) {
+    fn change_block(&mut self, position: BlockPos, state: BlockState) -> bool {
         let chunk_position = position.chunk();
         let Some(entry) = self.replica.get_mut(&chunk_position) else {
-            return;
+            return false;
         };
         let Some(chunk) = &mut entry.chunk else {
             // The chunk itself is still on its way and will include the change.
-            return;
+            return false;
         };
         let (x, z) = position.in_chunk();
         // A change that puts the state that is there changes nothing: two regions can
@@ -3591,26 +3616,49 @@ impl Fanout {
             }
         }
 
-        let packet = encoded(&BlockUpdate {
-            position: Position {
-                x: position.x,
-                y: position.y,
-                z: position.z,
-            },
-            state: state.0.into(),
-        });
-        // Players who have not been sent the chunk yet get it with the change in it.
-        let viewers: Vec<_> = self
-            .players
-            .iter()
-            .filter(|(_, view)| {
-                // Also one whose client still shows the chunk of before.
-                view.sent.contains(&chunk_position) || view.replace.contains(&chunk_position)
-            })
-            .map(|(player, _)| *player)
-            .collect();
-        for player in viewers {
-            self.send_to_player(player, [packet.clone()]).await;
+        true
+    }
+
+    /// Tells the players who have been sent a chunk of the changes `changed` made to its
+    /// blocks: a single change of a section as a block update, several as one update of
+    /// the section. Players who have not been sent the chunk yet get it with the changes
+    /// in it.
+    async fn show_changes(&mut self, changed: Changed) {
+        for ((chunk_position, section), blocks) in changed {
+            let packet = if let [(position, state)] = blocks.iter().collect::<Vec<_>>()[..] {
+                encoded(&BlockUpdate {
+                    position: Position {
+                        x: position.x,
+                        y: position.y,
+                        z: position.z,
+                    },
+                    state: state.0.into(),
+                })
+            } else {
+                let at = |coordinate: i32| coordinate.rem_euclid(16) as u8;
+                encoded(&SectionBlocksUpdate {
+                    section: (chunk_position.x, section, chunk_position.z),
+                    blocks: blocks
+                        .iter()
+                        .map(|(position, state)| {
+                            let place = (at(position.x), at(position.y), at(position.z));
+                            (place, i32::from(state.0))
+                        })
+                        .collect(),
+                })
+            };
+            let viewers: Vec<_> = self
+                .players
+                .iter()
+                .filter(|(_, view)| {
+                    // Also one whose client still shows the chunk of before.
+                    view.sent.contains(&chunk_position) || view.replace.contains(&chunk_position)
+                })
+                .map(|(player, _)| *player)
+                .collect();
+            for player in viewers {
+                self.send_to_player(player, [packet.clone()]).await;
+            }
         }
     }
 

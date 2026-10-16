@@ -558,6 +558,15 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    /// A change of a block the client was sent, alone or with others of its section.
+    fn take_block(&mut self, block: BlockPos, state: BlockState) {
+        self.told.push(Told::Block(block, state));
+        // A client has nowhere to put a block of a chunk it does not have.
+        if let Some(shown) = self.chunks.get_mut(&block.chunk()) {
+            shown.changed.insert(block, state);
+        }
+    }
+
     /// Takes a packet as a client would.
     fn take(&mut self, packet: Bytes) {
         // What `fill` put there to take up room.
@@ -593,11 +602,17 @@ impl Client {
             ClientboundPlay::BlockUpdate(update) => {
                 let at = update.position;
                 let block = BlockPos::new(at.x, at.y, at.z);
-                let state = BlockState(update.state as u16);
-                self.told.push(Told::Block(block, state));
-                // A client has nowhere to put a block of a chunk it does not have.
-                if let Some(shown) = self.chunks.get_mut(&block.chunk()) {
-                    shown.changed.insert(block, state);
+                self.take_block(block, BlockState(update.state as u16));
+            }
+            ClientboundPlay::SectionBlocksUpdate(update) => {
+                let (sx, sy, sz) = update.section;
+                for ((x, y, z), state) in update.blocks {
+                    let block = BlockPos::new(
+                        sx * 16 + i32::from(x),
+                        sy * 16 + i32::from(y),
+                        sz * 16 + i32::from(z),
+                    );
+                    self.take_block(block, BlockState(state as u16));
                 }
             }
             ClientboundPlay::LightUpdate(update) => {

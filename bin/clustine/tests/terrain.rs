@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use clustine::{Config, Land, Server};
 use clustine_botswarm::Bot;
-use clustine_data::blocks;
+use clustine_data::{BlockState, blocks};
 use clustine_protocol::packets::play::face;
 use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, Vec3};
 use clustine_worldgen::scheduler::{Options, Scheduler};
@@ -38,6 +38,31 @@ fn land() -> Scheduler<FeatureStages> {
 const VIEW: i32 = 2;
 
 const AIR: i32 = blocks::AIR.0 as i32;
+
+/// Whether a block a client was sent, `sent`, is the block the generator made, `made`,
+/// as the ticks generation scheduled with it leave it, which run once the chunk ticks
+/// (`docs/adr/0024-block-behaviour-in-a-region.md`): leaves that another tree's log
+/// came beside, or whose own was taken, are set to their distance, as the game sets
+/// them; and water and lava flow where generation left them able to, as in a cave
+/// with a spring.
+fn as_ticked(made: BlockState, sent: i32) -> bool {
+    let Ok(sent) = u16::try_from(sent).map(BlockState) else {
+        return false;
+    };
+    if sent == made {
+        return true;
+    }
+    let leaves = |state: BlockState| state.property("distance").is_some();
+    if leaves(made) && made.block_id() == sent.block_id() {
+        return made.with_property("distance", sent.property("distance").unwrap()) == Some(sent);
+    }
+    is_fluid_or_air(made) && is_fluid_or_air(sent)
+}
+
+/// Air, or a block that holds a fluid.
+fn is_fluid_or_air(state: BlockState) -> bool {
+    state.props().is_air() || state.props().fluid().is_some()
+}
 const STONE: i32 = blocks::STONE.0 as i32;
 
 fn on_disk(world: &std::path::Path) -> Config {
@@ -138,8 +163,9 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     assert!(!login.flat);
     assert_eq!(login.sea_level, 63);
 
-    // Every chunk of the view is the generator's, block for block and cell for cell,
-    // and none of them is one block throughout or level like the flat world.
+    // Every chunk of the view is the generator's, block for block and cell for cell, as
+    // the ticks generation scheduled leave it (`as_ticked`), and none of them is one
+    // block throughout or level like the flat world.
     let area = view_area((0, 0), VIEW);
     assert_eq!(walker.chunks.len(), area.len());
     let mut tops = BTreeSet::new();
@@ -149,14 +175,19 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
         assert_eq!(sections.len(), made.sections().len());
         let mut states = BTreeSet::new();
         for (sent, made) in sections.iter().zip(made.sections()) {
-            assert_eq!(
-                sent.block_count as u16,
-                made.non_air_count(),
-                "{position:?}"
-            );
+            let mut flowed = false;
             for (index, state) in made.states().enumerate() {
-                assert_eq!(sent.blocks.get(index), i32::from(state.0), "{position:?}");
+                let got = sent.blocks.get(index);
+                assert!(as_ticked(state, got), "{position:?}: {state:?} and {got}");
+                flowed |= is_fluid_or_air(state) && i32::from(state.0) != got;
                 states.insert(state);
+            }
+            if !flowed {
+                assert_eq!(
+                    sent.block_count as u16,
+                    made.non_air_count(),
+                    "{position:?}"
+                );
             }
             for (cell, biome) in made.biomes().enumerate() {
                 assert_eq!(sent.biomes.get(cell), i32::from(biome.0), "{position:?}");
@@ -190,10 +221,16 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
         assert_eq!(bot.block_at(2, dug, 1).unwrap(), Some(AIR));
         assert_eq!(bot.block_at(-2, built + 1, -1).unwrap(), Some(STONE));
         // What is beside them is as generated.
-        let beside = i32::from(origin.get(3, dug - 1, 1).unwrap().0);
-        assert_eq!(bot.block_at(3, dug - 1, 1).unwrap(), Some(beside));
-        let under = i32::from(beyond.get(14, built, 15).unwrap().0);
-        assert_eq!(bot.block_at(-2, built, -1).unwrap(), Some(under));
+        let beside = origin.get(3, dug - 1, 1).unwrap();
+        assert!(as_ticked(
+            beside,
+            bot.block_at(3, dug - 1, 1).unwrap().unwrap()
+        ));
+        let under = beyond.get(14, built, 15).unwrap();
+        assert!(as_ticked(
+            under,
+            bot.block_at(-2, built, -1).unwrap().unwrap()
+        ));
     };
     assert_built(&walker);
 
@@ -224,7 +261,7 @@ async fn a_world_with_a_seed_is_its_land_and_keeps_what_is_done_to_it() {
     let sections = visitor.sections((-2, 3)).unwrap().unwrap();
     for (sent, made) in sections.iter().zip(far.sections()) {
         for (index, state) in made.states().enumerate() {
-            assert_eq!(sent.blocks.get(index), i32::from(state.0));
+            assert!(as_ticked(state, sent.blocks.get(index)));
         }
     }
     let mut walker = join(&address, "Walker", (0, 0)).await;
