@@ -324,3 +324,18 @@ kept value of −1 possible (section 3); the stop's own saves named and to be me
 the new log kind carrying stays, and ticks with only such changes committed; no save
 at a return; `release` saving only when no ticket remains; rings worked out again when
 holdings change.
+
+## Found while building
+
+- The order of scheduled ticks needs no counter in `RegionState`: a tick's order is its
+  tick number shifted left by twenty bits with a count from zero, which starts again at
+  the start of each tick, so orders never collide and nothing more is saved.
+- Rings are a setting of the region runner (`RegionSettings.rings`), on in the server
+  and off in the tests of ADR-0012's tickets, whose expected loads and saves predate
+  rings; the tests of rings turn them on.
+- A test written from this record found that the shared rules had no survival rule for
+  farmland, which therefore turned to dirt at every tick; it now has
+  `FarmlandBlock.canSurvive`'s. Placing farmland where something solid is above it is
+  refused, where the game places dirt; only a player in creative can try it.
+- A commit with ticks makes the chunk no longer as generated in the store's replays,
+  as a commit with blocks does.
