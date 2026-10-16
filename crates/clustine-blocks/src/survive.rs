@@ -60,6 +60,8 @@ pub enum Survival {
     FaceAttached,
     Lantern,
     SnowLayer,
+    /// Nothing solid above, or what keeps farmland (`FarmlandBlock.canSurvive`).
+    Farmland,
     Door,
     RedstoneWire,
     Multiface,
@@ -142,6 +144,7 @@ fn class_rule(class: BlockClass, rules: Rules) -> Option<Survival> {
         C::FaceAttachedHorizontalDirectionalBlock => S::FaceAttached,
         C::LanternBlock => S::Lantern,
         C::SnowLayerBlock => S::SnowLayer,
+        C::FarmlandBlock => S::Farmland,
         C::DoorBlock => S::Door,
         C::RedstoneWireBlock => S::RedstoneWire,
         C::MultifaceBlock => S::Multiface,
@@ -295,6 +298,10 @@ pub fn can_survive<V: BlockView + ?Sized>(state: BlockState, pos: BlockPos, view
             )
         }
         Survival::SnowLayer => snow_layer(below),
+        Survival::Farmland => {
+            let above = view.block(relative(pos, Face::Up));
+            !above.props().is_solid() || in_tag(above, "minecraft:maintains_farmland")
+        }
         Survival::Door => {
             if state.property("half") == Some("upper") {
                 same_block(below, state)
