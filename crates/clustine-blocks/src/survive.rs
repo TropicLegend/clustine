@@ -68,6 +68,8 @@ pub enum Survival {
     Scaffolding,
     Fire,
     SoulFire,
+    /// What grows: a growing plant or a speleothem, by `growth.rs`.
+    Growing,
     /// A class with a `canSurvive` that is not ported: the block stays nowhere.
     NotPorted,
 }
@@ -130,6 +132,10 @@ fn class_rule(class: BlockClass, rules: Rules) -> Option<Survival> {
         C::BambooSaplingBlock | C::BambooStalkBlock => S::OnTag("minecraft:supports_bamboo"),
         C::BigDripleafBlock => S::BigDripleaf,
         C::SugarCaneBlock => S::SugarCane,
+        // Kelp, the vines that grow and speleothems: the simulation's growth needs
+        // them (`growth.rs`); generation never asked.
+        C::GrowingPlantBlock if placing => S::Growing,
+        C::SpeleothemBlock if placing => S::Growing,
         C::CactusBlock => S::Cactus,
         C::MossyCarpetBlock if generation => S::MossyCarpet,
         C::CarpetBlock => S::NotOnAir,
@@ -298,6 +304,7 @@ pub fn can_survive<V: BlockView + ?Sized>(state: BlockState, pos: BlockPos, view
             )
         }
         Survival::SnowLayer => snow_layer(below),
+        Survival::Growing => crate::growth::grows_and_can_stay(view, state, pos).unwrap_or(true),
         Survival::Farmland => {
             let above = view.block(relative(pos, Face::Up));
             !above.props().is_solid() || in_tag(above, "minecraft:maintains_farmland")

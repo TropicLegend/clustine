@@ -691,6 +691,18 @@ mod tests {
     }
 
     /// How many of the blocks from `pos` up are of the block of `of`.
+    /// 1 if `of` stands right above the column of other blocks from `pos` up, or at
+    /// `pos`: the head of a growing plant.
+    fn column_from(region: &Region, pos: BlockPos, of: BlockState) -> i32 {
+        let below = (0..)
+            .take_while(|up| {
+                let here = read(region, pos.offset(0, *up, 0));
+                !is_block(here, of) && !here.props().is_air() && here != blocks::WATER
+            })
+            .count() as i32;
+        i32::from(is_block(read(region, pos.offset(0, below, 0)), of))
+    }
+
     fn column(region: &Region, pos: BlockPos, of: BlockState) -> i32 {
         (0..)
             .take_while(|up| is_block(read(region, pos.offset(0, *up, 0)), of))
@@ -928,11 +940,16 @@ mod tests {
             placed.push((at(0, y, 0), blocks::WATER));
         }
         let mut region = region_with(&placed);
+        // Below its head a column of kelp is kelp plant, which the head's shape rule
+        // makes it as the head grows on.
+        let kelp_column = |region: &Region| {
+            column(region, base, blocks::KELP_PLANT) + column_from(region, base, blocks::KELP)
+        };
         for seed in 0..3000 {
-            let top = base.offset(0, column(&region, base, blocks::KELP) - 1, 0);
+            let top = base.offset(0, kelp_column(&region) - 1, 0);
             random_tick(&mut region, top, seed);
         }
-        assert_eq!(column(&region, base, blocks::KELP), 6);
+        assert_eq!(kelp_column(&region), 6);
         assert_eq!(read(&region, at(0, -55, 0)), state("minecraft:kelp[age=5]"));
         assert!(read(&region, at(0, -54, 0)).props().is_air());
     }

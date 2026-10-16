@@ -1309,3 +1309,102 @@ fn an_update_into_a_chunk_not_loaded_is_made_when_it_comes() {
     assert!(output.seams_changed.contains(&near));
     assert!(region.seams(near).iter().all(|seam| seam.at != torch));
 }
+
+// ---------------------------------------------------------------------------------------
+// I. The shapes of what grows (step B7)
+// ---------------------------------------------------------------------------------------
+
+/// The state of the block called `name` with `properties`.
+fn named(name: &str, properties: &[(&str, &str)]) -> BlockState {
+    let id = clustine_data::block_id_by_name(name).unwrap();
+    let mut state = clustine_data::BLOCKS[id].default_state;
+    for (property, value) in properties {
+        state = state.with_property(property, value).unwrap();
+    }
+    state
+}
+
+/// Kelp that grows becomes body under its new head, and the body at the top becomes a
+/// head again when the head above it goes (`GrowingPlant*Block.updateShape`).
+#[test]
+fn kelp_under_a_new_head_becomes_body_and_body_left_on_top_a_head() {
+    let (low, high, top) = (at(5, -60, 5), at(5, -59, 5), at(5, -58, 5));
+    let water = [(top, blocks::WATER), (at(5, -57, 5), blocks::WATER)];
+    let mut placed = vec![(low, named("minecraft:kelp", &[]))];
+    placed.push((high, blocks::WATER));
+    placed.extend(water);
+    let (mut region, _) = ticking_with(&placed, &[]);
+    let mut output = TickOutput::default();
+    region.set_block(high, named("minecraft:kelp", &[]), &mut output);
+    assert_eq!(
+        block_at(&region, low).unwrap().block().unwrap().name,
+        "minecraft:kelp_plant"
+    );
+    region.set_block(top, named("minecraft:kelp", &[]), &mut output);
+    assert_eq!(
+        block_at(&region, high).unwrap().block().unwrap().name,
+        "minecraft:kelp_plant"
+    );
+    region.set_block(top, blocks::WATER, &mut output);
+    let head = block_at(&region, high).unwrap();
+    assert_eq!(head.block().unwrap().name, "minecraft:kelp");
+    let age: u32 = head.property("age").unwrap().parse().unwrap();
+    assert!(age < 25);
+}
+
+/// Kelp whose ground goes is gone a tick later, and its water stays.
+#[test]
+fn kelp_whose_ground_goes_is_destroyed_at_its_tick() {
+    let (ground, kelp) = (at(5, -61, 5), at(5, -60, 5));
+    let (mut region, _) = ticking_with(
+        &[
+            (kelp, named("minecraft:kelp", &[])),
+            (at(5, -59, 5), blocks::WATER),
+        ],
+        &[],
+    );
+    let mut output = TickOutput::default();
+    region.set_block(ground, blocks::WATER, &mut output);
+    assert_eq!(
+        block_at(&region, kelp).unwrap().block().unwrap().name,
+        "minecraft:kelp"
+    );
+    idle_tick(&mut region);
+    idle_tick(&mut region);
+    // Kelp holds water, which it leaves.
+    assert_eq!(block_at(&region, kelp), Some(blocks::WATER));
+}
+
+/// A stalactite's tip becomes frustum when a tip grows below it, and base where it
+/// hangs from stone.
+#[test]
+fn a_stalactite_s_tip_becomes_frustum_when_a_tip_grows_below_it() {
+    let tip = |thickness| {
+        named(
+            "minecraft:pointed_dripstone",
+            &[("vertical_direction", "down"), ("thickness", thickness)],
+        )
+    };
+    let (ceiling, upper, lower, lowest) =
+        (at(5, -56, 5), at(5, -57, 5), at(5, -58, 5), at(5, -59, 5));
+    let (mut region, _) = ticking_with(&[(ceiling, blocks::STONE), (upper, tip("tip"))], &[]);
+    let mut output = TickOutput::default();
+    region.set_block(lower, tip("tip"), &mut output);
+    assert_eq!(block_at(&region, upper), Some(tip("frustum")));
+    region.set_block(lowest, tip("tip"), &mut output);
+    assert_eq!(block_at(&region, upper), Some(tip("base")));
+    assert_eq!(block_at(&region, lower), Some(tip("frustum")));
+}
+
+/// A chorus plant joins a chorus flower set beside it.
+#[test]
+fn a_chorus_plant_joins_a_flower_beside_it() {
+    let (plant, above) = (at(5, -60, 5), at(5, -59, 5));
+    let (mut region, _) = ticking_with(&[(plant, named("minecraft:chorus_plant", &[]))], &[]);
+    let mut output = TickOutput::default();
+    region.set_block(above, named("minecraft:chorus_flower", &[]), &mut output);
+    assert_eq!(
+        block_at(&region, plant).unwrap().property("up"),
+        Some("true")
+    );
+}

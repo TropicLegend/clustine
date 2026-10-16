@@ -11,6 +11,7 @@
 pub mod connect;
 pub mod data;
 pub mod fluid;
+pub mod growth;
 pub mod shape;
 pub mod support;
 pub mod survive;

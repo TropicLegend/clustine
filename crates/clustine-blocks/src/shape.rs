@@ -71,6 +71,12 @@ pub fn update_shape<V: BlockView + ?Sized>(
     if state.property("waterlogged") == Some("true") {
         view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
     }
+    // What grows takes its shape as it grows, in the simulation (`growth.rs`).
+    if view.rules() == crate::Rules::Placing
+        && let Some(grown) = crate::growth::update_shape(view, state, pos, direction, neighbour)
+    {
+        return grown;
+    }
     // Concrete powder that water touches hardens (`ConcretePowderBlock.updateShape`).
     if let Some(concrete) = crate::fluid::concrete_of(state)
         && crate::fluid::touches_water(view, pos)

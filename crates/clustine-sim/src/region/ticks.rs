@@ -420,6 +420,17 @@ impl Region {
         if self.fire_block_tick(pos, state, output) {
             return;
         }
+        // Kelp, a vine that grows or a speleothem that its support left goes
+        // (`GrowingPlantBlock.tick`; a stalactite falls in the game, and is destroyed
+        // here, as falling blocks land at once and dripstone's fall is not ported).
+        if let Some(stays) =
+            clustine_blocks::growth::grows_and_can_stay(&mut RegionView(self), state, pos)
+        {
+            if !stays {
+                self.destroy_block_by_tick(pos, output);
+            }
+            return;
+        }
         if is_class(state, BlockClass::FallingBlock) {
             self.fall(pos, state, output);
         } else if is_class(state, BlockClass::LeavesBlock) {
