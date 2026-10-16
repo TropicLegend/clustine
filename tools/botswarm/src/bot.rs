@@ -1358,6 +1358,17 @@ impl Bot {
                 self.block_changes
                     .insert((position.x, position.y, position.z), packet.state);
             }
+            ClientboundPlay::SectionBlocksUpdate(packet) => {
+                let (sx, sy, sz) = packet.section;
+                for ((x, y, z), state) in packet.blocks {
+                    let at = (
+                        sx * 16 + i32::from(x),
+                        sy * 16 + i32::from(y),
+                        sz * 16 + i32::from(z),
+                    );
+                    self.block_changes.insert(at, state);
+                }
+            }
             ClientboundPlay::SetContainerContent(packet) => {
                 if packet.window_id == inventory::PLAYER_WINDOW {
                     for (slot, held) in self.hotbar.iter_mut().enumerate() {

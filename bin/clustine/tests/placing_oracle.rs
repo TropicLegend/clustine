@@ -20,11 +20,13 @@
 //! listed at the end rather than the first one alone.
 //!
 //! The states are read by a second bot that joins once every case has been run: the
-//! chunks it is sent hold every block as the server has it then. The builder itself
-//! cannot be trusted with that, since the official server sends what changes in one
-//! section in one tick (a door's two halves, a bed's head and foot) in a
-//! `section_blocks_update`, which the bots do not read. Both servers serve the same
-//! version, so their numeric block state ids are the same and are compared as numbers.
+//! chunks it is sent hold every block as the server has it then, whatever the builder
+//! was or was not sent on the way. (The official server sends what changes in one
+//! section in one tick, a door's two halves or a bed's head and foot, in a
+//! `section_blocks_update`, which the bots read only since phase B's step B5.) A case
+//! of a flowing fluid has the builder wait first until it is shown the last block the
+//! fluid changes. Both servers serve the same version, so their numeric block state ids
+//! are the same and are compared as numbers.
 //!
 //! Where Clustine differs on purpose (section 7 of the plan: chests stay single, rails
 //! do not curve; neighbours change in turn since phase B's step B3), only the block
@@ -102,6 +104,10 @@ const NORTH_OF_IT: (f64, f64, f64) = (0.5, 0.0, -2.5);
 /// Where it hovers for a case in a pit: a block above the origin, so that it pours a
 /// bucket straight down into the pit.
 const ABOVE_IT: (f64, f64, f64) = (0.5, 1.0, 0.5);
+
+/// How long the builder waits for a flowing fluid to settle: lava takes thirty ticks
+/// for each block it flows.
+const SETTLE_PATIENCE: Duration = Duration::from_secs(30);
 
 /// What the builder holds for a step.
 #[derive(Debug, Clone, Copy)]
@@ -265,6 +271,11 @@ struct Case {
     steps: Vec<Step>,
     /// The positions compared afterwards.
     compared: Vec<Rel>,
+    /// Blocks the builder waits to be shown with these states after the steps, before
+    /// the next case: the last a flowing fluid changes, so that the states are read
+    /// once it has settled. A wait that ends unmet is noted, and the states are
+    /// compared all the same.
+    settled: Vec<(Rel, BlockState)>,
 }
 
 /// A case doing `step` and comparing the positions `compared`.
@@ -276,6 +287,7 @@ fn case(name: &str, step: Step, compared: &[Rel]) -> Case {
         setup: Vec::new(),
         steps: vec![step],
         compared: compared.to_vec(),
+        settled: Vec::new(),
     }
 }
 
@@ -297,6 +309,11 @@ impl Case {
 
     fn at(mut self, x: i32, z: i32) -> Self {
         self.origin = Some((x, z));
+        self
+    }
+
+    fn settles(mut self, at: Rel, state: BlockState) -> Self {
+        self.settled.push((at, state));
         self
     }
 }
@@ -1585,6 +1602,81 @@ fn breaking_cases() -> Vec<Case> {
     ]
 }
 
+/// The liquid block of `fluid` (water or lava) at `level`.
+fn liquid(fluid: BlockState, level: u8) -> BlockState {
+    fluid
+        .with_property("level", &level.to_string())
+        .expect("a liquid block has levels from 0 to 15")
+}
+
+/// Fluids poured where they flow, each case in a place of its own, twenty blocks from
+/// the next, for water spreads seven.
+fn flowing_cases() -> Vec<Case> {
+    use clustine_data::blocks::{LAVA, STONE, WATER};
+    use items::*;
+
+    // Looking east and down from above the origin, at the ground's top two blocks east:
+    // the eyes are 2.62 above it.
+    let two_east = |item| pour(item).look(270.0, 52.65);
+    let row = |y: i32, xs: std::ops::RangeInclusive<i32>| xs.map(move |x| (x, y, 0));
+    let mut spreading: Vec<Rel> = row(0, -1..=8).collect();
+    spreading.extend([(0, 0, 7), (0, 0, -8), (3, 0, 4), (4, 0, 4), (4, 0, 3)]);
+    let mut towards_the_drop: Vec<Rel> = row(0, -2..=4).collect();
+    towards_the_drop.extend([(0, 0, 1), (0, 0, -1), (3, -1, 0), (1, 0, 1)]);
+    let mut channel: Vec<Rel> = row(-1, 0..=6).collect();
+    channel.extend(row(0, 0..=6));
+    let trench = (0..=5).map(|x| dig((x, -1, 0)));
+    let mut meeting: Vec<Rel> = row(0, -2..=3).collect();
+    meeting.extend([(0, -1, 0), (1, -1, 0), (0, 0, 1), (0, 0, -1), (2, 0, 1)]);
+    vec![
+        // Lava first, which is slowest, so that what it does settles before the end.
+        case(
+            "lava poured beside a pond flows into it and turns its water to stone",
+            two_east(LAVA_BUCKET),
+            &meeting,
+        )
+        .at(20, -40)
+        .stand(ABOVE_IT)
+        .setup(pond())
+        .settles((0, -1, 0), STONE),
+        case(
+            "water poured on flat ground spreads seven blocks",
+            pour(WATER_BUCKET),
+            &spreading,
+        )
+        .at(44, -40)
+        .stand(ABOVE_IT)
+        .settles((7, 0, 0), liquid(WATER, 7))
+        .settles((0, 0, 7), liquid(WATER, 7)),
+        case(
+            "water poured near a drop runs only towards it",
+            pour(WATER_BUCKET),
+            &towards_the_drop,
+        )
+        .at(20, -16)
+        .stand(ABOVE_IT)
+        .setup([dig((3, -1, 0))])
+        .settles((3, -1, 0), liquid(WATER, 8)),
+        case(
+            "water poured into a trench runs along it",
+            pour(WATER_BUCKET),
+            &channel,
+        )
+        .at(44, -16)
+        .stand(ABOVE_IT)
+        .setup(trench)
+        .settles((5, -1, 0), liquid(WATER, 5)),
+        case(
+            "lava poured on flat ground spreads three blocks",
+            pour(LAVA_BUCKET),
+            &spreading,
+        )
+        .at(20, 8)
+        .stand(ABOVE_IT)
+        .settles((3, 0, 0), liquid(LAVA, 6)),
+    ]
+}
+
 fn bucket_cases() -> Vec<Case> {
     use items::*;
 
@@ -1719,6 +1811,14 @@ async fn breaking_matches_the_official_server() {
 #[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
 async fn using_blocks_matches_the_official_server() {
     compare(&using_cases()).await;
+}
+
+/// Water and lava, poured, flow and settle as on the official server (phase B, step
+/// B5).
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn flowing_matches_the_official_server() {
+    compare(&flowing_cases()).await;
 }
 
 /// Buckets and lily pads do what they do on the official server.
@@ -2011,6 +2111,19 @@ async fn perform(
     for step in &case.steps {
         do_step(builder, step, place, &mut sneaking).await?;
     }
+    for &(at, state) in &case.settled {
+        let (x, y, z) = place.block(at);
+        let id = i32::from(state.0);
+        let shown = |bot: &Bot| bot.block_at(x, y, z).ok().flatten() == Some(id);
+        if let Err(error) = builder.wait_until(SETTLE_PATIENCE, shown).await {
+            let was = builder.block_at(x, y, z).ok().flatten();
+            troubles.push(format!(
+                "case \"{}\": the builder was not shown {state:?} at {at:?}, which it \
+                 waited for to settle, but {was:?} ({error:#})",
+                case.name
+            ));
+        }
+    }
     if sneaking {
         builder.sneak(false).await?;
     }
@@ -2091,8 +2204,7 @@ async fn shown(builder: &mut Bot, step: &Step, before: &[Seen]) -> Option<String
         Ok(()) => None,
         Err(error) => Some(format!(
             "the builder was not shown a change at any of {before:?} after {step:?} \
-             ({error:#}); nothing was changed, or the official server sent it in a \
-             section_blocks_update, which the bots do not read"
+             ({error:#}); nothing was changed"
         )),
     }
 }

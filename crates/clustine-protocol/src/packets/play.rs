@@ -1455,6 +1455,64 @@ impl Encode for BlockUpdate {
     }
 }
 
+/// Several blocks of one section have changed in one tick
+/// (`ClientboundSectionBlocksUpdatePacket`). Clustine sends a [`BlockUpdate`] for each
+/// instead; the official server sends this, and the bots read it from there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionBlocksUpdate {
+    /// The section, in sections: x, y and z.
+    pub section: (i32, i32, i32),
+    /// Each changed block: where in the section (x, y, z from 0 to 15) and its new
+    /// state id.
+    pub blocks: Vec<((u8, u8, u8), i32)>,
+}
+
+impl Packet for SectionBlocksUpdate {
+    const ID: i32 = clientbound::SECTION_BLOCKS_UPDATE;
+}
+
+impl Encode for SectionBlocksUpdate {
+    fn encode(&self, w: &mut Writer) {
+        let (x, y, z) = self.section;
+        // `SectionPos.asLong`.
+        let packed = ((i64::from(x) & 0x3f_ffff) << 42)
+            | (i64::from(y) & 0xf_ffff)
+            | ((i64::from(z) & 0x3f_ffff) << 20);
+        w.put_i64(packed);
+        w.put_var_int(self.blocks.len() as i32);
+        for ((bx, by, bz), state) in &self.blocks {
+            // `SectionPos.sectionRelativePos`.
+            let at = (i64::from(*bx) << 8) | (i64::from(*bz) << 4) | i64::from(*by);
+            w.put_var_long((i64::from(*state) << 12) | at);
+        }
+    }
+}
+
+impl Decode for SectionBlocksUpdate {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let packed = r.i64()?;
+        let section = (
+            (packed >> 42) as i32,
+            ((packed << 44) >> 44) as i32,
+            ((packed << 22) >> 42) as i32,
+        );
+        let count = r.var_int()?;
+        let count = usize::try_from(count).map_err(|_| DecodeError::NegativeLength(count))?;
+        let mut blocks = Vec::with_capacity(count.min(4096));
+        for _ in 0..count {
+            let entry = r.var_long()?;
+            let at = entry & 0xfff;
+            let place = (
+                ((at >> 8) & 15) as u8,
+                (at & 15) as u8,
+                ((at >> 4) & 15) as u8,
+            );
+            blocks.push((place, (entry >> 12) as i32));
+        }
+        Ok(Self { section, blocks })
+    }
+}
+
 /// Something clients show at a place (`ClientboundLevelEventPacket`): a sound, bits,
 /// smoke. `data` says more, as the event needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -1725,6 +1783,7 @@ packet_set! {
         RemoveEntities,
         AcknowledgeBlockChange,
         BlockUpdate,
+        SectionBlocksUpdate,
         LevelEvent,
         SetContainerContent,
         SetHeldSlot,
@@ -1737,6 +1796,18 @@ mod tests {
 
     use super::*;
     use crate::packets::testing::assert_round_trip;
+
+    #[test]
+    fn a_section_blocks_update_round_trips_far_out_and_below_zero() {
+        assert_round_trip(
+            SectionBlocksUpdate {
+                section: (-1_875_000, -4, 1_874_999),
+                blocks: vec![((0, 0, 0), 1), ((15, 7, 3), 27_000), ((1, 15, 15), 0)],
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::SectionBlocksUpdate,
+        );
+    }
 
     fn login() -> Login {
         Login {
