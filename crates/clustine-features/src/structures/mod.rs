@@ -24,6 +24,7 @@ mod swamp_hut;
 mod template_piece;
 #[cfg(test)]
 mod template_tests;
+mod woodland_mansion;
 
 use std::sync::Arc;
 
@@ -83,6 +84,7 @@ pub fn built(structure: usize) -> bool {
             | Kind::DesertPyramid
             | Kind::JungleTemple
             | Kind::SwampHut
+            | Kind::WoodlandMansion
     )
 }
 
@@ -107,6 +109,9 @@ pub(crate) fn place_piece(
             (TemplateMarkerHandling::Igloo, _) => return igloo::place(placing, piece, data, state),
             (TemplateMarkerHandling::OceanRuin { is_large }, _) => {
                 return ocean_ruin::place(placing, piece, data, is_large, state);
+            }
+            (TemplateMarkerHandling::WoodlandMansion, _) => {
+                woodland_mansion::place(placing, data);
             }
             (_, TemplatePostProcess::RuinedPortal) => {
                 return ruined_portal::place(placing, data, state);
@@ -142,7 +147,9 @@ pub(crate) fn place_piece(
 /// The start's `afterPlace`, once its pieces are placed: only the desert pyramid's and
 /// the woodland mansion's do anything.
 pub(crate) fn after_place(placing: &mut Placing<'_, '_, '_>, start: &Start) {
-    if let Kind::DesertPyramid = start.data().kind {
-        desert_pyramid::after_place(placing, start);
+    match start.data().kind {
+        Kind::DesertPyramid => desert_pyramid::after_place(placing, start),
+        Kind::WoodlandMansion => woodland_mansion::after_place(placing, start),
+        _ => {}
     }
 }
