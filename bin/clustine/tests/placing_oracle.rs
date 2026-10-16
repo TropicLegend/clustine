@@ -1460,7 +1460,39 @@ fn breaking_cases() -> Vec<Case> {
     // A pillar east of the origin, whose upper stone's west face holds what is hung
     // on it, which stands at (0, 1, 0).
     let on_the_pillar = |item: i32| click(item, (1, 1, 0), WEST);
+    // A pit at the origin with a slab in it, and stone over the slab: what is put on
+    // the stone falls onto the slab when the stone is dug. A side of the pit clicked
+    // high places a top slab, its floor a bottom one.
+    let over_a_slab = |high: bool| {
+        let slab = if high {
+            click(STONE_SLAB, (1, -1, 0), WEST).height(0.75)
+        } else {
+            put(STONE_SLAB, (0, -1, 0))
+        };
+        [dig((0, -1, 0)), slab, stone(O)]
+    };
+    let fell = [(0, -1, 0), O, ABOVE];
     vec![
+        // Before the cases that follow, so that the official server's falling blocks
+        // have landed long before the states are read.
+        case(
+            "sand falls when the stone under it is dug",
+            dig(O),
+            &[O, ABOVE],
+        )
+        .setup([stone(O), put(SAND, ABOVE)]),
+        case(
+            "gravel falls when the stone under it is dug",
+            dig(O),
+            &[O, ABOVE],
+        )
+        .setup([stone(O), put(GRAVEL, ABOVE)]),
+        case("sand that falls onto a bottom slab is lost", dig(O), &fell)
+            .setup(over_a_slab(false))
+            .setup([put(SAND, ABOVE)]),
+        case("sand that falls onto a top slab rests on it", dig(O), &fell)
+            .setup(over_a_slab(true))
+            .setup([put(SAND, ABOVE)]),
         case(
             "a torch goes with the stone it stands on",
             dig(O),
