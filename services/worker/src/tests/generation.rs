@@ -285,7 +285,9 @@ fn making(
     let holdings = holdings(&restored);
     let state = restored_state(restored).unwrap();
     let region_now = Region::restore(config, state, holdings);
-    let runner = RegionRunner::with_store(region_now, Box::new(store)).with_id(region);
+    let runner = RegionRunner::with_store(region_now, Box::new(store))
+        .without_rings()
+        .with_id(region);
     (runner, control)
 }
 

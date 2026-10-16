@@ -67,6 +67,7 @@ impl Actor {
             changes: Vec::new(),
             state: format!("delta {tick}").into_bytes(),
             stays,
+            ticks: Vec::new(),
         });
     }
 

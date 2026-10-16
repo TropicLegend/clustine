@@ -24,7 +24,7 @@ use clustine_data::BlockState;
 use clustine_format::{ChunkFile, FormatError, StateFile};
 use clustine_rpc::{Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
-use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos};
+use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, ScheduledTick};
 use tracing::{error, info, warn};
 
 use crate::disk::{Disk, parent, temporary};
@@ -397,7 +397,7 @@ pub(crate) enum Job {
     /// chunks, makes the saves so far durable, and then hands the opened region to
     /// whoever asked for it; or the error, if either could not be done.
     Restore {
-        changes: Vec<(BlockPos, BlockState)>,
+        changes: Vec<Replayed>,
         tick: u64,
         /// The epoch the region is opened with.
         epoch: u64,
@@ -408,7 +408,7 @@ pub(crate) enum Job {
     },
     /// Applies block changes to the stored chunks and makes them durable.
     Fold {
-        changes: Vec<(BlockPos, BlockState)>,
+        changes: Vec<Replayed>,
         done: Sender<Result<(), StoreError>>,
     },
     /// Everything before it is done, of whatever handle, and what there was to say of
@@ -528,7 +528,7 @@ struct Loading {
 }
 
 struct Restoring {
-    changes: Vec<(BlockPos, BlockState)>,
+    changes: Vec<Replayed>,
     tick: u64,
     epoch: u64,
     peer: Arc<Peer>,
@@ -1040,7 +1040,7 @@ impl ChunkService {
     /// Applies block changes while a world is made over, and makes them durable. It
     /// keeps the thread until it is done, waiting for the generator on a way of its
     /// own: no region is open then.
-    fn fold(&mut self, changes: &[(BlockPos, BlockState)]) -> Result<(), StoreError> {
+    fn fold(&mut self, changes: &[Replayed]) -> Result<(), StoreError> {
         let touched = touched(changes);
         let mut bases = BTreeMap::new();
         let (made, arriving) = mpsc::channel();
@@ -1226,11 +1226,30 @@ impl ChunkService {
     }
 }
 
-/// The chunks that block changes lie in, and how many changes each has.
-fn touched(changes: &[(BlockPos, BlockState)]) -> BTreeMap<ChunkPos, usize> {
+/// What the replay of a commit puts into a stored chunk: a block it changed, or the
+/// chunk's scheduled ticks as the commit's tick left them, whole
+/// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4). A commit's ticks come
+/// after its blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Replayed {
+    Block(BlockPos, BlockState),
+    Ticks(ChunkPos, Vec<ScheduledTick>),
+}
+
+impl Replayed {
+    pub(crate) fn chunk(&self) -> ChunkPos {
+        match self {
+            Self::Block(position, _) => position.chunk(),
+            Self::Ticks(chunk, _) => *chunk,
+        }
+    }
+}
+
+/// The chunks that replayed changes lie in, and how many changes each has.
+fn touched(changes: &[Replayed]) -> BTreeMap<ChunkPos, usize> {
     let mut touched = BTreeMap::new();
-    for (position, _) in changes {
-        *touched.entry(position.chunk()).or_insert(0) += 1;
+    for change in changes {
+        *touched.entry(change.chunk()).or_insert(0) += 1;
     }
     touched
 }
@@ -1256,16 +1275,27 @@ fn lost(position: ChunkPos, changes: usize, why: &dyn std::fmt::Display) {
 fn apply(
     chunks: &mut dyn Chunks,
     mut bases: BTreeMap<ChunkPos, Chunk>,
-    changes: &[(BlockPos, BlockState)],
+    changes: &[Replayed],
     tick: u64,
     epoch: u64,
 ) -> Result<(), StoreError> {
-    for (position, state) in changes {
-        let Some(chunk) = bases.get_mut(&position.chunk()) else {
+    for change in changes {
+        let Some(chunk) = bases.get_mut(&change.chunk()) else {
             continue;
         };
-        let (x, z) = position.in_chunk();
-        chunk.set(x, position.y, z, *state);
+        match change {
+            Replayed::Block(position, state) => {
+                let (x, z) = position.in_chunk();
+                chunk.set(x, position.y, z, *state);
+            }
+            // The last list of a chunk wins, as the last change of a block does. A chunk
+            // whose ticks changed is no longer as generated, so that remaking one whose
+            // generation failed does not lose them.
+            Replayed::Ticks(_, ticks) => {
+                chunk.set_ticks(ticks.clone());
+                chunk.clear_generated();
+            }
+        }
     }
     for (position, chunk) in &bases {
         chunks.save(*position, tick, epoch, chunk)?;

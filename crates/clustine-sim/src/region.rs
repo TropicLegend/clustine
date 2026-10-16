@@ -364,6 +364,13 @@ impl Region {
         self.chunks.get(&position)
     }
 
+    /// The scheduled ticks of a loaded chunk as they are to be committed or saved: the
+    /// delays left at the end of this tick, in queue order; none for a chunk not
+    /// loaded.
+    pub fn scheduled_ticks(&self, position: ChunkPos) -> Vec<clustine_world::ScheduledTick> {
+        self.ticks_to_save(position)
+    }
+
     /// A loaded chunk as it is to be saved: with the ticks of the region's queues
     /// written into it as the delays left at the end of this tick
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).

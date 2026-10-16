@@ -44,7 +44,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use clustine_data::BlockState;
 use clustine_format::{
     LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, PlayersFile, RegionFile,
     StateFile, TableFile, read_log, read_log_with_offsets,
@@ -57,7 +56,7 @@ use clustine_rpc::{
 use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds, PlayerId};
 use tracing::{error, info, warn};
 
-use crate::chunks::{Job, Jobs};
+use crate::chunks::{Job, Jobs, Replayed};
 use crate::disk::{Disk, replace};
 use crate::players::{self, Players, Taken, Undo};
 use crate::table::{Division, Table};
@@ -744,6 +743,7 @@ impl Lanes {
                 changes,
                 state,
                 stays,
+                ticks,
             } => {
                 let region = session.region;
                 // The notes are in the commit's own record, so that the two are on
@@ -756,6 +756,7 @@ impl Lanes {
                     changes,
                     state,
                     stays: notes.clone(),
+                    ticks,
                 }
                 .encode();
                 self.group.regions.insert(region);
@@ -1338,16 +1339,7 @@ impl Lanes {
         &mut self,
         hello: RegionHello,
         reply_to: Sender<Message>,
-    ) -> Result<
-        (
-            Opened,
-            Restored,
-            Vec<(BlockPos, BlockState)>,
-            u64,
-            Arc<Peer>,
-        ),
-        StoreError,
-    > {
+    ) -> Result<(Opened, Restored, Vec<Replayed>, u64, Arc<Peer>), StoreError> {
         let RegionHello { region, epoch } = hello;
         // Before anything is written: the regions are those the table has, and a hello
         // makes none.
@@ -1972,11 +1964,11 @@ fn replayed(
     table: &Table,
     region: RegionId,
     tick: u64,
-    changes: Vec<(BlockPos, BlockState)>,
-) -> impl Iterator<Item = (BlockPos, BlockState)> + '_ {
-    changes.into_iter().filter(move |(position, _)| {
+    changes: Vec<Replayed>,
+) -> impl Iterator<Item = Replayed> + '_ {
+    changes.into_iter().filter(move |change| {
         table
-            .held_from(region, position.chunk())
+            .held_from(region, change.chunk())
             .is_some_and(|from| tick > from)
     })
 }
@@ -2153,19 +2145,26 @@ impl Log {
         Ok(records.into_iter().next())
     }
 
-    /// Reads the commit at `entry`: its tick, block changes and state.
+    /// Reads the commit at `entry`: its tick, what it changed in chunks (its blocks,
+    /// then the ticks of its chunks) and its state.
     #[allow(clippy::type_complexity)]
-    fn read(
-        &self,
-        entry: &Entry,
-    ) -> Result<Option<(u64, Vec<(BlockPos, BlockState)>, Vec<u8>)>, StoreError> {
+    fn read(&self, entry: &Entry) -> Result<Option<(u64, Vec<Replayed>, Vec<u8>)>, StoreError> {
         Ok(match self.record(entry)? {
             Some(LogRecord::Commit {
                 tick,
                 changes,
                 state,
+                ticks,
                 ..
-            }) => Some((tick, changes, state)),
+            }) => {
+                let blocks = changes
+                    .into_iter()
+                    .map(|(position, block)| Replayed::Block(position, block));
+                let ticks = ticks
+                    .into_iter()
+                    .map(|(chunk, ticks)| Replayed::Ticks(chunk, ticks));
+                Some((tick, blocks.chain(ticks).collect(), state))
+            }
             _ => None,
         })
     }

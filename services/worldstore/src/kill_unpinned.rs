@@ -147,6 +147,7 @@ impl Actor {
             changes,
             state: self.state("delta"),
             stays: Vec::new(),
+            ticks: Vec::new(),
         });
         self.settle(told).map(|_| ())
     }

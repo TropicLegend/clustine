@@ -528,6 +528,7 @@ mod tests {
             changes: vec![(BlockPos::new(-1, -64, 3), blocks::GLASS)],
             state: vec![4, 5],
             stays: Vec::new(),
+            ticks: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -666,6 +667,7 @@ mod tests {
                     place: place.clone(),
                 },
             ],
+            ticks: Vec::new(),
         });
         for reply in [
             StoreReply::Enter {

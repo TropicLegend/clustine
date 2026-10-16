@@ -2331,19 +2331,30 @@ impl RegionRunner {
         // the first tick of a region names every stay it has, changed or not, and the
         // store's answers to that are what removes a dead one and lets an entering one
         // in. See `docs/adr/0020-one-stay-per-player.md`, section 3.
-        let unchanged = changes.is_empty() && output.delta.changes_only_the_tick();
+        // The ticks of each chunk whose ticks changed go into the commit whole, as
+        // the delays left at the tick's end, so that a crash loses no more of them than
+        // of the blocks; a chunk the region has let go of went with its last save
+        // (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+        let ticks: Vec<_> = output
+            .ticks_changed
+            .iter()
+            .filter(|position| self.region.chunk(**position).is_some())
+            .map(|position| (*position, self.region.scheduled_ticks(*position)))
+            .collect();
+        let unchanged =
+            changes.is_empty() && ticks.is_empty() && output.delta.changes_only_the_tick();
         let needs_commit = !(unchanged && output.stays.is_empty());
-        // A chunk whose ticks changed is saved as one whose blocks did; the ticks go
-        // into the log with phase B's step B4c.
-        self.unsaved.extend(output.ticks_changed.iter().copied());
         if needs_commit {
             self.unsaved
                 .extend(changes.iter().map(|(position, _)| position.chunk()));
+            self.unsaved
+                .extend(ticks.iter().map(|(position, _)| *position));
             self.store.request(StoreRequest::Commit {
                 tick: output.tick,
                 changes,
                 state: stored(&output.delta),
                 stays: output.stays,
+                ticks,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its

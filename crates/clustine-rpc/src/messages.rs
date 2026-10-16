@@ -6,7 +6,9 @@ use clustine_sim::api::{
     Durable, EntityState, HOTBAR_SLOTS, ItemStack, Place, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote,
 };
-use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
+use clustine_world::{
+    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, ScheduledTick,
+};
 use serde::{Deserialize, Serialize};
 
 /// A message of an edge to the worker that owns a region, with its number.
@@ -329,6 +331,10 @@ pub enum StoreRequest {
         /// runner sends any yet, and the store does not look at them: steps R1.1 and
         /// R1.3 of that record give them meaning.
         stays: Vec<StayNote>,
+        /// The scheduled ticks of each chunk whose ticks changed in the tick, whole, as
+        /// the delays left at its end, ascending by chunk
+        /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+        ticks: Vec<(ChunkPos, Vec<ScheduledTick>)>,
     },
     /// `state` is the region's whole state after `tick`, and every change committed up
     /// to `tick` is contained in a chunk saved before this request. Once those saves are

@@ -1621,6 +1621,7 @@ mod tests {
                 changes: Vec::new(),
                 state: bytes(tick, *length),
                 stays: Vec::new(),
+                ticks: Vec::new(),
             });
         }
         committed(&owner, tick);

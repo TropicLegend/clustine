@@ -5262,6 +5262,7 @@ fn store_by_hand(
             changes: Vec::new(),
             state,
             stays: Vec::new(),
+            ticks: Vec::new(),
         });
     }
     handle.flush();

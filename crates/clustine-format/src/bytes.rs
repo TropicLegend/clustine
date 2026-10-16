@@ -22,6 +22,20 @@ impl<'a> Input<'a> {
         Ok(self.array::<1>()?[0])
     }
 
+    pub(crate) fn i8(&mut self) -> Result<i8, FormatError> {
+        Ok(i8::from_be_bytes(self.array()?))
+    }
+
+    pub(crate) fn i16(&mut self) -> Result<i16, FormatError> {
+        Ok(i16::from_be_bytes(self.array()?))
+    }
+
+    /// The next `u32`, left to be read.
+    pub(crate) fn peek_u32(&self) -> Result<u32, FormatError> {
+        let bytes = self.0.get(..4).ok_or(FormatError::Truncated)?;
+        Ok(u32::from_be_bytes(bytes.try_into().expect("four bytes")))
+    }
+
     pub(crate) fn u16(&mut self) -> Result<u16, FormatError> {
         Ok(u16::from_be_bytes(self.array()?))
     }

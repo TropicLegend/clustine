@@ -22,6 +22,7 @@
 //! | 6 | [`LogRecord::Absorbed`] | region u32, epoch u64, absorbed u32, tick u64, state bytes |
 //! | 7 | [`LogRecord::Split`] | region u32, epoch u64, tick u64, state bytes, part u32, part epoch u64, chunks, part state bytes |
 //! | 8 | [`LogRecord::Commit`] with stay notes | the fields of kind 2, stays |
+//! | 9 | [`LogRecord::Commit`] with the ticks of chunks | the fields of kind 2, stays (whose count may be 0), ticks |
 //!
 //! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
 //! u16 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z;
@@ -29,7 +30,13 @@
 //! big-endian, and so are the floating-point numbers.
 //!
 //! A commit is written as kind 2 if it has no stay notes and as kind 8 if it has any, so
-//! that a commit and its notes are on disk together or not at all. `stays` is a count
+//! that a commit and its notes are on disk together or not at all; as kind 9 if it
+//! carries the scheduled ticks of chunks whose ticks changed in its tick
+//! (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4), whatever its notes.
+//! `ticks` is a count of chunks (u32), followed per chunk by i32 x, i32 z and a count of
+//! ticks (u32), and per tick by u8 x, i16 y and u8 z within the chunk, u8 1 for a block
+//! and 2 for a fluid, u16 its id, i32 the delay left and i8 the priority: the chunk's
+//! ticks whole, as the delays left at the end of the tick. `stays` is a count
 //! (u32), which is not 0, followed, per note ([`LoggedStay`]), by:
 //!
 //! | Field | Type |
@@ -60,7 +67,7 @@
 //! reports how many bytes were valid.
 
 use clustine_data::BlockState;
-use clustine_world::{BlockPos, ChunkPos};
+use clustine_world::{BlockPos, ChunkPos, InChunk, ScheduledTick, Ticked};
 
 use crate::bytes::Input;
 use crate::{FORMAT_VERSION, FormatError};
@@ -73,6 +80,7 @@ const KIND_RETURNED: u8 = 5;
 const KIND_ABSORBED: u8 = 6;
 const KIND_SPLIT: u8 = 7;
 const KIND_COMMIT_WITH_STAYS: u8 = 8;
+const KIND_COMMIT_WITH_TICKS: u8 = 9;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -178,6 +186,10 @@ pub enum LogRecord {
         /// The stay notes of the tick. A commit without any is written as it was
         /// before there were notes.
         stays: Vec<LoggedStay>,
+        /// The scheduled ticks of each chunk whose ticks changed in the tick, whole, as
+        /// the delays left at its end, in ascending order of the chunks. A commit
+        /// without any is written as it was before there were ticks.
+        ticks: Vec<(ChunkPos, Vec<ScheduledTick>)>,
     },
     /// The region was opened by an owner with `epoch` and restored up to tick
     /// `restored`. A record of the region that comes before this one with a later tick
@@ -248,8 +260,11 @@ impl LogRecord {
                 changes,
                 state,
                 stays,
+                ticks,
             } => {
-                payload.push(if stays.is_empty() {
+                payload.push(if !ticks.is_empty() {
+                    KIND_COMMIT_WITH_TICKS
+                } else if stays.is_empty() {
                     KIND_COMMIT
                 } else {
                     KIND_COMMIT_WITH_STAYS
@@ -259,7 +274,10 @@ impl LogRecord {
                 payload.extend_from_slice(&epoch.to_be_bytes());
                 put_changes(&mut payload, changes);
                 put_bytes(&mut payload, state);
-                if !stays.is_empty() {
+                if !ticks.is_empty() {
+                    put_stays(&mut payload, stays);
+                    put_ticks(&mut payload, ticks);
+                } else if !stays.is_empty() {
                     put_stays(&mut payload, stays);
                 }
             }
@@ -345,6 +363,7 @@ impl LogRecord {
                 changes: take_changes(&mut input)?,
                 state: take_bytes(&mut input)?,
                 stays: Vec::new(),
+                ticks: Vec::new(),
             },
             KIND_COMMIT_WITH_STAYS => Self::Commit {
                 region: input.u32()?,
@@ -353,7 +372,34 @@ impl LogRecord {
                 changes: take_changes(&mut input)?,
                 state: take_bytes(&mut input)?,
                 stays: take_stays(&mut input)?,
+                ticks: Vec::new(),
             },
+            KIND_COMMIT_WITH_TICKS => {
+                let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
+                let changes = take_changes(&mut input)?;
+                let state = take_bytes(&mut input)?;
+                let stays = if input.peek_u32()? == 0 {
+                    input.u32()?;
+                    Vec::new()
+                } else {
+                    take_stays(&mut input)?
+                };
+                let ticks = take_ticks(&mut input)?;
+                if ticks.is_empty() {
+                    // A commit without ticks is of another kind, so that one commit has
+                    // one form.
+                    return Err(FormatError::Corrupt("a commit with ticks that has none"));
+                }
+                Self::Commit {
+                    region,
+                    tick,
+                    epoch,
+                    changes,
+                    state,
+                    stays,
+                    ticks,
+                }
+            }
             KIND_OPENED => Self::Opened {
                 region: input.u32()?,
                 epoch: input.u64()?,
@@ -473,6 +519,63 @@ fn put_stays(payload: &mut Vec<u8>, stays: &[LoggedStay]) {
             }
         }
     }
+}
+
+/// The length of one tick in a commit's ticks.
+const TICK_LENGTH: usize = 1 + 2 + 1 + 1 + 2 + 4 + 1;
+
+fn put_ticks(payload: &mut Vec<u8>, ticks: &[(ChunkPos, Vec<ScheduledTick>)]) {
+    payload.extend_from_slice(&(ticks.len() as u32).to_be_bytes());
+    for (chunk, of_chunk) in ticks {
+        payload.extend_from_slice(&chunk.x.to_be_bytes());
+        payload.extend_from_slice(&chunk.z.to_be_bytes());
+        payload.extend_from_slice(&(of_chunk.len() as u32).to_be_bytes());
+        for tick in of_chunk {
+            payload.push(tick.at.x);
+            payload.extend_from_slice(&tick.at.y.to_be_bytes());
+            payload.push(tick.at.z);
+            let (kind, id) = match tick.of {
+                Ticked::Block(block) => (1_u8, block),
+                Ticked::Fluid(fluid) => (2, u16::from(fluid)),
+            };
+            payload.push(kind);
+            payload.extend_from_slice(&id.to_be_bytes());
+            payload.extend_from_slice(&tick.delay.to_be_bytes());
+            payload.extend_from_slice(&tick.priority.to_be_bytes());
+        }
+    }
+}
+
+fn take_ticks(input: &mut Input<'_>) -> Result<Vec<(ChunkPos, Vec<ScheduledTick>)>, FormatError> {
+    let chunks = input.u32()? as usize;
+    let mut ticks = Vec::with_capacity(chunks.min(input.0.len() / 12));
+    for _ in 0..chunks {
+        let chunk = ChunkPos::new(input.i32()?, input.i32()?);
+        let count = input.u32()? as usize;
+        // A forged count must not reserve more than the payload can hold.
+        let mut of_chunk = Vec::with_capacity(count.min(input.0.len() / TICK_LENGTH));
+        for _ in 0..count {
+            let (x, y, z) = (input.u8()?, input.i16()?, input.u8()?);
+            if x > 15 || z > 15 {
+                return Err(FormatError::Corrupt("a tick outside its chunk"));
+            }
+            let kind = input.u8()?;
+            let id = input.u16()?;
+            let of = match kind {
+                1 => Ticked::Block(id),
+                2 => Ticked::Fluid(u8::try_from(id).map_err(|_| FormatError::Corrupt("fluid"))?),
+                _ => return Err(FormatError::Corrupt("tick kind")),
+            };
+            of_chunk.push(ScheduledTick {
+                at: InChunk { y, z, x },
+                of,
+                delay: input.i32()?,
+                priority: input.i8()?,
+            });
+        }
+        ticks.push((chunk, of_chunk));
+    }
+    Ok(ticks)
 }
 
 fn take_stays(input: &mut Input<'_>) -> Result<Vec<LoggedStay>, FormatError> {
@@ -621,6 +724,7 @@ mod tests {
                 .collect(),
             state: vec![tick as u8; count as usize],
             stays: Vec::new(),
+            ticks: Vec::new(),
         }
     }
 
@@ -633,6 +737,7 @@ mod tests {
             changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
             state: vec![7, 8],
             stays: Vec::new(),
+            ticks: Vec::new(),
         };
         let bytes = record.encode();
         let payload = [
@@ -878,9 +983,10 @@ mod tests {
 
     #[test]
     fn a_record_of_regions_that_checks_out_but_makes_no_sense_is_an_error() {
-        // Kinds there are none of. 8 was among them until a commit with stay notes
-        // became a kind of its own; 9 stands in for it.
-        for kind in [0, 9, 255] {
+        // Kinds there are none of. 8 and 9 were among them until a commit with stay
+        // notes, and one with the ticks of chunks, became kinds of their own; 10
+        // stands in for them.
+        for kind in [0, 10, 255] {
             assert_eq!(
                 read_log(&frame(&[2, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -908,6 +1014,57 @@ mod tests {
         payload.extend_from_slice(&u32::MAX.to_be_bytes());
         payload.extend_from_slice(&[0; 8]);
         assert_eq!(read_log(&frame(&payload)), Err(FormatError::Truncated));
+    }
+
+    /// A commit with the ticks of its chunks is written as kind 9, with its notes or
+    /// none, and read back as it was; one without ticks keeps the kind it had.
+    #[test]
+    fn a_commit_with_the_ticks_of_chunks_is_read_back_as_it_was() {
+        let ticks = vec![(
+            ChunkPos::new(-3, 7),
+            vec![
+                ScheduledTick {
+                    at: InChunk {
+                        y: -61,
+                        z: 15,
+                        x: 0,
+                    },
+                    of: Ticked::Block(12),
+                    delay: -1,
+                    priority: 0,
+                },
+                ScheduledTick {
+                    at: InChunk {
+                        y: 300,
+                        z: 0,
+                        x: 15,
+                    },
+                    of: Ticked::Fluid(2),
+                    delay: 4,
+                    priority: -3,
+                },
+            ],
+        )];
+        for stays in [
+            Vec::new(),
+            vec![LoggedStay::Entering {
+                player: 9,
+                entity: 4,
+            }],
+        ] {
+            let record = LogRecord::Commit {
+                region: 2,
+                tick: 40,
+                epoch: 3,
+                changes: vec![(BlockPos::new(1, 2, 3), BlockState(5))],
+                state: b"delta".to_vec(),
+                stays,
+                ticks: ticks.clone(),
+            };
+            let bytes = record.encode();
+            assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_TICKS);
+            assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+        }
     }
 
     /// What the store compares a record with before it writes it.
@@ -972,6 +1129,7 @@ mod tests {
                     place: place(),
                 },
             ],
+            ticks: Vec::new(),
         }
     }
 
@@ -1035,6 +1193,7 @@ mod tests {
             changes,
             state,
             stays: Vec::new(),
+            ticks: Vec::new(),
         };
         let bytes = without.encode();
         assert_eq!(bytes[8..10], [2, KIND_COMMIT]);
@@ -1153,6 +1312,7 @@ mod tests {
                 hops: 0,
                 place: nan,
             }],
+            ticks: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
@@ -1261,6 +1421,7 @@ mod tests {
                     .collect(),
                 state,
                 stays,
+                ticks: Vec::new(),
             };
             let opened = LogRecord::Opened { region, epoch, restored };
             let mut bytes = commit.encode();

@@ -437,6 +437,12 @@ impl Chunk {
     /// Says that the chunk is exactly as the generator of `version` made it, and
     /// whether something failed on the way. A generator says so of what it has made;
     /// the first change takes it back.
+    /// Says the chunk is no longer exactly as generated, as a change of a block does:
+    /// a change of its scheduled ticks makes it so too.
+    pub fn clear_generated(&mut self) {
+        self.generated = 0;
+    }
+
     pub fn mark_generated(&mut self, version: u16, with_failure: bool) {
         self.generated = version;
         self.with_failure = with_failure && version != 0;

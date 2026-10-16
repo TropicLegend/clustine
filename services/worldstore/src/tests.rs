@@ -138,6 +138,7 @@ pub(crate) fn log(store: &StoreHandle, tick: u64, changes: &[(i32, i32, i32, Blo
             .map(|(x, y, z, state)| (BlockPos::new(*x, *y, *z), *state))
             .collect(),
         stays: Vec::new(),
+        ticks: Vec::new(),
     });
 }
 
@@ -569,6 +570,7 @@ fn commits_carry_the_region_and_the_epoch_of_the_owner() {
             changes: vec![(BlockPos::new(3, -61, 4), blocks::AIR)],
             state: delta(3),
             stays: Vec::new(),
+            ticks: Vec::new(),
         },
     ];
     assert_eq!(logged(directory.path()), expected);
