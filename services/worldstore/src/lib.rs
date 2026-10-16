@@ -749,8 +749,11 @@ fn start(
 }
 
 /// How far around the spawn's chunk a store has the chunks made when it starts: the
-/// view distance an edge grants by default.
-const SPAWN_AREA: i32 = 8;
+/// view distance an edge grants by default, and two, for the chunks a client is sent one
+/// beyond its view and the ring a region loads around them, whose neighbours a chunk's
+/// post-processing waits for before it is first shown
+/// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 6).
+const SPAWN_AREA: i32 = 8 + 2;
 
 /// Starts the threads of a store that keeps its log and region files on `disk` under
 /// `root`, and its chunks in `chunks`, for a world pinned as `pins` says,

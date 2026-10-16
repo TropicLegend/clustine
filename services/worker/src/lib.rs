@@ -2491,6 +2491,12 @@ impl RegionRunner {
         // one that subscribes to a chunk the region has long known not to hold in the
         // same way. Each answer carries the subscription's number as it was while the
         // tick ran. See `docs/adr/0012-the-tick-on-chunks.md`, section 4.4.
+        let unsettled: BTreeSet<ChunkPos> = self
+            .links
+            .values()
+            .flat_map(|link| link.waiting.iter().copied())
+            .filter(|position| self.settles_soon(*position))
+            .collect();
         for (id, link) in &mut self.links {
             let waiting: Vec<_> = link.waiting.iter().copied().collect();
             for position in waiting {
@@ -2504,6 +2510,13 @@ impl RegionRunner {
                         let Some(chunk) = self.region.chunk(position) else {
                             continue;
                         };
+                        // New land is shown settled: a chunk that waits for its
+                        // post-processing waits for a neighbour on its way, without
+                        // holding what the edge sends (ADR-0024, section 6).
+                        if unsettled.contains(&position) {
+                            link.hold.remove(&position);
+                            continue;
+                        }
                         subscription.condition = Condition::Served;
                         // A snapshot shows the state after this tick, so it includes
                         // what the events above already said. The edge has to cope
@@ -2572,6 +2585,55 @@ impl RegionRunner {
         self.release_held();
 
         self.show_status();
+    }
+
+    /// Whether the chunk at `position` still has marks and a neighbour on its way that
+    /// would let it be post-processed: one this region wants (a link subscribes to it,
+    /// or it is in a ring), has not loaded, and holds and is loading or generating, or
+    /// is claiming, or is about to claim as a viewer's. A neighbour that is another
+    /// region's, or that cannot be read, lets the chunk be shown as it is, to be
+    /// settled later (`docs/adr/0024-block-behaviour-in-a-region.md`, section 6).
+    fn settles_soon(&self, position: ChunkPos) -> bool {
+        let Some(chunk) = self.region.chunk(position) else {
+            return false;
+        };
+        if chunk.marks().is_empty() {
+            return false;
+        }
+        let wanted = |neighbour: &ChunkPos| {
+            self.rings.contains_key(neighbour)
+                || self
+                    .links
+                    .values()
+                    .any(|link| link.subscriptions.contains_key(neighbour))
+        };
+        // Only a viewer's ticket claims a chunk the region knows nothing of wherever it
+        // is; a guest's claims only in a pinned area, and may never.
+        let as_viewer = |neighbour: &ChunkPos| {
+            self.rings.get(neighbour) == Some(&Ticket::ViewerRing)
+                || self.links.values().any(|link| {
+                    link.subscriptions
+                        .get(neighbour)
+                        .is_some_and(|subscription| subscription.kind == Ticket::Viewer)
+                })
+        };
+        let coming = |neighbour: &ChunkPos| match self.region.knowledge(*neighbour) {
+            Knowledge::Held => {
+                self.loads.contains_key(neighbour) || self.generating.contains(neighbour)
+            }
+            Knowledge::Asked => true,
+            Knowledge::Unknown => as_viewer(neighbour),
+            Knowledge::Foreign(_) => false,
+        };
+        (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dz| ChunkPos::new(position.x + dx, position.z + dz)))
+            .filter(|neighbour| *neighbour != position)
+            .any(|neighbour| {
+                self.region.chunk(neighbour).is_none()
+                    && !self.unreadable.contains(&neighbour)
+                    && wanted(&neighbour)
+                    && coming(&neighbour)
+            })
     }
 
     /// Brings what others may read of the region up to date with its last tick.

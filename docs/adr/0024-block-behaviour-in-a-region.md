@@ -344,3 +344,10 @@ holdings change.
   chunks, and does not shorten the stop: they age again in every tick, and only the
   stop's checkpoint saves them. B8 measures a merge's pause with and without the count
   and keeps it only if it pays.
+- The store's spawn area is the edges' default view distance and two, not the
+  server's: the store is not told the view distance. A server with a longer view
+  makes the rest of its first view as a first player asks for it.
+- A chunk waiting for its post-processing is held back from an edge only while a
+  neighbour is on its way that would let it tick: held and being loaded or made,
+  being claimed, or not yet claimed and wanted as a viewer's. A guest's ring outside
+  a pinned area never claims, and is not waited for.

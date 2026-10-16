@@ -427,7 +427,12 @@ mod tests {
 
         let store = start();
         let first = generator.asked.lock().unwrap().concat();
-        assert_eq!(first.len(), 17 * 17, "a view of 8 around the spawn's chunk");
+        // A view of 8, the chunk beyond it a client is sent, and a region's ring.
+        assert_eq!(
+            first.len(),
+            21 * 21,
+            "a view of 8 and two around the spawn's chunk"
+        );
         assert_eq!(first[0], ChunkPos::new(0, 0));
         assert!(
             first
@@ -437,7 +442,7 @@ mod tests {
         assert!(
             first
                 .iter()
-                .all(|chunk| chunk.x.abs() <= 8 && chunk.z.abs() <= 8)
+                .all(|chunk| chunk.x.abs() <= 10 && chunk.z.abs() <= 10)
         );
 
         // The home chunk is stored, and is read from its file from then on: the next
@@ -451,7 +456,7 @@ mod tests {
         generator.asked.lock().unwrap().clear();
         drop(start());
         let second = generator.asked.lock().unwrap().concat();
-        assert_eq!(second.len(), 17 * 17 - 1);
+        assert_eq!(second.len(), 21 * 21 - 1);
         assert!(!second.contains(&ChunkPos::new(0, 0)));
     }
 
