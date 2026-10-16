@@ -255,6 +255,13 @@ impl StateProps {
         self.flag(14)
     }
 
+    /// The game's `isRandomlyTicking`: whether a random tick that falls on the block
+    /// does anything (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7). Leaves
+    /// tick so only where they decay; most blocks never.
+    pub fn is_randomly_ticking(self) -> bool {
+        self.flag(15)
+    }
+
     /// The faces that are sturdy for `support`, one bit a face, bit 0 for
     /// [`Face::Down`].
     pub fn sturdy_faces(self, support: SupportType) -> u8 {

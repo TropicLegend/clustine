@@ -25,7 +25,7 @@ pub const PUSH_REACTIONS: [&str; 5] =
     ["PUSH_PULL", "PUSH", "POPPED", "IMMOVEABLE", "IGNORE_ENTITY"];
 
 /// The names of the flags of a row, bit 0 first.
-pub const FLAGS: [&str; 15] = [
+pub const FLAGS: [&str; 16] = [
     "air",
     "solid",
     "solid_render",
@@ -41,11 +41,14 @@ pub const FLAGS: [&str; 15] = [
     "motion_heightmap",
     "motion_heightmap_no_leaves",
     "beyond_its_state",
+    "randomly_ticking",
 ];
 
 const FLAG_MOTION_HEIGHTMAP: u16 = 1 << 12;
 const FLAG_MOTION_HEIGHTMAP_NO_LEAVES: u16 = 1 << 13;
 const FLAG_BEYOND_ITS_STATE: u16 = 1 << 14;
+/// Asked by the program, above the bits the Rust side works out.
+const FLAG_RANDOMLY_TICKING: u16 = 1 << 15;
 const FLAG_OCCLUDES_BY_SHAPE: u16 = 1 << 6;
 
 /// A block whose answers are not values of its state alone, and what is done about it.
@@ -444,8 +447,8 @@ fn state_row(
 
     let mut flags = state.flags;
     ensure!(
-        flags < 1 << 12,
-        "more flags than the twelve the program asks for"
+        flags & !(((1 << 12) - 1) | FLAG_RANDOMLY_TICKING) == 0,
+        "more flags than the thirteen the program asks for"
     );
     if in_heightmap {
         flags |= FLAG_MOTION_HEIGHTMAP;

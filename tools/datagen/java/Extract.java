@@ -247,6 +247,8 @@ public final class Extract {
             flags |= bit(9, state.hasBlockEntity());
             flags |= bit(10, collision.isEmpty());
             flags |= bit(11, collisionFull);
+            // Bits 12 to 14 are worked out from the rest by the Rust side.
+            flags |= bit(15, state.isRandomlyTicking());
             field(text, Integer.toString(flags));
 
             for (SupportType type : SUPPORT_TYPES) {

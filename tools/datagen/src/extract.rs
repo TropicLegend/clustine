@@ -237,7 +237,10 @@ fn state(line: &str, expected_id: usize) -> Result<StateDump> {
         "the state ids have a gap"
     );
     let flags: u16 = integer(fields[4])?;
-    ensure!(flags < 1 << 12, "more flags than the twelve the row has");
+    ensure!(
+        flags & !(((1 << 12) - 1) | (1 << 15)) == 0,
+        "more flags than the thirteen the row has"
+    );
 
     let fluid_id: i64 = integer(fields[9])?;
     let fluid = if fluid_id < 0 {
