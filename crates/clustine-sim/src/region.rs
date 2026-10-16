@@ -266,6 +266,9 @@ pub struct Region {
     /// The scheduled ticks of the chunks the region ticks; no part of the state, rebuilt
     /// from the chunks.
     ticks: ticks::Ticks,
+    /// How many streams the rules have drawn from outside random ticks in this tick
+    /// ([`Region::next_draw`]); 0 between ticks.
+    draws: u64,
 }
 
 impl Region {
@@ -309,6 +312,7 @@ impl Region {
             chunks: BTreeMap::new(),
             updater: updates::Updater::default(),
             ticks: ticks::Ticks::default(),
+            draws: 0,
             tickets: BTreeMap::new(),
             requested: BTreeSet::new(),
             players,
@@ -622,6 +626,7 @@ impl Region {
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
+        self.draws = 0;
         output.delta = self.take_delta();
         output
     }

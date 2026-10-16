@@ -50,6 +50,10 @@ impl<'a> World<'a> {
 pub(crate) struct View<'w, 'a>(pub(crate) &'w World<'a>);
 
 impl clustine_blocks::BlockView for View<'_, '_> {
+    fn next_int(&mut self, _bound: u32) -> u32 {
+        0
+    }
+
     fn block(&mut self, at: BlockPos) -> BlockState {
         self.0.get(at)
     }

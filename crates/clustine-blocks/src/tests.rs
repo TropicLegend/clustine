@@ -58,6 +58,10 @@ impl World {
 }
 
 impl BlockView for World {
+    fn next_int(&mut self, _bound: u32) -> u32 {
+        0
+    }
+
     fn block(&mut self, at: BlockPos) -> BlockState {
         *self.set.get(&(at.x, at.y, at.z)).unwrap_or(&blocks::AIR)
     }

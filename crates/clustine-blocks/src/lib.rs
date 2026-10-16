@@ -41,6 +41,11 @@ pub trait BlockView {
 
     /// Which side of the rules the two former copies disagreed on this caller takes.
     fn rules(&self) -> Rules;
+
+    /// `RandomSource.nextInt(bound)`, for a rule that draws (a coral's time to die out
+    /// of water). Generation's views draw nothing and answer 0: the rules that draw are
+    /// the simulation's.
+    fn next_int(&mut self, bound: u32) -> u32;
 }
 
 /// The callers whose copies of these rules disagreed before they were made one, each

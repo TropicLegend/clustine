@@ -123,6 +123,8 @@ impl Region {
             let block = clustine_blocks::data::tick_id(state);
             self.schedule_tick(pos, Ticked::Block(block), 2, 0);
         }
+        // Fire's and coral's `onPlace` schedule their ticks.
+        self.fire_on_place(pos, state);
         // `LiquidBlock.onPlace`: lava that meets water becomes stone of some kind there
         // and then; any other liquid looks again in its fluid's time.
         if is_class(state, BlockClass::LiquidBlock) {
@@ -339,7 +341,13 @@ impl Region {
 
     /// `Level.destroyBlock`: the block breaks where everyone sees it, and gives way to
     /// its fluid, with every update.
-    fn destroy_block(&mut self, pos: BlockPos, _drops: bool, depth: i32, output: &mut TickOutput) {
+    pub(crate) fn destroy_block(
+        &mut self,
+        pos: BlockPos,
+        _drops: bool,
+        depth: i32,
+        output: &mut TickOutput,
+    ) {
         let Some(state) = self.block(pos) else {
             return;
         };
@@ -471,6 +479,12 @@ impl Region {
 pub(super) struct RegionView<'r>(pub(super) &'r mut Region);
 
 impl BlockView for RegionView<'_> {
+    /// Drawn from a stream of the world, the tick and the next draw's number in the
+    /// tick, so that a tick stays a function of the region and its inputs.
+    fn next_int(&mut self, bound: u32) -> u32 {
+        self.0.next_draw().next_int(bound)
+    }
+
     fn block(&mut self, at: BlockPos) -> BlockState {
         self.0.block(at).unwrap_or(blocks::AIR)
     }

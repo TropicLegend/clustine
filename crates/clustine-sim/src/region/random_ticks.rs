@@ -13,6 +13,10 @@
 //! What needs light (crops, saplings, grass, mushrooms, bamboo, ice and snow melting)
 //! does nothing yet: the simulation has no light (section 8 of the record).
 
+mod fire;
+mod minerals;
+mod plants;
+
 use clustine_data::{BlockState, blocks};
 use clustine_world::{BlockPos, ChunkPos};
 
@@ -112,11 +116,26 @@ impl Region {
     /// is not ported, does nothing.
     fn random_tick(
         &mut self,
-        _pos: BlockPos,
-        _state: BlockState,
-        _random: &mut Random,
-        _output: &mut TickOutput,
+        pos: BlockPos,
+        state: BlockState,
+        random: &mut Random,
+        output: &mut TickOutput,
     ) {
+        let _ = self.plant_random_tick(pos, state, random, output)
+            || self.mineral_random_tick(pos, state, random, output)
+            || self.fire_random_tick(pos, state, random, output);
+    }
+
+    /// A stream for a rule that draws outside a random tick (a coral's time to die),
+    /// of the world, the tick and how many such streams the tick has had.
+    pub(crate) fn next_draw(&mut self) -> Random {
+        self.draws += 1;
+        Random::of_section(
+            self.config.seed,
+            ChunkPos::new(0, 0),
+            self.draws as i32,
+            self.tick,
+        )
     }
 }
 

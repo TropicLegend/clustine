@@ -232,6 +232,10 @@ impl<'a> Level<'a> {
 /// game's `WorldGenRegion` offers it, and take generation's side where the copies of
 /// the rules disagreed.
 impl clustine_blocks::BlockView for Level<'_> {
+    fn next_int(&mut self, _bound: u32) -> u32 {
+        0
+    }
+
     fn block(&mut self, at: BlockPos) -> BlockState {
         Level::block(self, at)
     }

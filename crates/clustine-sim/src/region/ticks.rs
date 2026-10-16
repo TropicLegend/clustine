@@ -417,6 +417,9 @@ impl Region {
 
     /// One block's `tick`.
     fn block_tick(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
+        if self.fire_block_tick(pos, state, output) {
+            return;
+        }
         if is_class(state, BlockClass::FallingBlock) {
             self.fall(pos, state, output);
         } else if is_class(state, BlockClass::LeavesBlock) {
