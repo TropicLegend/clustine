@@ -5,8 +5,8 @@
   whose findings are worked in (its sections 8 and 9) and the owner's answers to its
   questions (its section 6). Three reviews of this record found it not ready; their
   findings are worked in (see "Review"), with lockstep, which the owner asked for
-  afterwards (section 8). To be reviewed again, focused on sections 5 and 8, before it
-  is accepted; not built. Where the plan and this record differ, this record holds.
+  afterwards (section 8). A fourth, focused review accepted it after the changes it
+  names, which are made. **Accepted** on 2026-10-16; not built. Where the plan and this record differ, this record holds.
 - Date: 2026-10-16
 
 ## Context
@@ -163,7 +163,7 @@ position and direction. A commit's effects are split over records within the log
 - It moves with the holding: the record of a merge makes the absorbed region's chunks
   in use by the absorber, the record of a split makes the part's chunks in use by the
   part, untaken effects kept with them. The answer to the merge or split names the
-  chunks whose use moved; the runner counts them as warm chunks.
+  chunks whose use moved.
 - It ends at a return (from the request; a chunk being returned is not in use), at a
   new request **`Dropped`**, which the runner sends whenever it stops having a held
   chunk loaded or warm, for whatever reason (its tickets went and it is not yet
@@ -173,12 +173,20 @@ position and direction. A commit's effects are split over records within the log
 - A claim that calls off a return of the same chunk begins its use again.
 - A hello of a region to the store (a restore after a crash, a move, a restart of the
   store, after which every runner restores) keeps the use of its chunks: `Restored`
-  lists them, and the runner counts them as warm chunks. The resend after a hello
-  delivers their effects as they are loaded again.
+  lists them. The resend after a hello delivers their effects as they are loaded
+  again. Use is not a record of the log: after a restart of the store every chunk a
+  region holds by the table is in use by it until its `Dropped`, which is more than was
+  in use and so loses nothing.
+- **Use timers.** For every chunk listed (by the answer to a merge or a split, or by
+  `Restored`) that the runner neither has loaded nor holds warm in memory, it keeps a
+  use timer, and sends `Dropped` for the chunk if it has not loaded it within
+  `WARM_FOR` ticks of the tick it began from. A chunk listed and in memory is warm, as
+  warm chunks are now.
 
-**Filing.** When a group is durable, the commit thread files each of its effects under
-its target chunk, in the group's order, after the group's claims, loads passed on and
-returns: an effect whose chunk is in use goes on that region's stream; one whose chunk
+**Filing.** A group's records are applied in log order: use and couplings change at
+their record, and an effect is filed and converted against the state at its own record.
+When a group is durable, the commit thread files each of its effects under its target
+chunk so: an effect whose chunk is in use goes on that region's stream; one whose chunk
 nobody uses is dropped, as a record. Effects still untaken when a chunk's use ends are
 dropped the same way.
 
@@ -204,8 +212,9 @@ changed. The store drops what is taken. After a hello, a merge or a split it res
 the untaken effects of chunks in use on the stream; the worker drops those it has
 taken.
 
-A warm chunk counts as loaded for `Dropped`: beginning anew after a merge drops none.
-So no chunk stays in use that its region will never load.
+A warm chunk, and a chunk with a use timer running, counts as loaded for `Dropped`:
+beginning anew after a merge drops none. So no chunk stays in use that its region will
+never load.
 
 **Durable in the log.** An effect is a record of the commit that made it; a taking or
 a dropping is a record of the group that did it. Collection keeps a segment while it
@@ -298,7 +307,15 @@ what crosses its lines then is late (section 1).
    named ticks.
 4. The store **calls a handshake off**, as a record on both streams that ends the hold,
    at a hello of either region, a `Preparing` or a move of either, a giving up of
-   either, or the need ending before step 3.
+   either, or when one side has not made its "joins at" durable within
+   `COUPLING_PATIENCE` of the group that said "couple with"; that side is then given up,
+   and must earn its coupling back. A handshake is not called off because the need
+   ended: it completes, and `COUPLING_GRACE` ends the coupling, so that need coming and
+   going at a view's edge does not make handshakes flap.
+
+A region held in a handshake counts as waiting. A region may be in several handshakes
+at once; it names the same next tick to each, and a call-off ends only that
+handshake's hold.
 
 The pause is a commit and a delivery each way. Couplings, offsets, handshakes under way
 and the regions given up are kept in a file of their own, rewritten as the table is
@@ -330,8 +347,11 @@ scheduled.
 
 **Ending.** The store ends a coupling, as a record on both streams, once neither region
 has needed it for `COUPLING_GRACE` (a second, so that a view's edge going back and forth
-does not make it flap). Effects filed after that record convert as uncoupled. So
-couplings last while a border ticks, and do not gather into chains across the world.
+does not make it flap). Effects filed after that record convert as uncoupled. The record withdraws, on both
+sides, the copies of chunks the former partner uses; no chunk beside them ticks then,
+since neither region needs the coupling. So couplings last while a border ticks, and do
+not gather into chains across the world. A coupling ended by a giving up or a lost
+owner leaves the copies handed in.
 
 **Never stuck.** A region waits only for its partners' previous border time, so the
 region furthest behind can always tick: no line or ring of coupled regions waits for
@@ -340,18 +360,27 @@ itself. A region is **stalled** when its progress has not moved for
 which the last of its partners became durable through its next border time less one,
 that is, from when it stopped waiting. A region that waits counts nothing; of two
 healthy but slow regions coupled to each other, the one behind is ticking and the
-other waiting, so neither looks stalled. The store **gives up** a stalled region: it
+other waiting, so neither looks stalled. So is a region whose border time advances at under 15 ticks a second for five seconds
+while a partner waits on it (the owner, 2026-10-16): a region overloaded but still
+moving would otherwise hold its partners to its pace for as long as their border ticks.
+Ticks a second are measured by the store's own clock over the commits that arrive, and
+counted afresh from a hello. The store **gives up** a stalled region: it
 ends every coupling of that region, as a record, and marks it given up; the regions
 that waited for it tick on. Those coupled to them are not touched, so a stall ends one
 region's couplings, not a chain. A region given up that still needs coupling commits
 every tick, so that its pace can be seen, and is coupled again by the handshake once it
 has committed at 15 ticks a second or more for five seconds; until then what crosses
-its lines is late (section 1), and its copies of ticking land stay handed in. Effects
+its lines is late (section 1). Copies already handed in on either side of its lines
+stay handed in while it is given up, also where it comes to use a chunk another region
+copies: the giving up wins over the withdrawing of section 8's first paragraph. Effects
 already filed keep their conversion.
 
 **Reshapes, moves and restores.** A region entering `Preparing` for a merge or a split,
-or released for a move, asks the store, in its lane, to end its couplings; the store
-also ends them when the region loses its owner, without waiting out its patience. Its
+or released for a move, asks the store, in its lane, to end its couplings. The store
+also ends a region's couplings at once when its handle is closed, when another owner's
+hello replaces it, or when the log fails; a worker that is hung or cut off but keeps its
+connection is found by patience. A restart of the store keeps couplings, from
+`regions/couplings`. Its
 partners wait for it at most until that record reaches them, and it ticks on, still
 waiting for them, until its stop. A merge's survivor, a split's parts and a region
 restored after a move or a crash are coupled again by the handshake once they tick,
@@ -373,8 +402,9 @@ too if the owner's machine can be measured so.
   torch whose support is broken across it falls a tick later, leaves across it decay,
   the chunks along it tick. The half minute after a hand-over is the same.
 - Along a ticking border, regions tick in lockstep, and only while it ticks (a second's
-  grace); one that falls behind holds its partners back for up to `COUPLING_PATIENCE`
-  before they go on without it.
+  grace); one that stops holds its partners back for up to `COUPLING_PATIENCE`, and one
+  that runs under 15 ticks a second for up to five seconds, before they go on without
+  it.
 - Redstone, built later on the same machinery, settles across a line, and a circuit
   that counts ticks keeps its timing across a coupled line except for updates, each a
   tick late where it crosses (the owner, question 2).
@@ -489,3 +519,25 @@ of effects made before a coupling sound. Its findings, worked in:
 9. Warm chunks count as loaded for `Dropped`; a base says whether its chunk is in use
    and by whom; a region in `Preparing` keeps its copies; the named tick is the next not
    yet run (sections 5 and 8).
+
+**Fourth review of this record (2026-10-16), focused on sections 5 and 8: accept after
+named changes, no further review needed.** It found the exact delays, the shifts of
+offsets, held ticks keeping their deadlines and the keeping of couplings over a restart
+of the store sound. Its changes, made:
+
+1. Chunks listed by a merge, a split or `Restored` that are not in memory get a use
+   timer, not a pretence of being warm (section 5).
+2. Use is not a log record, so after a restart of the store every held chunk is in use
+   until `Dropped` (section 5).
+3. A coupling that ends for want of need withdraws the copies of the former partner's
+   chunks; a giving up leaves them, and wins over a withdrawing (section 8).
+4. A handshake has a limit of its own, and a region held in one counts as waiting;
+   several handshakes at once (section 8).
+5. A region running under 15 ticks a second for five seconds while a partner waits is
+   given up, as the owner chose (section 8; Consequences).
+6. A lost owner is a closed handle, a replacing hello or a failed log; a restart of the
+   store keeps couplings (section 8).
+7. A handshake is not called off because the need ended (section 8).
+8. Records in a group apply in log order (section 5).
+9. Ticks a second are measured by the store's clock over arriving commits, afresh from
+   a hello (section 8).

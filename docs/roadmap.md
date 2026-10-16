@@ -81,8 +81,12 @@ beyond the hotbar, and crafting.
   region on land stands still 0.04 to 0.24 s where it stood 0.01 to 0.05 s before.
   The disk without its cache was not measured: the cache is the machine's.
 
-**Next:** carrying updates and ticks between regions, a record of its own (the
-owner's answer of 2026-10-15), then redstone; S3 beside them. The judge of features, over 204 areas of two seeds with
+**Next:** phase E, effects carried between regions, so that a border is seamless
+([plan](groundwork/e-plan.md), [ADR-0025](adr/0025-effects-between-regions.md),
+accepted on 2026-10-16 after four reviews): border copies, effects kept by the store
+for the region that uses their chunk, and lockstep while a border ticks, so that a
+scheduled tick crossing a line runs on the tick it would in one region. Its first step
+is E2, the shared types. Then redstone; S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
