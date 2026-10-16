@@ -78,8 +78,10 @@ beyond the hotbar, and crafting.
 
 **Under way:** B8, the measurements of phase B on the real disk (commits with water
 flowing, random ticks over a full view, a flight over new land, a merge's pause) and
-the parity matrix; then S3. The judge of features found three areas of seed 12345
-that differ (an iceberg; water ticks at chunk edges in two areas), being looked into.
+the parity matrix; then S3. The judge of features, over 204 areas of two seeds with
+structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
+edge now schedules its water as the game's does, and the two icebergs that differ are
+HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
 
 **What to try with a real client, phase B** (`cargo run --release -p clustine --
 --seed 3`):
