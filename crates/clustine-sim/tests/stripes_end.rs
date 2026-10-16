@@ -2523,7 +2523,7 @@ impl Pair {
             let here = region.chunk(chunk).expect("it is loaded");
             let there = self.one.region.chunk(chunk).expect("it is loaded");
             assert!(
-                here == there,
+                but_seams(here) == but_seams(there),
                 "the blocks of {chunk:?}, which {holder} holds, and of the one region: {:?}",
                 differences(chunk, here, there)
             );
@@ -2929,4 +2929,13 @@ fn regions_that_split_with_grants_that_wait_and_absorb_each_other_show_what_one_
         tally.waited.went >= runs && tally.waited.stayed >= runs,
         "{tally:?}"
     );
+}
+
+/// A chunk without its seam entries, which tell where a region's borders were and
+/// differ between a world run as one region and as several
+/// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5).
+fn but_seams(chunk: &Chunk) -> Chunk {
+    let mut chunk = chunk.clone();
+    chunk.set_seams(Vec::new());
+    chunk
 }

@@ -401,6 +401,16 @@ impl Region {
         self.ticks_to_save(position)
     }
 
+    /// The seam entries of a loaded chunk, whole, as a commit carries them
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5); none for a chunk
+    /// that is not loaded.
+    pub fn seams(&self, position: ChunkPos) -> Vec<clustine_world::Seam> {
+        self.chunks
+            .get(&position)
+            .map(|chunk| chunk.seams().to_vec())
+            .unwrap_or_default()
+    }
+
     /// A loaded chunk as it is to be saved: with the ticks of the region's queues
     /// written into it as the delays left at the end of this tick
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
@@ -533,6 +543,7 @@ impl Region {
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
         self.update_ticking();
+        self.run_seams(&mut output);
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
@@ -604,6 +615,7 @@ impl Region {
         output.stays = self.notes(first, let_go);
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
+        output.seams_changed = self.seams_changed();
         output.delta = self.take_delta();
         output
     }
@@ -3048,6 +3060,15 @@ mod tests {
     }
 
     /// A chunk with a floor of stone right below where players stand.
+    /// A chunk without its seam entries: the updates a region with only a few chunks
+    /// loaded keeps for the chunks beside them (`docs/adr/0024-block-behaviour-in-a-
+    /// region.md`, section 5), which tests of blocks leave aside.
+    fn but_seams(chunk: &Chunk) -> Chunk {
+        let mut chunk = chunk.clone();
+        chunk.set_seams(Vec::new());
+        chunk
+    }
+
     fn floor() -> Chunk {
         let mut chunk = chunk();
         for z in 0..16 {
@@ -3611,7 +3632,8 @@ mod tests {
         region.tick(&moves(vec![place(1, 2, -61, 0, Face::Top)]));
         let output = region.tick(&moves(vec![dig(1, 2, -60, 0, 2)]));
         assert_eq!(block_changes(&output), [changed(2, -60, 0, blocks::AIR)]);
-        assert_eq!(region.chunk(ChunkPos::new(0, 0)), Some(&floor()));
+        let chunk = region.chunk(ChunkPos::new(0, 0)).map(but_seams);
+        assert_eq!(chunk, Some(floor()));
     }
 
     /// Chunks 0 and 1: the blocks with x from 0 up to, but not including, 32.
@@ -5186,7 +5208,10 @@ mod tests {
             assert_eq!(block_changes(&output), [change]);
             assert_eq!(outcomes(&output), [done(1, sequence)]);
         }
-        assert_eq!(west.chunk(WEST_CHUNK), whole.chunk(WEST_CHUNK));
+        assert_eq!(
+            west.chunk(WEST_CHUNK).map(but_seams),
+            whole.chunk(WEST_CHUNK).map(but_seams)
+        );
     }
 
     #[test]
@@ -5323,7 +5348,7 @@ mod tests {
         // The floor, with the block placed in the air at the line.
         let mut placed = floor();
         placed.set(0, -60, 2, blocks::STONE);
-        assert_eq!(region.chunk(EAST_CHUNK), Some(&placed));
+        assert_eq!(region.chunk(EAST_CHUNK).map(but_seams), Some(placed));
     }
 
     #[test]

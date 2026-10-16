@@ -80,6 +80,43 @@ pub struct ScheduledTick {
     pub priority: i8,
 }
 
+/// What kind of update a [`Seam`] keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum SeamKind {
+    /// `updateShape`: the block asks again what it is, beside the block that changed.
+    Shape,
+    /// `neighborChanged`: the block is told that its neighbour changed.
+    Neighbour,
+}
+
+/// An update a region could not make: one that would reach a block whose chunk, or a
+/// neighbour's, it had not loaded, as at the border with another region. It is kept in
+/// the chunk of the block that changed, and made when one region has the block it
+/// reaches and that block's neighbours loaded
+/// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seam {
+    /// The block the update reaches.
+    pub at: BlockPos,
+    /// The direction from that block to the one that changed, by `Face`'s numbers.
+    pub direction: u8,
+    pub kind: SeamKind,
+    /// The block that changed, as it was then.
+    pub source: BlockState,
+    /// The update's flags (`Block.UPDATE_*`).
+    pub flags: u32,
+    /// How much deeper a chain of shape updates may go from it.
+    pub depth: i32,
+}
+
+impl Seam {
+    /// What tells two entries apart: a chunk keeps one per block reached, direction and
+    /// kind, the latest.
+    pub fn key(&self) -> (BlockPos, u8, SeamKind) {
+        (self.at, self.direction, self.kind)
+    }
+}
+
 /// The four heightmaps a client is sent and generation asks: for each column, indexed
 /// by `z << 4 | x`, the height above the highest block that counts for the map,
 /// counted from the bottom of the dimension; 0 for a column without one.
@@ -197,6 +234,9 @@ pub struct Chunk {
     /// Positions whose block is to take its shape, or whose fluid is to flow a step,
     /// when the chunk is first ticked. Ascending, each once.
     marks: Vec<InChunk>,
+    /// Updates from this chunk's blocks that its region could not make, by
+    /// [`Seam::key`], each once.
+    seams: Vec<Seam>,
 }
 
 impl PartialEq for Chunk {
@@ -207,6 +247,7 @@ impl PartialEq for Chunk {
             && self.light == other.light
             && self.ticks == other.ticks
             && self.marks == other.marks
+            && self.seams == other.seams
     }
 }
 
@@ -234,6 +275,7 @@ impl Chunk {
             light: None,
             ticks: Vec::new(),
             marks: Vec::new(),
+            seams: Vec::new(),
         };
         chunk.heights = chunk.scanned_heights();
         chunk.block_entities = chunk.owed_block_entities(BTreeMap::new());
@@ -509,6 +551,29 @@ impl Chunk {
         self.marks = marks;
     }
 
+    /// The updates from this chunk that wait for their blocks to be loaded, by
+    /// [`Seam::key`].
+    pub fn seams(&self) -> &[Seam] {
+        &self.seams
+    }
+
+    /// Takes `seams` as the chunk's, by [`Seam::key`]; of two with one key, the later.
+    pub fn set_seams(&mut self, seams: Vec<Seam>) {
+        let mut kept: BTreeMap<(BlockPos, u8, SeamKind), Seam> = BTreeMap::new();
+        for seam in seams {
+            kept.insert(seam.key(), seam);
+        }
+        self.seams = kept.into_values().collect();
+    }
+
+    /// Keeps `seam`, in place of an entry with its key.
+    pub fn add_seam(&mut self, seam: Seam) {
+        match self.seams.binary_search_by_key(&seam.key(), Seam::key) {
+            Ok(index) => self.seams[index] = seam,
+            Err(index) => self.seams.insert(index, seam),
+        }
+    }
+
     /// Whether a client is shown the same of both: the lowest block, the blocks and
     /// biomes by content, and the block entities. Whether the two are as generated,
     /// their light, their ticks and their marks are not asked. An edge decides by
@@ -519,12 +584,13 @@ impl Chunk {
             && self.block_entities == other.block_entities
     }
 
-    /// The chunk as an edge is handed it: without the ticks and the marks, which are
-    /// the simulation's and the store's.
+    /// The chunk as an edge is handed it: without the ticks, the marks and the seams,
+    /// which are the simulation's and the store's.
     pub fn for_viewers(&self) -> Self {
         Self {
             ticks: Vec::new(),
             marks: Vec::new(),
+            seams: Vec::new(),
             ..self.clone()
         }
     }
@@ -549,6 +615,7 @@ struct ChunkRepr {
     light: Option<Light>,
     ticks: Vec<ScheduledTick>,
     marks: Vec<InChunk>,
+    seams: Vec<Seam>,
 }
 
 impl From<Chunk> for ChunkRepr {
@@ -562,6 +629,7 @@ impl From<Chunk> for ChunkRepr {
             light: chunk.light,
             ticks: chunk.ticks,
             marks: chunk.marks,
+            seams: chunk.seams,
         }
     }
 }
@@ -609,6 +677,7 @@ impl TryFrom<ChunkRepr> for Chunk {
         chunk.light = repr.light;
         chunk.ticks = repr.ticks;
         chunk.marks = repr.marks;
+        chunk.set_seams(repr.seams);
         Ok(chunk)
     }
 }

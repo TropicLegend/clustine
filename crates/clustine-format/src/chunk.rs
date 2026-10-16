@@ -12,7 +12,7 @@
 //! | Tick at which the chunk was saved | u64 |
 //! | Epoch of the region that saved it | u64 |
 //! | Generated: the version of the generator the chunk is exactly as made by, or 0 | u16 |
-//! | Flags | u8: bit 0 "with a failure"; the others 0 |
+//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams"; the others 0 |
 //! | Section count | u16 |
 //! | Codec of the body | u8: 0 as it is, 1 zstd |
 //! | Length of the body, as it is | u32, at most 8 MiB |
@@ -30,6 +30,7 @@
 //! | Light | u8: 0 for none, 1 for present without `beside`, 2 for present with it. If present: `made_by` u16; for 2, `beside` u16; then for sky and then for block, per light section bottom to top: u8 0 absent, 1 dark, 2 full, or 3 followed by 2,048 bytes |
 //! | Scheduled ticks | count u32; then, in order: kind u8 (0 block, 1 fluid), `x << 4 \| z` u8, y i16, id u16, delay i32, priority i8 |
 //! | Marks | count u32; then, ascending: `x << 4 \| z` u8, y i16 |
+//! | Seams, with bit 1 of the flags only | as `seams.rs` says, which is not empty |
 //!
 //! The writer writes one form: palettes ascending with nothing unused, lists in
 //! order, light that is all 0 or all 15 as dark and full. The reader refuses what it
@@ -57,6 +58,10 @@ const ZSTD_LEVEL: i32 = 3;
 /// below it; a file that claims more is not read into memory.
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const WITH_FAILURE: u8 = 1;
+/// A chunk with seam entries says so, so that one without, and every chunk from before
+/// there were any, is written as it was (`docs/adr/0024-block-behaviour-in-a-region.md`,
+/// section 4, "The format").
+const WITH_SEAMS: u8 = 2;
 /// The byte that says how a chunk's light is there: not at all, or with the version
 /// of the generator whose chunks it was made beside. The value between them, 1, is
 /// light without that version, which only a file from before it was kept has.
@@ -271,6 +276,9 @@ impl ChunkFile {
         for mark in chunk.marks() {
             put_in_chunk(&mut body, *mark);
         }
+        if !chunk.seams().is_empty() {
+            crate::seams::put_seams(&mut body, chunk.seams());
+        }
         assert!(body.len() <= MAX_BODY, "a chunk of {} bytes", body.len());
 
         let compressed = zstd::bulk::compress(&body, ZSTD_LEVEL).ok();
@@ -285,11 +293,17 @@ impl ChunkFile {
         out.extend_from_slice(&self.tick.to_be_bytes());
         out.extend_from_slice(&self.epoch.to_be_bytes());
         out.extend_from_slice(&chunk.generated().to_be_bytes());
-        out.push(if chunk.with_failure() {
+        let failure = if chunk.with_failure() {
             WITH_FAILURE
         } else {
             0
-        });
+        };
+        let seams = if chunk.seams().is_empty() {
+            0
+        } else {
+            WITH_SEAMS
+        };
+        out.push(failure | seams);
         out.extend_from_slice(&(chunk.sections().len() as u16).to_be_bytes());
         out.push(codec);
         out.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -325,7 +339,7 @@ impl ChunkFile {
         let epoch = input.u64()?;
         let generated = input.u16()?;
         let flags = input.u8()?;
-        if flags & !WITH_FAILURE != 0 {
+        if flags & !(WITH_FAILURE | WITH_SEAMS) != 0 {
             return Err(FormatError::Corrupt("flags that mean nothing"));
         }
         let section_count = usize::from(input.u16()?);
@@ -455,6 +469,13 @@ impl ChunkFile {
             marks.push(in_chunk(&mut input)?);
         }
         chunk.set_marks(marks);
+        if flags & WITH_SEAMS != 0 {
+            let seams = crate::seams::take_seams(&mut input)?;
+            if seams.is_empty() {
+                return Err(FormatError::Corrupt("a chunk with seams that has none"));
+            }
+            chunk.set_seams(seams);
+        }
         input.finish()?;
         chunk.mark_generated(generated, flags & WITH_FAILURE != 0);
         let file = Self {
@@ -470,6 +491,7 @@ impl ChunkFile {
 #[cfg(test)]
 mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
+    use clustine_world::{BlockPos, Seam, SeamKind};
 
     use super::*;
 
@@ -547,6 +569,42 @@ mod tests {
             // One form: what was read is written as it was.
             assert_eq!(ChunkFile::decode(&bytes).unwrap().0.encode(), bytes);
         }
+    }
+
+    /// A chunk with seam entries is read back with them, an entry reaching beyond the
+    /// chunk and below zero among them, and says so in its flags; one without has the
+    /// flag clear, as every chunk from before there were seams.
+    #[test]
+    fn a_chunk_with_seams_comes_back_with_them_and_one_without_is_as_before() {
+        let mut chunk = full();
+        chunk.set_seams(vec![
+            Seam {
+                at: BlockPos::new(-1, -64, 5),
+                direction: 5,
+                kind: SeamKind::Shape,
+                source: blocks::STONE,
+                flags: 2,
+                depth: 511,
+            },
+            Seam {
+                at: BlockPos::new(16, 70, 0),
+                direction: 4,
+                kind: SeamKind::Neighbour,
+                source: blocks::WATER,
+                flags: 3,
+                depth: -1,
+            },
+        ]);
+        let file = file(chunk);
+        let bytes = file.encode();
+        assert_eq!(bytes[32] & WITH_SEAMS, WITH_SEAMS);
+        assert_eq!(ChunkFile::decode(&bytes), Ok((file.clone(), 0)));
+        assert_eq!(ChunkFile::decode(&bytes).unwrap().0.encode(), bytes);
+        assert_eq!(file_of_full_without_seams()[32] & WITH_SEAMS, 0);
+    }
+
+    fn file_of_full_without_seams() -> Vec<u8> {
+        file(full()).encode()
     }
 
     /// The record's two sizes: a section of one state and one biome is seven bytes of

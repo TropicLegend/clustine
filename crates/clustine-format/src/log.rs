@@ -22,7 +22,7 @@
 //! | 6 | [`LogRecord::Absorbed`] | region u32, epoch u64, absorbed u32, tick u64, state bytes |
 //! | 7 | [`LogRecord::Split`] | region u32, epoch u64, tick u64, state bytes, part u32, part epoch u64, chunks, part state bytes |
 //! | 8 | [`LogRecord::Commit`] with stay notes | the fields of kind 2, stays |
-//! | 9 | [`LogRecord::Commit`] with records of chunks | the fields of kind 2, stays (whose count may be 0), ticks, marks taken (chunks) |
+//! | 9 | [`LogRecord::Commit`] with records of chunks | the fields of kind 2, stays (whose count may be 0), ticks, marks taken (chunks), seams |
 //!
 //! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
 //! u16 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z;
@@ -32,9 +32,11 @@
 //! A commit is written as kind 2 if it has no stay notes and as kind 8 if it has any, so
 //! that a commit and its notes are on disk together or not at all; as kind 9 if it
 //! carries records of chunks: the scheduled ticks of chunks whose ticks changed in its
-//! tick, or the chunks whose marks for post-processing were taken in it
-//! (`docs/adr/0024-block-behaviour-in-a-region.md`, sections 4 and 6), whatever its
-//! notes.
+//! tick, the chunks whose marks for post-processing were taken in it, or the seam
+//! entries of chunks whose entries changed in it
+//! (`docs/adr/0024-block-behaviour-in-a-region.md`, sections 4 to 6), whatever its
+//! notes. `seams` is a count of chunks (u32), followed per chunk by i32 x, i32 z and the
+//! chunk's entries whole, as `seams.rs` writes them.
 //! `ticks` is a count of chunks (u32), followed per chunk by i32 x, i32 z and a count of
 //! ticks (u32), and per tick by u8 x, i16 y and u8 z within the chunk, u8 1 for a block
 //! and 2 for a fluid, u16 its id, i32 the delay left and i8 the priority: the chunk's
@@ -69,7 +71,7 @@
 //! reports how many bytes were valid.
 
 use clustine_data::BlockState;
-use clustine_world::{BlockPos, ChunkPos, InChunk, ScheduledTick, Ticked};
+use clustine_world::{BlockPos, ChunkPos, InChunk, ScheduledTick, Seam, Ticked};
 
 use crate::bytes::Input;
 use crate::{FORMAT_VERSION, FormatError};
@@ -195,6 +197,9 @@ pub enum LogRecord {
         /// The chunks whose marks for post-processing were taken in the tick, in
         /// ascending order.
         marks_taken: Vec<ChunkPos>,
+        /// The seam entries of each chunk whose entries changed in the tick, whole, in
+        /// ascending order of the chunks.
+        seams: Vec<(ChunkPos, Vec<Seam>)>,
     },
     /// The region was opened by an owner with `epoch` and restored up to tick
     /// `restored`. A record of the region that comes before this one with a later tick
@@ -267,8 +272,9 @@ impl LogRecord {
                 stays,
                 ticks,
                 marks_taken,
+                seams,
             } => {
-                let records = !ticks.is_empty() || !marks_taken.is_empty();
+                let records = !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
                 payload.push(if records {
                     KIND_COMMIT_WITH_TICKS
                 } else if stays.is_empty() {
@@ -285,6 +291,12 @@ impl LogRecord {
                     put_stays(&mut payload, stays);
                     put_ticks(&mut payload, ticks);
                     put_chunks(&mut payload, marks_taken);
+                    payload.extend_from_slice(&(seams.len() as u32).to_be_bytes());
+                    for (chunk, of_chunk) in seams {
+                        payload.extend_from_slice(&chunk.x.to_be_bytes());
+                        payload.extend_from_slice(&chunk.z.to_be_bytes());
+                        crate::seams::put_seams(&mut payload, of_chunk);
+                    }
                 } else if !stays.is_empty() {
                     put_stays(&mut payload, stays);
                 }
@@ -373,6 +385,7 @@ impl LogRecord {
                 stays: Vec::new(),
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
+                seams: Vec::new(),
             },
             KIND_COMMIT_WITH_STAYS => Self::Commit {
                 region: input.u32()?,
@@ -383,6 +396,7 @@ impl LogRecord {
                 stays: take_stays(&mut input)?,
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
+                seams: Vec::new(),
             },
             KIND_COMMIT_WITH_TICKS => {
                 let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
@@ -396,7 +410,14 @@ impl LogRecord {
                 };
                 let ticks = take_ticks(&mut input)?;
                 let marks_taken = take_chunks(&mut input)?;
-                if ticks.is_empty() && marks_taken.is_empty() {
+                let chunks = input.u32()? as usize;
+                // Each is eight bytes and a count at least.
+                let mut seams = Vec::with_capacity(chunks.min(input.0.len() / 12));
+                for _ in 0..chunks {
+                    let chunk = ChunkPos::new(input.i32()?, input.i32()?);
+                    seams.push((chunk, crate::seams::take_seams(&mut input)?));
+                }
+                if ticks.is_empty() && marks_taken.is_empty() && seams.is_empty() {
                     // A commit without records of chunks is of another kind, so that one
                     // commit has one form.
                     return Err(FormatError::Corrupt(
@@ -412,6 +433,7 @@ impl LogRecord {
                     stays,
                     ticks,
                     marks_taken,
+                    seams,
                 }
             }
             KIND_OPENED => Self::Opened {
@@ -740,6 +762,7 @@ mod tests {
             stays: Vec::new(),
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         }
     }
 
@@ -754,6 +777,7 @@ mod tests {
             stays: Vec::new(),
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         };
         let bytes = record.encode();
         let payload = [
@@ -1077,6 +1101,7 @@ mod tests {
                 stays,
                 ticks: ticks.clone(),
                 marks_taken: Vec::new(),
+                seams: Vec::new(),
             };
             let bytes = record.encode();
             assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_TICKS);
@@ -1132,6 +1157,7 @@ mod tests {
             stays: Vec::new(),
             ticks,
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         }
     }
 
@@ -1186,6 +1212,7 @@ mod tests {
             stays: Vec::new(),
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         };
         let with = with.encode()[FRAME_HEADER_LENGTH..].to_vec();
         let without = without.encode()[FRAME_HEADER_LENGTH..].to_vec();
@@ -1225,6 +1252,7 @@ mod tests {
             stays,
             ticks,
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
@@ -1244,6 +1272,7 @@ mod tests {
             stays: Vec::new(),
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         };
         let payload = [
             2, 2, // version, kind
@@ -1310,6 +1339,7 @@ mod tests {
                 stays: Vec::new(),
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
+                seams: Vec::new(),
             },
             commit_with_stays(),
             LogRecord::Opened {
@@ -1419,6 +1449,7 @@ mod tests {
             ],
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         }
     }
 
@@ -1484,6 +1515,7 @@ mod tests {
             stays: Vec::new(),
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         };
         let bytes = without.encode();
         assert_eq!(bytes[8..10], [2, KIND_COMMIT]);
@@ -1604,6 +1636,7 @@ mod tests {
             }],
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
@@ -1735,6 +1768,7 @@ mod tests {
                 stays,
                 ticks: Vec::new(),
                 marks_taken: Vec::new(),
+                seams: Vec::new(),
             };
             let opened = LogRecord::Opened { region, epoch, restored };
             let mut bytes = commit.encode();
@@ -1765,6 +1799,7 @@ mod tests {
                 stays,
                 ticks,
                 marks_taken: Vec::new(),
+                seams: Vec::new(),
             };
             let bytes = commit.encode();
             prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);

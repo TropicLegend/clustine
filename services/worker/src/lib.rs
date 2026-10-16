@@ -2361,9 +2361,16 @@ impl RegionRunner {
             .copied()
             .filter(|position| self.region.chunk(*position).is_some())
             .collect();
+        let seams: Vec<_> = output
+            .seams_changed
+            .iter()
+            .filter(|position| self.region.chunk(**position).is_some())
+            .map(|position| (*position, self.region.seams(*position)))
+            .collect();
         let unchanged = changes.is_empty()
             && ticks.is_empty()
             && marks_taken.is_empty()
+            && seams.is_empty()
             && output.delta.changes_only_the_tick();
         let needs_commit = !(unchanged && output.stays.is_empty());
         if needs_commit {
@@ -2372,6 +2379,8 @@ impl RegionRunner {
             self.unsaved
                 .extend(ticks.iter().map(|(position, _)| *position));
             self.unsaved.extend(marks_taken.iter().copied());
+            self.unsaved
+                .extend(seams.iter().map(|(position, _)| *position));
             self.store.request(StoreRequest::Commit {
                 tick: output.tick,
                 changes,
@@ -2379,6 +2388,7 @@ impl RegionRunner {
                 stays: output.stays,
                 ticks,
                 marks_taken,
+                seams,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its

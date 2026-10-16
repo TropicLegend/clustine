@@ -7,7 +7,8 @@
 //! What phase B's later steps bring is left out here, each where it would be:
 //!
 //! - an update that would reach a block whose chunk, or a neighbour's, this region
-//!   has not loaded is not made: B6 keeps it as a seam entry;
+//!   has not loaded is kept as a seam entry in the chunk of the block that changed,
+//!   and made once the region has them loaded (section 5);
 //! - `neighborChanged` only removes what can no longer stay (rails, repeaters and
 //!   comparators, redstone wire) and has a liquid look again; power waits for the
 //!   phase of redstone.
@@ -17,7 +18,7 @@ use clustine_blocks::data::{is_class, same_block};
 use clustine_blocks::shape::update_shape;
 use clustine_blocks::survive::can_survive;
 use clustine_data::{BlockClass, BlockState, Face, blocks};
-use clustine_world::{BlockPos, PlayerId, Ticked};
+use clustine_world::{BlockPos, ChunkPos, PlayerId, Seam, SeamKind, Ticked};
 
 use super::Region;
 use crate::api::{RegionEvent, TickOutput};
@@ -276,6 +277,19 @@ impl Region {
             } => self.shape_update(pos, direction, neighbour, flags, depth, output),
             Pending::Neighbours { source, next } => {
                 let target = relative(source, UPDATE_ORDER[next]);
+                if !self.loaded_around(target) {
+                    let source_state = self.block(source).unwrap_or(blocks::AIR);
+                    let seam = Seam {
+                        at: target,
+                        direction: opposite(UPDATE_ORDER[next]) as u8,
+                        kind: SeamKind::Neighbour,
+                        source: source_state,
+                        flags: UPDATE_NEIGHBORS,
+                        depth: 0,
+                    };
+                    self.keep_seam(source, seam);
+                    return;
+                }
                 self.neighbour_changed(target, output);
             }
         }
@@ -292,6 +306,15 @@ impl Region {
         output: &mut TickOutput,
     ) {
         if !self.loaded_around(pos) {
+            let seam = Seam {
+                at: pos,
+                direction: direction as u8,
+                kind: SeamKind::Shape,
+                source: neighbour,
+                flags,
+                depth,
+            };
+            self.keep_seam(relative(pos, direction), seam);
             return;
         }
         let Some(old) = self.block(pos) else {
@@ -368,6 +391,70 @@ impl Region {
         }
     }
 
+    /// Keeps `seam`, an update from the block at `source` that cannot be made, in the
+    /// chunk of that block, unless it reaches outside the world, where the game makes
+    /// nothing either.
+    fn keep_seam(&mut self, source: BlockPos, seam: Seam) {
+        let chunk = source.chunk();
+        let Some(loaded) = self.chunks.get_mut(&chunk) else {
+            return;
+        };
+        let height = i32::try_from(loaded.height()).unwrap_or(i32::MAX);
+        if seam.at.y < loaded.min_y() || seam.at.y >= loaded.min_y() + height {
+            return;
+        }
+        loaded.add_seam(seam);
+        self.ticks_seams_changed(chunk);
+    }
+
+    /// Makes the seam entries whose blocks the region now has loaded with their
+    /// neighbours, those of each chunk in the order of their keys, the chunks in
+    /// ascending position, and forgets them (section 5 and 6a of the record). An
+    /// entry that cannot be made yet stays.
+    pub(crate) fn run_seams(&mut self, output: &mut TickOutput) {
+        let with_seams: Vec<ChunkPos> = self
+            .chunks
+            .iter()
+            .filter(|(_, chunk)| !chunk.seams().is_empty())
+            .map(|(position, _)| *position)
+            .collect();
+        for chunk in with_seams {
+            let Some(seams) = self
+                .chunks
+                .get(&chunk)
+                .map(|loaded| loaded.seams().to_vec())
+            else {
+                continue;
+            };
+            let (ready, waiting): (Vec<Seam>, Vec<Seam>) = seams
+                .into_iter()
+                .partition(|seam| self.loaded_around(seam.at));
+            if ready.is_empty() {
+                continue;
+            }
+            if let Some(loaded) = self.chunks.get_mut(&chunk) {
+                loaded.set_seams(waiting);
+            }
+            self.ticks_seams_changed(chunk);
+            for seam in ready {
+                let direction = face_of(seam.direction);
+                match seam.kind {
+                    SeamKind::Shape => self.add_and_run(
+                        Pending::Shape {
+                            pos: seam.at,
+                            direction,
+                            neighbour: seam.source,
+                            flags: seam.flags,
+                            depth: seam.depth,
+                        },
+                        output,
+                    ),
+                    SeamKind::Neighbour => self.neighbour_changed(seam.at, output),
+                }
+            }
+        }
+    }
+
     /// Whether the chunks of `pos` and of its six neighbours are loaded, so that an
     /// update there reads only what the region has.
     fn loaded_around(&self, pos: BlockPos) -> bool {
@@ -416,6 +503,18 @@ fn fluid_block(state: BlockState) -> BlockState {
 
 fn is_water(fluid: u8) -> bool {
     clustine_data::FLUIDS[usize::from(fluid)] == "minecraft:water"
+}
+
+/// The face numbered `number` (`Face as u8`).
+fn face_of(number: u8) -> Face {
+    match number {
+        0 => Face::Down,
+        1 => Face::Up,
+        2 => Face::North,
+        3 => Face::South,
+        4 => Face::West,
+        _ => Face::East,
+    }
 }
 
 fn relative(pos: BlockPos, face: Face) -> BlockPos {

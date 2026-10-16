@@ -24,7 +24,7 @@ use clustine_data::BlockState;
 use clustine_format::{ChunkFile, FormatError, StateFile};
 use clustine_rpc::{Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
-use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, ScheduledTick};
+use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, ScheduledTick, Seam};
 use tracing::{error, info, warn};
 
 use crate::disk::{Disk, parent, temporary};
@@ -1227,22 +1227,24 @@ impl ChunkService {
 }
 
 /// What the replay of a commit puts into a stored chunk: a block it changed, the
-/// chunk's scheduled ticks as the commit's tick left them, whole, or that its marks
-/// were taken (`docs/adr/0024-block-behaviour-in-a-region.md`, sections 4 and 6). A
-/// commit's ticks come after its blocks, and the marks taken last.
+/// chunk's scheduled ticks as the commit's tick left them, whole, that its marks were
+/// taken, or its seam entries, whole (`docs/adr/0024-block-behaviour-in-a-region.md`,
+/// sections 4 to 6). A commit's records come after its blocks.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Replayed {
     Block(BlockPos, BlockState),
     Ticks(ChunkPos, Vec<ScheduledTick>),
     /// The chunk's marks for post-processing were taken: it was post-processed.
     MarksTaken(ChunkPos),
+    /// The chunk's seam entries, whole.
+    Seams(ChunkPos, Vec<Seam>),
 }
 
 impl Replayed {
     pub(crate) fn chunk(&self) -> ChunkPos {
         match self {
             Self::Block(position, _) => position.chunk(),
-            Self::Ticks(chunk, _) | Self::MarksTaken(chunk) => *chunk,
+            Self::Ticks(chunk, _) | Self::MarksTaken(chunk) | Self::Seams(chunk, _) => *chunk,
         }
     }
 }
@@ -1299,6 +1301,10 @@ fn apply(
             }
             Replayed::MarksTaken(_) => {
                 chunk.set_marks(Vec::new());
+                chunk.clear_generated();
+            }
+            Replayed::Seams(_, seams) => {
+                chunk.set_seams(seams.clone());
                 chunk.clear_generated();
             }
         }

@@ -798,6 +798,10 @@ pub struct TickOutput {
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 6). They are to be
     /// committed and saved as chunks whose blocks changed are.
     pub marks_taken: Vec<ChunkPos>,
+    /// Chunks whose seam entries changed in this tick, in ascending order
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5). They are to be
+    /// committed and saved as chunks whose blocks changed are.
+    pub seams_changed: Vec<ChunkPos>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,
     /// What the region says to the world store of stays in this tick, in the order of

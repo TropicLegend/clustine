@@ -3362,13 +3362,17 @@ fn taking_a_merge_returns_every_chunk_that_was_loaded_block_for_block() {
     let mut broken = stone_chunk();
     let (x, z) = OWN_BLOCK.in_chunk();
     broken.set(x, OWN_BLOCK.y, z, blocks::AIR);
+    let loaded: Vec<_> = loaded
+        .iter()
+        .map(|(position, chunk)| (*position, but_seams(chunk)))
+        .collect();
     assert_eq!(
         loaded,
         vec![(WEST, stone_chunk()), (HOME, broken), (FAR, stone_chunk())],
         "in ascending order"
     );
     for (chunk, blocks) in &loaded {
-        assert_eq!(before.chunk(*chunk), Some(blocks));
+        assert_eq!(before.chunk(*chunk).map(but_seams).as_ref(), Some(blocks));
     }
     assert_eq!(region.loaded_chunk_count(), 0);
     for chunk in [HOME, WEST, FAR] {
@@ -5967,7 +5971,7 @@ impl Pair {
             let here = region.chunk(chunk).expect("it is loaded");
             let there = self.one.region.chunk(chunk).expect("it is loaded");
             assert!(
-                here == there,
+                but_seams(here) == but_seams(there),
                 "the blocks of {chunk:?}, which {holder} holds, and of the one region: {:?}",
                 differences(chunk, here, there)
             );
@@ -6759,4 +6763,13 @@ fn the_same_run_twice_gives_byte_identical_states_and_identical_chunks() {
         assert_eq!(runs[0].pair.steps, runs[1].pair.steps);
         assert!(runs[0].merges + runs[0].splits >= 5);
     }
+}
+
+/// A chunk without its seam entries, which tell where a region's borders were and
+/// differ between a world run as one region and as several
+/// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5).
+fn but_seams(chunk: &Chunk) -> Chunk {
+    let mut chunk = chunk.clone();
+    chunk.set_seams(Vec::new());
+    chunk
 }

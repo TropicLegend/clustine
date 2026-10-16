@@ -69,6 +69,7 @@ impl Actor {
             stays,
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         });
     }
 

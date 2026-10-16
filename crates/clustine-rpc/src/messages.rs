@@ -8,6 +8,7 @@ use clustine_sim::api::{
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, ScheduledTick,
+    Seam,
 };
 use serde::{Deserialize, Serialize};
 
@@ -338,6 +339,9 @@ pub enum StoreRequest {
         /// The chunks whose marks for post-processing were taken in the tick, in
         /// ascending order (`docs/adr/0024-block-behaviour-in-a-region.md`, section 6).
         marks_taken: Vec<ChunkPos>,
+        /// The seam entries of each chunk whose entries changed in the tick, whole
+        /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5).
+        seams: Vec<(ChunkPos, Vec<Seam>)>,
     },
     /// `state` is the region's whole state after `tick`, and every change committed up
     /// to `tick` is contained in a chunk saved before this request. Once those saves are

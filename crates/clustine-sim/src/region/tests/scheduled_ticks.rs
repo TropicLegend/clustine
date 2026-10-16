@@ -1273,3 +1273,39 @@ fn marks_wait_until_the_chunk_ticks() {
         blocks::OAK_FENCE.with_property("east", "true")
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// H. Seams (step B6)
+// ---------------------------------------------------------------------------------------
+
+/// An update that would reach a chunk the region has not loaded waits as a seam entry
+/// in the chunk of the block that changed, and is made once that chunk is loaded: a
+/// wall torch whose wall went while its chunk was away goes when it comes.
+#[test]
+fn an_update_into_a_chunk_not_loaded_is_made_when_it_comes() {
+    let (wall, torch) = (at(31, -60, 8), at(32, -60, 8));
+    let near = ChunkPos::new(1, 0);
+    let far = ChunkPos::new(2, 0);
+    let (mut region, _) = loaded_with(
+        &around_the_origin(),
+        vec![(near, floor_of(near, &[(wall, blocks::STONE)], &[]))],
+    );
+    let mut output = TickOutput::default();
+    region.set_block(wall, blocks::AIR, &mut output);
+    let seams = region.seams(near);
+    assert!(
+        seams
+            .iter()
+            .any(|seam| seam.at == torch && seam.kind == clustine_world::SeamKind::Shape),
+        "{seams:?}"
+    );
+    assert_eq!(idle_tick(&mut region).seams_changed, []);
+    let standing = blocks::WALL_TORCH.with_property("facing", "east").unwrap();
+    let output = load(
+        &mut region,
+        vec![(far, floor_of(far, &[(torch, standing)], &[]))],
+    );
+    assert_eq!(block_at(&region, torch), Some(blocks::AIR));
+    assert!(output.seams_changed.contains(&near));
+    assert!(region.seams(near).iter().all(|seam| seam.at != torch));
+}

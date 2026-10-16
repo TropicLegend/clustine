@@ -5885,8 +5885,8 @@ fn one_region() -> Cluster {
 fn assert_as_one(two: &Cluster, one: &Cluster) {
     for chunk in [HOME, EAST] {
         assert_eq!(
-            two.chunk(chunk),
-            one.chunk(chunk),
+            but_seams(&two.chunk(chunk)),
+            but_seams(&one.chunk(chunk)),
             "the blocks of {chunk:?}"
         );
     }
@@ -6082,4 +6082,13 @@ fn in_a_made_up_run_of_three_regions_every_player_and_every_action_ends_in_one_p
     // region, chunks were given back, and some actions found no region to take them.
     let counts = [let_go, passed_on, given_back, ended];
     assert!(counts.iter().all(|count| *count >= 50), "{counts:?}");
+}
+
+/// A chunk without its seam entries, which tell where a region's borders were and
+/// differ between a world run as one region and as several
+/// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5).
+fn but_seams(chunk: &Chunk) -> Chunk {
+    let mut chunk = chunk.clone();
+    chunk.set_seams(Vec::new());
+    chunk
 }

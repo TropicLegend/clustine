@@ -116,6 +116,8 @@ pub(crate) struct Ticks {
     /// The chunks that started ticking in this region's tick, ascending, which are
     /// post-processed after the tick's fluid ticks if they have marks.
     started: BTreeSet<ChunkPos>,
+    /// The chunks whose seam entries changed in this region's tick so far.
+    seams_changed: BTreeSet<ChunkPos>,
 }
 
 impl Region {
@@ -124,11 +126,22 @@ impl Region {
         self.ticks.counted = 0;
         self.ticks.changed.clear();
         self.ticks.started.clear();
+        self.ticks.seams_changed.clear();
     }
 
     /// The chunks whose ticks changed in this tick, ascending.
     pub(crate) fn ticks_changed(&self) -> Vec<ChunkPos> {
         self.ticks.changed.iter().copied().collect()
+    }
+
+    /// Notes that the seam entries of `chunk` changed in this tick.
+    pub(crate) fn ticks_seams_changed(&mut self, chunk: ChunkPos) {
+        self.ticks.seams_changed.insert(chunk);
+    }
+
+    /// The chunks whose seam entries changed in this tick, ascending.
+    pub(crate) fn seams_changed(&self) -> Vec<ChunkPos> {
+        self.ticks.seams_changed.iter().copied().collect()
     }
 
     /// The chunks that tick with ticks pending, ascending. Only a chunk that ticks has

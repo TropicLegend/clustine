@@ -745,6 +745,7 @@ impl Lanes {
                 stays,
                 ticks,
                 marks_taken,
+                seams,
             } => {
                 let region = session.region;
                 // The notes are in the commit's own record, so that the two are on
@@ -759,6 +760,7 @@ impl Lanes {
                     stays: notes.clone(),
                     ticks,
                     marks_taken,
+                    seams,
                 }
                 .encode();
                 self.group.regions.insert(region);
@@ -2148,7 +2150,8 @@ impl Log {
     }
 
     /// Reads the commit at `entry`: its tick, what it changed in chunks (its blocks,
-    /// then the ticks of its chunks, then whose marks it took) and its state.
+    /// then the ticks of its chunks, then whose marks it took, then their seams) and its
+    /// state.
     #[allow(clippy::type_complexity)]
     fn read(&self, entry: &Entry) -> Result<Option<(u64, Vec<Replayed>, Vec<u8>)>, StoreError> {
         Ok(match self.record(entry)? {
@@ -2158,6 +2161,7 @@ impl Log {
                 state,
                 ticks,
                 marks_taken,
+                seams,
                 ..
             }) => {
                 let blocks = changes
@@ -2167,7 +2171,11 @@ impl Log {
                     .into_iter()
                     .map(|(chunk, ticks)| Replayed::Ticks(chunk, ticks));
                 let marks = marks_taken.into_iter().map(Replayed::MarksTaken);
-                Some((tick, blocks.chain(ticks).chain(marks).collect(), state))
+                let seams = seams
+                    .into_iter()
+                    .map(|(chunk, seams)| Replayed::Seams(chunk, seams));
+                let records = ticks.chain(marks).chain(seams);
+                Some((tick, blocks.chain(records).collect(), state))
             }
             _ => None,
         })

@@ -239,6 +239,7 @@ impl Actor {
             stays: Vec::new(),
             ticks: Vec::new(),
             marks_taken: Vec::new(),
+            seams: Vec::new(),
         });
         self.ledger.push(commit);
     }

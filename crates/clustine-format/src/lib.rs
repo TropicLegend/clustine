@@ -17,6 +17,7 @@ mod bytes;
 mod chunk;
 mod log;
 mod region;
+mod seams;
 
 pub use chunk::{ChunkFile, KIND_CHUNK};
 pub use log::{
