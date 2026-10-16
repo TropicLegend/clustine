@@ -6360,3 +6360,266 @@ fn the_harness_finds_a_delta_behind_a_snapshot_of_its_tick() {
         vec![snapshot_of(HOME, 1, 4), delta(4, NEAR)],
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Rings (`docs/adr/0024-block-behaviour-in-a-region.md`, section 2): the runner hands
+// its region a ring of tickets around every chunk it holds that a link subscribes to,
+// so that the rim of a view ticks. Written from the specification of step B4b by
+// someone who did not read how the runner works the rings out.
+// ---------------------------------------------------------------------------------------
+
+/// A runner for the region under test that hands its region rings, or not, and whose
+/// players enter with `hotbar`.
+fn open_with_rings(
+    world: &mut World,
+    rings: bool,
+    hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+) -> RegionRunner {
+    let (handle, restored) = world.open_raw();
+    let settings = RegionSettings {
+        starting_hotbar: hotbar,
+        rings,
+        ..settings(0)
+    };
+    RegionRunner::restore(settings, handle, restored)
+        .expect("what the store has is readable")
+        .with_id(world.region())
+}
+
+/// The eight chunks around `centre`.
+fn ring_around(centre: ChunkPos) -> Vec<ChunkPos> {
+    (-1..=1)
+        .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(centre.x + x, centre.z + z)))
+        .filter(|position| *position != centre)
+        .collect()
+}
+
+/// Whether the region holds and has loaded every chunk of `chunks`.
+fn all_held_and_loaded(runner: &RegionRunner, chunks: &[ChunkPos]) -> bool {
+    let region = runner.region();
+    chunks
+        .iter()
+        .all(|chunk| region.knowledge(*chunk) == Knowledge::Held && region.chunk(*chunk).is_some())
+}
+
+#[test]
+fn a_viewers_ring_around_an_own_chunk_is_claimed_and_loaded_and_never_answered() {
+    let mut world = World::gap();
+    let mut runner = open_with_rings(&mut world, true, hotbar());
+    let mut e = linked(&mut runner, E, 5);
+    // A free chunk: claimed for the viewer, and its ring, all free, for the ring.
+    let ask = e.subscribe(vec![FREE]);
+    assert_eq!(
+        wait_answer(&mut runner, &mut [&mut e], 0, FREE, ask),
+        Answer::Snapshot
+    );
+    let ring = ring_around(FREE);
+    run_until(
+        &mut runner,
+        &mut [&mut e],
+        "the ring being held and loaded",
+        |runner, _| all_held_and_loaded(runner, &ring),
+    );
+    // The ring keeps its chunks, though the region gives back at once what nothing
+    // uses.
+    ticks(&mut runner, &mut [&mut e], 5);
+    assert!(all_held_and_loaded(&runner, &ring));
+    settle(&mut runner, &mut [&mut e]);
+    // A ring is the region's own: nothing of it goes to an edge.
+    for chunk in &ring {
+        assert_eq!(e.answers(*chunk), vec![], "{chunk:?}");
+    }
+    e.assert_answered(&[]);
+}
+
+#[test]
+fn a_runner_without_rings_loads_only_what_is_subscribed() {
+    let mut world = World::gap();
+    let mut runner = open_with_rings(&mut world, false, hotbar());
+    let mut e = linked(&mut runner, E, 5);
+    let ask = e.subscribe(vec![FREE]);
+    assert_eq!(
+        wait_answer(&mut runner, &mut [&mut e], 0, FREE, ask),
+        Answer::Snapshot
+    );
+    ticks(&mut runner, &mut [&mut e], 5);
+    for chunk in ring_around(FREE) {
+        if chunk == HOME {
+            continue;
+        }
+        assert_eq!(
+            runner.region().knowledge(chunk),
+            Knowledge::Unknown,
+            "{chunk:?}"
+        );
+    }
+}
+
+#[test]
+fn a_guests_ring_in_a_pinned_area_is_claimed_and_loaded() {
+    let mut world = World::stripes();
+    let mut runner = open_with_rings(&mut world, true, hotbar());
+    let mut e = linked(&mut runner, E, 5);
+    let ask = e.subscribe_as_guest(vec![OWN]);
+    assert_eq!(
+        wait_answer(&mut runner, &mut [&mut e], 0, OWN, ask),
+        Answer::Snapshot
+    );
+    let ring = ring_around(OWN);
+    run_until(
+        &mut runner,
+        &mut [&mut e],
+        "the ring being held and loaded",
+        |runner, _| all_held_and_loaded(runner, &ring),
+    );
+    e.assert_answered(&[]);
+}
+
+/// With the gap the home region is pinned to nothing: a guest's ring is no reason to
+/// claim, so the free chunks around the home chunk stay free.
+#[test]
+fn a_guests_ring_outside_a_pinned_area_claims_nothing() {
+    let mut world = World::gap();
+    let neighbour = world.neighbour();
+    let mut runner = open_with_rings(&mut world, true, hotbar());
+    let mut e = linked(&mut runner, E, 5);
+    let ask = e.subscribe_as_guest(vec![HOME]);
+    assert_eq!(
+        wait_answer(&mut runner, &mut [&mut e], 0, HOME, ask),
+        Answer::Snapshot
+    );
+    ticks(&mut runner, &mut [&mut e], 5);
+    for chunk in ring_around(HOME).into_iter().filter(|chunk| chunk.x >= 0) {
+        assert_eq!(
+            runner.region().knowledge(chunk),
+            Knowledge::Unknown,
+            "{chunk:?}"
+        );
+        assert!(runner.region().chunk(chunk).is_none(), "{chunk:?}");
+    }
+    assert_eq!(neighbour.claim(NEXT), Ok(()));
+}
+
+/// A chunk loaded only for a ring, in which a player broke a block, is saved before
+/// the region lets it go when the ring goes, and the next holder loads it with the
+/// block broken.
+#[test]
+fn a_ring_chunk_is_saved_when_its_ring_goes() {
+    let mut world = World::gap();
+    let neighbour = world.neighbour();
+    let mut runner = open_with_rings(&mut world, true, hotbar());
+    let mut e = greeted(&mut runner, E, 5, Vec::new(), vec![HOME], Vec::new());
+    let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
+    run_until(
+        &mut runner,
+        &mut [&mut e],
+        "the ring around the home chunk being loaded",
+        |runner, _| all_held_and_loaded(runner, &[NEXT]),
+    );
+    e.numbered(2, input(player(1), entity, 1, dig(BEYOND, 1)));
+    run_until(
+        &mut runner,
+        &mut [&mut e],
+        "the dig in the ring chunk being done and acknowledged",
+        |runner, links| {
+            let chunk = runner.region().chunk(NEXT).expect("the ring keeps it");
+            block_in(chunk, BEYOND) == blocks::AIR
+                && acknowledged(&links[0].log, player(1), 1).is_some()
+        },
+    );
+    e.unsubscribe(vec![HOME]);
+    claim_until_granted(&mut runner, &mut [&mut e], &neighbour, NEXT);
+    let stored = neighbour.load(NEXT);
+    assert_eq!(block_in(&stored, BEYOND), blocks::AIR);
+    e.assert_answered(&[]);
+}
+
+/// Sand in the only chunk a viewer subscribes to falls once its support is broken: the
+/// ring around the chunk makes it tick. Without rings the same chunk does not tick,
+/// and the sand stays where it was placed.
+#[test]
+fn a_falling_block_at_the_rim_of_a_view_falls_because_its_ring_ticks() {
+    for rings in [true, false] {
+        a_falling_block_at_the_rim_of_a_view_falls_because_its_ring_ticks_in(rings);
+    }
+}
+
+fn a_falling_block_at_the_rim_of_a_view_falls_because_its_ring_ticks_in(rings: bool) {
+    // A chunk of the region's own stripe whose ring is all the region's too.
+    const RIM: ChunkPos = ChunkPos::new(-3, 0);
+    // Two blocks west of where the player stands, so that the sand is not placed in
+    // them.
+    let sand = BlockPos::new(-43, FEET as i32, 8);
+    let grass = BlockPos::new(-43, GROUND, 8);
+    let mut with_sand = [None; HOTBAR_SLOTS];
+    with_sand[0] = Some(ItemStack {
+        item: items::SAND,
+        count: 64,
+    });
+    let mut world = World::stripes();
+    let mut runner = open_with_rings(&mut world, rings, with_sand);
+    let mut e = greeted(&mut runner, E, 5, Vec::new(), vec![RIM], Vec::new());
+    let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
+    e.numbered(2, input(player(1), entity, 1, move_to(-40.5)));
+    let place = PlayerInput::UseItemOn {
+        position: grass,
+        face: clustine_sim::api::Face::Top,
+        cursor: [0.5, 1.0, 0.5],
+        sneaking: false,
+        sequence: 1,
+    };
+    e.numbered(3, input(player(1), entity, 2, place));
+    run_until(
+        &mut runner,
+        &mut [&mut e],
+        "the sand being placed",
+        |runner, links| {
+            let chunk = runner.region().chunk(RIM).expect("subscribed");
+            block_in(chunk, sand) == blocks::SAND
+                && acknowledged(&links[0].log, player(1), 1).is_some()
+        },
+    );
+    if rings {
+        run_until(
+            &mut runner,
+            &mut [&mut e],
+            "the ring being loaded",
+            |runner, _| all_held_and_loaded(runner, &ring_around(RIM)),
+        );
+    }
+    // The grass under the sand: the sand falls into its place, onto the dirt.
+    e.numbered(4, input(player(1), entity, 3, dig(grass, 2)));
+    run_until(
+        &mut runner,
+        &mut [&mut e],
+        "the dig being acknowledged",
+        |_, links| acknowledged(&links[0].log, player(1), 2).is_some(),
+    );
+    if rings {
+        run_until(
+            &mut runner,
+            &mut [&mut e],
+            "the sand falling",
+            |runner, _| {
+                let chunk = runner.region().chunk(RIM).expect("subscribed");
+                block_in(chunk, sand) == blocks::AIR && block_in(chunk, grass) == blocks::SAND
+            },
+        );
+        // The edge is told, as of any change in a chunk it sees.
+        settle(&mut runner, &mut [&mut e]);
+        let shown: Vec<BlockState> = events(&e.log)
+            .into_iter()
+            .filter_map(|(_, _, event)| match event {
+                RegionEvent::BlockChanged { position, state } if *position == grass => Some(*state),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shown.last(), Some(&blocks::SAND), "{shown:?}");
+    } else {
+        ticks(&mut runner, &mut [&mut e], 10);
+        let chunk = runner.region().chunk(RIM).expect("subscribed");
+        assert_eq!(block_in(chunk, sand), blocks::SAND);
+        assert_eq!(block_in(chunk, grass), blocks::AIR);
+    }
+    e.assert_answered(&[]);
+}
