@@ -14,7 +14,7 @@ use clustine_structures::place::{StructurePlaceSettings, place_in_world};
 use clustine_structures::processors::{PlaceRandom, ProcessorList};
 use clustine_world::BlockPos;
 
-use super::templates::{read_processors, read_template_name};
+use super::templates::{FeatureShapes, read_processors, read_template_name};
 use crate::context::Context;
 use crate::feature::Feature;
 use crate::reader::{Read, Reader};
@@ -119,6 +119,7 @@ impl Feature for Template {
         };
         let position = centred(origin, rotation, template.size);
 
+        let shapes = FeatureShapes { settings };
         let mut placing = StructurePlaceSettings::new(settings.seed());
         placing.rotation = rotation;
         // Clipped to the world's height only: the view refuses what lies beyond the
@@ -129,6 +130,7 @@ impl Feature for Template {
         ));
         placing.processors = self.processors.processors.iter().collect();
         placing.random = PlaceRandom::Given;
+        placing.shapes = &shapes;
         place_in_world(
             template,
             context.level.view(),

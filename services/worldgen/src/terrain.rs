@@ -97,6 +97,10 @@ pub struct TerrainGenerator {
     /// comparisons with the official server, which answers an exact tie of two biomes
     /// by what its thread looked up last; the judge gives the game's answers.
     biome_answers: Option<Arc<BiomeAnswers>>,
+    /// Structures that never start, by their place in the data: only for comparisons
+    /// with the official server given a data pack that leaves them no biome. Whole
+    /// sets only, since within a set the game chooses among those that can start.
+    structures_off: Vec<usize>,
     /// Change what a chunk costs, never what it is.
     kept: Mutex<Kept>,
     starts: Mutex<KeptStarts>,
@@ -128,6 +132,7 @@ impl TerrainGenerator {
             structures: Structures::new(seed, Dimension::Overworld),
             with_structures: true,
             biome_answers: None,
+            structures_off: Vec::new(),
             kept: Mutex::new(Kept::default()),
             starts: Mutex::new(KeptStarts::default()),
             scratch: Mutex::new(clustine_light::Scratch::new()),
@@ -152,6 +157,15 @@ impl TerrainGenerator {
     #[must_use]
     pub fn with_biome_answers(mut self, answers: BiomeAnswers) -> Self {
         self.biome_answers = Some(Arc::new(answers));
+        self
+    }
+
+    /// This generator where the structures `off`, by their place in the data, never
+    /// start: for the judge of structures, which turns off in the game, with a data
+    /// pack, the sets whose structures are not built yet.
+    #[must_use]
+    pub fn with_structures_off(mut self, off: Vec<usize>) -> Self {
+        self.structures_off = off;
         self
     }
 
@@ -206,7 +220,9 @@ impl TerrainGenerator {
                 return Arc::clone(starts);
             }
         }
-        let starts: Arc<[Start]> = self.structures.starts(position.x, position.z).into();
+        let mut starts = self.structures.starts(position.x, position.z);
+        starts.retain(|start| !self.structures_off.contains(&start.structure));
+        let starts: Arc<[Start]> = starts.into();
         let mut kept = self.starts.lock().unwrap_or_else(PoisonError::into_inner);
         let asked = kept.asked;
         kept.starts.insert(position, (asked, Arc::clone(&starts)));

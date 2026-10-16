@@ -751,10 +751,12 @@ impl Processor {
                 rottable,
                 integrity,
             } => {
-                // The draw is made only for a block of the set.
+                // The draw is made only for a block of the set, which is asked of the
+                // block as the processors before left it: a jigsaw already replaced by
+                // what it becomes can rot.
                 if rottable
                     .as_ref()
-                    .is_none_or(|set| set.contains(original.state))
+                    .is_none_or(|set| set.contains(processed.state))
                     && cx.settings_random(processed.pos, |random| random.next_f32()) > *integrity
                 {
                     None

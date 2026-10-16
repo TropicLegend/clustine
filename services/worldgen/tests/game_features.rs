@@ -9,11 +9,15 @@
 //! feature's place in the order and so its seed: each step of the plan is judged
 //! exactly on what is built so far.
 //!
-//! Structures are on on both sides (`docs/groundwork/s-plan.md`, section 3). A chunk
-//! is compared only if every piece that meets the five by five chunks around it is of
-//! a structure whose placers are built: the chunk's blocks come from the runs of the
-//! three by three, and each of those reads its own three by three. The others are
-//! counted by the structures that kept them out.
+//! Structures are on on both sides (`docs/groundwork/s-plan.md`, section 3). A set of
+//! structures none of whose placers is built is turned off on both sides: in the game
+//! by a data pack that leaves its structures no biome, in Clustine by dropping their
+//! starts; within a set the game chooses among the structures that can start, so only
+//! whole sets are turned off. Where a set is built in part, a chunk is compared only
+//! if every piece that meets the five by five chunks around it is of a structure whose
+//! placers are built: the chunk's blocks come from the runs of the three by three, and
+//! each of those reads its own three by three. The others are counted by the
+//! structures that kept them out.
 //! The program runs twice, placing each rank's chunks once in ascending and once in
 //! descending order; runs of one rank do not meet, so the two must agree.
 //!
@@ -152,7 +156,18 @@ fn read(data: &'static Data) -> Box<dyn Feature> {
 /// every configured feature that is or holds one, written again; and the placed
 /// features named in `off` into a `no_op` with no modifiers, which keeps its place in
 /// the order and so every other feature's seed.
-fn pack(directory: &Path, off: &[String]) -> usize {
+fn pack(directory: &Path, off: &[String], structures_off: &[usize]) -> usize {
+    for structure in structures_off {
+        let name = clustine_worldgen_data::structures::STRUCTURES[*structure].name;
+        let path = name.strip_prefix("minecraft:").expect("the game's own");
+        let original = root().join(format!(
+            "target/datagen/26.3/generated/data/minecraft/worldgen/structure/{path}.json"
+        ));
+        let text = fs::read_to_string(&original).expect("cargo datagen wrote the structures");
+        let file = directory.join(format!("data/minecraft/worldgen/structure/{path}.json"));
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, without_biomes(&text)).unwrap();
+    }
     for name in off {
         let path = name.strip_prefix("minecraft:").expect("the game's own");
         let file = directory.join(format!(
@@ -186,6 +201,57 @@ fn pack(directory: &Path, off: &[String]) -> usize {
     )
     .unwrap();
     written
+}
+
+/// A structure's file with its member `biomes`, a tag or a list, made an empty list.
+fn without_biomes(text: &str) -> String {
+    let key = "\"biomes\":";
+    let start = text.find(key).expect("a structure names its biomes") + key.len();
+    let value = text[start..].trim_start();
+    let from = text.len() - value.len();
+    let length = if let Some(name) = value.strip_prefix('"') {
+        name.find('"').expect("a closed name") + 2
+    } else {
+        value.find(']').expect("a closed list") + 1
+    };
+    format!("{}[]{}", &text[..from], &text[from + length..])
+}
+
+/// The structures turned off on both sides: those of every set the overworld can have
+/// none of whose structures is built. A set that is on may not keep its distance from
+/// one that is off (`exclusion_zone`), or turning it off would move it.
+fn structures_off() -> Vec<usize> {
+    use clustine_worldgen_data::structures::STRUCTURE_SETS;
+    let structures =
+        clustine_structures::Structures::new(0, clustine_terrain::biome::Dimension::Overworld);
+    let sets_off: Vec<usize> = structures
+        .possible_sets()
+        .iter()
+        .copied()
+        .filter(|set| {
+            STRUCTURE_SETS[*set]
+                .structures
+                .iter()
+                .all(|(structure, _)| {
+                    !clustine_features::structures::built(usize::from(*structure))
+                })
+        })
+        .collect();
+    for set in structures.possible_sets() {
+        if let Some(zone) = &STRUCTURE_SETS[*set].placement.exclusion_zone {
+            assert!(
+                sets_off.contains(set) || !sets_off.contains(&usize::from(zone.other_set)),
+                "{} keeps its distance from {}, which is turned off",
+                STRUCTURE_SETS[*set].name,
+                STRUCTURE_SETS[usize::from(zone.other_set)].name
+            );
+        }
+    }
+    sets_off
+        .iter()
+        .flat_map(|set| STRUCTURE_SETS[*set].structures.iter())
+        .map(|(structure, _)| usize::from(*structure))
+        .collect()
 }
 
 fn classpath() -> String {
@@ -734,7 +800,8 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
         .unwrap();
     let off = placed_off();
     let pack_directory = work.path().join("pack");
-    let turned_off = pack(&pack_directory, &off);
+    let structures_off = structures_off();
+    let turned_off = pack(&pack_directory, &off, &structures_off);
     let classes = work.path().join("classes");
     let javac = Command::new("javac")
         .args(["-proc:none", "-cp", &classpath(), "-d"])
@@ -778,7 +845,11 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     .with_templates(Arc::new(templates))
     .with_placed_off(&off_names)
     .expect("the placed features turned off are the data's");
-    let terrain = Arc::new(TerrainGenerator::new(seed).with_biome_answers(answers(&cells)));
+    let terrain = Arc::new(
+        TerrainGenerator::new(seed)
+            .with_biome_answers(answers(&cells))
+            .with_structures_off(structures_off.clone()),
+    );
     let features = features.with_structures(terrain.clone());
     let stages = FeatureStages::with_features(Arc::clone(&terrain), features);
     let scheduler = Scheduler::new(stages, Options::for_processors(num_threads()));
@@ -838,6 +909,15 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
         area.max,
         turned_off,
         compared.len()
+    )
+    .unwrap();
+    let names: Vec<&str> = structures_off
+        .iter()
+        .map(|structure| clustine_worldgen_data::structures::STRUCTURES[*structure].name)
+        .collect();
+    writeln!(
+        report,
+        "  turned off on both sides, as not built: {names:?}"
     )
     .unwrap();
     for (structure, chunks) in &unbuilt {

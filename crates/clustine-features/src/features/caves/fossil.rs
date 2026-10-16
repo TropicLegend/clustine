@@ -17,7 +17,7 @@ use clustine_structures::place::{StructurePlaceSettings, place_in_world, templat
 use clustine_structures::processors::{PlaceRandom, ProcessorList};
 use clustine_world::BlockPos;
 
-use super::templates::{read_processors, read_template_name};
+use super::templates::{FeatureShapes, read_processors, read_template_name};
 use crate::blocks::same_block;
 use crate::context::{Context, Heightmap, Level};
 use crate::feature::Feature;
@@ -147,6 +147,7 @@ impl Feature for Fossil {
             ),
         );
         let seed = settings.seed();
+        let shapes = FeatureShapes { settings };
         for (template, processors) in [
             (fossil, &self.fossil_processors),
             (overlay, &self.overlay_processors),
@@ -156,6 +157,7 @@ impl Feature for Fossil {
             placing.bounding_box = Some(clip);
             placing.processors = processors.processors.iter().collect();
             placing.random = PlaceRandom::Given;
+            placing.shapes = &shapes;
             place_in_world(
                 template,
                 context.level.view(),

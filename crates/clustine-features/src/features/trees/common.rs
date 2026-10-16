@@ -62,6 +62,7 @@ tag!(
 );
 tag!(JUNGLE_LOGS, "minecraft:jungle_logs");
 tag!(SNOW, "minecraft:snow");
+tag!(MAINTAINS_FARMLAND, "minecraft:maintains_farmland");
 
 /// The horizontal directions in the game's order (`Direction.Plane.HORIZONTAL`).
 pub const HORIZONTAL: [Face; 4] = [Face::North, Face::East, Face::South, Face::West];

@@ -24,7 +24,11 @@ use crate::stages::{PieceMade, Stages, Start, Starts, StartsNear, Terrain, World
 
 /// Raised whenever a change makes any chunk of these stages come out otherwise
 /// (ADR-0021, section 8). Which kinds of features are built is in the identity.
-pub const FEATURES_VERSION: u16 = 1;
+///
+/// 2 (2026-10-16): fossils and the template feature give the blocks at their edges the
+/// features' shapes (gravel beside them schedules its tick), and their shape fix-ups
+/// mark nothing, as the game's.
+pub const FEATURES_VERSION: u16 = 2;
 
 /// A seed's overworld with its features, as stages.
 #[derive(Debug, Clone)]

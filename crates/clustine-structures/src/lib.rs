@@ -50,6 +50,7 @@ pub mod place;
 pub mod placement;
 pub mod processors;
 pub mod reader;
+pub mod resave;
 pub mod state_transform;
 pub mod template_blocks;
 #[cfg(test)]

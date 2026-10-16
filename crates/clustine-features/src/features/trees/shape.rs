@@ -15,7 +15,9 @@
 use clustine_data::{BlockClass, BlockState, Face, blocks};
 use clustine_world::BlockPos;
 
-use super::common::{JUNGLE_LOGS, PREVENTS_NEARBY_LEAF_DECAY, SNOW, is_block, tick_id};
+use super::common::{
+    JUNGLE_LOGS, MAINTAINS_FARMLAND, PREVENTS_NEARBY_LEAF_DECAY, SNOW, is_block, tick_id,
+};
 use crate::blocks::{face_name, face_named, fluid_id, is_class, relative};
 use crate::context::Level;
 use crate::survive::{can_survive, multiface_can_attach, sturdy};
@@ -83,6 +85,23 @@ pub fn update_shape(
         if source(state) || source(neighbour) {
             let fluid = fluid_id(state);
             level.schedule_fluid_tick(pos, fluid, fluid_delay(fluid));
+        }
+        return state;
+    }
+    // A path or farmland under something solid turns to dirt at its tick
+    // (`PathBlock.updateShape`, `FarmlandBlock.updateShape`): a fence gate may stand on a
+    // path, and what keeps farmland (crops, stems) on farmland.
+    if is_class(state, BlockClass::PathBlock) || is_class(state, BlockClass::FarmlandBlock) {
+        if direction == Face::Up {
+            let above = level.block(relative(pos, Face::Up));
+            let kept = if is_class(state, BlockClass::PathBlock) {
+                is_class(above, BlockClass::FenceGateBlock)
+            } else {
+                MAINTAINS_FARMLAND.contains(above)
+            };
+            if above.props().is_solid() && !kept {
+                level.schedule_block_tick(pos, tick_id(state), 1);
+            }
         }
         return state;
     }

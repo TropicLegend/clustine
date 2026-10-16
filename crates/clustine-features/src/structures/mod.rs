@@ -7,13 +7,18 @@
 //! batch of the plan is built its placers place nothing and say so ([`built`]), and
 //! the judge leaves out the chunks such a structure reaches.
 
+mod jigsaw;
+
 use std::sync::Arc;
 
 use clustine_noise::WorldgenRandom;
 use clustine_structures::Start;
 use clustine_structures::geometry::{BoundingBox, IVec3};
+use clustine_structures::piece::StructurePiecePayload;
 use clustine_world::ChunkPos;
 use clustine_world::generation::{PieceKey, PieceState};
+use clustine_worldgen_data::structure::Kind;
+use clustine_worldgen_data::structures::STRUCTURES;
 
 use crate::context::Level;
 use crate::settings::FeatureSettings;
@@ -43,19 +48,28 @@ pub struct Placing<'p, 'l, 'v> {
 /// `STRUCTURES`, has its placer built. Until it has, the judge counts the chunks
 /// the structure reaches rather than comparing them.
 #[must_use]
-pub fn built(_structure: usize) -> bool {
-    false
+pub fn built(structure: usize) -> bool {
+    // A jigsaw structure is pool elements only; its pools' features are the
+    // features', all of the overworld's built.
+    matches!(STRUCTURES[structure].kind, Kind::Jigsaw(_))
 }
 
 /// Places the piece `key` of `start`, whose state between runs is `state`. Returns the
 /// state as it is to be kept, which a piece that settles its height on first placing
 /// changes.
 pub(crate) fn place_piece(
-    _placing: &mut Placing<'_, '_, '_>,
-    _start: &Start,
-    _key: PieceKey,
+    placing: &mut Placing<'_, '_, '_>,
+    start: &Start,
+    key: PieceKey,
     state: PieceState,
 ) -> PieceState {
+    let piece = &start.pieces[usize::from(key.piece)];
+    match &piece.payload {
+        StructurePiecePayload::Jigsaw(data) => {
+            jigsaw::place(placing, data);
+        }
+        StructurePiecePayload::Template(_) | StructurePiecePayload::Procedural(_) => {}
+    }
     state
 }
 

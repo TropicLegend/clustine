@@ -70,6 +70,11 @@ pub struct StructurePlaceSettings<'a> {
     pub world_seed: i64,
     /// What a block's shape becomes beside another.
     pub shapes: &'a dyn ShapeUpdates,
+    /// Whether placed blocks are marked for post-processing: the game's `setBlock`
+    /// marks only where its flags lack `UPDATE_KNOWN_SHAPE` (16). Pieces of jigsaw
+    /// structures are placed with the flags 18 and mark nothing; fossils and the
+    /// template feature mark.
+    pub marks: bool,
 }
 
 impl<'a> StructurePlaceSettings<'a> {
@@ -89,6 +94,7 @@ impl<'a> StructurePlaceSettings<'a> {
             random: PlaceRandom::Positional,
             world_seed,
             shapes: &OVERWORLD_FLUID_TICKS,
+            marks: true,
         }
     }
 
@@ -313,9 +319,10 @@ pub fn place_in_world(
         let state = transform_state(info.state, settings.mirror, settings.rotation);
         if info.nbt.is_some() {
             // A fresh block entity: whatever stood there goes with the barrier.
-            set_block(world, pos, blocks::BARRIER);
+            // The game's flags here (820) hold `UPDATE_KNOWN_SHAPE`.
+            set_block(world, pos, blocks::BARRIER, false);
         }
-        if !set_block(world, pos, state) {
+        if !set_block(world, pos, state, settings.marks) {
             continue;
         }
         placed.push(pos);
@@ -323,7 +330,7 @@ pub fn place_in_world(
             && let Some(kind) = state.block_info().and_then(|info| info.block_entity_type)
         {
             let seed = randomizable(kind).then(|| random.next_i64());
-            let data = saved_data(nbt, seed);
+            let data = saved_data(kind, nbt, seed);
             let _ = world.set_block_entity(
                 pos,
                 Some(BlockEntity {
@@ -347,7 +354,7 @@ pub fn place_in_world(
     fill_from_neighbours(world, &mut to_fill, &locked_fluids);
 
     if !placed.is_empty() && !settings.known_shape {
-        update_shape_at_edge(world, settings.shapes, &placed);
+        update_shape_at_edge(world, settings.shapes, &placed, settings.marks);
         for &pos in &placed {
             let state = world.block(pos);
             let mut new = state;
@@ -365,7 +372,8 @@ pub fn place_in_world(
                 );
             }
             if new != state {
-                set_block(world, pos, new);
+                // The game sets these with `UPDATE_KNOWN_SHAPE` added to its flags.
+                set_block(world, pos, new, false);
             }
         }
     }
@@ -382,13 +390,14 @@ const UPDATE_SHAPE_ORDER: [Direction; 6] = [
     Direction::Up,
 ];
 
-/// `WorldGenRegion.setBlock`: false where the view refuses the write; a state that asks
-/// for it marks its place, or the one above it, for post-processing.
-fn set_block(world: &mut dyn Neighbourhood, at: BlockPos, state: BlockState) -> bool {
+/// `WorldGenRegion.setBlock`: false where the view refuses the write; where `marks` (the
+/// flags lack `UPDATE_KNOWN_SHAPE`), a state that asks for it marks its place, or the
+/// one above it, for post-processing.
+fn set_block(world: &mut dyn Neighbourhood, at: BlockPos, state: BlockState, marks: bool) -> bool {
     if !world.set_block(at, state) {
         return false;
     }
-    if let Some([dx, dy, dz]) = state.props().post_process() {
+    if marks && let Some([dx, dy, dz]) = state.props().post_process() {
         world.mark(at.offset(i32::from(dx), i32::from(dy), i32::from(dz)));
     }
     true
@@ -415,13 +424,17 @@ fn randomizable(kind: u8) -> bool {
 /// The block entity's data as Clustine keeps it (see the module's head): the template's
 /// compound without `id`, `x`, `y` and `z`, the drawn seed where it names a loot table
 /// (the game saves no seed of nought, and none without a table), and `components`.
-fn saved_data(nbt: Nbt, seed: Option<i64>) -> Nbt {
+fn saved_data(kind: u8, nbt: Nbt, seed: Option<i64>) -> Nbt {
     let Nbt::Compound(mut members) = nbt else {
         return Nbt::Compound(vec![("components".into(), Nbt::Compound(Vec::new()))]);
     };
     for key in ["id", "x", "y", "z"] {
         remove(&mut members, key);
     }
+    let mut members = crate::resave::resave(
+        clustine_data::BLOCK_ENTITY_TYPES[usize::from(kind)],
+        members,
+    );
     if let Some(seed) = seed {
         put(&mut members, "LootTableSeed", Nbt::Long(seed));
     }
@@ -471,7 +484,8 @@ fn place_liquid(
     {
         new = out;
     }
-    set_block(world, at, new);
+    // `LiquidBlockContainer.placeLiquid` sets with the flags 3, which mark.
+    set_block(world, at, new, true);
     schedule_fluid(world, at, WATER, WATER_TICK_DELAY);
     true
 }
@@ -529,6 +543,7 @@ fn update_shape_at_edge(
     world: &mut dyn Neighbourhood,
     shapes: &dyn ShapeUpdates,
     placed: &[BlockPos],
+    marks: bool,
 ) {
     let min = placed.iter().fold((i32::MAX, i32::MAX, i32::MAX), |m, p| {
         (m.0.min(p.x), m.1.min(p.y), m.2.min(p.z))
@@ -557,7 +572,7 @@ fn update_shape_at_edge(
         let neighbour = world.block(neighbour_at);
         let new = shapes.update_shape(world, pos, state, direction, neighbour_at, neighbour);
         if new != state {
-            set_block(world, pos, new);
+            set_block(world, pos, new, marks);
         }
         let new_neighbour = shapes.update_shape(
             world,
@@ -568,7 +583,7 @@ fn update_shape_at_edge(
             new,
         );
         if new_neighbour != neighbour {
-            set_block(world, neighbour_at, new_neighbour);
+            set_block(world, neighbour_at, new_neighbour, marks);
         }
     }
 }
@@ -889,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn a_container_without_a_loot_table_draws_a_seed_and_keeps_none() {
+    fn a_container_without_a_loot_table_draws_a_seed_keeps_none_and_saves_its_empty_items() {
         let barrel_data = compound(vec![("id", Nbt::String("minecraft:barrel".into()))]);
         let template = template(
             vec![state_entry("minecraft:barrel", &[])],
@@ -916,9 +931,14 @@ mod tests {
             .nbt()
             .unwrap()
             .unwrap();
+        // A barrel saves its items whether or not it has any (`saveAllItems`), and
+        // no seed without a table.
         assert_eq!(
             data,
-            Nbt::Compound(vec![("components".into(), Nbt::Compound(Vec::new()))])
+            Nbt::Compound(vec![
+                ("components".into(), Nbt::Compound(Vec::new())),
+                ("Items".into(), Nbt::List(Vec::new())),
+            ])
         );
     }
 

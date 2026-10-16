@@ -160,3 +160,30 @@ An independent review against the code and the reference ports, 2026-10-15:
 | 5 | The seed index counts all of a step's structures | Said (section 2), tested in S0 |
 | 6 | No reference port of the mansion's `afterPlace` | From the jar into the brief (S2e) |
 | 7 | S1 and B2 touch the same rules | B2 first (section 6) |
+
+## 10. As built
+
+- **S0** (2026-10-15): as planned. The judge's count of chunks kept out by unbuilt
+  structures proved too weak: mineshafts reach under most areas. So the judge also
+  **turns whole sets off on both sides** when none of their structures is built (in the
+  game a data pack leaves those structures no biome; in Clustine their starts are
+  dropped), and counts only what a partly built set keeps out. Only whole sets, since
+  within a set the game chooses among the structures that can start; the judge
+  refuses to turn off a set another set keeps its distance from.
+- **S1, the part jigsaw structures need, and S2a** (2026-10-16): the game's processor
+  lists emitted by datagen; pool elements (single, legacy, feature, list, empty) with
+  the game's processors in its order, the shape known, no marks (the game places them
+  with the flags 18, which hold `UPDATE_KNOWN_SHAPE`); block entities saved again as
+  each type's own code saves them (`clustine-structures/src/resave.rs`: containers,
+  furnaces, brewing stands, vaults, signs, hoppers, banners, sculk sensors); `block_rot`
+  asked of the block as the processors before left it, so a jigsaw replaced by its
+  final state can rot. Templates placed without a known shape (fossils, the template
+  feature) take the features' `updateShape`, so gravel beside a fossil schedules its
+  tick; paths and farmland schedule theirs under something solid. Judged: every
+  jigsaw structure's area on seed 13579 (27 areas: villages of five kinds, the
+  pillager outpost, the ancient city, trail ruins, trial chambers, the abandoned
+  camps) equal block for block with block entities, ticks and marks; on seed 12345
+  26 of 27, the other one block: an acacia fence beside a tree in a savanna camp that
+  the game joins to the tree's edge, since the features' `updateShape` has no fences
+  yet; B2, which makes one set of rules of the features' and the simulation's, brings
+  them.
