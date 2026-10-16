@@ -1317,6 +1317,9 @@ impl RegionRunner {
             tick = self.region.tick_number(),
             reshaping = self.reshaping.is_some(),
             unsaved = self.unsaved.len(),
+            // Saved at the stop too, though nothing changed in them but their ticks'
+            // delays: how many says what a stop's checkpoint costs (B8).
+            ageing = self.ageing.difference(&self.unsaved).count(),
             "the store has the first checkpoint of a release, a merge or a split; \
              the region stops ticking"
         );

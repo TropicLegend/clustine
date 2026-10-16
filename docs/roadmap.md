@@ -68,17 +68,21 @@ beyond the hotbar, and crafting.
   W4 (serving a world the official server made), the Nether's and the End's features
   (F7, with D), F8 and S3.
 - *Block behaviour* (phase B, [plan](groundwork/b-plan.md),
-  [ADR-0024](adr/0024-block-behaviour-in-a-region.md)): B1 to B7, on the branch
-  `b3-work` until its full check passes. The updates of a change (B3), scheduled ticks
+  [ADR-0024](adr/0024-block-behaviour-in-a-region.md)): B1 to B8, on `main` since
+  2026-10-16. The updates of a change (B3), scheduled ticks
   that are durable and survive merges, splits and crashes, the ring of chunks a region
   loads around its views and the wider merge distance (B4), fluids (B5),
   post-processing, settled first snapshots and seam entries at borders (B6), random
   ticks, fire and coral (B7). Each judged against the game's classes and, where a
   settled result can be compared, against the official server (`placing_oracle.rs`).
+  Measured on the network storage with its cache (B8, the record's "Measured"): a
+  view standing commits 4.5 times a second, flowing water 6.5, a flight 21 with 52
+  chunk files a second; a stop for a merge or a split saves 60 to 100 chunks, and a
+  region on land stands still 0.04 to 0.24 s where it stood 0.01 to 0.05 s before.
+  The disk without its cache was not measured: the cache is the machine's.
 
-**Under way:** B8, the measurements of phase B on the real disk (commits with water
-flowing, random ticks over a full view, a flight over new land, a merge's pause) and
-the parity matrix; then S3. The judge of features, over 204 areas of two seeds with
+**Next:** carrying updates and ticks between regions, a record of its own (the
+owner's answer of 2026-10-15), then redstone; S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).

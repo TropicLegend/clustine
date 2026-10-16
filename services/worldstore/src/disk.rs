@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
@@ -139,6 +139,64 @@ where
     }
 }
 
+/// What the stores of this process have asked of the local file system since it
+/// started, for measuring what behaviour costs the disk (phase B's B8): a test that
+/// runs a store in its own process reads them before and after.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiskFigures {
+    /// Appends to a file, such as a region's log on each commit.
+    pub appends: u64,
+    pub appended_bytes: u64,
+    /// Files written whole, such as a chunk's.
+    pub files_written: u64,
+    pub written_bytes: u64,
+    /// Syncs of a file, each one a wait for the disk unless several wait together.
+    pub file_syncs: u64,
+    pub directory_syncs: u64,
+}
+
+impl DiskFigures {
+    /// What was asked between `earlier` and these.
+    #[must_use]
+    pub fn since(self, earlier: Self) -> Self {
+        Self {
+            appends: self.appends - earlier.appends,
+            appended_bytes: self.appended_bytes - earlier.appended_bytes,
+            files_written: self.files_written - earlier.files_written,
+            written_bytes: self.written_bytes - earlier.written_bytes,
+            file_syncs: self.file_syncs - earlier.file_syncs,
+            directory_syncs: self.directory_syncs - earlier.directory_syncs,
+        }
+    }
+}
+
+/// The counters behind [`disk_figures`], one for each member of [`DiskFigures`].
+static FIGURES: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+const APPENDS: usize = 0;
+const APPENDED_BYTES: usize = 1;
+const FILES_WRITTEN: usize = 2;
+const WRITTEN_BYTES: usize = 3;
+const FILE_SYNCS: usize = 4;
+const DIRECTORY_SYNCS: usize = 5;
+
+fn count(figure: usize, by: u64) {
+    FIGURES[figure].fetch_add(by, Ordering::Relaxed);
+}
+
+/// What the stores of this process have asked of the local file system so far.
+#[must_use]
+pub fn disk_figures() -> DiskFigures {
+    let figure = |index: usize| FIGURES[index].load(Ordering::Relaxed);
+    DiskFigures {
+        appends: figure(APPENDS),
+        appended_bytes: figure(APPENDED_BYTES),
+        files_written: figure(FILES_WRITTEN),
+        written_bytes: figure(WRITTEN_BYTES),
+        file_syncs: figure(FILE_SYNCS),
+        directory_syncs: figure(DIRECTORY_SYNCS),
+    }
+}
+
 /// The local file system.
 #[derive(Default)]
 pub(crate) struct OsDisk {
@@ -216,6 +274,8 @@ impl Disk for OsDisk {
 
     fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         self.appending().remove(path);
+        count(FILES_WRITTEN, 1);
+        count(WRITTEN_BYTES, contents.len() as u64);
         File::create(path)?.write_all(contents)
     }
 
@@ -233,6 +293,8 @@ impl Disk for OsDisk {
                 file
             }
         };
+        count(APPENDS, 1);
+        count(APPENDED_BYTES, contents.len() as u64);
         (&*file).write_all(contents)
     }
 
@@ -249,6 +311,7 @@ impl Disk for OsDisk {
     }
 
     fn sync(&self, path: &Path) -> io::Result<()> {
+        count(FILE_SYNCS, 1);
         match self.appended(path) {
             // The length changes with every append, and is part of what is synced.
             Some(Appended {
@@ -272,6 +335,7 @@ impl Disk for OsDisk {
     }
 
     fn sync_directory(&self, directory: &Path) -> io::Result<()> {
+        count(DIRECTORY_SYNCS, 1);
         File::open(directory)?.sync_all()
     }
 
@@ -921,5 +985,28 @@ mod tests {
             assert_eq!(disk.list(root).unwrap(), ["state"]);
             assert_eq!(disk.list(&root.join("none")).unwrap(), Vec::<String>::new());
         }
+    }
+
+    /// The figures are the whole process's, and other tests write at the same time,
+    /// so each is only known to have grown by at least what this one asked.
+    #[test]
+    fn the_local_file_system_counts_what_it_is_asked() {
+        let directory = tempfile::tempdir().unwrap();
+        let disk = OsDisk::default();
+        let before = disk_figures();
+        let log = directory.path().join("log");
+        disk.append(&log, b"abc").unwrap();
+        disk.append(&log, b"de").unwrap();
+        disk.sync(&log).unwrap();
+        replace(&disk, &directory.path().join("state"), b"twelve bytes").unwrap();
+        disk.sync_directory(directory.path()).unwrap();
+        let asked = disk_figures().since(before);
+        assert!(asked.appends >= 2, "{asked:?}");
+        assert!(asked.appended_bytes >= 5, "{asked:?}");
+        assert!(asked.files_written >= 1, "{asked:?}");
+        assert!(asked.written_bytes >= 12, "{asked:?}");
+        // The log's sync and the one `replace` makes before it renames.
+        assert!(asked.file_syncs >= 2, "{asked:?}");
+        assert!(asked.directory_syncs >= 1, "{asked:?}");
     }
 }

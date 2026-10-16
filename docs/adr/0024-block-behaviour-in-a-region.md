@@ -366,3 +366,55 @@ holdings change.
 - A neighbour that the runner hands in from its warm copies after a merge or a split
   counts as on its way for a marked chunk's first snapshot; the independent tests of
   B6 noticed it did not.
+
+## Measured (B8, 2026-10-16)
+
+On the owner's machine, twelve processors, optimised builds, the world on the network
+storage **with its cache in local memory** (a sync 0.2 ms; `CLAUDE.md`). The record
+asked for the merge's pause on that storage without its cache; the cache is the
+machine's and was not taken away, so **no number here is of the disk without it**,
+and none is guessed. The world store now counts what it asks of the file system
+(`clustine_worldstore::disk_figures`).
+
+**What behaviour costs the disk** (`terrain.rs`, `what_behaviour_costs_the_disk`: seed
+13579, one player, a view of 8; three runs on the storage, one with the world in
+memory, which agreed with them to a few per cent, so these are rates of the work and
+not of waiting):
+
+| Part | Appends (commits) a second | Chunk files a second | File syncs a second |
+|---|---|---|---|
+| Standing, the first minute after the view is whole | 11.0 to 11.6 (4.8 KB) | 0 | 11.0 to 11.6 |
+| Standing, the second minute (random ticks, nothing settling) | 4.4 to 4.6 (1.1 KB) | 0 | 4.4 to 4.6 |
+| Water poured in eight places and flowing, 33 s | 6.4 to 6.5 (4.6 KB) | 13.8 (68 KB) | 20.1 to 20.2 |
+| A flight of 32 chunks east at 1.08 blocks a tick, and the view whole at its end, 24 s | 21.2 to 21.3 (21 KB) | 51.4 to 52.1 (244 KB) | 71.3 to 72.0 |
+| Standing at the end of the flight, 30 s | 14.2 to 16.9 (5 KB) | 7.4 to 8.2 (40 KB) | 22.2 to 25.0 |
+
+A tick commits only when something changed, and at most 20 times a second; the
+first seconds after a join commit on every tick while the land settles. The chunk
+files written while the water flows are not the water's: the region let 80 chunks go
+as the player moved three chunks east, and the sync of that return wrote the notes of
+the first view's chunks with them (451 files; ADR-0021's notes are written at the next
+sync). A flight writes the chunks it leaves and the notes of what it made.
+
+**A merge's and a split's pause on land** (`crowds.rs`,
+`measured_two_regions_whose_players_walk_outward…`, as in ADR-0021's W5m: two
+wanderers at a flying sprint on the land of seed 13579, view 8; four runs of two to
+five rounds): the region stood still **0.05 to 0.24 s** at a split and **0.04 to
+0.13 s** at a merge, where W5m found 0.009 to 0.010 s and 0.002 to 0.049 s; the
+coordinator took 0.05 to 0.24 s for a split and 0.16 to 0.88 s for a merge (W5m: 0.005
+to 0.011 s and 0.013 to 0.021 s). Within the record's second at worst. The workers'
+lines (the stop's line now says how many chunks are saved only for their ticks) put
+the time where this record expected it: a stop saves 60 to 100 chunks, of which 20 to
+40 are saved for their ticks' delays and the rest changed since the order to prepare,
+mostly new land that was post-processed as its neighbours came, which is a change
+where before phase B a chunk from the generator had none; the store has them 40 to
+100 ms later, about 0.7 ms a chunk. It does not grow with the chunks held (4,396 held
+stood 84 ms in one run, 1,368 held 101 ms in the same run).
+
+**The crowd** (`crowds.rs`, 100 bots, view 8, five rounds, the flat world): the crowd
+waited 0.25 s at worst at a split and at a merge, region 0 stood still 0.016 and 0.041
+s at worst, and a bot waits 0.10 s at most when nothing happens; the roadmap's last
+table, on the storage before its cache, had 0.38 and 0.41 s and about 0.2 s. On the
+land of a seed the crowd's ledgers no longer hold: a bot that digs under gravel sees
+it fall into the hole, as the game shows it, where its ledger expects air; the test
+on land waits for ledgers that know of falling blocks.

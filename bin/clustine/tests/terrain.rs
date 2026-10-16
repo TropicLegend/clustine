@@ -520,3 +520,160 @@ async fn what_a_join_and_a_flight_cost_with_a_seed() {
     }
     server.stop().await;
 }
+
+/// What block behaviour costs the disk (phase B's B8): over a world of a seed with a
+/// view of 8, a player standing while the land around it settles and takes its random
+/// ticks, water poured in eight places and flowing, and a flight over new land. Each
+/// part says what the store asked of the file system in it: appends (a region's log on
+/// each commit), files written (chunks), and syncs. The world is made under `TMPDIR`,
+/// so that the same run says it of the real disk or, with `TMPDIR=/dev/shm/...`, of
+/// memory:
+///
+/// ```text
+/// cargo test --release -p clustine --test terrain -- --ignored --nocapture behaviour
+/// ```
+///
+/// The parts are spans of time on purpose: what is measured is a rate. The roadmap has
+/// the numbers this gave.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "a measurement, for a release build"]
+async fn what_behaviour_costs_the_disk() {
+    use std::time::Instant;
+
+    use clustine_data::items;
+    use clustine_worldstore::{DiskFigures, disk_figures};
+
+    const SEED: i64 = 13579;
+    const VIEW: i32 = 8;
+    const HELD_SLOT: i16 = 0;
+    let whole = |bot: &Bot, centre: (i32, i32)| {
+        let area = view_area(centre, VIEW);
+        area.iter().all(|chunk| bot.chunks.contains_key(chunk))
+    };
+    let say = |what: &str, figures: DiskFigures, span: Duration| {
+        let seconds = span.as_secs_f64();
+        println!(
+            "{what}, over {seconds:.1} s: {:.1} appends a second ({:.1} KB a second), {:.1} files written a second ({:.1} KB a second), {:.1} file syncs and {:.1} directory syncs a second",
+            figures.appends as f64 / seconds,
+            figures.appended_bytes as f64 / 1024.0 / seconds,
+            figures.files_written as f64 / seconds,
+            figures.written_bytes as f64 / 1024.0 / seconds,
+            figures.file_syncs as f64 / seconds,
+            figures.directory_syncs as f64 / seconds,
+        );
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    println!("the world is in {}", directory.path().display());
+    let config = Config {
+        world: Some(directory.path().to_owned()),
+        view_distance: VIEW,
+        ..config()
+    };
+    let server = Server::start_in(config, Land::of_seed(SEED)).await.unwrap();
+    let address = server.address().to_string();
+    let mut bot = Bot::join(&address, "Measurer").await.unwrap();
+    let at = bot.entered(PATIENCE).await.unwrap().location;
+    let home = ((at.0.floor() as i32) >> 4, (at.2.floor() as i32) >> 4);
+    bot.wait_until(PATIENCE, |bot| whole(bot, home))
+        .await
+        .unwrap();
+
+    // Standing: the view's chunks settle (each stored once settled) and take their
+    // random ticks.
+    for part in ["standing, the first minute", "standing, the second minute"] {
+        let (before, started) = (disk_figures(), Instant::now());
+        bot.idle(Duration::from_secs(60)).await.unwrap();
+        say(part, disk_figures().since(before), started.elapsed());
+    }
+
+    // Water poured on the ground in eight places a few blocks apart, east of the
+    // player, flowing down whatever slopes are there.
+    bot.set_flying(true).await.unwrap();
+    bot.take_from_creative_inventory(HELD_SLOT, items::WATER_BUCKET)
+        .await
+        .unwrap();
+    bot.select_slot(HELD_SLOT).await.unwrap();
+    let (before, started) = (disk_figures(), Instant::now());
+    let (x0, z) = (at.0.floor() as i32, at.2.floor() as i32);
+    let mut poured_at = Vec::new();
+    for place in 0..8 {
+        let x = x0 + 6 * place;
+        let ground = (-64..320)
+            .rev()
+            .find(|y| {
+                bot.block_at(x, *y, z)
+                    .unwrap()
+                    .is_some_and(|state| !BlockState(state as u16).props().is_air())
+            })
+            .expect("the view has ground under it");
+        let above = f64::from(ground) + 2.0;
+        bot.fly_to(
+            (f64::from(x) + 0.5, above, f64::from(z) + 0.5),
+            (0.0, 90.0),
+            1.0,
+        )
+        .await
+        .unwrap();
+        // A bucket is used, not clicked on a block: the game casts a ray from the
+        // eyes, which looking straight down meet the ground.
+        let sequence = bot.use_item(0.0, 90.0).await.unwrap();
+        bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= sequence)
+            .await
+            .unwrap();
+        poured_at.push((x, ground + 1, z));
+    }
+    let poured = started.elapsed();
+    let water = |bot: &Bot| {
+        poured_at
+            .iter()
+            .filter(|(x, y, z)| {
+                bot.block_at(*x, *y, *z).unwrap().is_some_and(|state| {
+                    BlockState(state as u16)
+                        .props()
+                        .fluid()
+                        .is_some_and(|fluid| matches!(fluid.fluid, 1 | 2))
+                })
+            })
+            .count()
+    };
+    // Where the ground took no water (a leaf, a flower), the place is counted out.
+    println!("water stands in {} of the eight places", water(&bot));
+    assert!(water(&bot) >= 4, "the water was poured");
+    bot.idle(Duration::from_secs(30)).await.unwrap();
+    say(
+        &format!("water poured in eight places over {poured:?} and flowing"),
+        disk_figures().since(before),
+        started.elapsed(),
+    );
+
+    // A flight east over 32 chunks of new land at a sprint (1.08 blocks a tick), and
+    // the view made whole at its end.
+    let height = 250.0;
+    let location = bot.location;
+    bot.fly_to((location.0, height, location.2), (-90.0, 0.0), 4.0)
+        .await
+        .unwrap();
+    let to = location.0 + 32.0 * 16.0;
+    let centre = ((to.floor() as i32) >> 4, (location.2.floor() as i32) >> 4);
+    let (before, started) = (disk_figures(), Instant::now());
+    bot.fly_to((to, height, location.2), (-90.0, 0.0), 1.08)
+        .await
+        .unwrap();
+    bot.wait_until(PATIENCE, |bot| whole(bot, centre))
+        .await
+        .unwrap();
+    say(
+        "a flight of 32 chunks east and the view whole at its end",
+        disk_figures().since(before),
+        started.elapsed(),
+    );
+    let (before, started) = (disk_figures(), Instant::now());
+    bot.idle(Duration::from_secs(30)).await.unwrap();
+    say(
+        "standing at the end of the flight, the next 30 s",
+        disk_figures().since(before),
+        started.elapsed(),
+    );
+    server.stop().await;
+}

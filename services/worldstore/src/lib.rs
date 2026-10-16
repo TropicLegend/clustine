@@ -82,6 +82,7 @@ use clustine_world::{BlockPos, ChunkGenerator, ChunkPos};
 
 use crate::chunks::{ChunkService, Chunks, FileChunks, Job, Jobs, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk};
+pub use crate::disk::{DiskFigures, disk_figures};
 use crate::lanes::Lanes;
 pub use crate::table::{Division, NotAscending, Pins};
 pub use crate::tcp::{Server, regions, serve};
