@@ -82,8 +82,8 @@ cargo run -p clustine
 ```
 
 The world begins as one region. A group of players that goes far from everybody else
-(30 chunks at the usual view distance) is split off into a region of its own, which is
-simulated on a thread of its own, and merged again when it comes back within 22
+(32 chunks at the usual view distance) is split off into a region of its own, which is
+simulated on a thread of its own, and merged again when it comes back within 24
 chunks. Each is a pause for those it concerns, and the log says when it happens: in an
 optimised build (`--release`) well under a second, also for a crowd of a hundred
 (measured with the world on network storage: the

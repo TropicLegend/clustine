@@ -171,13 +171,13 @@ struct Reshaping {
 
     /// Regions with players this many chunks apart or nearer are merged by a
     /// coordinator that reshapes by itself. Unless told, twice the view distance and
-    /// 6. It has to be 1 at least.
+    /// 8. It has to be 1 at least.
     #[arg(long)]
     merge_distance: Option<u32>,
 
     /// Players of one region that are more than this many chunks apart are split by
     /// a coordinator that reshapes by itself. Unless told, twice the view distance
-    /// and 14. It has to be 2 more than the merge distance at least.
+    /// and 16. It has to be 2 more than the merge distance at least.
     #[arg(long)]
     split_distance: Option<u32>,
 
@@ -776,38 +776,38 @@ mod tests {
             follow(&words)
         };
         // What the edges grant unless told otherwise, and a rest of ten seconds.
-        assert_eq!(by_itself(&[]), Ok(Some(policy(22, 30, 10))));
+        assert_eq!(by_itself(&[]), Ok(Some(policy(24, 32, 10))));
         assert_eq!(by_itself(&[]), Ok(Some(Policy::for_view_distance(8))));
         // The least and the most an edge can be told to grant.
         assert_eq!(
             by_itself(&["--view-distance", "2"]),
-            Ok(Some(policy(10, 18, 10)))
+            Ok(Some(policy(12, 20, 10)))
         );
         assert_eq!(
             by_itself(&["--view-distance", "32"]),
-            Ok(Some(policy(70, 78, 10)))
+            Ok(Some(policy(72, 80, 10)))
         );
         // Each number that is given takes the place of what would follow, and the
         // others stay.
         assert_eq!(
             by_itself(&["--merge-distance", "3"]),
-            Ok(Some(policy(3, 30, 10)))
+            Ok(Some(policy(3, 32, 10)))
         );
         assert_eq!(
             by_itself(&["--split-distance", "40"]),
-            Ok(Some(policy(22, 40, 10)))
+            Ok(Some(policy(24, 40, 10)))
         );
         assert_eq!(
             by_itself(&["--rest-seconds", "1"]),
-            Ok(Some(policy(22, 30, 1)))
+            Ok(Some(policy(24, 32, 1)))
         );
         assert_eq!(
             by_itself(&["--rest-seconds", "86400"]),
-            Ok(Some(policy(22, 30, 86_400)))
+            Ok(Some(policy(24, 32, 86_400)))
         );
         assert_eq!(
-            by_itself(&["--view-distance", "12", "--split-distance", "33"]),
-            Ok(Some(policy(30, 33, 10)))
+            by_itself(&["--view-distance", "12", "--split-distance", "34"]),
+            Ok(Some(policy(32, 34, 10)))
         );
         // As the tests of a cluster that reshapes by itself start their coordinator.
         let small = [
@@ -883,11 +883,11 @@ mod tests {
                 near(5, 5),
             ),
             // Against what follows from the view distance, too.
-            (&["--merge-distance", "29"], near(29, 30)),
-            (&["--split-distance", "23"], near(22, 23)),
+            (&["--merge-distance", "31"], near(31, 32)),
+            (&["--split-distance", "25"], near(24, 25)),
             (
-                &["--view-distance", "2", "--split-distance", "11"],
-                near(10, 11),
+                &["--view-distance", "2", "--split-distance", "13"],
+                near(12, 13),
             ),
         ];
         for reshape in ["by-hand", "by-itself"] {
@@ -898,8 +898,8 @@ mod tests {
             }
         }
         // The nearest that fit.
-        let fits = ["--reshape", "by-itself", "--merge-distance", "28"];
-        assert_eq!(follow(&fits), Ok(Some(policy(28, 30, 10))));
+        let fits = ["--reshape", "by-itself", "--merge-distance", "30"];
+        assert_eq!(follow(&fits), Ok(Some(policy(30, 32, 10))));
     }
 
     #[test]

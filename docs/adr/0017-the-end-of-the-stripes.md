@@ -7,6 +7,11 @@
   [ADR-0018](0018-a-checkpoints-chunks-written-together.md)). It was reviewed twice
   against the code before it was built ("Review"); what building it found is under
   "Found while building" at the end.
+- Later: phase B widened both distances by two chunks, to `2V + 8` and `2V + 16` (24
+  and 32 at a view distance of 8), so that the ring a region loads around its view
+  meets another region's only after they merge
+  ([ADR-0024](0024-block-behaviour-in-a-region.md), section 2). The figures below are
+  those of the time.
 - Date: 2026-10-09
 
 ## Context

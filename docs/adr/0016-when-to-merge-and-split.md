@@ -5,6 +5,11 @@
   it settled is in "Found while building". The design of
   step C4 of milestone M3, phase C: the coordinator decides by itself. It changes no
   code of the simulation, the region runner, the world store or the edge.
+- Later: phase B widened both distances by two chunks, to `2V + 8` and `2V + 16` (24
+  and 32 at a view distance of 8), so that the ring a region loads around its view
+  meets another region's only after they merge
+  ([ADR-0024](0024-block-behaviour-in-a-region.md), section 2). The figures below are
+  those of the time.
 - Date: 2026-10-09
 
 ## Context

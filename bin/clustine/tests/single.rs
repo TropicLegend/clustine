@@ -1463,7 +1463,7 @@ async fn the_single_process_says_in_its_log_how_it_reshapes() {
     for flags in [&[][..], &["--reshape", "by-itself"]] {
         let by_itself = Process::start(flags).await;
         let line = by_itself.says(BY_ITSELF).await;
-        for field in ["merge_distance=22", "split_distance=30"] {
+        for field in ["merge_distance=24", "split_distance=32"] {
             let fields: Vec<&str> = line.split_whitespace().collect();
             assert!(fields.contains(&field), "{field} is not in: {line}");
         }

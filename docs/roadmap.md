@@ -684,7 +684,7 @@ regions have players. The coordinator joins players into groups by distance: two
 regions whose players come within the **merge distance** of each other are merged, and
 a group that has gone further than the **split distance** from everybody else of its
 region is split off with the chunks around it. Both distances follow from the view
-distance (22 and 30 chunks at a view distance of 8; `--merge-distance`,
+distance (24 and 32 chunks at a view distance of 8 since phase B; `--merge-distance`,
 `--split-distance`), and the gap between them is what keeps a player who stands at the
 edge from being merged and split over and over. What else keeps it calm: nothing is
 begun on one look (it has to have held for a second), a region that was just merged,
@@ -1023,7 +1023,7 @@ target/release/clustine edge
 12. One of you at x = 100, z = 8, the other at the spawn point. In a further terminal:
     `target/release/clustine split --region 0 --chunks 6,0`. **Expected**: no error;
     `a worker says what came of a split` with `outcome=Ok`; and ten to twenty seconds
-    later `a merge is begun by the distances survivor=0`, as you are within 22 chunks:
+    later `a merge is begun by the distances survivor=0`, as you are within 24 chunks:
     what is asked by hand lasts only where the distances agree.
 
 What to say if it is not so: which step, what was seen, and the logs of the

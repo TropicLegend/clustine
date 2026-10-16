@@ -33,11 +33,13 @@ pub struct CoordinatorArgs {
 ///
 /// And it says when the merge distance is too short for `view_distance`, the largest
 /// the edges grant: a region's land reaches as far as its players see, one chunk
-/// further than the view distance, so two regions whose players are nearer than
-/// twice that and a chunk have lands that touch before they are merged. Players are
-/// then handed over at the line where the lands met, and split off again if the
-/// split distance is short as well: nothing breaks and play is worse
-/// (`docs/adr/0017-the-end-of-the-stripes.md`, section 3.5). A warning and no
+/// further than the view distance, and it loads a ring one chunk further still, so
+/// two regions whose players are nearer than twice that and three chunks have rings
+/// that touch before they are merged. Where rings touch, the chunks at the rim of a
+/// view stop ticking (`docs/adr/0024-block-behaviour-in-a-region.md`, section 2);
+/// where lands touch, players are handed over at the line where they met, and split
+/// off again if the split distance is short as well: nothing breaks and play is
+/// worse (`docs/adr/0017-the-end-of-the-stripes.md`, section 3.5). A warning and no
 /// refusal: tests set such distances on purpose.
 pub(crate) fn say_how_it_reshapes(follow: Option<&Policy>, view_distance: u32) {
     let Some(policy) = follow else {
@@ -51,7 +53,7 @@ pub(crate) fn say_how_it_reshapes(follow: Option<&Policy>, view_distance: u32) {
         rest_seconds = policy.rest.as_secs(),
         "reshaping by itself: regions merge and split by where their players are"
     );
-    let needs = 2 * view_distance + 3;
+    let needs = 2 * view_distance + 5;
     if policy.merge_distance < needs {
         warn!(
             merge_distance = policy.merge_distance,

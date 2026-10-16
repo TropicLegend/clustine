@@ -130,7 +130,7 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
     let rounds = number_from("CLUSTINE_CROWD_ROUNDS").unwrap_or(2) as u32;
     let spacing = number_from("CLUSTINE_CROWD_SPACING").unwrap_or(4) as i32;
     // What the rule gives for the view distance.
-    let merge_distance = 2 * view + 6;
+    let merge_distance = 2 * view + 8;
     let split_distance = merge_distance + 8;
     let world = Setup {
         family: "crowd",

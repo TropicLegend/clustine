@@ -48,8 +48,8 @@ async fn a_coordinator_refuses_distances_that_do_not_fit_and_numbers_out_of_rang
         // Against what follows from the view distance as well, and with how a
         // coordinator is started below the reason.
         (
-            &["--reshape", "by-itself", "--merge-distance", "29"],
-            "and 30 is not 2 more than 29\n\nUsage: clustine coordinator",
+            &["--reshape", "by-itself", "--merge-distance", "31"],
+            "and 32 is not 2 more than 31\n\nUsage: clustine coordinator",
         ),
         (
             &[
@@ -104,7 +104,7 @@ async fn a_coordinator_says_when_it_starts_how_it_reshapes() {
 
     cluster.start_coordinator();
     let said = numbers(&cluster, by_itself, 1).await;
-    let usual = "merge_distance=22 split_distance=30 margin=3 rest_seconds=10";
+    let usual = "merge_distance=24 split_distance=32 margin=3 rest_seconds=10";
     assert!(said.ends_with(usual), "{said}");
     assert!(!cluster.log("coordinator").contains(by_hand));
     assert!(!cluster.log("coordinator").contains(too_short));
@@ -124,12 +124,12 @@ async fn a_coordinator_says_when_it_starts_how_it_reshapes() {
     let told = "merge_distance=3 split_distance=5 margin=2 rest_seconds=5";
     assert!(said.ends_with(told), "{said}");
     // Three chunks are fewer than players see across at the usual view distance of
-    // eight, which needs nineteen, and the coordinator says so, once.
+    // eight, which needs twenty-one, and the coordinator says so, once.
     cluster.wait_for_log("coordinator", too_short, 1).await;
     let log = cluster.log("coordinator");
     let warned = log.lines().find(|line| line.contains(too_short)).unwrap();
     assert!(
-        warned.ends_with("merge_distance=3 view_distance=8 needs=19"),
+        warned.ends_with("merge_distance=3 view_distance=8 needs=21"),
         "{warned}"
     );
     assert!(warned.contains("WARN"), "{warned}");

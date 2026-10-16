@@ -1674,7 +1674,7 @@ fn in_lines(changes: &[(Duration, String)]) -> String {
 
 /// What is measured (R1.7), fourth row: **join 10 to 22 chunks from a friend**,
 /// outside their land and inside the merge distance, which with the tests' view
-/// distance of 3 is 5 to 12 chunks: here 8. The plan has it that "the friend's
+/// distance of 3 is 5 to 14 chunks: here 8. The plan has it that "the friend's
 /// region is merged into the home region and both are split off again"; what the
 /// regions do and how often and how long the friend stands still is printed. Only
 /// that the player is in place is asserted.

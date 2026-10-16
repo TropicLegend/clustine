@@ -36,16 +36,19 @@ impl Policy {
     /// The policy for edges that grant a view distance of `view_distance` at most,
     /// with a rest of ten seconds.
     ///
-    /// A player is sent the chunks up to one more than the view distance away, so two
-    /// players whose views do not touch are twice that and one apart or more. Regions
-    /// merge four chunks before that, which is what two players in creative flight
-    /// cover towards each other until a merge is done, and split eight chunks beyond.
-    /// So the distances are `2 * view_distance + 6` and `2 * view_distance + 14`.
+    /// A player is sent the chunks up to one more than the view distance away, and a
+    /// region loads a ring one chunk further around them, so that the chunks at the rim
+    /// of a view tick (`docs/adr/0024-block-behaviour-in-a-region.md`, section 2). So
+    /// two players whose regions' rings do not touch are twice that and three apart or
+    /// more. Regions merge four chunks before that, which is what two players in
+    /// creative flight cover towards each other until a merge is done, and split eight
+    /// chunks beyond. So the distances are `2 * view_distance + 8` and
+    /// `2 * view_distance + 16`.
     ///
     /// Edges grant 32 at most. A view distance whose distances do not fit 32 bits
     /// gives the largest there are instead of overflowing.
     pub fn for_view_distance(view_distance: u32) -> Self {
-        let merge_distance = view_distance.saturating_mul(2).saturating_add(6);
+        let merge_distance = view_distance.saturating_mul(2).saturating_add(8);
         Self {
             merge_distance,
             split_distance: merge_distance.saturating_add(8),
@@ -408,15 +411,15 @@ mod tests {
     fn the_distances_follow_from_the_view_distance_and_the_rest_is_ten_seconds() {
         // What the edges grant unless told otherwise.
         let usual = Policy::for_view_distance(8);
-        assert_eq!(usual, policy(22, 30));
+        assert_eq!(usual, policy(24, 32));
         assert_eq!(usual.rest, Duration::from_secs(10));
         assert_eq!(usual.margin(), 3);
         // The least and the most an edge can be told to grant.
-        assert_eq!(Policy::for_view_distance(2), policy(10, 18));
-        assert_eq!(Policy::for_view_distance(32), policy(70, 78));
+        assert_eq!(Policy::for_view_distance(2), policy(12, 20));
+        assert_eq!(Policy::for_view_distance(32), policy(72, 80));
         // None at all is no view distance of an edge, and is reckoned with all the
         // same.
-        assert_eq!(Policy::for_view_distance(0), policy(6, 14));
+        assert_eq!(Policy::for_view_distance(0), policy(8, 16));
         for view_distance in 0..=32 {
             let policy = Policy::for_view_distance(view_distance);
             assert_eq!(policy.checked(), Ok(policy), "{view_distance}");
@@ -427,11 +430,11 @@ mod tests {
     #[test]
     fn a_view_distance_whose_distances_do_not_fit_gives_the_largest_there_are() {
         // The largest that still leaves room for both distances.
-        let largest = Policy::for_view_distance(u32::MAX / 2 - 7);
+        let largest = Policy::for_view_distance(u32::MAX / 2 - 8);
         assert_eq!(largest, policy(u32::MAX - 9, u32::MAX - 1));
         assert_eq!(largest.checked(), Ok(largest));
         // One more, and the split distance is no longer eight more than the other.
-        let beyond = Policy::for_view_distance(u32::MAX / 2 - 6);
+        let beyond = Policy::for_view_distance(u32::MAX / 2 - 7);
         assert_eq!(beyond, policy(u32::MAX - 7, u32::MAX));
         // And neither is what it would be. Such distances fit each other no more.
         let all = Policy::for_view_distance(u32::MAX);
