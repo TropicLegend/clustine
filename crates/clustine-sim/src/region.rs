@@ -1925,6 +1925,7 @@ mod tests {
     use crate::api::{Face, PlayerJoin};
 
     mod block_updates;
+    mod fluids;
     mod scheduled_ticks;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);

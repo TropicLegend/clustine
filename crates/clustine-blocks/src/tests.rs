@@ -1,5 +1,7 @@
 //! Tests of the rules against small worlds.
 
+mod fluid_rules;
+
 use std::collections::BTreeMap;
 
 use clustine_data::{BlockState, Face, blocks};
