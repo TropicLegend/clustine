@@ -493,7 +493,7 @@ fn chest_corridor(
     small_door(at, door, 1, 1, 0);
     small_door(at, StrongholdSmallDoorType::Opening, 1, 1, 6);
     fill(at, [3, 1, 2], [3, 1, 4], blocks::STONE_BRICKS);
-    let slab = blocks::SMOOTH_STONE_SLAB;
+    let slab = blocks::STONE_BRICK_SLAB;
     at.place_block(slab, 3, 1, 1);
     at.place_block(slab, 3, 1, 5);
     at.place_block(slab, 3, 2, 2);

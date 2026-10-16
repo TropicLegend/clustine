@@ -272,6 +272,10 @@ fn classpath() -> String {
 }
 
 /// Runs the program in a server directory of its own, and returns what it wrote.
+///
+/// The server runs on easy, the game's default: on peaceful the game makes no
+/// monster that a structure places (`EntityType.canSpawn`), and so neither draws for
+/// it nor clears its marker, and Clustine generates as on easy.
 fn game(seed: i64, area: Area, ascending: bool, classes: &Path, pack: &Path) -> String {
     let server = tempfile::Builder::new()
         .prefix("game-features")
@@ -283,7 +287,7 @@ fn game(seed: i64, area: Area, ascending: bool, classes: &Path, pack: &Path) -> 
         directory.join("server.properties"),
         format!(
             "level-seed={seed}\ngenerate-structures=true\nonline-mode=false\n\
-             server-port=0\nquery.port=0\ndifficulty=peaceful\nspawn-monsters=false\n\
+             server-port=0\nquery.port=0\ndifficulty=easy\nspawn-monsters=false\n\
              pause-when-empty-seconds=-1\nmax-tick-time=-1\nsync-chunk-writes=false\n\
              initial-enabled-packs=vanilla,file/clustine-unbuilt\n"
         ),
@@ -472,9 +476,11 @@ fn parse(text: &str) -> (BTreeMap<ChunkPos, Written>, Cells) {
             }
             "tick" => {
                 let parts: Vec<&str> = rest.split(' ').collect();
+                // Water and lava are a block and a fluid of one name: the kind
+                // tells their ticks apart.
                 written.ticks.push((
                     position(parts[1]),
-                    parts[2].to_owned(),
+                    format!("{} {}", parts[0], parts[2]),
                     parts[3].parse().unwrap(),
                     parts[4].parse().unwrap(),
                 ));
@@ -572,8 +578,8 @@ fn ours(chunk: &Chunk, at: ChunkPos) -> Written {
     }
     for tick in chunk.ticks() {
         let what = match tick.of {
-            Ticked::Block(block) => BLOCKS[usize::from(block)].name,
-            Ticked::Fluid(fluid) => FLUIDS[usize::from(fluid)],
+            Ticked::Block(block) => format!("block {}", BLOCKS[usize::from(block)].name),
+            Ticked::Fluid(fluid) => format!("fluid {}", FLUIDS[usize::from(fluid)]),
         };
         written.ticks.push((
             (
@@ -581,7 +587,7 @@ fn ours(chunk: &Chunk, at: ChunkPos) -> Written {
                 i32::from(tick.at.y),
                 base_z + i32::from(tick.at.z),
             ),
-            what.to_owned(),
+            what,
             tick.delay,
             i32::from(tick.priority),
         ));
@@ -716,7 +722,7 @@ fn differences(at: ChunkPos, game: &Written, ours: &Written) -> Vec<String> {
     if game.entities != ours_entities {
         found.push(format!(
             "{at:?}: block entities differ: the game has {:?} and Clustine {:?}",
-            game.entities, ours.entities
+            game.entities, ours_entities
         ));
     }
     if game.ticks != ours.ticks {

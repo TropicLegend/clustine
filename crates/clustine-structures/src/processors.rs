@@ -936,15 +936,10 @@ fn block_age(state: BlockState, mossiness: f32, random: &mut dyn Random) -> Opti
         return Some(random_block(random, mossiness, non_mossy, mossy));
     }
     if in_block_tag(state, "minecraft:stairs") {
-        let facing = state.property("facing").unwrap_or("north");
-        let half = state.property("half").unwrap_or("bottom");
         if random.next_f32() >= 0.5 {
             return None;
         }
-        let mossy_stairs = known("minecraft:mossy_stone_brick_stairs")
-            .with_property("facing", facing)
-            .and_then(|stairs| stairs.with_property("half", half))
-            .expect("stairs have a facing and a half");
+        let mossy_stairs = with_properties_of(known("minecraft:mossy_stone_brick_stairs"), state);
         let non_mossy = [
             known("minecraft:stone_slab"),
             known("minecraft:stone_brick_slab"),
@@ -953,15 +948,25 @@ fn block_age(state: BlockState, mossiness: f32, random: &mut dyn Random) -> Opti
         return Some(random_block(random, mossiness, non_mossy, mossy));
     }
     if in_block_tag(state, "minecraft:slabs") {
-        return (random.next_f32() < mossiness).then(|| known("minecraft:mossy_stone_brick_slab"));
+        return (random.next_f32() < mossiness)
+            .then(|| with_properties_of(known("minecraft:mossy_stone_brick_slab"), state));
     }
     if in_block_tag(state, "minecraft:walls") {
-        return (random.next_f32() < mossiness).then(|| known("minecraft:mossy_stone_brick_wall"));
+        return (random.next_f32() < mossiness)
+            .then(|| with_properties_of(known("minecraft:mossy_stone_brick_wall"), state));
     }
     if name == "minecraft:obsidian" {
         return (random.next_f32() < 0.15).then(|| known("minecraft:crying_obsidian"));
     }
     None
+}
+
+/// `Block.withPropertiesOf`: `block` with every property `state` has that it has too,
+/// at `state`'s value (a slab keeps its type and water, a wall its sides).
+fn with_properties_of(block: BlockState, state: BlockState) -> BlockState {
+    state.properties().fold(block, |result, (name, value)| {
+        result.with_property(name, value).unwrap_or(result)
+    })
 }
 
 /// `getRandomFacingStairs`: a facing of the four sideways ones, then a half.

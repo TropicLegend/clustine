@@ -21,8 +21,8 @@ use crate::BlockView;
 use crate::connect;
 use crate::data::{
     HORIZONTAL, JUNGLE_LOGS, MAINTAINS_FARMLAND, PREVENTS_NEARBY_LEAF_DECAY, SNOW, axis, clockwise,
-    face_name, facing, fluid_id, in_tag, is_block, is_class, is_horizontal, relative, same_block,
-    set_flag, tick_id,
+    face_name, facing, fluid_id, fluid_in_tag, in_tag, is_block, is_class, is_horizontal, relative,
+    same_block, set_flag, tick_id,
 };
 use crate::survive::{can_survive, multiface_can_attach, sturdy};
 
@@ -89,6 +89,21 @@ pub fn update_shape<V: BlockView + ?Sized>(
         if source(state) || source(neighbour) {
             let fluid = fluid_id(state);
             view.schedule_fluid_tick(pos, fluid, fluid_delay(fluid));
+        }
+        // Since 26.x bubble columns are water's own business: a full source of a fluid
+        // a column may stand in, told of a block below that makes one, ticks itself to
+        // become the column (`LiquidBlock.tryScheduleBubbleBlockColumn`).
+        let full_source = state
+            .props()
+            .fluid()
+            .is_some_and(|fluid| fluid.source && fluid.amount == 8);
+        if direction == Face::Down
+            && full_source
+            && fluid_in_tag(state, "minecraft:bubble_column_can_occupy")
+            && (in_tag(neighbour, "minecraft:enables_bubble_column_drag_down")
+                || in_tag(neighbour, "minecraft:enables_bubble_column_push_up"))
+        {
+            view.schedule_block_tick(pos, tick_id(state), 20);
         }
         return state;
     }
@@ -170,6 +185,25 @@ pub fn update_shape<V: BlockView + ?Sized>(
             return blocks::AIR;
         }
         return vegetation(view, state, pos);
+    }
+    // A door's half told of its other half becomes that half with its own half, and air
+    // where the other is no door's; a lower half told of the block below goes where it
+    // can no longer stand (`DoorBlock.updateShape`).
+    if is_class(state, BlockClass::DoorBlock) {
+        let half = state.property("half");
+        let lower = half == Some("lower");
+        if matches!(direction, Face::Up | Face::Down) && lower == (direction == Face::Up) {
+            if is_class(neighbour, BlockClass::DoorBlock) && neighbour.property("half") != half {
+                return neighbour
+                    .with_property("half", half.expect("a door has a half"))
+                    .expect("a door has a half");
+            }
+            return blocks::AIR;
+        }
+        if lower && direction == Face::Down && !can_survive(state, pos, view) {
+            return blocks::AIR;
+        }
+        return state;
     }
     if is_class(state, BlockClass::DoublePlantBlock) {
         let lower = state.property("half") == Some("lower");

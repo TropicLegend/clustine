@@ -470,7 +470,9 @@ fn place_liquid(
     state: BlockState,
     fluid: Option<clustine_data::FluidProps>,
 ) -> bool {
+    // A double slab holds no water (`SlabBlock.canPlaceLiquid`).
     if state.property("waterlogged") != Some("false")
+        || state.property("type") == Some("double") && is_class(state, BlockClass::SlabBlock)
         || fluid.is_none_or(|fluid| fluid.fluid != WATER)
     {
         return false;

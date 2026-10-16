@@ -214,6 +214,15 @@ fn sign(mut template: Vec<(String, Nbt)>) -> Vec<(String, Nbt)> {
                     *items = taken.into_iter().map(plain).collect();
                 }
             }
+            // `SignText`'s codec writes the filtered lines only where they differ from
+            // the lines.
+            let messages = side
+                .iter()
+                .find(|(name, _)| name == "messages")
+                .map(|(_, lines)| lines.clone());
+            side.retain(|(name, lines)| {
+                name != "filtered_messages" || Some(lines) != messages.as_ref()
+            });
         }
     }
     if !template.iter().any(|(key, _)| key == "is_waxed") {
@@ -367,6 +376,21 @@ mod tests {
         };
         assert_eq!(front[0].1, Nbt::List(vec![Nbt::String(String::new()); 4]));
         assert!(saved.contains(&("is_waxed".to_owned(), Nbt::Byte(0))));
+    }
+
+    #[test]
+    fn a_signs_filtered_lines_are_left_out_where_they_are_the_lines() {
+        let lines = Nbt::List(vec![Nbt::String("<----".into())]);
+        let side = Nbt::Compound(vec![
+            ("messages".to_owned(), lines.clone()),
+            ("filtered_messages".to_owned(), lines),
+        ]);
+        let saved = resave("minecraft:sign", vec![("front_text".to_owned(), side)]);
+        let Some((_, Nbt::Compound(front))) = saved.iter().find(|(key, _)| key == "front_text")
+        else {
+            panic!("the front is kept");
+        };
+        assert!(!front.iter().any(|(name, _)| name == "filtered_messages"));
     }
 
     #[test]
