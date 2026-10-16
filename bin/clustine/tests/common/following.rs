@@ -17,16 +17,16 @@ use clustine_rpc::RegionList;
 use super::wandering::{Begun, Ended, bounds, has_chunk, living, time_of};
 
 /// The view distance of the edge, and what the coordinator is told it is: the
-/// distances that follow from it are 10 and 18 chunks.
+/// distances that follow from it are 12 and 20 chunks (`Policy::for_view_distance`).
 pub const VIEW: i32 = 2;
 
 /// How long the coordinator leaves a region alone after anything it did to it.
 pub const REST: Duration = Duration::from_secs(5);
 
-/// How many bots play, and how far apart their lanes are, in blocks: 19 chunks,
+/// How many bots play, and how far apart their lanes are, in blocks: 21 chunks,
 /// which is more than the split distance, so that each bot is a group of its own.
 pub const BOTS: usize = 4;
-pub const LANE_TO_LANE: i32 = 304;
+pub const LANE_TO_LANE: i32 = 21 * 16;
 
 /// One worker for each region there will be and one to spare, so that while all of
 /// them live no worker runs two more than another and the coordinator moves nothing

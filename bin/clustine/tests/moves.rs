@@ -91,7 +91,7 @@ enum World {
     /// are: a boundary at a known place, and regions with known numbers.
     Pinned(&'static [i32]),
     /// One home region and nothing said of how it reshapes, so that regions follow
-    /// their players: each of the four bots stands in a region of its own, 19 chunks
+    /// their players: each of the four bots stands in a region of its own, 21 chunks
     /// from the next. See `docs/adr/0017-the-end-of-the-stripes.md`, section 9.6.
     Following,
 }
@@ -140,7 +140,7 @@ const SMALL: Setup = Setup {
 };
 
 /// A world that follows its players: four bots that walk within the chunk column
-/// players enter in, each on its lane, 19 chunks from the next, each in a region of
+/// players enter in, each on its lane, 21 chunks from the next, each in a region of
 /// its own, and one worker for each region and one to spare.
 const FOLLOWING: Setup = Setup {
     world: World::Following,

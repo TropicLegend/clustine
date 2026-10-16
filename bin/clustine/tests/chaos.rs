@@ -66,7 +66,7 @@ enum World<'a> {
     /// are: a boundary at a known place, and regions with known numbers.
     Pinned(&'a [i32]),
     /// One home region and nothing said of how it reshapes, so that regions follow
-    /// their players: each of the four bots stands in a region of its own, 19 chunks
+    /// their players: each of the four bots stands in a region of its own, 21 chunks
     /// from the next, with one worker for each and one to spare. See
     /// `docs/adr/0017-the-end-of-the-stripes.md`, section 9.6.
     Following,
@@ -1412,7 +1412,7 @@ async fn a_player_who_left_joins_again_while_their_region_has_no_worker() {
 }
 
 /// Where the bots of a world that follows its players walk: within the chunk column
-/// players enter in, each on its lane, 19 chunks from the next.
+/// players enter in, each on its lane, 21 chunks from the next.
 const AT_HOME: (f64, f64) = (2.5, 13.5);
 
 /// Y1, the twin of the test of a worker that wakes up after its region went to

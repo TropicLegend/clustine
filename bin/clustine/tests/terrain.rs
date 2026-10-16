@@ -40,11 +40,11 @@ const VIEW: i32 = 2;
 const AIR: i32 = blocks::AIR.0 as i32;
 
 /// Whether a block a client was sent, `sent`, is the block the generator made, `made`,
-/// as the ticks generation scheduled with it leave it, which run once the chunk ticks
-/// (`docs/adr/0024-block-behaviour-in-a-region.md`): leaves that another tree's log
-/// came beside, or whose own was taken, are set to their distance, as the game sets
-/// them; and water and lava flow where generation left them able to, as in a cave
-/// with a spring.
+/// as the ticks generation scheduled with it leave it, which run once the chunk ticks,
+/// and as random ticks leave it (`docs/adr/0024-block-behaviour-in-a-region.md`):
+/// the same block in another state (leaves that another tree's log came beside set to
+/// their distance, as the game sets them; sugar cane that has aged); and water and lava
+/// flowing where generation left them able to, as in a cave with a spring.
 fn as_ticked(made: BlockState, sent: i32) -> bool {
     let Ok(sent) = u16::try_from(sent).map(BlockState) else {
         return false;
@@ -52,11 +52,7 @@ fn as_ticked(made: BlockState, sent: i32) -> bool {
     if sent == made {
         return true;
     }
-    let leaves = |state: BlockState| state.property("distance").is_some();
-    if leaves(made) && made.block_id() == sent.block_id() {
-        return made.with_property("distance", sent.property("distance").unwrap()) == Some(sent);
-    }
-    is_fluid_or_air(made) && is_fluid_or_air(sent)
+    made.block_id() == sent.block_id() || (is_fluid_or_air(made) && is_fluid_or_air(sent))
 }
 
 /// Air, or a block that holds a fluid.
@@ -341,7 +337,8 @@ async fn a_cluster_whose_processes_are_told_the_seed_serves_its_land() {
         let sections = walker.sections(position).unwrap().unwrap();
         for (sent, made) in sections.iter().zip(made.sections()) {
             for (index, state) in made.states().enumerate() {
-                assert_eq!(sent.blocks.get(index), i32::from(state.0), "{position:?}");
+                let got = sent.blocks.get(index);
+                assert!(as_ticked(state, got), "{position:?}: {state:?} and {got}");
             }
         }
     }
