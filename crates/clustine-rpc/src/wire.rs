@@ -855,6 +855,7 @@ mod tests {
                 what: Effected::SetIf {
                     expected: blocks::OAK_PLANKS,
                     state: blocks::FIRE,
+                    flags: 3,
                 },
             },
         ];

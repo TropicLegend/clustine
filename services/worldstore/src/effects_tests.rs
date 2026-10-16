@@ -31,6 +31,7 @@ fn effect_in(chunk: ChunkPos, n: i32) -> Effect {
         what: Effected::SetIf {
             expected: blocks::AIR,
             state: blocks::STONE,
+            flags: 3,
         },
     }
 }

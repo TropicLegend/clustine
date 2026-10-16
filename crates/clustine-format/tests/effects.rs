@@ -77,6 +77,7 @@ fn every_kind_of_effect() -> Vec<(Effect, Due)> {
                 what: Effected::SetIf {
                     expected: blocks::OAK_PLANKS,
                     state: blocks::FIRE,
+                    flags: 3,
                 },
             },
             Due::FromTaking,

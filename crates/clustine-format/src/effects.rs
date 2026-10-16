@@ -9,7 +9,7 @@
 //! | 1, an update | direction u8 (0 to 5), kind u8 (0 `updateShape`, 1 `neighborChanged`), the block that changed u16, flags u32, depth i32 |
 //! | 2, a scheduled tick | 1 and a block u16, or 2 and a fluid u16; delay i32, priority i8 |
 //! | 3, a spread | direction u8 (0 to 5), the source's block u16 |
-//! | 4, a set if still | the block expected u16, the block to set u16 |
+//! | 4, a set if still | the block expected u16, the block to set u16, flags u32 |
 //!
 //! When it is due is a u8, 0 for counted from its taking or 1 followed by the holder's
 //! tick u64. An effect's number is its sequence u64 and its index u32.
@@ -70,10 +70,15 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
             out.push(direction);
             out.extend_from_slice(&source.0.to_be_bytes());
         }
-        Effected::SetIf { expected, state } => {
+        Effected::SetIf {
+            expected,
+            state,
+            flags,
+        } => {
             out.push(SET_IF);
             out.extend_from_slice(&expected.0.to_be_bytes());
             out.extend_from_slice(&state.0.to_be_bytes());
+            out.extend_from_slice(&flags.to_be_bytes());
         }
     }
 }
@@ -117,6 +122,7 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
         SET_IF => Effected::SetIf {
             expected: take_block(input)?,
             state: take_block(input)?,
+            flags: input.u32()?,
         },
         _ => return Err(FormatError::Corrupt("an effect's kind")),
     };

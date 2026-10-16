@@ -44,10 +44,12 @@ pub enum Effected {
     Spread { direction: u8, source: BlockState },
     /// A block set by a rule (fire spreading, a rail turned towards a placed one, a
     /// plant grown into a block, a block removed): only if the block is still
-    /// `expected`, and then the change's updates are run.
+    /// `expected`, and then with the set's `flags` (`Block.UPDATE_*`), which say which
+    /// updates it makes: a vine grows with 2, which tells no neighbour.
     SetIf {
         expected: BlockState,
         state: BlockState,
+        flags: u32,
     },
 }
 
@@ -85,8 +87,8 @@ pub struct EffectId {
     pub index: u32,
 }
 
-/// When a scheduled tick carried as an effect is due, in the ticks of the region that
-/// takes it (the record, section 8).
+/// When an effect is due, in the ticks of the region that takes it (the record,
+/// section 8): see [`FiledEffect::due`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Due {
     /// Its maker was coupled to the holder when it was made: due at the holder's
@@ -102,7 +104,9 @@ pub enum Due {
 pub struct FiledEffect {
     pub id: EffectId,
     pub effect: Effect,
-    /// Only a scheduled tick has a time to be due at; for every other effect this is
-    /// [`Due::FromTaking`].
+    /// For a scheduled tick, when it is due. For every other effect, [`Due::At`] names
+    /// the holder's tick that the effect was made in, which the ticks it schedules
+    /// count their delays from (never earlier than the tick that takes it), so that
+    /// water crosses a coupled line at its own pace (the record, section 8).
     pub due: Due,
 }

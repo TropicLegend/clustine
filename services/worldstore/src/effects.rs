@@ -261,6 +261,7 @@ mod tests {
             what: Effected::SetIf {
                 expected: blocks::AIR,
                 state: blocks::FIRE,
+                flags: 3,
             },
         }
     }

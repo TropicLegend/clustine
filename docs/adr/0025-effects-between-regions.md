@@ -504,6 +504,25 @@ E3b, copies in the store (2026-10-16):
   collection removed meanwhile followed a checkpoint of the holder, whose saves were
   durable before it, and the stored chunk read after it has their blocks.
 
+E4, the sim (2026-10-16), found by the author of the step:
+
+- **A spread across a coupled line came one tick late**: it is a set, made by the holder
+  a tick after the source ticked, and the new water's own tick counted from then. So
+  every effect is due, not only a scheduled tick: the store converts a coupled effect of
+  any kind to `Due::At` the holder's tick it was made in (a scheduled tick adds its
+  delay), and the ticks the holder schedules while it does an effect count their
+  delays from that tick, never earlier than the tick that takes it. Water, lava and
+  sand then cross a coupled line on the tick they would in one region, through a spread
+  or an update alike; the update itself is still a tick late.
+- **A conditional set carries its flags** (`Block.UPDATE_*`): a vine or a chorus flower
+  grows with 2, which tells no neighbour, and the holder must not tell them either.
+- **A set is sent only for a block the region can read in a copy**; what it cannot read
+  it does not set, as at the edge of loaded land.
+- **A seam entry whose target the region would send to is sent on**, `Unknown` and not
+  wanted as well as `Foreign`: such land was given back or never asked for, and the
+  entry would otherwise wait for good.
+- `Knowledge` gained no copy; copies sit beside it in the region.
+
 ## Review
 
 **First review of this record (2026-10-16): not ready.** Its findings, worked in:
