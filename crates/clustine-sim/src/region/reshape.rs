@@ -229,6 +229,9 @@ impl Region {
         let held = self.held().chain(chunks.iter().copied()).collect();
         let mut areas = mem::take(&mut self.land.pinned);
         areas.extend_from_slice(pinned);
+        // The chunks go as the store would have them: their ticks written into them
+        // (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+        self.stop_ticking_all();
         let loaded = mem::take(&mut self.chunks).into_iter().collect();
         let holdings = Holdings {
             held,
@@ -374,6 +377,8 @@ impl Region {
             .filter(|position| !gone.contains(position))
             .collect();
         let pinned = mem::take(&mut self.land.pinned);
+        // The chunks go as the store would have them: their ticks written into them.
+        self.stop_ticking_all();
         let (theirs, kept): (Vec<_>, Vec<_>) = mem::take(&mut self.chunks)
             .into_iter()
             .partition(|(position, _)| gone.contains(position));

@@ -773,6 +773,11 @@ pub struct TickOutput {
     ///
     /// [`RegionConfig::return_after`]: crate::RegionConfig::return_after
     pub returns: Vec<ChunkPos>,
+    /// Chunks whose scheduled ticks changed in this tick, in ascending order: a tick
+    /// scheduled or run there, or the ticks of a chunk that stopped ticking written
+    /// into it. They are to be saved as chunks whose blocks changed are
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+    pub ticks_changed: Vec<ChunkPos>,
     /// Everything that changed in the region's state in this tick.
     pub delta: StateDelta,
     /// What the region says to the world store of stays in this tick, in the order of

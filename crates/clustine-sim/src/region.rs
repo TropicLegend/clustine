@@ -17,6 +17,7 @@ use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
 mod reshape;
+mod ticks;
 mod updates;
 
 pub use reshape::{NoSplit, Part, Sides, Splitting};
@@ -242,6 +243,9 @@ pub struct Region {
     /// What one change of a block makes in turn while it runs; empty between changes,
     /// and no part of the state.
     updater: updates::Updater,
+    /// The scheduled ticks of the chunks the region ticks; no part of the state, rebuilt
+    /// from the chunks.
+    ticks: ticks::Ticks,
 }
 
 impl Region {
@@ -284,6 +288,7 @@ impl Region {
             land,
             chunks: BTreeMap::new(),
             updater: updates::Updater::default(),
+            ticks: ticks::Ticks::default(),
             tickets: BTreeMap::new(),
             requested: BTreeSet::new(),
             players,
@@ -345,6 +350,15 @@ impl Region {
         self.chunks.get(&position)
     }
 
+    /// A loaded chunk as it is to be saved: with the ticks of the region's queues
+    /// written into it as the delays left at the end of this tick
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+    pub fn saved_chunk(&self, position: ChunkPos) -> Option<Chunk> {
+        let mut chunk = self.chunks.get(&position)?.clone();
+        chunk.set_ticks(self.ticks_to_save(position));
+        Some(chunk)
+    }
+
     /// The number of loaded chunks.
     pub fn loaded_chunk_count(&self) -> usize {
         self.chunks.len()
@@ -401,6 +415,7 @@ impl Region {
     /// Advances the region by one tick.
     pub fn tick(&mut self, inputs: &TickInputs) -> TickOutput {
         self.tick += 1;
+        self.ticks_counted_from_zero();
         let first = mem::take(&mut self.unnamed);
         let mut output = TickOutput {
             tick: self.tick,
@@ -463,6 +478,11 @@ impl Region {
         for (edge, id, entity, number, input) in &inputs.inputs {
             self.apply_input(*edge, *id, *entity, *number, input, &mut output);
         }
+        // The scheduled ticks (`docs/adr/0024-block-behaviour-in-a-region.md`, section
+        // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
+        // for B5.
+        self.update_ticking();
+        self.run_block_ticks(&mut output);
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
         // they stay, and the answer decides.
@@ -529,6 +549,7 @@ impl Region {
         self.settle_chunks(&mut output);
 
         output.stays = self.notes(first, let_go);
+        output.ticks_changed = self.ticks_changed();
         output.delta = self.take_delta();
         output
     }
@@ -1825,7 +1846,7 @@ impl Player {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use clustine_world::Biome;
+    use clustine_world::{Biome, InChunk};
 
     use super::*;
     use clustine_data::items;
@@ -3170,6 +3191,105 @@ mod tests {
             position: fence,
             state: blocks::OAK_FENCE,
         }));
+    }
+
+    /// A region where player 1 stands on the floor of [`floor`] in the chunk at the
+    /// origin, with `blocks` set there, and the eight chunks around it loaded with the
+    /// same floor, so that the origin's chunk ticks.
+    fn ticking_floor_with(blocks: &[(BlockPos, BlockState)]) -> Region {
+        let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
+        let around: Vec<ChunkPos> = (-1..=1)
+            .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+            .collect();
+        let mut origin = floor();
+        for (at, state) in blocks {
+            origin.set(at.x as usize, at.y, at.z as usize, *state);
+        }
+        region.tick(&tickets(around.clone(), vec![]));
+        let loaded = around
+            .iter()
+            .map(|position| {
+                let chunk = if *position == ChunkPos::new(0, 0) {
+                    origin.clone()
+                } else {
+                    floor()
+                };
+                (*position, chunk)
+            })
+            .collect();
+        region.tick(&TickInputs {
+            chunks_loaded: loaded,
+            ..TickInputs::default()
+        });
+        region
+    }
+
+    #[test]
+    fn sand_whose_support_is_broken_falls_to_the_floor_two_ticks_later() {
+        let (sand, stone, under) = (
+            BlockPos::new(2, -58, 3),
+            BlockPos::new(2, -59, 3),
+            BlockPos::new(2, -60, 3),
+        );
+        let mut region = ticking_floor_with(&[(stone, blocks::STONE), (sand, blocks::SAND)]);
+        // A pillar: the floor at y -61, air at -60, stone at -59, sand at -58.
+        region.tick(&moves(vec![dig(1, 2, -59, 3, 1)]));
+        assert_eq!(region.block(sand), Some(blocks::SAND));
+        region.tick(&TickInputs::default());
+        assert_eq!(region.block(sand), Some(blocks::SAND));
+        region.tick(&TickInputs::default());
+        assert_eq!(region.block(sand), Some(blocks::AIR));
+        assert_eq!(region.block(under), Some(blocks::SAND));
+    }
+
+    #[test]
+    fn sand_in_a_chunk_that_does_not_tick_waits_and_its_tick_is_kept_in_the_chunk() {
+        let (sand, stone) = (BlockPos::new(2, -59, 3), BlockPos::new(2, -60, 3));
+        let mut region = on_floor_with(&[(stone, blocks::STONE), (sand, blocks::SAND)]);
+        region.tick(&moves(vec![dig(1, 2, -60, 3, 1)]));
+        for _ in 0..5 {
+            region.tick(&TickInputs::default());
+        }
+        assert_eq!(region.block(sand), Some(blocks::SAND));
+        let saved = region.saved_chunk(ChunkPos::new(0, 0)).expect("loaded");
+        assert_eq!(saved.ticks().len(), 1, "{:?}", saved.ticks());
+        assert_eq!(saved.ticks()[0].at, InChunk::new(2, -59, 3));
+    }
+
+    #[test]
+    fn a_saved_chunk_keeps_a_queued_tick_as_the_delay_left() {
+        let (sand, stone) = (BlockPos::new(2, -58, 3), BlockPos::new(2, -59, 3));
+        let mut region = ticking_floor_with(&[(stone, blocks::STONE), (sand, blocks::SAND)]);
+        region.tick(&moves(vec![dig(1, 2, -59, 3, 1)]));
+        // Scheduled with a delay of 2 in this tick: due in two ticks, so one tick
+        // still to tick before the one it runs in.
+        let saved = region.saved_chunk(ChunkPos::new(0, 0)).expect("loaded");
+        let ticks: Vec<_> = saved
+            .ticks()
+            .iter()
+            .map(|tick| (tick.at, tick.delay))
+            .collect();
+        assert_eq!(ticks, [(InChunk::new(2, -58, 3), 1)]);
+    }
+
+    #[test]
+    fn sand_that_falls_onto_a_torch_is_lost() {
+        let (sand, stone, torch) = (
+            BlockPos::new(2, -58, 3),
+            BlockPos::new(2, -59, 3),
+            BlockPos::new(2, -60, 3),
+        );
+        let mut region = ticking_floor_with(&[
+            (torch, blocks::TORCH),
+            (stone, blocks::STONE),
+            (sand, blocks::SAND),
+        ]);
+        region.tick(&moves(vec![dig(1, 2, -59, 3, 1)]));
+        region.tick(&TickInputs::default());
+        region.tick(&TickInputs::default());
+        assert_eq!(region.block(sand), Some(blocks::AIR));
+        assert_eq!(region.block(stone), Some(blocks::AIR));
+        assert_eq!(region.block(torch), Some(blocks::TORCH));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use clustine_blocks::data::{is_class, same_block};
 use clustine_blocks::shape::update_shape;
 use clustine_blocks::survive::can_survive;
 use clustine_data::{BlockClass, BlockState, Face, blocks};
-use clustine_world::{BlockPos, PlayerId};
+use clustine_world::{BlockPos, PlayerId, Ticked};
 
 use super::Region;
 use crate::api::{RegionEvent, TickOutput};
@@ -34,7 +34,7 @@ pub(crate) const UPDATE_SUPPRESS_DROPS: u32 = 32;
 pub(crate) const UPDATE_ALL: u32 = UPDATE_NEIGHBORS | UPDATE_CLIENTS;
 
 /// How deep a chain of shape updates goes (`Block.UPDATE_LIMIT`).
-const UPDATE_LIMIT: i32 = 512;
+pub(crate) const UPDATE_LIMIT: i32 = 512;
 /// How many updates one change may chain before the rest are dropped
 /// (`max-chained-neighbor-updates`, 1,000,000 by default).
 const MAX_CHAINED: usize = 1_000_000;
@@ -115,6 +115,13 @@ impl Region {
             position: pos,
             state,
         });
+        // `onPlace`, inside the chunk's set in the game: a block that falls looks two
+        // ticks on whether it is held up (`FallingBlock.onPlace`, `BrushableBlock`'s).
+        if is_class(state, BlockClass::FallingBlock) || is_class(state, BlockClass::BrushableBlock)
+        {
+            let block = clustine_blocks::data::tick_id(state);
+            self.schedule_tick(pos, Ticked::Block(block), 2, 0);
+        }
         if flags & UPDATE_NEIGHBORS != 0 {
             self.add_and_run(
                 Pending::Neighbours {
@@ -291,6 +298,12 @@ impl Region {
         }
     }
 
+    /// `destroyBlock` of a block's own tick (a cactus or sugar cane that can no longer
+    /// stay).
+    pub(super) fn destroy_block_by_tick(&mut self, pos: BlockPos, output: &mut TickOutput) {
+        self.destroy_block(pos, true, UPDATE_LIMIT, output);
+    }
+
     /// `Level.destroyBlock`: the block breaks where everyone sees it, and gives way to
     /// its fluid, with every update.
     fn destroy_block(&mut self, pos: BlockPos, _drops: bool, depth: i32, output: &mut TickOutput) {
@@ -339,10 +352,10 @@ impl Region {
     }
 }
 
-/// The region's loaded blocks as the shared rules read them. A block outside what is
-/// loaded reads as air; the updates are made only where the block and its six
-/// neighbours are loaded. The ticks the rules schedule wait for B4.
-struct RegionView<'r>(&'r Region);
+/// The region's loaded blocks as the shared rules read them, and where the ticks they
+/// schedule go. A block outside what is loaded reads as air; the updates are made only
+/// where the block and its six neighbours are loaded.
+pub(super) struct RegionView<'r>(pub(super) &'r mut Region);
 
 impl BlockView for RegionView<'_> {
     fn block(&mut self, at: BlockPos) -> BlockState {
@@ -353,9 +366,13 @@ impl BlockView for RegionView<'_> {
         None
     }
 
-    fn schedule_block_tick(&mut self, _at: BlockPos, _block: u16, _delay: i32) {}
+    fn schedule_block_tick(&mut self, at: BlockPos, block: u16, delay: i32) {
+        self.0.schedule_tick(at, Ticked::Block(block), delay, 0);
+    }
 
-    fn schedule_fluid_tick(&mut self, _at: BlockPos, _fluid: u8, _delay: i32) {}
+    fn schedule_fluid_tick(&mut self, at: BlockPos, fluid: u8, delay: i32) {
+        self.0.schedule_tick(at, Ticked::Fluid(fluid), delay, 0);
+    }
 
     fn rules(&self) -> clustine_blocks::Rules {
         clustine_blocks::Rules::Placing

@@ -2309,6 +2309,9 @@ impl RegionRunner {
         // in. See `docs/adr/0020-one-stay-per-player.md`, section 3.
         let unchanged = changes.is_empty() && output.delta.changes_only_the_tick();
         let needs_commit = !(unchanged && output.stays.is_empty());
+        // A chunk whose ticks changed is saved as one whose blocks did; the ticks go
+        // into the log with phase B's step B4c.
+        self.unsaved.extend(output.ticks_changed.iter().copied());
         if needs_commit {
             self.unsaved
                 .extend(changes.iter().map(|(position, _)| position.chunk()));
@@ -2575,14 +2578,14 @@ impl RegionRunner {
     /// Hands the chunk at `position` to the store if it has unsaved changes.
     fn save(&mut self, position: ChunkPos) {
         if self.unsaved.remove(&position)
-            && let Some(chunk) = self.region.chunk(position)
+            && let Some(chunk) = self.region.saved_chunk(position)
         {
             // The commit of the region's last tick has been sent, which the store has
-            // on disk before it writes the chunk.
+            // on disk before it writes the chunk. The chunk goes with its ticks.
             self.store.request(StoreRequest::Save {
                 position,
                 tick: self.region.tick_number(),
-                chunk: chunk.clone(),
+                chunk,
             });
         }
     }

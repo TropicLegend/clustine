@@ -62,7 +62,7 @@ pub enum DataRefused {
 }
 
 /// What a scheduled tick is of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Ticked {
     /// A block, by its id.
     Block(u16),
