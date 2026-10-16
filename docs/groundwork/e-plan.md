@@ -275,7 +275,9 @@ shows it is wanted; the sequences of 4.1 are what it would wait on. (2) Everythi
 phase B crosses, at all borders, redstone later with the limit named. (3) and (6)
 Copies of the neighbours' border chunks, through the store. (5) An effect into land
 nobody uses is dropped, as the game drops it (4.4). Question 4 was not asked apart from
-(6); the store is the channel.
+(6); the store is the channel. (7) Asked afterwards whether ticks need be lost at a line at
+all, the owner chose lockstep while a border ticks, in phase E: a scheduled tick that
+crosses then runs on the tick it would in one region. ADR-0025, section 8, has it.
 
 ## 7. Risks
 
