@@ -313,6 +313,35 @@ impl Region {
         }
     }
 
+    /// The region whose state is `state`, as [`Region::restore`] makes it, which starts
+    /// with `tickets` counted and `chunks` loaded, in their saved forms
+    /// ([`Region::saved_chunk`]): a chunk is loaded where the region holds it and has a
+    /// ticket on it or it is the home chunk. A load is accepted only a tick after it is
+    /// asked for, so a region restored by [`Region::restore`] cannot be given its chunks
+    /// in its first tick; this one has them then. Its chunks start ticking in that tick,
+    /// with each tick's delay left counted from it, so that it goes on as the region
+    /// whose state and chunks were taken in the tick before
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+    pub fn restore_loaded(
+        config: RegionConfig,
+        state: RegionState,
+        holdings: Holdings,
+        tickets: &[(ChunkPos, Ticket)],
+        chunks: Vec<(ChunkPos, Chunk)>,
+    ) -> Self {
+        let mut region = Self::restore(config, state, holdings);
+        for (position, kind) in tickets {
+            *region.tickets.entry(*position).or_default().of(*kind) += 1;
+        }
+        for (position, chunk) in chunks {
+            let wanted = region.tickets.contains_key(&position) || position == region.land.home;
+            if wanted && region.land.holds(position) {
+                region.chunks.insert(position, chunk);
+            }
+        }
+        region
+    }
+
     /// Everything the region knows apart from its chunks, as of the last tick.
     pub fn state(&self) -> RegionState {
         RegionState {

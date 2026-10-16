@@ -705,6 +705,82 @@ fn the_chunks_that_tick_with_ticks_pending_are_named_in_every_tick() {
     assert_eq!(idle_tick(&mut ticking_floor_with(&[])).ticks_pending, []);
 }
 
+/// The region `region` would be restored as from its state, its tickets and its
+/// loaded chunks' saved forms as of its last tick.
+fn restored(region: &Region) -> Region {
+    let mut tickets = Vec::new();
+    for (position, counts) in &region.tickets {
+        let kinds = [
+            (Ticket::Viewer, counts.viewers),
+            (Ticket::Guest, counts.guests),
+            (Ticket::ViewerRing, counts.viewer_rings),
+            (Ticket::GuestRing, counts.guest_rings),
+        ];
+        for (kind, count) in kinds {
+            tickets.extend((0..count).map(|_| (*position, kind)));
+        }
+    }
+    let held = region
+        .land
+        .known
+        .iter()
+        .filter(|(_, known)| matches!(known, Known::Held { .. }))
+        .map(|(position, _)| *position)
+        .collect();
+    let holdings = Holdings {
+        held,
+        pinned: region.land.pinned.clone(),
+    };
+    let chunks = region
+        .chunks
+        .keys()
+        .map(|position| {
+            let saved = region.saved_chunk(*position).expect("loaded");
+            (*position, saved)
+        })
+        .collect();
+    Region::restore_loaded(
+        region.config.clone(),
+        region.state(),
+        holdings,
+        &tickets,
+        chunks,
+    )
+}
+
+/// A region restored from its state and its chunks' saved forms goes on as the
+/// region they were taken from: the ticks pending in its chunks, and those they
+/// schedule as they run, run in the same ticks and change the same blocks, and the
+/// chunks are saved alike after every tick (ADR-0024, sections 3 and 4).
+#[test]
+fn a_region_restored_from_its_saved_chunks_runs_their_ticks_as_the_original_does() {
+    // Two sands over air, the lower due to fall in three ticks, and gravel due in
+    // five: the upper sand falls only when the lower has gone from under it.
+    let (lower, upper, gravel) = (at(5, -55, 5), at(5, -54, 5), at(9, -55, 9));
+    let blocks = [
+        (lower, blocks::SAND),
+        (upper, blocks::SAND),
+        (gravel, blocks::GRAVEL),
+    ];
+    let ticks = [
+        kept(lower, blocks::SAND, 3, 0),
+        kept(gravel, blocks::GRAVEL, 5, 0),
+    ];
+    let (mut original, _) = ticking_with(&blocks, &ticks);
+    idle_tick(&mut original);
+    let mut copy = restored(&original);
+    let origin = ChunkPos::new(0, 0);
+    let mut fell = Vec::new();
+    for _ in 0..8 {
+        let theirs = idle_tick(&mut original);
+        let ours = idle_tick(&mut copy);
+        assert_eq!(emptied(&ours), emptied(&theirs), "tick {}", theirs.tick);
+        assert_eq!(copy.saved_chunk(origin), original.saved_chunk(origin));
+        fell.extend(emptied(&theirs));
+    }
+    assert_eq!(fell, [lower, gravel, upper]);
+}
+
 /// A tick scheduled by a player's dig names the chunk in that tick.
 #[test]
 fn a_scheduled_tick_names_its_chunk() {
