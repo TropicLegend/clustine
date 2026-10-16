@@ -26,8 +26,8 @@
 //! `section_blocks_update`, which the bots do not read. Both servers serve the same
 //! version, so their numeric block state ids are the same and are compared as numbers.
 //!
-//! Where Clustine differs on purpose (section 7 of the plan: a neighbour does not
-//! change in turn until B1, chests stay single, rails do not curve), only the block
+//! Where Clustine differs on purpose (section 7 of the plan: chests stay single, rails
+//! do not curve; neighbours change in turn since phase B's step B3), only the block
 //! clicked or placed into is compared, and its other half where it has one.
 //!
 //! Run on 2026-10-14, the official server left one or two clicks of the test undone
@@ -796,11 +796,11 @@ fn attaching_cases() -> Vec<Case> {
 
     let mut cases = vec![
         // FenceBlock, IronBarsBlock, WallBlock: connections from the neighbours as
-        // placed. The neighbours are not compared: they change in turn only in vanilla.
+        // placed, and the neighbours' in turn (phase B, B3).
         case(
             "a fence beside stone, a fence, leaves and a pane",
             put(OAK_FENCE, O),
-            &[O],
+            &[O, (1, 0, 0), (-1, 0, 0), (0, 0, -1), (0, 0, 1)],
         )
         .setup([
             stone((1, 0, 0)),
@@ -1419,9 +1419,8 @@ fn using_cases() -> Vec<Case> {
         case(
             "stone clicked on a fence is placed against it",
             click(STONE, O, SOUTH),
-            // Not the fence, which the official server joins to the stone by a
-            // neighbour update and Clustine does not until phase B (B1).
-            &[(0, 0, 1)],
+            // The fence too, which joins the stone by a neighbour update (B3).
+            &[O, (0, 0, 1)],
         )
         .setup([put(OAK_FENCE, O)]),
         case(
@@ -1453,6 +1452,107 @@ fn using_cases() -> Vec<Case> {
 
 // Buckets and lily pads (section 5), all in pits so that nothing flows out of them on
 // the official server, where water and lava flow.
+// Breaking under what rests on a block, and beside what joins it: the updates of
+// phase B, step B3 (`docs/adr/0024-block-behaviour-in-a-region.md`, section 1).
+fn breaking_cases() -> Vec<Case> {
+    use items::*;
+
+    // A pillar east of the origin, whose upper stone's west face holds what is hung
+    // on it, which stands at (0, 1, 0).
+    let on_the_pillar = |item: i32| click(item, (1, 1, 0), WEST);
+    vec![
+        case(
+            "a torch goes with the stone it stands on",
+            dig(O),
+            &[O, ABOVE],
+        )
+        .setup([stone(O), put(TORCH, ABOVE)]),
+        case(
+            "a wall torch goes with the stone it hangs on",
+            dig((1, 1, 0)),
+            &[(0, 1, 0), (1, 1, 0)],
+        )
+        .setup(pillar(1, 0))
+        .setup([on_the_pillar(TORCH)]),
+        case(
+            "a ladder goes with the stone it hangs on",
+            dig((1, 1, 0)),
+            &[(0, 1, 0), (1, 1, 0)],
+        )
+        .setup(pillar(1, 0))
+        .setup([on_the_pillar(LADDER)]),
+        case(
+            "a lever goes with the stone it is fixed to",
+            dig((1, 1, 0)),
+            &[(0, 1, 0), (1, 1, 0)],
+        )
+        .setup(pillar(1, 0))
+        .setup([on_the_pillar(LEVER)]),
+        case(
+            "a button goes with the stone it is fixed to",
+            dig((1, 1, 0)),
+            &[(0, 1, 0), (1, 1, 0)],
+        )
+        .setup(pillar(1, 0))
+        .setup([on_the_pillar(STONE_BUTTON)]),
+        case(
+            "a pressure plate goes with the stone it lies on",
+            dig(O),
+            &[O, ABOVE],
+        )
+        .setup([stone(O), put(STONE_PRESSURE_PLATE, ABOVE)]),
+        case(
+            "a carpet goes with the stone it lies on",
+            dig(O),
+            &[O, ABOVE],
+        )
+        .setup([stone(O), put(WHITE_CARPET, ABOVE)]),
+        case("snow goes with the stone it lies on", dig(O), &[O, ABOVE])
+            .setup([stone(O), put(SNOW, ABOVE)]),
+        case("a rail goes with the stone it lies on", dig(O), &[O, ABOVE])
+            .setup([stone(O), put(RAIL, ABOVE)]),
+        case("a candle stays where its stone was", dig(O), &[O, ABOVE])
+            .setup([stone(O), put(CANDLE, ABOVE)]),
+        case(
+            "a lantern hung under a stone goes with it",
+            dig((0, 1, 0)),
+            &[O, (0, 1, 0)],
+        )
+        .setup(overhang())
+        .setup([click(LANTERN, (0, 1, 0), DOWN)]),
+        case(
+            "a door broken at its lower half goes whole",
+            dig(O),
+            &[O, ABOVE],
+        )
+        .setup([put(OAK_DOOR, O)]),
+        case(
+            "a door broken at its upper half goes whole",
+            dig(ABOVE),
+            &[O, ABOVE],
+        )
+        .setup([put(OAK_DOOR, O)]),
+        case(
+            "a tall flower broken at its upper half goes whole",
+            dig(ABOVE),
+            &[O, ABOVE],
+        )
+        .setup([put(ROSE_BUSH, O)]),
+        case(
+            "a fence joins a stone placed beside it",
+            stone((1, 0, 0)),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(OAK_FENCE, O)]),
+        case(
+            "a fence lets go of a stone broken beside it",
+            dig((1, 0, 0)),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(OAK_FENCE, O), stone((1, 0, 0))]),
+    ]
+}
+
 fn bucket_cases() -> Vec<Case> {
     use items::*;
 
@@ -1571,6 +1671,14 @@ async fn placing_matches_the_official_server() {
 #[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
 async fn attaching_matches_the_official_server() {
     compare(&attaching_cases()).await;
+}
+
+/// Breaking a block under or beside what rests on it or joins it changes them as on
+/// the official server (phase B, step B3).
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn breaking_matches_the_official_server() {
+    compare(&breaking_cases()).await;
 }
 
 /// Doors, trapdoors, fence gates and flower pots are used as on the official server,
