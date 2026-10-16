@@ -36,16 +36,17 @@ neighbours change, sand and gravel fall (landing at once), water and lava flow a
 game's and make obsidian, cobblestone, stone and basalt where they meet, blocks are
 waterlogged and concrete powder hardens; leaves of a felled tree decay, sugar cane,
 cactus, kelp and vines grow, copper weathers, amethyst and dripstone grow, farmland
-dries, fire burns and spreads and lava sets it, coral dies out of water. A player who
-leaves comes back where they left. The world runs in regions that follow their players
+dries, fire burns and spreads and lava sets it, coral dies out of water. Where two
+regions meet the border is no seam (phase E): water, lava and sand cross it at their
+own pace, updates a tick late, and the chunks along it tick. A player who leaves
+comes back where they left. The world runs in regions that follow their players
 across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
 **What a player will miss within minutes**, all of it planned: animals, monsters and
 items lying in the world (entities, below); what needs light, crops and saplings
 growing, grass spreading, ice and snow melting (light in the simulation); redstone;
-where two regions meet, water and updates wait at the border until one region has both
-sides (seamless borders, below); the Nether and the End; survival mode, inventories
+the Nether and the End; survival mode, inventories
 beyond the hotbar, and crafting.
 
 **Built since M3:**
@@ -81,15 +82,42 @@ beyond the hotbar, and crafting.
   region on land stands still 0.04 to 0.24 s where it stood 0.01 to 0.05 s before.
   The disk without its cache was not measured: the cache is the machine's.
 
-**Next:** phase E, effects carried between regions, so that a border is seamless
-([plan](groundwork/e-plan.md), [ADR-0025](adr/0025-effects-between-regions.md),
-accepted on 2026-10-16 after four reviews): border copies, effects kept by the store
-for the region that uses their chunk, and lockstep while a border ticks, so that a
-scheduled tick crossing a line runs on the tick it would in one region. Its first step
-is E2, the shared types. Then redstone; S3 beside them. The judge of features, over 204 areas of two seeds with
+- *Effects between regions* (phase E, [plan](groundwork/e-plan.md),
+  [ADR-0025](adr/0025-effects-between-regions.md)): E1 to E6, on `main` since
+  2026-10-16. Regions keep copies of the chunks across their lines beside what players
+  see. What a tick does in another region's land is an effect, which the world store
+  keeps for the region that uses the chunk and hands it on its stream; regions whose
+  border ticks run in lockstep. So water crosses a line on the ticks it would in one
+  region, an update a tick late, and the chunks along a line tick. Tests written from
+  the record by someone who did not write the code (E6) found three defects, mended:
+  a slow region never given up, updates across a line sometimes on time, and chunks
+  left in use.
+
+**Next:** E7, measuring phase E on the real disk: a coupled pair's pace, the
+store's load along a busy border, and `COUPLING_PATIENCE`. Then redstone; S3 beside
+it. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
+
+**What to try with a real client, phase E** (`cargo run --release -p clustine --
+--seed 3 --pin 4 --reshape by-hand`, which puts a line between two regions at block
+x = 64 that does not move):
+
+1. Walk to x = 60 and pour water there, flowing east: it spreads across x = 64 as it
+   does anywhere else, one block every five ticks, without stopping at the line.
+2. Pour lava beside water on the other side of the line: they meet across it and make
+   cobblestone or obsidian as on one side.
+3. Put a torch on the east face of a block at x = 63 (the torch is at x = 64) and
+   break the block: the torch drops with it.
+4. Build a row of fences along x = 63 and x = 64, and a fence across the line: they
+   join as anywhere. Put sand on a block at the line and break the block: it falls.
+5. Cut down a tree that stands on the line: its leaves on both sides decay.
+6. With a second player on the far side of the line, do the same while they watch:
+   both see the same blocks, at the same time.
+
+What to say if it is not so: which step, what was seen, and the log of the world
+store and the workers.
 
 **What to try with a real client, phase B** (`cargo run --release -p clustine --
 --seed 3`):
@@ -114,7 +142,7 @@ What to say if it is not so: which step, what was seen, and the log.
 try to accomplish vanilla parity"):
 
 1. Effects carried between regions, so that a border is seamless (a record of its
-   own; the owner's answer to B's question 1).
+   own; the owner's answer to B's question 1): built, E7's measurements to come.
 2. Redstone, a phase of its own (B's question 4).
 3. Entities other than players: item drops, falling blocks, animals and monsters
    with their movement, AI and spawning, the structures' villagers and the like

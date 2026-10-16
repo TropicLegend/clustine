@@ -6,7 +6,8 @@
   questions (its section 6). Three reviews of this record found it not ready; their
   findings are worked in (see "Review"), with lockstep, which the owner asked for
   afterwards (section 8). A fourth, focused review accepted it after the changes it
-  names, which are made. **Accepted** on 2026-10-16; not built. Where the plan and this record differ, this record holds.
+  names, which are made. **Accepted** on 2026-10-16, and built the same day (E2 to E6; what was found while
+  building is below). Where the plan and this record differ, this record holds.
 - Date: 2026-10-16
 
 ## Context
