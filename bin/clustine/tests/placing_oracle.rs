@@ -28,9 +28,11 @@
 //! fluid changes. Both servers serve the same version, so their numeric block state ids
 //! are the same and are compared as numbers.
 //!
-//! Where Clustine differs on purpose (section 7 of the plan: chests stay single, rails
-//! do not curve; neighbours change in turn since phase B's step B3), only the block
-//! clicked or placed into is compared, and its other half where it has one.
+//! Where Clustine differed on purpose (section 7 of the plan: chests stayed single,
+//! rails did not curve, until phase B; neighbours change in turn since its step B3),
+//! the older cases compare only the block clicked or placed into, and its other half
+//! where it has one. The cases of chests that pair and rails that join (step B7)
+//! compare the neighbours that change with it too.
 //!
 //! Run on 2026-10-14, the official server left one or two clicks of the test undone
 //! in every run, a different one each time: an animal that had wandered onto the spot,
@@ -429,6 +431,38 @@ fn placing_cases() -> Vec<Case> {
             put(CHEST, O).look(270.0, 0.0),
             &[O],
         ),
+        // ChestBlock's pairs (phase B, B7). Looking north, a chest faces south, and the
+        // chest to its east is on its right.
+        case(
+            "a chest placed beside a chest facing the same way pairs with it",
+            put(CHEST, O),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(CHEST, (1, 0, 0))]),
+        case(
+            "a chest placed sneaking beside a chest stays single",
+            put(CHEST, O).sneaking(),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(CHEST, (1, 0, 0))]),
+        case(
+            "a chest beside a chest facing another way stays single",
+            put(CHEST, O),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(CHEST, (1, 0, 0)).look(270.0, 0.0)]),
+        case(
+            "a chest placed sneaking against the side of a chest pairs with it",
+            click(CHEST, (1, 0, 0), WEST).sneaking(),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(CHEST, (1, 0, 0)).look(0.0, 0.0)]),
+        case(
+            "a chest beside a trapped chest stays single",
+            put(CHEST, O),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(TRAPPED_CHEST, (1, 0, 0))]),
         // CampfireBlock.
         case(
             "a campfire placed looking south faces south",
@@ -953,6 +987,31 @@ fn attaching_cases() -> Vec<Case> {
             put(POWERED_RAIL, O).look(270.0, 0.0),
             &[O],
         ),
+        // Rails that join their neighbours (phase B, B7).
+        case(
+            "rails in an L curve at the corner",
+            put(RAIL, O),
+            &[O, (-1, 0, 0), (0, 0, -1)],
+        )
+        .setup([put(RAIL, (-1, 0, 0)), put(RAIL, (0, 0, -1))]),
+        case(
+            "a rail laid between two rails joins both",
+            put(RAIL, O),
+            &[O, (-1, 0, 0), (1, 0, 0)],
+        )
+        .setup([put(RAIL, (-1, 0, 0)), put(RAIL, (1, 0, 0))]),
+        case(
+            "a rail beside a rail up a step slopes up to it",
+            put(RAIL, O),
+            &[O, (1, 0, 0), (1, 1, 0)],
+        )
+        .setup([stone((1, 0, 0)), put(RAIL, (1, 1, 0))]),
+        case(
+            "a powered rail at the corner of an L stays straight",
+            put(POWERED_RAIL, O),
+            &[O, (-1, 0, 0), (0, 0, -1)],
+        )
+        .setup([put(RAIL, (-1, 0, 0)), put(RAIL, (0, 0, -1))]),
         // BedBlock.
         case(
             "a bed placed looking north has its head north",
@@ -1560,6 +1619,19 @@ fn breaking_cases() -> Vec<Case> {
             .setup([stone(O), put(SNOW, ABOVE)]),
         case("a rail goes with the stone it lies on", dig(O), &[O, ABOVE])
             .setup([stone(O), put(RAIL, ABOVE)]),
+        case(
+            "a sloped rail goes with the stone it rises onto",
+            dig((1, 0, 0)),
+            &[O, (1, 0, 0), (1, 1, 0)],
+        )
+        .setup([stone((1, 0, 0)), put(RAIL, (1, 1, 0)), put(RAIL, O)]),
+        // Looking north, a chest faces south, and the chest to its east is its pair.
+        case(
+            "a double chest broken at one half leaves the other single",
+            dig(O),
+            &[O, (1, 0, 0)],
+        )
+        .setup([put(CHEST, (1, 0, 0)), put(CHEST, O)]),
         case("a candle stays where its stone was", dig(O), &[O, ABOVE])
             .setup([stone(O), put(CANDLE, ABOVE)]),
         case(

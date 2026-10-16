@@ -1237,7 +1237,8 @@ fn blocks_that_face_the_player_face_the_opposite_of_the_horizontal_direction() {
 }
 
 #[test]
-fn a_chest_is_placed_single_even_beside_a_chest() {
+fn a_chest_is_placed_as_half_of_a_double_chest_beside_a_chest_facing_its_way() {
+    // Facing north, the chest to its east is on its left (phase B, step B7).
     let east = P.offset(1, 1, 0);
     let world = World::new()
         .with(P, "stone")
@@ -1245,10 +1246,7 @@ fn a_chest_is_placed_single_even_beside_a_chest() {
     let placed = changes(&click_on(P, Face::Top, Some(items::CHEST)), &world);
     assert_changes(
         &placed,
-        &[(
-            above(P),
-            "chest[facing=north,type=single,waterlogged=false]",
-        )],
+        &[(above(P), "chest[facing=north,type=left,waterlogged=false]")],
     );
 }
 

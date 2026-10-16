@@ -17,6 +17,7 @@ use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
 mod fluids;
+mod rails;
 mod random_ticks;
 mod reshape;
 mod ticks;

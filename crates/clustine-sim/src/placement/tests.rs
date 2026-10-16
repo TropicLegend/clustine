@@ -776,3 +776,154 @@ fn a_lily_pad_is_not_placed_by_a_click() {
         Clicked::Nothing
     );
 }
+
+/// A chest placed by a player standing north of it and looking south, on the stone
+/// floor at y 63, into (0, 64, 0), with the blocks `around` set.
+fn chest_placed(around: &[((i32, i32, i32), &str)], held: i32, sneaking: bool) -> BlockState {
+    let mut world = TestWorld::default().floor(63, blocks::STONE);
+    for ((x, y, z), text) in around {
+        world = world.with(*x, *y, *z, state(text));
+    }
+    let mut click = click_top(at(0, 63, 0), held);
+    click.sneaking = sneaking;
+    let changes = click_and_place(&click, &world).expect("the chest is placed");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].0, at(0, 64, 0));
+    changes[0].1
+}
+
+#[test]
+fn a_chest_placed_beside_a_chest_facing_the_same_way_pairs_with_it() {
+    // Facing north, the chest to the east is on its left: it becomes the left half.
+    let east = [((1, 64, 0), "minecraft:chest[facing=north]")];
+    assert_eq!(
+        chest_placed(&east, items::CHEST, false),
+        state("minecraft:chest[facing=north,type=left]")
+    );
+    let west = [((-1, 64, 0), "minecraft:chest[facing=north]")];
+    assert_eq!(
+        chest_placed(&west, items::CHEST, false),
+        state("minecraft:chest[facing=north,type=right]")
+    );
+    // With one on either side, the one to the east is taken.
+    let both = [east[0], west[0]];
+    assert_eq!(
+        chest_placed(&both, items::CHEST, false),
+        state("minecraft:chest[facing=north,type=left]")
+    );
+}
+
+#[test]
+fn a_chest_placed_sneaking_on_the_ground_stays_single() {
+    let east = [((1, 64, 0), "minecraft:chest[facing=north]")];
+    assert_eq!(
+        chest_placed(&east, items::CHEST, true),
+        state("minecraft:chest[facing=north,type=single]")
+    );
+}
+
+#[test]
+fn a_chest_does_not_pair_with_one_facing_another_way_or_already_double() {
+    let turned = [((1, 64, 0), "minecraft:chest[facing=east]")];
+    assert_eq!(
+        chest_placed(&turned, items::CHEST, false),
+        state("minecraft:chest[facing=north,type=single]")
+    );
+    let double = [((1, 64, 0), "minecraft:chest[facing=north,type=right]")];
+    assert_eq!(
+        chest_placed(&double, items::CHEST, false),
+        state("minecraft:chest[facing=north,type=single]")
+    );
+}
+
+#[test]
+fn a_chest_pairs_only_with_its_own_block_and_copper_chests_with_any_copper_chest() {
+    let trapped = [((1, 64, 0), "minecraft:trapped_chest[facing=north]")];
+    assert_eq!(
+        chest_placed(&trapped, items::CHEST, false),
+        state("minecraft:chest[facing=north,type=single]")
+    );
+    assert_eq!(
+        chest_placed(&trapped, items::TRAPPED_CHEST, false),
+        state("minecraft:trapped_chest[facing=north,type=left]")
+    );
+    let copper = [((1, 64, 0), "minecraft:copper_chest[facing=north]")];
+    assert_eq!(
+        chest_placed(&copper, items::CHEST, false),
+        state("minecraft:chest[facing=north,type=single]")
+    );
+    // The least weathered of the two, unwaxed where only one was waxed.
+    let waxed_exposed = [(
+        (1, 64, 0),
+        "minecraft:waxed_exposed_copper_chest[facing=north]",
+    )];
+    assert_eq!(
+        chest_placed(&waxed_exposed, items::WEATHERED_COPPER_CHEST, false),
+        state("minecraft:exposed_copper_chest[facing=north,type=left]")
+    );
+    assert_eq!(
+        chest_placed(&waxed_exposed, items::WAXED_OXIDIZED_COPPER_CHEST, false),
+        state("minecraft:waxed_exposed_copper_chest[facing=north,type=left]")
+    );
+    assert_eq!(
+        chest_placed(&copper, items::OXIDIZED_COPPER_CHEST, false),
+        state("minecraft:copper_chest[facing=north,type=left]")
+    );
+}
+
+#[test]
+fn a_chest_placed_sneaking_against_the_side_of_a_chest_pairs_with_that_one() {
+    // The chest clicked faces south; one facing north on the other side would be
+    // taken were the player not sneaking.
+    let world = TestWorld::default()
+        .floor(63, blocks::STONE)
+        .with(1, 64, 0, state("minecraft:chest[facing=south]"))
+        .with(-1, 64, 0, state("minecraft:chest[facing=north]"));
+    let mut click = click_top(at(1, 64, 0), items::CHEST);
+    click.face = Face::West;
+    click.cursor = [0.0, 0.5, 0.5];
+    click.sneaking = true;
+    assert_eq!(
+        click_and_place(&click, &world),
+        Some(vec![(
+            at(0, 64, 0),
+            state("minecraft:chest[facing=south,type=right]")
+        )])
+    );
+    // Against a chest facing along the click, it faces the player and stays single.
+    let along = TestWorld::default().floor(63, blocks::STONE).with(
+        1,
+        64,
+        0,
+        state("minecraft:chest[facing=east]"),
+    );
+    assert_eq!(
+        click_and_place(&click, &along),
+        Some(vec![(
+            at(0, 64, 0),
+            state("minecraft:chest[facing=north,type=single]")
+        )])
+    );
+}
+
+#[test]
+fn a_rail_placed_facing_east_runs_east_and_west() {
+    let world = TestWorld::default().floor(63, blocks::STONE);
+    let mut click = click_top(at(0, 63, 0), items::RAIL);
+    click.yaw = 270.0;
+    assert_eq!(
+        click_and_place(&click, &world),
+        Some(vec![(
+            at(0, 64, 0),
+            state("minecraft:rail[shape=east_west]")
+        )])
+    );
+    click.yaw = 0.0;
+    assert_eq!(
+        click_and_place(&click, &world),
+        Some(vec![(
+            at(0, 64, 0),
+            state("minecraft:rail[shape=north_south]")
+        )])
+    );
+}

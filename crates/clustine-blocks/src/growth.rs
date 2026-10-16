@@ -4,8 +4,11 @@
 //! (`GrowingPlantHeadBlock` and `GrowingPlantBodyBlock.updateShape`); a pointed
 //! dripstone or a sulfur spike takes its thickness from those beside it
 //! (`SpeleothemBlock.updateShape`); a chorus plant joins what is beside it
-//! (`ChorusPlantBlock.updateShape`); and a bed's half goes with the other
-//! (`AbstractBedBlock.updateShape`). Read from the 26.3 jar's classes.
+//! (`ChorusPlantBlock.updateShape`); a bed's half goes with the other
+//! (`AbstractBedBlock.updateShape`); and a chest joins the chest placed beside it as
+//! the other half of a double chest, and is single again when that half goes
+//! (`ChestBlock.updateShape`, `CopperChestBlock.updateShape`). Read from the 26.3 jar's
+//! classes.
 //!
 //! Only the simulation asks these: generation places these blocks with their shapes,
 //! and its judge compares it with the official server as it is.
@@ -33,6 +36,9 @@ pub fn update_shape<V: BlockView + ?Sized>(
     }
     if is_class(state, BlockClass::AbstractBedBlock) {
         return Some(bed_shape(state, direction, neighbour));
+    }
+    if is_class(state, BlockClass::ChestBlock) {
+        return Some(chest_shape(state, direction, neighbour));
     }
     if is_class(state, BlockClass::ChorusPlantBlock) {
         // Its `canSurvive` is not ported, so the tick it schedules where it cannot
@@ -169,6 +175,145 @@ pub fn bed_other_half(state: BlockState) -> Option<Face> {
         "foot" => Some(facing),
         _ => Some(opposite(facing)),
     }
+}
+
+/// `ChestBlock.updateShape`, after its water, and `CopperChestBlock.updateShape`.
+///
+/// A single chest beside a chest it can pair with that is already half of a double
+/// chest, faces the same way and has its other half here, becomes that other half.
+/// A double chest whose other half is no longer a chest it pairs with is single again.
+/// A copper chest that pairs takes its partner's block, so that both halves weather
+/// alike: the chest placed second chose the least weathered of the two as it was
+/// placed ([`least_weathered_chest`]).
+fn chest_shape(state: BlockState, direction: Face, neighbour: BlockState) -> BlockState {
+    let connects = chest_can_connect_to(state, neighbour);
+    let mut shape = state;
+    if connects && crate::data::is_horizontal(direction) {
+        let theirs = neighbour.property("type");
+        if state.property("type") == Some("single")
+            && theirs.is_some_and(|kind| kind != "single")
+            && crate::data::facing(state) == crate::data::facing(neighbour)
+            && chest_connected_direction(neighbour) == Some(opposite(direction))
+        {
+            let ours = if theirs == Some("left") {
+                "right"
+            } else {
+                "left"
+            };
+            shape = crate::data::set(state, "type", ours);
+        }
+    } else if chest_connected_direction(state) == Some(direction) {
+        shape = crate::data::set(state, "type", "single");
+    }
+    if is_class(state, BlockClass::CopperChestBlock)
+        && connects
+        && shape.property("type") != Some("single")
+        && chest_connected_direction(shape) == Some(direction)
+    {
+        return with_properties_of(neighbour, shape);
+    }
+    shape
+}
+
+/// `ChestBlock.chestCanConnectTo`: whether a chest of `chest`'s block pairs with
+/// `other`. A chest or a trapped chest pairs only with its own block; a copper chest
+/// with any copper chest, whatever its weathering or wax
+/// (`CopperChestBlock.chestCanConnectTo`).
+pub fn chest_can_connect_to(chest: BlockState, other: BlockState) -> bool {
+    if is_class(chest, BlockClass::CopperChestBlock) {
+        return in_tag(other, "minecraft:copper_chests") && other.property("type").is_some();
+    }
+    crate::data::is_block(other, chest)
+}
+
+/// `ChestBlock.getConnectedDirection`: the way to a chest's other half, clockwise from
+/// its facing for the left half and counter-clockwise otherwise. A single chest
+/// answers as a right half does, as in the game.
+pub fn chest_connected_direction(chest: BlockState) -> Option<Face> {
+    let facing = crate::data::facing(chest)?;
+    Some(if chest.property("type") == Some("left") {
+        crate::data::clockwise(facing)
+    } else {
+        crate::data::counter_clockwise(facing)
+    })
+}
+
+/// `CopperChestBlock.getLeastOxidizedChestOfConnectedBlocks`: a copper chest placed as
+/// half of a double chest becomes the least weathered of itself and its partner, as
+/// waxed only where both are; the other half takes its block as it pairs
+/// ([`update_shape`]). `partner` is the block towards its other half.
+pub fn least_weathered_chest(placed: BlockState, partner: BlockState) -> BlockState {
+    if placed.property("type") == Some("single")
+        || !is_class(placed, BlockClass::CopperChestBlock)
+        || !is_class(partner, BlockClass::CopperChestBlock)
+    {
+        return placed;
+    }
+    let (Some(ours), Some(theirs)) = (copper_chest_age(placed), copper_chest_age(partner)) else {
+        return placed;
+    };
+    let (mut ours_state, mut theirs_state) = (placed, partner);
+    if ours.waxed != theirs.waxed {
+        ours_state = unwaxed(ours_state);
+        theirs_state = unwaxed(theirs_state);
+    }
+    let block = if ours.weathering <= theirs.weathering {
+        ours_state
+    } else {
+        theirs_state
+    };
+    with_properties_of(block, placed)
+}
+
+/// How weathered a copper chest is, and whether it is waxed.
+#[derive(Debug, Clone, Copy)]
+struct CopperAge {
+    /// `WeatheringCopper.WeatherState`'s order: unaffected, exposed, weathered,
+    /// oxidized.
+    weathering: u8,
+    waxed: bool,
+}
+
+fn copper_chest_age(state: BlockState) -> Option<CopperAge> {
+    let name = state.block()?.name.strip_prefix("minecraft:")?;
+    let (waxed, name) = match name.strip_prefix("waxed_") {
+        Some(rest) => (true, rest),
+        None => (false, name),
+    };
+    let weathering = match name {
+        "copper_chest" => 0,
+        "exposed_copper_chest" => 1,
+        "weathered_copper_chest" => 2,
+        "oxidized_copper_chest" => 3,
+        _ => return None,
+    };
+    Some(CopperAge { weathering, waxed })
+}
+
+/// `CopperChestBlock.unwaxBlock`: a waxed copper chest as the same chest unwaxed
+/// (`HoneycombItem.WAX_OFF_BY_BLOCK`), anything else as it is.
+fn unwaxed(state: BlockState) -> BlockState {
+    let Some(name) = state.block().map(|block| block.name) else {
+        return state;
+    };
+    let Some(rest) = name.strip_prefix("minecraft:waxed_") else {
+        return state;
+    };
+    match clustine_data::block_id_by_name(&format!("minecraft:{rest}")) {
+        Some(id) => with_properties_of(clustine_data::BLOCKS[id].default_state, state),
+        None => state,
+    }
+}
+
+/// `Block.withPropertiesOf`: the block of `block` with each property of `from` that it
+/// has too.
+fn with_properties_of(block: BlockState, from: BlockState) -> BlockState {
+    let default = block
+        .block_id()
+        .map_or(block, |id| clustine_data::BLOCKS[id].default_state);
+    from.properties().fold(default, |state, (name, value)| {
+        crate::data::set(state, name, value)
+    })
 }
 
 /// Cave vines keep their berries as a head becomes body and back

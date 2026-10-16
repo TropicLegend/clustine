@@ -366,7 +366,7 @@ impl Region {
     }
 
     /// The block at `pos`, air where the region has not loaded it.
-    fn read(&self, pos: BlockPos) -> BlockState {
+    pub(in crate::region) fn read(&self, pos: BlockPos) -> BlockState {
         self.block(pos).unwrap_or(blocks::AIR)
     }
 }

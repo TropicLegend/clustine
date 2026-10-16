@@ -1485,3 +1485,168 @@ fn the_leaves_of_a_felled_tree_are_gone_within_the_games_time() {
     }
     assert_eq!(left(&region), 0, "after {ticks} ticks");
 }
+
+// ---------------------------------------------------------------------------------------
+// J. Double chests and rails that join (step B7)
+// ---------------------------------------------------------------------------------------
+
+fn chest(facing: &str, kind: &str) -> BlockState {
+    named("minecraft:chest", &[("facing", facing), ("type", kind)])
+}
+
+fn rail(shape: &str) -> BlockState {
+    named("minecraft:rail", &[("shape", shape)])
+}
+
+fn shape_at(region: &Region, position: BlockPos) -> Option<&'static str> {
+    block_at(region, position)?.property("shape")
+}
+
+/// A chest placed as the left half beside a single chest makes it the right half, and
+/// breaking either half leaves the other single (`ChestBlock.updateShape`).
+#[test]
+fn breaking_one_half_of_a_double_chest_leaves_the_other_single() {
+    // Facing north, a left half has its other half to the east.
+    let (left, right) = (at(5, -60, 5), at(6, -60, 5));
+    let (mut region, _) = ticking_with(&[(right, chest("north", "single"))], &[]);
+    let mut output = TickOutput::default();
+    region.set_block(left, chest("north", "left"), &mut output);
+    assert_eq!(block_at(&region, right), Some(chest("north", "right")));
+    region.break_by_player(left, None, &mut output);
+    assert_eq!(block_at(&region, left), Some(blocks::AIR));
+    assert_eq!(block_at(&region, right), Some(chest("north", "single")));
+}
+
+/// A chest beside one of another block, or facing another way, stays as it is.
+#[test]
+fn a_chest_beside_a_trapped_chest_or_one_turned_away_stays_single() {
+    let (placed, trapped, turned) = (at(5, -60, 5), at(6, -60, 5), at(4, -60, 5));
+    let (mut region, _) = ticking_with(
+        &[
+            (
+                trapped,
+                named("minecraft:trapped_chest", &[("facing", "north")]),
+            ),
+            (turned, chest("east", "single")),
+        ],
+        &[],
+    );
+    let mut output = TickOutput::default();
+    region.set_block(placed, chest("north", "left"), &mut output);
+    assert_eq!(
+        block_at(&region, trapped),
+        Some(named("minecraft:trapped_chest", &[("facing", "north")]))
+    );
+    assert_eq!(block_at(&region, turned), Some(chest("east", "single")));
+}
+
+/// A copper chest that pairs takes the block of the half placed beside it, so that
+/// both halves weather alike (`CopperChestBlock.updateShape`).
+#[test]
+fn a_copper_chest_that_pairs_takes_the_block_of_its_new_half() {
+    let (placed, other) = (at(5, -60, 5), at(6, -60, 5));
+    let waxed = named(
+        "minecraft:waxed_oxidized_copper_chest",
+        &[("facing", "north")],
+    );
+    let (mut region, _) = ticking_with(&[(other, waxed)], &[]);
+    let mut output = TickOutput::default();
+    let exposed = named(
+        "minecraft:exposed_copper_chest",
+        &[("facing", "north"), ("type", "left")],
+    );
+    region.set_block(placed, exposed, &mut output);
+    assert_eq!(
+        block_at(&region, other),
+        Some(named(
+            "minecraft:exposed_copper_chest",
+            &[("facing", "north"), ("type", "right")]
+        ))
+    );
+}
+
+/// A rail placed at the end of another turns to it, and turns it towards itself.
+#[test]
+fn a_rail_placed_beside_another_turns_it() {
+    let (first, second) = (at(5, -60, 5), at(6, -60, 5));
+    let (mut region, _) = ticking_with(&[(first, rail("north_south"))], &[]);
+    let mut output = TickOutput::default();
+    region.set_block(second, rail("north_south"), &mut output);
+    assert_eq!(shape_at(&region, second), Some("east_west"));
+    assert_eq!(shape_at(&region, first), Some("east_west"));
+}
+
+/// Three rails laid in an L: the one at the corner curves once the third comes.
+#[test]
+fn three_rails_in_an_l_make_a_curve() {
+    let (end, corner, foot) = (at(5, -60, 5), at(6, -60, 5), at(6, -60, 6));
+    let (mut region, _) = ticking_with(&[], &[]);
+    let mut output = TickOutput::default();
+    region.set_block(end, rail("east_west"), &mut output);
+    region.set_block(corner, rail("east_west"), &mut output);
+    assert_eq!(shape_at(&region, corner), Some("east_west"));
+    region.set_block(foot, rail("east_west"), &mut output);
+    assert_eq!(shape_at(&region, foot), Some("north_south"));
+    assert_eq!(shape_at(&region, corner), Some("south_west"));
+    assert_eq!(shape_at(&region, end), Some("east_west"));
+}
+
+/// A rail placed beside a block one higher that has a rail on it slopes up to that
+/// rail, which turns to it.
+#[test]
+fn a_rail_beside_a_block_one_higher_with_a_rail_on_it_slopes_up() {
+    let (low, step, high) = (at(5, -60, 5), at(6, -60, 5), at(6, -59, 5));
+    let (mut region, _) = ticking_with(&[(step, blocks::STONE), (high, rail("north_south"))], &[]);
+    let mut output = TickOutput::default();
+    region.set_block(low, rail("north_south"), &mut output);
+    assert_eq!(shape_at(&region, low), Some("ascending_east"));
+    assert_eq!(shape_at(&region, high), Some("east_west"));
+}
+
+/// A rail laid in the gap between the ends of two others joins both.
+#[test]
+fn a_rail_laid_between_two_others_joins_both() {
+    let (west, middle, east) = (at(4, -60, 5), at(5, -60, 5), at(6, -60, 5));
+    let (mut region, _) = ticking_with(
+        &[(west, rail("north_south")), (east, rail("north_south"))],
+        &[],
+    );
+    let mut output = TickOutput::default();
+    region.set_block(middle, rail("north_south"), &mut output);
+    assert_eq!(shape_at(&region, middle), Some("east_west"));
+    assert_eq!(shape_at(&region, west), Some("east_west"));
+    assert_eq!(shape_at(&region, east), Some("east_west"));
+}
+
+/// A sloped rail goes when the block its slope rises onto goes, though the block under
+/// it stays (`BaseRailBlock.shouldBeRemoved`).
+#[test]
+fn a_sloped_rail_goes_when_the_block_it_slopes_onto_goes() {
+    let (low, step, high) = (at(5, -60, 5), at(6, -60, 5), at(6, -59, 5));
+    let (mut region, _) = ticking_with(&[(step, blocks::STONE), (high, rail("east_west"))], &[]);
+    let mut output = TickOutput::default();
+    region.set_block(low, rail("east_west"), &mut output);
+    assert_eq!(shape_at(&region, low), Some("ascending_east"));
+    region.set_block(step, blocks::AIR, &mut output);
+    assert_eq!(block_at(&region, high), Some(blocks::AIR));
+    assert_eq!(block_at(&region, low), Some(blocks::AIR));
+    assert_eq!(block_at(&region, at(5, -61, 5)), Some(blocks::STONE));
+}
+
+/// A powered rail never curves: at the corner of an L it keeps to one line, and the
+/// rail it does not lead to stays as it was.
+#[test]
+fn a_powered_rail_at_the_corner_of_an_l_stays_straight() {
+    let (end, corner, foot) = (at(5, -60, 5), at(6, -60, 5), at(6, -60, 6));
+    let (mut region, _) = ticking_with(
+        &[(end, rail("north_south")), (foot, rail("east_west"))],
+        &[],
+    );
+    let mut output = TickOutput::default();
+    let powered = named("minecraft:powered_rail", &[("shape", "north_south")]);
+    region.set_block(corner, powered, &mut output);
+    // Rails both ways: it keeps the shape it was placed with.
+    assert_eq!(shape_at(&region, corner), Some("north_south"));
+    assert_eq!(shape_at(&region, foot), Some("north_south"));
+    assert_eq!(shape_at(&region, end), Some("north_south"));
+}

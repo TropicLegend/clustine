@@ -126,6 +126,9 @@ impl Region {
         // Fire's and coral's `onPlace` schedule their ticks, and fire that cannot stay
         // goes there and then.
         self.fire_on_place(pos, state, old, output);
+        // `BaseRailBlock.onPlace`: a rail joins the rails beside it and turns them
+        // towards it (`rails.rs`).
+        self.rail_on_place(pos, state, old, output);
         // `LiquidBlock.onPlace`: lava that meets water becomes stone of some kind there
         // and then; any other liquid looks again in its fluid's time.
         if is_class(state, BlockClass::LiquidBlock) {
@@ -400,8 +403,12 @@ impl Region {
             self.liquid_told(pos, state, output);
             return;
         }
-        let removable = is_class(state, BlockClass::BaseRailBlock)
-            || is_class(state, BlockClass::DiodeBlock)
+        // A rail goes also where the block its slope rises onto went (`rails.rs`).
+        if is_class(state, BlockClass::BaseRailBlock) {
+            self.rail_neighbour_changed(pos, state, output);
+            return;
+        }
+        let removable = is_class(state, BlockClass::DiodeBlock)
             || is_class(state, BlockClass::RedstoneWireBlock);
         if removable && !can_survive(state, pos, &mut RegionView(self)) {
             self.set_block(pos, fluid_block(state), output);
@@ -529,7 +536,7 @@ impl BlockView for RegionView<'_> {
 
 /// `FluidState.createLegacyBlock`: what a block leaves when it goes, water where it held
 /// water and air otherwise.
-fn fluid_block(state: BlockState) -> BlockState {
+pub(super) fn fluid_block(state: BlockState) -> BlockState {
     match state.props().fluid() {
         Some(fluid) if fluid.source && is_water(fluid.fluid) => blocks::WATER,
         _ => blocks::AIR,

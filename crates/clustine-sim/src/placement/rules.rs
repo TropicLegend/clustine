@@ -23,7 +23,8 @@ pub(crate) enum Rule {
     Axis,
     /// `facing` the opposite of the player's facing: furnaces and the like.
     FacingAway,
-    /// As [`Rule::FacingAway`], and a single chest.
+    /// As [`Rule::FacingAway`], or turned to pair with a chest beside it as half of a
+    /// double chest.
     Chest,
     /// As [`Rule::FacingAway`], and a repeater locked by a powered diode beside it.
     Diode,
@@ -190,11 +191,7 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
         Rule::Default => block,
         Rule::Axis => set(block, "axis", face.axis().name()),
         Rule::FacingAway => set(block, "facing", horizontal.opposite().name()),
-        Rule::Chest => set(
-            set(block, "facing", horizontal.opposite().name()),
-            "type",
-            "single",
-        ),
+        Rule::Chest => chest(block, context),
         Rule::Diode => {
             let state = set(block, "facing", horizontal.opposite().name());
             if state.property("locked").is_some() {
@@ -516,6 +513,66 @@ fn door_hinge(context: &Context) -> &'static str {
         && (step_z >= 0 || click_x <= 0.5)
         && (step_z <= 0 || click_x >= 0.5);
     if left_side { "left" } else { "right" }
+}
+
+/// `ChestBlock.getStateForPlacement`: a chest faces the player and pairs with a single
+/// chest beside it that faces the same way, the one on its left first (it becomes
+/// that chest's right half). Sneaking against the side of a chest pairs with that chest
+/// whichever way it faces, unless it faces towards or away from the click; sneaking
+/// otherwise keeps it single. A copper chest that pairs becomes the least weathered of
+/// the two (`CopperChestBlock.getStateForPlacement`). The other chest joins it as the
+/// placing updates its neighbours (`growth.rs`, `ChestBlock.updateShape`).
+fn chest(block: BlockState, context: &Context) -> BlockState {
+    let world = &context.world;
+    let target = context.target;
+    let face = context.face;
+    let mut facing = context.horizontal().opposite();
+    let mut kind = "single";
+    if face.is_horizontal() && context.sneaking {
+        let partner = chest_partner_facing(block, world, target, face.opposite());
+        if let Some(partner) = partner
+            && partner.axis() != face.axis()
+        {
+            facing = partner;
+            kind = if partner.counter_clockwise() == face.opposite() {
+                "right"
+            } else {
+                "left"
+            };
+        }
+    }
+    if kind == "single" && !context.sneaking {
+        // `ChestBlock.getChestType`.
+        if chest_partner_facing(block, world, target, facing.clockwise()) == Some(facing) {
+            kind = "left";
+        } else if chest_partner_facing(block, world, target, facing.counter_clockwise())
+            == Some(facing)
+        {
+            kind = "right";
+        }
+    }
+    let state = data::set(data::set(block, "facing", facing.name()), "type", kind);
+    let partner = clustine_blocks::growth::chest_connected_direction(state)
+        .map_or(blocks::AIR, |towards| world.get(towards.relative(target)));
+    clustine_blocks::growth::least_weathered_chest(state, partner)
+}
+
+/// `ChestBlock.candidatePartnerFacing`: the facing of the chest towards `towards`, if
+/// it is single and one `block` pairs with.
+fn chest_partner_facing(
+    block: BlockState,
+    world: &super::context::World,
+    target: BlockPos,
+    towards: Dir,
+) -> Option<Dir> {
+    let other = world.get(towards.relative(target));
+    if clustine_blocks::growth::chest_can_connect_to(block, other)
+        && other.property("type") == Some("single")
+    {
+        facing(other)
+    } else {
+        None
+    }
 }
 
 /// Whether a repeater with this state is locked by a powered repeater or comparator
