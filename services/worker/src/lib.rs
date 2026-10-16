@@ -2353,20 +2353,32 @@ impl RegionRunner {
             .map(|position| (*position, self.region.scheduled_ticks(*position)))
             .collect();
         self.ageing = output.ticks_pending.iter().copied().collect();
-        let unchanged =
-            changes.is_empty() && ticks.is_empty() && output.delta.changes_only_the_tick();
+        // A chunk post-processed in the tick is committed as such, so that a restore
+        // does not post-process it again (section 6 of the same record).
+        let marks_taken: Vec<ChunkPos> = output
+            .marks_taken
+            .iter()
+            .copied()
+            .filter(|position| self.region.chunk(*position).is_some())
+            .collect();
+        let unchanged = changes.is_empty()
+            && ticks.is_empty()
+            && marks_taken.is_empty()
+            && output.delta.changes_only_the_tick();
         let needs_commit = !(unchanged && output.stays.is_empty());
         if needs_commit {
             self.unsaved
                 .extend(changes.iter().map(|(position, _)| position.chunk()));
             self.unsaved
                 .extend(ticks.iter().map(|(position, _)| *position));
+            self.unsaved.extend(marks_taken.iter().copied());
             self.store.request(StoreRequest::Commit {
                 tick: output.tick,
                 changes,
                 state: stored(&output.delta),
                 stays: output.stays,
                 ticks,
+                marks_taken,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its

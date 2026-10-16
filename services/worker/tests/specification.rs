@@ -5263,6 +5263,7 @@ fn store_by_hand(
             state,
             stays: Vec::new(),
             ticks: Vec::new(),
+            marks_taken: Vec::new(),
         });
     }
     handle.flush();

@@ -65,6 +65,7 @@ fn commit(
         state: format!("delta {tick}").into_bytes(),
         stays: Vec::new(),
         ticks,
+        marks_taken: Vec::new(),
     });
 }
 

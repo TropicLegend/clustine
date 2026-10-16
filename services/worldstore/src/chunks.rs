@@ -1226,21 +1226,23 @@ impl ChunkService {
     }
 }
 
-/// What the replay of a commit puts into a stored chunk: a block it changed, or the
-/// chunk's scheduled ticks as the commit's tick left them, whole
-/// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4). A commit's ticks come
-/// after its blocks.
+/// What the replay of a commit puts into a stored chunk: a block it changed, the
+/// chunk's scheduled ticks as the commit's tick left them, whole, or that its marks
+/// were taken (`docs/adr/0024-block-behaviour-in-a-region.md`, sections 4 and 6). A
+/// commit's ticks come after its blocks, and the marks taken last.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Replayed {
     Block(BlockPos, BlockState),
     Ticks(ChunkPos, Vec<ScheduledTick>),
+    /// The chunk's marks for post-processing were taken: it was post-processed.
+    MarksTaken(ChunkPos),
 }
 
 impl Replayed {
     pub(crate) fn chunk(&self) -> ChunkPos {
         match self {
             Self::Block(position, _) => position.chunk(),
-            Self::Ticks(chunk, _) => *chunk,
+            Self::Ticks(chunk, _) | Self::MarksTaken(chunk) => *chunk,
         }
     }
 }
@@ -1293,6 +1295,10 @@ fn apply(
             // generation failed does not lose them.
             Replayed::Ticks(_, ticks) => {
                 chunk.set_ticks(ticks.clone());
+                chunk.clear_generated();
+            }
+            Replayed::MarksTaken(_) => {
+                chunk.set_marks(Vec::new());
                 chunk.clear_generated();
             }
         }

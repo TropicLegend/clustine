@@ -68,6 +68,7 @@ impl Actor {
             state: format!("delta {tick}").into_bytes(),
             stays,
             ticks: Vec::new(),
+            marks_taken: Vec::new(),
         });
     }
 

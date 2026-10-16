@@ -79,6 +79,7 @@ fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState
         state: delta,
         stays: Vec::new(),
         ticks: Vec::new(),
+        marks_taken: Vec::new(),
     });
 }
 

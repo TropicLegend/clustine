@@ -535,6 +535,7 @@ impl Region {
         self.update_ticking();
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
+        self.post_process(&mut output);
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
         // they stay, and the answer decides.

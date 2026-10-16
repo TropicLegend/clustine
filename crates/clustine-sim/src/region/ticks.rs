@@ -113,6 +113,9 @@ pub(crate) struct Ticks {
     counted: u64,
     /// The chunks whose ticks changed in this region's tick so far.
     changed: BTreeSet<ChunkPos>,
+    /// The chunks that started ticking in this region's tick, ascending, which are
+    /// post-processed after the tick's fluid ticks if they have marks.
+    started: BTreeSet<ChunkPos>,
 }
 
 impl Region {
@@ -120,6 +123,7 @@ impl Region {
     pub(crate) fn ticks_counted_from_zero(&mut self) {
         self.ticks.counted = 0;
         self.ticks.changed.clear();
+        self.ticks.started.clear();
     }
 
     /// The chunks whose ticks changed in this tick, ascending.
@@ -224,6 +228,7 @@ impl Region {
 
     fn start_ticking(&mut self, chunk: ChunkPos) {
         self.ticks.ticking.insert(chunk);
+        self.ticks.started.insert(chunk);
         let Some(loaded) = self.chunks.get_mut(&chunk) else {
             return;
         };
@@ -323,6 +328,72 @@ impl Region {
             if let Ticked::Fluid(fluid) = of {
                 self.fluid_tick(pos, fluid, output);
             }
+        }
+    }
+
+    /// Post-processes the chunks that started ticking in this tick and have marks, in
+    /// ascending position (`docs/adr/0024-block-behaviour-in-a-region.md`, sections 6
+    /// and 6a), as the game's `LevelChunk.postProcessGeneration` does as a chunk becomes
+    /// ticking: at each mark the fluid there ticks, and a block that is not a liquid
+    /// takes its shape from its neighbours, set without telling them. The marks are
+    /// taken then, which the tick's output names.
+    ///
+    /// The game goes through a chunk's marks section by section in the order they were
+    /// made; Clustine keeps them in order of position, which it goes through.
+    pub(crate) fn post_process(&mut self, output: &mut TickOutput) {
+        let started: Vec<ChunkPos> = self.ticks.started.iter().copied().collect();
+        for chunk in started {
+            let Some(marks) = self
+                .chunks
+                .get(&chunk)
+                .map(|loaded| loaded.marks().to_vec())
+            else {
+                continue;
+            };
+            if marks.is_empty() {
+                continue;
+            }
+            for mark in marks {
+                self.post_process_at(world_pos(chunk, mark), output);
+            }
+            if let Some(loaded) = self.chunks.get_mut(&chunk) {
+                loaded.set_marks(Vec::new());
+            }
+            output.marks_taken.push(chunk);
+        }
+    }
+
+    /// What post-processing does at one mark.
+    fn post_process_at(&mut self, pos: BlockPos, output: &mut TickOutput) {
+        let Some(state) = self.block(pos) else {
+            return;
+        };
+        let fluid = clustine_blocks::fluid::FluidState::of(state);
+        if !fluid.is_empty() {
+            self.fluid_tick(pos, fluid.fluid, output);
+        }
+        // A liquid block's own tick makes a bubble column, which is not ported.
+        if is_class(state, BlockClass::LiquidBlock) {
+            return;
+        }
+        // `Block.updateFromNeighbourShapes`, of the state as it was before the fluid's
+        // tick, and set with the game's flags 276: no neighbour is told.
+        let mut updated = state;
+        for face in [
+            Face::West,
+            Face::East,
+            Face::North,
+            Face::South,
+            Face::Down,
+            Face::Up,
+        ] {
+            let neighbour = self.block(relative(pos, face)).unwrap_or(blocks::AIR);
+            updated =
+                clustine_blocks::update_shape(&mut RegionView(self), updated, pos, face, neighbour);
+        }
+        if updated != state {
+            let flags = super::updates::UPDATE_KNOWN_SHAPE | super::updates::UPDATE_CLIENTS;
+            self.set_block_updated(pos, updated, flags, super::updates::UPDATE_LIMIT, output);
         }
     }
 

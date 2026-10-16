@@ -529,6 +529,7 @@ mod tests {
             state: vec![4, 5],
             stays: Vec::new(),
             ticks: Vec::new(),
+            marks_taken: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -668,6 +669,7 @@ mod tests {
                 },
             ],
             ticks: Vec::new(),
+            marks_taken: Vec::new(),
         });
         for reply in [
             StoreReply::Enter {

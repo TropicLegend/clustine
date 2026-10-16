@@ -1531,6 +1531,7 @@ fn commit_ticks(
         state: whole("delta", tick),
         stays: Vec::new(),
         ticks,
+        marks_taken: Vec::new(),
     });
 }
 

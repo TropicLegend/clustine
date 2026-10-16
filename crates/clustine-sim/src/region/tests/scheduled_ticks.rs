@@ -1213,3 +1213,63 @@ fn lava_meeting_water_becomes_cobblestone_or_obsidian() {
     assert_eq!(block_at(&region, at(6, -60, 8)), Some(blocks::COBBLESTONE));
     assert_eq!(block_at(&region, water), Some(blocks::WATER));
 }
+
+// ---------------------------------------------------------------------------------------
+// G. Post-processing (step B6)
+// ---------------------------------------------------------------------------------------
+
+/// A marked fence beside stone takes its shape when its chunk starts ticking, and
+/// marked water ticks: the chunk's marks are taken and the tick names it.
+#[test]
+fn a_chunk_with_marks_is_post_processed_as_it_starts_ticking() {
+    let origin = ChunkPos::new(0, 0);
+    let (fence, wall, water) = (at(4, -60, 4), at(5, -60, 4), at(10, -60, 10));
+    let mut chunk = floor_of(
+        origin,
+        &[
+            (fence, blocks::OAK_FENCE),
+            (wall, blocks::STONE),
+            (water, blocks::WATER),
+        ],
+        &[],
+    );
+    chunk.set_marks(vec![in_chunk(fence), in_chunk(water)]);
+    let (mut region, output) = loaded_with(&around_the_origin(), vec![(origin, chunk)]);
+    assert_eq!(output.marks_taken, [origin]);
+    assert_eq!(
+        block_at(&region, fence),
+        blocks::OAK_FENCE.with_property("east", "true")
+    );
+    assert!(region.saved_chunk(origin).unwrap().marks().is_empty());
+    // The water's tick ran there and then, and it has spread.
+    assert_eq!(level_at(&region, at(11, -60, 10)), Some(1));
+    // Once taken, the marks are not taken again.
+    assert_eq!(idle_tick(&mut region).marks_taken, []);
+}
+
+/// A chunk whose neighbours are not all loaded keeps its marks until they are.
+#[test]
+fn marks_wait_until_the_chunk_ticks() {
+    let edge = ChunkPos::new(1, 0);
+    let fence = at(20, -60, 4);
+    let mut chunk = floor_of(
+        edge,
+        &[(fence, blocks::OAK_FENCE), (at(21, -60, 4), blocks::STONE)],
+        &[],
+    );
+    chunk.set_marks(vec![in_chunk(fence)]);
+    let (mut region, output) = loaded_with(&around_the_origin(), vec![(edge, chunk)]);
+    assert_eq!(output.marks_taken, []);
+    assert_eq!(block_at(&region, fence), Some(blocks::OAK_FENCE));
+    assert_eq!(region.saved_chunk(edge).unwrap().marks().len(), 1);
+    let more: Vec<_> = chunks((2, 2), (-1, 1))
+        .into_iter()
+        .map(|p| (p, floor()))
+        .collect();
+    let output = load(&mut region, more);
+    assert_eq!(output.marks_taken, [edge]);
+    assert_eq!(
+        block_at(&region, fence),
+        blocks::OAK_FENCE.with_property("east", "true")
+    );
+}

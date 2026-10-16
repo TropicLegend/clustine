@@ -238,6 +238,7 @@ impl Actor {
             state: commit.encode().into_bytes(),
             stays: Vec::new(),
             ticks: Vec::new(),
+            marks_taken: Vec::new(),
         });
         self.ledger.push(commit);
     }
