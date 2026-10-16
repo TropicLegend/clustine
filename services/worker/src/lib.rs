@@ -2635,8 +2635,11 @@ impl RegionRunner {
                 })
         };
         let coming = |neighbour: &ChunkPos| match self.region.knowledge(*neighbour) {
+            // A warm copy is handed to the tick after the one that asks for it.
             Knowledge::Held => {
-                self.loads.contains_key(neighbour) || self.generating.contains(neighbour)
+                self.loads.contains_key(neighbour)
+                    || self.generating.contains(neighbour)
+                    || self.warm.contains_key(neighbour)
             }
             Knowledge::Asked => true,
             Knowledge::Unknown => as_viewer(neighbour),

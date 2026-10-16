@@ -358,3 +358,11 @@ holdings change.
 - A merge or a split began the region anew without tickets but kept the runner's
   rings, so rings were not handed in again around players who did not move; found by
   the recalibration of the wanderer tests, and fixed.
+- Post-processing sets a block with the game's flags but for telling clients, which
+  Clustine always does: a chunk shown unsettled (beside another region's land) is then
+  shown the change.
+- A seam entry of `neighborChanged` keeps the block that changed as it is when the
+  update would run, and flags 1 and depth 0, which that kind does not use.
+- A neighbour that the runner hands in from its warm copies after a merge or a split
+  counts as on its way for a marked chunk's first snapshot; the independent tests of
+  B6 noticed it did not.
