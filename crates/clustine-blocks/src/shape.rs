@@ -17,14 +17,14 @@
 use clustine_data::{BlockClass, BlockState, Face, SupportType, blocks};
 use clustine_world::BlockPos;
 
-use crate::BlockView;
 use crate::connect;
 use crate::data::{
     HORIZONTAL, JUNGLE_LOGS, MAINTAINS_FARMLAND, PREVENTS_NEARBY_LEAF_DECAY, SNOW, axis, clockwise,
-    face_name, facing, fluid_id, fluid_in_tag, in_tag, is_block, is_class, is_horizontal, relative,
-    same_block, set_flag, tick_id,
+    face_name, facing, fluid_id, fluid_in_tag, has_water, in_tag, is_block, is_class,
+    is_horizontal, number, relative, same_block, set, set_flag, tick_id,
 };
-use crate::survive::{can_survive, multiface_can_attach, sturdy};
+use crate::survive::{can_survive, fire_can_burn, multiface_can_attach, sturdy};
+use crate::{BlockView, Rules};
 
 /// Still and flowing water, still and flowing lava, by the game's fluid ids.
 const FLOWING_WATER: u8 = 1;
@@ -65,6 +65,13 @@ pub fn update_shape<V: BlockView + ?Sized>(
     // A block whose support went goes, before its water is scheduled.
     if let Some(gone) = crate::support::without_support(view, state, pos, direction) {
         return gone;
+    }
+    // Fire and coral as the simulation has them. Generation keeps the answers its judge
+    // compared with the official server's.
+    if view.rules() == Rules::Placing
+        && let Some(updated) = fire_or_coral(view, state, pos, direction)
+    {
+        return updated;
     }
     // A waterlogged block lets its water flow on (`SimpleWaterloggedBlock`'s blocks
     // all do this first).
@@ -465,4 +472,188 @@ fn vine<V: BlockView + ?Sized>(
         .iter()
         .any(|name| state.property(name) == Some("true"));
     if any { state } else { blocks::AIR }
+}
+
+/// The `updateShape` of fire and of coral: what `state` becomes, or `None` for a
+/// block that is neither. Coral schedules its own water, in the order its classes do.
+fn fire_or_coral<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+    direction: Face,
+) -> Option<BlockState> {
+    use BlockClass as C;
+    // `FireBlock.updateShape`: gone where it cannot stay, else the fire this place
+    // makes (soul fire on its ground), at the same age.
+    if is_class(state, C::FireBlock) {
+        if !can_survive(state, pos, view) {
+            return Some(blocks::AIR);
+        }
+        let age = number(state, "age").unwrap_or(0);
+        return Some(fire_state_with_age(view, pos, age));
+    }
+    // `SoulFireBlock.updateShape`.
+    if is_class(state, C::SoulFireBlock) {
+        return Some(if can_survive(state, pos, view) {
+            blocks::SOUL_FIRE
+        } else {
+            blocks::AIR
+        });
+    }
+    // `CoralWallFanBlock.updateShape`, then its parent's.
+    if is_class(state, C::CoralWallFanBlock) {
+        if facing(state) == Some(direction.opposite()) && !coral_survives(view, state, pos) {
+            return Some(blocks::AIR);
+        }
+        schedule_water_if_waterlogged(view, state, pos);
+        coral_try_schedule_die_tick(view, state, pos);
+        return Some(coral_wall_fan_base(view, state, pos, direction));
+    }
+    if is_class(state, C::BaseCoralWallFanBlock) {
+        return Some(coral_wall_fan_base(view, state, pos, direction));
+    }
+    // `CoralPlantBlock.updateShape` and `CoralFanBlock.updateShape`, then their
+    // parents'.
+    if is_class(state, C::CoralPlantBlock) || is_class(state, C::CoralFanBlock) {
+        if direction == Face::Down && !coral_survives(view, state, pos) {
+            return Some(blocks::AIR);
+        }
+        coral_try_schedule_die_tick(view, state, pos);
+        schedule_water_if_waterlogged(view, state, pos);
+        return Some(coral_plant_base(view, state, pos, direction));
+    }
+    if is_class(state, C::BaseCoralPlantTypeBlock) {
+        return Some(coral_plant_base(view, state, pos, direction));
+    }
+    // `CoralBlock.updateShape`: a coral block with no water beside it dies at a tick.
+    if is_class(state, C::CoralBlock) {
+        let wet = Face::ALL
+            .into_iter()
+            .any(|face| has_water(view.block(relative(pos, face))));
+        if !wet {
+            let delay = 60 + view.next_int(40) as i32;
+            view.schedule_block_tick(pos, tick_id(state), delay);
+        }
+        return Some(state);
+    }
+    None
+}
+
+/// `BaseCoralWallFanBlock.updateShape`: its water flows on, and it goes when the
+/// block it hangs on can no longer hold it.
+fn coral_wall_fan_base<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+    direction: Face,
+) -> BlockState {
+    schedule_water_if_waterlogged(view, state, pos);
+    if facing(state) == Some(direction.opposite()) && !coral_survives(view, state, pos) {
+        return blocks::AIR;
+    }
+    state
+}
+
+/// `BaseCoralPlantTypeBlock.updateShape`: its water flows on, and it goes when the
+/// block below can no longer hold it.
+fn coral_plant_base<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+    direction: Face,
+) -> BlockState {
+    schedule_water_if_waterlogged(view, state, pos);
+    if direction == Face::Down && !coral_survives(view, state, pos) {
+        return blocks::AIR;
+    }
+    state
+}
+
+fn schedule_water_if_waterlogged<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+) {
+    if state.property("waterlogged") == Some("true") {
+        view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
+    }
+}
+
+/// The `canSurvive` of coral: a sturdy top below a plant or a fan
+/// (`BaseCoralPlantTypeBlock`), a sturdy face behind a wall fan
+/// (`BaseCoralWallFanBlock`). The coral's own, since placing has no rule for coral
+/// plants.
+fn coral_survives<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos: BlockPos) -> bool {
+    if is_class(state, BlockClass::BaseCoralWallFanBlock) {
+        let Some(facing) = facing(state) else {
+            return false;
+        };
+        let behind = view.block(relative(pos, facing.opposite()));
+        return sturdy(behind, facing, SupportType::Full);
+    }
+    sturdy(
+        view.block(relative(pos, Face::Down)),
+        Face::Up,
+        SupportType::Full,
+    )
+}
+
+/// `BaseCoralPlantTypeBlock.scanForWater`: whether a coral plant or fan is in water or
+/// has water beside it.
+pub fn coral_scan_for_water<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+) -> bool {
+    state.property("waterlogged") == Some("true")
+        || Face::ALL
+            .into_iter()
+            .any(|face| has_water(view.block(relative(pos, face))))
+}
+
+/// `BaseCoralPlantTypeBlock.tryScheduleDieTick`: coral out of water dies at a tick in
+/// three to five seconds.
+pub fn coral_try_schedule_die_tick<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+) {
+    if !coral_scan_for_water(view, state, pos) {
+        let delay = 60 + view.next_int(40) as i32;
+        view.schedule_block_tick(pos, tick_id(state), delay);
+    }
+}
+
+/// `BaseFireBlock.getState`: soul fire on its ground, else fire as
+/// `FireBlock.getStateForPlacement` makes it: plain on a block that burns or holds it
+/// up, else joined to each side but the bottom where the block there burns.
+pub fn fire_state<V: BlockView + ?Sized>(view: &mut V, pos: BlockPos) -> BlockState {
+    let below = view.block(relative(pos, Face::Down));
+    if in_tag(below, "minecraft:soul_fire_base_blocks") {
+        return blocks::SOUL_FIRE;
+    }
+    if fire_can_burn(below) || sturdy(below, Face::Up, SupportType::Full) {
+        return blocks::FIRE;
+    }
+    let mut fire = blocks::FIRE;
+    for face in [Face::Up, Face::North, Face::South, Face::West, Face::East] {
+        let burns = fire_can_burn(view.block(relative(pos, face)));
+        fire = set_flag(fire, face_name(face), burns);
+    }
+    fire
+}
+
+/// `FireBlock.getStateWithAge`: the fire this place makes, at `age` where it is fire
+/// and not soul fire, which has no age.
+pub fn fire_state_with_age<V: BlockView + ?Sized>(
+    view: &mut V,
+    pos: BlockPos,
+    age: u8,
+) -> BlockState {
+    let fire = fire_state(view, pos);
+    if is_block(fire, blocks::FIRE) {
+        set(fire, "age", &age.to_string())
+    } else {
+        fire
+    }
 }

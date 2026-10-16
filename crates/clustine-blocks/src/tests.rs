@@ -452,3 +452,63 @@ fn shapes_from_each_side_in_turn_are_the_shapes_the_blocks_are_placed_with() {
         assert_eq!(updated, placed, "{block:?}");
     }
 }
+
+#[test]
+fn fire_beside_wood_joins_it_and_goes_without_it_as_the_simulation_places_it() {
+    let pos = BlockPos::new(0, 64, 0);
+    let mut world = World::placing().with(1, 64, 0, blocks::OAK_PLANKS);
+    let fire = blocks::FIRE.with_property("age", "3").unwrap();
+    let updated = update_shape(&mut world, fire, pos, Face::East, blocks::OAK_PLANKS);
+    let joined = fire.with_property("east", "true").unwrap();
+    assert_eq!(updated, joined, "joined to the planks, at the same age");
+    let mut world = World::placing();
+    assert_eq!(
+        update_shape(&mut world, joined, pos, Face::East, blocks::AIR),
+        blocks::AIR
+    );
+    // Fire on soul sand becomes soul fire, as the game's `getStateWithAge` makes it.
+    let mut world = World::placing().with(0, 63, 0, blocks::SOUL_SAND);
+    assert_eq!(
+        update_shape(&mut world, fire, pos, Face::Down, blocks::SOUL_SAND),
+        blocks::SOUL_FIRE
+    );
+    // Generation keeps fire as its judge compared it.
+    let mut world = World::generation();
+    assert_eq!(
+        update_shape(&mut world, joined, pos, Face::East, blocks::AIR),
+        joined
+    );
+}
+
+#[test]
+fn coral_out_of_water_asks_for_its_death_as_the_simulation_places_it() {
+    let pos = BlockPos::new(0, 64, 0);
+    let dry = BlockState::parse("minecraft:tube_coral_fan[waterlogged=false]").unwrap();
+    let id = dry.block_id().unwrap() as u16;
+    let mut world = World::placing().floor(63, blocks::STONE);
+    assert_eq!(
+        update_shape(&mut world, dry, pos, Face::Up, blocks::AIR),
+        dry
+    );
+    assert_eq!(world.block_ticks, [(pos, id, 60)]);
+    assert_eq!(world.fluid_ticks, []);
+    // In water it asks for its water to flow and nothing else.
+    let wet = dry.with_property("waterlogged", "true").unwrap();
+    let mut world = World::placing().floor(63, blocks::STONE);
+    assert_eq!(
+        update_shape(&mut world, wet, pos, Face::Up, blocks::AIR),
+        wet
+    );
+    assert_eq!(world.block_ticks, []);
+    assert!(!world.fluid_ticks.is_empty());
+    // Without its ground it goes.
+    let mut world = World::placing();
+    assert_eq!(
+        update_shape(&mut world, dry, pos, Face::Down, blocks::AIR),
+        blocks::AIR
+    );
+    // Generation asks for no death.
+    let mut world = World::generation().floor(63, blocks::STONE);
+    update_shape(&mut world, dry, pos, Face::Up, blocks::AIR);
+    assert_eq!(world.block_ticks, []);
+}

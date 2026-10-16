@@ -159,8 +159,8 @@ fn class_rule(class: BlockClass, rules: Rules) -> Option<Survival> {
         C::BaseCoralFanBlock => S::OnTop(SupportType::Full),
         // Coral plants and fans: a sturdy top below (`BaseCoralPlantTypeBlock`).
         C::BaseCoralPlantTypeBlock if generation => S::OnTop(SupportType::Full),
-        C::SoulFireBlock if generation => S::SoulFire,
-        C::FireBlock if generation => S::Fire,
+        C::SoulFireBlock => S::SoulFire,
+        C::FireBlock => S::Fire,
         _ => return None,
     })
 }
@@ -330,10 +330,13 @@ pub fn can_survive<V: BlockView + ?Sized>(state: BlockState, pos: BlockPos, view
             any
         }
         Survival::Scaffolding => scaffolding_distance(pos, view) < SCAFFOLDING_MAX_DISTANCE,
-        // Fire also stays beside a block that burns (`isValidFireLocation`). Which
-        // blocks burn is not in Clustine's data; the features that place fire put it
-        // on netherrack, whose top holds it.
-        Survival::Fire => sturdy(below, Face::Up, SupportType::Full),
+        // Fire also stays beside a block that burns (`isValidFireLocation`). The
+        // features that place fire put it on netherrack, whose top holds it, and
+        // generation keeps the rule it was judged by; the simulation takes the game's.
+        Survival::Fire => {
+            sturdy(below, Face::Up, SupportType::Full)
+                || view.rules() == Rules::Placing && valid_fire_location(pos, view)
+        }
         Survival::SoulFire => in_tag(below, "minecraft:soul_fire_base_blocks"),
     }
 }
@@ -466,3 +469,302 @@ fn snow_layer(below: BlockState) -> bool {
     faces::face_full(&collision, Face::Up)
         || same_block(below, blocks::SNOW) && number(below, "layers") == Some(8)
 }
+
+/// `FireBlock.canBurn`: whether fire takes hold of `state`, which is whether it has
+/// odds of catching (`getIgniteOdds` above nought).
+pub fn fire_can_burn(state: BlockState) -> bool {
+    ignite_odds(state) > 0
+}
+
+/// `FireBlock.isValidFireLocation`: whether a block beside `pos`, on any of its six
+/// sides, burns.
+pub fn valid_fire_location<V: BlockView + ?Sized>(pos: BlockPos, view: &mut V) -> bool {
+    Face::ALL
+        .into_iter()
+        .any(|face| fire_can_burn(view.block(relative(pos, face))))
+}
+
+/// The odds that fire beside `state` sets it alight (`FireBlock.getIgniteOdds` of a
+/// state): nought for a waterlogged block and for one that does not burn.
+pub fn ignite_odds(state: BlockState) -> i32 {
+    flammable(state).map_or(0, |(ignite, _)| ignite)
+}
+
+/// The odds that fire beside `state` burns it away (`FireBlock.getBurnOdds`): nought
+/// for a waterlogged block and for one that does not burn.
+pub fn burn_odds(state: BlockState) -> i32 {
+    flammable(state).map_or(0, |(_, burn)| burn)
+}
+
+fn flammable(state: BlockState) -> Option<(i32, i32)> {
+    if state.property("waterlogged") == Some("true") {
+        return None;
+    }
+    let name = state.block()?.name;
+    let found = FLAMMABLE
+        .binary_search_by(|(entry, _, _)| entry.cmp(&name))
+        .ok()?;
+    let (_, ignite, burn) = FLAMMABLE[found];
+    Some((i32::from(ignite), i32::from(burn)))
+}
+
+/// The blocks that burn, with the odds that fire sets each alight and that it burns
+/// each away, as `FireBlock.bootStrap` sets them (`setFlammable`), read from the 26.3
+/// jar; the colours of wool, woollen stairs and slabs, and carpets are written out.
+/// Sorted by name, which a test checks.
+pub const FLAMMABLE: &[(&str, u8, u8)] = &[
+    ("minecraft:acacia_fence", 5, 20),
+    ("minecraft:acacia_fence_gate", 5, 20),
+    ("minecraft:acacia_leaves", 30, 60),
+    ("minecraft:acacia_log", 5, 5),
+    ("minecraft:acacia_planks", 5, 20),
+    ("minecraft:acacia_shelf", 30, 20),
+    ("minecraft:acacia_slab", 5, 20),
+    ("minecraft:acacia_stairs", 5, 20),
+    ("minecraft:acacia_wood", 5, 5),
+    ("minecraft:allium", 60, 100),
+    ("minecraft:azalea", 30, 60),
+    ("minecraft:azalea_leaves", 30, 60),
+    ("minecraft:azure_bluet", 60, 100),
+    ("minecraft:bamboo", 60, 60),
+    ("minecraft:bamboo_block", 5, 5),
+    ("minecraft:bamboo_fence", 5, 20),
+    ("minecraft:bamboo_fence_gate", 5, 20),
+    ("minecraft:bamboo_mosaic", 5, 20),
+    ("minecraft:bamboo_mosaic_slab", 5, 20),
+    ("minecraft:bamboo_mosaic_stairs", 5, 20),
+    ("minecraft:bamboo_planks", 5, 20),
+    ("minecraft:bamboo_shelf", 30, 20),
+    ("minecraft:bamboo_slab", 5, 20),
+    ("minecraft:bamboo_stairs", 5, 20),
+    ("minecraft:bee_nest", 30, 20),
+    ("minecraft:beehive", 5, 20),
+    ("minecraft:big_dripleaf", 60, 100),
+    ("minecraft:big_dripleaf_stem", 60, 100),
+    ("minecraft:birch_fence", 5, 20),
+    ("minecraft:birch_fence_gate", 5, 20),
+    ("minecraft:birch_leaves", 30, 60),
+    ("minecraft:birch_log", 5, 5),
+    ("minecraft:birch_planks", 5, 20),
+    ("minecraft:birch_shelf", 30, 20),
+    ("minecraft:birch_slab", 5, 20),
+    ("minecraft:birch_stairs", 5, 20),
+    ("minecraft:birch_wood", 5, 5),
+    ("minecraft:black_carpet", 60, 20),
+    ("minecraft:black_wool", 30, 60),
+    ("minecraft:black_wool_slab", 30, 60),
+    ("minecraft:black_wool_stairs", 30, 60),
+    ("minecraft:blue_carpet", 60, 20),
+    ("minecraft:blue_orchid", 60, 100),
+    ("minecraft:blue_wool", 30, 60),
+    ("minecraft:blue_wool_slab", 30, 60),
+    ("minecraft:blue_wool_stairs", 30, 60),
+    ("minecraft:bookshelf", 30, 20),
+    ("minecraft:brown_carpet", 60, 20),
+    ("minecraft:brown_wool", 30, 60),
+    ("minecraft:brown_wool_slab", 30, 60),
+    ("minecraft:brown_wool_stairs", 30, 60),
+    ("minecraft:bush", 60, 100),
+    ("minecraft:cactus_flower", 60, 100),
+    ("minecraft:cave_vines", 15, 60),
+    ("minecraft:cave_vines_plant", 15, 60),
+    ("minecraft:cherry_fence", 5, 20),
+    ("minecraft:cherry_fence_gate", 5, 20),
+    ("minecraft:cherry_leaves", 30, 60),
+    ("minecraft:cherry_log", 5, 5),
+    ("minecraft:cherry_planks", 5, 20),
+    ("minecraft:cherry_shelf", 30, 20),
+    ("minecraft:cherry_slab", 5, 20),
+    ("minecraft:cherry_stairs", 5, 20),
+    ("minecraft:cherry_wood", 5, 5),
+    ("minecraft:closed_eyeblossom", 60, 100),
+    ("minecraft:coal_block", 5, 5),
+    ("minecraft:composter", 5, 20),
+    ("minecraft:cornflower", 60, 100),
+    ("minecraft:cyan_carpet", 60, 20),
+    ("minecraft:cyan_wool", 30, 60),
+    ("minecraft:cyan_wool_slab", 30, 60),
+    ("minecraft:cyan_wool_stairs", 30, 60),
+    ("minecraft:dandelion", 60, 100),
+    ("minecraft:dark_oak_fence", 5, 20),
+    ("minecraft:dark_oak_fence_gate", 5, 20),
+    ("minecraft:dark_oak_leaves", 30, 60),
+    ("minecraft:dark_oak_log", 5, 5),
+    ("minecraft:dark_oak_planks", 5, 20),
+    ("minecraft:dark_oak_shelf", 30, 20),
+    ("minecraft:dark_oak_slab", 5, 20),
+    ("minecraft:dark_oak_stairs", 5, 20),
+    ("minecraft:dark_oak_wood", 5, 5),
+    ("minecraft:dead_bush", 60, 100),
+    ("minecraft:dried_kelp_block", 30, 60),
+    ("minecraft:fern", 60, 100),
+    ("minecraft:firefly_bush", 60, 100),
+    ("minecraft:flowering_azalea", 30, 60),
+    ("minecraft:flowering_azalea_leaves", 30, 60),
+    ("minecraft:glow_lichen", 15, 100),
+    ("minecraft:golden_dandelion", 60, 100),
+    ("minecraft:gray_carpet", 60, 20),
+    ("minecraft:gray_wool", 30, 60),
+    ("minecraft:gray_wool_slab", 30, 60),
+    ("minecraft:gray_wool_stairs", 30, 60),
+    ("minecraft:green_carpet", 60, 20),
+    ("minecraft:green_wool", 30, 60),
+    ("minecraft:green_wool_slab", 30, 60),
+    ("minecraft:green_wool_stairs", 30, 60),
+    ("minecraft:hanging_roots", 30, 60),
+    ("minecraft:hay_block", 60, 20),
+    ("minecraft:jungle_fence", 5, 20),
+    ("minecraft:jungle_fence_gate", 5, 20),
+    ("minecraft:jungle_leaves", 30, 60),
+    ("minecraft:jungle_log", 5, 5),
+    ("minecraft:jungle_planks", 5, 20),
+    ("minecraft:jungle_shelf", 30, 20),
+    ("minecraft:jungle_slab", 5, 20),
+    ("minecraft:jungle_stairs", 5, 20),
+    ("minecraft:jungle_wood", 5, 5),
+    ("minecraft:large_fern", 60, 100),
+    ("minecraft:leaf_litter", 60, 100),
+    ("minecraft:lectern", 30, 20),
+    ("minecraft:light_blue_carpet", 60, 20),
+    ("minecraft:light_blue_wool", 30, 60),
+    ("minecraft:light_blue_wool_slab", 30, 60),
+    ("minecraft:light_blue_wool_stairs", 30, 60),
+    ("minecraft:light_gray_carpet", 60, 20),
+    ("minecraft:light_gray_wool", 30, 60),
+    ("minecraft:light_gray_wool_slab", 30, 60),
+    ("minecraft:light_gray_wool_stairs", 30, 60),
+    ("minecraft:lilac", 60, 100),
+    ("minecraft:lily_of_the_valley", 60, 100),
+    ("minecraft:lime_carpet", 60, 20),
+    ("minecraft:lime_wool", 30, 60),
+    ("minecraft:lime_wool_slab", 30, 60),
+    ("minecraft:lime_wool_stairs", 30, 60),
+    ("minecraft:magenta_carpet", 60, 20),
+    ("minecraft:magenta_wool", 30, 60),
+    ("minecraft:magenta_wool_slab", 30, 60),
+    ("minecraft:magenta_wool_stairs", 30, 60),
+    ("minecraft:mangrove_fence", 5, 20),
+    ("minecraft:mangrove_fence_gate", 5, 20),
+    ("minecraft:mangrove_leaves", 30, 60),
+    ("minecraft:mangrove_log", 5, 5),
+    ("minecraft:mangrove_planks", 5, 20),
+    ("minecraft:mangrove_roots", 5, 20),
+    ("minecraft:mangrove_shelf", 30, 20),
+    ("minecraft:mangrove_slab", 5, 20),
+    ("minecraft:mangrove_stairs", 5, 20),
+    ("minecraft:mangrove_wood", 5, 5),
+    ("minecraft:oak_fence", 5, 20),
+    ("minecraft:oak_fence_gate", 5, 20),
+    ("minecraft:oak_leaves", 30, 60),
+    ("minecraft:oak_log", 5, 5),
+    ("minecraft:oak_planks", 5, 20),
+    ("minecraft:oak_shelf", 30, 20),
+    ("minecraft:oak_slab", 5, 20),
+    ("minecraft:oak_stairs", 5, 20),
+    ("minecraft:oak_wood", 5, 5),
+    ("minecraft:open_eyeblossom", 60, 100),
+    ("minecraft:orange_carpet", 60, 20),
+    ("minecraft:orange_poplar_leaves", 30, 60),
+    ("minecraft:orange_tulip", 60, 100),
+    ("minecraft:orange_wool", 30, 60),
+    ("minecraft:orange_wool_slab", 30, 60),
+    ("minecraft:orange_wool_stairs", 30, 60),
+    ("minecraft:oxeye_daisy", 60, 100),
+    ("minecraft:pale_hanging_moss", 5, 100),
+    ("minecraft:pale_moss_block", 5, 100),
+    ("minecraft:pale_moss_carpet", 5, 100),
+    ("minecraft:pale_oak_fence", 5, 20),
+    ("minecraft:pale_oak_fence_gate", 5, 20),
+    ("minecraft:pale_oak_leaves", 30, 60),
+    ("minecraft:pale_oak_log", 5, 5),
+    ("minecraft:pale_oak_planks", 5, 20),
+    ("minecraft:pale_oak_shelf", 30, 20),
+    ("minecraft:pale_oak_slab", 5, 20),
+    ("minecraft:pale_oak_stairs", 5, 20),
+    ("minecraft:pale_oak_wood", 5, 5),
+    ("minecraft:peony", 60, 100),
+    ("minecraft:pink_carpet", 60, 20),
+    ("minecraft:pink_petals", 60, 100),
+    ("minecraft:pink_tulip", 60, 100),
+    ("minecraft:pink_wool", 30, 60),
+    ("minecraft:pink_wool_slab", 30, 60),
+    ("minecraft:pink_wool_stairs", 30, 60),
+    ("minecraft:pitcher_plant", 60, 100),
+    ("minecraft:poplar_fence", 5, 20),
+    ("minecraft:poplar_fence_gate", 5, 20),
+    ("minecraft:poplar_log", 5, 5),
+    ("minecraft:poplar_planks", 5, 20),
+    ("minecraft:poplar_shelf", 30, 20),
+    ("minecraft:poplar_slab", 5, 20),
+    ("minecraft:poplar_stairs", 5, 20),
+    ("minecraft:poplar_wood", 5, 5),
+    ("minecraft:poppy", 60, 100),
+    ("minecraft:purple_carpet", 60, 20),
+    ("minecraft:purple_wool", 30, 60),
+    ("minecraft:purple_wool_slab", 30, 60),
+    ("minecraft:purple_wool_stairs", 30, 60),
+    ("minecraft:red_carpet", 60, 20),
+    ("minecraft:red_poplar_leaves", 30, 60),
+    ("minecraft:red_shrub", 60, 100),
+    ("minecraft:red_tulip", 60, 100),
+    ("minecraft:red_wool", 30, 60),
+    ("minecraft:red_wool_slab", 30, 60),
+    ("minecraft:red_wool_stairs", 30, 60),
+    ("minecraft:rose_bush", 60, 100),
+    ("minecraft:scaffolding", 60, 60),
+    ("minecraft:short_dry_grass", 60, 100),
+    ("minecraft:short_grass", 60, 100),
+    ("minecraft:small_dripleaf", 60, 100),
+    ("minecraft:spore_blossom", 60, 100),
+    ("minecraft:spruce_fence", 5, 20),
+    ("minecraft:spruce_fence_gate", 5, 20),
+    ("minecraft:spruce_leaves", 30, 60),
+    ("minecraft:spruce_log", 5, 5),
+    ("minecraft:spruce_planks", 5, 20),
+    ("minecraft:spruce_shelf", 30, 20),
+    ("minecraft:spruce_slab", 5, 20),
+    ("minecraft:spruce_stairs", 5, 20),
+    ("minecraft:spruce_wood", 5, 5),
+    ("minecraft:straw_bed", 30, 60),
+    ("minecraft:stripped_acacia_log", 5, 5),
+    ("minecraft:stripped_acacia_wood", 5, 5),
+    ("minecraft:stripped_bamboo_block", 5, 5),
+    ("minecraft:stripped_birch_log", 5, 5),
+    ("minecraft:stripped_birch_wood", 5, 5),
+    ("minecraft:stripped_cherry_log", 5, 5),
+    ("minecraft:stripped_cherry_wood", 5, 5),
+    ("minecraft:stripped_dark_oak_log", 5, 5),
+    ("minecraft:stripped_dark_oak_wood", 5, 5),
+    ("minecraft:stripped_jungle_log", 5, 5),
+    ("minecraft:stripped_jungle_wood", 5, 5),
+    ("minecraft:stripped_mangrove_log", 5, 5),
+    ("minecraft:stripped_mangrove_wood", 5, 5),
+    ("minecraft:stripped_oak_log", 5, 5),
+    ("minecraft:stripped_oak_wood", 5, 5),
+    ("minecraft:stripped_pale_oak_log", 5, 5),
+    ("minecraft:stripped_pale_oak_wood", 5, 5),
+    ("minecraft:stripped_poplar_log", 5, 5),
+    ("minecraft:stripped_poplar_wood", 5, 5),
+    ("minecraft:stripped_spruce_log", 5, 5),
+    ("minecraft:stripped_spruce_wood", 5, 5),
+    ("minecraft:sunflower", 60, 100),
+    ("minecraft:sweet_berry_bush", 60, 100),
+    ("minecraft:tall_dry_grass", 60, 100),
+    ("minecraft:tall_grass", 60, 100),
+    ("minecraft:target", 15, 20),
+    ("minecraft:tnt", 15, 100),
+    ("minecraft:torchflower", 60, 100),
+    ("minecraft:vine", 15, 100),
+    ("minecraft:white_carpet", 60, 20),
+    ("minecraft:white_tulip", 60, 100),
+    ("minecraft:white_wool", 30, 60),
+    ("minecraft:white_wool_slab", 30, 60),
+    ("minecraft:white_wool_stairs", 30, 60),
+    ("minecraft:wildflowers", 60, 100),
+    ("minecraft:wither_rose", 60, 100),
+    ("minecraft:yellow_carpet", 60, 20),
+    ("minecraft:yellow_poplar_leaves", 30, 60),
+    ("minecraft:yellow_wool", 30, 60),
+    ("minecraft:yellow_wool_slab", 30, 60),
+    ("minecraft:yellow_wool_stairs", 30, 60),
+];
