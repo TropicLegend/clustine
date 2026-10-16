@@ -2034,6 +2034,11 @@ impl RegionRunner {
         // ticket is given back for one: the region has none.
         self.links.clear();
         self.refuse_links();
+        // Nor has it a ring ticket: the rings are worked out afresh as the links come
+        // back and subscribe, and each is handed in again. Kept, they would be taken
+        // for handed in, and a region would hold no ring around players who stand still
+        // (ADR-0024, section 2).
+        self.rings.clear();
         // Edges count as away from this tick, as after a restore, and nothing is
         // received of any beyond what the state has applied.
         let state = self.region.state();
