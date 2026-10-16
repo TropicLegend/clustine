@@ -1366,6 +1366,7 @@ fn hold(assignment: Assignment) -> Held {
             starting_hotbar: starting_hotbar(),
             return_after: DEFAULT_RETURN_AFTER,
             lowest_y: lowest_y(),
+            rings: true,
         },
     }
 }

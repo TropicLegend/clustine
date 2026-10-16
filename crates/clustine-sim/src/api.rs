@@ -596,6 +596,13 @@ pub enum Ticket {
     /// anyone. A chunk the region holds it keeps from being given back, as any ticket
     /// does.
     Guest,
+    /// For a chunk beside a viewer's chunk that the region holds, which the chunk needs
+    /// loaded to tick (`docs/adr/0024-block-behaviour-in-a-region.md`, section 2). It
+    /// wants and claims the chunk as a viewer's ticket does.
+    ViewerRing,
+    /// The same beside a guest's chunk only: it wants and claims the chunk as a guest's
+    /// ticket does.
+    GuestRing,
 }
 
 impl TickInputs {

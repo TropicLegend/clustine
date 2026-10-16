@@ -108,6 +108,9 @@ fn settings() -> RegionSettings {
         starting_hotbar: hotbar(),
         return_after: 0,
         lowest_y: -64,
+        // What these tests count is a region's claims and loads for viewers' and
+        // guests' tickets alone (ADR-0012); rings would add to them.
+        rings: false,
     }
 }
 

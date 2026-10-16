@@ -861,6 +861,13 @@ pub struct RegionRunner {
     /// changed what the store has of it. One is also forgotten when the region gives
     /// the chunk back, and after [`WARM_FOR`] ticks.
     warm: BTreeMap<ChunkPos, Warm>,
+    /// The ring tickets handed to the region: around each chunk it holds that a link
+    /// subscribes to, the neighbours no link subscribes to, which the chunk needs loaded
+    /// to tick (`docs/adr/0024-block-behaviour-in-a-region.md`, section 2).
+    rings: BTreeMap<ChunkPos, Ticket>,
+    /// Whether the runner hands the region rings at all: off only in the tests of
+    /// ADR-0012's tickets, which count exactly what a region claims and loads.
+    with_rings: bool,
     /// Whether the store handle is lost, after which the runner does nothing any more.
     lost: bool,
     /// How far the runner is with releasing the region, or with a merge or a split.
@@ -966,6 +973,11 @@ pub struct RegionSettings {
     pub return_after: u64,
     /// [`RegionConfig::lowest_y`].
     pub lowest_y: i32,
+    /// Whether the runner hands its region ring tickets around what it sees, so that
+    /// the rim of a view ticks (`docs/adr/0024-block-behaviour-in-a-region.md`,
+    /// section 2): always, but in the tests of what a region claims and loads for
+    /// viewers' and guests' tickets alone ([`RegionRunner::without_rings`]).
+    pub rings: bool,
 }
 
 impl RegionSettings {
@@ -996,12 +1008,13 @@ impl RegionRunner {
         restored: Restored,
     ) -> Result<Self, RestoreError> {
         let holdings = holdings(&restored);
+        let rings = settings.rings;
         let config = settings.with_spawn(restored.spawn);
         let state = restored_state(restored)?;
-        Ok(Self::with_store(
-            Region::restore(config, state, holdings),
-            Box::new(store),
-        ))
+        let mut runner =
+            Self::with_store(Region::restore(config, state, holdings), Box::new(store));
+        runner.with_rings = rings;
+        Ok(runner)
     }
 
     /// A runner that carries on with `region`, of which `store` has everything up to its
@@ -1033,6 +1046,8 @@ impl RegionRunner {
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             gone_after: DEFAULT_GONE_AFTER,
             warm: BTreeMap::new(),
+            rings: BTreeMap::new(),
+            with_rings: true,
             lost: false,
             phase: Phase::Running,
             reshaping: None,
@@ -1103,6 +1118,14 @@ impl RegionRunner {
     /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 7.
     pub fn with_id(mut self, region: RegionId) -> Self {
         self.id = Some(region);
+        self
+    }
+
+    /// A runner that hands its region no ring tickets: for the tests of what a region
+    /// claims and loads for viewers' and guests' tickets alone (ADR-0012), which rings
+    /// would add to.
+    pub fn without_rings(mut self) -> Self {
+        self.with_rings = false;
         self
     }
 
@@ -2239,6 +2262,7 @@ impl RegionRunner {
             })
             .collect();
 
+        self.update_rings();
         // What is collected from here on is for the tick after this one.
         let inputs = mem::take(&mut self.inputs);
         self.discards.clear();
@@ -2481,6 +2505,9 @@ impl RegionRunner {
                     }
                     // A guest is served only what the region holds. Its subscription
                     // ends here, and its ticket is taken back with the coming tick.
+                    (_, Ticket::ViewerRing | Ticket::GuestRing) => {
+                        unreachable!("a link subscribes as a viewer or a guest")
+                    }
                     (Knowledge::Foreign(_) | Knowledge::Unknown, Ticket::Guest) => {
                         link.subscriptions.remove(&position);
                         self.inputs.tickets_removed.push((position, Ticket::Guest));
@@ -3216,6 +3243,9 @@ impl RegionRunner {
             let for_part = match kind {
                 Ticket::Viewer => self.of_a_part(link, position),
                 Ticket::Guest => None,
+                Ticket::ViewerRing | Ticket::GuestRing => {
+                    unreachable!("a link subscribes as a viewer or a guest")
+                }
             };
             let subscription = Subscription {
                 kind,
@@ -3425,7 +3455,7 @@ impl RegionRunner {
     /// subscribed.
     fn release(&mut self, position: ChunkPos, kind: Ticket) {
         let needs = |link: &EdgeLink| link.subscriptions.contains_key(&position);
-        if !self.links.values().any(needs) {
+        if !self.links.values().any(needs) && !self.rings.contains_key(&position) {
             // The region drops the chunk at the start of the coming tick, before
             // anything else can change it, so this is its final state. It is also what
             // the store has of the chunk when the region gives it back, which it can
@@ -3433,6 +3463,59 @@ impl RegionRunner {
             self.save(position);
         }
         self.inputs.tickets_removed.push((position, kind));
+    }
+
+    /// Works the rings out again from the links' subscriptions and what the region
+    /// holds, and hands the difference to the region as tickets: a new kind is added
+    /// before the old is let go, and a ring that goes is let go through
+    /// [`Self::release`], which saves the chunk where no ticket is left on it.
+    fn update_rings(&mut self) {
+        if !self.with_rings {
+            return;
+        }
+        let mut subscribed: BTreeMap<ChunkPos, Ticket> = BTreeMap::new();
+        for link in self.links.values() {
+            for (position, subscription) in &link.subscriptions {
+                let kind = subscribed.entry(*position).or_insert(subscription.kind);
+                if subscription.kind == Ticket::Viewer {
+                    *kind = Ticket::Viewer;
+                }
+            }
+        }
+        let mut rings: BTreeMap<ChunkPos, Ticket> = BTreeMap::new();
+        for (position, kind) in &subscribed {
+            if self.region.knowledge(*position) != Knowledge::Held {
+                continue;
+            }
+            let ring = if *kind == Ticket::Viewer {
+                Ticket::ViewerRing
+            } else {
+                Ticket::GuestRing
+            };
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let beside = ChunkPos::new(position.x + dx, position.z + dz);
+                    if subscribed.contains_key(&beside) {
+                        continue;
+                    }
+                    let entry = rings.entry(beside).or_insert(ring);
+                    if ring == Ticket::ViewerRing {
+                        *entry = Ticket::ViewerRing;
+                    }
+                }
+            }
+        }
+        let before = mem::replace(&mut self.rings, rings);
+        for (position, kind) in &self.rings {
+            if before.get(position) != Some(kind) {
+                self.inputs.tickets_added.push((*position, *kind));
+            }
+        }
+        for (position, kind) in before {
+            if self.rings.get(&position) != Some(&kind) {
+                self.release(position, kind);
+            }
+        }
     }
 
     /// Forgets a link that is of no use any more and has been taken out of
@@ -4210,6 +4293,9 @@ mod tests {
             starting_hotbar: [None; HOTBAR_SLOTS],
             return_after,
             lowest_y: -64,
+            // What these tests count is a region's claims and loads for viewers' and
+            // guests' tickets alone (ADR-0012); rings would add to them.
+            rings: false,
         }
     }
 
@@ -4278,6 +4364,7 @@ mod tests {
         settings: RegionSettings,
     ) -> (RegionRunner, Arc<GateControl>) {
         let (inner, restored) = store.open_region(hello).unwrap();
+        let rings = settings.rings;
         let config = settings.with_spawn(restored.spawn);
         let control = Arc::new(GateControl::default());
 
@@ -4288,7 +4375,9 @@ mod tests {
         let holdings = holdings(&restored);
         let region = Region::restore(config, restored_state(restored).unwrap(), holdings);
 
-        (RegionRunner::with_store(region, Box::new(gate)), control)
+        let mut runner = RegionRunner::with_store(region, Box::new(gate));
+        runner.with_rings = rings;
+        (runner, control)
     }
 
     /// A runner for the one region of a flat world that only lasts as long as the
@@ -5913,7 +6002,7 @@ mod tests {
         };
         let store = clustine_worldstore::spawn(Arc::new(FlatGenerator::classic()));
         let region = Region::new(config(0), entity_ids, Holdings::default());
-        let mut runner = RegionRunner::with_store(region, Box::new(store));
+        let mut runner = RegionRunner::with_store(region, Box::new(store)).without_rings();
         runner.links().attach(worker_end);
 
         // The refusal is of the tick that took the joins. The player who was given the
@@ -10311,7 +10400,7 @@ mod tests {
             // when the part knows it and whom the part has, and shown the chunk without
             // the store being asked for it. Three ticks again.
             let (store, gate) = gate_before(handle);
-            let mut part = RegionRunner::of_part_with(part, store);
+            let mut part = RegionRunner::of_part_with(part, store).without_rings();
             let (end, worker_end) = link::in_process(256);
             let mut there = TestEdge::silent(end, edge.edge, edge.start);
             part.links().attach(worker_end);
@@ -11333,7 +11422,7 @@ mod tests {
         };
         assert_eq!(positions(&part), [further, FAR_WEST]);
         let (handle, _) = world.store.open_region(world.hello(region, 5)).unwrap();
-        let mut first = RegionRunner::of_part(part, handle);
+        let mut first = RegionRunner::of_part(part, handle).without_rings();
 
         let (done, outcome) = self::outcome();
         let again = Reshape::SplitOff {
@@ -11354,7 +11443,7 @@ mod tests {
 
         let (handle, _) = world.store.open_region(world.hello(region, 6)).unwrap();
         let (store, gate) = gate_before(handle);
-        let mut second = RegionRunner::of_part_with(part, store);
+        let mut second = RegionRunner::of_part_with(part, store).without_rings();
         let (end, worker_end) = link::in_process(256);
         let mut there = TestEdge::silent(end, edge.edge, edge.start);
         second.links().attach(worker_end);
@@ -11684,7 +11773,7 @@ mod tests {
         // store for the other.
         let (handle, _) = world.store.open_region(world.hello(region, 5)).unwrap();
         let (store, gate) = gate_before(handle);
-        let mut second = RegionRunner::of_part_with(part, store);
+        let mut second = RegionRunner::of_part_with(part, store).without_rings();
         let (end, worker_end) = link::in_process(256);
         let mut there = TestEdge::silent(end, edge.edge, edge.start);
         second.links().attach(worker_end);
@@ -13029,7 +13118,7 @@ mod tests {
             let hello = scene.world.hello(made.region, made.as_epoch);
             let (handle, _) = scene.world.store.open_region(hello).unwrap();
             let (store, part_gate) = gate_before(handle);
-            let mut part = RegionRunner::of_part_with(made.part, store);
+            let mut part = RegionRunner::of_part_with(made.part, store).without_rings();
             let (end, worker_end) = link::in_process(4096);
             let mut there = TestEdge::silent(end, scene.edge.edge, scene.edge.start);
             part.links().attach(worker_end);
@@ -14174,7 +14263,7 @@ mod tests {
             let number = scene.number_of_the_split(part);
             let hello = scene.world.hello(part, made.as_epoch);
             let (handle, _) = scene.world.store.open_region(hello).unwrap();
-            let mut there = RegionRunner::of_part(made.part, handle);
+            let mut there = RegionRunner::of_part(made.part, handle).without_rings();
 
             // The edge has p under the region they left, links to it again and names
             // all that p sees. None of it is claimed.

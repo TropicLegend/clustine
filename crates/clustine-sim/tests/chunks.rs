@@ -504,16 +504,20 @@ impl Model {
             }
         }
         for (chunk, kind) in &inputs.tickets_added {
+            // A ring counts as its base kind does for all the model follows
+            // (ADR-0024, section 2).
             let counts = match kind {
-                Ticket::Viewer => &mut self.viewers,
-                Ticket::Guest => &mut self.guests,
+                Ticket::Viewer | Ticket::ViewerRing => &mut self.viewers,
+                Ticket::Guest | Ticket::GuestRing => &mut self.guests,
             };
             *counts.entry(*chunk).or_default() += 1;
         }
         for (chunk, kind) in &inputs.tickets_removed {
+            // A ring counts as its base kind does for all the model follows
+            // (ADR-0024, section 2).
             let counts = match kind {
-                Ticket::Viewer => &mut self.viewers,
-                Ticket::Guest => &mut self.guests,
+                Ticket::Viewer | Ticket::ViewerRing => &mut self.viewers,
+                Ticket::Guest | Ticket::GuestRing => &mut self.guests,
             };
             // A ticket of a kind that was never counted on the chunk is not released
             // ("Found while building", 8).

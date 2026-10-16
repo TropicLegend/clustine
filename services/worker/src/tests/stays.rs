@@ -1719,7 +1719,9 @@ fn a_split_drops_what_the_store_said_of_stays_and_both_regions_name_every_stay_i
     // nothing and is committed for the note.
     let (handle, _) = land.world.open(new, as_epoch);
     let (store, part_gate) = gate_before(handle);
-    let mut part = RegionRunner::of_part_with(part, store).with_id(new);
+    let mut part = RegionRunner::of_part_with(part, store)
+        .without_rings()
+        .with_id(new);
     part.step();
     assert_eq!(
         part_gate.noted(),

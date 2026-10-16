@@ -153,6 +153,9 @@ fn settings(return_after: u64) -> RegionSettings {
         starting_hotbar: hotbar(),
         return_after,
         lowest_y: -64,
+        // What these tests count is a region's claims and loads for viewers' and
+        // guests' tickets alone (ADR-0012); rings would add to them.
+        rings: false,
     }
 }
 
@@ -313,7 +316,9 @@ impl World {
             .open_with(region, as_epoch)
             .expect("the epoch of the split opens the part");
         // Told which region it runs, as a worker tells every runner.
-        RegionRunner::of_part(part, handle).with_id(region)
+        RegionRunner::of_part(part, handle)
+            .without_rings()
+            .with_id(region)
     }
 
     fn list(&self) -> RegionList {

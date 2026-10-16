@@ -96,6 +96,8 @@ enum Known {
 struct Tickets {
     viewers: u32,
     guests: u32,
+    viewer_rings: u32,
+    guest_rings: u32,
 }
 
 impl Tickets {
@@ -103,11 +105,23 @@ impl Tickets {
         match kind {
             Ticket::Viewer => &mut self.viewers,
             Ticket::Guest => &mut self.guests,
+            Ticket::ViewerRing => &mut self.viewer_rings,
+            Ticket::GuestRing => &mut self.guest_rings,
         }
     }
 
     fn is_empty(self) -> bool {
-        self.viewers == 0 && self.guests == 0
+        self.viewers == 0 && self.guests == 0 && self.viewer_rings == 0 && self.guest_rings == 0
+    }
+
+    /// Whether the chunk is wanted as a viewer's: a ring beside a viewer's chunk is.
+    fn as_viewer(self) -> bool {
+        self.viewers > 0 || self.viewer_rings > 0
+    }
+
+    /// Whether the chunk is wanted as a guest's.
+    fn as_guest(self) -> bool {
+        self.guests > 0 || self.guest_rings > 0
     }
 }
 
@@ -1642,8 +1656,8 @@ impl Region {
         // claim.
         let pinned = &land.pinned;
         let wanted_for = |position: &ChunkPos, tickets: &Tickets| {
-            tickets.viewers > 0
-                || (tickets.guests > 0 && pinned.iter().any(|area| area.contains(*position)))
+            tickets.as_viewer()
+                || (tickets.as_guest() && pinned.iter().any(|area| area.contains(*position)))
         };
         let wanted = |position: &ChunkPos| {
             let ticketed = tickets.get(position);
@@ -2133,8 +2147,8 @@ mod tests {
         let wanted = |position: &ChunkPos| {
             let tickets = region.tickets.get(position).copied().unwrap_or_default();
             standing.contains(position)
-                || tickets.viewers > 0
-                || (tickets.guests > 0 && region.land.is_pinned(*position))
+                || tickets.as_viewer()
+                || (tickets.as_guest() && region.land.is_pinned(*position))
         };
         // Every wanted chunk is held, asked for or believed another's,
         for position in standing.iter().chain(region.tickets.keys()) {
