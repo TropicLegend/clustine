@@ -7,14 +7,24 @@
 //! batch of the plan is built its placers place nothing and say so ([`built`]), and
 //! the judge leaves out the chunks such a structure reaches.
 
+mod buried_treasure;
+mod igloo;
 mod jigsaw;
+mod ocean_ruin;
+mod ruined_portal;
+mod shipwreck;
+mod template_piece;
+#[cfg(test)]
+mod template_tests;
 
 use std::sync::Arc;
 
 use clustine_noise::WorldgenRandom;
 use clustine_structures::Start;
 use clustine_structures::geometry::{BoundingBox, IVec3};
-use clustine_structures::piece::StructurePiecePayload;
+use clustine_structures::piece::{
+    ProceduralPieceData, StructurePiecePayload, TemplateMarkerHandling, TemplatePostProcess,
+};
 use clustine_world::ChunkPos;
 use clustine_world::generation::{PieceKey, PieceState};
 use clustine_worldgen_data::structure::Kind;
@@ -51,7 +61,15 @@ pub struct Placing<'p, 'l, 'v> {
 pub fn built(structure: usize) -> bool {
     // A jigsaw structure is pool elements only; its pools' features are the
     // features', all of the overworld's built.
-    matches!(STRUCTURES[structure].kind, Kind::Jigsaw(_))
+    matches!(
+        STRUCTURES[structure].kind,
+        Kind::Jigsaw(_)
+            | Kind::Shipwreck { .. }
+            | Kind::Igloo
+            | Kind::OceanRuin { .. }
+            | Kind::RuinedPortal { .. }
+            | Kind::BuriedTreasure
+    )
 }
 
 /// Places the piece `key` of `start`, whose state between runs is `state`. Returns the
@@ -68,7 +86,23 @@ pub(crate) fn place_piece(
         StructurePiecePayload::Jigsaw(data) => {
             jigsaw::place(placing, data);
         }
-        StructurePiecePayload::Template(_) | StructurePiecePayload::Procedural(_) => {}
+        StructurePiecePayload::Template(data) => match (data.marker_handling, data.post_process) {
+            (TemplateMarkerHandling::Shipwreck, _) => {
+                return shipwreck::place(placing, piece, data, state);
+            }
+            (TemplateMarkerHandling::Igloo, _) => return igloo::place(placing, piece, data, state),
+            (TemplateMarkerHandling::OceanRuin { is_large }, _) => {
+                return ocean_ruin::place(placing, piece, data, is_large, state);
+            }
+            (_, TemplatePostProcess::RuinedPortal) => {
+                return ruined_portal::place(placing, data, state);
+            }
+            _ => {}
+        },
+        StructurePiecePayload::Procedural(ProceduralPieceData::BuriedTreasure) => {
+            return buried_treasure::place(placing, piece, state);
+        }
+        StructurePiecePayload::Procedural(_) => {}
     }
     state
 }

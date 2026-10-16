@@ -80,7 +80,7 @@ fn with_facing(state: BlockState, face: Face) -> BlockState {
 
 /// `StructurePiece.reorient`: a chest turned away from the one solid wall beside it,
 /// or else from whichever walls block its front.
-fn reorient(level: &mut Level<'_>, pos: BlockPos, state: BlockState) -> BlockState {
+pub(crate) fn reorient(level: &mut Level<'_>, pos: BlockPos, state: BlockState) -> BlockState {
     let mut wall = None;
     for face in HORIZONTAL {
         let beside = level.block(relative(pos, face));

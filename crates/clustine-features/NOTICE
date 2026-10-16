@@ -1,0 +1,21 @@
+clustine-features
+
+Parts of this crate are adapted from SteelMC
+(https://github.com/Steel-Foundation/SteelMC), branch `26.3` at commit
+`885c4b3e60ed79862c37311780774f76806cb714`. Steel: A high-performance Minecraft
+server implementation written in Rust. Copyright (C) 2026 Alve Jeansson and
+contributors. Licensed under the GNU Affero General Public License, version 3 or
+(at your option) any later version; see `LICENSE` at the root of this
+repository. The files that were adapted say so at their head.
+
+The placers of structures' pieces are adapted from SteelMC's
+steel-core/src/worldgen/structure/piece_placer/, with what the pinned 26.3 jar's
+classes do otherwise put right, each file saying which: src/structures/jigsaw.rs
+(pool_element.rs); src/structures/template_piece.rs, src/structures/shipwreck.rs,
+src/structures/igloo.rs and src/structures/ocean_ruin.rs (template_piece.rs and
+template_processors.rs); src/structures/ruined_portal.rs (ruined_portal.rs and
+template_processors.rs); src/structures/buried_treasure.rs (buried_treasure.rs).
+
+The data the crate computes with is Mojang's, from `clustine-worldgen-data`; see
+NOTICE.md at the root of the repository. No block of a structure template is in
+this repository (ADR-0019).
