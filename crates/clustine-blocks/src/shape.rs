@@ -73,6 +73,12 @@ pub fn update_shape<V: BlockView + ?Sized>(
     {
         return updated;
     }
+    // Redstone's blocks that take their shape from a neighbour
+    // (`docs/adr/0026-redstone.md`, step R3b): a note block its instrument from the
+    // blocks above and below, tripwire its strings, a bell its walls.
+    if let Some(shaped) = redstone_shape(view, state, pos, direction, neighbour) {
+        return shaped;
+    }
     // A waterlogged block lets its water flow on (`SimpleWaterloggedBlock`'s blocks
     // all do this first).
     if state.property("waterlogged") == Some("true") {
@@ -655,4 +661,86 @@ pub fn fire_state_with_age<V: BlockView + ?Sized>(
     } else {
         fire
     }
+}
+
+/// The `updateShape` of a note block, tripwire and a bell, as the 26.3 jar has them;
+/// `None` for any other block.
+fn redstone_shape<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+    direction: Face,
+    neighbour: BlockState,
+) -> Option<BlockState> {
+    if crate::note::is_note_block(state) {
+        // `NoteBlock.updateShape`: above or below, the instrument again.
+        let vertical = matches!(direction, Face::Up | Face::Down);
+        return Some(if vertical {
+            crate::note::with_instrument(view, pos, state)
+        } else {
+            state
+        });
+    }
+    if is_class(state, BlockClass::TripWireBlock) {
+        // `TripWireBlock.updateShape`: a side joins tripwire or a hook facing it.
+        if !is_horizontal(direction) {
+            return Some(state);
+        }
+        let joins = tripwire_connects_to(neighbour, direction);
+        return Some(set_flag(state, face_name(direction), joins));
+    }
+    if is_class(state, BlockClass::BellBlock) {
+        return Some(bell_shape(view, state, pos, direction, neighbour));
+    }
+    None
+}
+
+/// `TripWireBlock.shouldConnectTo`: tripwire, or a hook that faces back along
+/// `direction`.
+pub fn tripwire_connects_to(neighbour: BlockState, direction: Face) -> bool {
+    if is_class(neighbour, BlockClass::TripWireHookBlock) {
+        return facing(neighbour) == Some(direction.opposite());
+    }
+    is_class(neighbour, BlockClass::TripWireBlock)
+}
+
+/// `BellBlock.updateShape`: a bell whose support went goes, unless it hangs between
+/// two walls; one between two walls that lost one hangs from the other, and one on a
+/// wall that gained another across from it hangs between them. The faces asked are
+/// the jar's: of the neighbour, towards `direction` and towards the bell's facing.
+fn bell_shape<V: BlockView + ?Sized>(
+    view: &mut V,
+    state: BlockState,
+    pos: BlockPos,
+    direction: Face,
+    neighbour: BlockState,
+) -> BlockState {
+    let attachment = state.property("attachment");
+    let Some(bell_facing) = facing(state) else {
+        return state;
+    };
+    let support = match attachment {
+        Some("floor") => Face::Down,
+        Some("ceiling") => Face::Up,
+        _ => bell_facing,
+    };
+    if support == direction && !can_survive(state, pos, view) && attachment != Some("double_wall") {
+        return blocks::AIR;
+    }
+    if axis(direction) == axis(bell_facing) {
+        if attachment == Some("double_wall") && !sturdy(neighbour, direction, SupportType::Full) {
+            return set(
+                set(state, "attachment", "single_wall"),
+                "facing",
+                face_name(direction.opposite()),
+            );
+        }
+        if attachment == Some("single_wall")
+            && support.opposite() == direction
+            && sturdy(neighbour, bell_facing, SupportType::Full)
+        {
+            return set(state, "attachment", "double_wall");
+        }
+    }
+    state
 }

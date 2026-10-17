@@ -14,7 +14,10 @@
 //!   (`onPlace`, `affectNeighborsAfterRemoval`, `updateNeighborsOfNeighboringWires`); a
 //!   click turns a dot into a cross and back (`useWithoutItem`);
 //! - a lamp lit at once by power and put out four ticks after it goes; doors,
-//!   trapdoors and fence gates opened and closed by power, with their sounds.
+//!   trapdoors and fence gates opened and closed by power, with their sounds;
+//! - from R3b, a copper bulb flipped by each rise of its power, big dripleaf laid flat
+//!   by power, and the dispatch to note blocks and bells (`instruments.rs`), plates,
+//!   tripwire and hooks (`pressed.rs`) and rails (`rails.rs`).
 //!
 //! The signals themselves are pure functions of the blocks, read through the region's
 //! view (`clustine_blocks::signal`); the rules here run only where the updater lets
@@ -77,7 +80,53 @@ impl Region {
             self.gate_powered(pos, state, output);
             return true;
         }
+        if clustine_blocks::note::is_note_block(state) {
+            self.note_block_powered(pos, state, output);
+            return true;
+        }
+        if is_class(state, BlockClass::BellBlock) {
+            self.bell_powered(pos, state, output);
+            return true;
+        }
+        if is_class(state, BlockClass::CopperBulbBlock) {
+            self.copper_bulb_check_and_flip(pos, state, output);
+            return true;
+        }
+        if is_class(state, BlockClass::BigDripleafBlock) {
+            // `BigDripleafBlock.neighborChanged`: power lays the leaf flat at once.
+            if self.has_neighbour_signal(pos) {
+                self.reset_dripleaf(pos, state, output);
+            }
+            return true;
+        }
         false
+    }
+
+    /// `CopperBulbBlock.checkAndFlip`: power that rises turns the bulb on or off, with
+    /// its sound heard by everyone near, and the bulb keeps whether it is powered. Its
+    /// output for comparators is 15 while lit (`signal::analog_output`), which R4's
+    /// comparators read.
+    fn copper_bulb_check_and_flip(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        output: &mut TickOutput,
+    ) {
+        let powered = self.has_neighbour_signal(pos);
+        if powered == flag(state, "powered") {
+            return;
+        }
+        let mut changed = state;
+        if !flag(state, "powered") {
+            changed = set_flag(changed, "lit", !flag(state, "lit"));
+            let sound = if flag(changed, "lit") {
+                sounds::BLOCK_COPPER_BULB_TURN_ON
+            } else {
+                sounds::BLOCK_COPPER_BULB_TURN_OFF
+            };
+            play(pos, sound, 1.0, 1.0, None, output);
+        }
+        self.set_block(pos, set_flag(changed, "powered", powered), output);
     }
 
     /// `DoorBlock.neighborChanged`: a door is powered by power beside either half, and
@@ -201,7 +250,21 @@ impl Region {
         old: BlockState,
         output: &mut TickOutput,
     ) {
-        if !signal::is_wire(state) || same_block(state, old) {
+        if same_block(state, old) {
+            return;
+        }
+        // `CopperBulbBlock.onPlace`: a bulb placed beside power lights. Where the
+        // chunk does not tick it waits as an update of itself, as wire does.
+        if is_class(state, BlockClass::CopperBulbBlock) {
+            if self.ticks_chunk(pos.chunk()) {
+                self.copper_bulb_check_and_flip(pos, state, output);
+            } else {
+                self.neighbour_changed_at(pos, Face::Down, state, false, output);
+            }
+            return;
+        }
+        self.pressed_on_place(pos, state, old, output);
+        if !signal::is_wire(state) {
             return;
         }
         self.update_power_strength(pos, state, output);
@@ -227,6 +290,8 @@ impl Region {
         if moved_by_piston {
             return;
         }
+        self.pressed_after_removal(pos, old, moved_by_piston, output);
+        self.rail_after_removal(pos, old, output);
         if is_lever_or_button(old) {
             if flag(old, "powered") {
                 self.update_attached(pos, old, output);
@@ -295,6 +360,9 @@ impl Region {
         state: BlockState,
         output: &mut TickOutput,
     ) -> bool {
+        if self.pressed_tick(pos, state, output) {
+            return true;
+        }
         if is_class(state, BlockClass::ButtonBlock) {
             // `ButtonBlock.checkPressed`: nothing but an arrow keeps a button pressed,
             // and there are no arrows before the phase of entities.
@@ -318,11 +386,17 @@ impl Region {
     }
 
     /// A click whose use is the block's own rule (`useWithoutItem`), run on the block at
-    /// `pos` by `player`: a lever toggled, a button pressed, wire turned from a dot to a
-    /// cross or back. A use that reads what is two blocks away runs only where its
+    /// `pos` by `player` on its side `face`: a lever toggled, a button pressed, wire
+    /// turned from a dot to a cross or back, a note block tuned, a bell rung. A use that reads what is two blocks away runs only where its
     /// chunk ticks, as the predicate worked out at the end of the tick before says
     /// (`docs/adr/0026-redstone.md`, section 1); one that cannot changes nothing.
-    pub(super) fn use_by_rule(&mut self, pos: BlockPos, player: PlayerId, output: &mut TickOutput) {
+    pub(super) fn use_by_rule(
+        &mut self,
+        pos: BlockPos,
+        face: Face,
+        player: PlayerId,
+        output: &mut TickOutput,
+    ) {
         let Some(state) = self.own_block(pos) else {
             return;
         };
@@ -356,6 +430,11 @@ impl Region {
             };
             self.set_block(pos, used, output);
             self.wire_updates_on_shape_change(pos, state, used, output);
+        } else if clustine_blocks::note::is_note_block(state) {
+            self.note_block_used(pos, state, output);
+        } else if is_class(state, BlockClass::BellBlock) {
+            // `BellBlock.onHit`: the bell swings away from the side it was hit on.
+            self.ring_bell(pos, Some(face), output);
         }
     }
 

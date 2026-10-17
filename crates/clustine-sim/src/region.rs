@@ -17,8 +17,11 @@ use crate::api::{
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
+mod block_entities;
 mod block_events;
 mod fluids;
+mod instruments;
+mod pressed;
 mod rails;
 mod random_ticks;
 mod redstone;
@@ -293,6 +296,10 @@ pub struct Region {
     /// The queue of block events, in the order queued (`block_events.rs`); kept in
     /// the chunks at the end of each tick, so no part of the region's own state.
     block_events: Vec<block_events::QueuedEvent>,
+    /// The typed block entities of the loaded chunks and their tickers
+    /// (`block_entities.rs`); rebuilt from the chunks as they load, so no part of the
+    /// region's own state.
+    block_entities: block_entities::BlockEntities,
     /// The block events that reached their block's rule, for the tests to see.
     #[cfg(test)]
     events_run: Vec<block_events::QueuedEvent>,
@@ -349,6 +356,7 @@ impl Region {
             made_in: None,
             handling_tick: false,
             block_events: Vec::new(),
+            block_entities: block_entities::BlockEntities::default(),
             #[cfg(test)]
             events_run: Vec::new(),
             tickets: BTreeMap::new(),
@@ -397,6 +405,7 @@ impl Region {
         let loaded: Vec<ChunkPos> = region.chunks.keys().copied().collect();
         for position in loaded {
             region.take_up_events(position);
+            region.take_up_block_entities(position);
         }
         for (position, copy) in copies {
             if !region.chunks.contains_key(&position) {
@@ -672,9 +681,12 @@ impl Region {
         self.run_random_ticks(&mut output);
         self.run_block_events(&mut output);
         self.handling_tick = false;
-        // The phase of block entities is the game's next; no block entity ticks before
-        // redstone's (`docs/adr/0026-redstone.md`, section 5). Then the chunks keep the
+        // The entities, of which players are the only ones so far, press and step on
+        // blocks (`pressed.rs`); then the block entities tick
+        // (`docs/adr/0026-redstone.md`, sections 3 and 5). Then the chunks keep the
         // events still queued.
+        self.players_touch_blocks(&mut output);
+        self.run_block_entities(&mut output);
         self.keep_events(&mut output);
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
@@ -1538,6 +1550,9 @@ impl Region {
     /// region does not hold. See `docs/groundwork/w6-plan.md`, sections 3.2 and 4.6.
     fn click_here(&mut self, action: &RemoteAction, output: &mut TickOutput) -> Option<Durable> {
         let bodies = self.bodies(Some(action.player));
+        if let RemoteStep::UseOn { click } = &action.step {
+            self.redstone_ore_clicked(click, output);
+        }
         let (click, target, replace_clicked, clicked) = match &action.step {
             RemoteStep::UseOn { click } => match placement::click(click, &Readable(self)) {
                 Clicked::Nothing => return None,
@@ -1545,8 +1560,8 @@ impl Region {
                     self.use_block(&changes, flags, action.player, output);
                     return None;
                 }
-                Clicked::ByRule { position } => {
-                    self.use_by_rule(position, action.player, output);
+                Clicked::ByRule { position, face } => {
+                    self.use_by_rule(position, face, action.player, output);
                     return None;
                 }
                 Clicked::Place {
@@ -1588,11 +1603,27 @@ impl Region {
             let reads = changes
                 .iter()
                 .any(|(_, state)| clustine_blocks::signal::placing_reads_signal(*state));
-            if !reads || self.ticks_chunk(target.chunk()) {
-                self.change_all(&changes, output);
+            if (!reads || self.ticks_chunk(target.chunk())) && self.change_all(&changes, output) {
+                // `Block.setPlacedBy`: a hook placed looks along its line.
+                self.placed_by_player(target, output);
             }
         }
         None
+    }
+
+    /// `RedStoneOreBlock.useItemOn`: a click on redstone ore lights it, and the click
+    /// goes on to place what is in hand, unless the player sneaks with something in
+    /// hand and passes the block by. The ore reads only itself.
+    fn redstone_ore_clicked(&mut self, click: &placement::Click, output: &mut TickOutput) {
+        if click.sneaking && click.held.is_some() {
+            return;
+        }
+        let Some(state) = self.own_block(click.position) else {
+            return;
+        };
+        if clustine_blocks::data::is_class(state, clustine_data::BlockClass::RedStoneOreBlock) {
+            self.light_redstone_ore(click.position, state, output);
+        }
     }
 
     /// The boxes of the region's players other than `except`, which a placed block may
@@ -1931,6 +1962,7 @@ impl Region {
                 if *position != self.land.home {
                     self.chunks.remove(position);
                     self.let_go_events(*position);
+                    self.let_go_block_entities(*position);
                     self.requested.remove(position);
                 }
             }
@@ -1952,6 +1984,7 @@ impl Region {
         // The kept block events of the chunks loaded join the queue's end, by chunk.
         for position in loaded {
             self.take_up_events(position);
+            self.take_up_block_entities(position);
         }
         // Border copies, with the chunks and before the region works out which chunks
         // tick, so that a chunk beside them ticks in this very tick
@@ -2242,7 +2275,10 @@ mod tests {
     mod block_updates;
     mod effects;
     mod fluids;
+    mod instruments;
     mod post_processing_and_seams;
+    mod pressed;
+    mod rails_and_bulbs;
     mod redstone;
     mod redstone_ground;
     mod scheduled_ticks;

@@ -8,7 +8,7 @@
 //! - down: standing torches of every kind (`BaseTorchBlock`), standing signs, banners
 //!   and pressure plates;
 //! - the wall behind, which the block faces away from: wall torches, ladders, wall
-//!   signs and wall banners;
+//!   signs, wall banners and tripwire hooks;
 //! - up: hanging signs under a ceiling;
 //! - the direction it hangs or stands by: buttons, levers (`getConnectedDirection` of
 //!   `FaceAttachedHorizontalDirectionalBlock`) and lanterns.
@@ -47,6 +47,7 @@ fn support_direction(state: BlockState) -> Option<Face> {
         || class(C::LadderBlock)
         || class(C::WallSignBlock)
         || class(C::WallBannerBlock)
+        || class(C::TripWireHookBlock)
     {
         return facing().map(opposite);
     }

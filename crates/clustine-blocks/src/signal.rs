@@ -67,8 +67,10 @@ pub fn use_reads_signal(state: BlockState) -> bool {
 /// Whether placing `state` reads a signal or what is two blocks away, so that it is
 /// placed only where its chunk ticks (the record, section 1): a lamp, a door, a
 /// trapdoor and a gate take their state from the power beside them
-/// (`getStateForPlacement`), and wire works out its power as it is placed
-/// (`RedstoneWireBlock.onPlace`).
+/// (`getStateForPlacement`), wire works out its power as it is placed
+/// (`RedstoneWireBlock.onPlace`), a rail chooses its curve and a powered rail its
+/// power by it (`BaseRailBlock.onPlace`), and a copper bulb lights
+/// (`CopperBulbBlock.onPlace`).
 pub fn placing_reads_signal(state: BlockState) -> bool {
     use BlockClass as C;
     [
@@ -77,6 +79,8 @@ pub fn placing_reads_signal(state: BlockState) -> bool {
         C::TrapDoorBlock,
         C::FenceGateBlock,
         C::RedstoneWireBlock,
+        C::BaseRailBlock,
+        C::CopperBulbBlock,
     ]
     .into_iter()
     .any(|class| is_class(state, class))
@@ -132,7 +136,41 @@ pub fn own_signal(state: BlockState) -> u8 {
     if is_wire(state) {
         return wire_power(state);
     }
+    if let Some(signal) = plate_signal(state) {
+        return signal;
+    }
+    if is_class(state, BlockClass::TripWireHookBlock) && flag(state, "powered") {
+        return MAX_SIGNAL;
+    }
     0
+}
+
+/// `BasePressurePlateBlock.getSignalForState`: a plate's power, all or nothing for
+/// one that is pressed or not and its count of what stands on it for a weighted one;
+/// `None` for anything that is not a plate.
+pub fn plate_signal(state: BlockState) -> Option<u8> {
+    if is_class(state, BlockClass::WeightedPressurePlateBlock) {
+        return Some(crate::data::number(state, "power").unwrap_or(0));
+    }
+    if is_class(state, BlockClass::BasePressurePlateBlock) {
+        return Some(if flag(state, "powered") {
+            MAX_SIGNAL
+        } else {
+            0
+        });
+    }
+    None
+}
+
+/// `getAnalogOutputSignal` of a block whose output is a function of its state alone,
+/// which a comparator reads behind it (R4): a copper bulb's 15 while lit and 0 while
+/// dark (`CopperBulbBlock`). `None` for the blocks whose output R4 brings in, and for
+/// those without one.
+pub fn analog_output(state: BlockState) -> Option<u8> {
+    if is_class(state, BlockClass::CopperBulbBlock) {
+        return Some(if flag(state, "lit") { MAX_SIGNAL } else { 0 });
+    }
+    None
 }
 
 /// A block's `getSignal`: the signal `state` at `pos` gives the block that asks it
@@ -152,9 +190,9 @@ pub fn block_signal<V: BlockView + ?Sized>(
 }
 
 /// A block's `getDirectSignal`: the signal `state` at `pos` gives directly, through a
-/// conductor, to the block that asks it towards `direction`. A lever or a button
-/// powers the block it hangs on; wire powers what it gives a signal to; the rest give
-/// none.
+/// conductor, to the block that asks it towards `direction`. A lever, a button or a
+/// tripwire hook powers the block it hangs on, a pressure plate the block below it;
+/// wire powers what it gives a signal to; the rest give none.
 pub fn block_direct_signal<V: BlockView + ?Sized>(
     view: &mut V,
     state: BlockState,
@@ -164,6 +202,15 @@ pub fn block_direct_signal<V: BlockView + ?Sized>(
 ) -> u8 {
     if is_class(state, BlockClass::LeverBlock) || is_class(state, BlockClass::ButtonBlock) {
         let held = flag(state, "powered") && attached_towards(state) == Some(direction);
+        return if held { MAX_SIGNAL } else { 0 };
+    }
+    // A plate powers the block it lies on, which asks it upwards.
+    if let Some(signal) = plate_signal(state) {
+        return if direction == Face::Up { signal } else { 0 };
+    }
+    // A hook powers the block it hangs on, which asks it the way the hook faces.
+    if is_class(state, BlockClass::TripWireHookBlock) {
+        let held = flag(state, "powered") && facing(state) == Some(direction);
         return if held { MAX_SIGNAL } else { 0 };
     }
     if is_wire(state) {

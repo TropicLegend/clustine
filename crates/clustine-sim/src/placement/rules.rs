@@ -78,6 +78,12 @@ pub(crate) enum Rule {
     Seagrass,
     /// Bamboo: a shoot on the ground, a stalk on bamboo or under it, nothing in a fluid.
     Bamboo,
+    /// A note block, with the instrument of the blocks above and below it.
+    NoteBlock,
+    /// Tripwire, joined to the tripwire and the hooks beside it.
+    TripWire,
+    /// A bell, on the floor, under a ceiling, or on one wall or between two.
+    Bell,
     /// The block's default state.
     Default,
 }
@@ -139,7 +145,11 @@ fn class_rule(class: BlockClass) -> Option<Rule> {
         | C::RedstoneWallTorchBlock
         | C::WallSignBlock
         | C::WallBannerBlock
-        | C::BaseCoralWallFanBlock => Rule::OnWall,
+        | C::BaseCoralWallFanBlock
+        | C::TripWireHookBlock => Rule::OnWall,
+        C::NoteBlock => Rule::NoteBlock,
+        C::TripWireBlock => Rule::TripWire,
+        C::BellBlock => Rule::Bell,
         C::StandingSignBlock | C::BannerBlock => Rule::StandingRotation,
         C::SkullBlock => Rule::Skull,
         C::WallSkullBlock => Rule::WallSkull,
@@ -322,6 +332,13 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
             return on_wall(block, context);
         }
         Rule::OnWall => return on_wall(block, context),
+        Rule::NoteBlock => clustine_blocks::note::with_instrument(&mut View(world), target, block),
+        Rule::TripWire => HORIZONTAL_ORDER.into_iter().fold(block, |state, dir| {
+            let beside = world.get(dir.relative(target));
+            let joins = clustine_blocks::shape::tripwire_connects_to(beside, dir);
+            data::set_flag(state, dir.name(), joins)
+        }),
+        Rule::Bell => return bell(block, context),
         Rule::Lantern => {
             return context
                 .nearest_looking_directions()
@@ -489,6 +506,59 @@ fn has_neighbour_signal(context: &Context, pos: BlockPos) -> bool {
 
 /// The wall form of a block: `facing` away from the first horizontal looking direction
 /// where it can stay.
+/// The sides tripwire looks to as it is placed, in the game's order.
+const HORIZONTAL_ORDER: [Dir; 4] = [Dir::North, Dir::East, Dir::South, Dir::West];
+
+/// `BellBlock.getStateForPlacement`: on the floor or under the ceiling clicked, facing
+/// the player's way; on a clicked wall, facing it, between two walls where the side
+/// across holds it too, and else on the floor or under the ceiling.
+fn bell(block: BlockState, context: &Context) -> Option<BlockState> {
+    let world = &context.world;
+    let target = context.target;
+    let face = context.face;
+    let set = data::set;
+    let sturdy = |dir: Dir, towards: Dir| {
+        clustine_blocks::sturdy(
+            world.get(dir.relative(target)),
+            towards,
+            clustine_data::SupportType::Full,
+        )
+    };
+    if !face.is_horizontal() {
+        let attachment = if face == Dir::Down {
+            "ceiling"
+        } else {
+            "floor"
+        };
+        let state = set(
+            set(block, "attachment", attachment),
+            "facing",
+            context.horizontal().name(),
+        );
+        return can_survive(state, target, world).then_some(state);
+    }
+    let double = match face.axis() {
+        geometry::Axis::X => sturdy(Dir::West, Dir::East) && sturdy(Dir::East, Dir::West),
+        _ => sturdy(Dir::North, Dir::South) && sturdy(Dir::South, Dir::North),
+    };
+    let attachment = if double { "double_wall" } else { "single_wall" };
+    let state = set(
+        set(block, "facing", face.opposite().name()),
+        "attachment",
+        attachment,
+    );
+    if can_survive(state, target, world) {
+        return Some(state);
+    }
+    let on_floor = sturdy(Dir::Down, Dir::Up);
+    let state = set(
+        state,
+        "attachment",
+        if on_floor { "floor" } else { "ceiling" },
+    );
+    can_survive(state, target, world).then_some(state)
+}
+
 fn on_wall(block: BlockState, context: &Context) -> Option<BlockState> {
     context
         .nearest_looking_directions()
@@ -721,6 +791,10 @@ mod tests {
             Rule::WallHangingSign
         );
         assert_eq!(rule("minecraft:dead_tube_coral_wall_fan"), Rule::OnWall);
+        assert_eq!(rule("minecraft:tripwire_hook"), Rule::OnWall);
+        assert_eq!(rule("minecraft:note_block"), Rule::NoteBlock);
+        assert_eq!(rule("minecraft:tripwire"), Rule::TripWire);
+        assert_eq!(rule("minecraft:bell"), Rule::Bell);
     }
 
     #[test]
@@ -768,6 +842,9 @@ mod tests {
                 Rule::StandingRotation | Rule::Skull | Rule::CeilingHangingSign => &["rotation"],
                 Rule::MangrovePropagule => &["age"],
                 Rule::Bamboo => &["age"],
+                Rule::NoteBlock => &["instrument"],
+                Rule::TripWire => &["north", "east", "south", "west"],
+                Rule::Bell => &["facing", "attachment"],
                 Rule::Additive | Rule::Multiface | Rule::Seagrass | Rule::Default => &[],
             };
             for property in needs {

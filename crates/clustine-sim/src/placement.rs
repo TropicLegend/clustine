@@ -70,9 +70,10 @@ pub enum Clicked {
     },
     /// The clicked block's own rule is its use (`useWithoutItem`), which the region
     /// runs inside its updater, reading the blocks as the rule reads them: a lever
-    /// toggled, a button pressed, wire turned from a dot to a cross
-    /// (`docs/adr/0026-redstone.md`, section 7).
-    ByRule { position: BlockPos },
+    /// toggled, a button pressed, wire turned from a dot to a cross, a note block
+    /// tuned, a bell rung (`docs/adr/0026-redstone.md`, section 7). `face` is the
+    /// clicked face, which a bell rings away from.
+    ByRule { position: BlockPos, face: Dir },
     /// A block is to be placed at `target` (`T`), which the region that holds it does
     /// with [`place`]. `replace_clicked` is whether `T` is the clicked block itself,
     /// and `clicked` the clicked block's state as read here (section 4.5).
@@ -92,9 +93,17 @@ pub fn click(click: &Click, blocks: &dyn Blocks) -> Clicked {
     // Sneaking with something in hand passes the block by and places against it.
     if !(click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
         let used = use_block(click, clicked, blocks);
-        // Wire that is neither a dot nor a cross, or would not change, passes the click
-        // on to the item in hand (`InteractionResult.PASS`).
-        if !(used == Clicked::Nothing && data::is(clicked, BlockClass::RedstoneWireBlock)) {
+        // Wire that is neither a dot nor a cross, or would not change, a bell hit
+        // where it does not ring, and a note block clicked on top with a head pass the
+        // click on to the item in hand (`InteractionResult.PASS`).
+        let passes = [
+            BlockClass::RedstoneWireBlock,
+            BlockClass::BellBlock,
+            BlockClass::NoteBlock,
+        ]
+        .into_iter()
+        .any(|class| data::is(clicked, class));
+        if !(used == Clicked::Nothing && passes) {
             return used;
         }
     }
@@ -200,15 +209,36 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     }
     // A lever, a button and wire use themselves by rules that tell their neighbours,
     // which the region runs.
+    let face = geometry::from_api(click.face);
     if data::is(state, BlockClass::LeverBlock) || data::is(state, BlockClass::ButtonBlock) {
-        return Clicked::ByRule { position };
+        return Clicked::ByRule { position, face };
+    }
+    // `NoteBlock.useItemOn`: a head clicked onto the top is placed there; anything
+    // else tunes the block (`useWithoutItem`).
+    if data::is(state, BlockClass::NoteBlock) {
+        let head = click.held.is_some_and(|held| {
+            clustine_blocks::data::item_in_tag(held, "minecraft:noteblock_top_instruments")
+        });
+        if head && face == Dir::Up {
+            return Clicked::Nothing;
+        }
+        return Clicked::ByRule { position, face };
+    }
+    // `BellBlock.onHit`: a bell rings only when it is hit on a side it swings from,
+    // below its top (`isProperHit`).
+    if data::is(state, BlockClass::BellBlock) {
+        let height = f64::from(click.cursor[1]);
+        if bell_hit_properly(state, face, height) {
+            return Clicked::ByRule { position, face };
+        }
+        return Clicked::Nothing;
     }
     if data::is(state, BlockClass::RedstoneWireBlock) {
         let world = World::new(blocks, position, state);
         let changes =
             clustine_blocks::signal::wire_used(&mut context::View(&world), state, position);
         return match changes {
-            Some(_) => Clicked::ByRule { position },
+            Some(_) => Clicked::ByRule { position, face },
             None => Clicked::Nothing,
         };
     }
@@ -219,6 +249,24 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
         }
     }
     Clicked::Nothing
+}
+
+/// `BellBlock.isProperHit`: a hit on a side, no higher than 0.8124 up the block, on
+/// the bell's own axis for one on the floor, across it for one on a wall, anywhere for
+/// one under a ceiling.
+fn bell_hit_properly(state: BlockState, face: Dir, height: f64) -> bool {
+    if !face.is_horizontal() || height > 0.812_399_983_406_066_9 {
+        return false;
+    }
+    let Some(facing) = survive::facing(state) else {
+        return false;
+    };
+    match state.property("attachment") {
+        Some("floor") => facing.axis() == face.axis(),
+        Some("single_wall" | "double_wall") => facing.axis() != face.axis(),
+        Some("ceiling") => true,
+        _ => false,
+    }
 }
 
 /// The sound of using `state`, which a door, a trapdoor or a gate has just become:

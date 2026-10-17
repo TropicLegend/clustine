@@ -57,8 +57,6 @@ impl QueuedEvent {
 impl Region {
     /// `Level.blockEvent(pos, block, b0, b1)`: queues an event of the block `state` is
     /// of at `at`, unless the same one is queued already.
-    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn block_event(&mut self, at: BlockPos, state: BlockState, kind: i32, data: i32) {
         let event = QueuedEvent {
             at,
@@ -143,8 +141,8 @@ impl Region {
         self.trigger_event(event.at, state, event.kind, event.data, output)
     }
 
-    /// `BlockBehaviour.triggerEvent` of the block `state` at `at`. No block has one
-    /// before redstone's rules give note blocks, bells and pistons theirs.
+    /// `BlockBehaviour.triggerEvent` of the block `state` at `at`: a note block's note
+    /// and a bell's ring (`instruments.rs`); R5's pistons come here too.
     fn trigger_event(
         &mut self,
         at: BlockPos,
@@ -153,8 +151,8 @@ impl Region {
         data: i32,
         output: &mut TickOutput,
     ) -> bool {
-        let _ = (at, state, kind, data, output);
-        false
+        self.instrument_event(at, state, kind, data, output)
+            .unwrap_or(false)
     }
 
     /// At the end of a tick: every loaded chunk keeps the events of its blocks still

@@ -12,6 +12,7 @@ pub mod connect;
 pub mod data;
 pub mod fluid;
 pub mod growth;
+pub mod note;
 pub mod shape;
 pub mod signal;
 pub mod support;

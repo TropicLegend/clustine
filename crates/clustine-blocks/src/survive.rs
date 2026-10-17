@@ -58,6 +58,9 @@ pub enum Survival {
     Hanging,
     SporeBlossom,
     FaceAttached,
+    /// A bell: under a ceiling that holds it at its centre, or against the floor or
+    /// the wall its attachment names (`BellBlock.canSurvive`).
+    Bell,
     Lantern,
     SnowLayer,
     /// Nothing solid above, or what keeps farmland (`FarmlandBlock.canSurvive`).
@@ -141,7 +144,10 @@ fn class_rule(class: BlockClass, rules: Rules) -> Option<Survival> {
         C::CarpetBlock => S::NotOnAir,
         C::BaseRailBlock | C::DiodeBlock => S::OnTop(SupportType::Rigid),
         C::BasePressurePlateBlock => S::PressurePlate,
-        C::WallTorchBlock | C::RedstoneWallTorchBlock | C::LadderBlock => S::BehindSturdy,
+        C::WallTorchBlock | C::RedstoneWallTorchBlock | C::LadderBlock | C::TripWireHookBlock => {
+            S::BehindSturdy
+        }
+        C::BellBlock => S::Bell,
         C::BaseTorchBlock | C::CandleBlock => S::OnTop(SupportType::Center),
         C::StandingSignBlock | C::BannerBlock => S::OnSolid,
         C::WallSignBlock | C::WallBannerBlock => S::BehindSolid,
@@ -289,6 +295,27 @@ pub fn can_survive<V: BlockView + ?Sized>(state: BlockState, pos: BlockPos, view
                 view.block(relative(pos, towards)),
                 towards.opposite(),
                 SupportType::Full,
+            )
+        }
+        Survival::Bell => {
+            // `getConnectedDirection(state).getOpposite()`: the side its support is on.
+            let towards = match state.property("attachment") {
+                Some("floor") => Face::Down,
+                Some("ceiling") => Face::Up,
+                _ => match facing(state) {
+                    Some(facing) => facing,
+                    None => return false,
+                },
+            };
+            let support = if towards == Face::Up {
+                SupportType::Center
+            } else {
+                SupportType::Full
+            };
+            sturdy(
+                view.block(relative(pos, towards)),
+                towards.opposite(),
+                support,
             )
         }
         Survival::Lantern => {

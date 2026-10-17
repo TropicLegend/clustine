@@ -167,6 +167,9 @@ impl Region {
             position: pos,
             state,
         });
+        // The typed block entity there goes with a block of another kind, and a new
+        // one comes with a block that keeps one (`block_entities.rs`).
+        self.block_entity_changed(pos, old, state);
         // `affectNeighborsAfterRemoval` of the block that went, inside the chunk's set
         // in the game, before the new block's `onPlace`: only where the block is
         // another and the neighbours are to be told, or a piston moved it.
@@ -673,7 +676,7 @@ impl Region {
         }
         // A rail goes also where the block its slope rises onto went (`rails.rs`).
         if is_class(state, BlockClass::BaseRailBlock) {
-            self.rail_neighbour_changed(pos, state, output);
+            self.rail_neighbour_changed(pos, block, output);
             return;
         }
         // Wire, lamps, doors, trapdoors and gates (`redstone.rs`).

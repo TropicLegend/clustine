@@ -795,6 +795,9 @@ impl RegionEvent {
 /// The game's `SoundSource.BLOCKS`, which a block's sounds are of.
 pub const SOUND_SOURCE_BLOCKS: i32 = 4;
 
+/// The game's `SoundSource.RECORDS`, which a note block's notes are of.
+pub const SOUND_SOURCE_RECORDS: i32 = 2;
+
 /// What a tick resulted in.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TickOutput {

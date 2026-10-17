@@ -27,6 +27,12 @@ pub fn in_tag(state: BlockState, name: &str) -> bool {
     tag("minecraft:block", name).is_some_and(|entries| entries.contains(&(id as i32)))
 }
 
+/// Whether the item `item` (its id) is in the item tag `name`, such as
+/// `minecraft:noteblock_top_instruments`.
+pub fn item_in_tag(item: i32, name: &str) -> bool {
+    tag("minecraft:item", name).is_some_and(|entries| entries.contains(&item))
+}
+
 /// A block tag the rules ask often, looked up once.
 pub struct Tag {
     name: &'static str,

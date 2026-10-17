@@ -17,7 +17,7 @@ use crate::region::updates::relative;
 
 /// A region of player 1 with the 25 chunks within two of chunk (0, 0) loaded on the
 /// floor of [`floor`], and `blocks` set in them.
-fn ticking_with(blocks: &[(BlockPos, BlockState)]) -> Region {
+pub(super) fn ticking_with(blocks: &[(BlockPos, BlockState)]) -> Region {
     let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
     let around: Vec<ChunkPos> = (-2..=2)
         .flat_map(|x| (-2..=2).map(move |z| ChunkPos::new(x, z)))
@@ -45,18 +45,18 @@ fn ticking_with(blocks: &[(BlockPos, BlockState)]) -> Region {
     region
 }
 
-fn block_at(region: &Region, pos: BlockPos) -> Option<BlockState> {
+pub(super) fn block_at(region: &Region, pos: BlockPos) -> Option<BlockState> {
     let (x, z) = pos.in_chunk();
     region
         .chunk(pos.chunk())
         .and_then(|chunk| chunk.get(x, pos.y, z))
 }
 
-fn state(text: &str) -> BlockState {
+pub(super) fn state(text: &str) -> BlockState {
     BlockState::parse(text).expect("a state")
 }
 
-fn api_face(face: Face) -> crate::api::Face {
+pub(super) fn api_face(face: Face) -> crate::api::Face {
     match face {
         Face::Up => crate::api::Face::Top,
         Face::Down => crate::api::Face::Bottom,
@@ -68,7 +68,7 @@ fn api_face(face: Face) -> crate::api::Face {
 }
 
 /// Player 1 clicks the top of the block at `at` with what is in hand.
-fn click(at: BlockPos) -> TickInputs {
+pub(super) fn click(at: BlockPos) -> TickInputs {
     moves(vec![numbered(
         1,
         PlayerInput::UseItemOn {
@@ -81,12 +81,12 @@ fn click(at: BlockPos) -> TickInputs {
     )])
 }
 
-fn holding(item: i32) -> TickInputs {
+pub(super) fn holding(item: i32) -> TickInputs {
     let stack = ItemStack { item, count: 1 };
     moves(vec![set_slot(1, 0, Some(stack)), select(1, 0)])
 }
 
-fn sounds(output: &TickOutput) -> Vec<(i32, f32, f32, Option<PlayerId>)> {
+pub(super) fn sounds(output: &TickOutput) -> Vec<(i32, f32, f32, Option<PlayerId>)> {
     output
         .events
         .iter()
@@ -103,7 +103,7 @@ fn sounds(output: &TickOutput) -> Vec<(i32, f32, f32, Option<PlayerId>)> {
         .collect()
 }
 
-fn lever(powered: bool) -> BlockState {
+pub(super) fn lever(powered: bool) -> BlockState {
     state(&format!(
         "minecraft:lever[face=floor,facing=north,powered={powered}]"
     ))

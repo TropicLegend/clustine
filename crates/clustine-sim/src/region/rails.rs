@@ -1,34 +1,63 @@
 //! Rails that join their neighbours as they are placed, curving and sloping
-//! (`BaseRailBlock.onPlace`, `updateState` and `updateDir`, and `RailState`), and the
-//! rule under which a rail goes when what holds it goes (`BaseRailBlock.neighborChanged`
-//! and `shouldBeRemoved`). Read from the 26.3 jar's classes.
+//! (`BaseRailBlock.onPlace`, `updateState` and `updateDir`, and `RailState`), the rule
+//! under which a rail goes when what holds it goes (`BaseRailBlock.neighborChanged`
+//! and `shouldBeRemoved`), and what power does to rails (step R3b of
+//! `docs/adr/0026-redstone.md`). Read from the 26.3 jar's classes.
 //!
 //! A rail placed turns the rails beside it towards itself, each set with every update
 //! (`setBlockAndUpdate`) as the game sets it. Powered, detector and activator rails
-//! never curve (`isStraight`). What the game does besides with power is left for the
-//! phase of redstone, each where it would be:
+//! never curve (`isStraight`). Power:
 //!
-//! - a rail asks whether it is powered as it chooses between the curves of a junction
-//!   (`hasNeighborSignal`): Clustine's blocks give no power yet, so a rail is never
-//!   powered;
+//! - a rail chooses between the curves of a junction by whether it is powered
+//!   (`hasNeighborSignal`), as it is placed and when it turns again;
 //! - a plain rail at a junction of three turns again when a block that gives power
-//!   beside it changes (`RailBlock.updateState`), and a powered or activator rail is
-//!   powered along its line (`PoweredRailBlock.updateState`);
-//! - a detector rail tells comparators of its state (`DetectorRailBlock.checkPressed`),
-//!   which without minecarts never changes;
+//!   beside it changes (`RailBlock.updateState`);
+//! - a powered or activator rail is powered by power beside it, or along its line by
+//!   a powered rail of its kind up to eight rails away that has power beside it
+//!   (`PoweredRailBlock.updateState`, `findPoweredRailSignal`), and tells the blocks
+//!   below it, and above it on a slope, when that changes;
 //! - a rail taken away tells the blocks around it and the one above a slope
-//!   (`BaseRailBlock.affectNeighborsAfterRemoval`), which only power reads.
+//!   (`BaseRailBlock.affectNeighborsAfterRemoval`).
 //!
-//! A rail reads and turns only the blocks beside it, which a region that lets a player
-//! place has loaded (its ring); one it has not loaded reads as air and is left as it
-//! is, where the game would have it loaded.
+//! A detector rail tells comparators of its state (`DetectorRailBlock.checkPressed`),
+//! which without minecarts never changes.
+//!
+//! A rail's rules read signals, so they run only where its chunk ticks (section 1 of
+//! the record), where every block they read is loaded or copied.
 
 use clustine_blocks::data::{in_tag, is_class, relative};
 use clustine_data::{BlockClass, BlockState, Face, SupportType};
 use clustine_world::BlockPos;
 
 use super::Region;
+use super::updates::RegionView;
 use crate::api::TickOutput;
+use clustine_blocks::signal;
+
+/// The four sides, in the game's `Direction.Plane.HORIZONTAL` order.
+const HORIZONTAL_SIDES: [Face; 4] = [Face::North, Face::East, Face::South, Face::West];
+
+/// The region's blocks read without changing them, as the signal queries read them:
+/// a block of a chunk neither loaded nor copied reads as air, which the rules that
+/// read signals never meet, as they run only where their chunk ticks.
+struct ReadOnly<'r>(&'r Region);
+
+impl clustine_blocks::BlockView for ReadOnly<'_> {
+    fn block(&mut self, at: BlockPos) -> BlockState {
+        self.0.read(at)
+    }
+    fn raw_brightness(&mut self, _at: BlockPos) -> Option<u8> {
+        None
+    }
+    fn schedule_block_tick(&mut self, _at: BlockPos, _block: u16, _delay: i32) {}
+    fn schedule_fluid_tick(&mut self, _at: BlockPos, _fluid: u8, _delay: i32) {}
+    fn rules(&self) -> clustine_blocks::Rules {
+        self.0.rules()
+    }
+    fn next_int(&mut self, _bound: u32) -> u32 {
+        0
+    }
+}
 
 /// `RailShape`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,30 +216,231 @@ impl Region {
             return;
         };
         let rail = Rail::new(pos, state);
-        let placed = self.rail_place(rail, false, true, shape, output);
+        // Power is read only where the chunk ticks, where all it reaches is there (the
+        // record, section 1); a player places a rail nowhere else, and a rail set
+        // there otherwise chooses its curve as if unpowered.
+        let powered = self.ticks_chunk(pos.chunk())
+            && signal::has_neighbour_signal(&mut RegionView(self), pos);
+        let placed = self.rail_place(rail, powered, true, shape, output);
+        // `Level.neighborChanged` of the rail placed, through the updater.
         if placed.straight {
-            self.rail_neighbour_changed(pos, placed.state, output);
+            self.neighbour_changed_at(pos, Face::Down, placed.state, false, output);
         }
     }
 
     /// `BaseRailBlock.neighborChanged`: a rail goes where nothing rigid holds it, or
     /// where the block a slope rises onto went (`shouldBeRemoved`), as `removeBlock`
-    /// takes it; `state` is the rail's as the game passes it. What it does besides is
-    /// power's.
+    /// takes it, and otherwise follows power (`updateState`), told that `block`
+    /// changed beside it.
     pub(super) fn rail_neighbour_changed(
         &mut self,
         pos: BlockPos,
-        state: BlockState,
+        block: BlockState,
         output: &mut TickOutput,
     ) {
-        let Some(current) = self.block(pos) else {
+        let Some(state) = self.block(pos) else {
             return;
         };
-        if !clustine_blocks::data::is_block(current, state) {
+        if !is_class(state, BlockClass::BaseRailBlock) {
             return;
         }
         if self.rail_should_be_removed(pos, state) {
-            self.set_block(pos, super::updates::fluid_block(current), output);
+            self.set_block(pos, super::updates::fluid_block(state), output);
+            return;
+        }
+        if is_class(state, BlockClass::PoweredRailBlock) {
+            self.powered_rail_update(pos, state, output);
+        } else if is_class(state, BlockClass::RailBlock) {
+            self.plain_rail_update(pos, state, block, output);
+        }
+    }
+
+    /// `RailBlock.updateState`: a plain rail at a junction of three chooses its curve
+    /// again when a block that gives power changed beside it.
+    fn plain_rail_update(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        block: BlockState,
+        output: &mut TickOutput,
+    ) {
+        let source = block
+            .block()
+            .is_some_and(|of| signal::is_signal_source(of.default_state, signal::Query::ALL));
+        if !source {
+            return;
+        }
+        let Some(shape) = Shape::of(state) else {
+            return;
+        };
+        // `RailState.countPotentialConnections`: the sides with a rail at, above or
+        // below them.
+        let joins = HORIZONTAL_SIDES
+            .into_iter()
+            .filter(|side| self.rail_near(relative(pos, *side)).is_some())
+            .count();
+        if joins == 3 {
+            let rail = Rail::new(pos, state);
+            let powered = signal::has_neighbour_signal(&mut RegionView(self), pos);
+            self.rail_place(rail, powered, false, shape, output);
+        }
+    }
+
+    /// `PoweredRailBlock.updateState`: powered by power beside it or along its line,
+    /// set with every update, and then the blocks below it told, and above it where it
+    /// slopes.
+    fn powered_rail_update(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
+        let was = clustine_blocks::data::flag(state, "powered");
+        let powered = signal::has_neighbour_signal(&mut RegionView(self), pos)
+            || self.powered_rail_signal(pos, state, true, 0)
+            || self.powered_rail_signal(pos, state, false, 0);
+        if powered == was {
+            return;
+        }
+        let changed = clustine_blocks::data::set_flag(state, "powered", powered);
+        self.set_block(pos, changed, output);
+        self.update_neighbours_at(relative(pos, Face::Down), changed, output);
+        if Shape::of(state).and_then(Shape::rises_towards).is_some() {
+            self.update_neighbours_at(relative(pos, Face::Up), changed, output);
+        }
+    }
+
+    /// `PoweredRailBlock.findPoweredRailSignal`: whether the next rail along the line
+    /// of `state` at `pos`, forwards or back, at its height or one below (or one above
+    /// up a slope), is a powered rail of its kind that has power beside it or, within
+    /// eight rails, from further along.
+    fn powered_rail_signal(
+        &self,
+        pos: BlockPos,
+        state: BlockState,
+        forward: bool,
+        depth: u32,
+    ) -> bool {
+        if depth >= 8 {
+            return false;
+        }
+        let Some(shape) = Shape::of(state) else {
+            return false;
+        };
+        let (mut x, mut y, mut z) = (pos.x, pos.y, pos.z);
+        let mut below = true;
+        let line = match shape {
+            Shape::NorthSouth => {
+                z += if forward { 1 } else { -1 };
+                Shape::NorthSouth
+            }
+            Shape::EastWest => {
+                x += if forward { -1 } else { 1 };
+                Shape::EastWest
+            }
+            Shape::AscendingEast => {
+                if forward {
+                    x -= 1;
+                } else {
+                    x += 1;
+                    y += 1;
+                    below = false;
+                }
+                Shape::EastWest
+            }
+            Shape::AscendingWest => {
+                if forward {
+                    x -= 1;
+                    y += 1;
+                    below = false;
+                } else {
+                    x += 1;
+                }
+                Shape::EastWest
+            }
+            Shape::AscendingNorth => {
+                if forward {
+                    z += 1;
+                } else {
+                    z -= 1;
+                    y += 1;
+                    below = false;
+                }
+                Shape::NorthSouth
+            }
+            Shape::AscendingSouth => {
+                if forward {
+                    z += 1;
+                    y += 1;
+                    below = false;
+                } else {
+                    z -= 1;
+                }
+                Shape::NorthSouth
+            }
+            // A powered rail never curves.
+            curve => curve,
+        };
+        let next = BlockPos::new(x, y, z);
+        self.same_rail_with_power(next, state, forward, depth, line)
+            || (below
+                && self.same_rail_with_power(
+                    BlockPos::new(x, y - 1, z),
+                    state,
+                    forward,
+                    depth,
+                    line,
+                ))
+    }
+
+    /// `PoweredRailBlock.isSameRailWithPower`: a rail of the block of `rail` at `pos`,
+    /// on the line `line`, powered, with power beside it or from further along.
+    fn same_rail_with_power(
+        &self,
+        pos: BlockPos,
+        rail: BlockState,
+        forward: bool,
+        depth: u32,
+        line: Shape,
+    ) -> bool {
+        let state = self.read(pos);
+        if !clustine_blocks::data::same_block(state, rail) {
+            return false;
+        }
+        let Some(other) = Shape::of(state) else {
+            return false;
+        };
+        let across = match line {
+            Shape::EastWest => matches!(
+                other,
+                Shape::NorthSouth | Shape::AscendingNorth | Shape::AscendingSouth
+            ),
+            Shape::NorthSouth => matches!(
+                other,
+                Shape::EastWest | Shape::AscendingEast | Shape::AscendingWest
+            ),
+            _ => false,
+        };
+        if across || !clustine_blocks::data::flag(state, "powered") {
+            return false;
+        }
+        signal::has_neighbour_signal(&mut ReadOnly(self), pos)
+            || self.powered_rail_signal(pos, state, forward, depth + 1)
+    }
+
+    /// `BaseRailBlock.affectNeighborsAfterRemoval` of `old`, a rail that has just gone
+    /// at `pos`: the blocks around the one above a slope are told, and for a straight
+    /// rail those around it and around the block below it.
+    pub(super) fn rail_after_removal(
+        &mut self,
+        pos: BlockPos,
+        old: BlockState,
+        output: &mut TickOutput,
+    ) {
+        if !is_class(old, BlockClass::BaseRailBlock) {
+            return;
+        }
+        if Shape::of(old).and_then(Shape::rises_towards).is_some() {
+            self.update_neighbours_at(relative(pos, Face::Up), old, output);
+        }
+        if is_straight(old) {
+            self.update_neighbours_at(pos, old, output);
+            self.update_neighbours_at(relative(pos, Face::Down), old, output);
         }
     }
 
