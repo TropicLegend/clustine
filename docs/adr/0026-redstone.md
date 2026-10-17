@@ -504,6 +504,38 @@ R3b, note blocks, bells, copper bulbs, rails, dripleaf, plates, tripwire, redsto
   resonance, shears on tripwire, game events and vibrations. A copper bulb has its
   analog output for R4's comparators.
 
+R4, torches, repeaters, comparators, observers, target blocks (2026-10-17, by a
+subagent, read against the jar):
+
+- **The comparator's output is the second typed block entity, and the first durable
+  one**: written as the game writes it (`{components:{}, OutputSignal:n}`, in Java's
+  `HashMap` order), through `set_block_entity_data` whenever it changes, so that a
+  commit carries it, and read back from a chunk's data at a load and a restore, and
+  from a copy's across a line. A comparator whose output has never changed keeps an
+  empty block entity, which reads as 0, where the game saves `OutputSignal: 0`. Its
+  data is not sent to clients, as the game sends no update of it.
+- **Burnout is the jar's**: only a torch going out is counted, and the eighth time
+  within 60 ticks, the new one included, puts it out, with level event 1502 alone (the
+  client plays the hiss). A torch put out by outside power lights again; a torch clock
+  that feeds itself stays out until a neighbour changes once 60 ticks have passed, as
+  in the game. The list is a field of the region, emptied at a restore, which merges and
+  splits go through.
+- **A repeater's click has no sound** in the jar; a comparator's plays before its set.
+  The diodes' priorities follow `shouldPrioritize` as the jar has it (a diode in front
+  whose facing is not this one's front), locking is set in `updateShape` and worked out
+  again in ticks; a repeater and a comparator also go when the block below can no longer
+  hold them, in `updateShape`, which generation's shape rules now do too.
+- **Two observers facing each other pulse every 6 ticks** by the jar's order of their
+  ticks, not 4. That is read from the code, not seen in the game, and is one of R8's
+  comparisons with the official server, with the torch clock that stays out.
+- A target block without projectiles only conducts. Placement: a torch is placed lit
+  and its own `onPlace` puts it out two ticks later where it stands on power; a diode
+  that should be on ticks a tick after it is placed. Repeaters and comparators are
+  refused where the chunk does not tick.
+- Waiting for entities and inventories: comparators reading containers, the jukebox's
+  disc, the creaking heart, sculk sensors, command blocks, detector rails and item
+  frames; a comparator reads 0 from them until then.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are
