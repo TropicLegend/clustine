@@ -284,6 +284,10 @@ pub struct Region {
     /// effect was made in, from which the ticks it schedules count. `None` otherwise,
     /// and between ticks; no part of the state.
     made_in: Option<i64>,
+    /// The game's `isHandlingTick`: true from the region's seam phase through its
+    /// block events, false while inputs, entities and block entities run, and between
+    /// ticks (`docs/adr/0026-redstone.md`, section 3); no part of the state.
+    handling_tick: bool,
 }
 
 impl Region {
@@ -335,6 +339,7 @@ impl Region {
             draws: 0,
             made: Vec::new(),
             made_in: None,
+            handling_tick: false,
             tickets: BTreeMap::new(),
             requested: BTreeSet::new(),
             players,
@@ -563,6 +568,13 @@ impl Region {
         theirs.next().map(|player| player.edge)
     }
 
+    /// Whether the region handles its tick, as the game's `isHandlingTick` says.
+    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn handling_tick(&self) -> bool {
+        self.handling_tick
+    }
+
     /// Advances the region by one tick.
     pub fn tick(&mut self, inputs: &TickInputs) -> TickOutput {
         self.tick += 1;
@@ -633,11 +645,15 @@ impl Region {
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
         self.update_ticking();
+        // What another region sent was made while it handled its tick, and is done so
+        // here too.
+        self.handling_tick = true;
         self.run_seams(&inputs.effects, &mut output);
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
         self.run_random_ticks(&mut output);
+        self.handling_tick = false;
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
         // they stay, and the answer decides.
@@ -2127,6 +2143,7 @@ mod tests {
     mod effects;
     mod fluids;
     mod post_processing_and_seams;
+    mod redstone_ground;
     mod scheduled_ticks;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);

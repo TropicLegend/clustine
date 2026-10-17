@@ -348,6 +348,23 @@ R2a, the ordered list of changes (2026-10-17):
   refused alike in the region's chunk, a copy, the edge's replica and a replay, so
   all keep the block entity without it.
 
+R2b, the simulation's ground, first part (2026-10-17):
+
+- **The updater's entries are the game's three**: the six neighbours (`Neighbours`,
+  with a side to skip for `updateNeighborsAtExceptFromFacing`), a single block
+  (`Single`), and a shape asked again. A multiple update keeps the block that changed
+  as it was when the update was made, the game's `sourceBlock`, where it read the
+  block afresh at each step before; a kept entry carries it as its source, and
+  moved-by-piston as the game's flag 64.
+- **`has_scheduled_tick` and `will_tick_this_tick` answer of the queues**, which hold
+  only the ticks of chunks that tick; a chunk that does not tick keeps its ticks in
+  itself, where redstone's rules never ask.
+- **A test of E6 raced**: `a_handshake_under_way_survives_a_restart_of_the_store` took
+  the disk as a crash leaves it after dropping its regions' handles, and a handle
+  closed ends its region's couplings and calls off its handshakes, which a crash does
+  not. Whether the store had done so first depended on scheduling: 32 of 200 runs
+  failed twelve at a time. The disk is now taken while the handles are open.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

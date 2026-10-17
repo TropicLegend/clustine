@@ -1584,7 +1584,7 @@ fn couplings_and_their_offsets_survive_a_restart_of_the_store() {
 #[test]
 fn a_handshake_under_way_survives_a_restart_of_the_store() {
     let disk = Arc::new(MemoryDisk::default());
-    {
+    let left = {
         let (store, _hands) = clocked_on(&disk, &division());
         let (mut west, _) = Played::open(&store, 0, 1);
         let (mut east, _) = Played::open(&store, 1, 1);
@@ -1611,8 +1611,12 @@ fn a_handshake_under_way_survives_a_restart_of_the_store() {
         });
         west.commit(&[], &[], &[]);
         west.settled(&store);
-    }
-    let left = Arc::new(disk.crashed(Survival::Nothing));
+        // The disk as a crash leaves it, taken while the regions' handles are open: a
+        // handle closed ends its region's couplings and calls off its handshakes, which
+        // a crash does not, and the store may or may not have done so by the time a
+        // copy taken after the drops is made.
+        Arc::new(disk.crashed(Survival::Nothing))
+    };
     let (store, _hands) = clocked_on(&left, &division());
     let (_, west) = Played::open(&store, 0, 10);
     assert_eq!(west.handshakes, [RegionId(1)]);

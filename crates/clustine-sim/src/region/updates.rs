@@ -16,8 +16,9 @@
 //!   own chunk, and a seam entry whose block comes to be another region's is sent on.
 //!
 //! `neighborChanged` only removes what can no longer stay (rails, repeaters and
-//! comparators, redstone wire) and has a liquid look again; power waits for the phase
-//! of redstone.
+//! comparators, redstone wire) and has a liquid look again; it is told the block that
+//! changed and whether a piston moved it, which redstone's rules read
+//! (`docs/adr/0026-redstone.md`, section 2).
 
 use clustine_blocks::BlockView;
 use clustine_blocks::data::{is_class, same_block};
@@ -41,6 +42,9 @@ pub(crate) const UPDATE_CLIENTS: u32 = 2;
 pub(crate) const UPDATE_KNOWN_SHAPE: u32 = 16;
 /// `Block.UPDATE_SUPPRESS_DROPS`: a block destroyed by the change drops nothing.
 pub(crate) const UPDATE_SUPPRESS_DROPS: u32 = 32;
+/// `Block.UPDATE_MOVE_BY_PISTON`: the change is a piston's move. A kept update keeps it
+/// among its flags, for the `movedByPiston` of the `neighborChanged` it makes.
+pub(crate) const UPDATE_MOVE_BY_PISTON: u32 = 64;
 /// `Block.UPDATE_ALL`: what a player's placing and breaking and `destroyBlock` use.
 pub(crate) const UPDATE_ALL: u32 = UPDATE_NEIGHBORS | UPDATE_CLIENTS;
 
@@ -82,9 +86,26 @@ enum Pending {
         flags: u32,
         depth: i32,
     },
-    /// `MultiNeighborUpdate`: the six neighbours of `source` are told, one at a time;
-    /// `next` is the next of [`UPDATE_ORDER`].
-    Neighbours { source: BlockPos, next: usize },
+    /// `MultiNeighborUpdate`: the six neighbours of `source` are told, one at a time,
+    /// but the one towards `skip`; `next` is the next of [`UPDATE_ORDER`]. `block` is
+    /// the block that changed as it was when the update was made, which each is told.
+    Neighbours {
+        source: BlockPos,
+        block: BlockState,
+        skip: Option<Face>,
+        next: usize,
+    },
+    /// `SimpleNeighborUpdate` and `FullNeighborUpdate`: the block at `pos` is told that
+    /// `block`, towards `from`, changed. `from` is a neighbour, or the block an update
+    /// came through (`updateNeighbourForOutputSignal`), and is where the update is kept
+    /// if it cannot be made.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Single {
+        pos: BlockPos,
+        from: Face,
+        block: BlockState,
+        moved_by_piston: bool,
+    },
 }
 
 /// The updater of one change: the game's `CollectingNeighborUpdater`, which runs
@@ -168,13 +189,7 @@ impl Region {
             return true;
         }
         if flags & UPDATE_NEIGHBORS != 0 {
-            self.add_and_run(
-                Pending::Neighbours {
-                    source: pos,
-                    next: 0,
-                },
-                output,
-            );
+            self.update_neighbours_at(pos, state, output);
         }
         if flags & UPDATE_KNOWN_SHAPE == 0 && depth > 0 {
             let passed = flags & !(UPDATE_NEIGHBORS | UPDATE_SUPPRESS_DROPS);
@@ -279,6 +294,103 @@ impl Region {
         }
     }
 
+    /// `Level.updateNeighborsAt(pos, block)`: the six neighbours of `pos` are told that
+    /// `block` there changed, in [`UPDATE_ORDER`].
+    pub(crate) fn update_neighbours_at(
+        &mut self,
+        pos: BlockPos,
+        block: BlockState,
+        output: &mut TickOutput,
+    ) {
+        self.add_and_run(
+            Pending::Neighbours {
+                source: pos,
+                block,
+                skip: None,
+                next: 0,
+            },
+            output,
+        );
+    }
+
+    /// `Level.updateNeighborsAtExceptFromFacing`: as [`Self::update_neighbours_at`],
+    /// but for the neighbour towards `skip`, which a diode or an observer has told
+    /// already.
+    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn update_neighbours_at_except(
+        &mut self,
+        pos: BlockPos,
+        block: BlockState,
+        skip: Face,
+        output: &mut TickOutput,
+    ) {
+        self.add_and_run(
+            Pending::Neighbours {
+                source: pos,
+                block,
+                skip: Some(skip),
+                next: 0,
+            },
+            output,
+        );
+    }
+
+    /// `Level.neighborChanged(pos, block, orientation)`, and with `moved_by_piston`
+    /// the game's `neighborChanged` of a state: the block at `pos` is told that
+    /// `block`, towards `from`, changed.
+    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn neighbour_changed_at(
+        &mut self,
+        pos: BlockPos,
+        from: Face,
+        block: BlockState,
+        moved_by_piston: bool,
+        output: &mut TickOutput,
+    ) {
+        self.add_and_run(
+            Pending::Single {
+                pos,
+                from,
+                block,
+                moved_by_piston,
+            },
+            output,
+        );
+    }
+
+    /// `Level.updateNeighbourForOutputSignal(pos, block)`: a comparator beside `pos`,
+    /// or one beyond a conductor beside it, is told that `block` changed, for each
+    /// side in the game's horizontal order (north, east, south, west).
+    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn update_neighbour_for_output_signal(
+        &mut self,
+        pos: BlockPos,
+        block: BlockState,
+        output: &mut TickOutput,
+    ) {
+        for direction in [Face::North, Face::East, Face::South, Face::West] {
+            let beside = relative(pos, direction);
+            let Some(state) = self.block(beside) else {
+                continue;
+            };
+            if is_class(state, BlockClass::ComparatorBlock) {
+                self.neighbour_changed_at(beside, opposite(direction), block, false, output);
+            } else if clustine_blocks::connect::is_conductor(state) {
+                let beyond = relative(beside, direction);
+                if self
+                    .block(beyond)
+                    .is_some_and(|state| is_class(state, BlockClass::ComparatorBlock))
+                {
+                    // Kept, if it cannot be made, towards the block it came through.
+                    self.neighbour_changed_at(beyond, opposite(direction), block, false, output);
+                }
+            }
+        }
+    }
+
     /// `CollectingNeighborUpdater.addAndRun`.
     fn add_and_run(&mut self, pending: Pending, output: &mut TickOutput) {
         let running = self.updater.count > 0;
@@ -307,11 +419,21 @@ impl Region {
             let Some(top) = self.updater.stack.last_mut() else {
                 break;
             };
+            // A multiple update that skips a side passes over it: the step it takes is
+            // the next it does not skip.
+            if let Pending::Neighbours { skip, next, .. } = top
+                && *skip == Some(UPDATE_ORDER[*next])
+            {
+                *next += 1;
+            }
             let current = *top;
             let finished = match top {
-                Pending::Shape { .. } => true,
-                Pending::Neighbours { next, .. } => {
+                Pending::Shape { .. } | Pending::Single { .. } => true,
+                Pending::Neighbours { skip, next, .. } => {
                     *next += 1;
+                    if *skip == UPDATE_ORDER.get(*next).copied() {
+                        *next += 1;
+                    }
                     *next >= UPDATE_ORDER.len()
                 }
             };
@@ -333,24 +455,57 @@ impl Region {
                 flags,
                 depth,
             } => self.shape_update(pos, direction, neighbour, flags, depth, output),
-            Pending::Neighbours { source, next } => {
-                let target = relative(source, UPDATE_ORDER[next]);
-                if self.sends_to(target.chunk()) || !self.readable_around(target) {
-                    let source_state = self.block(source).unwrap_or(blocks::AIR);
-                    let seam = Seam {
-                        at: target,
-                        direction: opposite(UPDATE_ORDER[next]) as u8,
-                        kind: SeamKind::Neighbour,
-                        source: source_state,
-                        flags: UPDATE_NEIGHBORS,
-                        depth: 0,
-                    };
-                    self.send_or_keep(source, seam);
-                    return;
-                }
-                self.neighbour_changed(target, output);
+            Pending::Neighbours {
+                source,
+                block,
+                next,
+                ..
+            } => {
+                let towards = UPDATE_ORDER[next];
+                self.tell(
+                    relative(source, towards),
+                    opposite(towards),
+                    block,
+                    false,
+                    output,
+                );
             }
+            Pending::Single {
+                pos,
+                from,
+                block,
+                moved_by_piston,
+            } => self.tell(pos, from, block, moved_by_piston, output),
         }
+    }
+
+    /// One block told that `block`, towards `from`, changed: here, or kept as a seam
+    /// entry in the chunk of the block it came from, or sent on as an effect.
+    fn tell(
+        &mut self,
+        target: BlockPos,
+        from: Face,
+        block: BlockState,
+        moved_by_piston: bool,
+        output: &mut TickOutput,
+    ) {
+        if self.sends_to(target.chunk()) || !self.readable_around(target) {
+            let mut flags = UPDATE_NEIGHBORS;
+            if moved_by_piston {
+                flags |= UPDATE_MOVE_BY_PISTON;
+            }
+            let seam = Seam {
+                at: target,
+                direction: from as u8,
+                kind: SeamKind::Neighbour,
+                source: block,
+                flags,
+                depth: 0,
+            };
+            self.send_or_keep(relative(target, from), seam);
+            return;
+        }
+        self.neighbour_changed(target, block, moved_by_piston, output);
     }
 
     /// `executeShapeUpdate` and `Block.updateOrDestroy`.
@@ -424,7 +579,18 @@ impl Region {
     /// `neighborChanged` of the block at `pos`, for what goes when it can no longer
     /// stay: rails, repeaters and comparators, redstone wire (`removeBlock`, without
     /// the bits of a broken block).
-    fn neighbour_changed(&mut self, pos: BlockPos, output: &mut TickOutput) {
+    ///
+    /// `block` is the block that changed and `moved_by_piston` whether a piston moved
+    /// it, as the game's `neighborChanged` is given them; nothing reads them before
+    /// the rules of redstone (`docs/adr/0026-redstone.md`, section 2).
+    fn neighbour_changed(
+        &mut self,
+        pos: BlockPos,
+        block: BlockState,
+        moved_by_piston: bool,
+        output: &mut TickOutput,
+    ) {
+        let _ = (block, moved_by_piston);
         if !self.readable_around(pos) {
             return;
         }
@@ -570,7 +736,12 @@ impl Region {
                 },
                 output,
             ),
-            SeamKind::Neighbour => self.neighbour_changed(seam.at, output),
+            SeamKind::Neighbour => self.neighbour_changed(
+                seam.at,
+                seam.source,
+                seam.flags & UPDATE_MOVE_BY_PISTON != 0,
+                output,
+            ),
         }
     }
 
@@ -734,7 +905,7 @@ fn face_of(number: u8) -> Face {
     }
 }
 
-fn relative(pos: BlockPos, face: Face) -> BlockPos {
+pub(crate) fn relative(pos: BlockPos, face: Face) -> BlockPos {
     let (dx, dy, dz) = match face {
         Face::Down => (0, -1, 0),
         Face::Up => (0, 1, 0),
