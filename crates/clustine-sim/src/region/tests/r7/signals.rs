@@ -40,7 +40,8 @@ fn a_levers_click_is_heard_by_everyone_at_the_games_pitches() {
 }
 
 /// `RedstoneLampBlock`: lit in the update that powers it, put out by a tick four ticks
-/// after its power goes.
+/// after its power goes, which for a click is three after its own tick, since the game
+/// handles a player's packet between ticks, at the time of the tick before (R8).
 #[test]
 fn a_lamp_lights_at_once_and_goes_out_four_ticks_after_its_power() {
     let lamp = at(3, -60, 2);
@@ -50,7 +51,7 @@ fn a_lamp_lights_at_once_and_goes_out_four_ticks_after_its_power() {
     step(&mut region, &click(LEVER));
     assert!(on(&region, lamp, "lit"), "the lamp waits for its tick");
     let lit = watch(&mut region, 5, |region| on(region, lamp, "lit"));
-    assert_eq!(lit, [true, true, true, false, false]);
+    assert_eq!(lit, [true, true, false, false, false]);
 }
 
 /// A lamp powered again before its tick stays lit: the tick finds it powered and does
@@ -123,8 +124,9 @@ fn a_trapdoor_and_a_gate_open_and_close_with_power() {
 }
 
 /// A button is let go by a tick of its block set's time pressed: 20 for stone, 30 for
-/// wood (`BlockSetType.ticksToStayPressed`). Its click on is played for all but the
-/// presser, whose client plays it; its click off for all.
+/// wood (`BlockSetType.ticksToStayPressed`), counted from the tick before the press's
+/// own, as the game handles a player's packet between ticks. Its click on is played
+/// for all but the presser, whose client plays it; its click off for all.
 #[test]
 fn a_stone_button_stays_pressed_twenty_ticks_and_an_oak_button_thirty() {
     for (name, pressed, click_on, click_off) in [
@@ -160,11 +162,13 @@ fn a_stone_button_stays_pressed_twenty_ticks_and_an_oak_button_thirty() {
                 released = Some(tick);
                 assert_eq!(sounds(&output), [(click_off, 1.0, 1.0, None)], "{name}");
             }
-            // The lamp goes out four ticks after the button.
+            // The lamp goes out four ticks after the button, which lets go in the
+            // tick before its time is up, the press counting from the tick before its
+            // own.
             let lamp_lit = on(&region, lamp, "lit");
-            assert_eq!(lamp_lit, tick < pressed + 4, "{name}, tick {tick}");
+            assert_eq!(lamp_lit, tick < pressed + 3, "{name}, tick {tick}");
         }
-        assert_eq!(released, Some(pressed), "{name}");
+        assert_eq!(released, Some(pressed - 1), "{name}");
     }
 }
 
@@ -180,10 +184,13 @@ fn a_pressed_button_clicked_again_keeps_its_time() {
     let output = step(&mut region, &click(LEVER));
     assert_eq!(sounds(&output), []);
     let pressed = watch(&mut region, 10, |region| on(region, LEVER, "powered"));
-    // Released in tick 20 after the first click: the eighth tick of these.
+    // Released in tick 19 after the first click, which counts from the tick before
+    // its own: the eighth tick of these.
     assert_eq!(
         pressed,
-        [true, true, true, true, true, true, true, true, false, false]
+        [
+            true, true, true, true, true, true, true, false, false, false
+        ]
     );
 }
 
@@ -208,18 +215,19 @@ fn torch_on_powered_block() -> Region {
 }
 
 /// `RedstoneTorchBlock`: a neighbour's change schedules a tick of 2 where the torch's
-/// light disagrees with its block's power, and the tick sets it.
+/// light disagrees with its block's power, and the tick sets it: for a click, the tick
+/// after its own, which counts from the tick before.
 #[test]
 fn a_torch_goes_out_two_ticks_after_its_block_is_powered_and_lights_two_after() {
     let mut region = torch_on_powered_block();
     step(&mut region, &click(TOP));
     assert!(on(&region, TORCH, "lit"));
     let lit = watch(&mut region, 3, |region| on(region, TORCH, "lit"));
-    assert_eq!(lit, [true, false, false]);
+    assert_eq!(lit, [false, false, false]);
     step(&mut region, &click(TOP));
     assert!(!on(&region, TORCH, "lit"));
     let lit = watch(&mut region, 3, |region| on(region, TORCH, "lit"));
-    assert_eq!(lit, [false, true, true]);
+    assert_eq!(lit, [true, true, true]);
 }
 
 /// Burnout as the jar has it (`RedstoneTorchBlock.tick` and `isToggledTooFrequently`):
@@ -241,7 +249,8 @@ fn a_torch_put_out_eight_times_within_sixty_ticks_burns_out_and_lights_160_ticks
         burnt.extend(level_events(&output).into_iter().map(|event| (tick, event)));
     };
     // Eight cycles, the lever on at 6i + 1 and off at 6i + 4: the torch goes out at
-    // 6i + 3 and lights at 6i + 6, but for the eighth time out.
+    // 6i + 2 and lights at 6i + 5, a click counting from the tick before its own, but
+    // for the eighth time out.
     for _ in 0..8 {
         advance(&mut region, &click(TOP));
         advance(&mut region, &TickInputs::default());
@@ -261,12 +270,12 @@ fn a_torch_put_out_eight_times_within_sixty_ticks_burns_out_and_lights_160_ticks
         .collect();
     let mut expected = Vec::new();
     for i in 0..7 {
-        expected.push((6 * i + 3, false));
-        expected.push((6 * i + 6, true));
+        expected.push((6 * i + 2, false));
+        expected.push((6 * i + 5, true));
     }
-    expected.extend([(45, false), (205, true)]);
+    expected.extend([(44, false), (204, true)]);
     assert_eq!(changes, expected);
-    assert_eq!(burnt, [(45, (1502, TORCH, 0))]);
+    assert_eq!(burnt, [(44, (1502, TORCH, 0))]);
 }
 
 /// A torch clock: a torch on the side of a block, its wire led up onto that block, so
@@ -274,7 +283,8 @@ fn a_torch_put_out_eight_times_within_sixty_ticks_burns_out_and_lights_160_ticks
 /// four ticks, burns out the eighth time, and stays out: its last tick finds it toggled
 /// too often and schedules nothing, and the tick of 160 that burning out asked for was
 /// dropped for the tick of 2 its own going out had scheduled. A neighbour changed after
-/// the toggles are older than 60 ticks lights it again, two ticks later.
+/// the toggles are older than 60 ticks lights it again, two game ticks later. The
+/// official server does the same (R8). Placings count from the tick before their own.
 #[test]
 fn a_torch_clock_that_feeds_itself_burns_out_and_stays_out_until_a_neighbour_changes() {
     let block = at(3, -60, 3);
@@ -307,20 +317,20 @@ fn a_torch_clock_that_feeds_itself_burns_out_and_stays_out_until_a_neighbour_cha
         lit.push(on(&region, torch, "lit"));
         burnt.extend(level_events(&output).into_iter().map(|event| (tick, event)));
     }
-    // Out at 2, 6, ..., 30; lit at 4, 8, ..., 28.
+    // Out at 1, 5, ..., 29; lit at 3, 7, ..., 27.
     for (index, lit) in lit.iter().enumerate() {
         let tick = index + 1;
-        let expected = tick < 30 && tick % 4 <= 1;
+        let expected = tick < 29 && (tick + 1) % 4 <= 1;
         assert_eq!(*lit, expected, "tick {tick}");
     }
-    assert_eq!(burnt, [(30, (1502, torch, 0))]);
+    assert_eq!(burnt, [(29, (1502, torch, 0))]);
     assert_eq!(power(&region, on_block), 0);
     // A block set beside the torch, long after the toggles are older than 60 ticks.
     step(&mut region, &holding(items::STONE));
     step(&mut region, &use_on(at(5, -61, 3), Face::Top));
     assert_eq!(block_at(&region, at(5, -60, 3)), Some(blocks::STONE));
     let lit = watch(&mut region, 6, |region| on(region, torch, "lit"));
-    assert_eq!(lit, [false, true, true, false, false, true]);
+    assert_eq!(lit, [true, true, false, false, true, true]);
 }
 
 /// `CopperBulbBlock.checkAndFlip`: in the update, a bulb whose power differs from its
@@ -370,9 +380,11 @@ fn a_comparator_reads_fifteen_from_a_lit_copper_bulb() {
         ),
         (out, wire("east=side,west=side")),
     ]);
+    // The comparator's tick of 2 runs in the next tick, the click counting from the
+    // tick before its own.
     step(&mut region, &click(LEVER));
     let powers = watch(&mut region, 3, |region| power(region, out));
-    assert_eq!(powers, [0, 15, 15]);
+    assert_eq!(powers, [15; 3]);
 }
 
 /// `PoweredRailBlock.findPoweredRailSignal`: a rail is powered through up to eight
@@ -573,8 +585,8 @@ fn wire_updates_its_neighbours_in_the_order_of_javas_hash_set() {
 }
 
 /// The burnout list is not durable (section 12): dropped at a restore. A torch clock
-/// burnt out and restored lights again two ticks after a neighbour changes, though its
-/// toggles are not 60 ticks old.
+/// burnt out and restored lights again two game ticks after a neighbour changes, in the
+/// tick after a placing's, though its toggles are not 60 ticks old.
 #[test]
 fn a_burnt_out_torch_restored_lights_again_when_a_neighbour_changes() {
     let block = at(3, -60, 3);
@@ -590,12 +602,12 @@ fn a_burnt_out_torch_restored_lights_again_when_a_neighbour_changes() {
     for _ in 0..35 {
         idle(&mut region);
     }
-    assert!(!on(&region, torch, "lit"), "burnt out at 30");
+    assert!(!on(&region, torch, "lit"), "burnt out at 29");
     let mut restored = super::super::scheduled_ticks::restored(&region);
     step(&mut restored, &holding(items::STONE));
     step(&mut restored, &use_on(at(5, -61, 3), Face::Top));
     let lit = watch(&mut restored, 2, |region| on(region, torch, "lit"));
-    assert_eq!(lit, [false, true]);
+    assert_eq!(lit, [true, true]);
 }
 
 /// `RedStoneOreBlock.useItemOn`: a click lights the ore and, with a block in hand that
@@ -625,10 +637,11 @@ fn a_player_stepping_on_redstone_ore_lights_it() {
     assert!(on(&region, ore, "lit"));
 }
 
-/// Section 8: the mark of the phase of block events is said once, in a tick that has
-/// block events, before the first of them; the changes made from it on (a piston's
-/// base set extended) come after it, the changes of the inputs (the lever) before. A
-/// tick without block events has no mark.
+/// Section 8: the mark of the phase of block events is said once, before the first of
+/// them; the changes made from it on (a piston's base set extended) come after it, the
+/// changes of the inputs (the lever) before. Since R8 it is said in any tick in which
+/// something comes after it, as a piston's move going on in the block entities' phase
+/// does, and not in a quiet one.
 #[test]
 fn the_phase_of_block_events_is_marked_once_between_the_inputs_changes_and_its_own() {
     let piston = at(3, -60, 3);
@@ -658,6 +671,23 @@ fn the_phase_of_block_events_is_marked_once_between_the_inputs_changes_and_its_o
     };
     assert!(position_of(lever_at) < marks[0]);
     assert!(marks[0] < position_of(piston));
+    // The move finishes two ticks on, after the mark; then nothing follows it.
+    idle(&mut region);
+    let output = idle(&mut region);
+    let finished = output
+        .events
+        .iter()
+        .position(|event| matches!(event, RegionEvent::BlockChanged { .. }))
+        .expect("the head is set");
+    let mark = output
+        .events
+        .iter()
+        .position(|event| *event == RegionEvent::BlockEventsBegin);
+    assert!(
+        mark.is_some_and(|mark| mark < finished),
+        "{:?}",
+        output.events
+    );
     let output = idle(&mut region);
     assert!(!output.events.contains(&RegionEvent::BlockEventsBegin));
 }

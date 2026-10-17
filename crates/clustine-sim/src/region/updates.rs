@@ -39,7 +39,8 @@ use crate::api::{RegionEvent, TickOutput};
 
 /// `Block.UPDATE_NEIGHBORS`: the neighbours are told (`neighborChanged`).
 pub(crate) const UPDATE_NEIGHBORS: u32 = 1;
-/// `Block.UPDATE_CLIENTS`: the clients are told. Clustine tells them of every change.
+/// `Block.UPDATE_CLIENTS`: the clients are told. A change without it is sent only where
+/// the block is to be sent for another (`RegionEvent::BlockChanged`).
 pub(crate) const UPDATE_CLIENTS: u32 = 2;
 /// `Block.UPDATE_KNOWN_SHAPE`: the neighbours' shapes are not asked again.
 pub(crate) const UPDATE_KNOWN_SHAPE: u32 = 16;
@@ -172,6 +173,7 @@ impl Region {
         output.events.push(RegionEvent::BlockChanged {
             position: pos,
             state,
+            seen: flags & UPDATE_CLIENTS != 0,
         });
         // A circuit's part gone may leave a lent chunk unneeded, and a part that
         // changes is a circuit at work (`docs/adr/0027-lending-at-a-line.md`, sections

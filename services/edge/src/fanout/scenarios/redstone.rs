@@ -60,6 +60,7 @@ async fn block_changes_after_the_beginning_of_block_events_go_with_the_regions_n
                 RegionEvent::BlockChanged {
                     position: before,
                     state: STONE,
+                    seen: true,
                 },
                 RegionEvent::BlockEventsBegin,
                 RegionEvent::BlockEvent {
@@ -71,6 +72,7 @@ async fn block_changes_after_the_beginning_of_block_events_go_with_the_regions_n
                 RegionEvent::BlockChanged {
                     position: after,
                     state: STONE,
+                    seen: true,
                 },
             ],
         ),
@@ -91,6 +93,39 @@ async fn block_changes_after_the_beginning_of_block_events_go_with_the_regions_n
         first.heard,
         [Received::Block(before), event, Received::Block(after)]
     );
+    edge.end().await;
+}
+
+/// A block set without the game's `UPDATE_CLIENTS` (a block a piston moves, which
+/// clients move themselves from the piston's block event) is not sent for itself, but
+/// a block waiting to be sent goes as it is when it goes, as `broadcastChanges` reads
+/// the level then.
+#[tokio::test]
+async fn a_block_set_without_telling_clients_is_sent_only_where_another_change_sends_it() {
+    let (mut edge, mut first, _) = two_at_home().await;
+    let moved = BlockPos::new(3, -60, 5);
+    let waiting = BlockPos::new(4, -60, 5);
+    let changed = |position, state, seen| RegionEvent::BlockChanged {
+        position,
+        state,
+        seen,
+    };
+    edge.tell(
+        WEST,
+        tick(
+            2,
+            vec![
+                changed(moved, STONE, false),
+                changed(waiting, STONE, true),
+                changed(waiting, GRANITE, false),
+            ],
+        ),
+    );
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    assert_eq!(first.heard, [Received::Block(waiting)]);
+    assert_eq!(first.blocks.get(&waiting), Some(&i32::from(GRANITE.0)));
+    assert_eq!(first.blocks.get(&moved), None);
     edge.end().await;
 }
 

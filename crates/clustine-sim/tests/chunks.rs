@@ -341,7 +341,9 @@ fn block_changes(output: &TickOutput) -> Vec<(BlockPos, BlockState)> {
         .events
         .iter()
         .filter_map(|event| match event {
-            RegionEvent::BlockChanged { position, state } => Some((*position, *state)),
+            RegionEvent::BlockChanged {
+                position, state, ..
+            } => Some((*position, *state)),
             _ => None,
         })
         .collect()

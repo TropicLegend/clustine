@@ -1158,9 +1158,9 @@ fn block_change(log: &[WorkerToEdge], block: BlockPos) -> Option<(usize, u64, Bl
     events(log)
         .into_iter()
         .find_map(|(index, tick, event)| match event {
-            RegionEvent::BlockChanged { position, state } if *position == block => {
-                Some((index, tick, *state))
-            }
+            RegionEvent::BlockChanged {
+                position, state, ..
+            } if *position == block => Some((index, tick, *state)),
             _ => None,
         })
 }

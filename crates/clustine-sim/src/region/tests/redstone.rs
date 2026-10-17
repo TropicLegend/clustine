@@ -221,9 +221,10 @@ fn a_button_lets_go_twenty_ticks_on_for_stone_and_thirty_for_wood() {
         assert_eq!(block_at(&region, LEVER), Some(button(true)), "{name}");
         assert!(lit(&region, lamp), "{name}");
         assert_eq!(sounds(&pressed), [(on_sound, 1.0, 1.0, Some(player(1)))]);
-        // A click on a pressed button does nothing more.
+        // A click on a pressed button does nothing more. The press counts its ticks from
+        // the tick before its own, as the game handles a player's packet between ticks.
         assert_eq!(sounds(&region.tick(&click(LEVER))), []);
-        for tick in 2..ticks {
+        for tick in 2..ticks - 1 {
             idle(&mut region);
             assert_eq!(
                 block_at(&region, LEVER),
@@ -238,7 +239,8 @@ fn a_button_lets_go_twenty_ticks_on_for_stone_and_thirty_for_wood() {
 }
 
 /// A lamp is lit in the tick power comes, and goes out four ticks after it goes
-/// (`RedstoneLampBlock`'s scheduled tick).
+/// (`RedstoneLampBlock`'s scheduled tick): three after the tick of the click that took
+/// it, which the game handles at the time of the tick before.
 #[test]
 fn a_lamp_goes_out_four_ticks_after_its_power() {
     let lamp = relative(LEVER, Face::East);
@@ -248,7 +250,7 @@ fn a_lamp_goes_out_four_ticks_after_its_power() {
     region.tick(&click(LEVER));
     let block = clustine_blocks::data::tick_id(blocks::REDSTONE_LAMP);
     assert!(region.has_scheduled_tick(lamp, Ticked::Block(block)));
-    for _ in 1..4 {
+    for _ in 1..3 {
         idle(&mut region);
         assert!(lit(&region, lamp));
     }

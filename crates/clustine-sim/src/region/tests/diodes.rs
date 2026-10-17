@@ -89,15 +89,14 @@ fn a_torch_goes_out_two_ticks_after_its_block_is_powered_and_comes_back_two_afte
     region.set_block(relative(lamp, Face::North), blocks::STONE, &mut output);
     assert!(lit(&region, lamp), "the block above the torch is powered");
 
+    // A click is handled at the game time of the tick before, as the game handles a
+    // player's packet between ticks: two game ticks after it is the tick after its own.
     region.tick(&click(SUPPORT_LEVER));
     assert!(lit(&region, TORCH));
-    idle(&mut region);
-    assert!(lit(&region, TORCH), "one tick on");
     idle(&mut region);
     assert_eq!(block_at(&region, TORCH), Some(torch(false)), "two ticks on");
 
     region.tick(&click(SUPPORT_LEVER));
-    idle(&mut region);
     assert_eq!(block_at(&region, TORCH), Some(torch(false)));
     idle(&mut region);
     assert_eq!(block_at(&region, TORCH), Some(torch(true)));
@@ -112,8 +111,7 @@ fn a_torch_placed_on_a_powered_block_comes_out_lit_and_goes_out_two_ticks_on() {
     region.tick(&holding(items::REDSTONE_TORCH));
     region.tick(&click(SUPPORT));
     assert_eq!(block_at(&region, TORCH), Some(torch(true)));
-    idle(&mut region);
-    assert_eq!(block_at(&region, TORCH), Some(torch(true)));
+    // Two game ticks after the placing, which counts from the tick before.
     idle(&mut region);
     assert_eq!(block_at(&region, TORCH), Some(torch(false)));
 }
@@ -194,16 +192,18 @@ fn a_burnt_out_torch_is_lit_again_by_its_own_tick_160_ticks_on() {
         (SUPPORT_LEVER, wall_lever(false)),
         (TORCH, torch(true)),
     ]);
-    // On, and off, every four ticks: the torch goes out two ticks after each pull on.
+    // On, and off, every four ticks: the torch goes out two game ticks after each pull
+    // on, which is the tick after the pull's, a pull counting from the tick before.
     let mut burnt_at = None;
     for pull in 0..8 {
         region.tick(&click(SUPPORT_LEVER));
-        idle(&mut region);
         let output = idle(&mut region);
+        let at = region.tick;
+        idle(&mut region);
         assert!(!lit(&region, TORCH), "pull {pull}");
         if !level_events(&output).is_empty() {
             assert_eq!(level_events(&output), [(1502, TORCH, 0)]);
-            burnt_at = Some(region.tick);
+            burnt_at = Some(at);
         }
         region.tick(&click(SUPPORT_LEVER));
         idle(&mut region);
@@ -298,8 +298,10 @@ fn a_repeaters_delay_is_set_by_clicks_and_passes_power_two_ticks_late_a_step() {
             block_at(&region, at).and_then(|block| block.property("delay")),
             Some(delay.to_string().as_str())
         );
+        // Two game ticks a step, counted from the tick before the click's, as the game
+        // handles a player's packet between ticks.
         region.tick(&click(LEVER));
-        for late in 1..2 * delay {
+        for late in 1..2 * delay - 1 {
             idle(&mut region);
             assert!(!lit(&region, lamp), "delay {delay}, {late} ticks on");
         }
@@ -313,21 +315,27 @@ fn a_repeaters_delay_is_set_by_clicks_and_passes_power_two_ticks_late_a_step() {
 }
 
 /// A repeater placed facing a powered lever behind it schedules its tick of 1
-/// (`DiodeBlock.setPlacedBy`) and is powered the tick after.
+/// (`DiodeBlock.setPlacedBy`), which counts from the tick before the placing's, as the
+/// game handles a player's packet between ticks: it is placed unpowered and powered
+/// within the placing's tick, and seen powered.
 #[test]
-fn a_repeater_placed_with_power_behind_it_is_powered_the_tick_after() {
+fn a_repeater_placed_with_power_behind_it_is_powered_in_the_tick_it_is_placed() {
     let target = BlockPos::new(0, -60, 2);
     let behind = BlockPos::new(0, -60, 1);
     let mut region = ticking_with(&[(behind, lever(true))]);
     region.tick(&holding(items::REPEATER));
-    region.tick(&click(relative(target, Face::Down)));
-    let placed = block_at(&region, target).expect("loaded");
+    let output = region.tick(&click(relative(target, Face::Down)));
+    let placed = output.events.iter().find_map(|event| match event {
+        RegionEvent::BlockChanged {
+            position, state, ..
+        } if *position == target => Some(*state),
+        _ => None,
+    });
     assert_eq!(
         placed,
-        repeater("north", 1, false),
+        Some(repeater("north", 1, false)),
         "facing the player's way"
     );
-    idle(&mut region);
     assert_eq!(block_at(&region, target), Some(repeater("north", 1, true)));
 }
 
@@ -401,7 +409,6 @@ fn a_repeater_facing_a_diode_runs_before_one_told_before_it() {
         }
         let mut region = ticking_with(&blocks);
         region.tick(&click(at));
-        idle(&mut region);
         let output = idle(&mut region);
         let order: Vec<BlockPos> = changed(&output)
             .into_iter()

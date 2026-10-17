@@ -752,10 +752,14 @@ pub enum RegionEvent {
     EntitySpawned(EntityState),
     /// An entity has ceased to exist. `chunk` is where it was last.
     EntityRemoved { entity: EntityId, chunk: ChunkPos },
-    /// A block has changed.
+    /// A block has changed. `seen` says whether it was set with the game's
+    /// `UPDATE_CLIENTS`: one set without it (a block a piston moves, which clients
+    /// move themselves from the piston's block event) is not sent, but a block waiting
+    /// to be sent is sent as it is then, as `ChunkHolder.broadcastChanges` reads it.
     BlockChanged {
         position: BlockPos,
         state: BlockState,
+        seen: bool,
     },
     /// The block entity at the position has new data, the bytes of one NBT compound as
     /// [`clustine_world::BlockEntity`] keeps them; empty where the game makes a fresh
@@ -800,10 +804,11 @@ pub enum RegionEvent {
         position: BlockPos,
         data: i32,
     },
-    /// The phase of block events begins in this tick (`docs/adr/0026-redstone.md`,
-    /// section 8): the game sends the tick's block changes before its block events,
-    /// and those made from here on with the next tick's. It has no place, and whoever
-    /// filters events by where they are passes it to all.
+    /// The phase of block events begins here (`docs/adr/0026-redstone.md`, section
+    /// 8): the game sends the tick's block changes before its block events, and those
+    /// made from here on, in the block events, the entities and the block entities,
+    /// with the next tick's. Said in a tick in which something comes after it. It has
+    /// no place, and whoever filters events by where they are passes it to all.
     BlockEventsBegin,
     /// Lava met water, or took the place of a block, which clients show with a hiss and
     /// smoke (the game's level event 1501).

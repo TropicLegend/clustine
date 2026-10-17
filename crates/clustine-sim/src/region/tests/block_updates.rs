@@ -20,7 +20,11 @@ fn state(text: &str) -> BlockState {
 }
 
 fn set(position: BlockPos, state: BlockState) -> RegionEvent {
-    RegionEvent::BlockChanged { position, state }
+    RegionEvent::BlockChanged {
+        position,
+        state,
+        seen: true,
+    }
 }
 
 /// A block shown breaking: by the player with this number, or by an update if none.

@@ -1602,12 +1602,25 @@ impl Fanout {
                 let mut begun = false;
                 for event in events {
                     match event {
-                        RegionEvent::BlockChanged { position, state } => {
+                        RegionEvent::BlockChanged {
+                            position,
+                            state,
+                            seen,
+                        } => {
                             if self.change_block(position, state) {
                                 let into = if begun { &mut later } else { &mut changed };
-                                into.entry((position.chunk(), position.y.div_euclid(16)))
-                                    .or_default()
-                                    .insert(position, state);
+                                let section = (position.chunk(), position.y.div_euclid(16));
+                                if seen {
+                                    into.entry(section).or_default().insert(position, state);
+                                } else if let Some(waiting) = into
+                                    .get_mut(&section)
+                                    .and_then(|blocks| blocks.get_mut(&position))
+                                {
+                                    // Set without `UPDATE_CLIENTS`, it is not sent for
+                                    // itself; but a block waiting to be sent goes as it
+                                    // is when it goes, as the game reads it then.
+                                    *waiting = state;
+                                }
                             }
                         }
                         RegionEvent::BlockEventsBegin => {
@@ -2582,8 +2595,12 @@ impl Fanout {
                     self.remove_entity(entity).await;
                 }
             }
-            RegionEvent::BlockChanged { position, state } => {
-                if self.change_block(position, state) {
+            RegionEvent::BlockChanged {
+                position,
+                state,
+                seen,
+            } => {
+                if self.change_block(position, state) && seen {
                     let section = (position.chunk(), position.y.div_euclid(16));
                     let changed = Changed::from([(section, BTreeMap::from([(position, state)]))]);
                     self.show_changes(changed).await;
@@ -7738,6 +7755,7 @@ mod scenarios {
             events: vec![RegionEvent::BlockChanged {
                 position: block_of(chunk),
                 state,
+                seen: true,
             }],
         }
     }
@@ -11666,7 +11684,9 @@ mod scenarios {
                                 assert_eq!(theirs, region, "a run has a player's region move them");
                                 self.recentre(player, chunk_of(pose.position));
                             }
-                            RegionEvent::BlockChanged { position, state } => {
+                            RegionEvent::BlockChanged {
+                                position, state, ..
+                            } => {
                                 let chunk = position.chunk();
                                 if !self.replica.contains_key(&chunk) {
                                     continue;

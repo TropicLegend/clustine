@@ -446,14 +446,16 @@ fn an_observers_pulse_into_a_sticky_piston_retracts_it_at_once_and_drops_its_blo
     step(&mut region, &use_on(at(1, -61, 3), Face::Top));
     assert_eq!(block_at(&region, at(1, -60, 3)), Some(blocks::STONE));
     let id = block_id(sticky(false));
+    // The observer turns on in the tick after the placing, which counts from the tick
+    // before its own, and off two after that.
     let events: Vec<_> = (1..=6).map(|_| block_events(&idle(&mut region))).collect();
     assert_eq!(
         events,
         [
-            vec![],
             vec![(PISTON_AT, id, 0, EAST)],
             vec![],
             vec![(PISTON_AT, id, 2, EAST)],
+            vec![],
             vec![],
             vec![]
         ]

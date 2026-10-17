@@ -35,6 +35,38 @@ use crate::kept::Journal;
 use crate::light::{ChunkLight, LightAt, LightUpdateSeen, Named};
 use crate::{Connection, Ending, Kept, Left, Reason, intention};
 
+/// What a server sent of blocks and of what happens at them, as [`Bot::heard`] keeps it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Heard {
+    /// Blocks changed: one in a `block_update`, or those of a `section_blocks_update`
+    /// (`section`), sorted by position.
+    Blocks {
+        blocks: Vec<((i32, i32, i32), i32)>,
+        section: bool,
+    },
+    /// A `block_event`: a piston's move, a note block's note, a bell's ring.
+    BlockEvent {
+        at: (i32, i32, i32),
+        action: u8,
+        param: u8,
+        block: i32,
+    },
+    /// A `sound` at a place, which is in eighths of a block.
+    Sound {
+        sound: i32,
+        source: i32,
+        at: (i32, i32, i32),
+        volume: f32,
+        pitch: f32,
+    },
+    /// A `level_event`: a block broken, a torch burnt out.
+    LevelEvent {
+        event: i32,
+        at: (i32, i32, i32),
+        data: i32,
+    },
+}
+
 /// The length of a client tick.
 const TICK: Duration = Duration::from_millis(50);
 
@@ -253,6 +285,10 @@ pub struct Bot {
     /// Whether the arrays of a light update are kept with it; see
     /// [`Bot::keep_light_arrays`].
     light_arrays_kept: bool,
+    /// What the server sent of blocks changing and of what happens at them, in the
+    /// order it came and with when, if the bot was asked to record it; see
+    /// [`Bot::record_heard`].
+    pub heard: Option<Vec<(Instant, Heard)>>,
     /// The number of the bot's latest action that changes blocks.
     sequence: i32,
     /// Up to which of those actions the server has confirmed handling them.
@@ -468,6 +504,7 @@ impl Bot {
             light_updates: Vec::new(),
             stray_light_updates: Vec::new(),
             light_arrays_kept: false,
+            heard: None,
             sequence: 0,
             acknowledged_sequence: 0,
             acknowledgements: Vec::new(),
@@ -1036,6 +1073,19 @@ impl Bot {
         self.light_arrays_kept = true;
     }
 
+    /// From now on the bot records every block change, block event, sound and level
+    /// event it is sent, in [`Bot::heard`], for a test that compares when and in which
+    /// order a server sends them. It grows for as long as it is not taken.
+    pub fn record_heard(&mut self) {
+        self.heard.get_or_insert_with(Vec::new);
+    }
+
+    fn hear(&mut self, heard: Heard) {
+        if let Some(record) = &mut self.heard {
+            record.push((Instant::now(), heard));
+        }
+    }
+
     /// How many light sections a chunk of the bot's dimension has: its sections and
     /// one below and one above.
     fn light_sections(&self) -> Result<usize> {
@@ -1355,18 +1405,36 @@ impl Bot {
             ClientboundPlay::LightUpdate(packet) => self.take_light_update(packet)?,
             ClientboundPlay::BlockUpdate(packet) => {
                 let position = packet.position;
-                self.block_changes
-                    .insert((position.x, position.y, position.z), packet.state);
+                let at = (position.x, position.y, position.z);
+                self.block_changes.insert(at, packet.state);
+                self.hear(Heard::Blocks {
+                    blocks: vec![(at, packet.state)],
+                    section: false,
+                });
             }
             ClientboundPlay::SectionBlocksUpdate(packet) => {
                 let (sx, sy, sz) = packet.section;
-                for ((x, y, z), state) in packet.blocks {
-                    let at = (
-                        sx * 16 + i32::from(x),
-                        sy * 16 + i32::from(y),
-                        sz * 16 + i32::from(z),
-                    );
-                    self.block_changes.insert(at, state);
+                let mut blocks: Vec<_> = packet
+                    .blocks
+                    .into_iter()
+                    .map(|((x, y, z), state)| {
+                        let at = (
+                            sx * 16 + i32::from(x),
+                            sy * 16 + i32::from(y),
+                            sz * 16 + i32::from(z),
+                        );
+                        (at, state)
+                    })
+                    .collect();
+                self.block_changes.extend(blocks.iter().copied());
+                if self.heard.is_some() {
+                    // A client applies a packet's blocks all at once, so their order in
+                    // it says nothing; the official server's is that of a hash set.
+                    blocks.sort_unstable();
+                    self.hear(Heard::Blocks {
+                        blocks,
+                        section: true,
+                    });
                 }
             }
             ClientboundPlay::SetContainerContent(packet) => {
@@ -1436,11 +1504,32 @@ impl Bot {
                     .await?;
             }
             ClientboundPlay::Login(_) => bail!("received a second login packet"),
+            ClientboundPlay::BlockEvent(packet) => {
+                let position = packet.position;
+                self.hear(Heard::BlockEvent {
+                    at: (position.x, position.y, position.z),
+                    action: packet.action,
+                    param: packet.param,
+                    block: packet.block,
+                });
+            }
+            ClientboundPlay::Sound(packet) => self.hear(Heard::Sound {
+                sound: packet.sound,
+                source: packet.source,
+                at: (packet.x, packet.y, packet.z),
+                volume: packet.volume,
+                pitch: packet.pitch,
+            }),
+            ClientboundPlay::LevelEvent(packet) => {
+                let position = packet.position;
+                self.hear(Heard::LevelEvent {
+                    event: packet.event,
+                    at: (position.x, position.y, position.z),
+                    data: packet.data,
+                });
+            }
             ClientboundPlay::ChunkBatchStart(_)
             | ClientboundPlay::GameEvent(_)
-            | ClientboundPlay::LevelEvent(_)
-            | ClientboundPlay::BlockEvent(_)
-            | ClientboundPlay::Sound(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)

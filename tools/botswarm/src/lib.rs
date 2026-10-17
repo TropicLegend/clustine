@@ -21,7 +21,7 @@ use clustine_data::PROTOCOL_VERSION;
 use clustine_protocol::packets::handshake::{Intent, Intention};
 use clustine_protocol::packets::status::{ClientboundStatus, PingRequest, StatusRequest};
 
-pub use bot::{Behaviour, Bot, Entry, JoinInfo, PlayStats, SeenEntity};
+pub use bot::{Behaviour, Bot, Entry, Heard, JoinInfo, PlayStats, SeenEntity};
 pub use connection::Connection;
 pub use cross::{Crossing, CrossingReport, cross};
 pub use kept::{Kept, Left, World};

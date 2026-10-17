@@ -29,7 +29,8 @@ fn comparator(mode: &str) -> BlockState {
 
 /// `DiodeBlock`: a change of input schedules a tick of twice the delay, and the tick
 /// sets the output; a lamp in front lights as the repeater does and goes out four ticks
-/// after it.
+/// after it. A click counts from the tick before its own, as the game handles a
+/// player's packet between ticks (R8): the repeater turns a tick sooner after it.
 #[test]
 fn a_repeater_passes_power_on_after_two_game_ticks_for_each_step_of_its_delay() {
     for delay in 1..=4u8 {
@@ -43,16 +44,16 @@ fn a_repeater_passes_power_on_after_two_game_ticks_for_each_step_of_its_delay() 
         let lit = watch(&mut region, ticks + 1, |region| {
             (on(region, DIODE, "powered"), on(region, FRONT, "lit"))
         });
-        let mut expected = vec![(false, false); ticks - 1];
-        expected.extend([(true, true), (true, true)]);
+        let mut expected = vec![(false, false); ticks - 2];
+        expected.extend([(true, true); 3]);
         assert_eq!(lit, expected, "delay {delay}");
         step(&mut region, &click(LEVER));
         let lit = watch(&mut region, ticks + 4, |region| {
             (on(region, DIODE, "powered"), on(region, FRONT, "lit"))
         });
-        let mut expected = vec![(true, true); ticks - 1];
+        let mut expected = vec![(true, true); ticks - 2];
         expected.extend([(false, true); 4]);
-        expected.push((false, false));
+        expected.extend([(false, false); 2]);
         assert_eq!(lit, expected, "delay {delay}");
     }
 }
@@ -65,10 +66,10 @@ fn a_repeater_stretches_a_pulse_of_one_tick_to_its_delay() {
     step(&mut region, &click(LEVER));
     step(&mut region, &click(LEVER));
     let powered = watch(&mut region, 12, |region| on(region, DIODE, "powered"));
-    // Watched from T + 2: on in T + 6, off in T + 12.
-    let mut expected = vec![false; 4];
+    // Watched from T + 2: on in T + 5, the click counting from T − 1, off in T + 11.
+    let mut expected = vec![false; 3];
     expected.extend([true; 6]);
-    expected.extend([false; 2]);
+    expected.extend([false; 3]);
     assert_eq!(powered, expected);
 }
 
@@ -108,9 +109,11 @@ fn a_repeater_locked_from_the_side_keeps_its_output_until_it_is_unlocked() {
         (SIDE, side_repeater()),
         (SIDE_LEVER, lever(false)),
     ]);
+    // The side repeater turns on in the tick after the click, which counts from the
+    // tick before its own.
     step(&mut region, &click(SIDE_LEVER));
     let locked = watch(&mut region, 2, |region| on(region, DIODE, "locked"));
-    assert_eq!(locked, [false, true]);
+    assert_eq!(locked, [true, true]);
     step(&mut region, &click(LEVER));
     let state = watch(&mut region, 4, |region| {
         (on(region, DIODE, "powered"), on(region, FRONT, "lit"))
@@ -124,14 +127,14 @@ fn a_repeater_locked_from_the_side_keeps_its_output_until_it_is_unlocked() {
             on(region, FRONT, "lit"),
         )
     });
-    // The side repeater goes off in T + 2, which unlocks the diode and has it schedule
-    // its tick, which turns it on in T + 4.
+    // The side repeater goes off in T + 1, which unlocks the diode and has it schedule
+    // its tick, which turns it on in T + 3.
     assert_eq!(
         state,
         [
-            (true, false, false),
             (false, false, false),
             (false, false, false),
+            (false, true, true),
             (false, true, true)
         ]
     );
@@ -164,15 +167,8 @@ fn a_repeater_feeding_anothers_side_ticks_first_and_locks_it_before_it_turns_on(
             on(region, FRONT, "lit"),
         )
     });
-    assert_eq!(
-        state,
-        [
-            (false, false, false, false),
-            (true, true, false, false),
-            (true, true, false, false),
-            (true, true, false, false)
-        ]
-    );
+    // Both tick in the tick after the click, which counts from the tick before its own.
+    assert_eq!(state, [(true, true, false, false); 4]);
 }
 
 /// The comparator of the next tests reads from the west and puts its output into a
@@ -193,7 +189,8 @@ fn comparing(mode: &str) -> Region {
 
 /// `ComparatorBlock.calculateOutputSignal`: nothing from no input, nothing where the
 /// side is stronger, the input less the side in subtraction, the input in comparison;
-/// the output follows two ticks after a change of its inputs.
+/// the output follows two ticks after a change of its inputs, a tick after a click's
+/// own, which counts from the tick before.
 #[test]
 fn a_comparator_compares_or_subtracts_its_side_from_its_input() {
     for (mode, output) in [("compare", 15), ("subtract", 1)] {
@@ -204,12 +201,12 @@ fn a_comparator_compares_or_subtracts_its_side_from_its_input() {
         idle(&mut region);
         step(&mut region, &click(LEVER));
         let powers = watch(&mut region, 3, |region| power(region, FRONT));
-        assert_eq!(powers, [0, output, output], "{mode}");
+        assert_eq!(powers, [output; 3], "{mode}");
         assert_eq!(on(&region, DIODE, "powered"), output > 0, "{mode}");
         // The side gone, both give the input.
         step(&mut region, &click(SIDE_SOURCE));
         let powers = watch(&mut region, 2, |region| power(region, FRONT));
-        assert_eq!(powers, [output, 15], "{mode}");
+        assert_eq!(powers, [15, 15], "{mode}");
     }
 }
 
@@ -235,7 +232,7 @@ fn a_comparator_gives_nothing_where_its_side_is_stronger_than_its_input() {
         step(&mut region, &click(side_lever));
         assert_eq!(power(&region, SIDE_WIRE), 15);
         let powers = watch(&mut region, 2, |region| power(region, FRONT));
-        assert_eq!(powers, [14, 0], "{mode}");
+        assert_eq!(powers, [0, 0], "{mode}");
     }
 }
 
@@ -274,7 +271,6 @@ fn a_comparators_output_is_kept_in_its_block_entity_and_said_when_it_changes() {
     let mut region = comparing("subtract");
     step(&mut region, &click(SIDE_SOURCE));
     step(&mut region, &click(LEVER));
-    idle(&mut region);
     let output = idle(&mut region);
     let said: Vec<Option<i32>> = output
         .events
@@ -364,18 +360,16 @@ fn a_comparator_reads_the_analog_outputs_of_the_blocks_the_record_names() {
             // A stone set beside the comparator tells it of its neighbours.
             step(&mut region, &use_on(at(3, -61, 1), Face::Top));
             assert_eq!(block_at(&region, at(3, -60, 1)), Some(blocks::STONE));
+            // Its tick of 2 runs in the next tick, the placing counting from the tick
+            // before its own.
             let powers = watch(&mut region, 3, |region| power(region, FRONT));
-            assert_eq!(
-                powers,
-                [0, expected, expected],
-                "{text}, through a block: {through}"
-            );
+            assert_eq!(powers, [expected; 3], "{text}, through a block: {through}");
         }
     }
 }
 
 /// `ObserverBlock`: a change in front schedules a tick of 2, which powers the back for
-/// two ticks.
+/// two ticks; a placing counts from the tick before its own, so it powers in the next.
 #[test]
 fn an_observer_pulses_two_ticks_long_two_ticks_after_what_it_watches_changes() {
     let observer = state("minecraft:observer[facing=west,powered=false]");
@@ -388,13 +382,13 @@ fn an_observer_pulses_two_ticks_long_two_ticks_after_what_it_watches_changes() {
     assert_eq!(
         state,
         [
+            (true, true),
+            (true, true),
+            (false, true),
+            (false, true),
+            (false, true),
+            (false, true),
             (false, false),
-            (true, true),
-            (true, true),
-            (false, true),
-            (false, true),
-            (false, true),
-            (false, true),
             (false, false),
             (false, false)
         ]
@@ -406,7 +400,8 @@ fn an_observer_pulses_two_ticks_long_two_ticks_after_what_it_watches_changes() {
 /// schedule a tick; each turning on is seen by the other, which is off and schedules
 /// its own, ahead of the tick that turns the first off; each turning off is seen by the
 /// other while it is on, and does nothing. So each is on for two ticks in six, the
-/// second two ticks after the first.
+/// second two ticks after the first, the first from the tick after the placing's (which
+/// counts from the tick before its own). The official server does the same (R8).
 #[test]
 fn two_observers_facing_each_other_pulse_every_six_ticks() {
     let east = at(3, -60, 2);
@@ -426,8 +421,8 @@ fn two_observers_facing_each_other_pulse_every_six_ticks() {
     });
     for (index, (east_on, west_on)) in state.into_iter().enumerate() {
         let tick = index + 1;
-        assert_eq!(east_on, tick % 6 == 2 || tick % 6 == 3, "east, tick {tick}");
-        assert_eq!(west_on, tick % 6 == 4 || tick % 6 == 5, "west, tick {tick}");
+        assert_eq!(east_on, tick % 6 == 1 || tick % 6 == 2, "east, tick {tick}");
+        assert_eq!(west_on, tick % 6 == 3 || tick % 6 == 4, "west, tick {tick}");
     }
 }
 
@@ -463,16 +458,17 @@ fn a_repeater_clock_started_by_a_short_pulse_goes_round_every_four_ticks() {
         (on(region, first, "powered"), on(region, second, "powered"))
     });
     for (index, (first_on, second_on)) in state.into_iter().enumerate() {
-        // Ticks after the pulse's first: the first repeater is on from T + 2.
+        // Ticks after the pulse's first: the first repeater is on from T + 1, the
+        // click counting from T − 1.
         let tick = index + 2;
         assert_eq!(
             first_on,
-            tick >= 2 && (tick - 2) % 4 < 2,
+            tick >= 1 && (tick - 1) % 4 < 2,
             "first, T + {tick}"
         );
         assert_eq!(
             second_on,
-            tick >= 4 && (tick - 4) % 4 < 2,
+            tick >= 3 && (tick - 3) % 4 < 2,
             "second, T + {tick}"
         );
     }

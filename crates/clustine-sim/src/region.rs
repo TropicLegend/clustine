@@ -738,6 +738,11 @@ impl Region {
             self.apply_entered(answer, &mut unplaced, &mut output);
         }
 
+        // A player's action is the game's packet handled between two ticks, at the game
+        // time of the one before (`MinecraftServer.runAllTasks`): what it schedules
+        // counts from there, and a lamp put out by a lever goes out three ticks after
+        // the lever is seen, not four, as on the official server (ADR-0026, R8).
+        self.made_in = Some(self.tick as i64 - 1);
         for (edge, action) in &inputs.remote_actions {
             // Nobody would hear what became of it.
             if !self.edges.contains_key(edge) {
@@ -749,6 +754,7 @@ impl Region {
         for (edge, id, entity, number, input) in &inputs.inputs {
             self.apply_input(*edge, *id, *entity, *number, input, &mut output);
         }
+        self.made_in = None;
         // The scheduled ticks (`docs/adr/0024-block-behaviour-in-a-region.md`, section
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
@@ -763,6 +769,7 @@ impl Region {
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
         self.run_random_ticks(&mut output);
+        let broadcast = output.events.len();
         self.run_block_events(&mut output);
         self.handling_tick = false;
         // The entities, of which players are the only ones so far, press and step on
@@ -771,6 +778,16 @@ impl Region {
         // events still queued.
         self.players_touch_blocks(&mut output);
         self.run_block_entities(&mut output);
+        // The game broadcasts a tick's block changes before its block events, and what
+        // changes from then on (in the block events, the entities and the block
+        // entities: a piston's move finishing) with the next tick's
+        // (`docs/adr/0026-redstone.md`, section 8). The mark goes where that is,
+        // wherever something comes after it.
+        if output.events.len() > broadcast {
+            output
+                .events
+                .insert(broadcast, RegionEvent::BlockEventsBegin);
+        }
         self.keep_events(&mut output);
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
@@ -3844,10 +3861,12 @@ mod tests {
                 RegionEvent::BlockChanged {
                     position: BlockPos::new(2, -61, 3),
                     state: blocks::AIR,
+                    seen: true,
                 },
                 RegionEvent::BlockChanged {
                     position: torch,
                     state: blocks::AIR,
+                    seen: true,
                 },
             ]
         );
@@ -3873,7 +3892,9 @@ mod tests {
         let changed: Vec<_> = block_changes(&output)
             .into_iter()
             .map(|event| match event {
-                RegionEvent::BlockChanged { position, state } => (position, state),
+                RegionEvent::BlockChanged {
+                    position, state, ..
+                } => (position, state),
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -3921,6 +3942,7 @@ mod tests {
         assert!(block_changes(&output).contains(&RegionEvent::BlockChanged {
             position: fence,
             state: blocks::OAK_FENCE,
+            seen: true,
         }));
     }
 
@@ -3956,17 +3978,17 @@ mod tests {
     }
 
     #[test]
-    fn sand_whose_support_is_broken_falls_to_the_floor_two_ticks_later() {
+    fn sand_whose_support_is_broken_falls_to_the_floor_two_game_ticks_later() {
         let (sand, stone, under) = (
             BlockPos::new(2, -58, 3),
             BlockPos::new(2, -59, 3),
             BlockPos::new(2, -60, 3),
         );
         let mut region = ticking_floor_with(&[(stone, blocks::STONE), (sand, blocks::SAND)]);
-        // A pillar: the floor at y -61, air at -60, stone at -59, sand at -58.
+        // A pillar: the floor at y -61, air at -60, stone at -59, sand at -58. The dig
+        // is handled at the game time of the tick before, as the game handles a
+        // player's packet between ticks, so the sand's tick of 2 runs in the next.
         region.tick(&moves(vec![dig(1, 2, -59, 3, 1)]));
-        assert_eq!(region.block(sand), Some(blocks::SAND));
-        region.tick(&TickInputs::default());
         assert_eq!(region.block(sand), Some(blocks::SAND));
         region.tick(&TickInputs::default());
         assert_eq!(region.block(sand), Some(blocks::AIR));
@@ -3992,15 +4014,15 @@ mod tests {
         let (sand, stone) = (BlockPos::new(2, -58, 3), BlockPos::new(2, -59, 3));
         let mut region = ticking_floor_with(&[(stone, blocks::STONE), (sand, blocks::SAND)]);
         region.tick(&moves(vec![dig(1, 2, -59, 3, 1)]));
-        // Scheduled with a delay of 2 in this tick: due in two ticks, so one tick
-        // still to tick before the one it runs in.
+        // Scheduled with a delay of 2 by the dig, counted from the tick before: due in
+        // the next tick, with none to wait before it.
         let saved = region.saved_chunk(ChunkPos::new(0, 0)).expect("loaded");
         let ticks: Vec<_> = saved
             .ticks()
             .iter()
             .map(|tick| (tick.at, tick.delay))
             .collect();
-        assert_eq!(ticks, [(InChunk::new(2, -58, 3), 1)]);
+        assert_eq!(ticks, [(InChunk::new(2, -58, 3), 0)]);
     }
 
     #[test]
@@ -4050,6 +4072,7 @@ mod tests {
             [RegionEvent::BlockChanged {
                 position: BlockPos::new(2, -61, 3),
                 state: blocks::AIR,
+                seen: true,
             }]
         );
         assert_eq!(block_changes(&output)[0].chunks(), [ChunkPos::new(0, 0); 2]);
@@ -4096,6 +4119,7 @@ mod tests {
             [RegionEvent::BlockChanged {
                 position: BlockPos::new(6, -61, 0),
                 state: blocks::AIR,
+                seen: true,
             }]
         );
     }
@@ -4142,6 +4166,7 @@ mod tests {
         RegionEvent::BlockChanged {
             position: BlockPos::new(x, y, z),
             state,
+            seen: true,
         }
     }
 
@@ -7928,7 +7953,9 @@ mod tests {
             let mut changes: Vec<_> = changes
                 .iter()
                 .map(|event| match event {
-                    RegionEvent::BlockChanged { position, state } => (*position, *state),
+                    RegionEvent::BlockChanged {
+                        position, state, ..
+                    } => (*position, *state),
                     other => panic!("unexpected event {other:?}"),
                 })
                 .collect();

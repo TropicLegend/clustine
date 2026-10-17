@@ -2546,9 +2546,9 @@ impl RegionRunner {
             .events
             .iter()
             .filter_map(|event| match event {
-                RegionEvent::BlockChanged { position, state } => {
-                    Some(Change::Block(*position, *state))
-                }
+                RegionEvent::BlockChanged {
+                    position, state, ..
+                } => Some(Change::Block(*position, *state)),
                 RegionEvent::BlockEntityChanged { position, data } => {
                     Some(Change::BlockEntity(*position, data.clone()))
                 }
@@ -6326,6 +6326,7 @@ mod tests {
                 RegionEvent::BlockChanged {
                     position: block,
                     state: clustine_data::blocks::AIR,
+                    seen: true,
                 },
             ];
             assert_eq!(events(step_for(&mut runner, &mut other)), changed);

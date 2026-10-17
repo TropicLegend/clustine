@@ -315,6 +315,7 @@ fn water_with_no_way_down_within_four_blocks_spreads_to_every_side() {
             reported.contains(&RegionEvent::BlockChanged {
                 position: on_floor_at(dx, dz),
                 state: water(1),
+                seen: true,
             }),
             "{dx}, {dz}: {reported:?}"
         );
@@ -435,6 +436,7 @@ fn a_source_that_goes_down_spreads_sideways_only_beside_three_sources() {
         block_changes(&output).contains(&RegionEvent::BlockChanged {
             position: at(8, -60, 8),
             state: water(8),
+            seen: true,
         }),
         "it goes down"
     );
@@ -447,6 +449,7 @@ fn a_source_that_goes_down_spreads_sideways_only_beside_three_sources() {
     assert!(block_changes(&output).contains(&RegionEvent::BlockChanged {
         position: at(8, -60, 8),
         state: water(8),
+        seen: true,
     }));
     assert_eq!(level_at(&region, open), Some(1));
 }
@@ -546,6 +549,7 @@ fn a_block_waterlogged_by_spreading_water_gets_a_water_tick_of_five() {
         block_changes(&output).contains(&RegionEvent::BlockChanged {
             position: slab,
             state: state("minecraft:stone_slab[type=bottom,waterlogged=true]"),
+            seen: true,
         }),
         "the sources waterlog the slab at their first tick"
     );
@@ -770,12 +774,14 @@ fn bucket_into_a_slab() -> (Region, BlockPos) {
     (region, slab)
 }
 
-/// Specification 13: a bucket that waterlogs a block schedules a water tick of five.
+/// Specification 13: a bucket that waterlogs a block schedules a water tick of five,
+/// counted from the tick before the bucket's, as the game handles a player's packet
+/// between ticks.
 #[test]
 fn a_bucket_that_waterlogs_a_slab_gives_it_a_water_tick_of_five() {
     let (mut region, slab) = bucket_into_a_slab();
     let east = at(slab.x + 1, slab.y, slab.z);
-    run(&mut region, 4);
+    run(&mut region, 3);
     assert_eq!(level_at(&region, east), None);
     run(&mut region, 1);
     assert_eq!(level_at(&region, east), Some(1));
@@ -946,7 +952,9 @@ fn lava_hisses_where_it_washes_a_block_away_and_not_into_air() {
 /// What the tick that `output` reports set at `position`, last.
 fn level_at_output(output: &TickOutput, position: BlockPos) -> Option<BlockState> {
     output.events.iter().rev().find_map(|event| match event {
-        RegionEvent::BlockChanged { position: p, state } if *p == position => Some(*state),
+        RegionEvent::BlockChanged {
+            position: p, state, ..
+        } if *p == position => Some(*state),
         _ => None,
     })
 }

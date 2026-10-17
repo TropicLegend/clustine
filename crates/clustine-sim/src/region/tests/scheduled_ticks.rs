@@ -123,7 +123,9 @@ fn emptied(output: &TickOutput) -> Vec<BlockPos> {
     block_changes(output)
         .into_iter()
         .filter_map(|event| match event {
-            RegionEvent::BlockChanged { position, state } if state == blocks::AIR => Some(position),
+            RegionEvent::BlockChanged {
+                position, state, ..
+            } if state == blocks::AIR => Some(position),
             _ => None,
         })
         .collect()
@@ -244,9 +246,10 @@ fn a_tick_kept_in_a_chunk_without_its_neighbours_waits_and_then_runs_with_its_de
 // C. The delay left
 // ---------------------------------------------------------------------------------------
 
-/// A tick of delay 2 scheduled into a loaded chunk that does not tick is kept as 1, as
-/// if written at the end of the tick it was scheduled in, and stays so; when the chunk
-/// starts ticking in L it is due in L + 1.
+/// A tick of delay 2 scheduled into a loaded chunk that does not tick is kept as the
+/// delay left, as if written at the end of the tick it was scheduled in, and stays so;
+/// a dig's counts from the tick before, as the game handles a player's packet between
+/// ticks, and is kept as 0. When the chunk starts ticking in L it is due in L.
 #[test]
 fn a_tick_scheduled_into_a_chunk_that_does_not_tick_is_kept_with_one_less_than_its_delay() {
     let origin = ChunkPos::new(0, 0);
@@ -255,10 +258,10 @@ fn a_tick_scheduled_into_a_chunk_that_does_not_tick_is_kept_with_one_less_than_i
     let (mut region, _) = loaded_with(&[origin], vec![(origin, chunk)]);
     let output = checked(&mut region, &moves(vec![dig(1, 2, -60, 3, 1)]));
     assert_eq!(output.ticks_changed, [origin]);
-    assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), 1)]);
+    assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), 0)]);
     for _ in 0..4 {
         idle_tick(&mut region);
-        assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), 1)]);
+        assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), 0)]);
     }
     assert_eq!(block_at(&region, sand), Some(blocks::SAND));
 
@@ -268,22 +271,19 @@ fn a_tick_scheduled_into_a_chunk_that_does_not_tick_is_kept_with_one_less_than_i
         .map(|position| (position, floor()))
         .collect();
     let output = load(&mut region, neighbours);
-    assert_eq!(emptied(&output), [], "a tick runs early");
-    let output = idle_tick(&mut region);
     assert_eq!(emptied(&output), [sand]);
 }
 
 /// Written at the end of tick T, a tick due in D is kept as D − T − 1: a tick of
-/// delay 2 scheduled in T is kept as 1 at the end of T, as 0 at the end of T + 1, and
-/// has run at T + 2.
+/// delay 3 scheduled in T is kept as 2 at the end of T, as 1 at the end of T + 1, and
+/// has run at T + 3. A dig in T schedules the sand's tick of 2 from T − 1, as the game
+/// handles a player's packet between ticks, which is a tick of 3 from T.
 #[test]
 fn a_queued_tick_is_saved_with_the_delay_left_at_the_end_of_each_tick() {
     let origin = ChunkPos::new(0, 0);
     let (sand, stone) = (at(2, -58, 3), at(2, -59, 3));
     let (mut region, _) = ticking_with(&[(stone, blocks::STONE), (sand, blocks::SAND)], &[]);
     checked(&mut region, &moves(vec![dig(1, 2, -59, 3, 1)]));
-    assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), 1)]);
-    idle_tick(&mut region);
     assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), 0)]);
     idle_tick(&mut region);
     let left: Vec<_> = saved_ticks(&region, origin)
@@ -328,8 +328,8 @@ fn a_saved_chunk_lists_its_ticks_in_queue_order() {
     assert_eq!(
         saved_ticks(&region, origin),
         [
-            (in_chunk(first.offset(0, 1, 0)), 1),
-            (in_chunk(second.offset(0, 1, 0)), 1)
+            (in_chunk(first.offset(0, 1, 0)), 0),
+            (in_chunk(second.offset(0, 1, 0)), 0)
         ]
     );
 }
@@ -343,7 +343,8 @@ fn a_chunk_whose_neighbour_is_let_go_keeps_its_ticks_and_runs_them_when_it_ticks
     let corner = ChunkPos::new(1, 1);
     let (sand, stone) = (at(2, -58, 3), at(2, -59, 3));
     let (mut region, _) = ticking_with(&[(stone, blocks::STONE), (sand, blocks::SAND)], &[]);
-    // Scheduled in T, due in T + 2.
+    // Scheduled in T by a dig, which counts from T − 1: due in T + 1, the tick the
+    // corner goes in, which leaves it overdue by one.
     checked(&mut region, &moves(vec![dig(1, 2, -59, 3, 1)]));
     let output = checked(&mut region, &tickets(vec![], vec![corner]));
     assert!(region.chunk(corner).is_none(), "the corner is let go");
@@ -353,7 +354,7 @@ fn a_chunk_whose_neighbour_is_let_go_keeps_its_ticks_and_runs_them_when_it_ticks
         assert_eq!(emptied(&output), []);
         assert_eq!(output.ticks_changed, []);
     }
-    assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), 0)]);
+    assert_eq!(saved_ticks(&region, origin), [(in_chunk(sand), -1)]);
     assert_eq!(region.chunk(origin).unwrap().ticks().len(), 1);
 
     let output = load(&mut region, vec![(corner, floor())]);
@@ -384,17 +385,15 @@ fn a_merge_hands_out_chunks_with_their_ticks_written_in() {
         .iter()
         .find(|(position, _)| *position == origin)
         .expect("the origin's chunk was loaded");
-    assert_eq!(chunk.ticks(), [kept(sand, blocks::SAND, 1, 0)]);
+    assert_eq!(chunk.ticks(), [kept(sand, blocks::SAND, 0, 0)]);
     let others: Vec<_> = handed
         .iter()
         .filter(|(position, chunk)| *position != origin && !chunk.ticks().is_empty())
         .collect();
     assert!(others.is_empty(), "{others:?}");
 
-    // Loaded again, all nine at once: due one tick after they start ticking.
+    // Loaded again, all nine at once: due as they start ticking.
     let output = load(&mut region, handed);
-    assert_eq!(emptied(&output), []);
-    let output = idle_tick(&mut region);
     assert_eq!(emptied(&output), [sand]);
 }
 
@@ -459,7 +458,6 @@ fn two_ticks_due_together_run_in_the_order_they_were_scheduled() {
             &mut region,
             &moves(vec![dig(1, first, -59, 3, 1), dig(1, second, -59, 3, 2)]),
         );
-        idle_tick(&mut region);
         let output = idle_tick(&mut region);
         assert_eq!(
             emptied(&output),
@@ -482,12 +480,11 @@ fn a_tick_that_came_with_its_chunk_runs_before_one_scheduled_since_at_the_same_d
             (stone, blocks::STONE),
             (scheduled, blocks::SAND),
         ],
-        &[kept(stored, blocks::SAND, 3, 0)],
+        &[kept(stored, blocks::SAND, 2, 0)],
     );
-    // In L + 1, with a delay of 2: due in L + 3, as the kept one.
+    // In L + 1, with a delay of 2 from L, as a dig counts from the tick before: due in
+    // L + 2, as the kept one.
     checked(&mut region, &moves(vec![dig(1, 2, -59, 3, 1)]));
-    let output = idle_tick(&mut region);
-    assert_eq!(emptied(&output), []);
     let output = idle_tick(&mut region);
     assert_eq!(emptied(&output), [stored, scheduled]);
 }
@@ -519,7 +516,8 @@ fn kept_ticks_of_the_same_due_and_priority_run_in_the_order_the_chunk_lists_them
 
 /// A tick of a block at a position that has one pending already is dropped: two
 /// changes beside a sand block, in two ticks, give it one tick, due when the first
-/// said.
+/// said, which runs in the second's tick (a dig counting from the tick before) with
+/// none left after it.
 #[test]
 fn a_second_schedule_of_the_same_block_at_the_same_place_is_dropped() {
     let origin = ChunkPos::new(0, 0);
@@ -536,9 +534,9 @@ fn a_second_schedule_of_the_same_block_at_the_same_place_is_dropped() {
         of_sand.map(|(_, delay)| delay).collect()
     };
     checked(&mut region, &moves(vec![dig(1, 1, -60, 3, 1)]));
-    assert_eq!(ticks_of_the_sand(&region), [1]);
-    checked(&mut region, &moves(vec![dig(1, 3, -60, 3, 2)]));
     assert_eq!(ticks_of_the_sand(&region), [0]);
+    checked(&mut region, &moves(vec![dig(1, 3, -60, 3, 2)]));
+    assert_eq!(ticks_of_the_sand(&region), []);
 
     // Both in one tick.
     let mut region = ticking_floor_with(&[
@@ -550,7 +548,7 @@ fn a_second_schedule_of_the_same_block_at_the_same_place_is_dropped() {
         &mut region,
         &moves(vec![dig(1, 1, -60, 3, 1), dig(1, 3, -60, 3, 2)]),
     );
-    assert_eq!(ticks_of_the_sand(&region), [1]);
+    assert_eq!(ticks_of_the_sand(&region), [0]);
 }
 
 /// A tick the chunk came with counts as pending: a schedule of the same block there
@@ -844,7 +842,7 @@ fn a_scheduled_tick_names_its_chunk() {
     let mut region = ticking_floor_with(&[(stone, blocks::STONE), (sand, blocks::SAND)]);
     let output = checked(&mut region, &moves(vec![dig(1, 2, -59, 3, 1)]));
     assert_eq!(output.ticks_changed, [ChunkPos::new(0, 0)]);
-    assert_eq!(idle_tick(&mut region).ticks_changed, []);
+    // Due in the next tick, a dig counting from the tick before its own.
     assert_eq!(idle_tick(&mut region).ticks_changed, [ChunkPos::new(0, 0)]);
 }
 
@@ -852,12 +850,12 @@ fn a_scheduled_tick_names_its_chunk() {
 // E. What a block tick does
 // ---------------------------------------------------------------------------------------
 
-/// The region after player 1 has broken `dug` under a falling block, two ticks on,
-/// when the block's tick has run.
+/// The region after player 1 has broken `dug` under a falling block, a tick on, when
+/// the block's tick of 2 has run: the dig counts from the tick before its own, as the
+/// game handles a player's packet between ticks.
 fn after_a_fall(blocks: &[(BlockPos, BlockState)], dug: BlockPos) -> (Region, TickOutput) {
     let mut region = ticking_floor_with(blocks);
     checked(&mut region, &moves(vec![dig(1, dug.x, dug.y, dug.z, 1)]));
-    idle_tick(&mut region);
     let output = idle_tick(&mut region);
     (region, output)
 }
@@ -1048,22 +1046,26 @@ fn destroyed_at(output: &TickOutput, position: BlockPos) -> Vec<BlockState> {
         .collect()
 }
 
-/// A cactus whose sand is broken does not break with it: at its tick, which the change
-/// below it scheduled, it breaks and is shown breaking.
+/// A cactus whose sand is broken does not break with it: at its tick of 1, which the
+/// change below it scheduled, it breaks and is shown breaking. The dig counts from the
+/// tick before its own, as the game handles a player's packet between ticks, so that
+/// tick runs in the dig's, after it.
 #[test]
 fn a_cactus_whose_sand_is_broken_breaks_at_its_tick() {
     let (cactus, sand) = (at(2, -59, 3), at(2, -60, 3));
     let mut region = ticking_floor_with(&[(sand, blocks::SAND), (cactus, blocks::CACTUS)]);
     let output = checked(&mut region, &moves(vec![dig(1, 2, -60, 3, 1)]));
-    assert_eq!(block_at(&region, cactus), Some(blocks::CACTUS));
-    assert_eq!(destroyed_at(&output, cactus), []);
-    let mut destroyed = Vec::new();
-    for _ in 0..3 {
-        let output = idle_tick(&mut region);
-        destroyed.extend(destroyed_at(&output, cactus));
-    }
+    let gone: Vec<BlockPos> = output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RegionEvent::BlockChanged { position, .. } => Some(*position),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(gone, [sand, cactus], "the sand goes first");
     assert_eq!(block_at(&region, cactus), Some(blocks::AIR));
-    assert_eq!(destroyed, [blocks::CACTUS]);
+    assert_eq!(destroyed_at(&output, cactus), [blocks::CACTUS]);
 }
 
 #[test]

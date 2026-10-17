@@ -1108,9 +1108,9 @@ fn block_change(log: &[WorkerToEdge], block: BlockPos) -> Option<(usize, BlockSt
     events(log)
         .into_iter()
         .find_map(|(index, _, event)| match event {
-            RegionEvent::BlockChanged { position, state } if *position == block => {
-                Some((index, *state))
-            }
+            RegionEvent::BlockChanged {
+                position, state, ..
+            } if *position == block => Some((index, *state)),
             _ => None,
         })
 }
@@ -6042,6 +6042,7 @@ fn a_generated_run(shape: Shape, on_disk: bool, seed: u64, beside_a_neighbour: b
                 if let RegionEvent::BlockChanged {
                     position: block,
                     state,
+                    ..
                 } = event
                     && told > at
                     && replica.contains_key(block)
@@ -6239,6 +6240,7 @@ fn delta(tick: u64, block: BlockPos) -> WorkerToEdge {
         events: vec![RegionEvent::BlockChanged {
             position: block,
             state: blocks::AIR,
+            seen: true,
         }],
     }
 }
@@ -6620,7 +6622,9 @@ fn a_falling_block_at_the_rim_of_a_view_falls_because_its_ring_ticks_in(rings: b
         let shown: Vec<BlockState> = events(&e.log)
             .into_iter()
             .filter_map(|(_, _, event)| match event {
-                RegionEvent::BlockChanged { position, state } if *position == grass => Some(*state),
+                RegionEvent::BlockChanged {
+                    position, state, ..
+                } if *position == grass => Some(*state),
                 _ => None,
             })
             .collect();

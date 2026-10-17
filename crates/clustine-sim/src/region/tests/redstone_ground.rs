@@ -397,7 +397,8 @@ fn a_block_entitys_data_is_said_in_its_place_among_the_changes() {
         [
             &RegionEvent::BlockChanged {
                 position: chest,
-                state: blocks::CHEST
+                state: blocks::CHEST,
+                seen: true,
             },
             &RegionEvent::BlockEntityChanged {
                 position: chest,
@@ -606,23 +607,21 @@ fn a_use_sounds_as_its_block_set_or_wood_says() {
     assert_eq!(sound("minecraft:flower_pot"), None);
 }
 
-/// The beginning of block events is said in a tick that has block events, before
-/// their phase's changes, and in no other tick.
+/// The beginning of block events is said only where something comes after it (R8, a
+/// piston's in `r7/signals.rs`): not in a quiet tick, nor in one whose block event
+/// does nothing.
 #[test]
-fn the_beginning_of_block_events_is_said_only_in_a_tick_that_has_them() {
+fn the_beginning_of_block_events_is_said_only_where_something_follows_it() {
     let mut region = loaded_floor(&square(-1..=1));
     let output = idle(&mut region);
     assert!(!output.events.contains(&RegionEvent::BlockEventsBegin));
     region.block_event(stone_at(2), blocks::STONE, 0, 0);
     let output = idle(&mut region);
-    let begins: Vec<usize> = output
-        .events
-        .iter()
-        .enumerate()
-        .filter(|(_, event)| **event == RegionEvent::BlockEventsBegin)
-        .map(|(index, _)| index)
-        .collect();
-    assert_eq!(begins.len(), 1);
+    assert!(
+        !output.events.contains(&RegionEvent::BlockEventsBegin),
+        "{:?}",
+        output.events
+    );
 }
 
 // The sounds of what players do (section 8 of the record, step R6).

@@ -605,6 +605,35 @@ ground) and 4 of the store killed at every point of a redstone history
 - Two observers facing each other pulse every 6 ticks by the jar's order, worked out
   independently of R4; R8 compares it with the official server.
 
+R8, the comparisons with the official server (2026-10-17, by me,
+`bin/clustine/tests/redstone_oracle.rs`): a builder builds eleven circuits by plain
+clicks on both servers, and a second player hovering above each records, as they come,
+the block changes, block events, sounds and level events, each at its tick from the
+first. The two observers' clock, the torch clock (eight times out, level event 1502,
+then out for good), lamps behind wire and a repeater, both pistons, and doors, an iron
+trapdoor and a gate by hand and by lever, with their sounds' events, volumes, places
+and order. It found:
+
+- **A block a piston moves was sent as a moving piston.** The game sets it without
+  `UPDATE_CLIENTS` (flags 324 and 276), and clients make their own from the block
+  event. `RegionEvent::BlockChanged` now says whether a change was set with it
+  (`seen`); the edge keeps one without it in its chunks, which new viewers are sent,
+  and sends it only where the block waits to be sent for another change, as it is
+  then, as `ChunkHolder.broadcastChanges` reads the level.
+- **What a player's action scheduled came a tick late.** The game handles a player's
+  packet between ticks, at the game time of the tick before, so a lamp put out by a
+  lever goes out three ticks after the lever is seen; a region's actions now schedule
+  from the tick before theirs (`made_in`). The tests that counted from a click's own
+  tick count so now, R7's among them.
+- **A piston's move finishing was sent a tick early** in a tick without block events:
+  the mark of their phase was said only where there were some. It is now said wherever
+  something comes after it, so that what the block entities and the entities change
+  goes with the next tick's, as the game broadcasts it.
+
+With those, all 168 things the eleven circuits send come on the same tick on both
+servers, in the same order. A sound's pitch, which both draw at random, is not
+compared.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

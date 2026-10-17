@@ -594,9 +594,9 @@ fn block_change(log: &[WorkerToEdge], block: BlockPos) -> Option<(usize, BlockSt
     events(log)
         .into_iter()
         .find_map(|(index, _, event)| match event {
-            RegionEvent::BlockChanged { position, state } if *position == block => {
-                Some((index, *state))
-            }
+            RegionEvent::BlockChanged {
+                position, state, ..
+            } if *position == block => Some((index, *state)),
             _ => None,
         })
 }
@@ -904,7 +904,9 @@ impl Witness {
                             self.entities.remove(entity);
                             self.own.retain(|_, own| own != entity);
                         }
-                        RegionEvent::BlockChanged { position, state } => {
+                        RegionEvent::BlockChanged {
+                            position, state, ..
+                        } => {
                             self.blocks.insert(*position, *state);
                         }
                         // What a client shows of a block breaking or lava hissing; the

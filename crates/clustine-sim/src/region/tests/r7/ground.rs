@@ -520,15 +520,18 @@ fn a_block_with_an_analog_output_tells_a_comparator_beyond_a_conductor() {
     ]);
     step(&mut region, &click(lever_at));
     assert!(on(&region, bulb, "lit"));
+    // The comparator's tick of 2 runs in the next tick, the click counting from the
+    // tick before its own.
     let powers = watch(&mut region, 3, |region| power(region, out));
-    assert_eq!(powers, [0, 15, 15]);
+    assert_eq!(powers, [15; 3]);
 }
 
 /// Section 7: placement runs the blocks' `onPlace` and `setPlacedBy` and reads
 /// signals. Beside a powered lever, a lamp is placed lit, a trapdoor open and powered,
 /// a powered rail powered; a piston placed powered extends in the tick it is placed;
-/// a repeater placed with its input powered ticks one tick later
-/// (`DiodeBlock.setPlacedBy`).
+/// a repeater placed with its input powered ticks one game tick later
+/// (`DiodeBlock.setPlacedBy`), which is still the placing's own tick, since a placing
+/// counts from the tick before (R8).
 #[test]
 fn blocks_placed_beside_power_come_out_powered() {
     let lever_at = at(3, -60, 2);
@@ -566,7 +569,5 @@ fn blocks_placed_beside_power_come_out_powered() {
     step(&mut region, &holding(items::REPEATER));
     step(&mut region, &use_on(floor_at, Face::Top));
     assert_eq!(property(&region, target, "facing"), "north");
-    assert!(!on(&region, target, "powered"));
-    idle(&mut region);
     assert!(on(&region, target, "powered"));
 }

@@ -1147,6 +1147,7 @@ fn remote_done_goes_to_the_edge_the_action_came_from() {
     assert!(output.events.contains(&RegionEvent::BlockChanged {
         position: BORDER_BLOCK_B,
         state: blocks::AIR,
+        seen: true,
     }));
     assert!(region.edge(F).expect("F is known").outbox.is_empty());
 }

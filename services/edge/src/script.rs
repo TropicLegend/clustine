@@ -1096,6 +1096,7 @@ impl Script {
             events.push(RegionEvent::BlockChanged {
                 position: *position,
                 state: *state,
+                seen: true,
             });
         }
         let tick = self.next_tick();
