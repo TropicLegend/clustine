@@ -1536,6 +1536,7 @@ fn commit_ticks(
         seams: Vec::new(),
         effects: Vec::new(),
         taken: Vec::new(),
+        events: Vec::new(),
     });
 }
 

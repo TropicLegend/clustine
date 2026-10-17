@@ -15,8 +15,9 @@ pub mod spawn;
 
 pub use change::Change;
 pub use chunk::{
-    BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, MAX_BLOCK_ENTITY_DATA,
-    MAX_CHUNK_ENTITY_DATA, ScheduledTick, Seam, SeamKind, Ticked, light_tells_apart,
+    BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, KeptEvent,
+    MAX_BLOCK_ENTITY_DATA, MAX_CHUNK_ENTITY_DATA, ScheduledTick, Seam, SeamKind, Ticked,
+    light_tells_apart,
 };
 pub use effects::{Due, Effect, EffectId, EffectKey, Effected, FiledEffect};
 pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};

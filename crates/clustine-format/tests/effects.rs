@@ -98,6 +98,7 @@ fn commit(effects: Vec<(Effect, Due)>, taken: Vec<EffectId>) -> LogRecord {
         seams: Vec::new(),
         effects,
         taken,
+        events: Vec::new(),
     }
 }
 
@@ -158,6 +159,7 @@ fn a_commit_without_effects_or_takings_is_of_the_kind_it_always_was() {
         seams: Vec::new(),
         effects: Vec::new(),
         taken: Vec::new(),
+        events: Vec::new(),
     };
     assert_eq!(kind_of(&with_marks.encode()), 9);
 }

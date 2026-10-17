@@ -1034,6 +1034,7 @@ impl Lanes {
                 seams,
                 effects,
                 taken,
+                events,
             } => {
                 let region = session.region;
                 // An effect is filed if its chunk is in use, and left out otherwise:
@@ -1094,6 +1095,7 @@ impl Lanes {
                         .map(|(effect, due, _)| (*effect, *due))
                         .collect(),
                     taken: taken.clone(),
+                    events,
                 }
                 .encode();
                 self.group.regions.insert(region);
@@ -2976,6 +2978,7 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
         ticks,
         marks_taken,
         seams,
+        events,
         ..
     } = record
     else {
@@ -2992,7 +2995,10 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
     let seams = seams
         .into_iter()
         .map(|(chunk, seams)| Replayed::Seams(chunk, seams));
-    let records = ticks.chain(marks).chain(seams);
+    let events = events
+        .into_iter()
+        .map(|(chunk, events)| Replayed::Events(chunk, events));
+    let records = ticks.chain(marks).chain(seams).chain(events);
     Some((tick, blocks.chain(records).collect(), state))
 }
 

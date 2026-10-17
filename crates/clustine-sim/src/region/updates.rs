@@ -210,6 +210,36 @@ impl Region {
         true
     }
 
+    /// Gives the block entity at `pos` in a chunk the region has loaded the data
+    /// `data`, and says so in its place among the tick's changes, to be committed with
+    /// them (`docs/adr/0026-redstone.md`, section 6). Returns whether it took it: there
+    /// is no block entity there, or the chunk refuses that much data, which it keeps
+    /// without, as the game keeps a block entity it could not save whole.
+    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_block_entity_data(
+        &mut self,
+        pos: BlockPos,
+        data: Vec<u8>,
+        output: &mut TickOutput,
+    ) -> bool {
+        let Some(chunk) = self.chunks.get_mut(&pos.chunk()) else {
+            return false;
+        };
+        let (x, z) = pos.in_chunk();
+        if chunk
+            .set_block_entity_data(clustine_world::InChunk::new(x, pos.y, z), data.clone())
+            .is_err()
+        {
+            return false;
+        }
+        output.events.push(RegionEvent::BlockEntityChanged {
+            position: pos,
+            data,
+        });
+        true
+    }
+
     /// A player's or a region's own change of a block: `setBlock` with every update.
     pub(crate) fn set_block(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
         self.set_block_updated(pos, state, UPDATE_ALL, UPDATE_LIMIT, output);

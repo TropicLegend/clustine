@@ -55,6 +55,7 @@ fn commit(handle: &StoreHandle, tick: u64, changes: &[(BlockPos, BlockState)]) {
         seams: Vec::new(),
         effects: Vec::new(),
         taken: Vec::new(),
+        events: Vec::new(),
     });
 }
 
@@ -362,6 +363,7 @@ fn commit_changes(handle: &StoreHandle, tick: u64, changes: Vec<clustine_world::
         seams: Vec::new(),
         effects: Vec::new(),
         taken: Vec::new(),
+        events: Vec::new(),
     });
 }
 

@@ -103,6 +103,7 @@ fn commit(
         seams,
         effects: Vec::new(),
         taken: Vec::new(),
+        events: Vec::new(),
     });
 }
 

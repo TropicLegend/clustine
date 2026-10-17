@@ -16,6 +16,7 @@
 mod bytes;
 mod chunk;
 mod effects;
+mod kept_events;
 mod log;
 mod region;
 mod seams;

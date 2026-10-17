@@ -2527,10 +2527,19 @@ impl RegionRunner {
             .filter(|position| self.region.chunk(**position).is_some())
             .map(|position| (*position, self.region.seams(*position)))
             .collect();
+        // The block events each chunk keeps, whole, where they changed
+        // (`docs/adr/0026-redstone.md`, section 4).
+        let events: Vec<_> = output
+            .events_changed
+            .iter()
+            .filter(|position| self.region.chunk(**position).is_some())
+            .map(|position| (*position, self.region.kept_events(*position)))
+            .collect();
         let unchanged = changes.is_empty()
             && ticks.is_empty()
             && marks_taken.is_empty()
             && seams.is_empty()
+            && events.is_empty()
             && output.delta.changes_only_the_tick();
         // A tick that takes effects commits, so that the store drops them; one that made
         // some commits them; and a coupled region commits every tick (section 8).
@@ -2547,6 +2556,8 @@ impl RegionRunner {
             self.unsaved.extend(marks_taken.iter().copied());
             self.unsaved
                 .extend(seams.iter().map(|(position, _)| *position));
+            self.unsaved
+                .extend(events.iter().map(|(position, _)| *position));
             self.store.request(StoreRequest::Commit {
                 tick: output.tick,
                 changes,
@@ -2557,6 +2568,7 @@ impl RegionRunner {
                 seams,
                 effects: self.border.take_for_commit(),
                 taken,
+                events,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its

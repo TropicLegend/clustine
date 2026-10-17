@@ -548,6 +548,7 @@ mod tests {
             seams: Vec::new(),
             effects: Vec::new(),
             taken: Vec::new(),
+            events: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -698,6 +699,7 @@ mod tests {
             seams: Vec::new(),
             effects: Vec::new(),
             taken: Vec::new(),
+            events: Vec::new(),
         });
         for reply in [
             StoreReply::Enter {
@@ -870,6 +872,7 @@ mod tests {
             seams: Vec::new(),
             effects: effects.clone(),
             taken: vec![id(4, 0), id(4, 2)],
+            events: Vec::new(),
         });
         let (one, two) = (ChunkPos::new(-2, 2), ChunkPos::new(-1, 2));
         for request in [

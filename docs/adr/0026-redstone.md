@@ -365,6 +365,29 @@ R2b, the simulation's ground, first part (2026-10-17):
   not. Whether the store had done so first depended on scheduling: 32 of 200 runs
   failed twelve at a time. The disk is now taken while the handles are open.
 
+R2b, second part, block events (2026-10-17):
+
+- **Kept events travel as seam entries do**: `Chunk::events`, a chunk file's bit 2 of
+  its flags and a part after the seams (`kept_events.rs`), a commit's `events` of the
+  chunks whose kept events changed, whole, which the log writes as kind 14 (the
+  fields of kind 13, then the events), and the store's `Replayed::Events`. A chunk or
+  a commit without any is written as before.
+- **The queue is the region's in memory, and the chunks are its durable form**: at the
+  end of each tick every loaded chunk keeps the events of its blocks still queued, and
+  a chunk whose list changed is named in `TickOutput::events_changed`, which the
+  worker commits as it commits seam entries. A chunk unloaded takes its events out of
+  the queue; one loaded, or every chunk of a region restored with its chunks, puts
+  them at the queue's end in ascending order of the chunks.
+- **No block has a `triggerEvent` yet**: the phase runs and puts back, and an event
+  that reaches its block does nothing until R3's note blocks and bells and R5's
+  pistons. `RegionEvent::BlockEvent` is what a run event will say, which the edge
+  sends from R2c on.
+- **Typed block entities and their tickers come with their first users** (the bell in
+  R3, the comparator in R4, the moving piston in R5), each with tests of its own, and
+  so does the phase of block entities, which has nothing to tick before them.
+  `Region::set_block_entity_data` is how a rule gives a block entity new data, said
+  as `BlockEntityChanged` in its place among the tick's changes.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

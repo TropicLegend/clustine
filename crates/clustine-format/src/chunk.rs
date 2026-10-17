@@ -12,7 +12,7 @@
 //! | Tick at which the chunk was saved | u64 |
 //! | Epoch of the region that saved it | u64 |
 //! | Generated: the version of the generator the chunk is exactly as made by, or 0 | u16 |
-//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams"; the others 0 |
+//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events"; the others 0 |
 //! | Section count | u16 |
 //! | Codec of the body | u8: 0 as it is, 1 zstd |
 //! | Length of the body, as it is | u32, at most 8 MiB |
@@ -31,6 +31,7 @@
 //! | Scheduled ticks | count u32; then, in order: kind u8 (0 block, 1 fluid), `x << 4 \| z` u8, y i16, id u16, delay i32, priority i8 |
 //! | Marks | count u32; then, ascending: `x << 4 \| z` u8, y i16 |
 //! | Seams, with bit 1 of the flags only | as `seams.rs` says, which is not empty |
+//! | Block events, with bit 2 of the flags only | as `kept_events.rs` says, which is not empty |
 //!
 //! The writer writes one form: palettes ascending with nothing unused, lists in
 //! order, light that is all 0 or all 15 as dark and full. The reader refuses what it
@@ -62,6 +63,9 @@ const WITH_FAILURE: u8 = 1;
 /// there were any, is written as it was (`docs/adr/0024-block-behaviour-in-a-region.md`,
 /// section 4, "The format").
 const WITH_SEAMS: u8 = 2;
+/// A chunk with block events kept says so, so that one without, and every chunk from
+/// before there were any, is written as it was (`docs/adr/0026-redstone.md`, section 4).
+const WITH_EVENTS: u8 = 4;
 /// The byte that says how a chunk's light is there: not at all, or with the version
 /// of the generator whose chunks it was made beside. The value between them, 1, is
 /// light without that version, which only a file from before it was kept has.
@@ -279,6 +283,9 @@ impl ChunkFile {
         if !chunk.seams().is_empty() {
             crate::seams::put_seams(&mut body, chunk.seams());
         }
+        if !chunk.events().is_empty() {
+            crate::kept_events::put_events(&mut body, chunk.events());
+        }
         assert!(body.len() <= MAX_BODY, "a chunk of {} bytes", body.len());
 
         let compressed = zstd::bulk::compress(&body, ZSTD_LEVEL).ok();
@@ -303,7 +310,12 @@ impl ChunkFile {
         } else {
             WITH_SEAMS
         };
-        out.push(failure | seams);
+        let events = if chunk.events().is_empty() {
+            0
+        } else {
+            WITH_EVENTS
+        };
+        out.push(failure | seams | events);
         out.extend_from_slice(&(chunk.sections().len() as u16).to_be_bytes());
         out.push(codec);
         out.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -339,7 +351,7 @@ impl ChunkFile {
         let epoch = input.u64()?;
         let generated = input.u16()?;
         let flags = input.u8()?;
-        if flags & !(WITH_FAILURE | WITH_SEAMS) != 0 {
+        if flags & !(WITH_FAILURE | WITH_SEAMS | WITH_EVENTS) != 0 {
             return Err(FormatError::Corrupt("flags that mean nothing"));
         }
         let section_count = usize::from(input.u16()?);
@@ -476,6 +488,15 @@ impl ChunkFile {
             }
             chunk.set_seams(seams);
         }
+        if flags & WITH_EVENTS != 0 {
+            let events = crate::kept_events::take_events(&mut input)?;
+            if events.is_empty() {
+                return Err(FormatError::Corrupt(
+                    "a chunk with block events that has none",
+                ));
+            }
+            chunk.set_events(events);
+        }
         input.finish()?;
         chunk.mark_generated(generated, flags & WITH_FAILURE != 0);
         let file = Self {
@@ -569,6 +590,43 @@ mod tests {
             // One form: what was read is written as it was.
             assert_eq!(ChunkFile::decode(&bytes).unwrap().0.encode(), bytes);
         }
+    }
+
+    /// A chunk with block events kept is read back with them, in their order, and says
+    /// so in its flags; one without has the flag clear, as every chunk from before
+    /// there were any (`docs/adr/0026-redstone.md`, section 4).
+    #[test]
+    fn a_chunk_with_block_events_comes_back_with_them_in_order_and_one_without_is_as_before() {
+        let mut chunk = full();
+        let events = vec![
+            clustine_world::KeptEvent {
+                at: InChunk::new(15, -64, 0),
+                block: 1200,
+                kind: 1,
+                data: -3,
+            },
+            clustine_world::KeptEvent {
+                at: InChunk::new(0, 300, 15),
+                block: 7,
+                kind: 0,
+                data: i32::MAX,
+            },
+        ];
+        chunk.set_events(events.clone());
+        let bytes = file(chunk).encode();
+        let (read, _) = ChunkFile::decode(&bytes).unwrap();
+        assert_eq!(read.chunk.events(), events);
+        assert_eq!(bytes[32] & WITH_EVENTS, WITH_EVENTS);
+        assert_eq!(read.encode(), bytes);
+        assert_eq!(file(full()).encode()[32] & WITH_EVENTS, 0);
+    }
+
+    /// The flag of block events with none after it is refused, as seams' is.
+    #[test]
+    fn a_chunk_that_says_it_has_block_events_and_has_none_is_refused() {
+        let mut bytes = file(empty()).encode();
+        bytes[32] |= WITH_EVENTS;
+        assert!(ChunkFile::decode(&bytes).is_err());
     }
 
     /// A chunk with seam entries is read back with them, an entry reaching beyond the

@@ -1,12 +1,13 @@
 //! The store killed at every point of commits that change block entities' data among
-//! their blocks (`docs/adr/0026-redstone.md`, section 6): what a crash leaves is opened
-//! by a new store, and the chunk it restores must be the restored history's changes
-//! applied in their order, whatever of them the stored chunk had already.
+//! their blocks and the block events a chunk keeps (`docs/adr/0026-redstone.md`,
+//! sections 4 and 6): what a crash leaves is opened by a new store, and the chunk it
+//! restores must be the restored history's changes applied in their order, whatever of
+//! them the stored chunk had already, with the events the last of them left.
 
 use std::path::Path;
 
 use clustine_data::blocks;
-use clustine_world::{BlockPos, Change, Chunk, ChunkPos};
+use clustine_world::{BlockPos, Change, Chunk, ChunkPos, InChunk, KeptEvent};
 
 use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival};
@@ -59,12 +60,32 @@ fn changes(tick: u64) -> Vec<Change> {
     changes
 }
 
+/// The block events the chunk keeps after the commit of `tick`, where that changed
+/// them: one queued at tick 2, a second behind it at tick 5, and none from tick 6 on.
+fn events(tick: u64) -> Option<Vec<KeptEvent>> {
+    let event = |data| KeptEvent {
+        at: InChunk::new(2, 100, 3),
+        block: 1200,
+        kind: 0,
+        data,
+    };
+    match tick {
+        2 => Some(vec![event(1)]),
+        5 => Some(vec![event(1), event(2)]),
+        6 => Some(Vec::new()),
+        _ => None,
+    }
+}
+
 /// The chunk at the origin with the changes of `ticks` applied in order.
 fn chunk_after(ticks: impl IntoIterator<Item = u64>) -> Chunk {
     let mut chunk = generator().generate(ORIGIN);
     for tick in ticks {
         for change in changes(tick) {
             chunk.apply(&change).expect("small data");
+        }
+        if let Some(events) = events(tick) {
+            chunk.set_events(events);
         }
     }
     chunk
@@ -114,6 +135,9 @@ fn scenario(store: &Store) -> Vec<u64> {
             seams: Vec::new(),
             effects: Vec::new(),
             taken: Vec::new(),
+            events: events(tick)
+                .map(|events| vec![(ORIGIN, events)])
+                .unwrap_or_default(),
         });
         if tick == SAVED_AS_OF {
             handle.request(StoreRequest::Save {

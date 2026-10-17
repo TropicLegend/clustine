@@ -7,15 +7,15 @@
 //! test with; this one writes every message with postcard. The types `…OnWire` say
 //! again, from the record, what travels: "per section the form, the palette and the
 //! words as bytes; the biomes; the block entities; the version and the failure bit;
-//! the light; ticks and marks", and since ADR-0024 the seam entries, and not the counts
-//! and not the heightmaps. A section
+//! the light; ticks and marks", since ADR-0024 the seam entries and since ADR-0026 the
+//! block events kept, and not the counts and not the heightmaps. A section
 //! or a chunk is read into them to see its form, and broken ones are written from
 //! them.
 
 use clustine_data::{BLOCK_INFO, BLOCK_STATE_COUNT, BlockState, blocks};
 use clustine_world::{
-    BIOME_CELLS, BLOCKS_PER_SECTION, Biome, BlockEntity, Chunk, InChunk, LIGHT_ARRAY_LENGTH, Light,
-    ScheduledTick, Seam, Section, SectionLight, Ticked,
+    BIOME_CELLS, BLOCKS_PER_SECTION, Biome, BlockEntity, Chunk, InChunk, KeptEvent,
+    LIGHT_ARRAY_LENGTH, Light, ScheduledTick, Seam, Section, SectionLight, Ticked,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,7 @@ struct ChunkOnWire {
     ticks: Vec<ScheduledTick>,
     marks: Vec<InChunk>,
     seams: Vec<Seam>,
+    events: Vec<KeptEvent>,
 }
 
 fn bytes_of<T: Serialize>(value: &T) -> Vec<u8> {
@@ -590,6 +591,7 @@ fn a_section_with_a_state_that_is_none_of_the_games_is_not_a_panic() {
                 ticks: Vec::new(),
                 marks: Vec::new(),
                 seams: Vec::new(),
+                events: Vec::new(),
             };
             if let Ok(chunk) = chunk_from(&chunk) {
                 assert_eq!(chunk.sections().len(), 1);

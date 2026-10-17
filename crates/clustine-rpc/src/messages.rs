@@ -7,7 +7,7 @@ use clustine_sim::api::{
 };
 use clustine_world::{
     BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityId, EntityIds,
-    FiledEffect, PlayerId, ScheduledTick, Seam,
+    FiledEffect, KeptEvent, PlayerId, ScheduledTick, Seam,
 };
 use serde::{Deserialize, Serialize};
 
@@ -343,6 +343,9 @@ pub enum StoreRequest {
         /// The seam entries of each chunk whose entries changed in the tick, whole
         /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5).
         seams: Vec<(ChunkPos, Vec<Seam>)>,
+        /// The block events kept in each chunk whose kept events changed in the tick,
+        /// whole, in their order (`docs/adr/0026-redstone.md`, section 4).
+        events: Vec<(ChunkPos, Vec<KeptEvent>)>,
         /// What the tick did in chunks the region does not have loaded, made in `tick`,
         /// in the order the tick made them, each kept once as
         /// [`Effect::key`] says (`docs/adr/0025-effects-between-regions.md`, section 4).

@@ -24,7 +24,9 @@ use clustine_data::BlockState;
 use clustine_format::{ChunkFile, FormatError, StateFile, read_log};
 use clustine_rpc::{Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
-use clustine_world::{BlockPos, Change, Chunk, ChunkGenerator, ChunkPos, ScheduledTick, Seam};
+use clustine_world::{
+    BlockPos, Change, Chunk, ChunkGenerator, ChunkPos, KeptEvent, ScheduledTick, Seam,
+};
 use tracing::{error, info, warn};
 
 use crate::disk::{Disk, parent, temporary};
@@ -1399,13 +1401,19 @@ pub(crate) enum Replayed {
     MarksTaken(ChunkPos),
     /// The chunk's seam entries, whole.
     Seams(ChunkPos, Vec<Seam>),
+    /// The block events the chunk keeps, whole (`docs/adr/0026-redstone.md`, section
+    /// 4).
+    Events(ChunkPos, Vec<KeptEvent>),
 }
 
 impl Replayed {
     pub(crate) fn chunk(&self) -> ChunkPos {
         match self {
             Self::Block(position, _) | Self::BlockEntity(position, _) => position.chunk(),
-            Self::Ticks(chunk, _) | Self::MarksTaken(chunk) | Self::Seams(chunk, _) => *chunk,
+            Self::Ticks(chunk, _)
+            | Self::MarksTaken(chunk)
+            | Self::Seams(chunk, _)
+            | Self::Events(chunk, _) => *chunk,
         }
     }
 }
@@ -1499,6 +1507,10 @@ fn put(chunk: &mut Chunk, change: &Replayed) {
         }
         Replayed::Seams(_, seams) => {
             chunk.set_seams(seams.clone());
+            chunk.clear_generated();
+        }
+        Replayed::Events(_, events) => {
+            chunk.set_events(events.clone());
             chunk.clear_generated();
         }
     }

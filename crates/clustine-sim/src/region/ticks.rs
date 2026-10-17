@@ -199,6 +199,11 @@ impl Region {
         self.schedule_due(pos, of, due, priority);
     }
 
+    /// Whether the region ticks the chunk at `position`.
+    pub(crate) fn ticks_chunk(&self, position: ChunkPos) -> bool {
+        self.ticks.ticking.contains(&position)
+    }
+
     /// A tick of `of` at `pos` due in the region's tick `due`: in the queue of a chunk
     /// the region ticks, kept as the delay left in a loaded chunk that does not tick,
     /// and nowhere in a chunk not loaded.

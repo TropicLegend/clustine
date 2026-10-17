@@ -72,6 +72,7 @@ impl Actor {
             seams: Vec::new(),
             effects: Vec::new(),
             taken: Vec::new(),
+            events: Vec::new(),
         });
     }
 

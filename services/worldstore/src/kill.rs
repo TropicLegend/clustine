@@ -83,6 +83,7 @@ fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState
         seams: Vec::new(),
         effects: Vec::new(),
         taken: Vec::new(),
+        events: Vec::new(),
     });
 }
 

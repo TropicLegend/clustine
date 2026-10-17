@@ -493,7 +493,8 @@ describe sections and manifests and are rewritten in the same commit.
 A chunk travels as it is in memory, written by postcard as today: per section the
 form, the palette and the words **as bytes** (postcard would write a `u64` as a
 variable-length integer); the biomes; the block entities; the version and the
-failure bit; the light; ticks and marks, but for a snapshot. **Not** the counts and
+failure bit; the light; ticks and marks, but for a snapshot (and, since ADR-0024 and
+ADR-0026, the seam entries and the block events kept). **Not** the counts and
 not the heightmaps, which the receiver makes (as it counts what is not air today,
 `section.rs:161-180`). The receiver checks what it is given (every index within its
 palette, every length and bound) and makes I1 to I3 hold as the file's reader

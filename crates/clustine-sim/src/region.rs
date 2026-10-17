@@ -17,6 +17,7 @@ use crate::api::{
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
+mod block_events;
 mod fluids;
 mod rails;
 mod random_ticks;
@@ -288,6 +289,12 @@ pub struct Region {
     /// block events, false while inputs, entities and block entities run, and between
     /// ticks (`docs/adr/0026-redstone.md`, section 3); no part of the state.
     handling_tick: bool,
+    /// The queue of block events, in the order queued (`block_events.rs`); kept in
+    /// the chunks at the end of each tick, so no part of the region's own state.
+    block_events: Vec<block_events::QueuedEvent>,
+    /// The block events that reached their block's rule, for the tests to see.
+    #[cfg(test)]
+    events_run: Vec<block_events::QueuedEvent>,
 }
 
 impl Region {
@@ -340,6 +347,9 @@ impl Region {
             made: Vec::new(),
             made_in: None,
             handling_tick: false,
+            block_events: Vec::new(),
+            #[cfg(test)]
+            events_run: Vec::new(),
             tickets: BTreeMap::new(),
             requested: BTreeSet::new(),
             players,
@@ -380,6 +390,12 @@ impl Region {
             if wanted && region.land.holds(position) {
                 region.chunks.insert(position, chunk);
             }
+        }
+        // The queue of block events from the chunks' kept events, by chunk and then in
+        // each chunk's order (`docs/adr/0026-redstone.md`, section 4).
+        let loaded: Vec<ChunkPos> = region.chunks.keys().copied().collect();
+        for position in loaded {
+            region.take_up_events(position);
         }
         for (position, copy) in copies {
             if !region.chunks.contains_key(&position) {
@@ -653,7 +669,12 @@ impl Region {
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
         self.run_random_ticks(&mut output);
+        self.run_block_events(&mut output);
         self.handling_tick = false;
+        // The phase of block entities is the game's next; no block entity ticks before
+        // redstone's (`docs/adr/0026-redstone.md`, section 5). Then the chunks keep the
+        // events still queued.
+        self.keep_events(&mut output);
         // A player is let go only where the store has said that the chunk they stand in
         // is another region's. In a chunk the region has asked for or knows nothing of
         // they stay, and the answer decides.
@@ -1837,11 +1858,13 @@ impl Region {
                 // on its spawn column as it is now.
                 if *position != self.land.home {
                     self.chunks.remove(position);
+                    self.let_go_events(*position);
                     self.requested.remove(position);
                 }
             }
         }
         let home = self.land.home;
+        let mut loaded = BTreeSet::new();
         for (position, chunk) in &inputs.chunks_loaded {
             // A chunk can arrive after everyone stopped needing it.
             if self.requested.remove(position)
@@ -1851,7 +1874,12 @@ impl Region {
                 self.chunks.insert(*position, chunk.clone());
                 // A chunk the region loads is its own to read, and no longer copied.
                 self.copies.remove(position);
+                loaded.insert(*position);
             }
+        }
+        // The kept block events of the chunks loaded join the queue's end, by chunk.
+        for position in loaded {
+            self.take_up_events(position);
         }
         // Border copies, with the chunks and before the region works out which chunks
         // tick, so that a chunk beside them ticks in this very tick

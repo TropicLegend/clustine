@@ -727,6 +727,15 @@ pub enum RegionEvent {
         state: BlockState,
         breaker: Option<PlayerId>,
     },
+    /// A block event ran (`docs/adr/0026-redstone.md`, section 4): the game's
+    /// `ClientboundBlockEventPacket`, of the block whose id is `block`, with its two
+    /// numbers, which clients act on (a piston's move, a note block's note).
+    BlockEvent {
+        position: BlockPos,
+        block: u16,
+        kind: i32,
+        data: i32,
+    },
     /// Lava met water, or took the place of a block, which clients show with a hiss and
     /// smoke (the game's level event 1501).
     Fizzed { position: BlockPos },
@@ -748,6 +757,7 @@ impl RegionEvent {
             Self::EntityRemoved { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
+            | Self::BlockEvent { position, .. }
             | Self::BlockDestroyed { position, .. }
             | Self::Fizzed { position } => [position.chunk(); 2],
             Self::EntityMoved {
@@ -829,6 +839,10 @@ pub struct TickOutput {
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 5). They are to be
     /// committed and saved as chunks whose blocks changed are.
     pub seams_changed: Vec<ChunkPos>,
+    /// Chunks whose kept block events changed in this tick, in ascending order
+    /// (`docs/adr/0026-redstone.md`, section 4). They are to be committed and saved as
+    /// chunks whose blocks changed are.
+    pub events_changed: Vec<ChunkPos>,
     /// What the tick did in chunks the region does not have loaded and does not hold
     /// or ask for, in the order it did them
     /// (`docs/adr/0025-effects-between-regions.md`, section 4). They are to be

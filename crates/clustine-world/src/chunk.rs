@@ -89,6 +89,21 @@ pub enum SeamKind {
     Neighbour,
 }
 
+/// A block event that outlived the tick it was queued in (`docs/adr/0026-redstone.md`,
+/// section 4): its block's chunk did not tick, or it was queued after the phase of
+/// block events. Kept in the chunk of its block, in the order of the region's queue,
+/// as the game's `BlockEventData`: the block it is of, and its two numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptEvent {
+    pub at: InChunk,
+    /// The block's id, which the block there has to be for the event to run.
+    pub block: u16,
+    /// The game's `b0`, which says what the event is (a piston's 0 to extend, say).
+    pub kind: i32,
+    /// The game's `b1`, the event's number (a piston's direction, say).
+    pub data: i32,
+}
+
 /// An update a region could not make: one that would reach a block whose chunk, or a
 /// neighbour's, it had not loaded, as at the border with another region. It is kept in
 /// the chunk of the block that changed, and made when one region has the block it
@@ -237,6 +252,9 @@ pub struct Chunk {
     /// Updates from this chunk's blocks that its region could not make, by
     /// [`Seam::key`], each once.
     seams: Vec<Seam>,
+    /// The block events of this chunk's blocks that outlived their tick, in the order
+    /// of the queue they wait in.
+    events: Vec<KeptEvent>,
 }
 
 impl PartialEq for Chunk {
@@ -248,6 +266,7 @@ impl PartialEq for Chunk {
             && self.ticks == other.ticks
             && self.marks == other.marks
             && self.seams == other.seams
+            && self.events == other.events
     }
 }
 
@@ -276,6 +295,7 @@ impl Chunk {
             ticks: Vec::new(),
             marks: Vec::new(),
             seams: Vec::new(),
+            events: Vec::new(),
         };
         chunk.heights = chunk.scanned_heights();
         chunk.block_entities = chunk.owed_block_entities(BTreeMap::new());
@@ -566,6 +586,16 @@ impl Chunk {
         self.seams = kept.into_values().collect();
     }
 
+    /// The block events that wait in this chunk, in their order.
+    pub fn events(&self) -> &[KeptEvent] {
+        &self.events
+    }
+
+    /// Takes `events` as the chunk's, in their order.
+    pub fn set_events(&mut self, events: Vec<KeptEvent>) {
+        self.events = events;
+    }
+
     /// Keeps `seam`, in place of an entry with its key.
     pub fn add_seam(&mut self, seam: Seam) {
         match self.seams.binary_search_by_key(&seam.key(), Seam::key) {
@@ -584,13 +614,14 @@ impl Chunk {
             && self.block_entities == other.block_entities
     }
 
-    /// The chunk as an edge is handed it: without the ticks, the marks and the seams,
-    /// which are the simulation's and the store's.
+    /// The chunk as an edge is handed it: without the ticks, the marks, the seams and
+    /// the block events, which are the simulation's and the store's.
     pub fn for_viewers(&self) -> Self {
         Self {
             ticks: Vec::new(),
             marks: Vec::new(),
             seams: Vec::new(),
+            events: Vec::new(),
             ..self.clone()
         }
     }
@@ -616,6 +647,7 @@ struct ChunkRepr {
     ticks: Vec<ScheduledTick>,
     marks: Vec<InChunk>,
     seams: Vec<Seam>,
+    events: Vec<KeptEvent>,
 }
 
 impl From<Chunk> for ChunkRepr {
@@ -630,6 +662,7 @@ impl From<Chunk> for ChunkRepr {
             ticks: chunk.ticks,
             marks: chunk.marks,
             seams: chunk.seams,
+            events: chunk.events,
         }
     }
 }
@@ -678,6 +711,7 @@ impl TryFrom<ChunkRepr> for Chunk {
         chunk.ticks = repr.ticks;
         chunk.marks = repr.marks;
         chunk.set_seams(repr.seams);
+        chunk.events = repr.events;
         Ok(chunk)
     }
 }

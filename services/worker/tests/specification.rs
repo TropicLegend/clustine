@@ -911,7 +911,8 @@ impl Witness {
                         // block itself comes as a change.
                         RegionEvent::BlockDestroyed { .. }
                         | RegionEvent::Fizzed { .. }
-                        | RegionEvent::BlockEntityChanged { .. } => {}
+                        | RegionEvent::BlockEntityChanged { .. }
+                        | RegionEvent::BlockEvent { .. } => {}
                         RegionEvent::EntityMoved { entity, pose, .. } => {
                             self.entities.insert(*entity, *pose);
                         }
@@ -5271,6 +5272,7 @@ fn store_by_hand(
             seams: Vec::new(),
             effects: Vec::new(),
             taken: Vec::new(),
+            events: Vec::new(),
         });
     }
     handle.flush();

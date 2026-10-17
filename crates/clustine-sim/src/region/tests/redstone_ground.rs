@@ -187,3 +187,226 @@ fn a_region_does_not_handle_its_tick_between_ticks() {
     idle(&mut region);
     assert!(!region.handling_tick());
 }
+
+// Block events (section 4 of the record).
+
+/// A region that has loaded `chunks`, of the floor, with player 1 in it.
+fn loaded_floor(chunks: &[ChunkPos]) -> Region {
+    let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
+    checked(&mut region, &tickets(chunks.to_vec(), vec![]));
+    checked(
+        &mut region,
+        &TickInputs {
+            chunks_loaded: chunks.iter().map(|position| (*position, floor())).collect(),
+            ..TickInputs::default()
+        },
+    );
+    region
+}
+
+fn square(xs: std::ops::RangeInclusive<i32>) -> Vec<ChunkPos> {
+    xs.flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+        .collect()
+}
+
+/// A block of the floor, which the events are of.
+fn stone_at(x: i32) -> BlockPos {
+    BlockPos::new(x, -61, 8)
+}
+
+fn run(region: &Region) -> Vec<BlockPos> {
+    region.events_run.iter().map(|event| event.at).collect()
+}
+
+#[test]
+fn block_events_run_in_the_order_queued_once_each_where_their_block_is() {
+    let mut region = loaded_floor(&square(-1..=1));
+    region.block_event(stone_at(3), blocks::STONE, 0, 1);
+    region.block_event(stone_at(1), blocks::STONE, 0, 1);
+    // The same again is not queued twice; one with another number is.
+    region.block_event(stone_at(3), blocks::STONE, 0, 1);
+    region.block_event(stone_at(3), blocks::STONE, 0, 2);
+    // The block there is not glass, so its event does nothing.
+    region.block_event(stone_at(5), blocks::GLASS, 0, 1);
+    idle(&mut region);
+    assert_eq!(run(&region), [stone_at(3), stone_at(1), stone_at(3)]);
+    let numbers: Vec<i32> = region.events_run.iter().map(|event| event.data).collect();
+    assert_eq!(numbers, [1, 1, 2]);
+    // Run, they are gone.
+    region.events_run.clear();
+    idle(&mut region);
+    assert_eq!(run(&region), []);
+}
+
+/// An event whose chunk does not tick waits, kept in the chunk and committed once,
+/// and runs in the tick the chunk starts ticking, when the chunk keeps it no more.
+#[test]
+fn a_block_event_of_a_chunk_that_does_not_tick_is_kept_in_it_until_it_ticks() {
+    let mut region = loaded_floor(&square(-1..=2));
+    // Chunk (2, 0) has no neighbours to the east loaded, and does not tick.
+    let at = stone_at(40);
+    region.block_event(at, blocks::STONE, 1, 3);
+    let output = idle(&mut region);
+    assert_eq!(run(&region), []);
+    assert_eq!(output.events_changed, [ChunkPos::new(2, 0)]);
+    let kept = region.kept_events(ChunkPos::new(2, 0));
+    assert_eq!(kept.len(), 1);
+    assert_eq!((kept[0].kind, kept[0].data), (1, 3));
+    // Waiting, it changes nothing to commit.
+    let output = idle(&mut region);
+    assert_eq!(output.events_changed, []);
+    // With its eastern neighbours loaded the chunk ticks, and the event runs.
+    let east = square(3..=3);
+    checked(&mut region, &tickets(east.clone(), vec![]));
+    let output = checked(
+        &mut region,
+        &TickInputs {
+            chunks_loaded: east.iter().map(|position| (*position, floor())).collect(),
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(run(&region), [at]);
+    assert_eq!(output.events_changed, [ChunkPos::new(2, 0)]);
+    assert_eq!(region.kept_events(ChunkPos::new(2, 0)), []);
+}
+
+/// One queued after the phase, as between two ticks, runs in the next.
+#[test]
+fn a_block_event_queued_after_the_phase_runs_in_the_next_tick() {
+    let mut region = loaded_floor(&square(-1..=1));
+    idle(&mut region);
+    region.block_event(stone_at(2), blocks::STONE, 0, 0);
+    assert_eq!(run(&region), []);
+    idle(&mut region);
+    assert_eq!(run(&region), [stone_at(2)]);
+}
+
+/// A chunk unloaded takes its kept events out of the queue, and has them when it is
+/// saved; loaded again, it puts them back at the queue's end.
+#[test]
+fn a_chunk_unloaded_takes_its_block_events_with_it_and_brings_them_back() {
+    let mut region = loaded_floor(&square(-1..=2));
+    let waiting = ChunkPos::new(2, 0);
+    region.block_event(stone_at(40), blocks::STONE, 0, 0);
+    idle(&mut region);
+    let saved = region.saved_chunk(waiting).expect("loaded");
+    assert_eq!(saved.events().len(), 1);
+    checked(&mut region, &tickets(vec![], vec![waiting]));
+    assert_eq!(region.block_events, []);
+    // Back with its eastern neighbours, so that it ticks, and the event runs.
+    let east = square(3..=3);
+    let mut wanted = east.clone();
+    wanted.push(waiting);
+    checked(&mut region, &tickets(wanted.clone(), vec![]));
+    let mut chunks: Vec<(ChunkPos, Chunk)> =
+        east.iter().map(|position| (*position, floor())).collect();
+    chunks.push((waiting, saved));
+    checked(
+        &mut region,
+        &TickInputs {
+            chunks_loaded: chunks,
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(run(&region), [stone_at(40)]);
+}
+
+/// A region restored with its chunks, as after a merge or a split, queues their kept
+/// events by chunk, ascending, and then in each chunk's order.
+#[test]
+fn a_region_restored_with_its_chunks_queues_their_events_by_chunk() {
+    let chunks = square(-1..=1);
+    let mut region = loaded_floor(&chunks);
+    // Queued in the opposite order to the chunks', in two chunks that do not tick, so
+    // that both are kept.
+    // Chunks (3, 0) and (3, 1) without chunk 2 beside them: neither has all its
+    // neighbours.
+    let mut apart = square(-1..=1);
+    apart.extend(square(3..=3));
+    let mut far = loaded_floor(&apart);
+    let later_chunk = BlockPos::new(56, -61, 24);
+    far.block_event(later_chunk, blocks::STONE, 0, 0);
+    far.block_event(stone_at(56), blocks::STONE, 0, 1);
+    far.block_event(stone_at(57), blocks::STONE, 0, 2);
+    idle(&mut far);
+    assert_eq!(run(&far), [], "neither chunk ticks");
+    let kept: Vec<(ChunkPos, Chunk)> = [ChunkPos::new(3, 0), ChunkPos::new(3, 1)]
+        .into_iter()
+        .map(|position| (position, far.saved_chunk(position).expect("loaded")))
+        .collect();
+    idle(&mut region);
+    let all: Vec<(ChunkPos, Chunk)> = (-1..=4)
+        .flat_map(|x| (-1..=2).map(move |z| ChunkPos::new(x, z)))
+        .map(|position| {
+            let chunk = kept
+                .iter()
+                .find(|(at, _)| *at == position)
+                .map_or_else(floor, |(_, chunk)| chunk.clone());
+            (position, chunk)
+        })
+        .collect();
+    let ticketed: Vec<(ChunkPos, Ticket)> = all
+        .iter()
+        .map(|(position, _)| (*position, Ticket::Viewer))
+        .collect();
+    let mut restored = Region::restore_loaded(
+        region.config.clone(),
+        region.state(),
+        Holdings {
+            pinned: Vec::new(),
+            held: ticketed.iter().map(|(position, _)| *position).collect(),
+        },
+        &ticketed,
+        all,
+        Vec::new(),
+    );
+    let order: Vec<i32> = restored
+        .block_events
+        .iter()
+        .map(|event| event.data)
+        .collect();
+    assert_eq!(order, [1, 2, 0], "chunk (3, 0) before (3, 1)");
+    idle(&mut restored);
+    assert_eq!(run(&restored), [stone_at(56), stone_at(57), later_chunk]);
+}
+
+/// A block entity's new data is set in its chunk and said among the tick's changes,
+/// after the block it belongs to; where there is no block entity nothing is said.
+#[test]
+fn a_block_entitys_data_is_said_in_its_place_among_the_changes() {
+    let chest = BlockPos::new(4, -60, 4);
+    let mut region = on_floor_with(&[]);
+    let mut output = TickOutput::default();
+    region.set_block(chest, blocks::CHEST, &mut output);
+    assert!(region.set_block_entity_data(chest, b"items".to_vec(), &mut output));
+    assert!(!region.set_block_entity_data(BlockPos::new(5, -60, 4), b"none".to_vec(), &mut output));
+    let said: Vec<&RegionEvent> = output
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                RegionEvent::BlockChanged { .. } | RegionEvent::BlockEntityChanged { .. }
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            &RegionEvent::BlockChanged {
+                position: chest,
+                state: blocks::CHEST
+            },
+            &RegionEvent::BlockEntityChanged {
+                position: chest,
+                data: b"items".to_vec()
+            },
+        ]
+    );
+    let saved = region.saved_chunk(chest.chunk()).expect("loaded");
+    let (x, z) = chest.in_chunk();
+    assert_eq!(
+        saved.block_entities()[&InChunk::new(x, chest.y, z)].data,
+        b"items".to_vec()
+    );
+}

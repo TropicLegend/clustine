@@ -2551,6 +2551,9 @@ impl Fanout {
             RegionEvent::BlockEntityChanged { position, data } => {
                 self.change_block_entity(position, data);
             }
+            // Sent to players as the game sends it from R2c on
+            // (`docs/adr/0026-redstone.md`, section 8).
+            RegionEvent::BlockEvent { .. } => {}
             RegionEvent::BlockDestroyed {
                 position,
                 state,

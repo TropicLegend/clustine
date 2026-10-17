@@ -189,6 +189,7 @@ fn commit(marks_taken: Vec<ChunkPos>, seams: Vec<(ChunkPos, Vec<Seam>)>) -> LogR
         seams,
         effects: Vec::new(),
         taken: Vec::new(),
+        events: Vec::new(),
     }
 }
 

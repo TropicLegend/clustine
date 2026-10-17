@@ -98,6 +98,7 @@ fn commit(handle: &StoreHandle, tick: u64, effects: &[Effect]) {
         seams: Vec::new(),
         effects: effects.to_vec(),
         taken: Vec::new(),
+        events: Vec::new(),
     });
 }
 
@@ -431,6 +432,7 @@ fn what_a_restore_costs_a_coupled_region_after_a_crash_beside_its_checkpoint() {
                         seams: Vec::new(),
                         effects: Vec::new(),
                         taken: Vec::new(),
+                        events: Vec::new(),
                     });
                 }
             }

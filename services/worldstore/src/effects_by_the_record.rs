@@ -276,6 +276,7 @@ fn commit_of(
         seams: Vec::new(),
         effects: effects.to_vec(),
         taken: taken.to_vec(),
+        events: Vec::new(),
     }
 }
 

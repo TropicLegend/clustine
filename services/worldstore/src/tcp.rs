@@ -1699,6 +1699,7 @@ mod tests {
                 seams: Vec::new(),
                 effects: Vec::new(),
                 taken: Vec::new(),
+                events: Vec::new(),
             });
         }
         committed(&owner, tick);
