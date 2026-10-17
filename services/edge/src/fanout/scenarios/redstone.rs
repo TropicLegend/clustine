@@ -169,3 +169,34 @@ async fn a_sound_is_heard_within_sixteen_blocks_or_sixteen_times_its_volume() {
     assert_eq!(heard(&first), [eighths(15.0), eighths(15.5), eighths(17.0)]);
     edge.end().await;
 }
+
+/// A level event the region says goes to the players near who have the chunk, as the
+/// game's `levelEvent`: a torch burning out, here.
+#[tokio::test]
+async fn a_level_event_is_shown_to_the_players_near_it() {
+    let (mut edge, mut first, mut second) = two_at_home().await;
+    let torch = BlockPos::new(4, -60, 6);
+    edge.tell(
+        WEST,
+        tick(
+            2,
+            vec![RegionEvent::LevelEvent {
+                kind: 1502,
+                position: torch,
+                data: 0,
+            }],
+        ),
+    );
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    edge.sync(&mut second).await;
+    let shown = LevelEvent {
+        event: 1502,
+        position: at(torch),
+        data: 0,
+        global: false,
+    };
+    assert_eq!(first.level_events, std::slice::from_ref(&shown));
+    assert_eq!(second.level_events, [shown]);
+    edge.end().await;
+}

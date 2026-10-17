@@ -748,6 +748,15 @@ pub enum RegionEvent {
         pitch: f32,
         except: Option<PlayerId>,
     },
+    /// The game's level event `kind` at a block (`Level.levelEvent`), with its `data`:
+    /// what clients show of something there, a torch burning out (1502) say. Seen by
+    /// the players within 64 blocks; the breaking of a block and lava's hiss have
+    /// variants of their own.
+    LevelEvent {
+        kind: i32,
+        position: BlockPos,
+        data: i32,
+    },
     /// The phase of block events begins in this tick (`docs/adr/0026-redstone.md`,
     /// section 8): the game sends the tick's block changes before its block events,
     /// and those made from here on with the next tick's. It has no place, and whoever
@@ -775,6 +784,7 @@ impl RegionEvent {
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }
+            | Self::LevelEvent { position, .. }
             | Self::BlockDestroyed { position, .. }
             | Self::Fizzed { position } => [position.chunk(); 2],
             Self::Sound { position, .. } => [ChunkPos::containing(position.x, position.z); 2],

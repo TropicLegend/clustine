@@ -2638,6 +2638,13 @@ impl Fanout {
                 let chunk = ChunkPos::containing(position.x, position.z);
                 self.send_near(chunk, at, range, except, packet).await;
             }
+            RegionEvent::LevelEvent {
+                kind,
+                position,
+                data,
+            } => {
+                self.show_near(position, kind, data, None).await;
+            }
             // A region's changes after it are taken where its tick's are.
             RegionEvent::BlockEventsBegin => {}
             RegionEvent::BlockDestroyed {
