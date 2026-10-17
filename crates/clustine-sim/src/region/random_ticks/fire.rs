@@ -810,6 +810,8 @@ mod tests {
         let holdings = Holdings {
             held: around.clone(),
             pinned: Vec::new(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut region = Region::new(config, EntityIds::block(0).expect("ids"), holdings);
         region.tick(&TickInputs {

@@ -352,19 +352,24 @@ impl Table {
     }
 
     /// What `region` holds by a lend and has lent away: its grants in another region's
-    /// pinned area, and the grants of others in its own, each ascending
-    /// (`docs/adr/0027-lending-at-a-line.md`, section 1).
+    /// pinned area if it is pinned itself, and the grants of others in its own, each
+    /// ascending (`docs/adr/0027-lending-at-a-line.md`, section 1).
     pub(crate) fn lends(&self, region: RegionId) -> (Vec<ChunkPos>, Vec<(ChunkPos, RegionId)>) {
-        let lent = self
-            .grants(region)
-            .into_iter()
-            .map(|(chunk, _)| chunk)
-            .filter(|chunk| {
-                self.pinned_holder(*chunk)
-                    .is_some_and(|area| area != region)
-            })
-            .collect();
         let pinned = self.pinned(region);
+        // Only a pinned region borrows: a split part's grants in its parent's area are
+        // its own by a grant and no lend, which it gives back as any other (section 4).
+        let lent = match pinned.is_empty() {
+            true => Vec::new(),
+            false => self
+                .grants(region)
+                .into_iter()
+                .map(|(chunk, _)| chunk)
+                .filter(|chunk| {
+                    self.pinned_holder(*chunk)
+                        .is_some_and(|area| area != region)
+                })
+                .collect(),
+        };
         let lent_away = self
             .granted
             .iter()

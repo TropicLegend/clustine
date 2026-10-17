@@ -189,6 +189,8 @@ fn a_move_half_way_is_saved_with_its_chunk_and_finished_after_a_restore() {
         Holdings {
             pinned: Vec::new(),
             held: around.clone(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         },
         &tickets,
         chunks,

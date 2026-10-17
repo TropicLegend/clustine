@@ -991,11 +991,8 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
-            // Its grants lie in the west's area.
-            lends: clustine_rpc::Lends {
-                lent: PART.to_vec(),
-                lent_away: Vec::new(),
-            },
+            // Its grants lie in the west's area, and are no lend: it is not pinned.
+            lends: clustine_rpc::Lends::default(),
         },
     ];
     let mut handles = Vec::new();

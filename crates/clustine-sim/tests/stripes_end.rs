@@ -460,6 +460,7 @@ fn with_players(holdings: Holdings, players: &[(i32, EdgeId, ChunkPos)]) -> Regi
             .collect(),
         edges: edges_before_a_split().into_iter().collect(),
         entering: BTreeMap::new(),
+        lends_asked: std::collections::BTreeMap::new(),
     };
     Region::restore(config(LONG), state, holdings)
 }
@@ -498,6 +499,8 @@ fn on_open_land(held: &[ChunkPos]) -> Holdings {
     Holdings {
         held: sorted(held.iter().copied()),
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     }
 }
 
@@ -515,6 +518,8 @@ fn two_views(pinned: Vec<ChunkArea>, p_at: ChunkPos, asked: &[ChunkPos]) -> Regi
     let holdings = Holdings {
         held: held.clone(),
         pinned,
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut region = with_players(holdings, &[(1, E, HOME), (2, E, p_at)]);
     let output = tick(&mut region, &looking_at(&held));
@@ -681,12 +686,16 @@ fn check_taken(
     let holdings = Holdings {
         held: stays.clone(),
         pinned: pinned.to_vec(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let restored = Region::restore(config.clone(), splitting.state.clone(), holdings);
     assert_eq!(region, &restored, "the region after the split");
     let holdings = Holdings {
         held: splitting.chunks.clone(),
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let restored = Region::restore(config.clone(), splitting.part.clone(), holdings);
     assert_eq!(part, &restored, "the part");
@@ -1389,6 +1398,8 @@ fn splitting_made_up_regions_with_grants_that_wait_gives_what_the_record_says() 
         let holdings = Holdings {
             held: held.clone(),
             pinned: areas.clone(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut region = with_players(holdings, &players);
 
@@ -1782,6 +1793,8 @@ impl Cluster {
             let holdings = Holdings {
                 held: Vec::new(),
                 pinned: vec![*area],
+                lent: Vec::new(),
+                lent_away: Vec::new(),
             };
             let entity_ids = EntityIds::block(3 + index as u32).expect("the block exists");
             let mut site = Site {
@@ -2090,11 +2103,15 @@ impl Cluster {
         // With the grants that moved, what the store had granted the survivor in
         // answer to claims that no tick has been told of.
         chunks.extend(std::mem::take(&mut site.next.granted));
-        let loaded = site.region.take_absorbed(state.clone(), &chunks, &areas);
+        let loaded = site
+            .region
+            .take_absorbed(state.clone(), &chunks, &areas, &[], &[]);
         held.extend(&chunks);
         let holdings = Holdings {
             held: sorted(held),
             pinned,
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let restored = Region::restore(run_config(), state.clone(), holdings);
         assert_eq!(site.region, restored, "after the merge");
@@ -2308,6 +2325,8 @@ impl One {
         let holdings = Holdings {
             held: Vec::new(),
             pinned: vec![ChunkArea::EVERYWHERE],
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut next = looking_at(&grid());
         next.edges = vec![started(E, START), started(F, START)];

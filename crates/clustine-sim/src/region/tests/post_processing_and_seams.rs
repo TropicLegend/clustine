@@ -748,6 +748,8 @@ fn pinned_with(area: ChunkArea, ids: u32, chunks: Vec<(ChunkPos, Chunk)>) -> Reg
     let holdings = Holdings {
         held: chunks.iter().map(|(position, _)| *position).collect(),
         pinned: vec![area],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let state = RegionState::new(EntityIds::block(ids).unwrap());
     Region::restore_loaded(config(), state, holdings, &tickets, chunks, Vec::new())
@@ -814,7 +816,7 @@ fn an_update_across_the_line_between_two_regions_waits_for_a_merge_and_is_made_t
         .collect();
     let state = west.absorb(RegionId(1), &east.state());
     let theirs_held: Vec<ChunkPos> = theirs.iter().map(|(p, _)| *p).collect();
-    let mut ours = west.take_absorbed(state, &theirs_held, &[EASTERN]);
+    let mut ours = west.take_absorbed(state, &theirs_held, &[EASTERN], &[], &[]);
     assert!(
         ours.iter()
             .any(|(p, chunk)| *p == line && chunk.seams().contains(&kept[0])),

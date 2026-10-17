@@ -767,6 +767,8 @@ impl World {
             Holdings {
                 held: Vec::new(),
                 pinned: vec![WESTERN],
+                lent: Vec::new(),
+                lent_away: Vec::new(),
             },
         )
     }
@@ -779,6 +781,8 @@ impl World {
             Holdings {
                 held: held.to_vec(),
                 pinned: Vec::new(),
+                lent: Vec::new(),
+                lent_away: Vec::new(),
             },
         )
     }
@@ -1487,6 +1491,8 @@ fn a_guests_ticket_claims_in_every_area_a_region_is_pinned_to_and_nowhere_else()
     let holdings = Holdings {
         held: Vec::new(),
         pinned: vec![west, east],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::new(config(0), ids(), holdings);
     let [near, far, between, beyond] = [
@@ -2046,6 +2052,8 @@ fn eastern() -> World {
         Holdings {
             held: Vec::new(),
             pinned: vec![EASTERN],
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         },
     )
 }
@@ -2750,6 +2758,8 @@ fn a_restored_region_reports_the_entity_of_an_arrival_that_went_on_when_its_outb
         let holdings = Holdings {
             held: Vec::new(),
             pinned: vec![WESTERN],
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut world = World::restore(config(0), original.region.state(), holdings);
         let output = world.tick(&edges(vec![event]));
@@ -3614,6 +3624,8 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
     let holdings = Holdings {
         held: Vec::new(),
         pinned: vec![WESTERN],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::new(config(0), four, holdings);
     world.hold(HOME);
@@ -3861,6 +3873,8 @@ fn with_the_longest_time_before_a_return_nothing_is_ever_given_back() {
     let holdings = Holdings {
         held: vec![HOME, EAST],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::restore(config(u64::MAX), after_a_hundred_ticks(), holdings);
     world.tick(&add(&[guest(EAST)]));
@@ -4010,6 +4024,8 @@ fn the_time_before_a_return_starts_anew_with_a_restore() {
     let holdings = Holdings {
         held: vec![HOME, EAST, WEST],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::restore(config(5), after_a_hundred_ticks(), holdings.clone());
     assert_eq!(given_back(&mut world, EAST, 130), [106]);
@@ -4167,6 +4183,8 @@ fn a_restored_region_knows_what_the_store_says_it_holds_and_nothing_else() {
     let holdings = Holdings {
         held: vec![HOME, WEST],
         pinned: vec![WESTERN],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::restore(config(0), state.clone(), holdings);
     assert_eq!(world.region.state(), state);
@@ -4214,6 +4232,8 @@ fn a_restored_region_given_the_same_tickets_and_answers_believes_the_same() {
     let holdings = Holdings {
         held: Vec::new(),
         pinned: vec![WESTERN],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::restore(config(0), original.region.state(), holdings);
     let output = world.tick(&add(&[
@@ -4252,6 +4272,8 @@ fn a_restored_player_in_a_chunk_the_store_does_not_name_stays_and_the_chunk_is_c
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::restore(config(0), state, holdings);
     assert_eq!(world.knowledge(EAST), Knowledge::Unknown);
@@ -4288,6 +4310,8 @@ fn a_restored_player_in_a_chunk_that_is_then_granted_stays() {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::restore(config(0), state, holdings);
     let output = world.idle();
@@ -4306,6 +4330,8 @@ fn a_restored_pinned_region_claims_the_chunk_its_player_stands_in_again() {
     let holdings = Holdings {
         held: Vec::new(),
         pinned: vec![WESTERN],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::restore(config(0), original.region.state(), holdings);
     assert_eq!(world.knowledge(HOME), Knowledge::Unknown);
@@ -4332,6 +4358,8 @@ fn a_region_with_the_empty_block_of_entity_ids_answers_every_join_with_refused()
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut world = World::new(config(0), empty, holdings);
     world.tick(&edges(vec![started(E, 10), started(F, 10)]));
@@ -4498,6 +4526,8 @@ impl Wander {
                 .filter(|(_, region)| *region == REGION_A)
                 .map(|(area, _)| *area)
                 .collect(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let state = world.region.state();
         let mut restored = World::restore(config(self.return_after), state, holdings);
@@ -5535,6 +5565,8 @@ impl Cluster {
             let holdings = Holdings {
                 held,
                 pinned: areas,
+                lent: Vec::new(),
+                lent_away: Vec::new(),
             };
             let entity_ids = EntityIds::block(3 + index as u32).expect("the block exists");
             sites.push(Site {

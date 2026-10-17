@@ -506,7 +506,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 5;
+pub const STATE_FORMAT: u8 = 6;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1975,7 +1975,7 @@ impl RegionRunner {
                     chunks,
                     pinned,
                     in_use,
-                    lends: _,
+                    lends,
                 },
                 Plan::Absorb {
                     state: Some(state), ..
@@ -1985,7 +1985,9 @@ impl RegionRunner {
                 // The region holds what came with the merge, and what the store had
                 // granted it in answer to claims that no tick was told of.
                 let held: Vec<ChunkPos> = chunks.into_iter().chain(granted).collect();
-                let loaded = self.region.take_absorbed(state, &held, &pinned);
+                let loaded =
+                    self.region
+                        .take_absorbed(state, &held, &pinned, &lends.lent, &lends.lent_away);
                 self.begin_anew(loaded.into_iter().chain(delivered));
                 // The absorbed region's chunks in use are this one's now, and timed.
                 let tick = self.region.tick_number();
@@ -3960,6 +3962,8 @@ fn holdings(restored: &Restored) -> Holdings {
     Holdings {
         held: restored.held.iter().map(|(chunk, _)| *chunk).collect(),
         pinned: restored.pinned.clone(),
+        lent: restored.lends.lent.clone(),
+        lent_away: restored.lends.lent_away.clone(),
     }
 }
 
@@ -7619,6 +7623,11 @@ mod tests {
             change.added.push((known.sent, entry));
         }
         change.sent = known.sent;
+        // And an ask for a lend across a pinned line, in both
+        // (`docs/adr/0027-lending-at-a-line.md`, section 2).
+        let asked = ChunkPos::new(-1, 3);
+        state.lends_asked.insert(asked, 9);
+        delta.lends_asked.push((asked, Some(9)));
         (state, delta)
     }
 
@@ -7645,11 +7654,11 @@ mod tests {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 5);
+        assert_eq!(STATE_FORMAT, 6);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "0005020280808001060110000000000000000000000000000000020404416c65780000000000002d",
+                "0006020280808001060110000000000000000000000000000000020404416c65780000000000002d",
                 "400000000000004ec0000000000000e03f0000000000000000010000000000000000000002000700",
                 "00000107030102060601040010000000000000000000000000000000039a01054e6f746368000000",
                 "00004044400000000000004ec0000000000000e03f00000000000000000000000000000000000000",
@@ -7657,13 +7666,13 @@ mod tests {
                 "0000000000000000000000010205537465766500000000004044400000000000004ec00000000000",
                 "00e03f00000000000000000100000000000000000000010100000104050104060201030506090110",
                 "000000000000000000000000000000039a0101170607100000000000000000000000000000000398",
-                "0101180110000000000000000000000000000000039c01034a65620719",
+                "0101180110000000000000000000000000000000039c01034a6562071901010609",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00050200021000000000000000000000000000000001001000000000000000000000000000000002",
+                "00060200021000000000000000000000000000000001001000000000000000000000000000000002",
                 "010404416c65780000000000002d400000000000004ec0000000000000e03f000000000000000001",
                 "00000000000000000000020007000000010701030102060000060104001000000000000000000000",
                 "0000000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f0000",
@@ -7673,7 +7682,7 @@ mod tests {
                 "0100000104050104060201030506090110000000000000000000000000000000039a010117060710",
                 "00000000000000000000000000000003980101180310000000000000000000000000000000010010",
                 "00000000000000000000000000000002001000000000000000000000000000000003019c01034a65",
-                "620719",
+                "6207190101060109",
             )
         );
     }

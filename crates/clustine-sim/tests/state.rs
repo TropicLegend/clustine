@@ -56,6 +56,8 @@ fn holdings() -> Holdings {
     Holdings {
         held: CHUNKS.to_vec(),
         pinned: vec![AREA],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     }
 }
 

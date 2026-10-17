@@ -73,6 +73,8 @@ fn holdings_a() -> Holdings {
             min_x: None,
             max_x: Some(1),
         }],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     }
 }
 
@@ -95,6 +97,8 @@ fn holdings_b() -> Holdings {
             min_x: Some(1),
             max_x: Some(2),
         }],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     }
 }
 

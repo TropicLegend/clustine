@@ -10,9 +10,9 @@ use clustine_world::{
 };
 
 use crate::api::{
-    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected,
-    Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent,
-    RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
+    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, LendAsked,
+    Misdirected, Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose,
+    RegionEvent, RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
 };
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
@@ -22,6 +22,7 @@ mod block_events;
 mod diodes;
 mod fluids;
 mod instruments;
+mod lends;
 mod pistons;
 mod pressed;
 mod rails;
@@ -64,6 +65,13 @@ pub struct Holdings {
     /// The areas the region is pinned to. It does not hold a chunk of them before it
     /// has claimed it, but may claim one for a guest, and never gives one back.
     pub pinned: Vec<ChunkArea>,
+    /// Those of `held` that lie in another region's pinned area: lent, kept loaded and
+    /// given back when no circuit's part is near (`docs/adr/0027-lending-at-a-line.md`,
+    /// sections 1 and 4).
+    pub lent: Vec<ChunkPos>,
+    /// The chunks of `pinned` another region holds by a grant, with that region:
+    /// believed until they are pinned back.
+    pub lent_away: Vec<(ChunkPos, RegionId)>,
 }
 
 /// What a region knows of a chunk: always exactly one of these. A region never works
@@ -150,6 +158,18 @@ struct Land {
     /// The chunks the region knows something of. A chunk is in one condition at a
     /// time, which is why this is one collection and not three.
     known: BTreeMap<ChunkPos, Known>,
+    /// Of the chunks held, those lent to the region: kept loaded, and given back once
+    /// no circuit's part is near (`docs/adr/0027-lending-at-a-line.md`, section 4).
+    lent: BTreeSet<ChunkPos>,
+    /// Chunks of the pinned land another region holds by a grant, with that region, as
+    /// `known` has them: believed whatever the region wants, until they are pinned back.
+    lent_away: BTreeMap<ChunkPos, RegionId>,
+    /// Chunks of the pinned land let go of for a lend, by its number, until the store
+    /// says lent or called off: not held, not claimed, not loaded (section 3, step 2).
+    lending: BTreeMap<ChunkPos, u64>,
+    /// Chunks the store said cannot be lent, not asked for again until what the region
+    /// knows of them changes (section 2).
+    not_lendable: BTreeSet<ChunkPos>,
 }
 
 impl Land {
@@ -236,6 +256,8 @@ struct Journal {
     edges: BTreeMap<EdgeId, EdgeJournal>,
     /// The players whose entering stay was begun or ended.
     entering: BTreeSet<PlayerId>,
+    /// The chunks whose ask for a lend began, was asked again or ended.
+    lends_asked: BTreeSet<ChunkPos>,
 }
 
 /// A stay that the tick lets go, kept until the departures are numbered at the end of
@@ -313,6 +335,21 @@ pub struct Region {
     /// The block events that reached their block's rule, for the tests to see.
     #[cfg(test)]
     events_run: Vec<block_events::QueuedEvent>,
+    /// [`RegionState::lends_asked`].
+    lends_asked: BTreeMap<ChunkPos, u64>,
+    /// The store's asks of lends of this tick, answered at its end (`lends.rs`); no
+    /// part of the state, as the store calls a lend off at every hello.
+    lends_to_answer: Vec<LendAsked>,
+    /// Chunks loaded for a lend asked, to be seen before it is decided, each until the
+    /// tick it is kept to; no part of the state.
+    lend_tickets: BTreeMap<ChunkPos, u64>,
+    /// Chunks let go of at the end of the last tick, for a lend or as a lent chunk given
+    /// back, which the region drops at the start of this one, once the runner has saved
+    /// them as they were; no part of the state.
+    letting_go: BTreeSet<ChunkPos>,
+    /// Lent chunks to look at for giving back: near which a circuit's part went, or all
+    /// of them after a restore, a merge or a split; no part of the state.
+    lent_to_check: BTreeSet<ChunkPos>,
 }
 
 impl Region {
@@ -346,11 +383,33 @@ impl Region {
             pinned: holdings.pinned,
             home: ChunkPos::containing(config.spawn.x, config.spawn.z),
             known: BTreeMap::new(),
+            lent: BTreeSet::new(),
+            lent_away: BTreeMap::new(),
+            lending: BTreeMap::new(),
+            not_lendable: BTreeSet::new(),
         };
         for position in holdings.held {
             land.known
                 .insert(position, Known::Held { used: state.tick });
         }
+        // What is lent and lent away, as the store says with the holdings
+        // (`docs/adr/0027-lending-at-a-line.md`, section 1).
+        for position in holdings.lent {
+            if land.holds(position) {
+                land.lent.insert(position);
+            }
+        }
+        for (position, holder) in holdings.lent_away {
+            land.known.insert(position, Known::Foreign(holder));
+            land.lent_away.insert(position, holder);
+        }
+        // An ask for a chunk the region holds, or is pinned to, is done.
+        let lends_asked = state
+            .lends_asked
+            .into_iter()
+            .filter(|(position, _)| !land.holds(*position) && !land.is_pinned(*position))
+            .collect();
+        let lent_to_check = land.lent.clone();
         Self {
             config,
             tick: state.tick,
@@ -379,6 +438,11 @@ impl Region {
             entering: state.entering,
             unnamed: true,
             journal: Journal::default(),
+            lends_asked,
+            lends_to_answer: Vec::new(),
+            lend_tickets: BTreeMap::new(),
+            letting_go: BTreeSet::new(),
+            lent_to_check,
         }
     }
 
@@ -441,6 +505,7 @@ impl Region {
                 .collect(),
             edges: self.edges.clone(),
             entering: self.entering.clone(),
+            lends_asked: self.lends_asked.clone(),
         }
     }
 
@@ -1380,6 +1445,11 @@ impl Region {
                 .into_iter()
                 .map(|id| (id, self.entering.get(&id).cloned()))
                 .collect(),
+            lends_asked: journal
+                .lends_asked
+                .into_iter()
+                .map(|position| (position, self.lends_asked.get(&position).copied()))
+                .collect(),
         }
     }
 
@@ -1625,6 +1695,7 @@ impl Region {
                 // `Block.setPlacedBy`: a hook placed looks along its line.
                 self.placed_by_player(target, output);
                 self.play_placed(target, action.player, output);
+                self.ask_lends_for(target, output);
             }
         }
         None
@@ -1932,6 +2003,7 @@ impl Region {
             && !placer.is_some_and(|feet| occupies(feet, target))
         {
             self.set_block(target, block, output);
+            self.ask_lends_for(target, output);
         }
     }
 
@@ -1978,6 +2050,7 @@ impl Region {
             tickets.as_viewer() || (tickets.as_guest() && self.land.is_pinned(position))
         });
         ticketed
+            || self.lend_ticketed(position)
             || self
                 .players
                 .values()
@@ -1993,6 +2066,11 @@ impl Region {
         if self.chunks.contains_key(&position) {
             return false;
         }
+        // Let go of for a lend: whoever uses it is told, the lender until the grant and
+        // the borrower after (`docs/adr/0027-lending-at-a-line.md`, section 3).
+        if self.is_lending(position) {
+            return true;
+        }
         match self.land.knowledge(position) {
             Knowledge::Foreign(_) => true,
             // A chunk of an area the region is pinned to is its own until another is
@@ -2007,6 +2085,8 @@ impl Region {
     /// and ended, and what storage delivered. See
     /// `docs/adr/0012-the-tick-on-chunks.md`, section 2.1, step 2.
     fn update_chunks(&mut self, inputs: &TickInputs, output: &mut TickOutput) {
+        // What the last tick let go of for a lend, or gave back as lent, goes first.
+        self.drop_let_go();
         // The store's answers are believed whatever the region knew, except that it
         // does not unlearn that it holds a chunk: the store never says `foreign` of a
         // chunk the region holds.
@@ -2028,10 +2108,13 @@ impl Region {
         }
         for (position, region) in &inputs.unbelieve {
             // A belief that has changed since is newer than the doubt.
-            if self.land.known.get(position) == Some(&Known::Foreign(*region)) {
+            if self.land.known.get(position) == Some(&Known::Foreign(*region))
+                && !self.is_lent_away(*position)
+            {
                 self.land.known.remove(position);
             }
         }
+        self.take_lend_answers(inputs);
 
         // Tickets are counted on every chunk, whatever the region knows of it: one on a
         // chunk it does not hold is its reason to ask, or to go on knowing who does.
@@ -2050,8 +2133,12 @@ impl Region {
             if tickets.is_empty() {
                 self.tickets.remove(position);
                 // The home chunk stays loaded without a ticket: a new player is put
-                // on its spawn column as it is now.
-                if *position != self.land.home {
+                // on its spawn column as it is now. So do a lent chunk and one loaded
+                // for a lend asked (`docs/adr/0027-lending-at-a-line.md`).
+                if *position != self.land.home
+                    && !self.is_lent(*position)
+                    && !self.lend_ticketed(*position)
+                {
                     self.chunks.remove(position);
                     self.let_go_events(*position);
                     self.let_go_block_entities(*position);
@@ -2064,7 +2151,10 @@ impl Region {
         for (position, chunk) in &inputs.chunks_loaded {
             // A chunk can arrive after everyone stopped needing it.
             if self.requested.remove(position)
-                && (self.tickets.contains_key(position) || *position == home)
+                && (self.tickets.contains_key(position)
+                    || *position == home
+                    || self.is_lent(*position)
+                    || self.lend_ticketed(*position))
                 && self.land.holds(*position)
             {
                 self.chunks.insert(*position, chunk.clone());
@@ -2106,7 +2196,14 @@ impl Region {
         // when the chunk is granted it is asked of storage in that same tick. The home
         // chunk is loaded whenever it is held, ticket or none (see
         // `docs/groundwork/w6-plan.md`, section 2).
-        let wanted: BTreeSet<ChunkPos> = self.tickets.keys().copied().chain([home]).collect();
+        let wanted: BTreeSet<ChunkPos> = self
+            .tickets
+            .keys()
+            .copied()
+            .chain([home])
+            .chain(self.land.lent.iter().copied())
+            .chain(self.lend_ticket_chunks())
+            .collect();
         for position in wanted {
             if self.land.holds(position)
                 && !self.chunks.contains_key(&position)
@@ -2122,6 +2219,9 @@ impl Region {
     /// the tick left them. See `docs/adr/0012-the-tick-on-chunks.md`, sections 1.2 and
     /// 2.1, step 9.
     fn settle_chunks(&mut self, output: &mut TickOutput) {
+        // Lends first: what the region lets go of or gives back is not settled below.
+        self.settle_lends(output);
+        let lend_ticketed: BTreeSet<ChunkPos> = self.lend_ticket_chunks().into_iter().collect();
         let (tick, return_after) = (self.tick, self.config.return_after);
         let (land, tickets) = (&mut self.land, &self.tickets);
         let standing: BTreeSet<ChunkPos> = self.players.values().map(Player::chunk).collect();
@@ -2134,13 +2234,21 @@ impl Region {
             let Known::Held { used } = known else {
                 continue;
             };
-            if standing.contains(position) || tickets.contains_key(position) {
+            // A lent chunk is given back by its own rule (`lends.rs`), and one loaded
+            // for a lend asked is used.
+            if standing.contains(position)
+                || tickets.contains_key(position)
+                || land.lent.contains(position)
+                || lend_ticketed.contains(position)
+            {
                 *used = tick;
             } else if tick - *used > return_after {
                 output.returns.push(*position);
             }
         }
-        output.returns.retain(|position| !land.keeps(*position));
+        output
+            .returns
+            .retain(|position| !land.keeps(*position) || land.lent.contains(position));
         for position in &output.returns {
             land.known.remove(position);
         }
@@ -2158,21 +2266,30 @@ impl Region {
             let ticketed = tickets.get(position);
             standing.contains(position)
                 || ticketed.is_some_and(|tickets| wanted_for(position, tickets))
+                || lend_ticketed.contains(position)
         };
         // A belief is kept only while it is wanted, so that what a region believes
-        // follows from what it holds, its tickets and the store's answers alone.
-        land.known
-            .retain(|position, known| !matches!(known, Known::Foreign(_)) || wanted(position));
+        // follows from what it holds, its tickets and the store's answers alone; one of
+        // land lent away is kept until it is pinned back.
+        let lent_away = &land.lent_away;
+        land.known.retain(|position, known| {
+            !matches!(known, Known::Foreign(_))
+                || wanted(position)
+                || lent_away.contains_key(position)
+        });
         // What is wanted and unknown is claimed, once: it is asked until the answer
         // comes.
         let ticketed = tickets
             .iter()
             .filter(|(position, tickets)| wanted_for(position, tickets))
             .map(|(position, _)| position);
+        let lending = &land.lending;
         let claims: BTreeSet<ChunkPos> = standing
             .iter()
             .chain(ticketed)
+            .chain(lend_ticketed.iter())
             .filter(|position| !land.known.contains_key(*position))
+            .filter(|position| !lending.contains_key(*position))
             .copied()
             .collect();
         for position in claims {
@@ -2382,6 +2499,7 @@ mod tests {
     mod effects;
     mod fluids;
     mod instruments;
+    mod lends;
     mod pistons;
     mod post_processing_and_seams;
     mod pressed;
@@ -2546,6 +2664,8 @@ mod tests {
             let holdings = Holdings {
                 held,
                 pinned: vec![area],
+                lent: Vec::new(),
+                lent_away: Vec::new(),
             };
             let mut served = Self {
                 region: Region::restore(config(), knowing_the_edges(entity_ids), holdings),
@@ -2633,6 +2753,8 @@ mod tests {
         let holdings = Holdings {
             held: held.to_vec(),
             pinned: pinned.to_vec(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let state = knowing_the_edges(EntityIds::block(0).unwrap());
         Region::restore(config, state, holdings)
@@ -2673,27 +2795,39 @@ mod tests {
                 || tickets.as_viewer()
                 || (tickets.as_guest() && region.land.is_pinned(*position))
         };
-        // Every wanted chunk is held, asked for or believed another's,
+        // Every wanted chunk is held, asked for or believed another's, or let go of for
+        // a lend (`docs/adr/0027-lending-at-a-line.md`),
         for position in standing.iter().chain(region.tickets.keys()) {
             let knowledge = region.knowledge(*position);
             assert!(
-                !wanted(position) || knowledge != Knowledge::Unknown,
+                !wanted(position)
+                    || knowledge != Knowledge::Unknown
+                    || region.is_lending(*position),
                 "tick {tick}: {position:?} is wanted and unknown"
             );
         }
-        // and nothing is believed of a chunk that is not wanted.
+        // and nothing is believed of a chunk that is not wanted but land lent away.
         for (position, known) in &region.land.known {
             assert!(
-                !matches!(known, Known::Foreign(_)) || wanted(position),
+                !matches!(known, Known::Foreign(_))
+                    || wanted(position)
+                    || region.is_lent_away(*position),
                 "tick {tick}: {position:?} is believed another's and not wanted"
             );
         }
-        // A loaded chunk is held and has a ticket or is the home chunk, and so has one
-        // asked of storage.
+        // A loaded chunk is held and has a ticket or is the home chunk, or is lent or
+        // loaded for a lend asked, and so has one asked of storage; one let go of for a
+        // lend or given back as lent stays loaded until the next tick.
         for position in region.chunks.keys().chain(&region.requested) {
+            if region.letting_go.contains(position) {
+                continue;
+            }
             assert_eq!(region.knowledge(*position), Knowledge::Held, "tick {tick}");
             assert!(
-                region.tickets.contains_key(position) || *position == region.land.home,
+                region.tickets.contains_key(position)
+                    || *position == region.land.home
+                    || region.is_lent(*position)
+                    || region.lend_ticketed(*position),
                 "tick {tick}"
             );
         }
@@ -2706,10 +2840,13 @@ mod tests {
                 Knowledge::Unknown,
                 "tick {tick}"
             );
+            assert!(!output.claims.contains(position), "tick {tick}");
+            if region.letting_go.contains(position) {
+                continue;
+            }
             assert!(!region.tickets.contains_key(position), "tick {tick}");
             assert!(!standing.contains(position), "tick {tick}");
             assert!(!region.chunks.contains_key(position), "tick {tick}");
-            assert!(!output.claims.contains(position), "tick {tick}");
         }
         for position in &output.claims {
             assert_eq!(region.knowledge(*position), Knowledge::Asked, "tick {tick}");
@@ -4441,6 +4578,8 @@ mod tests {
         let holdings = Holdings {
             held: vec![home, unused, stood_in, viewed, visited],
             pinned: Vec::new(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut region = Region::restore(config(), before.state(), holdings);
         let output = checked(
@@ -4560,6 +4699,8 @@ mod tests {
         let holdings = Holdings {
             held: vec![home, spare],
             pinned: Vec::new(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut restored = Region::restore(config, state.clone(), holdings);
         assert_eq!(restored.state(), state);
@@ -7005,6 +7146,8 @@ mod tests {
                 let holdings = Holdings {
                     held: Vec::new(),
                     pinned: vec![area],
+                    lent: Vec::new(),
+                    lent_away: Vec::new(),
                 };
                 let mut region = Region::restore(config(), state, holdings);
                 claim_floor(&mut region, id, &mut grants, position);

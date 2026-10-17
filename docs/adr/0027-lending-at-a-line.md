@@ -294,9 +294,9 @@ L2, the store's lends (2026-10-17, by me):
 - **A lend needs no new state in the table.** A chunk of a pinned area granted to another
   region is already held by it, and a release makes it the pinned region's again; a lend
   is such a grant made by asking the pinned region first. The lend states are worked out
-  from the grants (`Table::lends`), and a split part's grants in a pinned area count as
-  lent too: they are, for the region whose area it is, and it learns of their end by the
-  same `PinnedBack`.
+  from the grants (`Table::lends`). A split part's grants in a pinned area are lent away
+  for the region whose area it is, which learns of their end by the same `PinnedBack`,
+  but no lend for the part, which is not pinned and gives them back as any other.
 - **The lender's `Lending` is the chunk thread's return**, unchanged: the commit thread
   notes its number with the lend, and the return's completion grants the borrower instead
   of freeing. A lend under way is in memory only, called off at any hello, merge or split

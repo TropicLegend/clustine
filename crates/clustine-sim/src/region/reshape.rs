@@ -187,6 +187,11 @@ impl Region {
                 state.players.insert(*id, player.clone());
             }
         }
+        // The asks for lends of both; those the survivor holds or is pinned to go when
+        // it is restored (`docs/adr/0027-lending-at-a-line.md`, section 2).
+        for (position, asked) in &other.lends_asked {
+            state.lends_asked.entry(*position).or_insert(*asked);
+        }
 
         // An entry for every edge, also for one that only one of the two knew: the edge
         // may keep things for the other region, and hears here that it is no more.
@@ -212,7 +217,9 @@ impl Region {
     /// holds and `chunks`, and of its pinned areas and `pinned`, and returns the chunks
     /// that were loaded, in ascending order. `state` is what [`Region::absorb`] gave
     /// for this very region, with no tick in between; `chunks` and `pinned` are what
-    /// came with the merge, as the world store says.
+    /// came with the merge, as the world store says, and `lent` and `lent_away` what
+    /// the store says the region holds by a lend and has lent away after it
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 1).
     ///
     /// So the region knows the areas that came with the merge, and forgets everything
     /// it believed of other regions and everything it had asked: not only of the region
@@ -226,6 +233,8 @@ impl Region {
         state: RegionState,
         chunks: &[ChunkPos],
         pinned: &[ChunkArea],
+        lent: &[ChunkPos],
+        lent_away: &[(ChunkPos, RegionId)],
     ) -> Vec<(ChunkPos, Chunk)> {
         let held = self.held().chain(chunks.iter().copied()).collect();
         let mut areas = mem::take(&mut self.land.pinned);
@@ -237,6 +246,8 @@ impl Region {
         let holdings = Holdings {
             held,
             pinned: areas,
+            lent: lent.to_vec(),
+            lent_away: lent_away.to_vec(),
         };
         *self = Self::restore(self.config.clone(), state, holdings);
         loaded
@@ -378,6 +389,22 @@ impl Region {
             .filter(|position| !gone.contains(position))
             .collect();
         let pinned = mem::take(&mut self.land.pinned);
+        // What stays lent and lent away: a lent chunk that goes to the part is the
+        // part's by a grant and no lend, which it gives back as any other
+        // (`docs/adr/0027-lending-at-a-line.md`, section 4).
+        let lent = self
+            .land
+            .lent
+            .iter()
+            .copied()
+            .filter(|position| !gone.contains(position))
+            .collect();
+        let lent_away = self
+            .land
+            .lent_away
+            .iter()
+            .map(|(position, holder)| (*position, *holder))
+            .collect();
         // The chunks go as the store would have them: their ticks written into them.
         self.stop_ticking_all();
         let (theirs, kept): (Vec<_>, Vec<_>) = mem::take(&mut self.chunks)
@@ -386,10 +413,16 @@ impl Region {
         let config = self.config.clone();
         let of_part = Holdings {
             held: chunks,
-            pinned: Vec::new(),
+            ..Holdings::default()
         };
         let region = Self::restore(config.clone(), part, of_part);
-        *self = Self::restore(config, state, Holdings { held, pinned });
+        let holdings = Holdings {
+            held,
+            pinned,
+            lent,
+            lent_away,
+        };
+        *self = Self::restore(config, state, holdings);
         (
             kept,
             Part {
@@ -542,6 +575,7 @@ mod tests {
                 .collect(),
             edges: edges.into_iter().collect(),
             entering: BTreeMap::new(),
+            lends_asked: std::collections::BTreeMap::new(),
         }
     }
 
@@ -554,6 +588,8 @@ mod tests {
         Holdings {
             held: held.to_vec(),
             pinned: pinned.to_vec(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         }
     }
 
@@ -641,7 +677,7 @@ mod tests {
 
         // A join after the merge gets the id it would have got without it.
         let mut merged_region = survivor.clone();
-        merged_region.take_absorbed(merged.clone(), &[], &[]);
+        merged_region.take_absorbed(merged.clone(), &[], &[], &[], &[]);
         let join = PlayerChange::Join(
             E,
             PlayerJoin {
@@ -832,7 +868,7 @@ mod tests {
         // What came with the merge, as the store says: the chunk the other was
         // granted, one far off, and the area it was pinned to.
         let (far, came) = (at(9, 9), area(Some(2), Some(6)));
-        let loaded = survivor.take_absorbed(merged.clone(), &[of_absorbed, far], &[came]);
+        let loaded = survivor.take_absorbed(merged.clone(), &[of_absorbed, far], &[came], &[], &[]);
 
         let own = area(None, Some(2));
         let restored = Region::restore(
@@ -1060,6 +1096,7 @@ mod tests {
                 .collect(),
             edges: [(E, edge(3, 21, 0, 0, &[])), (F, edge(5, 21, 0, 0, &[]))].into(),
             entering: BTreeMap::new(),
+            lends_asked: std::collections::BTreeMap::new(),
         };
         assert_eq!(split.part, expected);
         // The region has lost them, and tells each of their edges which stays went
@@ -1551,7 +1588,7 @@ mod tests {
         let came: Vec<ChunkPos> = part.held().collect();
         assert_eq!(came, row(5, 9, 0));
         let merged = region.absorb(PART, &part.state());
-        region.take_absorbed(merged, &came, &[]);
+        region.take_absorbed(merged, &came, &[], &[], &[]);
         assert_eq!(
             region.held().collect::<Vec<_>>(),
             whole.held().collect::<Vec<_>>()

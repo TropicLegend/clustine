@@ -60,7 +60,7 @@ const RETRACT_AT_ONCE: i32 = 2;
 
 impl Region {
     /// The world's heights at `pos`, as its chunk has them.
-    fn heights_at(&self, pos: BlockPos) -> Heights {
+    pub(super) fn heights_at(&self, pos: BlockPos) -> Heights {
         let min_y = self.config.lowest_y;
         let height = self
             .chunks

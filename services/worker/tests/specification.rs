@@ -5384,6 +5384,7 @@ fn joining(tick: u64, edge: EdgeId, id: PlayerId, entity: EntityId) -> clustine_
             }),
         )],
         entering: Vec::new(),
+        lends_asked: Vec::new(),
     }
 }
 
@@ -5407,6 +5408,7 @@ fn answering(tick: u64, edge: EdgeId, since: u64) -> clustine_sim::StateDelta {
             }),
         )],
         entering: Vec::new(),
+        lends_asked: Vec::new(),
     }
 }
 

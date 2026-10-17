@@ -73,6 +73,8 @@ fn holdings(held: Vec<ChunkPos>, pinned: ChunkArea) -> Holdings {
     Holdings {
         held,
         pinned: vec![pinned],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     }
 }
 

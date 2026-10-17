@@ -248,6 +248,8 @@ fn the_burnout_list_is_dropped_at_a_restore() {
         Holdings {
             pinned: Vec::new(),
             held: around.clone(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         },
         &ticketed,
         chunks,
@@ -537,6 +539,8 @@ fn a_comparator_reads_a_cake_through_a_block_and_keeps_its_output_durably() {
         Holdings {
             pinned: Vec::new(),
             held: around.clone(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         },
         &ticketed,
         chunks,

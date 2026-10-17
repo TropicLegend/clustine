@@ -113,6 +113,29 @@ pub fn is_wire(state: BlockState) -> bool {
     is_class(state, BlockClass::RedstoneWireBlock)
 }
 
+/// Whether `state` is a circuit's part, which asks for a lend where it is placed by a
+/// line and keeps one while it stands (`docs/adr/0027-lending-at-a-line.md`, section 2):
+/// what gives off power of its own, and what moves, sounds or lights by power alone.
+/// Doors, trapdoors, gates and rails, which only open or turn a tick late at a line, are
+/// not.
+pub fn is_circuit_part(state: BlockState) -> bool {
+    state.props().is_signal_source()
+        || [
+            BlockClass::RedstoneWireBlock,
+            BlockClass::DiodeBlock,
+            BlockClass::ObserverBlock,
+            BlockClass::PistonBaseBlock,
+            BlockClass::PistonHeadBlock,
+            BlockClass::MovingPistonBlock,
+            BlockClass::NoteBlock,
+            BlockClass::CopperBulbBlock,
+            BlockClass::RedstoneLampBlock,
+            BlockClass::TargetBlock,
+        ]
+        .into_iter()
+        .any(|class| is_class(state, class))
+}
+
 /// The game's `isSignalSource`, of the state as the table has it, but for wire, which
 /// is one only while it gives its signals.
 pub fn is_signal_source(state: BlockState, query: Query) -> bool {

@@ -604,6 +604,49 @@ pub struct TickInputs {
     /// [`Durable::Ended`]. Nothing of an entry is kept after the tick. See section 5
     /// of the same record.
     pub dead: Vec<(PlayerId, EntityId, u32)>,
+    /// The world store asks the region for chunks of its pinned land, each lend under its
+    /// number, in the order asked. Answered in [`TickOutput::lend_answers`] at the end of
+    /// the tick (`docs/adr/0027-lending-at-a-line.md`, section 3, step 2).
+    pub lends_asked: Vec<LendAsked>,
+    /// Chunks the region asked to be lent that are not: asked again later where the
+    /// flag says so, and not before what the region knows of them changes otherwise
+    /// (the same record, section 2).
+    pub not_lent: Vec<(Vec<ChunkPos>, bool)>,
+    /// Lends called off, by their numbers: the region that asked keeps its ask, and the
+    /// lender takes the chunks up again as its own.
+    pub lends_called_off: Vec<(u64, Vec<ChunkPos>)>,
+    /// Chunks of the region's pinned land that the region named holds by a lend, or by
+    /// what a merge or a split made of one: believed until they are pinned back.
+    pub lent: Vec<(Vec<ChunkPos>, RegionId)>,
+    /// Chunks of the region's pinned land that whoever held them by a grant has given
+    /// back.
+    pub pinned_back: Vec<ChunkPos>,
+}
+
+/// The world store's ask of a lend of chunks of the region's pinned land to the region
+/// `to` (`docs/adr/0027-lending-at-a-line.md`, section 3, step 1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LendAsked {
+    pub lend: u64,
+    pub chunks: Vec<ChunkPos>,
+    pub to: RegionId,
+}
+
+/// A lender's answer to a [`LendAsked`] for some of its chunks (the same record,
+/// section 3, step 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LendAnswer {
+    /// Not lent: asked again later if `again`, and not otherwise while what stands
+    /// there stands.
+    Refused {
+        lend: u64,
+        chunks: Vec<ChunkPos>,
+        again: bool,
+    },
+    /// Let go of for the lend: the region has stopped ticking them, and drops them at
+    /// the start of its next tick, so that they are to be saved as they are after this
+    /// one, with their ticks, before the answer goes to the store.
+    Lending { lend: u64, chunks: Vec<ChunkPos> },
 }
 
 /// What a link's subscription to a chunk is for.
@@ -858,7 +901,18 @@ pub struct TickOutput {
     /// every change the region made to them is in a save it asked for before.
     ///
     /// [`RegionConfig::return_after`]: crate::RegionConfig::return_after
+    ///
+    /// A lent chunk is given back once no circuit's part is near it, loaded: the region
+    /// drops it at the start of its next tick, so that it is to be saved as it is after
+    /// this one before the return goes to the store
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 4).
     pub returns: Vec<ChunkPos>,
+    /// Chunks across a pinned line the region asks to be lent, ascending: for a circuit's
+    /// part placed in its own pinned land within reach of them, or asked again
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 2).
+    pub lends: Vec<ChunkPos>,
+    /// The region's answers to [`TickInputs::lends_asked`], in the order asked.
+    pub lend_answers: Vec<LendAnswer>,
     /// Chunks whose scheduled ticks changed in this tick, in ascending order: a tick
     /// scheduled or run there, or the ticks of a chunk that stopped ticking written
     /// into it. They are to be saved as chunks whose blocks changed are

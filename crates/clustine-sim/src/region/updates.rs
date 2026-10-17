@@ -173,6 +173,13 @@ impl Region {
             position: pos,
             state,
         });
+        // A circuit's part gone may leave a lent chunk unneeded
+        // (`docs/adr/0027-lending-at-a-line.md`, section 4).
+        if clustine_blocks::signal::is_circuit_part(old)
+            && !clustine_blocks::signal::is_circuit_part(state)
+        {
+            self.part_gone_near(pos);
+        }
         // The typed block entity there goes with a block of another kind, and a new
         // one comes with a block that keeps one (`block_entities.rs`).
         self.block_entity_changed(pos, old, state);

@@ -355,6 +355,8 @@ fn a_region_restored_with_its_chunks_queues_their_events_by_chunk() {
         Holdings {
             pinned: Vec::new(),
             held: ticketed.iter().map(|(position, _)| *position).collect(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         },
         &ticketed,
         all,

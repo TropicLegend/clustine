@@ -4295,6 +4295,7 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
             },
         )]),
         entering: BTreeMap::new(),
+        lends_asked: BTreeMap::new(),
     };
     assert_eq!(part.region.state(), goes);
 
@@ -6975,7 +6976,9 @@ fn a_split_with_a_death(on_disk: bool, kill: Kill, descending: bool) {
     if done {
         // The part is restored from the record by whoever opens it, with its chunks.
         assert_eq!(runners[2].1.region().knowledge(FAR), Knowledge::Held);
-        assert_eq!(runners[0].1.region().knowledge(FAR), Knowledge::Unknown);
+        // The region split knows its pinned chunk the part holds, from the store
+        // (`docs/adr/0027-lending-at-a-line.md`, section 1).
+        assert_eq!(runners[0].1.region().knowledge(FAR), Knowledge::Foreign(n));
     }
 
     resume_and_end(

@@ -379,7 +379,7 @@ fn a_merge_hands_out_chunks_with_their_ticks_written_in() {
     checked(&mut region, &moves(vec![dig(1, 2, -59, 3, 1)]));
     let other = RegionState::new(EntityIds::block(7).unwrap());
     let state = region.absorb(RegionId(7), &other);
-    let handed = region.take_absorbed(state, &[], &[]);
+    let handed = region.take_absorbed(state, &[], &[], &[], &[]);
     let (_, chunk) = handed
         .iter()
         .find(|(position, _)| *position == origin)
@@ -732,6 +732,8 @@ pub(super) fn restored(region: &Region) -> Region {
     let holdings = Holdings {
         held,
         pinned: region.land.pinned.clone(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let chunks = region
         .chunks

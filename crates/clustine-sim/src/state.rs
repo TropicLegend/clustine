@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use clustine_world::{EdgeId, EntityId, EntityIds, PlayerId};
+use clustine_world::{ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{Durable, HOTBAR_SLOTS, ItemStack, Pose};
@@ -29,6 +29,11 @@ pub struct RegionState {
     /// where each is to enter: at most one for a player. See
     /// `docs/adr/0020-one-stay-per-player.md`, section 4, step 3.
     pub entering: BTreeMap<PlayerId, EnteringState>,
+    /// The chunks across a pinned line the region has asked to be lent and has not been,
+    /// each with the tick it asked last, which it asks again twenty ticks after
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 2). Kept so that a crash before
+    /// the grant loses no ask.
+    pub lends_asked: BTreeMap<ChunkPos, u64>,
 }
 
 /// A stay the home region has given a joining player and holds as entering: the player
@@ -107,6 +112,7 @@ impl RegionState {
             players: BTreeMap::new(),
             edges: BTreeMap::new(),
             entering: BTreeMap::new(),
+            lends_asked: BTreeMap::new(),
         }
     }
 
@@ -134,6 +140,16 @@ impl RegionState {
                 }
                 None => {
                     self.entering.remove(id);
+                }
+            }
+        }
+        for (position, asked) in &delta.lends_asked {
+            match asked {
+                Some(tick) => {
+                    self.lends_asked.insert(*position, *tick);
+                }
+                None => {
+                    self.lends_asked.remove(position);
                 }
             }
         }
@@ -192,6 +208,9 @@ pub struct StateDelta {
     /// Each entering stay that changed, in the order of the players, as it is after
     /// the tick: `None` for a player of whom the region holds none any more.
     pub entering: Vec<(PlayerId, Option<EnteringState>)>,
+    /// Each ask for a lend that changed, ascending, as it is after the tick: `None` for
+    /// one that ended.
+    pub lends_asked: Vec<(ChunkPos, Option<u64>)>,
 }
 
 impl StateDelta {
@@ -201,6 +220,7 @@ impl StateDelta {
             && self.players.is_empty()
             && self.edges.is_empty()
             && self.entering.is_empty()
+            && self.lends_asked.is_empty()
     }
 }
 

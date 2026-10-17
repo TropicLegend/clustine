@@ -436,6 +436,8 @@ fn home() -> Region {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut region = Region::new(config(), ids(), holdings);
     let output = tick(
@@ -855,6 +857,8 @@ fn the_first_tick_after_a_restore_names_every_stay_and_no_later_tick_does() {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut restored = Region::restore(config(), state.clone(), holdings.clone());
     let output = tick(&mut restored, &TickInputs::default());
@@ -880,6 +884,8 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     let holdings = Holdings {
         held: vec![HOME, FAR],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut region = Region::new(config(), ids(), holdings);
     tick(
@@ -909,7 +915,7 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     };
     other.players.insert(player(5), theirs.clone());
     let merged = region.absorb(OTHER, &other);
-    region.take_absorbed(merged, &[EAST], &[]);
+    region.take_absorbed(merged, &[EAST], &[], &[], &[]);
     let output = tick(&mut region, &TickInputs::default());
     let far_place = place_in(FAR);
     assert_eq!(
@@ -1173,6 +1179,8 @@ fn a_join_over_a_present_stay_tells_the_edge_that_had_it() {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut region = Region::new(config(), two, holdings);
     tick(
@@ -1354,6 +1362,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let both = Region::restore(config(), state, holdings);
 
@@ -1398,6 +1408,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut region = Region::restore(config(), state, holdings);
     let output = tick(
@@ -1432,6 +1444,8 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         let holdings = Holdings {
             held: vec![HOME],
             pinned: Vec::new(),
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let survivor = Region::restore(config(), state.clone(), holdings);
         let mut other = RegionState::new(EntityIds::block(4).expect("block 4 exists"));
@@ -1575,6 +1589,8 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let mut region = Region::restore(config(), state, holdings);
     learn(&mut region, EAST, OTHER);
@@ -1728,6 +1744,8 @@ fn flying_is_set_by_the_input_kept_handed_on_and_taken_in() {
     let holdings = Holdings {
         held: vec![HOME],
         pinned: Vec::new(),
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let restored = Region::restore(config(), region.state(), holdings);
     assert!(state_of(&restored, 1).flying);
@@ -2203,6 +2221,8 @@ impl World {
                 .filter(|chunk| area.contains(*chunk))
                 .collect(),
             pinned: vec![area],
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         }
     }
 
@@ -3208,6 +3228,8 @@ fn a_region_restored_after_any_tick_does_what_the_region_run_on_does_but_for_its
         let holdings = Holdings {
             held: square(),
             pinned: vec![ChunkArea::EVERYWHERE],
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut region = Region::new(config(), ids(), holdings.clone());
         let mut starts: BTreeMap<EdgeId, u64> = BTreeMap::new();
@@ -3296,6 +3318,8 @@ fn made_up_ticks_of_one_region_never_leave_two_stays_and_tell_every_edge_whose_s
         let holdings = Holdings {
             held: square(),
             pinned: vec![ChunkArea::EVERYWHERE],
+            lent: Vec::new(),
+            lent_away: Vec::new(),
         };
         let mut region = Region::new(config(), ids(), holdings);
         let mut starts: BTreeMap<EdgeId, u64> = BTreeMap::new();

@@ -93,6 +93,8 @@ fn region_of(
     let holdings = Holdings {
         held: chunks.iter().map(|(position, _)| *position).collect(),
         pinned: vec![area],
+        lent: Vec::new(),
+        lent_away: Vec::new(),
     };
     let copies = copied
         .iter()
