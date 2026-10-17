@@ -306,6 +306,25 @@ L2, the store's lends (2026-10-17, by me):
 - A chunk the asker holds already is answered as a claim would be; its own pinned land and
   the home chunk are not lendable, whoever holds them.
 
+L3a and L3b, the region's and the worker's part (2026-10-17, by me):
+
+- **A lender decides at the end of the tick it is asked in**, from the world as that tick
+  leaves it, and lets go by dropping the chunk at the start of the next: so the runner
+  saves it as it was, ticks and all, before `Lending` goes, as a chunk whose last ticket
+  goes is saved before the tick that drops it. A lent chunk given back goes the same way.
+- **A lent chunk given back can be wanted still**, by a viewer's ring: the region claimed
+  it again in the same tick, and the store's rule that a claim keeps a chunk on its way
+  back kept it, as an ordinary grant of another's pinned land. A claim of another living
+  region's pinned land on its way back is answered with that region now, and the return
+  goes on.
+- **A region doubts its belief in its own pinned land** when an action or an arrival names
+  it, since land handed to a split part came back unsaid before `PinnedBack`. Land lent
+  away is believed against both until it is pinned back.
+- The subscriptions a lender served of a chunk it lets go of wait, and are answered by
+  what it knows once the store has spoken, as any waiting subscription is; the edge needs
+  nothing new for `Elsewhere` and `NotMine`, which it takes as it does at a split.
+- The section 7 reports, which the coordinator alone uses, are built with L4.
+
 ## Review
 
 **First review (2026-10-17): not ready.** Its findings, worked in:
