@@ -62,6 +62,14 @@ pub fn update_shape<V: BlockView + ?Sized>(
     if state.block_info().is_none() {
         return state;
     }
+    // `PistonHeadBlock.updateShape`: a head whose base behind it went goes.
+    if is_class(state, BlockClass::PistonHeadBlock) {
+        let behind = crate::data::facing(state).map(Face::opposite);
+        if behind == Some(direction) && !crate::piston::head_can_survive(view, state, pos) {
+            return blocks::AIR;
+        }
+        return state;
+    }
     // A block whose support went goes, before its water is scheduled.
     if let Some(gone) = crate::support::without_support(view, state, pos, direction) {
         return gone;

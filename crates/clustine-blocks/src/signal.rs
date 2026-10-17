@@ -83,6 +83,7 @@ pub fn placing_reads_signal(state: BlockState) -> bool {
         C::BaseRailBlock,
         C::CopperBulbBlock,
         C::DiodeBlock,
+        C::PistonBaseBlock,
     ]
     .into_iter()
     .any(|class| is_class(state, class))
@@ -564,7 +565,7 @@ pub fn wire_update_order(pos: BlockPos) -> [BlockPos; 7] {
 
 /// The bucket of a `HashMap` of 16 that Java puts `pos` in: `Vec3i.hashCode`,
 /// `(z * 31 + y) * 31 + x`, spread as `HashMap.hash` spreads it.
-fn java_bucket(pos: BlockPos) -> u32 {
+pub fn java_bucket(pos: BlockPos) -> u32 {
     let hash = pos
         .z
         .wrapping_mul(31)

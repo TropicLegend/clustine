@@ -22,6 +22,7 @@ mod block_events;
 mod diodes;
 mod fluids;
 mod instruments;
+mod pistons;
 mod pressed;
 mod rails;
 mod random_ticks;
@@ -294,6 +295,10 @@ pub struct Region {
     /// block events, false while inputs, entities and block entities run, and between
     /// ticks (`docs/adr/0026-redstone.md`, section 3); no part of the state.
     handling_tick: bool,
+    /// Whether the pistons waiting for their land are tried again in this tick: the
+    /// land changed, a chunk started ticking, or the region was restored, merged or
+    /// split (`pistons.rs`); no part of the state.
+    pistons_may_retry: bool,
     /// The queue of block events, in the order queued (`block_events.rs`); kept in
     /// the chunks at the end of each tick, so no part of the region's own state.
     block_events: Vec<block_events::QueuedEvent>,
@@ -360,6 +365,8 @@ impl Region {
             made: Vec::new(),
             made_in: None,
             handling_tick: false,
+            // A region restored, merged or split may hold land it did not before.
+            pistons_may_retry: true,
             block_events: Vec::new(),
             block_entities: block_entities::BlockEntities::default(),
             torch_toggles: Vec::new(),
@@ -680,7 +687,9 @@ impl Region {
         // What another region sent was made while it handled its tick, and is done so
         // here too.
         self.handling_tick = true;
+        self.pistons_may_retry |= !inputs.granted.is_empty() || self.chunks_started_ticking();
         self.run_seams(&inputs.effects, &mut output);
+        self.pistons_may_retry = false;
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
@@ -2287,6 +2296,7 @@ mod tests {
     mod effects;
     mod fluids;
     mod instruments;
+    mod pistons;
     mod post_processing_and_seams;
     mod pressed;
     mod rails_and_bulbs;

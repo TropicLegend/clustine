@@ -199,6 +199,11 @@ impl Region {
         self.schedule_due(pos, of, due, priority);
     }
 
+    /// Whether a chunk started ticking in this tick.
+    pub(crate) fn chunks_started_ticking(&self) -> bool {
+        !self.ticks.started.is_empty()
+    }
+
     /// Whether the region ticks the chunk at `position`.
     pub(crate) fn ticks_chunk(&self, position: ChunkPos) -> bool {
         self.ticks.ticking.contains(&position)

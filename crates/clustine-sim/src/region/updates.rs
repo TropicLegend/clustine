@@ -58,7 +58,7 @@ pub(crate) const UPDATE_LIMIT: i32 = 512;
 const MAX_CHAINED: usize = 1_000_000;
 
 /// `Block.UPDATE_SHAPE_ORDER`.
-const UPDATE_SHAPE_ORDER: [Face; 6] = [
+pub(crate) const UPDATE_SHAPE_ORDER: [Face; 6] = [
     Face::West,
     Face::East,
     Face::North,
@@ -156,6 +156,12 @@ impl Region {
             }
             return false;
         }
+        // A moving piston replaced finishes its move first, unless the change says it
+        // is not to (`BlockEntity.preRemoveSideEffects`); that may set the block itself,
+        // which this change then replaces, as in the game.
+        if is_class(old, BlockClass::MovingPistonBlock) && !same_block(old, state) {
+            self.moving_piston_replaced(pos, flags, output);
+        }
         let (x, z) = pos.in_chunk();
         let Some(chunk) = self.chunks.get_mut(&pos.chunk()) else {
             return false;
@@ -176,10 +182,13 @@ impl Region {
         let moved_by_piston = flags & UPDATE_MOVE_BY_PISTON != 0;
         if !same_block(old, state) && (flags & UPDATE_NEIGHBORS != 0 || moved_by_piston) {
             self.redstone_after_removal(pos, old, moved_by_piston, output);
+            self.piston_after_removal(pos, old, output);
         }
         // Wire placed works out its power and tells the blocks around it
         // (`RedStoneWireBlock.onPlace`).
         self.redstone_on_place(pos, state, old, output);
+        // A piston placed checks whether to move (`PistonBaseBlock.onPlace`).
+        self.piston_on_place(pos, state, old, output);
         // `onPlace`, inside the chunk's set in the game: a block that falls looks two
         // ticks on whether it is held up (`FallingBlock.onPlace`, `BrushableBlock`'s).
         if is_class(state, BlockClass::FallingBlock) || is_class(state, BlockClass::BrushableBlock)
@@ -283,6 +292,7 @@ impl Region {
         if state.props().is_air() {
             return;
         }
+        self.head_broken_by_player(pos, state, output);
         if is_class(state, BlockClass::DoorBlock) || is_class(state, BlockClass::DoublePlantBlock) {
             self.prevent_drop_from_bottom_part(pos, state, player, output);
         }
@@ -765,7 +775,19 @@ impl Region {
         };
         let mut waiting = Vec::new();
         let mut taken = Vec::new();
+        let mut retried = Vec::new();
         for seam in seams {
+            // A piston waiting for its land is tried again only when the land or the
+            // chunks that tick change, so that one refused at a line does not rewrite
+            // its chunk every tick (`docs/adr/0026-redstone.md`, section 10).
+            if seam.flags & super::pistons::WAITING_PISTON != 0 {
+                if self.pistons_may_retry {
+                    retried.push(seam);
+                } else {
+                    waiting.push(seam);
+                }
+                continue;
+            }
             // Land that is another's, or that was given back or never asked for and is
             // not wanted: there the entry would otherwise wait for good (ADR-0025,
             // "Found while building", E4).
@@ -776,7 +798,7 @@ impl Region {
                 waiting.push(seam);
             }
         }
-        if taken.is_empty() {
+        if taken.is_empty() && retried.is_empty() {
             return;
         }
         if let Some(loaded) = self.chunks.get_mut(&chunk) {
@@ -790,6 +812,7 @@ impl Region {
                 self.run_update(seam, output);
             }
         }
+        self.retry_waiting_pistons(retried, output);
     }
 
     /// Makes the update a seam entry keeps, whose block and neighbours the region can

@@ -14,6 +14,7 @@ pub mod diode;
 pub mod fluid;
 pub mod growth;
 pub mod note;
+pub mod piston;
 pub mod shape;
 pub mod signal;
 pub mod support;

@@ -607,6 +607,10 @@ impl Region {
             self.hook_calculate_state(pos, state, false, false, -1, None, output);
         }
         self.diode_placed_by_player(pos, state);
+        // `PistonBaseBlock.setPlacedBy`: a piston placed checks whether to move.
+        if clustine_blocks::piston::is_piston_base(state) {
+            self.piston_check(pos, state, output);
+        }
     }
 }
 

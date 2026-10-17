@@ -47,6 +47,10 @@ impl Region {
         block: BlockState,
         output: &mut TickOutput,
     ) -> bool {
+        // Pistons, their heads and moving pistons (`pistons.rs`).
+        if self.piston_neighbour_changed(pos, state, block, output) {
+            return true;
+        }
         // Torches, repeaters and comparators (`diodes.rs`).
         if self.diode_neighbour_changed(pos, state, output) {
             return true;

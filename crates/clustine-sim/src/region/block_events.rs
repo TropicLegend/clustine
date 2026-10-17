@@ -152,6 +152,7 @@ impl Region {
         output: &mut TickOutput,
     ) -> bool {
         self.instrument_event(at, state, kind, data, output)
+            .or_else(|| self.piston_event(at, state, kind, data, output))
             .unwrap_or(false)
     }
 

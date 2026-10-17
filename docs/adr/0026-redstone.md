@@ -536,6 +536,45 @@ subagent, read against the jar):
   disc, the creaking heart, sculk sensors, command blocks, detector rails and item
   frames; a comparator reads 0 from them until then.
 
+R5, pistons (2026-10-17, by me, ported from SteelMC-26.3 and read against the jar):
+
+- **The resolver is pure** (`clustine_blocks::piston`): `isPushable` with the jar's
+  rules (obsidian, crying obsidian, respawn anchors and reinforced deepslate stay,
+  unbreakable blocks stay, which the table now says in byte 11's bit 3, `Push` only
+  along the push, `Popped` broken, block entities stay, an extended piston stays, the
+  world's height), the line of twelve, slime and honey and the reordering at a
+  collision; quasi-connectivity is `piston_powered`. There is no world border.
+- **The region's rules** (`region/pistons.rs`): `checkIfExtend` on a neighbour's
+  change, on `onPlace` and `setPlacedBy`; the three block events; `moveBlocks` with the
+  jar's flags (276 for a retracting base, 324 for a moving block, 18 for a block broken,
+  82 for a block cleared) and the cleared blocks in the order of a `HashMap`'s buckets;
+  the moving piston's three ticks and its finish, `finalTick` for an instant
+  retraction and for a moving piston replaced without flag 256; the head's shape,
+  neighbour changes and removal, a head broken by a player taking its base. A
+  replaced moving piston's `preRemoveSideEffects` runs before the replacing set, which
+  then replaces what it set, as in the game.
+- **The moving piston's block entity is durable**: written as the game saves it, its
+  compound's names in the order of their buckets (as `HashMap` writes them), and read
+  back at a load; a move carried through a restore takes a tick more, as section 5
+  says.
+- **A player is not moved by the region.** Section 9 has the region push a player and
+  never correct them; the client owns its position, pushes itself by its own moving
+  piston and is launched by slime on its own, and its next move, a tick later at most,
+  says where it is. The region's own push would be overwritten by that move before
+  anyone but the other players saw it, and would need entities' collisions, which are
+  the phase of entities'. So nothing moves players here; plates and lines see them
+  where their packets put them.
+- **A piston at a line** (section 10): its move is refused unless the piston, its
+  head, the block two ahead where a move ends there or a sticky piston pulls, and every
+  block the structure moves and where it goes are in chunks that are loaded, held and
+  ticking. One refused is kept as a seam entry of its own kind (flag `1 << 30`), left
+  out of the seam phase's retries and tried again only in a tick that follows a grant,
+  a chunk starting to tick, a restore, a merge or a split, so that it never rewrites
+  its chunk while it waits.
+- Not built: drops (every player is in creative), game events, entities pushed and
+  moved by a moving block's collision, and the client's slime bounce, which the client
+  does. The timing against the official server is R8's.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

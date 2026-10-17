@@ -1,6 +1,7 @@
 //! Tests of the rules against small worlds.
 
 mod fluid_rules;
+mod pistons;
 
 use std::collections::BTreeMap;
 
