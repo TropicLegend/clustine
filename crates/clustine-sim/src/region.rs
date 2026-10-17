@@ -1197,7 +1197,9 @@ impl Region {
             None => {}
         }
         if let Knowledge::Foreign(holder) = self.land.knowledge(chunk) {
-            if self.land.is_pinned(chunk) {
+            // Land lent away is told of when it is pinned back, and believed until then
+            // (`docs/adr/0027-lending-at-a-line.md`, section 1).
+            if self.land.is_pinned(chunk) && !self.is_lent_away(chunk) {
                 // A chunk of the region's own area that was split off and given back is
                 // the region's again without anyone telling it, and whoever sent the
                 // player was told so by the store. The belief goes, and the player is
@@ -1912,7 +1914,11 @@ impl Region {
         let concerned = action.step.concerns().chunk();
         match self.land.knowledge(concerned) {
             Knowledge::Held => {}
-            Knowledge::Foreign(holder) if !self.land.is_pinned(concerned) => {
+            // Land lent away is believed until it is pinned back
+            // (`docs/adr/0027-lending-at-a-line.md`, section 1).
+            Knowledge::Foreign(holder)
+                if !self.land.is_pinned(concerned) || self.is_lent_away(concerned) =>
+            {
                 let what = Misdirected::Remote(action.clone());
                 return Durable::NotMine { what, holder };
             }

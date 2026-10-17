@@ -58,9 +58,9 @@ use clustine_rpc::{
 };
 use clustine_sim::api::{Entered, HOTBAR_SLOTS, ItemStack, PlayerInput, RegionEvent};
 use clustine_sim::{
-    Durable, EdgeEvent, Holdings, Knowledge, Misdirected, NoSplit, Part, PlayerChange, PlayerEvent,
-    Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting, StateDelta, TickInputs,
-    Ticket,
+    Durable, EdgeEvent, Holdings, Knowledge, LendAnswer, LendAsked, Misdirected, NoSplit, Part,
+    PlayerChange, PlayerEvent, Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting,
+    StateDelta, TickInputs, Ticket,
 };
 use clustine_world::{
     BlockPos, Change, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3,
@@ -861,6 +861,10 @@ pub struct RegionRunner {
     crowds: Crowds,
     /// Loaded chunks that have changed since they were loaded or last stored.
     unsaved: BTreeSet<ChunkPos>,
+    /// The chunks the region has asked the store to lend it and has had no answer for
+    /// yet: subscriptions to them wait, so that the edge is not sent back and forth
+    /// while a grant is on its way (`docs/adr/0027-lending-at-a-line.md`, section 5).
+    lends_in_flight: BTreeSet<ChunkPos>,
     /// Loaded chunks that ticked with ticks pending in the last tick and have not been
     /// saved since ([`TickOutput::ticks_pending`]). What is kept of a tick is the delay
     /// left, so their saved forms age with every tick without a commit; they are saved
@@ -1084,6 +1088,7 @@ impl RegionRunner {
             loads: BTreeMap::new(),
             crowds: Crowds::new(),
             unsaved: BTreeSet::new(),
+            lends_in_flight: BTreeSet::new(),
             ageing: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             gone_after: DEFAULT_GONE_AFTER,
@@ -1413,14 +1418,25 @@ impl RegionRunner {
     fn take_replies(&mut self) -> bool {
         while let Some(reply) = self.store.try_reply() {
             match reply {
-                // No region asks for a lend before step L3 of
-                // `docs/adr/0027-lending-at-a-line.md`, and the store sends none of these
-                // to one that has not.
-                StoreReply::LendAsked { .. }
-                | StoreReply::NotLent { .. }
-                | StoreReply::LendCalledOff { .. }
-                | StoreReply::Lent { .. }
-                | StoreReply::PinnedBack { .. } => {}
+                // Lends (`docs/adr/0027-lending-at-a-line.md`): into the coming tick, as
+                // a claim's answer goes. An ask answered in any way is no longer under way.
+                StoreReply::LendAsked { lend, chunks, to } => {
+                    self.inputs.lends_asked.push(LendAsked { lend, chunks, to });
+                }
+                StoreReply::NotLent { chunks, again } => {
+                    for position in &chunks {
+                        self.lends_in_flight.remove(position);
+                    }
+                    self.inputs.not_lent.push((chunks, again));
+                }
+                StoreReply::LendCalledOff { lend, chunks } => {
+                    for position in &chunks {
+                        self.lends_in_flight.remove(position);
+                    }
+                    self.inputs.lends_called_off.push((lend, chunks));
+                }
+                StoreReply::Lent { chunks, to } => self.inputs.lent.push((chunks, to)),
+                StoreReply::PinnedBack { chunks } => self.inputs.pinned_back.extend(chunks),
                 StoreReply::Loaded { position, chunk } => {
                     self.generating.remove(&position);
                     if self.answers_the_latest_load(position) {
@@ -1470,6 +1486,9 @@ impl RegionRunner {
                 // that was dropped would leave whoever waits for the chunk waiting for
                 // good. Only a runner that never ticks again lets them lie.
                 StoreReply::Claimed { granted, foreign } => {
+                    for position in &granted {
+                        self.lends_in_flight.remove(position);
+                    }
                     self.inputs.granted.extend(granted);
                     self.inputs.foreign.extend(foreign);
                 }
@@ -2597,9 +2616,46 @@ impl RegionRunner {
         // dropped it, and so before this. Neither a return nor a claim waits for the
         // commit: what the store does about either for a tick that is then lost, it
         // says when the region is opened again.
+        // What the region let go of loaded, for a lend or as a lent chunk given back,
+        // goes as the tick left it: saved, with its ticks, before the store hears of it,
+        // and what links were served of it waits until the region knows who has it
+        // (`docs/adr/0027-lending-at-a-line.md`, sections 3 to 5).
+        for position in self.region.letting_go() {
+            self.ageing.insert(position);
+            self.save(position);
+            for link in self.links.values_mut() {
+                if let Some(subscription) = link.subscriptions.get_mut(&position)
+                    && subscription.condition == Condition::Served
+                {
+                    subscription.condition = Condition::Waiting;
+                    link.waiting.insert(position);
+                }
+            }
+        }
         if !output.returns.is_empty() {
             self.store.request(StoreRequest::Return {
                 chunks: output.returns,
+            });
+        }
+        for answer in output.lend_answers {
+            let request = match answer {
+                LendAnswer::Refused {
+                    lend,
+                    chunks,
+                    again,
+                } => StoreRequest::LendRefused {
+                    lend,
+                    chunks,
+                    again,
+                },
+                LendAnswer::Lending { lend, chunks } => StoreRequest::Lending { lend, chunks },
+            };
+            self.store.request(request);
+        }
+        if !output.lends.is_empty() {
+            self.lends_in_flight.extend(output.lends.iter().copied());
+            self.store.request(StoreRequest::Lend {
+                chunks: output.lends,
             });
         }
         if !output.claims.is_empty() {
@@ -2723,6 +2779,12 @@ impl RegionRunner {
                 let Some(subscription) = link.subscriptions.get_mut(&position) else {
                     continue;
                 };
+                // A chunk let go of for a lend, or asked to be lent, is answered once the
+                // store has said who has it (`docs/adr/0027-lending-at-a-line.md`,
+                // section 5).
+                if self.region.lending_away(position) || self.lends_in_flight.contains(&position) {
+                    continue;
+                }
                 let ask = subscription.ask;
                 let answer = match (self.region.knowledge(position), subscription.kind) {
                     (Knowledge::Held, _) => {

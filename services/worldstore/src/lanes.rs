@@ -1268,6 +1268,19 @@ impl Lanes {
                     if !asked.insert(chunk) {
                         continue;
                     }
+                    // A lent chunk on its way back is its lender's: a claim takes nothing
+                    // of another's pinned land, and does not call the return off
+                    // (`docs/adr/0027-lending-at-a-line.md`, section 4).
+                    let lender = self
+                        .table
+                        .pinned_holder(chunk)
+                        .filter(|lender| *lender != region);
+                    if let Some(lender) = lender
+                        && lane.returning.contains_key(&chunk)
+                    {
+                        foreign.push((chunk, lender));
+                        continue;
+                    }
                     match self.table.holder(chunk) {
                         // Nothing about it changes, also not its tick. A return of it
                         // that is on its way is called off.

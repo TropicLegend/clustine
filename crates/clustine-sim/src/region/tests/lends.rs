@@ -330,3 +330,43 @@ fn an_ask_outlives_a_restore_and_one_for_a_chunk_held_since_is_dropped() {
         [ChunkPos::new(1, -1)]
     );
 }
+
+#[test]
+fn land_lent_away_is_believed_against_an_action_and_an_arrival_that_name_it() {
+    let mut region = the_east(&[]);
+    checked(&mut region, &asked(7, &[ACROSS]));
+    checked(&mut region, &TickInputs::default());
+    checked(
+        &mut region,
+        &TickInputs {
+            lent: vec![(vec![ACROSS], THE_WEST)],
+            ..TickInputs::default()
+        },
+    );
+    // What another region's player does there goes on to the borrower, and the belief
+    // stays: only the store's word that it is pinned back ends it.
+    let action = RemoteAction {
+        player: player(9),
+        entity: EntityId(90),
+        sequence: 1,
+        step: RemoteStep::Break {
+            position: BlockPos::new(17, -61, 0),
+        },
+    };
+    let output = checked(
+        &mut region,
+        &TickInputs {
+            remote_actions: vec![(REMOTE, action)],
+            ..TickInputs::default()
+        },
+    );
+    assert!(
+        output.durable.iter().any(|(_, _, entry)| matches!(
+            entry,
+            Durable::NotMine { holder, .. } if *holder == THE_WEST
+        )),
+        "{:?}",
+        output.durable
+    );
+    assert_eq!(region.knowledge(ACROSS), Knowledge::Foreign(THE_WEST));
+}
