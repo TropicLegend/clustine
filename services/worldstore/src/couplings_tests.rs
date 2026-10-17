@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clustine_data::blocks;
 use clustine_rpc::{CopyUse, Coupling, Uncoupling};
@@ -382,4 +382,81 @@ fn couplings_outlive_a_restart_of_the_store() {
         }]
     );
     assert!(!restored.given_up);
+}
+
+/// What a restore after a crash costs a coupled region (ADR-0025, E7, "What it costs"):
+/// coupled regions commit on every tick, so a region that crashes just before its next
+/// checkpoint is restored with as many commits as there are ticks between two, about
+/// 6,000. Two regions commit that many ticks each, a block changed and a state of a
+/// few dozen bytes each tick, as the pair of `services/worker/tests/border_costs.rs`
+/// did; the store then ends without a checkpoint, as at a crash after the last sync,
+/// and a new store on the same files opens both. The files go under `TMPDIR`:
+///
+/// ```text
+/// cargo test --release -p clustine-worldstore --lib -- --ignored --nocapture a_crash_beside
+/// ```
+#[test]
+#[ignore = "a measurement, for a release build on the disk the server runs on"]
+fn what_a_restore_costs_a_coupled_region_after_a_crash_beside_its_checkpoint() {
+    use crate::disk::OsDisk;
+
+    const TICKS: u64 = 6_000;
+    let opened = |directory: &Path| {
+        let disk = Arc::new(OsDisk::default());
+        let chunks = FileChunks::new(disk.clone(), directory);
+        start(disk, directory, Box::new(chunks), generator(), &gap()).unwrap()
+    };
+    for _ in 0..3 {
+        let directory = tempfile::tempdir().unwrap();
+        let committing = Instant::now();
+        {
+            let store = opened(directory.path());
+            let west = store.open_region(hello(WEST, 1)).unwrap().0;
+            let east = store.open_region(hello(EAST, 1)).unwrap().0;
+            for tick in 1..=TICKS {
+                for (handle, x) in [(&west, -40), (&east, 16 * 16 + 3)] {
+                    let block = BlockPos::new(x, 100, (tick % 16) as i32);
+                    let state = if tick % 2 == 0 {
+                        blocks::GLASS
+                    } else {
+                        blocks::STONE
+                    };
+                    handle.request(StoreRequest::Commit {
+                        tick,
+                        changes: vec![(block, state)],
+                        state: format!("the state of the region at tick {tick:>8}").into_bytes(),
+                        stays: Vec::new(),
+                        ticks: Vec::new(),
+                        marks_taken: Vec::new(),
+                        seams: Vec::new(),
+                        effects: Vec::new(),
+                        taken: Vec::new(),
+                    });
+                }
+            }
+            crate::tests::committed(&west, TICKS);
+            crate::tests::committed(&east, TICKS);
+        }
+        let committed_in = committing.elapsed();
+        let starting = Instant::now();
+        let store = opened(directory.path());
+        let started_in = starting.elapsed();
+        let mut opens = Vec::new();
+        for region in [WEST, EAST] {
+            let opening = Instant::now();
+            let (_, restored) = store.open_region(hello(region, 2)).unwrap();
+            opens.push(format!(
+                "{:.3} s with {} commits",
+                opening.elapsed().as_secs_f64(),
+                restored.deltas.len()
+            ));
+        }
+        println!(
+            "MEASURED: two regions committed {TICKS} ticks each in {:.1} s; the store \
+             started again in {:.3} s and opened them in {}",
+            committed_in.as_secs_f64(),
+            started_in.as_secs_f64(),
+            opens.join(" and ")
+        );
+    }
 }

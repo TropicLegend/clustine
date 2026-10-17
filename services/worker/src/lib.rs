@@ -2934,10 +2934,15 @@ impl RegionRunner {
                 break;
             }
             self.take_orders();
+            let before = self.region.tick_number();
             self.step();
             // A tick held for the region's partners is tried again as their progress
             // arrives, and keeps its deadline: it does not lose its slot (section 8).
+            // Only the slot's own tick is waited for: once it has run, the next is
+            // usually held too, and running it as soon as the partners allow would
+            // tick the pair faster than the game's pace wherever commits are slow.
             while self.ended.is_none()
+                && self.region.tick_number() == before
                 && !stop.load(Ordering::Relaxed)
                 && matches!(self.phase, Phase::Running | Phase::Preparing)
                 && self.pending.len() < MAX_TICKS_AHEAD

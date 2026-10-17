@@ -8,8 +8,9 @@
 //! region 0's chunk at the origin, with its tick scheduled.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clustine_data::blocks;
 use clustine_region::RegionId;
@@ -18,7 +19,7 @@ use clustine_rpc::{
     EdgeMessage, EdgeToWorker, RegionHello, StoreReply, StoreRequest, WorkerToEdge,
 };
 use clustine_sim::api::HOTBAR_SLOTS;
-use clustine_worker::{RegionRunner, RegionSettings};
+use clustine_worker::{RegionRunner, RegionSettings, Worker};
 use clustine_world::{BlockPos, ChunkPos, EdgeId, InChunk, ScheduledTick, Ticked};
 use clustine_worldgen::FlatGenerator;
 use clustine_worldstore::{Pins, Store, StoreHandle};
@@ -171,4 +172,49 @@ fn water_crosses_a_coupled_line_at_its_own_pace() {
     assert_eq!(beyond - across, 4, "across at {across}, beyond at {beyond}");
     // The west did its side as in one region.
     assert!(block(&west, SOURCE).is_some_and(|state| state == blocks::WATER));
+}
+
+/// A coupled pair keeps the game's pace where commits are slow: a tick held for the
+/// partner keeps its slot, and the tick after it waits for its own (the run's loop, as
+/// E7 found it, ran the next tick as soon as the partner allowed, and a pair whose
+/// syncs took 22 ms ran at 22.4 ticks a second). The time is a lower bound: a machine
+/// that is slow makes it longer, never shorter. Ten ticks may be caught up.
+#[test]
+fn a_coupled_pair_on_slow_storage_keeps_the_games_pace() {
+    const TICKS: u64 = 200;
+    let directory = tempfile::tempdir().expect("a directory for the world");
+    let generator = Arc::new(FlatGenerator::classic().with_spawn(SPAWN_BLOCK));
+    let pins = Pins::side_by_side(&[1]).expect("one cut ascends");
+    let store =
+        Store::local_divided_slowed(directory.path(), generator, pins, Duration::from_millis(22))
+            .expect("the world is made");
+    let spawned = |region: u32, chunks| {
+        let (runner, edge) = viewed(&store, region, 1, chunks);
+        let status = runner.status();
+        (Worker::spawn(runner), status, edge)
+    };
+    let (west, west_status, mut west_edge) = spawned(0, columns(-1..=0));
+    let (east, east_status, mut east_edge) = spawned(1, columns(1..=2));
+    let tick = || west_status.tick.load(Ordering::Relaxed);
+    let wait_for = |at: u64, edges: [&mut EdgeEnd; 2]| {
+        let [west_edge, east_edge] = edges;
+        while tick() < at || east_status.tick.load(Ordering::Relaxed) < at {
+            for edge in [&mut *west_edge, &mut *east_edge] {
+                while let Ok(Some(_)) = edge.try_recv() {}
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    };
+    // Coupled by then: both rims tick beside the line from their first tick.
+    wait_for(60, [&mut west_edge, &mut east_edge]);
+    let (from, began) = (tick(), Instant::now());
+    wait_for(from + TICKS, [&mut west_edge, &mut east_edge]);
+    let took = began.elapsed();
+    west.stop();
+    east.stop();
+    let least = Duration::from_millis(50) * u32::try_from(TICKS - 10).expect("small");
+    assert!(
+        took >= least,
+        "{TICKS} ticks took {took:?}, less than the game's pace allows ({least:?})"
+    );
 }

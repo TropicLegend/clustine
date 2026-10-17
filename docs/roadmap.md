@@ -83,19 +83,23 @@ beyond the hotbar, and crafting.
   The disk without its cache was not measured: the cache is the machine's.
 
 - *Effects between regions* (phase E, [plan](groundwork/e-plan.md),
-  [ADR-0025](adr/0025-effects-between-regions.md)): E1 to E6, on `main` since
-  2026-10-16. Regions keep copies of the chunks across their lines beside what players
+  [ADR-0025](adr/0025-effects-between-regions.md)): E1 to E7, on `main` since
+  2026-10-17. Regions keep copies of the chunks across their lines beside what players
   see. What a tick does in another region's land is an effect, which the world store
   keeps for the region that uses the chunk and hands it on its stream; regions whose
   border ticks run in lockstep. So water crosses a line on the ticks it would in one
   region, an update a tick late, and the chunks along a line tick. Tests written from
   the record by someone who did not write the code (E6) found three defects, mended:
   a slow region never given up, updates across a line sometimes on time, and chunks
-  left in use.
+  left in use. Measured (E7, the record's "Measured"): a coupled pair keeps 20 ticks a
+  second on the storage with its cache and with its syncs made 22 ms slower, which
+  stands in for it without; a gap between ticks is 74 ms at worst while a river
+  crosses the line; a restore with a checkpoint interval's 6,000 commits takes 16 ms;
+  merges and splits pause as at B8. E7 found a coupled pair on slow storage ticking at
+  22.4 a second, mended.
 
-**Next:** E7, measuring phase E on the real disk: a coupled pair's pace, the
-store's load along a busy border, and `COUPLING_PATIENCE`. Then redstone; S3 beside
-it. The judge of features, over 204 areas of two seeds with
+**Next:** redstone, a phase of its own, planned and reviewed before it is built; S3
+beside it. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
@@ -142,7 +146,7 @@ What to say if it is not so: which step, what was seen, and the log.
 try to accomplish vanilla parity"):
 
 1. Effects carried between regions, so that a border is seamless (a record of its
-   own; the owner's answer to B's question 1): built, E7's measurements to come.
+   own; the owner's answer to B's question 1): built and measured.
 2. Redstone, a phase of its own (B's question 4).
 3. Entities other than players: item drops, falling blocks, animals and monsters
    with their movement, AI and spawning, the structures' villagers and the like

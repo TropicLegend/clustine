@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 /// What the store does with files. Paths name files; directories are made with
 /// [`Disk::create_dir_all`] and otherwise only synced and listed.
@@ -362,6 +363,84 @@ impl Disk for OsDisk {
             Err(error) if error.kind() != ErrorKind::NotFound => Err(error),
             _ => Ok(()),
         }
+    }
+}
+
+/// The local file system with every sync taking `extra` longer, for measuring what the
+/// server does on storage whose syncs are slow, as the owner's network storage is
+/// without the cache in front of it (about 22 ms a sync, `docs/groundwork/
+/// disk-syncs-measured.md`). Syncs made together wait together, as there.
+pub(crate) struct SlowedDisk {
+    disk: OsDisk,
+    extra: Duration,
+}
+
+impl SlowedDisk {
+    pub(crate) fn new(extra: Duration) -> Self {
+        Self {
+            disk: OsDisk::default(),
+            extra,
+        }
+    }
+}
+
+impl Disk for SlowedDisk {
+    fn read(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        self.disk.read(path)
+    }
+
+    fn read_at(&self, path: &Path, offset: u64, length: usize) -> io::Result<Vec<u8>> {
+        self.disk.read_at(path, offset, length)
+    }
+
+    fn exists(&self, path: &Path) -> io::Result<bool> {
+        self.disk.exists(path)
+    }
+
+    fn list(&self, directory: &Path) -> io::Result<Vec<String>> {
+        self.disk.list(directory)
+    }
+
+    fn create_dir_all(&self, directory: &Path) -> io::Result<()> {
+        self.disk.create_dir_all(directory)
+    }
+
+    fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        self.disk.write(path, contents)
+    }
+
+    fn append(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        self.disk.append(path, contents)
+    }
+
+    fn truncate(&self, path: &Path, length: u64) -> io::Result<()> {
+        self.disk.truncate(path, length)
+    }
+
+    fn sync(&self, path: &Path) -> io::Result<()> {
+        thread::sleep(self.extra);
+        self.disk.sync(path)
+    }
+
+    fn sync_directory(&self, directory: &Path) -> io::Result<()> {
+        thread::sleep(self.extra);
+        self.disk.sync_directory(directory)
+    }
+
+    fn sync_files(&self, files: &[PathBuf]) -> io::Result<()> {
+        together(files, |file| self.sync(file))
+    }
+
+    fn sync_directories(&self, directories: &[PathBuf]) -> io::Result<()> {
+        together(directories, |directory| self.sync_directory(directory))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.disk.rename(from, to)
+    }
+
+    fn remove(&self, path: &Path) -> io::Result<()> {
+        self.disk.remove(path)
     }
 }
 

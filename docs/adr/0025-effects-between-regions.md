@@ -6,7 +6,7 @@
   questions (its section 6). Three reviews of this record found it not ready; their
   findings are worked in (see "Review"), with lockstep, which the owner asked for
   afterwards (section 8). A fourth, focused review accepted it after the changes it
-  names, which are made. **Accepted** on 2026-10-16, and built the same day (E2 to E6; what was found while
+  names, which are made. **Accepted** on 2026-10-16, and built the same day (E2 to E6), measured on 2026-10-17 (E7; what was found while
   building is below). Where the plan and this record differ, this record holds.
 - Date: 2026-10-16
 
@@ -394,8 +394,8 @@ and the tick still to come, so a coupled pair there is likely to run below 20 ti
 second. "An overloaded region slows down alone" (architecture.md) no longer holds along
 a ticking border: a slow region slows the regions coupled to it, until it is given up.
 Coupled regions commit every tick, about 6,000 commits between two checkpoints of a
-region, all replayed at a restore. E7 measures all of it, on the disk without its cache
-too if the owner's machine can be measured so.
+region, all replayed at a restore. E7 measured all of it ("Measured" below): the
+pair keeps 20 ticks a second, also with syncs as slow as the disk's without its cache.
 
 ## Consequences
 
@@ -592,6 +592,70 @@ a tick late, as an update is. The resend after a hello comes at the hello, and t
 runner keeps what it gets until the chunk is loaded. A hello after a restart of the
 store does not call off a handshake under way: section 8's call-off at a hello is of a
 hello that replaces an owner.
+
+E7, measuring on the real disk (2026-10-17), found one more defect, now mended:
+
+- **A coupled pair on slow storage ran faster than the game.** With every sync 22 ms
+  slower, the pair ticked at 22.4 ticks a second for five minutes: once a held tick
+  had run, the runner's loop went on waiting for the next one, which is usually held
+  too, and ran it as soon as the partner allowed, inside the same slot. The loop now
+  waits only for the slot's own tick (`RegionRunner::run`), and
+  `a_coupled_pair_on_slow_storage_keeps_the_games_pace` (`services/worker/tests/
+  borders.rs`) holds 200 ticks to no less than the game's time for 190.
+
+## Measured (E7, 2026-10-17)
+
+On the owner's machine, twelve processors, optimised builds, the world on the network
+storage **with its cache in local memory** (a sync 0.2 ms). The cache cannot be taken
+away there, so the disk without it is stood in for by the same storage with every
+sync made 22 ms slower (`Store::local_divided_slowed`, syncs made together waiting
+together, as on the storage); that is the sync's cost alone, and not a measurement of
+the storage itself.
+
+**A coupled pair's pace and the store's load along a busy border**
+(`services/worker/tests/border_costs.rs`): two regions side by side, each ticked in
+real time by a worker of its own, with a viewer at the line, so that the rims of both
+views tick beside it and the store couples them, and a river of 48 sources along the
+line whose water crosses in the first ten seconds; against the same two with their
+viewers four chunks from it. Ten-second windows, 28 of them for the pair at the line
+(5,600 ticks, almost as many as between two checkpoints):
+
+| Case | Ticks a second, each region | Gaps between ticks, p50 / p99 / longest | Appends and syncs a second | The process |
+|---|---|---|---|---|
+| Apart, either disk | 20.0 | 50 / 50 / 53 ms | 0 | 2% of a processor |
+| Coupled, the river crossing, as it is | 20.0 | 50 / 73 / 74 ms | 40 (5 kB/s) | 5% |
+| Coupled, after it, as it is | 20.0 in all 27 windows | 50 / 50 / 51 ms | 40 (2 kB/s) | 2% |
+| Coupled, the river crossing, syncs 22 ms slower | 20.0 | 50 / 72 / 72 ms | 40 (5 kB/s) | 5% |
+| Coupled, after it, syncs 22 ms slower | 20.0 in all 27 windows | 50 / 50 / 52 ms | 40 (2 kB/s) | 3% |
+
+So a coupled pair keeps the game's pace on both, where section 8 expected it to run
+below 20 on the disk without its cache: a tick waits only for its partner's tick before
+it, a sync and a delivery take about 25 ms of the 50, and up to eight ticks may be
+ahead of what the store has confirmed. The pair commits on every tick, one sync a
+commit, which regions apart with nothing to change do not; the store's work for the
+river (filing, routing, copies' updates) is lost in the process's 5%.
+
+**`COUPLING_PATIENCE`.** The longest gap between two ticks of a coupled region in all
+of it was 74 ms, of which a tick's own 50: a region that is healthy waits for its
+partner a quarter of a millisecond to 24 ms. A quarter of a second stays: ten times
+that, and short enough that a partner that stops holds a player for a moment only.
+
+**A restore after a crash beside a checkpoint** (`services/worldstore/src/
+couplings_tests.rs`, `what_a_restore_costs_a_coupled_region_after_a_crash_beside_its_
+checkpoint`): two regions commit 6,000 ticks each, a block and a state each, and the
+store ends without a checkpoint; a new store on the same files started in 4 to 6 ms
+and opened each region, with its 6,000 commits, in 13 to 16 ms (three runs, the disk
+as it is). After a stop, which checkpoints, opening took 1 ms, and 45 and 89 ms with
+syncs 22 ms slower.
+
+**A merge's and a split's pause on land** (`crowds.rs`, as B8: two wanderers at a
+flying sprint, seed 13579, view 8, five rounds): the region stood still 0.09 to 0.25 s
+at a split and 0.04 to 0.10 s at a merge, and the coordinator took 0.09 to 0.25 s and
+0.62 to 0.88 s; B8 had 0.05 to 0.24, 0.04 to 0.13, 0.05 to 0.24 and 0.16 to 0.88 s.
+Phase E has not changed them. The wanderers' regions are merged 21 to 23 chunks
+apart, so no coupling was under way there; a merge of coupled regions ends its
+couplings at `Preparing` and its survivor is coupled again by the handshake, which
+E5's and E6's tests cover and this did not time.
 
 ## Review
 

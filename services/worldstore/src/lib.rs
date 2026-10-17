@@ -85,6 +85,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
 
 use clustine_format::FormatError;
 use clustine_region::RegionId;
@@ -92,7 +93,7 @@ use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest};
 use clustine_world::{BlockPos, ChunkGenerator, ChunkPos};
 
 use crate::chunks::{ChunkService, Chunks, FileChunks, Job, Jobs, MemoryChunks};
-use crate::disk::{Disk, MemoryDisk, OsDisk};
+use crate::disk::{Disk, MemoryDisk, OsDisk, SlowedDisk};
 pub use crate::disk::{DiskFigures, disk_figures};
 use crate::lanes::Lanes;
 pub use crate::table::{Division, NotAscending, Pins};
@@ -408,6 +409,22 @@ impl Store {
         pins: Pins,
     ) -> Result<Store, StoreError> {
         let disk: Arc<dyn Disk> = Arc::new(OsDisk::default());
+        let meta = local::prepare(&disk, root, generator.as_ref())?;
+        let spawn = meta.spawn;
+        let chunks = FileChunks::new(Arc::clone(&disk), root).with_meta(meta);
+        begin(disk, root, Box::new(chunks), generator, pins, spawn)
+    }
+
+    /// Starts a store as [`Store::local_divided`] does, on a disk whose every sync takes
+    /// `extra` longer: for measuring what the server does on storage whose syncs are
+    /// slow, as the owner's network storage is without the cache in front of it.
+    pub fn local_divided_slowed(
+        root: &Path,
+        generator: Arc<dyn ChunkGenerator>,
+        pins: Pins,
+        extra: Duration,
+    ) -> Result<Store, StoreError> {
+        let disk: Arc<dyn Disk> = Arc::new(SlowedDisk::new(extra));
         let meta = local::prepare(&disk, root, generator.as_ref())?;
         let spawn = meta.spawn;
         let chunks = FileChunks::new(Arc::clone(&disk), root).with_meta(meta);
