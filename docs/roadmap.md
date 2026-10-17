@@ -125,8 +125,12 @@ beyond the hotbar, and crafting.
   same ticks (L6), once a click that came with its chunk's grant waited for the chunk's
   load instead of being lost.
 
-**Next:** entities, in the agreed order (then light in the simulation, then the
-Nether and the End). S3 beside them. The judge of features, over 204 areas of two seeds with
+**Next:** entities, phase N, planned in [n-plan.md](groundwork/n-plan.md) and agreed
+with the owner's answers on 2026-10-17: keys, items, crossing, physics, vehicles, TNT,
+animals and the structures' entities (N1 to N7); then light in the simulation (N8,
+brought forward); then monsters and natural spawning (N9) and the villagers' brain and
+trading (N10); then the Nether and the End. Survival mode later, with the rest of parity
+by the matrix's tiers. Its record, ADR-0028, comes first. S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).

@@ -1,8 +1,8 @@
 # Phase N: entities other than players, planned
 
 Draft of 2026-10-17, revised the same day after two independent reviews (sections 8
-and 9); to be put to the owner (section 6) before its record, ADR-0028, is written
-from it. The third item of the order agreed on 2026-10-15 (the roadmap, "Next"):
+and 9), and agreed with the owner's answers (section 6); its record, ADR-0028, is
+written from it. The third item of the order agreed on 2026-10-15 (the roadmap, "Next"):
 entities other than players, "a record of how entities cross regions and survive
 merges, splits and crashes comes first", toward tier T3 of the
 [parity matrix](../parity-matrix.md), and what redstone has waiting for entities
@@ -383,6 +383,13 @@ sorted sections). So:
    exception, as the icebergs' are. Agreed?
 6. **Difficulty.** The game's default is easy; peaceful removes monsters, and difficulty
    changes spawning and damage. A setting (`--difficulty`, default easy as the game's)?
+
+**The owner's answers (2026-10-17).** 1: every tick. 2: survival later, with the rest of
+parity by the matrix's tiers, after the Nether and the End. 4: light before monsters,
+as proposed. 5: the game's rules and distributions, exact where the game draws nothing,
+the three HotSpot uses a named exception. Questions 3 and 6 were not put; the
+recommendations are taken and can be overruled: villagers' brain and trading a phase of
+their own (N10), and a `--difficulty` setting, easy by default as the game's.
 
 ## 7. Risks
 
