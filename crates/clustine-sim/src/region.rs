@@ -1540,8 +1540,8 @@ impl Region {
         let (click, target, replace_clicked, clicked) = match &action.step {
             RemoteStep::UseOn { click } => match placement::click(click, &Readable(self)) {
                 Clicked::Nothing => return None,
-                Clicked::Used(changes) => {
-                    self.change_all(&changes, output);
+                Clicked::Used { changes, flags } => {
+                    self.use_block(&changes, flags, output);
                     return None;
                 }
                 Clicked::Place {
@@ -1589,6 +1589,44 @@ impl Region {
         others
             .map(|(_, player)| placement::body(player.pose.position, false))
             .collect()
+    }
+
+    /// A block used by a click is set as its use sets it, all or none of `changes`, in
+    /// order, with the game's `flags`; what else changes follows from the rules. A
+    /// block whose use reads a signal is used only where its chunk ticks, as the
+    /// predicate worked out at the end of the tick before says
+    /// (`docs/adr/0026-redstone.md`, section 1).
+    fn use_block(
+        &mut self,
+        changes: &[(BlockPos, BlockState)],
+        flags: u32,
+        output: &mut TickOutput,
+    ) {
+        for (position, _) in changes {
+            let Some(state) = self.own_block(*position) else {
+                return;
+            };
+            if clustine_blocks::signal::use_reads_signal(state)
+                && !self.ticks_chunk(position.chunk())
+            {
+                return;
+            }
+        }
+        for (position, state) in changes {
+            self.set_block_updated(*position, *state, flags, updates::UPDATE_LIMIT, output);
+            // `TrapDoorBlock.toggle`: water in it looks again.
+            if clustine_blocks::data::is_class(*state, clustine_data::BlockClass::TrapDoorBlock)
+                && state.property("waterlogged") == Some("true")
+            {
+                let water = clustine_blocks::fluid::Kind::Water;
+                self.schedule_tick(
+                    *position,
+                    clustine_world::Ticked::Fluid(water.source()),
+                    water.tick_delay(),
+                    0,
+                );
+            }
+        }
     }
 
     /// Changes every block of `changes`, or none of them if one is in a chunk the
@@ -3416,6 +3454,34 @@ mod tests {
 
     /// A region where player 1 stands on the floor of [`floor`] with `blocks` set on
     /// it.
+    /// As [`on_floor_with`], with the eight chunks around the origin loaded too, so
+    /// that chunk (0, 0) ticks: where the updates of blocks whose rules read a signal
+    /// run (`docs/adr/0026-redstone.md`, section 1).
+    fn on_ticking_floor_with(blocks: &[(BlockPos, BlockState)]) -> Region {
+        let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
+        let around: Vec<ChunkPos> = (-1..=1)
+            .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+            .collect();
+        region.tick(&tickets(around.clone(), vec![]));
+        let chunks = around
+            .into_iter()
+            .map(|position| {
+                let mut chunk = floor();
+                if position == ChunkPos::new(0, 0) {
+                    for (at, state) in blocks {
+                        chunk.set(at.x as usize, at.y, at.z as usize, *state);
+                    }
+                }
+                (position, chunk)
+            })
+            .collect();
+        region.tick(&TickInputs {
+            chunks_loaded: chunks,
+            ..TickInputs::default()
+        });
+        region
+    }
+
     fn on_floor_with(blocks: &[(BlockPos, BlockState)]) -> Region {
         let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
         let origin = ChunkPos::new(0, 0);
@@ -3466,7 +3532,7 @@ mod tests {
                 .expect("a door has halves")
         };
         let (lower, upper) = (BlockPos::new(2, -60, 3), BlockPos::new(2, -59, 3));
-        let mut region = on_floor_with(&[(lower, door("lower")), (upper, door("upper"))]);
+        let mut region = on_ticking_floor_with(&[(lower, door("lower")), (upper, door("upper"))]);
         let output = region.tick(&moves(vec![dig(1, 2, -60, 3, 1)]));
         let changed: Vec<_> = block_changes(&output)
             .into_iter()

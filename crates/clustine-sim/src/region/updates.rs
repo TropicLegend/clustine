@@ -519,7 +519,7 @@ impl Region {
         moved_by_piston: bool,
         output: &mut TickOutput,
     ) {
-        if self.sends_to(target.chunk()) || !self.readable_around(target) {
+        if self.sends_to(target.chunk()) || !self.may_run_at(target) {
             let mut flags = UPDATE_NEIGHBORS;
             if moved_by_piston {
                 flags |= UPDATE_MOVE_BY_PISTON;
@@ -621,7 +621,7 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let _ = (block, moved_by_piston);
-        if !self.readable_around(pos) {
+        if !self.may_run_at(pos) {
             return;
         }
         let Some(state) = self.own_block(pos) else {
@@ -730,7 +730,7 @@ impl Region {
             // not wanted: there the entry would otherwise wait for good (ADR-0025,
             // "Found while building", E4).
             let sent = self.sends_to(seam.at.chunk());
-            if sent || self.readable_around(seam.at) {
+            if sent || self.may_run(&seam) {
                 taken.push((seam, sent));
             } else {
                 waiting.push(seam);
@@ -802,7 +802,7 @@ impl Region {
                     flags,
                     depth,
                 };
-                if self.readable_around(at) {
+                if self.may_run(&seam) {
                     self.made_in = made_in(filed.due);
                     self.run_update(seam, output);
                     self.made_in = None;
@@ -849,6 +849,31 @@ impl Region {
             && UPDATE_SHAPE_ORDER
                 .iter()
                 .all(|face| self.readable(relative(pos, *face).chunk()))
+    }
+
+    /// Whether a kept update may run here: a shape asked again where its block's
+    /// neighbours can be read, a neighbour told where [`Self::may_run_at`] says.
+    fn may_run(&self, seam: &Seam) -> bool {
+        match seam.kind {
+            SeamKind::Shape => self.readable_around(seam.at),
+            SeamKind::Neighbour => self.may_run_at(seam.at),
+        }
+    }
+
+    /// Whether the block at `pos` may be told that its neighbour changed: its chunk
+    /// loaded and its neighbours' read, and, for a block whose rules read a signal or
+    /// what is two blocks away, its chunk one that ticks, where all of that is there
+    /// (`docs/adr/0026-redstone.md`, section 1). Otherwise the update waits as a seam
+    /// entry, so that nothing reads a block that is not there as air. A shape asked
+    /// again reads only the neighbours, which [`Self::readable_around`] makes sure of.
+    pub(crate) fn may_run_at(&self, pos: BlockPos) -> bool {
+        if !self.readable_around(pos) {
+            return false;
+        }
+        let reads = self
+            .own_block(pos)
+            .is_some_and(clustine_blocks::signal::reads_signal);
+        !reads || self.ticks_chunk(pos.chunk())
     }
 }
 

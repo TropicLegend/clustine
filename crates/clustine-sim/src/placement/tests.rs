@@ -78,7 +78,7 @@ fn click_and_place(click: &Click, blocks: &dyn Blocks) -> Option<Vec<(BlockPos, 
             replace_clicked,
             clicked,
         } => place(click, target, replace_clicked, clicked, blocks, &[]),
-        Clicked::Used(changes) => Some(changes),
+        Clicked::Used { changes, .. } => Some(changes),
         Clicked::Nothing => None,
     }
 }
@@ -397,21 +397,23 @@ fn a_door_opens_with_its_other_half() {
         .with(0, 65, 0, upper);
     let mut click = click_top(at(0, 65, 0), items::STONE);
     click.held = None;
-    let Clicked::Used(changes) = super::click(&click, &world) else {
-        panic!("the door is not used");
-    };
+    // Each half is set telling no neighbour, as `DoorBlock.useWithoutItem` sets the
+    // clicked one (`docs/adr/0026-redstone.md`, section 7).
     assert_eq!(
-        changes,
-        vec![
-            (
-                at(0, 65, 0),
-                state("minecraft:oak_door[half=upper,facing=north,open=true]")
-            ),
-            (
-                at(0, 64, 0),
-                state("minecraft:oak_door[half=lower,facing=north,open=true]")
-            ),
-        ]
+        super::click(&click, &world),
+        Clicked::Used {
+            changes: vec![
+                (
+                    at(0, 65, 0),
+                    state("minecraft:oak_door[half=upper,facing=north,open=true]")
+                ),
+                (
+                    at(0, 64, 0),
+                    state("minecraft:oak_door[half=lower,facing=north,open=true]")
+                ),
+            ],
+            flags: 10,
+        }
     );
 }
 
@@ -423,7 +425,7 @@ fn a_block_in_hand_places_against_an_iron_door_and_sneaking_against_an_oak_one()
     let iron = click_top(at(0, 64, 0), items::STONE);
     assert!(matches!(super::click(&iron, &world), Clicked::Place { .. }));
     let mut oak = click_top(at(1, 64, 0), items::STONE);
-    assert!(matches!(super::click(&oak, &world), Clicked::Used(_)));
+    assert!(matches!(super::click(&oak, &world), Clicked::Used { .. }));
     oak.sneaking = true;
     assert!(matches!(super::click(&oak, &world), Clicked::Place { .. }));
 }
@@ -437,10 +439,13 @@ fn a_closed_gate_opened_from_behind_turns_to_the_player() {
     click.yaw = 0.0; // facing south
     assert_eq!(
         super::click(&click, &world),
-        Clicked::Used(vec![(
-            at(0, 64, 0),
-            state("minecraft:oak_fence_gate[facing=south,open=true]")
-        )])
+        Clicked::Used {
+            changes: vec![(
+                at(0, 64, 0),
+                state("minecraft:oak_fence_gate[facing=south,open=true]")
+            )],
+            flags: 10,
+        }
     );
 }
 
@@ -452,7 +457,10 @@ fn a_flower_goes_into_an_empty_pot_and_not_into_a_full_one() {
     let click = click_top(at(0, 64, 0), items::POPPY);
     assert_eq!(
         super::click(&click, &world),
-        Clicked::Used(vec![(at(0, 64, 0), blocks::POTTED_POPPY)])
+        Clicked::Used {
+            changes: vec![(at(0, 64, 0), blocks::POTTED_POPPY)],
+            flags: 3,
+        }
     );
     let full = click_top(at(1, 64, 0), items::POPPY);
     assert_eq!(super::click(&full, &world), Clicked::Nothing);

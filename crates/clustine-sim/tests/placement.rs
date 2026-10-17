@@ -150,7 +150,7 @@ fn as_changes(list: Vec<(BlockPos, BlockState)>) -> Changes {
 fn changes_among(click: &Click, world: &World, bodies: &[[f64; 6]]) -> Changes {
     match placement::click(click, world) {
         Clicked::Nothing => Changes::new(),
-        Clicked::Used(list) => as_changes(list),
+        Clicked::Used { changes, .. } => as_changes(changes),
         Clicked::Place {
             target,
             replace_clicked,
@@ -183,7 +183,7 @@ fn target_of(click: &Click, world: &World) -> Option<(BlockPos, bool)> {
 fn comes_to_nothing(clicked: &Clicked) -> bool {
     match clicked {
         Clicked::Nothing => true,
-        Clicked::Used(list) => list.is_empty(),
+        Clicked::Used { changes, .. } => changes.is_empty(),
         Clicked::Place { .. } => false,
     }
 }
@@ -233,7 +233,10 @@ fn an_empty_hand_opens_both_halves_of_a_closed_door() {
         .with(below(P), "stone")
         .with_door(P, "facing=north,open=false");
     let click = click_on(P, Face::North, None);
-    assert!(matches!(placement::click(&click, &world), Clicked::Used(_)));
+    assert!(matches!(
+        placement::click(&click, &world),
+        Clicked::Used { .. }
+    ));
     assert_changes(
         &changes(&click, &world),
         &[
@@ -444,7 +447,10 @@ fn an_empty_flower_pot_takes_a_plant_that_a_pot_holds() {
     ] {
         let world = World::new().with(below(P), "stone").with(P, "flower_pot");
         let click = click_on(P, Face::Top, Some(item));
-        assert!(matches!(placement::click(&click, &world), Clicked::Used(_)));
+        assert!(matches!(
+            placement::click(&click, &world),
+            Clicked::Used { .. }
+        ));
         assert_changes(&changes(&click, &world), &[(P, potted)]);
     }
 }

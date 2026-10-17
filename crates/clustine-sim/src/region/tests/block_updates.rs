@@ -3,8 +3,10 @@
 //! `Level.setBlock`, `Level.destroyBlock` and `CollectingNeighborUpdater`, by someone
 //! who did not write the code.
 //!
-//! Player 1 stands at (0.5, -60, 0.5) on the stone floor of chunk (0, 0), which is the
-//! only chunk the region has loaded. Every block a test breaks is within their reach.
+//! Player 1 stands at (0.5, -60, 0.5) on the stone floor of chunk (0, 0). A test that
+//! breaks a block has the eight chunks around loaded too, so that chunk (0, 0) ticks,
+//! where the updates of blocks whose rules read a signal run (ADR-0026, section 1).
+//! Every block a test breaks is within their reach.
 
 use super::*;
 
@@ -30,10 +32,10 @@ fn destroyed(position: BlockPos, state: BlockState, breaker: Option<u128>) -> Re
     }
 }
 
-/// The region with `blocks` set on the floor, after player 1 has broken the block at
-/// `broken`, and what that tick reported.
+/// The region with `blocks` set on the floor of chunk (0, 0), which ticks, after player
+/// 1 has broken the block at `broken`, and what that tick reported.
 fn breaking(blocks: &[(BlockPos, BlockState)], broken: BlockPos) -> (Region, TickOutput) {
-    let mut region = on_floor_with(blocks);
+    let mut region = on_ticking_floor_with(blocks);
     let output = region.tick(&moves(vec![dig(1, broken.x, broken.y, broken.z, 1)]));
     (region, output)
 }

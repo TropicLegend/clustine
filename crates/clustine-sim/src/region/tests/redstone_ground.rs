@@ -140,7 +140,7 @@ fn comparators_beside_or_beyond_a_conductor_are_told_of_an_output_signal() {
     let beyond_east = beside(east, Face::East);
     let south = beside(MIDDLE, Face::South);
     let beyond_south = beside(south, Face::South);
-    let mut region = on_floor_with(&[
+    let mut region = on_ticking_floor_with(&[
         (north, comparator),
         (east, blocks::STONE),
         (beyond_east, comparator),
@@ -409,4 +409,111 @@ fn a_block_entitys_data_is_said_in_its_place_among_the_changes() {
         saved.block_entities()[&InChunk::new(x, chest.y, z)].data,
         b"items".to_vec()
     );
+}
+
+// Clicks run the blocks' rules (section 7 of the record).
+
+fn click_block(number: u128, at: BlockPos, face: Face) -> Input {
+    numbered(
+        number,
+        PlayerInput::UseItemOn {
+            position: at,
+            face: match face {
+                Face::Up => crate::api::Face::Top,
+                Face::Down => crate::api::Face::Bottom,
+                Face::North => crate::api::Face::North,
+                Face::South => crate::api::Face::South,
+                Face::West => crate::api::Face::West,
+                Face::East => crate::api::Face::East,
+            },
+            cursor: [0.5; 3],
+            sneaking: false,
+            sequence: 1,
+        },
+    )
+}
+
+/// `DoorBlock.useWithoutItem` sets the door with `UPDATE_CLIENTS | UPDATE_IMMEDIATE`:
+/// its neighbours are not told. A comparator floating beside it, which a neighbour's
+/// update would take away, stays; both halves open.
+#[test]
+fn a_door_opened_by_hand_tells_no_neighbour_and_opens_both_halves() {
+    let lower = BlockPos::new(2, -60, 3);
+    let upper = BlockPos::new(2, -59, 3);
+    let beside = BlockPos::new(3, -60, 3);
+    let door = |half: &str, open: bool| {
+        BlockState::parse(&format!(
+            "minecraft:oak_door[half={half},facing=north,open={open}]"
+        ))
+        .expect("a door")
+    };
+    let mut region = on_ticking_floor_with(&[
+        (lower, door("lower", false)),
+        (upper, door("upper", false)),
+        (beside, blocks::COMPARATOR),
+    ]);
+    let output = region.tick(&moves(vec![click_block(1, lower, Face::North)]));
+    let at = |pos: BlockPos| {
+        let (x, z) = pos.in_chunk();
+        region
+            .chunk(pos.chunk())
+            .and_then(|chunk| chunk.get(x, pos.y, z))
+    };
+    assert_eq!(at(lower), Some(door("lower", true)), "{:?}", output.events);
+    assert_eq!(at(upper), Some(door("upper", true)));
+    assert_eq!(at(beside), Some(blocks::COMPARATOR));
+}
+
+/// `TrapDoorBlock.toggle`: the water in a waterlogged trapdoor looks again.
+#[test]
+fn a_waterlogged_trapdoor_used_has_its_water_tick() {
+    let trapdoor = BlockPos::new(2, -60, 3);
+    let closed = BlockState::parse("minecraft:oak_trapdoor[waterlogged=true]").expect("a trapdoor");
+    let mut region = on_ticking_floor_with(&[(trapdoor, closed)]);
+    assert!(!region.has_scheduled_tick(trapdoor, WATER));
+    region.tick(&moves(vec![click_block(1, trapdoor, Face::Up)]));
+    assert!(region.has_scheduled_tick(trapdoor, WATER));
+}
+
+/// A rail whose block goes is told so only where its chunk ticks: in a region whose
+/// one chunk does not, the update waits as a seam entry, and the rail is still there;
+/// once the chunk ticks, the entry runs and the rail goes
+/// (`docs/adr/0026-redstone.md`, section 1). A rail goes only when told: its shape
+/// rule takes nothing away, as wire's and a diode's take them away from below.
+#[test]
+fn a_rail_is_told_of_its_neighbour_only_where_its_chunk_ticks() {
+    let block = BlockPos::new(2, -61, 3);
+    let rail = BlockPos::new(2, -60, 3);
+    let mut region = on_floor_with(&[(rail, blocks::RAIL)]);
+    region.tick(&moves(vec![dig(1, block.x, block.y, block.z, 1)]));
+    let at = |region: &Region, pos: BlockPos| {
+        let (x, z) = pos.in_chunk();
+        region
+            .chunk(pos.chunk())
+            .and_then(|chunk| chunk.get(x, pos.y, z))
+    };
+    assert_eq!(at(&region, block), Some(blocks::AIR));
+    assert_eq!(at(&region, rail), Some(blocks::RAIL));
+    assert!(
+        region
+            .seams(ChunkPos::new(0, 0))
+            .iter()
+            .any(|seam| seam.at == rail && seam.kind == SeamKind::Neighbour),
+        "{:?}",
+        region.seams(ChunkPos::new(0, 0))
+    );
+    // The eight chunks around come, and the chunk ticks.
+    let around: Vec<ChunkPos> = (-1..=1)
+        .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+        .filter(|position| *position != ChunkPos::new(0, 0))
+        .collect();
+    checked(&mut region, &tickets(around.clone(), vec![]));
+    checked(
+        &mut region,
+        &TickInputs {
+            chunks_loaded: around.iter().map(|position| (*position, floor())).collect(),
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(at(&region, rail), Some(blocks::AIR));
 }

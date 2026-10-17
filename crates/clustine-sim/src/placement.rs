@@ -60,8 +60,14 @@ pub struct Click {
 pub enum Clicked {
     /// Nothing changes. The click is acknowledged all the same.
     Nothing,
-    /// The clicked block was used, and these blocks change, all or none.
-    Used(Vec<(BlockPos, BlockState)>),
+    /// The clicked block was used: these blocks are set, all or none, in order, each
+    /// with the game's `flags` for that use (`Level.setBlock`'s), and what else
+    /// changes follows from the region's rules (`docs/adr/0026-redstone.md`, section
+    /// 7).
+    Used {
+        changes: Vec<(BlockPos, BlockState)>,
+        flags: u32,
+    },
     /// A block is to be placed at `target` (`T`), which the region that holds it does
     /// with [`place`]. `replace_clicked` is whether `T` is the clicked block itself,
     /// and `clicked` the clicked block's state as read here (section 4.5).
@@ -123,17 +129,35 @@ fn is_used(state: BlockState, held: Option<i32>) -> bool {
     true
 }
 
+/// `Block.UPDATE_CLIENTS | Block.UPDATE_IMMEDIATE`, with which a door and a gate set
+/// themselves when used: the neighbours are not told.
+const USED_DOOR: u32 = 2 | 8;
+/// `Block.UPDATE_CLIENTS`, a trapdoor's.
+const USED_TRAPDOOR: u32 = 2;
+/// `Block.UPDATE_ALL`, a flower pot's.
+const USED_POT: u32 = 1 | 2;
+
 /// What using `state` does: doors, trapdoors and fence gates open and close, a flower
-/// goes into an empty pot, and every other used block does nothing yet.
+/// goes into an empty pot, each set as the game's `useWithoutItem` and `useItemOn` set
+/// it, and every other used block does nothing yet.
 fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
-    let pos = click.position;
+    let position = click.position;
     let flip_open = |state: BlockState| data::set_flag(state, "open", !data::flag(state, "open"));
+    let used = |state, flags| Clicked::Used {
+        changes: vec![(position, state)],
+        flags,
+    };
+    // The game sets the clicked half, and the other follows from its shape. A shape
+    // asked again waits where the block's neighbours cannot all be read, as at a line
+    // whose other side the region has no copy of, which would leave a door open by
+    // half; so the other half is set here too, after the clicked one, as its shape
+    // would set it.
     if data::is(state, BlockClass::DoorBlock) {
-        let mut changes = vec![(pos, flip_open(state))];
+        let mut changes = vec![(position, flip_open(state))];
         let (other_pos, other_half) = if state.property("half") == Some("upper") {
-            (Dir::Down.relative(pos), "lower")
+            (Dir::Down.relative(position), "lower")
         } else {
-            (Dir::Up.relative(pos), "upper")
+            (Dir::Up.relative(position), "upper")
         };
         if let Some(other) = blocks.block(other_pos)
             && data::same_block(other, state)
@@ -141,10 +165,13 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
         {
             changes.push((other_pos, flip_open(other)));
         }
-        return Clicked::Used(changes);
+        return Clicked::Used {
+            changes,
+            flags: USED_DOOR,
+        };
     }
     if data::is(state, BlockClass::TrapDoorBlock) {
-        return Clicked::Used(vec![(pos, flip_open(state))]);
+        return used(flip_open(state), USED_TRAPDOOR);
     }
     if data::is(state, BlockClass::FenceGateBlock) {
         let changed = if data::flag(state, "open") {
@@ -158,12 +185,12 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
             };
             data::set_flag(state, "open", true)
         };
-        return Clicked::Used(vec![(pos, changed)]);
+        return used(changed, USED_DOOR);
     }
     if data::is(state, BlockClass::FlowerPotBlock) && data::info(state).potted == Some(0) {
         let plant = click.held.and_then(data::item).and_then(|item| item.places);
         if let Some(pot) = plant.and_then(data::pot_holding) {
-            return Clicked::Used(vec![(pos, pot)]);
+            return used(pot, USED_POT);
         }
     }
     Clicked::Nothing

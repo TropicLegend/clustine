@@ -388,6 +388,29 @@ R2b, second part, block events (2026-10-17):
   `Region::set_block_entity_data` is how a rule gives a block entity new data, said
   as `BlockEntityChanged` in its place among the tick's changes.
 
+R2b, third part, clicks and what may be read (2026-10-17):
+
+- **Section 1's rule holds for neighbour updates, not shape updates.** Signals are read
+  in `neighborChanged`, `onPlace`, ticks and uses; a shape asked again reads its
+  neighbours alone, wire's and a diode's included, which an update's existing test
+  makes sure of. So `may_run_at` (the chunk ticks, for a block whose rules read a
+  signal, `clustine_blocks::signal::reads_signal`) is asked of a neighbour told, a
+  kept `Neighbour` entry and an effect's, and `readable_around` of a shape. Tests of
+  B3 that broke a block in a region whose one chunk does not tick now load the eight
+  around it, since a rail, a repeater or wire told there waits as an entry.
+- **A use is a list of sets with the game's flags** (`Clicked::Used { changes, flags }`):
+  a door and a gate 10, which tells no neighbour, a trapdoor 2, with its water's tick
+  where it is waterlogged, a flower pot 3. The game sets a door's clicked half and the
+  other follows from its shape; a shape asked again waits where the block's
+  neighbours cannot all be read, which at a line without a copy of its other side
+  would leave a door open by half, so both halves are set, the clicked one first, as
+  the shape would set the other.
+- **A click is refused where its use reads a signal** and the chunk does not tick
+  (`use_reads_signal`, the comparator's); every other use reads the block itself.
+  **A placement's test comes with the first placement that reads a signal**, in R3:
+  until then no placement reads one, and refusing doors and rails where a chunk does
+  not tick would change W6's placing for nothing.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are
