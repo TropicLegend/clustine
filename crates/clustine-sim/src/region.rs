@@ -169,7 +169,7 @@ struct Land {
     lending: BTreeMap<ChunkPos, u64>,
     /// Chunks the store said cannot be lent, not asked for again until what the region
     /// knows of them changes (section 2).
-    not_lendable: BTreeSet<ChunkPos>,
+    not_lendable: BTreeMap<ChunkPos, u64>,
 }
 
 impl Land {
@@ -386,7 +386,7 @@ impl Region {
             lent: BTreeSet::new(),
             lent_away: BTreeMap::new(),
             lending: BTreeMap::new(),
-            not_lendable: BTreeSet::new(),
+            not_lendable: BTreeMap::new(),
         };
         for position in holdings.held {
             land.known
@@ -2290,12 +2290,16 @@ impl Region {
             .filter(|(position, tickets)| wanted_for(position, tickets))
             .map(|(position, _)| position);
         let lending = &land.lending;
+        let letting_go = &self.letting_go;
         let claims: BTreeSet<ChunkPos> = standing
             .iter()
             .chain(ticketed)
             .chain(lend_ticketed.iter())
             .filter(|position| !land.known.contains_key(*position))
             .filter(|position| !lending.contains_key(*position))
+            // Not in the tick it is let go of: the store learns of the return first
+            // (`docs/adr/0027-lending-at-a-line.md`, section 4).
+            .filter(|position| !letting_go.contains(*position))
             .copied()
             .collect();
         for position in claims {
@@ -2506,6 +2510,7 @@ mod tests {
     mod fluids;
     mod instruments;
     mod lends;
+    mod lends_by_the_record;
     mod pistons;
     mod post_processing_and_seams;
     mod pressed;

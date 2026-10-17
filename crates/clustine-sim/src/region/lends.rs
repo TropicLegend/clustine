@@ -24,6 +24,11 @@ use crate::api::{LendAnswer, LendAsked, TickInputs, TickOutput};
 /// wait for, or that was called off (section 2).
 pub(crate) const ASK_AGAIN_AFTER: u64 = 20;
 
+/// How long a chunk the store said cannot be lent is not asked for again, a minute: the
+/// borrower is not told when what stands in the lender's land changes, so the word
+/// lapses rather than holding for good ("Found while building", L5).
+const NOT_LENDABLE_FOR: u64 = 1_200;
+
 /// How long a lender keeps loaded what it loaded to decide a lend, if it is not asked
 /// again first: five seconds (section 3, step 2).
 const LEND_TICKET_FOR: u64 = 100;
@@ -117,7 +122,11 @@ impl Region {
     fn may_ask_for(&self, position: ChunkPos) -> bool {
         !self.land.holds(position)
             && !self.land.is_pinned(position)
-            && !self.land.not_lendable.contains(&position)
+            && !self
+                .land
+                .not_lendable
+                .get(&position)
+                .is_some_and(|told| self.tick.saturating_sub(*told) < NOT_LENDABLE_FOR)
             && !self.lends_asked.contains_key(&position)
     }
 
@@ -184,7 +193,7 @@ impl Region {
             for position in chunks {
                 if !*again && self.lends_asked.remove(position).is_some() {
                     self.journal.lends_asked.insert(*position);
-                    self.land.not_lendable.insert(*position);
+                    self.land.not_lendable.insert(*position, self.tick);
                 }
             }
         }
@@ -366,7 +375,7 @@ impl Region {
             || chunk
                 .sections()
                 .iter()
-                .any(|section| section.may_hold(moving))
+                .any(|section| section.may_hold(moving) && section.states().any(moving))
     }
 
     /// Gives back each lent chunk looked at in which no circuit's part stands and into

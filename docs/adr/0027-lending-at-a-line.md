@@ -325,6 +325,19 @@ L3a and L3b, the region's and the worker's part (2026-10-17, by me):
   nothing new for `Elsewhere` and `NotMine`, which it takes as it does at a split.
 - The section 7 reports, which the coordinator alone uses, are built with L4.
 
+L5's first part, 41 tests of sections 2 to 4 of the region by someone who had not read
+the code (`region/tests/lends_by_the_record.rs`, 2026-10-17), found:
+
+- **A lender waited for good after any piston had moved in the chunk**: the section's
+  palette keeps a state after the block is gone. It looks at the blocks now.
+- **A lender dropped its belief in land lent away** when an arrival or an action named it,
+  and **a lent chunk given back under a viewer's ticket was claimed in the same tick**:
+  both mended in L3b, the second now also in the region, which claims such a chunk only
+  in the tick after.
+- **Not lendable could never end by `PinnedBack`**, which a borrower is told only of its
+  own land, not of the lender's. The answer lapses after a minute instead, as the
+  borrower cannot learn that what stood in the lender's land is gone.
+
 ## Review
 
 **First review (2026-10-17): not ready.** Its findings, worked in:
