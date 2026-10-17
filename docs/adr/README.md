@@ -32,7 +32,7 @@ one names it. As of 2026-10-15:
 | [0023](0023-light-at-the-edge.md) | Light at the edge | Built (L0a to L7, which is W3); L8 not built |
 | [0024](0024-block-behaviour-in-a-region.md) | Block behaviour in a region | Built (phase B, B1 to B8) |
 | [0025](0025-effects-between-regions.md) | Effects between regions | Built and measured (phase E, E1 to E7) |
-| [0026](0026-redstone.md) | Redstone | Accepted; R2 to R6 built (phase R) |
-| [0027](0027-lending-at-a-line.md) | Lending land at a pinned line, and merging at once at a busy one | Accepted; to be built (L2 to L6) |
+| [0026](0026-redstone.md) | Redstone | Accepted; R2 to R7 built, R8 to come (phase R) |
+| [0027](0027-lending-at-a-line.md) | Lending land at a pinned line, and merging at once at a busy one | Accepted; L2 to L5 built, L6 to come |
 
 Drafts that are not records yet are in [`../groundwork`](../groundwork).

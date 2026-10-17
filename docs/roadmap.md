@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-16)
+## Where the work stands (2026-10-17)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -45,8 +45,10 @@ disconnected or losing what they were shown.
 
 **What a player will miss within minutes**, all of it planned: animals, monsters and
 items lying in the world (entities, below); what needs light, crops and saplings
-growing, grass spreading, ice and snow melting (light in the simulation); redstone;
-the Nether and the End; survival mode, inventories
+growing, grass spreading, ice and snow melting (light in the simulation); the
+redstone that waits for entities (TNT, dispensers, droppers, hoppers, crafters, sculk,
+detector rails, arrows, plates pressed by mobs or items, pistons pushing anything but
+blocks, comparators reading containers, the daylight detector); the Nether and the End; survival mode, inventories
 beyond the hotbar, and crafting.
 
 **Built since M3:**
@@ -98,16 +100,56 @@ beyond the hotbar, and crafting.
   merges and splits pause as at B8. E7 found a coupled pair on slow storage ticking at
   22.4 a second, mended.
 
-**Next:** redstone (phase R, [plan](groundwork/r-plan.md),
-[ADR-0026](adr/0026-redstone.md), accepted on 2026-10-17): R2 to R6 are built (the ground in the store, the simulation and
-the edge; levers, buttons, wire, lamps, doors; note blocks, bells, rails, plates; torches,
-repeaters, comparators, observers, targets; pistons; the sounds of placing), R7's tests
-from the record are being written, and R8's comparisons with the official server follow.
-Lending at a pinned line ([ADR-0027](adr/0027-lending-at-a-line.md), accepted on
-2026-10-17 after four reviews) comes after it, L2 to L6. S3 beside it. The judge of features, over 204 areas of two seeds with
+- *Redstone* (phase R, [plan](groundwork/r-plan.md), [ADR-0026](adr/0026-redstone.md)):
+  R2 to R7, on `main` since 2026-10-17. Levers, buttons, wire, lamps, doors, trapdoors
+  and gates; note blocks, bells, copper bulbs, powered and activator rails, dripleaf,
+  plates and tripwire stepped on by players, redstone ore; torches with their burnout,
+  repeaters, comparators, observers, targets; pistons and sticky pistons with slime and
+  honey; the sounds of placing and of buckets. The game's order of updates, ticks and
+  block events, from its classes. Tests from the record by someone who had not read the
+  code (R7, 70 of them) found a sticky piston's retraction sent with the wrong event,
+  mended.
+- *Lending at a line* ([ADR-0027](adr/0027-lending-at-a-line.md), accepted after four
+  reviews): L2 to L5 on 2026-10-17. Where regions are pinned, a circuit's part placed by
+  the line has the chunks across it that it reaches lent to the region that built it, so
+  that the circuit runs in one region; where regions follow players, two whose line a
+  circuit works at merge at once, and splits keep clear of it. Tests from the record by
+  someone who had not read the code (L5, 41 of them) found four defects, mended.
+
+**Next:** R8, the comparisons of redstone with the official server (the timing of the
+two-observer clock and the torch clock, the order of packets, the door's sound) and a
+busy circuit's commits measured; L6, the comparison of lending at a line. S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
+
+**What to try with a real client, phase R and lending** (`cargo run --release -p
+clustine -- --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not
+move; and `cargo run --release -p clustine -- --seed 3` for regions that follow players):
+
+1. Build a lever, wire and a lamp anywhere: the wire lights to 15 and fades by one a
+   block, the lamp lights at once and goes out four ticks after the lever is off.
+2. A repeater clock (two repeaters facing round a loop of wire, a torch to start it),
+   a torch clock and two observers facing each other: they run steadily, the torch one
+   burning out after a few seconds with a puff of smoke.
+3. A piston and a sticky piston pushing and pulling stone, slime carrying blocks beside
+   it, a door of two pistons powered from above (quasi-connectivity).
+4. With pins: build the same lamp circuit across x = 64, the lever at x = 62 and the
+   lamp at x = 66. It works as on one side, without a tick's delay: the chunks across
+   were lent to your region as you placed the wire. A second player on the far side
+   sees it the same. Break the wire: within a second the chunks go back, which nobody
+   should notice.
+5. With pins: stand at x = 66 and build wire towards the line from there, then walk
+   back over: the lend waits while you stand in the chunk, and comes once you step
+   back.
+6. Without pins: two players together; one builds a repeater clock with a lamp, and the
+   other walks away until the coordinator splits the region (about 32 chunks; its log
+   says so). The split draws its line clear of the clock, which goes on running as
+   before. (Regions that follow players merge by distance before their land touches, so
+   a merge for a circuit at a line comes only where a split has just left one.)
+
+What to say if it is not so: which step, what was seen, and the log of the world
+store, the coordinator and the workers.
 
 **What to try with a real client, phase E** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, which puts a line between two regions at block
