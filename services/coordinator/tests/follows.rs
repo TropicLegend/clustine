@@ -1197,6 +1197,7 @@ impl Cluster {
                     epoch,
                     tick,
                     crowds,
+                    redstone: Vec::new(),
                 });
                 given.push((region, epoch, tick, members));
             }

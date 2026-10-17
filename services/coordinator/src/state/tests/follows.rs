@@ -118,6 +118,9 @@ struct World {
     store: Store,
     /// Where the players of each region are, as its worker says at every look.
     crowds: BTreeMap<u32, Where>,
+    /// Where a circuit works in each region, beside the region named, as its worker
+    /// says at every look (`docs/adr/0027-lending-at-a-line.md`, section 7).
+    circuits: BTreeMap<u32, Where>,
     /// The tick the regions are at, which goes up by one with every look.
     tick: u64,
     /// The regions whose workers say nothing of their players.
@@ -155,6 +158,7 @@ impl World {
             list,
             store: Store::Answers,
             crowds: BTreeMap::new(),
+            circuits: BTreeMap::new(),
             tick: 0,
             silent: BTreeSet::new(),
             dead: BTreeSet::new(),
@@ -212,7 +216,12 @@ impl World {
                 .filter(|held| !self.silent.contains(&held.region.0))
                 .map(|held| {
                     let crowds = self.crowds.get(&held.region.0);
-                    players_of(held, self.tick, crowds.map_or(&[], Vec::as_slice))
+                    let mut said = players_of(held, self.tick, crowds.map_or(&[], Vec::as_slice));
+                    let circuits = self.circuits.get(&held.region.0).into_iter().flatten();
+                    said.redstone = circuits
+                        .map(|((x, z), beside)| (ChunkPos::new(*x, *z), RegionId(*beside)))
+                        .collect();
+                    said
                 })
                 .collect();
             self.cluster.players(self.now + later, &name, &reports);
@@ -1477,6 +1486,7 @@ fn nothing_is_wanted_before_the_list_has_been_read() {
         silent: BTreeSet::new(),
         dead: BTreeSet::new(),
         said: Changes::default(),
+        circuits: BTreeMap::new(),
     };
     world.put(1, &[((100, 0), 2)]);
     world.put(2, &[((102, 0), 1)]);
@@ -3129,4 +3139,50 @@ fn players_who_walk_at_random_are_followed_and_it_ends_when_they_stand_still() {
     // The runs are worth something only if all of it happened in them.
     let counts = [merges, absorptions, splits, moves];
     assert!(counts.iter().all(|count| *count >= 10), "{counts:?}");
+}
+
+/// ADR-0027, section 7: two regions that follow players, with a circuit at work at
+/// their line, are merged at once: without the second a merge stands, and while the
+/// survivor rests.
+#[test]
+fn regions_with_a_circuit_at_their_line_merge_at_once_and_not_where_regions_are_pinned() {
+    let mut world = World::unpinned(&[4], &["a", "b"]);
+    world.put(0, &[((0, 0), 1)]);
+    world.put(1, &[((40, 0), 1)]);
+    world.look();
+    world.rests_from_now(0);
+    world.circuits.insert(0, vec![((3, 0), 1)]);
+    let begun = world.look();
+    assert_eq!(begun, [merge_of(0, 1)]);
+    assert!(world.kept(0).merged_for_a_circuit);
+
+    // A world of stripes lends at its lines instead.
+    let mut world = World::new(&[4], &["a", "b"]);
+    world.put(0, &[((0, 0), 1)]);
+    world.put(1, &[((40, 0), 1)]);
+    world.circuits.insert(0, vec![((3, 0), 1)]);
+    world.quiet_until(READY + 5_000);
+}
+
+/// ADR-0027, section 7: a region a merge for a circuit made is not split by distance
+/// where the line would pass within two chunks of its circuit, for five minutes from
+/// the circuit's last report; elsewhere it is split as ever.
+#[test]
+fn a_region_merged_for_a_circuit_is_not_split_through_it() {
+    let mut world = World::unpinned(&[4], &["a", "b"]);
+    world.put(0, &[((0, 0), 1)]);
+    world.put(1, &[((40, 0), 1)]);
+    world.circuits.insert(0, vec![((3, 0), 1)]);
+    assert_eq!(world.look(), [merge_of(0, 1)]);
+    world.merge_ends(0, 1);
+    // The survivor's circuit is half way between its players: the line runs through
+    // it, and no split comes while the circuit is reported and for five minutes after.
+    world.circuits.insert(0, vec![((20, 0), 0)]);
+    world.put(0, &[((0, 0), 1), ((40, 0), 1)]);
+    world.quiet_until(world.now + 3 * REST);
+    world.circuits.remove(&0);
+    world.quiet_until(world.now + 5 * 60 * 1_000 - 2 * LOOK);
+    // Then it is split.
+    let (_, begun) = world.until_begun(world.now + 2 * REST);
+    assert_eq!(begun, [split_of(0)]);
 }

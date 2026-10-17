@@ -164,6 +164,9 @@ pub struct RegionStatus {
     ended: AtomicU8,
     /// Where the players were after that tick; read through [`RegionStatus::crowds`].
     crowds: Mutex<Crowds>,
+    /// Where a circuit worked in the last second; read through
+    /// [`RegionStatus::redstone`].
+    redstone: Mutex<Vec<(ChunkPos, RegionId)>>,
 }
 
 impl RegionStatus {
@@ -173,6 +176,14 @@ impl RegionStatus {
         // Whoever held the lock only ever replaced the whole list.
         let crowds = self.crowds.lock().unwrap_or_else(PoisonError::into_inner);
         crowds.clone()
+    }
+
+    /// The chunks in which a circuit's part changed in the last second, as a
+    /// [`clustine_rpc::PlayersOf`] reports them (`docs/adr/0027-lending-at-a-line.md`,
+    /// section 7).
+    pub fn redstone(&self) -> Vec<(ChunkPos, RegionId)> {
+        let redstone = self.redstone.lock().unwrap_or_else(PoisonError::into_inner);
+        redstone.clone()
     }
 
     /// How the runner ended, or `None` while it runs or is still releasing the region.
@@ -1435,7 +1446,13 @@ impl RegionRunner {
                     }
                     self.inputs.lends_called_off.push((lend, chunks));
                 }
-                StoreReply::Lent { chunks, to } => self.inputs.lent.push((chunks, to)),
+                // What the lender was sent for them and has not run is the borrower's
+                // now, which the store sends it (the same record, section 3, step 4).
+                StoreReply::Lent { chunks, to } => {
+                    self.border
+                        .drop_effects_of(&chunks.iter().copied().collect());
+                    self.inputs.lent.push((chunks, to));
+                }
                 StoreReply::PinnedBack { chunks } => self.inputs.pinned_back.extend(chunks),
                 StoreReply::Loaded { position, chunk } => {
                     self.generating.remove(&position);
@@ -2931,12 +2948,46 @@ impl RegionRunner {
         self.status.chunks.store(chunks, Ordering::Relaxed);
         let held = self.region.held_chunk_count() as u64;
         self.status.held.store(held, Ordering::Relaxed);
+        let redstone = self.redstone_at_work();
+        let shown = self.status.redstone.lock();
+        *shown.unwrap_or_else(PoisonError::into_inner) = redstone;
         let crowds = self.region.crowds();
         if crowds != self.crowds {
             let shown = self.status.crowds.lock();
             *shown.unwrap_or_else(PoisonError::into_inner) = crowds.clone();
             self.crowds = crowds;
         }
+    }
+
+    /// Where a circuit worked in the last second, for the coordinator: the chunks beside
+    /// another region's chunk the region copies first, each with that region, then the
+    /// others with the region itself, at most [`clustine_rpc::REDSTONE_REPORTED`]
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 7).
+    fn redstone_at_work(&self) -> Vec<(ChunkPos, RegionId)> {
+        let Some(own) = self.id else {
+            return Vec::new();
+        };
+        let mut beside = Vec::new();
+        let mut others = Vec::new();
+        for position in self.region.circuit_changes() {
+            let users: BTreeSet<RegionId> = (-1..=1)
+                .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
+                .filter_map(|(dx, dz)| {
+                    let near = ChunkPos::new(position.x + dx, position.z + dz);
+                    self.border.copy_user(near)
+                })
+                .filter(|user| *user != own)
+                .collect();
+            if users.is_empty() {
+                others.push((position, own));
+            }
+            beside.extend(users.into_iter().map(|user| (position, user)));
+        }
+        beside
+            .into_iter()
+            .chain(others)
+            .take(clustine_rpc::REDSTONE_REPORTED)
+            .collect()
     }
 
     /// Makes ready what each edge with a link is told of how far the region has got with

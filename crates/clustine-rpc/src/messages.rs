@@ -973,7 +973,15 @@ pub struct PlayersOf {
     /// The chunks with players in them, each with how many, ascending; empty if the
     /// region has no player.
     pub crowds: Crowds,
+    /// Chunks of the region in which a circuit's part changed in the last second, at
+    /// most [`REDSTONE_REPORTED`]: first those beside a chunk of another region the
+    /// region copies, each with that region, then the others, each with the region
+    /// itself (`docs/adr/0027-lending-at-a-line.md`, section 7).
+    pub redstone: Vec<(ChunkPos, RegionId)>,
 }
+
+/// How many chunks a [`PlayersOf`] reports a circuit at work in, at most.
+pub const REDSTONE_REPORTED: usize = 16;
 
 /// What a service says first on a connection to a worker, and, in a
 /// [`StoreHello::Region`], on one to the world store: which region the connection is

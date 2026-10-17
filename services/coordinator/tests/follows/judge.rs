@@ -362,6 +362,7 @@ impl Judge {
                     region: *region,
                     fresh: true,
                     crowds,
+                    redstone: &[],
                 })
                 .collect();
             decide(&policy(), ORIGIN, HOME, &sighted)

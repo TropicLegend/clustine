@@ -2292,6 +2292,7 @@ fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_tha
                     epoch: held.epoch,
                     tick,
                     crowds: crowds.get(&held.region).cloned().unwrap_or_default(),
+                    redstone: Vec::new(),
                 })
                 .collect();
             coordinator.players(now, name, &players);

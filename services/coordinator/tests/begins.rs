@@ -335,6 +335,7 @@ impl World {
                         .get(&assignment.region.0)
                         .cloned()
                         .unwrap_or_default(),
+                    redstone: Vec::new(),
                 });
             }
             assert!(

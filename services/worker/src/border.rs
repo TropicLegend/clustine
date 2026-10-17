@@ -401,6 +401,15 @@ impl Border {
         }
     }
 
+    /// The region that uses the chunk the region copies at `position`, as the store
+    /// said last, if one does.
+    pub(crate) fn copy_user(&self, position: ChunkPos) -> Option<RegionId> {
+        match self.copies.get(&position)?.used? {
+            CopyUse::Coupled(user) | CopyUse::Uncoupled(user) => Some(user),
+            CopyUse::Nobody => None,
+        }
+    }
+
     /// Effects received for a chunk the region stops using are dropped with it.
     pub(crate) fn drop_effects_of(&mut self, chunks: &BTreeSet<ChunkPos>) {
         self.received

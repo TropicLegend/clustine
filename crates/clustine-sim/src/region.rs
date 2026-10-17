@@ -350,6 +350,9 @@ pub struct Region {
     /// Lent chunks to look at for giving back: near which a circuit's part went, or all
     /// of them after a restore, a merge or a split; no part of the state.
     lent_to_check: BTreeSet<ChunkPos>,
+    /// The chunks in which a circuit's part changed, each with the last tick it did, as
+    /// far back as a second (`lends.rs`); no part of the state.
+    circuit_changes: BTreeMap<ChunkPos, u64>,
 }
 
 impl Region {
@@ -443,6 +446,7 @@ impl Region {
             lend_tickets: BTreeMap::new(),
             letting_go: BTreeSet::new(),
             lent_to_check,
+            circuit_changes: BTreeMap::new(),
         }
     }
 

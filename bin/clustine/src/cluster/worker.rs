@@ -341,6 +341,7 @@ fn players(regions: &Regions) -> Vec<PlayersOf> {
                 epoch: held.assignment.epoch,
                 tick,
                 crowds: status.crowds(),
+                redstone: status.redstone(),
             });
         }
     }
@@ -2036,6 +2037,7 @@ mod tests {
                 epoch: 4,
                 tick,
                 crowds: crowds.to_vec(),
+                redstone: Vec::new(),
             }];
             let report = Outcome::Players {
                 registration,

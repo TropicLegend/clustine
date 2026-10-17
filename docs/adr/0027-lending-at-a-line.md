@@ -338,6 +338,22 @@ the code (`region/tests/lends_by_the_record.rs`, 2026-10-17), found:
   own land, not of the lender's. The answer lapses after a minute instead, as the
   borrower cannot learn that what stood in the lender's land is gone.
 
+L4, the coordinator's part (2026-10-17, by me):
+
+- **A region says where a circuit worked in the last second** with its players
+  (`PlayersOf::redstone`, sixteen at most): the chunks beside a chunk of another region it
+  copies first, with that region, then the others, with itself.
+- **Merged at once**: two fresh regions, one of which names the other so, are wanted for
+  `Why::Redstone`, which needs no second of standing and no rest, and goes before the
+  merges by distance.
+- **Pinned regions are told apart by the world, not one by one**: a division's areas
+  cover the world, so where any region is pinned every region is pinned or holds pinned
+  land by a grant, and the coordinator merges for no circuit there.
+- **Splits kept off**: a survivor of such a merge keeps each chunk it reports for five
+  minutes from the last report, and a split by distance is not wanted while its line, as
+  `Sides::goes` draws it from the players who go and stay and the chunk players enter in,
+  passes within two chunks of one.
+
 ## Review
 
 **First review (2026-10-17): not ready.** Its findings, worked in:

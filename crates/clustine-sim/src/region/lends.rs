@@ -29,6 +29,10 @@ pub(crate) const ASK_AGAIN_AFTER: u64 = 20;
 /// lapses rather than holding for good ("Found while building", L5).
 const NOT_LENDABLE_FOR: u64 = 1_200;
 
+/// How long a change of a circuit's part counts as a circuit at work, a second
+/// (section 7).
+const CIRCUIT_CHANGES_FOR: u64 = 20;
+
 /// How long a lender keeps loaded what it loaded to decide a lend, if it is not asked
 /// again first: five seconds (section 3, step 2).
 const LEND_TICKET_FOR: u64 = 100;
@@ -261,6 +265,8 @@ impl Region {
     pub(super) fn settle_lends(&mut self, output: &mut TickOutput) {
         let tick = self.tick;
         self.lend_tickets.retain(|_, until| *until >= tick);
+        self.circuit_changes
+            .retain(|_, changed| tick.saturating_sub(*changed) < CIRCUIT_CHANGES_FOR);
         for asked in std::mem::take(&mut self.lends_to_answer) {
             self.answer_lend(&asked, output);
         }
@@ -448,5 +454,24 @@ impl Region {
     /// store has not said lent or called off: whoever asks for the chunk waits.
     pub fn lending_away(&self, position: ChunkPos) -> bool {
         self.is_lending(position)
+    }
+
+    /// A circuit's part changed in the chunk at `position` in this tick.
+    pub(super) fn circuit_changed(&mut self, position: ChunkPos) {
+        self.circuit_changes.insert(position, self.tick);
+    }
+
+    /// The loaded chunks in which a circuit's part changed in the last second, ascending:
+    /// what the runner reports to the coordinator, which merges regions that follow
+    /// players at once where a circuit works at their line (section 7).
+    pub fn circuit_changes(&self) -> Vec<ChunkPos> {
+        self.circuit_changes
+            .iter()
+            .filter(|(position, tick)| {
+                self.tick.saturating_sub(**tick) < CIRCUIT_CHANGES_FOR
+                    && self.chunks.contains_key(position)
+            })
+            .map(|(position, _)| *position)
+            .collect()
     }
 }

@@ -1907,6 +1907,7 @@ mod tests {
                 epoch: held.epoch,
                 tick: 7,
                 crowds: vec![(ChunkPos::new(2, -1), 3)],
+                redstone: Vec::new(),
             }],
         }
     }
@@ -2034,6 +2035,7 @@ mod tests {
                 epoch: held_a.epoch,
                 tick: 12,
                 crowds: vec![(ChunkPos::new(-3, 0), 2), (ChunkPos::new(-2, 5), 1)],
+                redstone: Vec::new(),
             },
             // What is not its own does no harm either.
             PlayersOf {
@@ -2041,6 +2043,7 @@ mod tests {
                 epoch: held_b.epoch,
                 tick: 0,
                 crowds: Vec::new(),
+                redstone: Vec::new(),
             },
         ]);
         a.players(Vec::new());

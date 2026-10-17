@@ -1195,6 +1195,7 @@ mod tests {
                 epoch,
                 tick,
                 crowds,
+                redstone: Vec::new(),
             }
         };
         let (near, far) = (ChunkPos::new(3, -2), ChunkPos::new(40, -2));

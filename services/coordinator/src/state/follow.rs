@@ -25,7 +25,7 @@ use clustine_world::{ChunkPos, RegionId};
 use tracing::{info, warn};
 
 use super::{Coordinator, LOG, Order, ReshapeOrder, ReshapeRefusal, Split, Undone};
-use crate::policy::{self, Policy, Sighted, Wanted};
+use crate::policy::{self, Policy, Sighted, Wanted, Why};
 
 /// How old a sighting may be and still be fresh; and what is wanted has to be wanted
 /// for longer than this before it is begun (section 3).
@@ -47,6 +47,14 @@ const DOUBLINGS: u32 = 3;
 /// The answer "not yet" to a split is a failure the third time in a row (section 5.5).
 const NOT_YET: u32 = 3;
 
+/// How long a chunk a circuit worked in is kept from a split's line after it was last
+/// reported, in a region that a merge for its circuit made
+/// (`docs/adr/0027-lending-at-a-line.md`, section 7).
+const CIRCUIT_KEPT_FOR: Duration = Duration::from_secs(5 * 60);
+
+/// How near a split's line may come to a chunk a circuit is kept in, in chunks.
+const CIRCUIT_CLEARANCE: i32 = 2;
+
 /// What was taken last of where the players of a region are (section 2.3).
 #[derive(Debug, Clone)]
 pub(super) struct Sighting {
@@ -58,6 +66,8 @@ pub(super) struct Sighting {
     /// The chunks with players in them, each once and with how many, ascending. A
     /// chunk without players is left out.
     pub(super) crowds: Crowds,
+    /// Where a circuit worked in the last second, as the report says.
+    pub(super) redstone: Vec<(ChunkPos, RegionId)>,
     /// When it was taken; nothing once a merge or a split of the region has begun
     /// since, and for a sighting that was made for a part. Such a sighting is not
     /// fresh until a report replaces it.
@@ -94,6 +104,12 @@ pub(super) struct Kept {
     pub(super) after_absorption: bool,
     /// Whether the last reading of the list that succeeded has it pinned to an area.
     pub(super) pinned: bool,
+    /// Whether a merge for a circuit at its line made it what it is, so that its
+    /// circuits are kept from a split's line (`docs/adr/0027-lending-at-a-line.md`,
+    /// section 7).
+    pub(super) merged_for_a_circuit: bool,
+    /// The chunks it reported a circuit at work in since, each with when it did last.
+    pub(super) circuits: BTreeMap<ChunkPos, Instant>,
 }
 
 /// Since when a merge of two regions has been wanted (section 5.3).
@@ -228,11 +244,21 @@ impl Coordinator {
             if std::mem::take(&mut kept.after_absorption) && !crowds.is_empty() {
                 leave_alone(kept, after(now, policy.rest));
             }
+            // A region a merge for a circuit made keeps its circuits from a split's
+            // line, for five minutes from their last report.
+            if kept.merged_for_a_circuit {
+                for (chunk, _) in &said.redstone {
+                    kept.circuits.insert(*chunk, now);
+                }
+            }
+            kept.circuits
+                .retain(|_, last| now.saturating_duration_since(*last) <= CIRCUIT_KEPT_FOR);
             kept.sighting = Some(Sighting {
                 owner: name.to_owned(),
                 epoch: said.epoch,
                 tick: said.tick,
                 crowds,
+                redstone: said.redstone.clone(),
                 taken: Some(now),
             });
         }
@@ -477,6 +503,7 @@ impl Coordinator {
                     epoch: split.as_epoch,
                     tick: 0,
                     crowds: gone,
+                    redstone: Vec::new(),
                     taken: None,
                 });
             }
@@ -678,6 +705,10 @@ impl Coordinator {
             .filter(|region| self.fresh(**region, now))
             .copied()
             .collect();
+        // A world with pinned regions lends land at their lines instead of merging
+        // for a circuit: every region there is pinned or holds land of a pinned area
+        // (`docs/adr/0027-lending-at-a-line.md`, sections 1 and 7).
+        let pins = self.regions.values().any(|state| state.kept.pinned);
         let wanted = {
             let sighted: Vec<Sighted<'_>> = self
                 .regions
@@ -688,11 +719,13 @@ impl Coordinator {
                         region: *region,
                         fresh: fresh.contains(region),
                         crowds: &sighting.crowds,
+                        redstone: if pins { &[] } else { &sighting.redstone },
                     })
                 })
                 .collect();
             policy::decide(&policy, enter, home, &sighted)
         };
+        let wanted = self.keep_splits_off_circuits(wanted, enter, home);
         // Whether or not anything may be begun: what is wanted stands while its
         // regions rest, and while the world is not known.
         self.note_wanted(now, &policy, &wanted, &fresh);
@@ -714,6 +747,66 @@ impl Coordinator {
                 state.kept.prepared.take_if(old);
             }
         }
+    }
+
+    /// `wanted` without the splits by distance whose line would pass within two chunks
+    /// of a circuit the region keeps: a region a merge for a circuit made is not split
+    /// through it again (`docs/adr/0027-lending-at-a-line.md`, section 7). The line is
+    /// the one the region draws (`Sides::goes`): a chunk goes where it is nearer one of
+    /// the players who go than any who stay, or the chunk players enter in for the home
+    /// region.
+    fn keep_splits_off_circuits(
+        &self,
+        wanted: Vec<Wanted>,
+        enter: ChunkPos,
+        home: RegionId,
+    ) -> Vec<Wanted> {
+        wanted
+            .into_iter()
+            .filter(|want| {
+                let Wanted::Split { region, groups, .. } = want else {
+                    return true;
+                };
+                let Some(state) = self.regions.get(region) else {
+                    return true;
+                };
+                let kept = &state.kept;
+                if kept.circuits.is_empty() {
+                    return true;
+                }
+                let going: BTreeSet<ChunkPos> = groups.iter().flatten().copied().collect();
+                let crowds = kept.sighting.as_ref().map(|sighting| &sighting.crowds);
+                let mut staying: Vec<ChunkPos> = crowds
+                    .into_iter()
+                    .flatten()
+                    .map(|(chunk, _)| *chunk)
+                    .filter(|chunk| !going.contains(chunk))
+                    .collect();
+                if *region == home {
+                    staying.push(enter);
+                }
+                let nearest = |chunks: &mut dyn Iterator<Item = &ChunkPos>, to: ChunkPos| {
+                    chunks.map(|chunk| policy::distance(*chunk, to)).min()
+                };
+                let goes = |chunk: ChunkPos| {
+                    let to_going = nearest(&mut going.iter(), chunk);
+                    let to_staying = nearest(&mut staying.iter(), chunk);
+                    match (to_going, to_staying) {
+                        (Some(going), Some(staying)) => going < staying,
+                        (Some(_), None) => true,
+                        (None, _) => false,
+                    }
+                };
+                let crossed = |kept: ChunkPos| {
+                    let side = goes(kept);
+                    (-CIRCUIT_CLEARANCE..=CIRCUIT_CLEARANCE).any(|dx| {
+                        (-CIRCUIT_CLEARANCE..=CIRCUIT_CLEARANCE)
+                            .any(|dz| goes(ChunkPos::new(kept.x + dx, kept.z + dz)) != side)
+                    })
+                };
+                !kept.circuits.keys().any(|chunk| crossed(*chunk))
+            })
+            .collect()
     }
 
     /// Notes since when each thing that is wanted at `now` has been wanted without
@@ -876,27 +969,49 @@ impl Coordinator {
                     return None;
                 };
                 let key = pair(*survivor, *absorbed);
+                let circuit = matches!(
+                    want,
+                    Wanted::Merge {
+                        why: Why::Redstone,
+                        ..
+                    }
+                );
+                // One for a circuit at the line is begun at once: it has not to stand.
                 let waited = self.noted.merges.get(&key)?;
-                let since = waited
-                    .since
-                    .filter(|since| longer_than_fresh(now, *since))?;
-                // Of several that have waited since the same tick the one with
-                // the smaller gap, then by their regions.
+                let since = match circuit {
+                    true => waited.since.unwrap_or(now),
+                    false => waited
+                        .since
+                        .filter(|since| longer_than_fresh(now, *since))?,
+                };
+                // For a circuit first; of several that have waited since the same
+                // tick the one with the smaller gap, then by their regions.
                 let waiting = waited.waiting.unwrap_or(since);
-                Some((waiting, *gap, key, *survivor, *absorbed))
+                Some((!circuit, waiting, *gap, key, *survivor, *absorbed))
             })
             .collect();
         stood.sort_unstable();
-        for (_, gap, _, survivor, absorbed) in stood {
+        for (later, _, gap, _, survivor, absorbed) in stood {
+            let circuit = !later;
             if !self.one_more_may_begin() {
                 break;
             }
             // A region that something was begun with at this tick is reserved, and
-            // so not free.
-            if !(self.free(survivor, now) && self.free(absorbed, now)) {
+            // so not free; for a circuit its rest does not count.
+            let free = |region| match circuit {
+                true => self.free_but_for_its_rest(region, now),
+                false => self.free(region, now),
+            };
+            if !(free(survivor) && free(absorbed)) {
                 continue;
             }
             match self.begin_merge(now, survivor, absorbed, None, false) {
+                Ok(()) if circuit => {
+                    if let Some(state) = self.regions.get_mut(&survivor) {
+                        state.kept.merged_for_a_circuit = true;
+                    }
+                    info!(target: LOG, %survivor, %absorbed, "a merge is begun for a circuit at the line");
+                }
                 Ok(()) => {
                     info!(target: LOG, %survivor, %absorbed, gap, "a merge is begun by the distances");
                 }

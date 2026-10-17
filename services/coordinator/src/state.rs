@@ -4853,6 +4853,7 @@ mod tests {
             epoch: held.epoch,
             tick,
             crowds: crowds.iter().map(crowd).collect(),
+            redstone: Vec::new(),
         }
     }
 

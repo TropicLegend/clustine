@@ -99,6 +99,11 @@ pub struct Sighted<'a> {
     pub fresh: bool,
     /// The chunks with players in them, each with how many.
     pub crowds: &'a Crowds,
+    /// Chunks in which a circuit worked in the last second, beside the region named,
+    /// as [`clustine_rpc::PlayersOf::redstone`] has them; none where the world has
+    /// pinned regions, whose lines lend land instead
+    /// (`docs/adr/0027-lending-at-a-line.md`, sections 1 and 7).
+    pub redstone: &'a [(ChunkPos, RegionId)],
 }
 
 /// A merge or a split that is wanted by where the players are.
@@ -130,6 +135,10 @@ pub enum Why {
     Near,
     /// Players of one region are far apart, with nobody between them.
     Apart,
+    /// A circuit works at the line between two regions, which are merged at once,
+    /// without the time a merge otherwise stands or the rest
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 7).
+    Redstone,
 }
 
 /// A region and a chunk in which its sighting has players; or the chunk players enter
@@ -353,9 +362,35 @@ pub fn decide(
         .into_iter()
         .map(|((lower, higher), gap)| (gap, lower, higher))
         .collect();
-    merges.sort_unstable();
+    // Where a circuit works at a line between two fresh regions, they merge at once
+    // for that, whether their players are near or not.
+    let fresh: BTreeSet<RegionId> = regions
+        .iter()
+        .filter(|sighted| sighted.fresh)
+        .map(|sighted| sighted.region)
+        .collect();
+    let mut at_work: BTreeSet<(RegionId, RegionId)> = BTreeSet::new();
+    for sighted in regions.iter().filter(|sighted| sighted.fresh) {
+        for (_, other) in sighted.redstone {
+            if *other != sighted.region && fresh.contains(other) {
+                let one = sighted.region;
+                at_work.insert((one.min(*other), one.max(*other)));
+            }
+        }
+    }
+    merges.retain(|(_, lower, higher)| !at_work.contains(&(*lower, *higher)));
+    let mut merges: Vec<(u32, RegionId, RegionId, Why)> = merges
+        .into_iter()
+        .map(|(gap, lower, higher)| (gap, lower, higher, Why::Near))
+        .collect();
+    merges.extend(
+        at_work
+            .into_iter()
+            .map(|(lower, higher)| (0, lower, higher, Why::Redstone)),
+    );
+    merges.sort_unstable_by_key(|(gap, lower, higher, _)| (*gap, *lower, *higher));
     let players = |region: RegionId| players.get(&region).copied().unwrap_or(0);
-    for (gap, lower, higher) in merges {
+    for (gap, lower, higher, why) in merges {
         // The home region survives; else the one with more players; else the lower.
         let higher_survives = higher == home || (lower != home && players(higher) > players(lower));
         let (survivor, absorbed) = if higher_survives {
@@ -367,7 +402,7 @@ pub fn decide(
             survivor,
             absorbed,
             gap,
-            why: Why::Near,
+            why,
         });
     }
     wanted
@@ -552,6 +587,7 @@ mod tests {
         region: RegionId,
         fresh: bool,
         crowds: Crowds,
+        redstone: Vec<(ChunkPos, RegionId)>,
     }
 
     fn said(region: RegionId, fresh: bool, crowds: &[(i32, i32, u32)]) -> Said {
@@ -562,6 +598,7 @@ mod tests {
                 .iter()
                 .map(|&(x, z, players)| (ChunkPos::new(x, z), players))
                 .collect(),
+            redstone: Vec::new(),
         }
     }
 
@@ -581,6 +618,7 @@ mod tests {
                 region: said.region,
                 fresh: said.fresh,
                 crowds: &said.crowds,
+                redstone: &said.redstone,
             })
             .collect()
     }
@@ -1461,6 +1499,7 @@ mod tests {
                             (chunk(&mut dice), players as u32)
                         })
                         .collect(),
+                    redstone: Vec::new(),
                 })
                 .collect();
             Self {

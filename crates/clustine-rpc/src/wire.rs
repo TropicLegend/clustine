@@ -364,6 +364,7 @@ mod tests {
                     epoch: 5,
                     tick: 1_200,
                     crowds: vec![(chunks[0], 3)],
+                    redstone: Vec::new(),
                 }],
             },
             ToCoordinator::Merge {
@@ -454,6 +455,7 @@ mod tests {
             epoch: 0,
             tick: 0,
             crowds: Vec::new(),
+            redstone: Vec::new(),
         };
         let crowded = PlayersOf {
             region: RegionId(u32::MAX),
@@ -464,6 +466,7 @@ mod tests {
                 (ChunkPos::new(-1, 0), u32::MAX),
                 (ChunkPos::new(i32::MAX, i32::MIN), 0),
             ],
+            redstone: Vec::new(),
         };
         round_trip(empty.clone());
         round_trip(crowded.clone());

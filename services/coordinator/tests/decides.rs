@@ -535,6 +535,7 @@ impl World {
             epoch,
             tick,
             crowds,
+            redstone: Vec::new(),
         }
     }
 
@@ -1164,6 +1165,7 @@ fn word(world: &World, id: u32, tick: u64, x: i32) -> PlayersOf {
         epoch: world.epoch(id),
         tick,
         crowds: vec![(at(x), 1)],
+        redstone: Vec::new(),
     }
 }
 
@@ -1234,6 +1236,7 @@ fn a_report_with_another_epoch_than_the_region_has_changes_nothing() {
             epoch: 7,
             tick: 1,
             crowds: vec![(at(101), 4)],
+            redstone: Vec::new(),
         };
         assert!(world.coordinator.players(world.now, "a", &[stranger]));
         assert_eq!(format!("{:?}", world.coordinator), before);
@@ -5120,6 +5123,7 @@ fn a_merge_that_the_list_shows_done_before_the_worker_says_so_ends_there_and_the
         epoch: world.epoch(1),
         tick: 1_000,
         crowds: vec![(at(100), 2)],
+        redstone: Vec::new(),
     };
     world.reported.insert(1, 1_000);
     assert!(world.coordinator.players(world.now, "a", &[before]));
