@@ -14673,12 +14673,21 @@ mod tests {
             let both_players = [player(), other_player()];
             let mut again = scene.hello_again(0, &both_players, &named).await;
             scene.gate.asked();
-            step(&mut scene.runner);
-            let heard = again.everything();
             let expected: Vec<(ChunkPos, u64, Told)> = ahead
                 .iter()
                 .map(|chunk| (*chunk, 0, Told::Elsewhere(part)))
                 .collect();
+            // The hello reaches the runner when it reaches it: under load a step can
+            // come first, so the runner steps until it has answered all it names.
+            let mut heard = Vec::new();
+            for _ in 0..10_000 {
+                step(&mut scene.runner);
+                heard.extend(again.everything());
+                if answers_among(&heard).len() >= expected.len() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             assert_eq!(answers_among(&heard), expected);
 
             // It reads of the split and asks the part, which serves what it holds and
