@@ -912,7 +912,9 @@ impl Witness {
                         RegionEvent::BlockDestroyed { .. }
                         | RegionEvent::Fizzed { .. }
                         | RegionEvent::BlockEntityChanged { .. }
-                        | RegionEvent::BlockEvent { .. } => {}
+                        | RegionEvent::BlockEvent { .. }
+                        | RegionEvent::Sound { .. }
+                        | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityMoved { entity, pose, .. } => {
                             self.entities.insert(*entity, *pose);
                         }

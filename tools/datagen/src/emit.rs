@@ -151,6 +151,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "entity_types",
             "items",
             "registries",
+            "sound_events",
             "tags",
             "version",
         ]),
@@ -161,6 +162,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "block_classes.rs", block_classes(data)?);
     add(DATA_DIR, "items.rs", items(data)?);
     add(DATA_DIR, "entity_types.rs", entity_types(data)?);
+    add(DATA_DIR, "sound_events.rs", sound_events(data)?);
     add(DATA_DIR, "registries.rs", registries(data));
     add(DATA_DIR, "dimension_types.rs", dimension_types(data));
     add(DATA_DIR, "tags.rs", tags(data));
@@ -860,6 +862,34 @@ fn entity_types(data: &GameData) -> Result<String> {
     }
     writeln!(out, "];\n")?;
     out.push_str(&id_constants(data.entity_types.iter().map(String::as_str))?);
+    Ok(out)
+}
+
+/// The sound events, by id, and a constant for each, named as the game's
+/// `SoundEvents` names them: `minecraft:block.wooden_door.open` is
+/// `BLOCK_WOODEN_DOOR_OPEN`.
+fn sound_events(data: &GameData) -> Result<String> {
+    let mut out = String::new();
+    writeln!(
+        out,
+        "pub static SOUND_EVENTS: [&str; {}] = [",
+        data.sound_events.len()
+    )?;
+    for name in &data.sound_events {
+        writeln!(out, "    {name:?},")?;
+    }
+    writeln!(out, "];\n")?;
+    let mut seen = std::collections::BTreeSet::new();
+    out.push_str("pub mod ids {\n");
+    for (id, name) in data.sound_events.iter().enumerate() {
+        let constant = constant_name(&name.replace('.', "_"))?;
+        ensure!(
+            seen.insert(constant.clone()),
+            "two sound events are {constant}"
+        );
+        writeln!(out, "    pub const {constant}: i32 = {id};")?;
+    }
+    out.push_str("}\n");
     Ok(out)
 }
 

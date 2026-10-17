@@ -70,6 +70,8 @@ pub struct GameData {
     pub blocks: Vec<Block>,
     pub items: Vec<Item>,
     pub entity_types: Vec<String>,
+    /// The sound events by the ids of `registries.json`, which the sound packets name.
+    pub sound_events: Vec<String>,
     pub synced_registries: Vec<Registry>,
     pub dimension_types: Vec<DimensionType>,
     pub tags: Vec<RegistryTags>,
@@ -257,6 +259,7 @@ impl GameData {
             blocks,
             items,
             entity_types: static_registry(&registries, "entity_type")?,
+            sound_events: static_registry(&registries, "sound_event")?,
             synced_registries,
             dimension_types,
             tags,

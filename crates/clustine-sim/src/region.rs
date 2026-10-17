@@ -1541,7 +1541,7 @@ impl Region {
             RemoteStep::UseOn { click } => match placement::click(click, &Readable(self)) {
                 Clicked::Nothing => return None,
                 Clicked::Used { changes, flags } => {
-                    self.use_block(&changes, flags, output);
+                    self.use_block(&changes, flags, action.player, output);
                     return None;
                 }
                 Clicked::Place {
@@ -1600,6 +1600,7 @@ impl Region {
         &mut self,
         changes: &[(BlockPos, BlockState)],
         flags: u32,
+        player: PlayerId,
         output: &mut TickOutput,
     ) {
         for (position, _) in changes {
@@ -1626,6 +1627,25 @@ impl Region {
                     0,
                 );
             }
+        }
+        // `playSound(player, pos, …)` of the use: everyone near hears it but the player,
+        // whose own client plays it. A door is heard once, at the half clicked.
+        if let Some((position, state)) = changes.first()
+            && let Some(sound) = placement::use_sound(*state)
+        {
+            let pitch = self.next_draw().next_float() * 0.1 + 0.9;
+            output.events.push(RegionEvent::Sound {
+                sound,
+                source: crate::api::SOUND_SOURCE_BLOCKS,
+                position: Vec3::new(
+                    f64::from(position.x) + 0.5,
+                    f64::from(position.y) + 0.5,
+                    f64::from(position.z) + 0.5,
+                ),
+                volume: 1.0,
+                pitch,
+                except: Some(player),
+            });
         }
     }
 

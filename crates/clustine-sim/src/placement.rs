@@ -196,6 +196,96 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     Clicked::Nothing
 }
 
+/// The sound of using `state`, which a door, a trapdoor or a gate has just become:
+/// its open or its close sound, by its block set or its wood, as the game's
+/// `BlockSetType` and `WoodType` give them.
+pub fn use_sound(state: BlockState) -> Option<i32> {
+    use clustine_data::sounds as s;
+    let name = state.block().map(|block| block.name)?;
+    let open = data::flag(state, "open");
+    let of = |(opened, closed): (i32, i32)| Some(if open { opened } else { closed });
+    let wood = |copper, iron, bamboo, cherry, nether, plain| {
+        if name.contains("copper") {
+            copper
+        } else if name.contains("iron") {
+            iron
+        } else if name.contains("bamboo") {
+            bamboo
+        } else if name.contains("cherry") {
+            cherry
+        } else if name.contains("crimson") || name.contains("warped") {
+            nether
+        } else {
+            plain
+        }
+    };
+    if data::is(state, BlockClass::DoorBlock) {
+        return of(wood(
+            (s::BLOCK_COPPER_DOOR_OPEN, s::BLOCK_COPPER_DOOR_CLOSE),
+            (s::BLOCK_IRON_DOOR_OPEN, s::BLOCK_IRON_DOOR_CLOSE),
+            (
+                s::BLOCK_BAMBOO_WOOD_DOOR_OPEN,
+                s::BLOCK_BAMBOO_WOOD_DOOR_CLOSE,
+            ),
+            (
+                s::BLOCK_CHERRY_WOOD_DOOR_OPEN,
+                s::BLOCK_CHERRY_WOOD_DOOR_CLOSE,
+            ),
+            (
+                s::BLOCK_NETHER_WOOD_DOOR_OPEN,
+                s::BLOCK_NETHER_WOOD_DOOR_CLOSE,
+            ),
+            (s::BLOCK_WOODEN_DOOR_OPEN, s::BLOCK_WOODEN_DOOR_CLOSE),
+        ));
+    }
+    if data::is(state, BlockClass::TrapDoorBlock) {
+        return of(wood(
+            (
+                s::BLOCK_COPPER_TRAPDOOR_OPEN,
+                s::BLOCK_COPPER_TRAPDOOR_CLOSE,
+            ),
+            (s::BLOCK_IRON_TRAPDOOR_OPEN, s::BLOCK_IRON_TRAPDOOR_CLOSE),
+            (
+                s::BLOCK_BAMBOO_WOOD_TRAPDOOR_OPEN,
+                s::BLOCK_BAMBOO_WOOD_TRAPDOOR_CLOSE,
+            ),
+            (
+                s::BLOCK_CHERRY_WOOD_TRAPDOOR_OPEN,
+                s::BLOCK_CHERRY_WOOD_TRAPDOOR_CLOSE,
+            ),
+            (
+                s::BLOCK_NETHER_WOOD_TRAPDOOR_OPEN,
+                s::BLOCK_NETHER_WOOD_TRAPDOOR_CLOSE,
+            ),
+            (
+                s::BLOCK_WOODEN_TRAPDOOR_OPEN,
+                s::BLOCK_WOODEN_TRAPDOOR_CLOSE,
+            ),
+        ));
+    }
+    if data::is(state, BlockClass::FenceGateBlock) {
+        let plain = (s::BLOCK_FENCE_GATE_OPEN, s::BLOCK_FENCE_GATE_CLOSE);
+        return of(wood(
+            plain,
+            plain,
+            (
+                s::BLOCK_BAMBOO_WOOD_FENCE_GATE_OPEN,
+                s::BLOCK_BAMBOO_WOOD_FENCE_GATE_CLOSE,
+            ),
+            (
+                s::BLOCK_CHERRY_WOOD_FENCE_GATE_OPEN,
+                s::BLOCK_CHERRY_WOOD_FENCE_GATE_CLOSE,
+            ),
+            (
+                s::BLOCK_NETHER_WOOD_FENCE_GATE_OPEN,
+                s::BLOCK_NETHER_WOOD_FENCE_GATE_CLOSE,
+            ),
+            plain,
+        ));
+    }
+    None
+}
+
 /// How the held item places a block (section 3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Placing {

@@ -736,6 +736,23 @@ pub enum RegionEvent {
         kind: i32,
         data: i32,
     },
+    /// A sound the server plays at a place (`Level.playSound`), the game's sound event
+    /// of id `sound` from its `source` (4 for blocks): heard by the players within 16
+    /// blocks, or 16 times `volume` if that is more, but `except`, whose own client
+    /// plays it (`docs/adr/0026-redstone.md`, section 8).
+    Sound {
+        sound: i32,
+        source: i32,
+        position: Vec3,
+        volume: f32,
+        pitch: f32,
+        except: Option<PlayerId>,
+    },
+    /// The phase of block events begins in this tick (`docs/adr/0026-redstone.md`,
+    /// section 8): the game sends the tick's block changes before its block events,
+    /// and those made from here on with the next tick's. It has no place, and whoever
+    /// filters events by where they are passes it to all.
+    BlockEventsBegin,
     /// Lava met water, or took the place of a block, which clients show with a hiss and
     /// smoke (the game's level event 1501).
     Fizzed { position: BlockPos },
@@ -760,6 +777,9 @@ impl RegionEvent {
             | Self::BlockEvent { position, .. }
             | Self::BlockDestroyed { position, .. }
             | Self::Fizzed { position } => [position.chunk(); 2],
+            Self::Sound { position, .. } => [ChunkPos::containing(position.x, position.z); 2],
+            // No place: see the variant.
+            Self::BlockEventsBegin => [ChunkPos::new(0, 0); 2],
             Self::EntityMoved {
                 pose,
                 previous_chunk,
@@ -771,6 +791,9 @@ impl RegionEvent {
         }
     }
 }
+
+/// The game's `SoundSource.BLOCKS`, which a block's sounds are of.
+pub const SOUND_SOURCE_BLOCKS: i32 = 4;
 
 /// What a tick resulted in.
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -1513,6 +1513,102 @@ impl Decode for SectionBlocksUpdate {
     }
 }
 
+/// A block event (`ClientboundBlockEventPacket`): what a block's `triggerEvent` did, which
+/// the client does again on its own world, a piston's move or a note block's note
+/// (`docs/adr/0026-redstone.md`, sections 4 and 8). `block` is the block's id in the
+/// block registry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockEvent {
+    pub position: Position,
+    pub action: u8,
+    pub param: u8,
+    pub block: i32,
+}
+
+impl Packet for BlockEvent {
+    const ID: i32 = clientbound::BLOCK_EVENT;
+}
+
+impl Encode for BlockEvent {
+    fn encode(&self, w: &mut Writer) {
+        w.put_position(self.position);
+        w.put_u8(self.action);
+        w.put_u8(self.param);
+        w.put_var_int(self.block);
+    }
+}
+
+impl Decode for BlockEvent {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            position: r.position()?,
+            action: r.u8()?,
+            param: r.u8()?,
+            block: r.var_int()?,
+        })
+    }
+}
+
+/// A sound played at a place (`ClientboundSoundPacket`), named by its id in the sound
+/// event registry, as the game names one it has registered. The place is in eighths
+/// of a block, as the game sends it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sound {
+    pub sound: i32,
+    /// The game's `SoundSource`, by its number: 4 for blocks.
+    pub source: i32,
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub seed: i64,
+}
+
+/// The game's `SoundSource.BLOCKS`.
+pub const SOUND_SOURCE_BLOCKS: i32 = 4;
+
+impl Packet for Sound {
+    const ID: i32 = clientbound::SOUND;
+}
+
+impl Encode for Sound {
+    fn encode(&self, w: &mut Writer) {
+        // A holder of the registry: its id plus one, 0 being a sound sent whole.
+        w.put_var_int(self.sound + 1);
+        w.put_var_int(self.source);
+        w.put_i32(self.x);
+        w.put_i32(self.y);
+        w.put_i32(self.z);
+        w.put_f32(self.volume);
+        w.put_f32(self.pitch);
+        w.put_i64(self.seed);
+    }
+}
+
+impl Decode for Sound {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let holder = r.var_int()?;
+        if holder == 0 {
+            // The server sends none whole, and a test that reads one back needs none.
+            return Err(DecodeError::InvalidValue {
+                what: "registered sound",
+                value: 0,
+            });
+        }
+        Ok(Self {
+            sound: holder - 1,
+            source: r.var_int()?,
+            x: r.i32()?,
+            y: r.i32()?,
+            z: r.i32()?,
+            volume: r.f32()?,
+            pitch: r.f32()?,
+            seed: r.i64()?,
+        })
+    }
+}
+
 /// Something clients show at a place (`ClientboundLevelEventPacket`): a sound, bits,
 /// smoke. `data` says more, as the event needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -1785,6 +1881,8 @@ packet_set! {
         BlockUpdate,
         SectionBlocksUpdate,
         LevelEvent,
+        BlockEvent,
+        Sound,
         SetContainerContent,
         SetHeldSlot,
     }
@@ -1852,6 +1950,34 @@ mod tests {
             },
             Set::decode,
             Set::LevelEvent,
+        );
+        assert_round_trip(
+            BlockEvent {
+                position: Position {
+                    x: -30_000_000,
+                    y: -64,
+                    z: 29_999_999,
+                },
+                action: 1,
+                param: 5,
+                block: 1200,
+            },
+            Set::decode,
+            Set::BlockEvent,
+        );
+        assert_round_trip(
+            Sound {
+                sound: 1850,
+                source: SOUND_SOURCE_BLOCKS,
+                x: -20,
+                y: 524,
+                z: 100,
+                volume: 1.0,
+                pitch: 0.93,
+                seed: -7,
+            },
+            Set::decode,
+            Set::Sound,
         );
         assert_round_trip(
             Login {
@@ -2495,5 +2621,30 @@ mod tests {
             let _ = ServerboundPlay::decode(&bytes);
             let _ = ClientboundPlay::decode(&bytes);
         }
+    }
+
+    /// The sound is a holder of the registry, its id plus one, as the game writes one
+    /// it names; then the source, the place in eighths, volume, pitch and seed.
+    #[test]
+    fn a_sound_is_written_as_the_game_writes_it() {
+        let mut w = Writer::default();
+        Sound {
+            sound: 1850,
+            source: SOUND_SOURCE_BLOCKS,
+            x: 20,
+            y: -4,
+            z: 8,
+            volume: 1.0,
+            pitch: 1.0,
+            seed: 1,
+        }
+        .encode(&mut w);
+        let bytes = w.into_bytes();
+        assert_eq!(bytes[..3], [0xBB, 0x0E, 4], "1851 as a VarInt, then 4");
+        assert_eq!(
+            bytes[3..15],
+            [0, 0, 0, 20, 0xFF, 0xFF, 0xFF, 0xFC, 0, 0, 0, 8]
+        );
+        assert_eq!(bytes.len(), 3 + 12 + 4 + 4 + 8);
     }
 }

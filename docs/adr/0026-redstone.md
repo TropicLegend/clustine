@@ -411,6 +411,30 @@ R2b, third part, clicks and what may be read (2026-10-17):
   until then no placement reads one, and refusing doors and rails where a chunk does
   not tick would change W6's placing for nothing.
 
+R2c, the edge (2026-10-17):
+
+- **The sound events are generated** from the jar's registry report
+  (`clustine_data::sounds`, named as the game's `SoundEvents`: 1,991 of them), and a
+  sound is sent by its registry id, as the game sends one it has registered.
+- **`RegionEvent::Sound` and `RegionEvent::BlockEvent` go to the players who have the
+  chunk and stand near**: a block event within 64 blocks, a sound within 16, or 16
+  times its volume where that is more, never to the player it leaves out. The edge
+  draws a sound's seed itself. Level events go the same way, within 64.
+- **`RegionEvent::BlockEventsBegin` is said in a tick that has block events**, at the
+  phase's start. The edge sends the changes collected before it there, and keeps the
+  changes after it for the region's next tick, merged before that tick's own; it
+  sends them also when the region is absorbed. A worker sends a link the next tick's
+  delta, empty or not, after a delta whose changes ran past the mark, so that they
+  always go. The mark alone is not sent.
+- **The first sounds are those of a door, a trapdoor and a gate used by hand**, by the
+  block set or the wood as the game's `BlockSetType` and `WoodType` give them, heard
+  by all near but the player, the pitch drawn from the rules' stream. The rest of what
+  phase B does is R6's.
+- The comparison with the official server of what a client is sent (the order of
+  changes and block events, a door's sound) waits for R5's pistons, the first block
+  events a client can be compared by, and is R8's with the rest; the packets' layouts
+  are SteelMC-26.3's (`c_sound.rs`, `c_block_event.rs`).
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

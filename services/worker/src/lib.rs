@@ -711,6 +711,10 @@ struct EdgeLink {
     subscriptions: BTreeMap<ChunkPos, Subscription>,
     /// The chunks whose subscriptions wait for an answer.
     waiting: BTreeSet<ChunkPos>,
+    /// Whether the last tick's events the link was sent had block changes after the
+    /// beginning of block events, which the edge sends with the next tick's: that tick
+    /// is then sent, also with no events (`docs/adr/0026-redstone.md`, section 8).
+    carried: bool,
 }
 
 impl EdgeLink {
@@ -733,6 +737,11 @@ impl EdgeLink {
     ) -> Vec<RegionEvent> {
         let mut visible = Vec::new();
         for event in events {
+            // The beginning of block events has no place, and every edge is told.
+            if *event == RegionEvent::BlockEventsBegin {
+                visible.push(event.clone());
+                continue;
+            }
             let [current, previous] = event.chunks();
             let visible_now = self.watches(current);
             let visible_before = self.watches(previous);
@@ -2593,15 +2602,24 @@ impl RegionRunner {
 
         // An edge only hears about what happens in chunks it watches, by its
         // subscriptions as they were while the tick ran.
-        for (id, link) in &self.links {
-            let events = link.visible(&output.events, &self.region, &orphaned);
-            if !events.is_empty() {
+        for (id, link) in &mut self.links {
+            let mut events = link.visible(&output.events, &self.region, &orphaned);
+            // The beginning of block events alone tells the edge nothing.
+            if events == [RegionEvent::BlockEventsBegin] {
+                events.clear();
+            }
+            let carries = events
+                .iter()
+                .skip_while(|event| **event != RegionEvent::BlockEventsBegin)
+                .any(|event| matches!(event, RegionEvent::BlockChanged { .. }));
+            if !events.is_empty() || link.carried {
                 let delta = WorkerToEdge::TickDelta {
                     tick: output.tick,
                     events,
                 };
                 outgoing.push((*id, delta));
             }
+            link.carried = carries;
         }
 
         // What concerns a single player goes to the edge they belong to. One who was let
@@ -3088,6 +3106,7 @@ impl RegionRunner {
                 held: VecDeque::new(),
                 subscriptions: BTreeMap::new(),
                 waiting: BTreeSet::new(),
+                carried: false,
             },
         );
         info!(link = id.0, "an edge attached a link");

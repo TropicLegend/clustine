@@ -98,6 +98,13 @@ impl Region {
     /// `ServerLevel.runBlockEvents`: runs the queue to empty, putting back those whose
     /// chunk does not tick.
     pub(crate) fn run_block_events(&mut self, output: &mut TickOutput) {
+        // The edge sends the block changes before this with the tick's, and those
+        // after it with the next tick's, as the game broadcasts them
+        // (`docs/adr/0026-redstone.md`, section 8). A tick without events changes
+        // nothing from here on before the block entities, which tick from R5 on.
+        if !self.block_events.is_empty() {
+            output.events.push(RegionEvent::BlockEventsBegin);
+        }
         let mut deferred = Vec::new();
         while !self.block_events.is_empty() {
             let event = self.block_events.remove(0);

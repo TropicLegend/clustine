@@ -7,5 +7,6 @@ pub mod dimension_types;
 pub mod entity_types;
 pub mod items;
 pub mod registries;
+pub mod sound_events;
 pub mod tags;
 pub mod version;

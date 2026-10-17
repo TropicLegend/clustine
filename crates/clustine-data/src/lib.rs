@@ -25,6 +25,7 @@ pub use generated::dimension_types::DIMENSION_TYPES;
 pub use generated::entity_types::ENTITY_TYPES;
 pub use generated::items::{ITEMS, ItemClass};
 pub use generated::registries::SYNCED_REGISTRIES;
+pub use generated::sound_events::SOUND_EVENTS;
 pub use generated::tags::TAGS;
 pub use generated::version::{
     DATA_VERSION, GAME_VERSION, PROTOCOL_VERSION, SERVER_JAR_SHA1, SERVER_JAR_SHA1_BYTES,
@@ -48,6 +49,11 @@ pub mod items {
 /// The id of every entity type, by name.
 pub mod entity_types {
     pub use crate::generated::entity_types::ids::*;
+}
+
+/// The ids of the sound events, named as the game's `SoundEvents` names them.
+pub mod sounds {
+    pub use crate::generated::sound_events::ids::*;
 }
 
 /// One concrete combination of a block and its property values, identified by its

@@ -22,10 +22,10 @@ use clustine_protocol::codec::Position;
 use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    AcknowledgeBlockChange, BlockUpdate, ChunkBatchFinished, ChunkBatchStart, Disconnect,
-    GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
+    AcknowledgeBlockChange, BlockEvent, BlockUpdate, ChunkBatchFinished, ChunkBatchStart,
+    Disconnect, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
     PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
-    SetContainerContent, SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, SpawnEntity,
+    SetContainerContent, SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, Sound, SpawnEntity,
     SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk, abilities, angle, game_event,
     game_mode, inventory, level_event, player_info,
 };
@@ -682,6 +682,20 @@ type FromLink = (RegionId, u64, Option<WorkerToEdge>);
 /// last state.
 type Changed = BTreeMap<(ChunkPos, i32), BTreeMap<BlockPos, BlockState>>;
 
+/// How far a level event is seen, as the game's `ServerLevel.levelEvent` sends it.
+const LEVEL_EVENTS_WITHIN: f64 = 64.0;
+/// How far a block event is seen, as the game's `ServerLevel.runBlockEvents` sends it.
+const BLOCK_EVENTS_WITHIN: f64 = 64.0;
+
+/// The middle of the block at `position`.
+fn block_centre(position: BlockPos) -> (f64, f64, f64) {
+    (
+        f64::from(position.x) + 0.5,
+        f64::from(position.y) + 0.5,
+        f64::from(position.z) + 0.5,
+    )
+}
+
 pub(crate) struct Fanout {
     config: FanoutConfig,
     /// The region players enter the world in.
@@ -764,6 +778,13 @@ pub(crate) struct Fanout {
     /// [`Fanout::retire`] and by nothing else; see
     /// `docs/adr/0015-the-edge-through-merges-and-splits.md`, section 1.
     stands_for: BTreeMap<RegionId, RegionId>,
+    /// The block changes a region made after the beginning of its block events, by
+    /// region, which go with its next tick's changes, as the game broadcasts them
+    /// (`docs/adr/0026-redstone.md`, section 8).
+    carried: BTreeMap<RegionId, Changed>,
+    /// Where the seeds of the sounds this edge sends come from: any number will do,
+    /// and none of the regions' rules draws it.
+    sound_seeds: u64,
 }
 
 /// An entity the edge shows, and the region that last introduced it: reported it
@@ -827,6 +848,8 @@ impl Fanout {
             lit: Some(lit),
             entities: BTreeMap::new(),
             stands_for: BTreeMap::new(),
+            carried: BTreeMap::new(),
+            sound_seeds: 0,
         }
     }
 
@@ -1566,26 +1589,40 @@ impl Fanout {
                 }
             }
             WorkerToEdge::TickDelta { events, .. } => {
-                // The changes of blocks of one tick go out together at its end, those of
-                // one section in one packet, as the game's `ChunkHolder.broadcastChanges`
+                // The changes of blocks of one tick go out together, those of one
+                // section in one packet, as the game's `ChunkHolder.broadcastChanges`
                 // sends them: a tick can change thousands (the leaves of a forest set
                 // right as it is loaded), which one packet each would not fit in a
-                // client's queue.
-                let mut changed = Changed::new();
+                // client's queue. The game broadcasts them before its block events, and
+                // what changes from those on with the next tick's: a region's changes
+                // after its beginning of block events wait for its next tick, behind
+                // which this tick's own come (`docs/adr/0026-redstone.md`, section 8).
+                let mut changed = self.carried.remove(&from).unwrap_or_default();
+                let mut later = Changed::new();
+                let mut begun = false;
                 for event in events {
                     match event {
                         RegionEvent::BlockChanged { position, state } => {
                             if self.change_block(position, state) {
-                                changed
-                                    .entry((position.chunk(), position.y.div_euclid(16)))
+                                let into = if begun { &mut later } else { &mut changed };
+                                into.entry((position.chunk(), position.y.div_euclid(16)))
                                     .or_default()
                                     .insert(position, state);
+                            }
+                        }
+                        RegionEvent::BlockEventsBegin => {
+                            if !begun {
+                                begun = true;
+                                self.show_changes(std::mem::take(&mut changed)).await;
                             }
                         }
                         event => self.handle_event(from, event).await,
                     }
                 }
                 self.show_changes(changed).await;
+                if !later.is_empty() {
+                    self.carried.insert(from, later);
+                }
             }
             // A region says these through its outbox, so that they reach the edge even
             // if the region's owner dies right after.
@@ -2071,6 +2108,10 @@ impl Fanout {
             return;
         }
         info!(%region, %into, "a region has been absorbed");
+        // It sends no next tick: what it changed after its last block events goes now.
+        if let Some(carried) = self.carried.remove(&region) {
+            self.show_changes(carried).await;
+        }
         // Whether the two shared a numbering: the edge and the region then mean the
         // same by `applied` and by the numbers of the entries.
         let port = self.regions.entry(region).or_default();
@@ -2551,9 +2592,54 @@ impl Fanout {
             RegionEvent::BlockEntityChanged { position, data } => {
                 self.change_block_entity(position, data);
             }
-            // Sent to players as the game sends it from R2c on
-            // (`docs/adr/0026-redstone.md`, section 8).
-            RegionEvent::BlockEvent { .. } => {}
+            RegionEvent::BlockEvent {
+                position,
+                block,
+                kind,
+                data,
+            } => {
+                let packet = encoded(&BlockEvent {
+                    position: Position {
+                        x: position.x,
+                        y: position.y,
+                        z: position.z,
+                    },
+                    // The game writes both as bytes.
+                    action: kind as u8,
+                    param: data as u8,
+                    block: i32::from(block),
+                });
+                let at = block_centre(position);
+                self.send_near(position.chunk(), at, BLOCK_EVENTS_WITHIN, None, packet)
+                    .await;
+            }
+            RegionEvent::Sound {
+                sound,
+                source,
+                position,
+                volume,
+                pitch,
+                except,
+            } => {
+                self.sound_seeds = self.sound_seeds.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let packet = encoded(&Sound {
+                    sound,
+                    source,
+                    x: (position.x * 8.0) as i32,
+                    y: (position.y * 8.0) as i32,
+                    z: (position.z * 8.0) as i32,
+                    volume,
+                    pitch,
+                    seed: self.sound_seeds as i64,
+                });
+                // `ServerLevel.playSeededSound`: within 16 blocks, or 16 times the volume.
+                let range = 16.0 * f64::from(volume.max(1.0));
+                let at = (position.x, position.y, position.z);
+                let chunk = ChunkPos::containing(position.x, position.z);
+                self.send_near(chunk, at, range, except, packet).await;
+            }
+            // A region's changes after it are taken where its tick's are.
+            RegionEvent::BlockEventsBegin => {}
             RegionEvent::BlockDestroyed {
                 position,
                 state,
@@ -3699,8 +3785,6 @@ impl Fanout {
         data: i32,
         except: Option<PlayerId>,
     ) {
-        const HEARD_WITHIN: f64 = 64.0;
-        let chunk = position.chunk();
         let packet = encoded(&LevelEvent {
             event,
             position: Position {
@@ -3711,11 +3795,22 @@ impl Fanout {
             data,
             global: false,
         });
-        let (x, y, z) = (
-            f64::from(position.x) + 0.5,
-            f64::from(position.y) + 0.5,
-            f64::from(position.z) + 0.5,
-        );
+        let at = block_centre(position);
+        self.send_near(position.chunk(), at, LEVEL_EVENTS_WITHIN, except, packet)
+            .await;
+    }
+
+    /// Sends `packet` to the players who have the chunk `chunk` and stand within
+    /// `range` of `at`, but `except`.
+    async fn send_near(
+        &mut self,
+        chunk: ChunkPos,
+        at: (f64, f64, f64),
+        range: f64,
+        except: Option<PlayerId>,
+        packet: Bytes,
+    ) {
+        let (x, y, z) = at;
         let near: Vec<_> = self
             .players
             .iter()
@@ -3728,7 +3823,7 @@ impl Fanout {
                         .is_some_and(|shown| {
                             let at = shown.state.pose.position;
                             let (dx, dy, dz) = (at.x - x, at.y - y, at.z - z);
-                            dx * dx + dy * dy + dz * dz < HEARD_WITHIN * HEARD_WITHIN
+                            dx * dx + dy * dy + dz * dz < range * range
                         })
             })
             .map(|(player, _)| *player)
@@ -6524,6 +6619,7 @@ mod scenarios {
     use crate::Relinks;
 
     mod block_destroyed;
+    mod redstone;
 
     /// The flat world's spawn, which these tests' edges tell their clients.
     const FLAT_SPAWN: BlockPos = BlockPos::new(0, -60, 0);
@@ -7282,6 +7378,17 @@ mod scenarios {
         taken: usize,
         /// Every level event it was told of (a block breaking), in order.
         level_events: Vec<LevelEvent>,
+        /// The blocks it was told changed one at a time, the block events and the
+        /// sounds, in the order told.
+        heard: Vec<Received>,
+    }
+
+    /// One of what a client was told, in [`Client::heard`].
+    #[derive(Debug, Clone, PartialEq)]
+    enum Received {
+        Block(BlockPos),
+        Event(BlockEvent),
+        Sound(Sound),
     }
 
     /// Something a client was told that changes whom it shows or lists.
@@ -7316,6 +7423,7 @@ mod scenarios {
                 centres: Vec::new(),
                 taken: 0,
                 level_events: Vec::new(),
+                heard: Vec::new(),
             }
         }
 
@@ -7359,7 +7467,10 @@ mod scenarios {
                     let block = BlockPos::new(x, y, z);
                     self.of_chunks.push(OfChunk::Block(block.chunk()));
                     self.blocks.insert(block, update.state);
+                    self.heard.push(Received::Block(block));
                 }
+                ClientboundPlay::BlockEvent(event) => self.heard.push(Received::Event(event)),
+                ClientboundPlay::Sound(sound) => self.heard.push(Received::Sound(sound)),
                 ClientboundPlay::LightUpdate(update) => {
                     let position = ChunkPos::new(update.chunk_x, update.chunk_z);
                     self.of_chunks.push(OfChunk::Light(position));

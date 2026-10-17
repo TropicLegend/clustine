@@ -517,3 +517,108 @@ fn a_rail_is_told_of_its_neighbour_only_where_its_chunk_ticks() {
     );
     assert_eq!(at(&region, rail), Some(blocks::AIR));
 }
+
+// What the edge is to send (section 8 of the record).
+
+/// A door opened by hand is heard by everyone near but the player, at the middle of
+/// the half clicked, from the blocks, its pitch the game's 0.9 to 1.
+#[test]
+fn a_door_opened_by_hand_plays_its_sound_to_all_but_the_player() {
+    let lower = BlockPos::new(2, -60, 3);
+    let door = |half: &str| {
+        BlockState::parse(&format!("minecraft:oak_door[half={half},facing=north]")).expect("a door")
+    };
+    let mut region = on_ticking_floor_with(&[
+        (lower, door("lower")),
+        (BlockPos::new(2, -59, 3), door("upper")),
+    ]);
+    let output = region.tick(&moves(vec![click_block(1, lower, Face::North)]));
+    let sounds: Vec<&RegionEvent> = output
+        .events
+        .iter()
+        .filter(|event| matches!(event, RegionEvent::Sound { .. }))
+        .collect();
+    let [
+        RegionEvent::Sound {
+            sound,
+            source,
+            position,
+            volume,
+            pitch,
+            except,
+        },
+    ] = sounds[..]
+    else {
+        panic!("{sounds:?}");
+    };
+    assert_eq!(*sound, clustine_data::sounds::BLOCK_WOODEN_DOOR_OPEN);
+    assert_eq!(*source, crate::api::SOUND_SOURCE_BLOCKS);
+    assert_eq!(*position, Vec3::new(2.5, -59.5, 3.5));
+    assert_eq!(*volume, 1.0);
+    assert!((0.9..1.0).contains(pitch), "{pitch}");
+    assert_eq!(*except, Some(player(1)));
+}
+
+/// The sound of a use is by the block's set or wood, open or closed, as the game's
+/// `BlockSetType` and `WoodType` have them.
+#[test]
+fn a_use_sounds_as_its_block_set_or_wood_says() {
+    use clustine_data::sounds as s;
+    let sound = |text: &str| crate::placement::use_sound(BlockState::parse(text).expect("a state"));
+    assert_eq!(
+        sound("minecraft:oak_door[open=true]"),
+        Some(s::BLOCK_WOODEN_DOOR_OPEN)
+    );
+    assert_eq!(
+        sound("minecraft:spruce_door[open=false]"),
+        Some(s::BLOCK_WOODEN_DOOR_CLOSE)
+    );
+    assert_eq!(
+        sound("minecraft:iron_door[open=true]"),
+        Some(s::BLOCK_IRON_DOOR_OPEN)
+    );
+    assert_eq!(
+        sound("minecraft:waxed_weathered_copper_door[open=true]"),
+        Some(s::BLOCK_COPPER_DOOR_OPEN)
+    );
+    assert_eq!(
+        sound("minecraft:crimson_trapdoor[open=true]"),
+        Some(s::BLOCK_NETHER_WOOD_TRAPDOOR_OPEN)
+    );
+    assert_eq!(
+        sound("minecraft:bamboo_trapdoor[open=false]"),
+        Some(s::BLOCK_BAMBOO_WOOD_TRAPDOOR_CLOSE)
+    );
+    assert_eq!(
+        sound("minecraft:cherry_fence_gate[open=true]"),
+        Some(s::BLOCK_CHERRY_WOOD_FENCE_GATE_OPEN)
+    );
+    assert_eq!(
+        sound("minecraft:warped_fence_gate[open=false]"),
+        Some(s::BLOCK_NETHER_WOOD_FENCE_GATE_CLOSE)
+    );
+    assert_eq!(
+        sound("minecraft:pale_oak_fence_gate[open=true]"),
+        Some(s::BLOCK_FENCE_GATE_OPEN)
+    );
+    assert_eq!(sound("minecraft:flower_pot"), None);
+}
+
+/// The beginning of block events is said in a tick that has block events, before
+/// their phase's changes, and in no other tick.
+#[test]
+fn the_beginning_of_block_events_is_said_only_in_a_tick_that_has_them() {
+    let mut region = loaded_floor(&square(-1..=1));
+    let output = idle(&mut region);
+    assert!(!output.events.contains(&RegionEvent::BlockEventsBegin));
+    region.block_event(stone_at(2), blocks::STONE, 0, 0);
+    let output = idle(&mut region);
+    let begins: Vec<usize> = output
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| **event == RegionEvent::BlockEventsBegin)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(begins.len(), 1);
+}

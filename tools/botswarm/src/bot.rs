@@ -1439,6 +1439,8 @@ impl Bot {
             ClientboundPlay::ChunkBatchStart(_)
             | ClientboundPlay::GameEvent(_)
             | ClientboundPlay::LevelEvent(_)
+            | ClientboundPlay::BlockEvent(_)
+            | ClientboundPlay::Sound(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)
