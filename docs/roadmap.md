@@ -98,8 +98,10 @@ beyond the hotbar, and crafting.
   merges and splits pause as at B8. E7 found a coupled pair on slow storage ticking at
   22.4 a second, mended.
 
-**Next:** redstone, a phase of its own, planned and reviewed before it is built; S3
-beside it. The judge of features, over 204 areas of two seeds with
+**Next:** redstone (phase R, [plan](groundwork/r-plan.md),
+[ADR-0026](adr/0026-redstone.md), accepted on 2026-10-17): R2, the ground it needs in
+the store, the simulation and the edge; lending at a pinned line after it
+([ADR-0027](groundwork/r-lines.md), to be written). S3 beside it. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
