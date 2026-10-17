@@ -354,6 +354,36 @@ L4, the coordinator's part (2026-10-17, by me):
   `Sides::goes` draws it from the players who go and stay and the chunk players enter in,
   passes within two chunks of one.
 
+L6, a circuit across a pinned line against the same circuit in one region (2026-10-17,
+by me, `redstone_across_a_pinned_line_matches_redstone_in_one_region` in
+`bin/clustine/tests/redstone_oracle.rs`): R8's eleven circuits, each built across a line
+at block x 16 by a builder standing east of it, and in a world of one region, their
+timelines compared as R8 compares them with the official server. It found:
+
+- **A lever placed at once after the lamp that asked for its chunk was lost**, every
+  time. The click came with the grant: the worker judged it by what the region knew
+  before the tick (another region's chunk, nothing to wait for), the tick took the grant
+  first, found the chunk held and not loaded, read air there and acknowledged the click
+  without effect. A link's actions now wait, as at ADR-0014's section 3.6, where a chunk
+  they are about is one the region borrows and has not loaded: its lend asked for and
+  not answered, granted in the coming tick, or lent, whether or not the link waits for
+  the chunk. The wait begins at the ask, since a grant can come in the step that takes
+  the action or while taken actions wait for a tick (the tests found that case); it
+  lasts the store's answer and then the load, the region keeping a lent chunk loaded.
+  Tests by someone who had not read the mend (`services/worker/src/tests/lends.rs`,
+  eight of them) found the case of a grant in the same step, mended.
+
+With that, all eleven circuits send the same things across the line as in one region,
+on the same ticks and in the same order.
+
+A first design kept such actions in the region instead; its review found that a list
+outside the region's durable state would lose a click for good at a crash and stop the
+player's acknowledgements, and that the worker's hold already covers the lender's side
+(a chunk let go of for a lend holds its links' waiting subscriptions). Not seen and not
+mended, from that review: where a borrower gives a chunk back (section 4) it forgets the
+chunk at once while the lender believes it lent until `PinnedBack`, so an action on it in
+those few ticks, after the last circuit's part near it went, can find nowhere to go.
+
 ## Review
 
 **First review (2026-10-17): not ready.** Its findings, worked in:

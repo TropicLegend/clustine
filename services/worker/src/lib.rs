@@ -3315,6 +3315,16 @@ impl RegionRunner {
     /// turns out to be this region's own. See
     /// `docs/adr/0014-merging-and-splitting.md`, section 3.6.
     ///
+    /// A chunk the region borrows waits so too, whether or not the link waits for it:
+    /// one whose lend it has asked for and had no answer of, one granted it by a lend
+    /// in the coming tick or lent to it, and not loaded yet. The region keeps a lent
+    /// chunk loaded from the grant on, so the wait is for the store's answer and then
+    /// for the load. Judged by what the region knew before the grant, the action would
+    /// be taken in the tick that takes the grant first, find the chunk held and not
+    /// there, and be acknowledged without effect; the wait begins at the ask, since a
+    /// grant can come in the step that takes the action, or while taken actions wait
+    /// for a tick (`docs/adr/0027-lending-at-a-line.md`, step L6).
+    ///
     /// Nothing else waits so. A chunk the region has asked for outside its pinned
     /// areas is, if a client can click it, another region's: the click behind one's
     /// back right after a hand-over is judged at once and goes on without a region
@@ -3355,6 +3365,12 @@ impl RegionRunner {
             _ => return false,
         };
         about.into_iter().any(|position| {
+            let borrowed = (self.lends_in_flight.contains(&position)
+                || self.region.borrows(position, &self.inputs.granted))
+                && self.region.chunk(position).is_none();
+            if borrowed && !self.unreadable.contains(&position) {
+                return true;
+            }
             link.waiting.contains(&position)
                 && !self.unreadable.contains(&position)
                 && match self.region.knowledge(position) {
@@ -15105,6 +15121,7 @@ mod tests {
 
     mod busy_circuits;
     mod generation;
+    mod lends;
     mod scheduled_ticks;
     mod stays;
 }

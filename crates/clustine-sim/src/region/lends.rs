@@ -430,6 +430,14 @@ impl Region {
         self.land.lent.contains(&position)
     }
 
+    /// Whether the chunk at `position` is the region's by a lend, or would be by a grant
+    /// of the store's that the coming tick takes: a chunk the region keeps loaded from
+    /// then, so that what acts on it can wait until it is there.
+    pub fn borrows(&self, position: ChunkPos, granted: &[ChunkPos]) -> bool {
+        self.is_lent(position)
+            || (self.lends_asked.contains_key(&position) && granted.contains(&position))
+    }
+
     /// Whether the chunk at `position` is let go of for a lend, and not the region's
     /// to claim, load or write until the store says otherwise.
     pub(super) fn is_lending(&self, position: ChunkPos) -> bool {

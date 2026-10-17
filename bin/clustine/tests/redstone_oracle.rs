@@ -25,6 +25,16 @@
 //! changes the blocks are sorted, since a client sets them all at once; a sound's pitch,
 //! which both servers draw at random for most sounds, is shown and not compared.
 //!
+//! The same cases are also run on Clustine with every case across a pinned line between
+//! two regions, and compared with one region (step L6 of ADR-0027): what a player sees of
+//! a circuit is not to change where a line runs through it. That needs no Java, but is
+//! timed by arrival as the other, so it too is for a quiet machine:
+//!
+//! ```text
+//! cargo test -p clustine --locked --test redstone_oracle -- --ignored --nocapture \
+//!     across_a_pinned_line
+//! ```
+//!
 //! What a stage waits for is a state, not a time, as everywhere else. Once it is
 //! reached, the watcher goes on recording for a while, which is no wait for the server
 //! but the window in which what comes after it is seen; a torch clock's is long enough
@@ -42,7 +52,7 @@ use clustine_protocol::packets::play::face::{EAST, NORTH, SOUTH, TOP as UP, WEST
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use common::start;
+use common::{config, start, start_with};
 
 /// How long a bot waits for what it should be sent soon: an acknowledgement, a block
 /// it placed, the chunks of a case, the state a stage ends in.
@@ -73,6 +83,22 @@ const FIRST_X: i32 = 14;
 const FIRST_Z: i32 = -42;
 const SPACING: i32 = 10;
 const COLUMNS: usize = 4;
+
+/// The pinned line the cases are built across where they are compared with one region:
+/// at chunk x 1, block x 16. The cases' origins are on its eastern side, so that a lever
+/// to the west of one is in the other region, in a column southwards from where the
+/// grid begins.
+const LINE_CHUNK: i32 = 1;
+const LINE_X: i32 = 16 * LINE_CHUNK;
+
+/// Where the cases are built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// In a grid within one region, as on the official server.
+    Grid,
+    /// In a column, each across [`LINE_X`].
+    AtTheLine,
+}
 
 /// How far a case's box reaches from its origin: three blocks each way across, two
 /// below the first block above the ground and three above it.
@@ -513,7 +539,14 @@ struct Place {
 }
 
 impl Place {
-    fn of(index: usize, feet: i32) -> Self {
+    fn of(layout: Layout, index: usize, feet: i32) -> Self {
+        if layout == Layout::AtTheLine {
+            return Self {
+                x: LINE_X,
+                feet,
+                z: FIRST_Z + SPACING * index as i32,
+            };
+        }
         let (row, column) = (index / COLUMNS, index % COLUMNS);
         let column = if row.is_multiple_of(2) {
             column
@@ -626,11 +659,17 @@ async fn compare(cases: &[Case]) {
     let oracle = Oracle::start(false).await.unwrap();
     let (server, address) = start().await;
 
-    let theirs = run(oracle.address(), cases).await;
-    let ours = run(&address, cases).await;
+    let theirs = run(oracle.address(), cases, Layout::Grid).await;
+    let ours = run(&address, cases, Layout::Grid).await;
     server.stop().await;
     drop(oracle);
+    judge(cases, &theirs, &ours, ["the official server", "Clustine"]);
+}
 
+/// Fails, listing every difference, if the timelines of `theirs` and `ours` differ: the
+/// first is the one judged by, and `names` names the two.
+fn judge(cases: &[Case], theirs: &Ran, ours: &Ran, names: [&str; 2]) {
+    let [their_name, our_name] = names;
     let mut differences = Vec::new();
     for (index, case) in cases.iter().enumerate() {
         println!("{index:3} {}", case.name);
@@ -647,9 +686,9 @@ async fn compare(cases: &[Case]) {
                     "case {index}, \"{}\", stage {number}: not run on {}",
                     case.name,
                     if their.is_none() {
-                        "the official server"
+                        their_name
                     } else {
-                        "Clustine"
+                        our_name
                     }
                 ));
                 continue;
@@ -683,7 +722,7 @@ async fn compare(cases: &[Case]) {
             if let Some(row) = first_difference {
                 differences.push(format!(
                     "case {index}, \"{}\", stage {number}: the timelines part at their \
-                     thing {row}: the official server sent {} things and Clustine {}",
+                     thing {row}: {their_name} sent {} things and {our_name} {}",
                     case.name,
                     their.len(),
                     our.len()
@@ -694,11 +733,11 @@ async fn compare(cases: &[Case]) {
     let troubles: Vec<String> = theirs
         .troubles
         .iter()
-        .map(|trouble| format!("on the official server: {trouble}"))
+        .map(|trouble| format!("on {their_name}: {trouble}"))
         .chain(
             ours.troubles
                 .iter()
-                .map(|trouble| format!("on Clustine: {trouble}")),
+                .map(|trouble| format!("on {our_name}: {trouble}")),
         )
         .collect();
     for trouble in &troubles {
@@ -706,8 +745,8 @@ async fn compare(cases: &[Case]) {
     }
     assert!(
         differences.is_empty() && troubles.is_empty(),
-        "{} of the stages differ (each official line above its Clustine line, ≠ where \
-         they part):\n  {}\n{}",
+        "{} of the stages differ (each line of {their_name} above that of {our_name}, ≠ \
+         where they part):\n  {}\n{}",
         differences.len(),
         differences.join("\n  "),
         if troubles.is_empty() {
@@ -721,8 +760,9 @@ async fn compare(cases: &[Case]) {
     );
 }
 
-/// Runs every case on the server at `address` with a builder and a watcher.
-async fn run(address: &str, cases: &[Case]) -> Ran {
+/// Runs every case on the server at `address` with a builder and a watcher, the cases
+/// where `layout` puts them.
+async fn run(address: &str, cases: &[Case], layout: Layout) -> Ran {
     let mut troubles = Vec::new();
     let mut builder = join(address, "Builder").await;
     let feet = builder.location.1.floor() as i32;
@@ -762,7 +802,7 @@ async fn run(address: &str, cases: &[Case]) -> Ran {
 
     let mut timelines = Vec::new();
     for (index, case) in cases.iter().enumerate() {
-        let place = Place::of(index, feet);
+        let place = Place::of(layout, index, feet);
         match perform(&mut builder, &watcher, case, place, &mut troubles).await {
             Ok(ran) => timelines.push(ran),
             Err(error) => {
@@ -1028,15 +1068,57 @@ async fn redstone_matches_the_official_server() {
     compare(&cases()).await;
 }
 
-#[test]
-fn the_cases_keep_apart_and_within_one_region() {
+/// Runs the cases across a pinned line and in one region, and compares the two: the
+/// region of one judges the pinned pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "timed by arrival, for a quiet machine"]
+async fn redstone_across_a_pinned_line_matches_redstone_in_one_region() {
     let cases = cases();
-    let places: Vec<Place> = (0..cases.len()).map(|index| Place::of(index, 0)).collect();
+    let one = || {
+        let mut config = config();
+        (config.pins, config.follow) = (Vec::new(), None);
+        config
+    };
+    let (server, address) = start_with(one()).await;
+    let alone = run(&address, &cases, Layout::AtTheLine).await;
+    server.stop().await;
+    let mut pinned = one();
+    pinned.pins = vec![LINE_CHUNK];
+    let (server, address) = start_with(pinned).await;
+    let across = run(&address, &cases, Layout::AtTheLine).await;
+    server.stop().await;
+    judge(&cases, &alone, &across, ["one region", "two regions"]);
+}
+
+#[test]
+fn the_cases_keep_apart_within_one_region_or_across_the_line() {
+    let cases = cases();
+    let places: Vec<Place> = (0..cases.len())
+        .map(|index| Place::of(Layout::Grid, index, 0))
+        .collect();
     for (index, place) in places.iter().enumerate() {
         let (west, east) = (place.x - BOX_ACROSS, place.x + BOX_ACROSS);
         assert!(west >= 0 && east < 64, "case {index} leaves chunks 0 to 3");
         assert!(
             place.z + BOX_ACROSS < -12 || place.x - BOX_ACROSS > 12,
+            "case {index} is where players join"
+        );
+        for other in &places[index + 1..] {
+            let apart = (place.x - other.x).abs().max((place.z - other.z).abs());
+            assert!(apart > 2 * BOX_ACROSS, "case {index}'s box holds another's");
+        }
+    }
+    let places: Vec<Place> = (0..cases.len())
+        .map(|index| Place::of(Layout::AtTheLine, index, 0))
+        .collect();
+    for (index, place) in places.iter().enumerate() {
+        let (west, east) = (place.x - BOX_ACROSS, place.x + BOX_ACROSS);
+        assert!(
+            west < LINE_X && east >= LINE_X && west >= 0 && east < 2 * LINE_X,
+            "case {index} at the line is not across it"
+        );
+        assert!(
+            place.x - BOX_ACROSS > 12,
             "case {index} is where players join"
         );
         for other in &places[index + 1..] {

@@ -120,9 +120,13 @@ beyond the hotbar, and crafting.
   the line has the chunks across it that it reaches lent to the region that built it, so
   that the circuit runs in one region; where regions follow players, two whose line a
   circuit works at merge at once, and splits keep clear of it. Tests from the record by
-  someone who had not read the code (L5, 41 of them) found four defects, mended.
+  someone who had not read the code (L5, 41 of them) found four defects, mended. R8's
+  eleven circuits built across a pinned line send what they send in one region, on the
+  same ticks (L6), once a click that came with its chunk's grant waited for the chunk's
+  load instead of being lost.
 
-**Next:** L6, the comparison of lending at a line. S3 beside them. The judge of features, over 204 areas of two seeds with
+**Next:** entities, in the agreed order (then light in the simulation, then the
+Nether and the End). S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
@@ -146,7 +150,12 @@ move; and `cargo run --release -p clustine -- --seed 3` for regions that follow 
 5. With pins: stand at x = 66 and build wire towards the line from there, then walk
    back over: the lend waits while you stand in the chunk, and comes once you step
    back.
-6. Without pins: two players together; one builds a repeater clock with a lamp, and the
+6. With pins: place a lamp at x = 65 and at once a lever at x = 63 beside the line: the
+   lever is there, and flipping it lights the lamp.
+7. With pins: clear a circuit at the line and at once place a block where its last part
+   was. Not mended (ADR-0027, L6): in the few ticks while the chunk goes back, the block
+   may not appear; say if it ever does not.
+8. Without pins: two players together; one builds a repeater clock with a lamp, and the
    other walks away until the coordinator splits the region (about 32 chunks; its log
    says so). The split draws its line clear of the clock, which goes on running as
    before. (Regions that follow players merge by distance before their land touches, so
