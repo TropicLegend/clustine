@@ -76,7 +76,8 @@ pub struct StateDump {
     /// What a click or a ray hits, without a plant's offset.
     pub outline: Vec<ShapeBox>,
     /// What redstone asks of the state: bit 0 `isRedstoneConductor`, bit 1
-    /// `isSignalSource`, bit 2 `hasAnalogOutputSignal`.
+    /// `isSignalSource`, bit 2 `hasAnalogOutputSignal`, bit 3 that it cannot be broken
+    /// (`getDestroySpeed` is -1), which a piston does not move.
     pub redstone: u8,
     /// The questions whose answer looked at the level or changed with the position,
     /// such as `collision:block_entity`. Empty for a state that answers by itself.
@@ -290,10 +291,7 @@ fn state(line: &str, expected_id: usize) -> Result<StateDump> {
         outline: shape(fields[21])?,
         redstone: {
             let redstone: u8 = integer(fields[22])?;
-            ensure!(
-                redstone < 1 << 3,
-                "more redstone flags than the three asked"
-            );
+            ensure!(redstone < 1 << 4, "more redstone flags than the four asked");
             redstone
         },
         consulted: match fields[23] {

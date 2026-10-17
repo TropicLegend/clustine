@@ -289,6 +289,12 @@ impl StateProps {
         self.redstone(2)
     }
 
+    /// Whether the block cannot be broken, its `getDestroySpeed` being -1, as bedrock,
+    /// barriers and end portal frames: a piston moves none of them.
+    pub fn is_unbreakable(self) -> bool {
+        self.redstone(3)
+    }
+
     /// The faces that are sturdy for `support`, one bit a face, bit 0 for
     /// [`Face::Down`].
     pub fn sturdy_faces(self, support: SupportType) -> u8 {
@@ -306,7 +312,7 @@ impl StateProps {
     /// It is what the state answers and not the whole of whether a piston moves the
     /// block: the game also leaves alone what cannot be broken (bedrock answers
     /// [`PushReaction::PushPull`] here) and what keeps a block entity (a chest does
-    /// too). Neither a block's hardness nor that rule is in this table.
+    /// too). [`StateProps::is_unbreakable`] answers the first.
     pub fn push_reaction(self) -> PushReaction {
         match self.0[7] {
             0 => PushReaction::PushPull,
@@ -487,5 +493,11 @@ mod redstone_tests {
         assert!(analog(blocks::COMPOSTER));
         assert!(analog(blocks::CHEST));
         assert!(!analog(blocks::STONE));
+        let unbreakable = |state: crate::BlockState| state.props().is_unbreakable();
+        assert!(unbreakable(blocks::BEDROCK));
+        assert!(unbreakable(blocks::BARRIER));
+        assert!(unbreakable(blocks::END_PORTAL_FRAME));
+        assert!(!unbreakable(blocks::OBSIDIAN));
+        assert!(!unbreakable(blocks::STONE));
     }
 }

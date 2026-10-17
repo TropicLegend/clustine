@@ -300,9 +300,13 @@ public final class Extract {
             if (conductor != state.isRedstoneConductor(level, SECOND)) {
                 consulted.add("conductor:position");
             }
+            level.reset();
+            float destroyTime = state.getDestroySpeed(level, FIRST);
+            note(consulted, "destroy_time", level);
             int redstone = bit(0, conductor)
                 | bit(1, state.isSignalSource())
-                | bit(2, state.hasAnalogOutputSignal());
+                | bit(2, state.hasAnalogOutputSignal())
+                | bit(3, destroyTime == -1.0f);
             field(text, Integer.toString(redstone));
             field(text, consulted.isEmpty() ? "-" : String.join(",", consulted));
             text.append('\n');
