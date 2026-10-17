@@ -13,7 +13,7 @@ use crate::model::{BiomeReport, Block};
 use crate::packed::{self, Section};
 
 /// The layout of `block_states.bin`; the reader in `clustine-data` names the same.
-pub const BLOCK_STATES_LAYOUT: u16 = 2;
+pub const BLOCK_STATES_LAYOUT: u16 = 3;
 /// The layout of `biome_parameters.bin`.
 pub const BIOME_PARAMETERS_LAYOUT: u16 = 1;
 
@@ -66,9 +66,11 @@ const BLOCK_ENTITY: &[&str] = &[
     "collision:block_entity",
     "sturdy:block_entity",
     "outline:block_entity",
+    "conductor:block_entity",
 ];
-const SHULKER_BOX: &str = "Its shape is the box's as its block entity has it open. The row \
-     holds the answer without a block entity: the closed box, a full block. The flag says so.";
+const SHULKER_BOX: &str = "Its shape, and whether it conducts power, are the box's as its \
+     block entity has it open. The row holds the answer without a block entity: the closed \
+     box, a full block that conducts. The flag says so.";
 const SHIFTED: &str = "Its shape is shifted sideways by a number made from its position. The \
      row holds the shape at (0, 0, 0); whether it is empty or full does not change. The flag \
      says so.";
@@ -541,6 +543,7 @@ fn state_row(
     } else {
         0
     };
+    row[11] = state.redstone;
     row[12..14].copy_from_slice(&u16::try_from(set)?.to_le_bytes());
 
     let collision = shapes.number(state.collision.clone());
@@ -714,6 +717,7 @@ mod tests {
             occlusion_faces: Default::default(),
             collision: Vec::new(),
             outline: Vec::new(),
+            redstone: 0,
             consulted: Vec::new(),
         }
     }

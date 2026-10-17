@@ -2,7 +2,8 @@
 //!
 //! The values are in `generated/block_states.bin`, a packed table that `cargo datagen`
 //! makes by asking the game itself (ADR-0019, section 5): one row of 18 bytes for each
-//! state id, and behind the rows the distinct shapes the rows point into. This module
+//! state id (byte 11 being what redstone asks, since layout 3), and behind the rows the
+//! distinct shapes the rows point into. This module
 //! reads it. [`BlockState::props`] is the way in.
 //!
 //! Four kinds of block do not answer by their state alone, and their rows hold what
@@ -12,7 +13,7 @@ use crate::BlockState;
 use crate::packed::{self, Table};
 
 /// The layout of the table this module reads.
-pub const LAYOUT: u16 = 2;
+pub const LAYOUT: u16 = 3;
 
 const STATES: usize = 0;
 const FACE_SETS: usize = 1;
@@ -244,7 +245,8 @@ impl StateProps {
     /// shapes and the sturdy faces here are what it answers in one place only.
     ///
     /// - A shulker box and a moving piston look at their block entity. The row holds
-    ///   the answer without one: the closed box, and nothing to collide with.
+    ///   the answer without one: the closed box, which conducts power, and nothing to
+    ///   collide with.
     /// - Bamboo, pointed dripstone and a sulfur spike are shifted sideways by where
     ///   they stand. The row holds the shape at the position (0, 0, 0). Whether the
     ///   shape is empty or a full block does not depend on the position.
@@ -260,6 +262,31 @@ impl StateProps {
     /// tick so only where they decay; most blocks never.
     pub fn is_randomly_ticking(self) -> bool {
         self.flag(15)
+    }
+
+    /// What redstone asks of a state, in byte 11 of its row
+    /// (`docs/adr/0026-redstone.md`, section 1).
+    fn redstone(self, bit: u32) -> bool {
+        self.0[11] & (1 << bit) != 0
+    }
+
+    /// The game's `isRedstoneConductor`: whether power passes through the block, as
+    /// the game's own predicate answers it with the state alone. Pistons and observers
+    /// are not; soul sand and mud are.
+    pub fn is_redstone_conductor(self) -> bool {
+        self.redstone(0)
+    }
+
+    /// The game's `isSignalSource`: whether the block gives off power of its own, as
+    /// a lever, a torch, wire or a redstone block do.
+    pub fn is_signal_source(self) -> bool {
+        self.redstone(1)
+    }
+
+    /// The game's `hasAnalogOutputSignal`: whether a comparator reads a level from the
+    /// block, as from a cake or a composter.
+    pub fn has_analog_output_signal(self) -> bool {
+        self.redstone(2)
     }
 
     /// The faces that are sturdy for `support`, one bit a face, bit 0 for
@@ -426,5 +453,39 @@ impl Shape {
             let row = TABLE.row(BOXES, shape_box);
             [0, 8, 16, 24, 32, 40].map(|at| packed::row_f64(row, at))
         })
+    }
+}
+
+#[cfg(test)]
+mod redstone_tests {
+    use crate::blocks;
+
+    /// What the game answers of a few blocks it is known to answer for
+    /// (`docs/adr/0026-redstone.md`, section 1): power passes through stone, soul sand
+    /// and a closed shulker box, and not through glass, a piston, an observer or a
+    /// redstone block, which gives off power of its own.
+    #[test]
+    fn redstone_flags_are_the_games_answers() {
+        let conducts = |state: crate::BlockState| state.props().is_redstone_conductor();
+        let source = |state: crate::BlockState| state.props().is_signal_source();
+        let analog = |state: crate::BlockState| state.props().has_analog_output_signal();
+        assert!(conducts(blocks::STONE));
+        assert!(conducts(blocks::SOUL_SAND));
+        assert!(conducts(blocks::MUD));
+        assert!(conducts(blocks::SHULKER_BOX));
+        assert!(!conducts(blocks::GLASS));
+        assert!(!conducts(blocks::PISTON));
+        assert!(!conducts(blocks::OBSERVER));
+        assert!(!conducts(blocks::REDSTONE_BLOCK));
+        assert!(!conducts(blocks::AIR));
+        assert!(source(blocks::REDSTONE_BLOCK));
+        assert!(source(blocks::LEVER));
+        assert!(source(blocks::REDSTONE_TORCH));
+        assert!(source(blocks::REDSTONE_WIRE));
+        assert!(!source(blocks::STONE));
+        assert!(analog(blocks::CAKE));
+        assert!(analog(blocks::COMPOSTER));
+        assert!(analog(blocks::CHEST));
+        assert!(!analog(blocks::STONE));
     }
 }

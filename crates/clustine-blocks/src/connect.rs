@@ -420,26 +420,11 @@ fn is_signal_source(state: BlockState) -> bool {
     .any(|class| is_class(state, class))
 }
 
-/// Whether a block passes redstone power on, the game's `isRedstoneConductor`. By
-/// default that is a block whose collision is a full cube; the classes here say "never"
-/// in the game's code, and soul sand and mud "always". Not taken from the jar: an
-/// approximation that W6f judges.
+/// Whether a block passes redstone power on, the game's `isRedstoneConductor`, as the
+/// game answers it of the state (`docs/adr/0026-redstone.md`, section 1). It was a
+/// guess from the shapes until the table had the answer, and differed for 32 blocks:
+/// TNT, ice, glowstone, sea lanterns, copper bulbs and the chorus flower do not
+/// conduct, and spawners and closed shulker boxes do.
 pub fn is_conductor(state: BlockState) -> bool {
-    use BlockClass as C;
-    if same_block(state, blocks::SOUL_SAND) || same_block(state, blocks::MUD) {
-        return true;
-    }
-    let never = [
-        C::TransparentBlock,
-        C::LeavesBlock,
-        C::PistonBaseBlock,
-        C::ObserverBlock,
-        C::PoweredBlock,
-        C::BeaconBlock,
-        C::SpawnerBlock,
-        C::ShulkerBoxBlock,
-    ]
-    .into_iter()
-    .any(|class| is_class(state, class));
-    !never && state.props().collision_is_full_block()
+    state.props().is_redstone_conductor()
 }

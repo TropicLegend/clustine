@@ -292,6 +292,18 @@ public final class Extract {
             }
             field(text, collisionText);
             field(text, outlineText);
+
+            // What redstone asks of a state (docs/adr/0026-redstone.md, section 1).
+            level.reset();
+            boolean conductor = state.isRedstoneConductor(level, FIRST);
+            note(consulted, "conductor", level);
+            if (conductor != state.isRedstoneConductor(level, SECOND)) {
+                consulted.add("conductor:position");
+            }
+            int redstone = bit(0, conductor)
+                | bit(1, state.isSignalSource())
+                | bit(2, state.hasAnalogOutputSignal());
+            field(text, Integer.toString(redstone));
             field(text, consulted.isEmpty() ? "-" : String.join(",", consulted));
             text.append('\n');
         }

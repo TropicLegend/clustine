@@ -75,6 +75,9 @@ pub struct StateDump {
     pub collision: Vec<ShapeBox>,
     /// What a click or a ray hits, without a plant's offset.
     pub outline: Vec<ShapeBox>,
+    /// What redstone asks of the state: bit 0 `isRedstoneConductor`, bit 1
+    /// `isSignalSource`, bit 2 `hasAnalogOutputSignal`.
+    pub redstone: u8,
     /// The questions whose answer looked at the level or changed with the position,
     /// such as `collision:block_entity`. Empty for a state that answers by itself.
     pub consulted: Vec<String>,
@@ -228,8 +231,8 @@ pub fn states(text: &str) -> Result<Vec<StateDump>> {
 fn state(line: &str, expected_id: usize) -> Result<StateDump> {
     let fields: Vec<&str> = line.split('\t').collect();
     ensure!(
-        fields.len() == 23,
-        "{} fields where 23 are expected",
+        fields.len() == 24,
+        "{} fields where 24 are expected",
         fields.len()
     );
     ensure!(
@@ -285,7 +288,15 @@ fn state(line: &str, expected_id: usize) -> Result<StateDump> {
         occlusion_faces,
         collision: shape(fields[20])?,
         outline: shape(fields[21])?,
-        consulted: match fields[22] {
+        redstone: {
+            let redstone: u8 = integer(fields[22])?;
+            ensure!(
+                redstone < 1 << 3,
+                "more redstone flags than the three asked"
+            );
+            redstone
+        },
+        consulted: match fields[23] {
             "-" => Vec::new(),
             listed => listed.split(',').map(str::to_owned).collect(),
         },
@@ -499,7 +510,7 @@ mod tests {
         let line = format!(
             "0\tminecraft:thing\t7\t1\t2086\t63\t2\t1\tPOPPED\t2\t8\t1\t0\t0,1,0\t\
              -\t{full}\t{lower}\t{lower}\t{lower}\t{lower}\t{lower};{full}\t{lower}\t\
-             collision:block_entity"
+             5\tcollision:block_entity"
         );
         let read = states(&line).unwrap();
         assert_eq!(read.len(), 1);
@@ -509,6 +520,7 @@ mod tests {
         assert_eq!(state.flags, 2086);
         assert_eq!(state.sturdy, [63, 2, 1]);
         assert_eq!(state.push_reaction, "POPPED");
+        assert_eq!(state.redstone, 5, "a conductor with an analog output");
         assert_eq!(
             state.fluid,
             Some(FluidDump {
