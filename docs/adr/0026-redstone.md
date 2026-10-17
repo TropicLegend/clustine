@@ -476,6 +476,34 @@ subagent, read against the jar's own classes, which 26.3 ships unobfuscated):
   trapdoors and gates moved by power heard by everyone, a door's and a trapdoor's
   before its set and a gate's after, as in the jar.
 
+R3b, note blocks, bells, copper bulbs, rails, dripleaf, plates, tripwire, redstone ore
+(2026-10-17, by a subagent, read against the jar):
+
+- **The first typed block entity and the tickers are the bell's**
+  (`region/block_entities.rs`), as section 5 says: tickers in the order made, those
+  made during the phase waiting, a chunk's leaving at an unload and joining at the end,
+  in position order, at a load, waiting where the chunk does not tick. The tick's
+  phases are now block events, **entities**, block entities: the entity phase is where
+  plates and tripwire look for the region's players.
+- **Instruments are the jar's**: `clustine_blocks::note` with a table of the 796 blocks
+  whose instrument is not the harp, read from the jar's `Blocks` (a block's own
+  `instrument`, the block it copies, or its family's properties), not picked by hand.
+- **A left click plays no note and lights no ore**: in creative the jar's
+  `handleBlockBreakAction` breaks the block at once and never calls `attack`, and every
+  Clustine player is in creative. Survival will need `attack`.
+- Where SteelMC and the jar differ the jar holds: a bell under a ceiling needs the
+  centre's support; a tripwire hook that is no longer a hook at its own position stops.
+  With neighbours told of the block that was there (R3a), a redstone block placed
+  beside a junction of three rails does not turn it, and a lever does, as in the game.
+- **What a player's box presses is the box at the end of the tick's inputs**, not the
+  box swept along a move, so a fast walk over a plate within one tick does not press
+  it; nobody sneaks, as sneaking is not region state. A hook's line, up to 41 blocks,
+  can reach beyond three by three chunks: where it meets a block the region cannot
+  read, the hook does nothing.
+- Not built: a player head's own note (its NBT is not read), the bell's raiders and
+  resonance, shears on tripwire, game events and vibrations. A copper bulb has its
+  analog output for R4's comparators.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are
