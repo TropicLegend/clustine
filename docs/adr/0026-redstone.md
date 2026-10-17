@@ -634,6 +634,31 @@ With those, all 168 things the eleven circuits send come on the same tick on bot
 servers, in the same order. A sound's pitch, which both draw at random, is not
 compared.
 
+R8, what a busy circuit commits (2026-10-17, by me,
+`services/worker/src/tests/busy_circuits.rs`, a measurement of what is asked of the
+store, so neither disk's): a clock of four repeaters of delay 1 in a ring of three by
+three, alone and driving a line of 64 dust with a repeater before every 15, run for
+twenty seconds of game time and each commit encoded as the log writes it.
+
+| Circuit | Commits a second | Block changes a second | Log a second | A commit |
+|---|---|---|---|---|
+| The clock | 10 | 40 | 1.5 kB | 155 bytes |
+| The clock and 64 dust | 10 | 923, 381 of them a block's last in its commit | 14.7 kB | 1,468 bytes |
+
+- **A circuit commits in each tick it changes, and only then**: a delay of one
+  repeater tick changes something every second game tick, so ten commits a second,
+  each with the ticks of the chunks it changed, whole. None carried kept block events,
+  which only a piston that outlives its tick makes.
+- **Most of a busy line's changes are a block set again in the same tick**: the
+  game's wire steps a dust through its powers as the signal goes, and each step is a
+  change of the commit, which replay and copies apply in turn. Keeping only a block's
+  last state in a commit would cut such a line's log by about two and a half times. It
+  is not done: what a commit says is what replay, copies and the store's crash tests
+  rest on, so it waits for a design of its own. At 15 kB a second a busy line is a
+  small part of what the log takes, and no player sees it.
+- Copies' updates carry the same changes, for the chunks a neighbouring region copies:
+  a circuit by a line sends at most these numbers again.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

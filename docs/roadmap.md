@@ -111,7 +111,10 @@ beyond the hotbar, and crafting.
   mended. Compared with the official server (R8, `redstone_oracle.rs`): eleven
   circuits send the same things on the same ticks in the same order, once three
   differences were mended (a piston's moving blocks sent to clients, what a player's
-  action scheduled a tick late, a piston's move finishing a tick early).
+  action scheduled a tick late, a piston's move finishing a tick early). A busy
+  circuit commits in each tick it changes: a repeater clock ten times a second, 1.5 kB
+  of log a second, 14.7 kB with 64 dust behind it, more than half of that dust set again
+  in the same tick (R8, ADR-0026).
 - *Lending at a line* ([ADR-0027](adr/0027-lending-at-a-line.md), accepted after four
   reviews): L2 to L5 on 2026-10-17. Where regions are pinned, a circuit's part placed by
   the line has the chunks across it that it reaches lent to the region that built it, so
@@ -119,8 +122,7 @@ beyond the hotbar, and crafting.
   circuit works at merge at once, and splits keep clear of it. Tests from the record by
   someone who had not read the code (L5, 41 of them) found four defects, mended.
 
-**Next:** the rest of R8, a busy circuit's commits measured; L6, the comparison of
-lending at a line. S3 beside them. The judge of features, over 204 areas of two seeds with
+**Next:** L6, the comparison of lending at a line. S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).

@@ -4533,6 +4533,8 @@ mod tests {
         flushes: AtomicU64,
         /// The commits asked for that carried the ticks of chunks, in that order.
         ticked: Mutex<Vec<TickedCommit>>,
+        /// Every commit asked for, whole, in that order.
+        committed: Mutex<Vec<StoreRequest>>,
         /// The saves asked for, in that order: the chunk, the tick and what was saved.
         saved: Mutex<Vec<(ChunkPos, u64, Chunk)>>,
     }
@@ -4726,6 +4728,7 @@ mod tests {
             }
             if let StoreRequest::Commit { tick, stays, .. } = &request {
                 self.control.commits.lock().unwrap().push(*tick);
+                self.control.committed.lock().unwrap().push(request.clone());
                 if !stays.is_empty() {
                     let mut noted = self.control.noted.lock().unwrap();
                     noted.push((*tick, stays.clone()));
@@ -15100,6 +15103,7 @@ mod tests {
         }
     }
 
+    mod busy_circuits;
     mod generation;
     mod scheduled_ticks;
     mod stays;
