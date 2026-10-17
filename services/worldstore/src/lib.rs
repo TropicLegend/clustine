@@ -55,6 +55,8 @@ mod kill_regions;
 #[cfg(test)]
 mod kill_unpinned;
 #[cfg(test)]
+mod r7_redstone_kill;
+#[cfg(test)]
 mod regions;
 #[cfg(test)]
 mod replayed_marks_and_seams;

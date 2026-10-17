@@ -230,7 +230,8 @@ checkpoint, and to a crash at every point of a commit with both kinds of change.
   with block entities immovable, quasi-connectivity (the five sides but the face,
   then the piston's own position downward, then the block above), the block events
   (0 to extend, 1 to retract, 2 to retract at once when the block two ahead is a
-  moving piston extending the same way and it is less than half way, has ticked this
+  moving piston extending the same way and it was less than half way before its last
+  tick (the game's `getProgress(0)`, `progressO`), has ticked this
   tick, or the level handles its tick), sticky pistons that drop their block on a
   short pulse.
 - **Players are pushed and launched.** The client owns its player's position: the
@@ -590,6 +591,19 @@ hand out):
 - A block broken by another player is heard already, by the level event 2001 that
   clients play the breaking sound of; lava's hiss is its level event. Fluids make no
   other sound the server sends.
+
+R7, tests written from this record and the jar by someone who had not read the code
+(2026-10-17): 66 of the simulation (`region/tests/r7/`: signals, diodes, pistons and the
+ground) and 4 of the store killed at every point of a redstone history
+(`r7_redstone_kill.rs`). They found:
+
+- **A sticky piston unpowered one tick after extending retracted with event 1, not 2.**
+  The game reads the moving block's progress before its last tick, which is still 0
+  then; Clustine read the progress after it. Mended; section 9 says which progress.
+- Section 1's list of what waits where the chunk does not tick was read, as built, as the
+  uses and placements that read a signal, not every rule of a door; the tests hold that.
+- Two observers facing each other pulse every 6 ticks by the jar's order, worked out
+  independently of R4; R8 compares it with the official server.
 
 ## Review
 

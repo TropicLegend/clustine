@@ -2385,6 +2385,7 @@ mod tests {
     mod pistons;
     mod post_processing_and_seams;
     mod pressed;
+    mod r7;
     mod rails_and_bulbs;
     mod redstone;
     mod redstone_ground;

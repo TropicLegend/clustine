@@ -111,7 +111,9 @@ impl Region {
                 && clustine_blocks::data::facing(state) == Some(facing)
         }) && self.moving_piston(pushed).is_some_and(|moving| {
             moving.extending
-                && (moving.progress < 1 || moving.last_ticked == self.tick || self.handling_tick())
+                && (moving.progress_before < 1
+                    || moving.last_ticked == self.tick
+                    || self.handling_tick())
         });
         let event = if at_once { RETRACT_AT_ONCE } else { RETRACT };
         let pulled = if flag_sticky(state) {
