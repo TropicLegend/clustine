@@ -435,6 +435,47 @@ R2c, the edge (2026-10-17):
   events a client can be compared by, and is R8's with the rest; the packets' layouts
   are SteelMC-26.3's (`c_sound.rs`, `c_block_event.rs`).
 
+What redstone asks of a state (2026-10-17, before R3): the extract program asks the
+game's `isRedstoneConductor`, `isSignalSource` and `hasAnalogOutputSignal` of every
+state, kept in byte 11 of the table's rows (layout 3); a shulker box answers by its
+block entity and the row holds the closed box's answer. The guess from shapes that wire
+used before differed for 32 blocks (TNT, ice, glowstone, sea lanterns, copper bulbs and
+the chorus flower do not conduct; spawners and closed shulker boxes do).
+
+R3a, levers, buttons, wire, lamps, doors, trapdoors and gates (2026-10-17, by a
+subagent, read against the jar's own classes, which 26.3 ships unobfuscated):
+
+- **A change of block tells its neighbours of the block that was there**: the jar's
+  `Level.setBlock` passes `updateNeighborsAt` the state `setBlockState` returned, the
+  old one. R2b's note above, that a multiple update keeps "the block that changed as it
+  was when the update was made", is to be read so: the block the change replaced.
+  `set_block_updated` also runs the old block's `affectNeighborsAfterRemoval`, only
+  where the block is another and the neighbours are told or a piston moved it, as
+  `LevelChunk.setBlockState` does, then the new block's `onPlace`; it tells comparators
+  of a block with an analog output; and it asks the old block's indirect shapes, then
+  the neighbours', then the new block's, as `Level.setBlock` orders them.
+- **Wire is the game's `calculateTargetStrength`**, not SteelMC's Lithium-shaped one,
+  which skips the direction back; its `onPlace` updates up and then down, as the jar's
+  `Direction.Plane.VERTICAL` is `{UP, DOWN}`, where SteelMC and Pumpkin go down first.
+  The seven positions of its update are in `HashSet` order, ported from SteelMC with
+  its fixtures and seen in the jar (the evaluator sets the wire with flag 2 only if it
+  is still the state it measured).
+- **A click on a lever, a button or wire runs its rule** (`Clicked::ByRule`); wire's
+  dot and cross reads its neighbours, so wire joins the comparator in
+  `use_reads_signal`. A wire whose use changes nothing passes, and the held item is
+  placed, as the game's PASS does.
+- **Placement reads power** (a lamp lit, a door, a trapdoor or a gate open and
+  powered), and a placement whose state is worked out from a signal, wire's included,
+  is refused where the target's chunk does not tick (`placing_reads_signal`).
+- Wire set in a chunk that does not tick waits as a kept update of itself, and wire
+  removed there tells all seven positions, each kept until its chunk ticks: a few more
+  updates than the game makes, in a rare case.
+- Sounds: a lever's click at 0.3, pitch 0.6 on and 0.5 off, heard by everyone; a
+  button's click on by its block set, left out for the presser, its click off heard by
+  everyone, released after 20 ticks (stone, polished blackstone) or 30 (wood); doors,
+  trapdoors and gates moved by power heard by everyone, a door's and a trapdoor's
+  before its set and a gate's after, as in the jar.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are
