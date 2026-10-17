@@ -47,6 +47,8 @@ pub(crate) enum Rule {
     Wall,
     RedstoneWire,
     Rail,
+    /// A redstone lamp, lit where power is beside it.
+    Lamp,
     Bed,
     FaceAttached,
     Ladder,
@@ -117,6 +119,7 @@ fn class_rule(class: BlockClass) -> Option<Rule> {
         C::WallBlock => Rule::Wall,
         C::RedstoneWireBlock => Rule::RedstoneWire,
         C::BaseRailBlock => Rule::Rail,
+        C::RedstoneLampBlock => Rule::Lamp,
         C::AbstractBedBlock => Rule::Bed,
         C::FaceAttachedHorizontalDirectionalBlock => Rule::FaceAttached,
         C::LadderBlock => Rule::Ladder,
@@ -244,8 +247,11 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
             let state = set(block, "facing", horizontal.name());
             let state = set(state, "hinge", door_hinge(context));
             let state = set(state, "half", "lower");
-            let state = data::set_flag(state, "open", false);
-            data::set_flag(state, "powered", false)
+            // Powered beside either half, it is placed open.
+            let powered = has_neighbour_signal(context, target)
+                || has_neighbour_signal(context, Dir::Up.relative(target));
+            let state = data::set_flag(state, "open", powered);
+            data::set_flag(state, "powered", powered)
         }
         Rule::TrapDoor => {
             let state = if !context.replace_clicked && face.is_horizontal() {
@@ -262,13 +268,15 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
                     if face == Dir::Up { "bottom" } else { "top" },
                 )
             };
-            data::set_flag(data::set_flag(state, "open", false), "powered", false)
+            let powered = has_neighbour_signal(context, target);
+            data::set_flag(data::set_flag(state, "open", powered), "powered", powered)
         }
         Rule::FenceGate => {
             let in_wall = connect::gate_in_wall(target, horizontal, &mut View(world));
+            let powered = has_neighbour_signal(context, target);
             let state = set(block, "facing", horizontal.name());
-            let state = data::set_flag(state, "open", false);
-            let state = data::set_flag(state, "powered", false);
+            let state = data::set_flag(state, "open", powered);
+            let state = data::set_flag(state, "powered", powered);
             data::set_flag(state, "in_wall", in_wall)
         }
         Rule::Fence => connect::fence(block, target, &mut View(world)),
@@ -283,6 +291,7 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
             };
             set(block, "shape", shape)
         }
+        Rule::Lamp => data::set_flag(block, "lit", has_neighbour_signal(context, target)),
         Rule::Bed => {
             let head = world.known(horizontal.relative(target))?;
             if !can_be_replaced(head, context) {
@@ -468,6 +477,14 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
             }
         }
     })
+}
+
+/// `Level.hasNeighborSignal` of the blocks a placement reads: whether a neighbour of
+/// `pos` gives it power, read before the block is placed. A placement that reads it
+/// is made only where its chunk ticks, where all it reads is there
+/// (`docs/adr/0026-redstone.md`, section 1).
+fn has_neighbour_signal(context: &Context, pos: BlockPos) -> bool {
+    clustine_blocks::signal::has_neighbour_signal(&mut View(&context.world), pos)
 }
 
 /// The wall form of a block: `facing` away from the first horizontal looking direction
@@ -738,6 +755,7 @@ mod tests {
                 Rule::Wall => &["north", "east", "south", "west", "up"],
                 Rule::RedstoneWire => &["north", "east", "south", "west"],
                 Rule::Rail => &["shape"],
+                Rule::Lamp => &["lit"],
                 Rule::Bed => &["facing", "part"],
                 Rule::FaceAttached => &["face", "facing"],
                 Rule::Lantern => &["hanging"],

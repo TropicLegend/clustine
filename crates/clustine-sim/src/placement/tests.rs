@@ -79,7 +79,7 @@ fn click_and_place(click: &Click, blocks: &dyn Blocks) -> Option<Vec<(BlockPos, 
             clicked,
         } => place(click, target, replace_clicked, clicked, blocks, &[]),
         Clicked::Used { changes, .. } => Some(changes),
-        Clicked::Nothing => None,
+        Clicked::Nothing | Clicked::ByRule { .. } => None,
     }
 }
 

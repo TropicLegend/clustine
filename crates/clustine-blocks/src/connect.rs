@@ -313,7 +313,7 @@ pub fn redstone_wire_shape<V: BlockView + ?Sized>(
 
 /// The game's `getConnectionState`: the sides a wire's neighbours connect, kept a dot
 /// where it was one and still is.
-fn wire_connection_state<V: BlockView + ?Sized>(
+pub fn wire_connection_state<V: BlockView + ?Sized>(
     state: BlockState,
     pos: BlockPos,
     view: &mut V,
@@ -335,7 +335,8 @@ fn wire_connection_state<V: BlockView + ?Sized>(
     wire_cross_where_alone(found)
 }
 
-fn wire_is_cross(state: BlockState) -> bool {
+/// Whether wire runs to all four sides (the game's `isCross`).
+pub fn wire_is_cross(state: BlockState) -> bool {
     HORIZONTAL.into_iter().all(|towards| {
         state
             .property(face_name(towards))
@@ -343,7 +344,8 @@ fn wire_is_cross(state: BlockState) -> bool {
     })
 }
 
-fn wire_is_dot(state: BlockState) -> bool {
+/// Whether wire runs to no side (the game's `isDot`).
+pub fn wire_is_dot(state: BlockState) -> bool {
     HORIZONTAL
         .into_iter()
         .all(|towards| state.property(face_name(towards)) == Some("none"))

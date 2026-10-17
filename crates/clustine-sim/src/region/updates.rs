@@ -15,10 +15,13 @@
 //! - an update another region sent that cannot run yet is kept as a seam entry in its
 //!   own chunk, and a seam entry whose block comes to be another region's is sent on.
 //!
-//! `neighborChanged` only removes what can no longer stay (rails, repeaters and
-//! comparators, redstone wire) and has a liquid look again; it is told the block that
-//! changed and whether a piston moved it, which redstone's rules read
-//! (`docs/adr/0026-redstone.md`, section 2).
+//! `neighborChanged` removes what can no longer stay (rails, repeaters and
+//! comparators), has a liquid look again, and runs redstone's rules (wire, lamps,
+//! doors, trapdoors and gates, in `redstone.rs`); it is told the block that changed
+//! and whether a piston moved it (`docs/adr/0026-redstone.md`, section 2). A change of
+//! block tells its neighbours of the block that was there, as the game's
+//! `Level.setBlock` does, and runs what the old block does as it goes
+//! (`affectNeighborsAfterRemoval`) and the new one as it is placed (`onPlace`).
 
 use clustine_blocks::BlockView;
 use clustine_blocks::data::{is_class, same_block};
@@ -99,7 +102,6 @@ enum Pending {
     /// `block`, towards `from`, changed. `from` is a neighbour, or the block an update
     /// came through (`updateNeighbourForOutputSignal`), and is where the update is kept
     /// if it cannot be made.
-    #[cfg_attr(not(test), allow(dead_code))]
     Single {
         pos: BlockPos,
         from: Face,
@@ -165,6 +167,16 @@ impl Region {
             position: pos,
             state,
         });
+        // `affectNeighborsAfterRemoval` of the block that went, inside the chunk's set
+        // in the game, before the new block's `onPlace`: only where the block is
+        // another and the neighbours are to be told, or a piston moved it.
+        let moved_by_piston = flags & UPDATE_MOVE_BY_PISTON != 0;
+        if !same_block(old, state) && (flags & UPDATE_NEIGHBORS != 0 || moved_by_piston) {
+            self.redstone_after_removal(pos, old, moved_by_piston, output);
+        }
+        // Wire placed works out its power and tells the blocks around it
+        // (`RedStoneWireBlock.onPlace`).
+        self.redstone_on_place(pos, state, old, output);
         // `onPlace`, inside the chunk's set in the game: a block that falls looks two
         // ticks on whether it is held up (`FallingBlock.onPlace`, `BrushableBlock`'s).
         if is_class(state, BlockClass::FallingBlock) || is_class(state, BlockClass::BrushableBlock)
@@ -188,11 +200,19 @@ impl Region {
         if self.block(pos) != Some(state) {
             return true;
         }
+        // The neighbours are told of the block that was there, as the game's
+        // `Level.setBlock` tells them, and a comparator of a block with an output.
         if flags & UPDATE_NEIGHBORS != 0 {
-            self.update_neighbours_at(pos, state, output);
+            self.update_neighbours_at(pos, old, output);
+            if state.props().has_analog_output_signal() {
+                self.update_neighbour_for_output_signal(pos, state, output);
+            }
         }
         if flags & UPDATE_KNOWN_SHAPE == 0 && depth > 0 {
             let passed = flags & !(UPDATE_NEIGHBORS | UPDATE_SUPPRESS_DROPS);
+            // `updateIndirectNeighbourShapes` of the block that was there, then the
+            // neighbours' shapes, then the new block's: wire's diagonals.
+            self.wire_indirect_shapes(pos, old, passed, depth - 1, output);
             for direction in UPDATE_SHAPE_ORDER {
                 let neighbour = relative(pos, direction);
                 self.add_and_run(
@@ -206,6 +226,7 @@ impl Region {
                     output,
                 );
             }
+            self.wire_indirect_shapes(pos, state, passed, depth - 1, output);
         }
         true
     }
@@ -346,8 +367,6 @@ impl Region {
     /// `Level.updateNeighborsAtExceptFromFacing`: as [`Self::update_neighbours_at`],
     /// but for the neighbour towards `skip`, which a diode or an observer has told
     /// already.
-    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn update_neighbours_at_except(
         &mut self,
         pos: BlockPos,
@@ -369,8 +388,6 @@ impl Region {
     /// `Level.neighborChanged(pos, block, orientation)`, and with `moved_by_piston`
     /// the game's `neighborChanged` of a state: the block at `pos` is told that
     /// `block`, towards `from`, changed.
-    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn neighbour_changed_at(
         &mut self,
         pos: BlockPos,
@@ -393,8 +410,6 @@ impl Region {
     /// `Level.updateNeighbourForOutputSignal(pos, block)`: a comparator beside `pos`,
     /// or one beyond a conductor beside it, is told that `block` changed, for each
     /// side in the game's horizontal order (north, east, south, west).
-    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn update_neighbour_for_output_signal(
         &mut self,
         pos: BlockPos,
@@ -419,6 +434,29 @@ impl Region {
                 }
             }
         }
+    }
+
+    /// `Level.neighborShapeChanged`: the block at `pos` takes its shape again, its
+    /// neighbour towards `direction` being now `neighbour`, as the updater runs it.
+    pub(super) fn shape_changed_at(
+        &mut self,
+        pos: BlockPos,
+        direction: Face,
+        neighbour: BlockState,
+        flags: u32,
+        depth: i32,
+        output: &mut TickOutput,
+    ) {
+        self.add_and_run(
+            Pending::Shape {
+                pos,
+                direction,
+                neighbour,
+                flags,
+                depth,
+            },
+            output,
+        );
     }
 
     /// `CollectingNeighborUpdater.addAndRun`.
@@ -606,13 +644,14 @@ impl Region {
         self.set_block_updated(pos, fluid_block(state), UPDATE_ALL, depth, output);
     }
 
-    /// `neighborChanged` of the block at `pos`, for what goes when it can no longer
-    /// stay: rails, repeaters and comparators, redstone wire (`removeBlock`, without
-    /// the bits of a broken block).
+    /// `neighborChanged` of the block at `pos`: a liquid looks again; rails, repeaters
+    /// and comparators go when they can no longer stay (`removeBlock`, without the bits
+    /// of a broken block); wire goes or works out its power again; lamps, doors,
+    /// trapdoors and gates follow the power beside them (`redstone.rs`).
     ///
     /// `block` is the block that changed and `moved_by_piston` whether a piston moved
-    /// it, as the game's `neighborChanged` is given them; nothing reads them before
-    /// the rules of redstone (`docs/adr/0026-redstone.md`, section 2).
+    /// it, as the game's `neighborChanged` is given them (`docs/adr/0026-redstone.md`,
+    /// section 2): a door is not moved by an update from its own kind.
     fn neighbour_changed(
         &mut self,
         pos: BlockPos,
@@ -620,7 +659,8 @@ impl Region {
         moved_by_piston: bool,
         output: &mut TickOutput,
     ) {
-        let _ = (block, moved_by_piston);
+        // Nothing of this step reads whether a piston moved the block (R5's pistons).
+        let _ = moved_by_piston;
         if !self.may_run_at(pos) {
             return;
         }
@@ -636,9 +676,13 @@ impl Region {
             self.rail_neighbour_changed(pos, state, output);
             return;
         }
-        let removable = is_class(state, BlockClass::DiodeBlock)
-            || is_class(state, BlockClass::RedstoneWireBlock);
-        if removable && !can_survive(state, pos, &mut RegionView(self)) {
+        // Wire, lamps, doors, trapdoors and gates (`redstone.rs`).
+        if self.redstone_neighbour_changed(pos, state, block, output) {
+            return;
+        }
+        if is_class(state, BlockClass::DiodeBlock)
+            && !can_survive(state, pos, &mut RegionView(self))
+        {
             self.set_block(pos, fluid_block(state), output);
         }
     }

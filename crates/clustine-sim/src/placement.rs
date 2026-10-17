@@ -68,6 +68,11 @@ pub enum Clicked {
         changes: Vec<(BlockPos, BlockState)>,
         flags: u32,
     },
+    /// The clicked block's own rule is its use (`useWithoutItem`), which the region
+    /// runs inside its updater, reading the blocks as the rule reads them: a lever
+    /// toggled, a button pressed, wire turned from a dot to a cross
+    /// (`docs/adr/0026-redstone.md`, section 7).
+    ByRule { position: BlockPos },
     /// A block is to be placed at `target` (`T`), which the region that holds it does
     /// with [`place`]. `replace_clicked` is whether `T` is the clicked block itself,
     /// and `clicked` the clicked block's state as read here (section 4.5).
@@ -86,7 +91,12 @@ pub fn click(click: &Click, blocks: &dyn Blocks) -> Clicked {
     };
     // Sneaking with something in hand passes the block by and places against it.
     if !(click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
-        return use_block(click, clicked, blocks);
+        let used = use_block(click, clicked, blocks);
+        // Wire that is neither a dot nor a cross, or would not change, passes the click
+        // on to the item in hand (`InteractionResult.PASS`).
+        if !(used == Clicked::Nothing && data::is(clicked, BlockClass::RedstoneWireBlock)) {
+            return used;
+        }
     }
     if placing(click.held, true).is_none() {
         return Clicked::Nothing;
@@ -139,7 +149,8 @@ const USED_POT: u32 = 1 | 2;
 
 /// What using `state` does: doors, trapdoors and fence gates open and close, a flower
 /// goes into an empty pot, each set as the game's `useWithoutItem` and `useItemOn` set
-/// it, and every other used block does nothing yet.
+/// it; a lever, a button and wire that changes are used by their own rules; and every
+/// other used block does nothing yet.
 fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     let position = click.position;
     let flip_open = |state: BlockState| data::set_flag(state, "open", !data::flag(state, "open"));
@@ -186,6 +197,20 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
             data::set_flag(state, "open", true)
         };
         return used(changed, USED_DOOR);
+    }
+    // A lever, a button and wire use themselves by rules that tell their neighbours,
+    // which the region runs.
+    if data::is(state, BlockClass::LeverBlock) || data::is(state, BlockClass::ButtonBlock) {
+        return Clicked::ByRule { position };
+    }
+    if data::is(state, BlockClass::RedstoneWireBlock) {
+        let world = World::new(blocks, position, state);
+        let changes =
+            clustine_blocks::signal::wire_used(&mut context::View(&world), state, position);
+        return match changes {
+            Some(_) => Clicked::ByRule { position },
+            None => Clicked::Nothing,
+        };
     }
     if data::is(state, BlockClass::FlowerPotBlock) && data::info(state).potted == Some(0) {
         let plant = click.held.and_then(data::item).and_then(|item| item.places);

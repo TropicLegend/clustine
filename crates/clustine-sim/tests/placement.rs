@@ -149,7 +149,8 @@ fn as_changes(list: Vec<(BlockPos, BlockState)>) -> Changes {
 /// changes.
 fn changes_among(click: &Click, world: &World, bodies: &[[f64; 6]]) -> Changes {
     match placement::click(click, world) {
-        Clicked::Nothing => Changes::new(),
+        // A use by the block's own rule is the region's to run, with its updates.
+        Clicked::Nothing | Clicked::ByRule { .. } => Changes::new(),
         Clicked::Used { changes, .. } => as_changes(changes),
         Clicked::Place {
             target,
@@ -184,7 +185,7 @@ fn comes_to_nothing(clicked: &Clicked) -> bool {
     match clicked {
         Clicked::Nothing => true,
         Clicked::Used { changes, .. } => changes.is_empty(),
-        Clicked::Place { .. } => false,
+        Clicked::ByRule { .. } | Clicked::Place { .. } => false,
     }
 }
 

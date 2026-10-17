@@ -492,6 +492,10 @@ impl Region {
 
     /// One block's `tick`.
     fn block_tick(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
+        // A button let go, a lamp put out (`redstone.rs`).
+        if self.redstone_tick(pos, state, output) {
+            return;
+        }
         if self.fire_block_tick(pos, state, output) {
             return;
         }

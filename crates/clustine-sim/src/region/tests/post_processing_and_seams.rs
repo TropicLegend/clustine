@@ -507,7 +507,9 @@ fn a_torch_and_a_ladder_whose_wall_went_while_their_chunk_was_away_go_when_it_co
 
 /// An update that cannot be made is kept in the chunk of the block that changed, with
 /// the block it reaches, the direction from that block to the one that changed, its
-/// kind, the block that changed as it is now, the update's flags and the depth left.
+/// kind, the update's flags and the depth left; a shape update with the block that
+/// changed as it is now, a neighbour told with the block that was there, which is the
+/// block the game's `Level.setBlock` tells the neighbours of.
 /// A player's break is `UPDATE_ALL` at the full depth: the shape update it makes goes
 /// with `UPDATE_CLIENTS` (the game takes out `UPDATE_NEIGHBORS` and
 /// `UPDATE_SUPPRESS_DROPS`) and one level down.
@@ -536,7 +538,7 @@ fn an_entry_is_kept_in_the_chunk_of_the_block_that_changed_with_what_the_update_
     let told = entries(&region, NEAR, torch, SeamKind::Neighbour);
     assert_eq!(told.len(), 1, "{told:?}");
     assert_eq!(told[0].direction, Face::West as u8);
-    assert_eq!(told[0].source, blocks::AIR);
+    assert_eq!(told[0].source, blocks::STONE);
     // Kept with the chunk that changed, and in its saved form.
     let saved = region.saved_chunk(NEAR).unwrap();
     assert!(saved.seams().contains(&shape[0]));
@@ -592,7 +594,8 @@ fn a_later_update_with_the_same_key_replaces_the_entry() {
     assert_eq!(shape[0].source, blocks::DIRT);
     let told = entries(&region, NEAR, torch, SeamKind::Neighbour);
     assert_eq!(told.len(), 1);
-    assert_eq!(told[0].source, blocks::DIRT);
+    // Told of the air the dirt took the place of.
+    assert_eq!(told[0].source, blocks::AIR);
 }
 
 /// No entry is kept for a position outside the world's height: a block at the top of

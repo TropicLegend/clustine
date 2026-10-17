@@ -21,6 +21,7 @@ mod block_events;
 mod fluids;
 mod rails;
 mod random_ticks;
+mod redstone;
 mod reshape;
 mod ticks;
 mod updates;
@@ -1544,6 +1545,10 @@ impl Region {
                     self.use_block(&changes, flags, action.player, output);
                     return None;
                 }
+                Clicked::ByRule { position } => {
+                    self.use_by_rule(position, action.player, output);
+                    return None;
+                }
                 Clicked::Place {
                     target,
                     replace_clicked,
@@ -1575,8 +1580,17 @@ impl Region {
         }
         let readable = Readable(self);
         let placed = placement::place(click, target, replace_clicked, clicked, &readable, &bodies);
+        // A placement that reads a signal, or what is two blocks away, is made only where
+        // its chunk ticks, as the predicate worked out at the end of the tick before
+        // says (`docs/adr/0026-redstone.md`, section 1): elsewhere it could read a block
+        // that is not there as air.
         if let Some(changes) = placed {
-            self.change_all(&changes, output);
+            let reads = changes
+                .iter()
+                .any(|(_, state)| clustine_blocks::signal::placing_reads_signal(*state));
+            if !reads || self.ticks_chunk(target.chunk()) {
+                self.change_all(&changes, output);
+            }
         }
         None
     }
@@ -2229,6 +2243,7 @@ mod tests {
     mod effects;
     mod fluids;
     mod post_processing_and_seams;
+    mod redstone;
     mod redstone_ground;
     mod scheduled_ticks;
 
