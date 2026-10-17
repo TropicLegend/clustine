@@ -1597,6 +1597,7 @@ fn a_merge_that_may_not_be_is_declined_with_its_reason() {
         chunks: Vec::new(),
         pinned: gap().pinned[1..].to_vec(),
         in_use: Vec::new(),
+        lends: clustine_rpc::Lends::default(),
     };
     assert_eq!(absorb(&survivor, 1, 5, 8), done);
 }
@@ -1623,6 +1624,7 @@ fn a_merge_gives_the_survivor_all_the_absorbed_region_had() {
         chunks: vec![FREE],
         pinned: gap().pinned[1..].to_vec(),
         in_use: vec![FREE],
+        lends: clustine_rpc::Lends::default(),
     };
     assert_eq!(absorb(&survivor, 1, 3, 10), done);
     // The other region is none any more: its handle is lost, and nobody opens it.
@@ -2087,6 +2089,13 @@ fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
 
     give_back(&part, &[first]);
     part.flush();
+    // The pinned region is told it has its chunk back (ADR-0027, section 1).
+    assert_eq!(
+        reply(&pinned),
+        StoreReply::PinnedBack {
+            chunks: vec![first]
+        }
+    );
     assert_eq!(load(&pinned, first), generator().generate(first));
     pinned.request(StoreRequest::Load { position: second });
     assert!(matches!(reply(&pinned), StoreReply::NotHeld { .. }));
@@ -2096,6 +2105,7 @@ fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
         chunks: vec![second],
         pinned: Vec::new(),
         in_use: Vec::new(),
+        lends: clustine_rpc::Lends::default(),
     };
     assert_eq!(absorb(&pinned, 3, 1, 6), merged);
     assert_eq!(load(&pinned, second), generator().generate(second));
@@ -2306,6 +2316,7 @@ fn absorbed_with(reply: StoreReply) -> (u32, Vec<ChunkPos>, Ends) {
             chunks,
             pinned,
             in_use: _,
+            lends: _,
         } => (absorbed.0, chunks, in_order(&pinned)),
         other => panic!("expected the answer to a merge, got {other:?}"),
     }

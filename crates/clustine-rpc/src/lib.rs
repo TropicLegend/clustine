@@ -16,8 +16,8 @@ pub use clustine_sim::api::{ItemStack, Pose};
 pub use clustine_sim::{Place, StayNote};
 pub use messages::{
     Assignment, ChunkBox, CopyUse, Coupling, Crowds, Decline, EdgeMessage, EdgeToWorker,
-    FromCoordinator, Off, PlayersOf, Presence, RegionHello, RegionInfo, RegionList, RegionWelcome,
-    Restored, RestoredItem, RestoredPart, RestoredPiece, SplitPart, StoreHello, StoreReply,
-    StoreRequest, StoreWelcome, TickState, ToCoordinator, Uncoupling, Vouch, Welcome, WorkerToEdge,
-    held_bytes, held_from_bytes, in_use_bytes, in_use_from_bytes,
+    FromCoordinator, Lends, Off, PlayersOf, Presence, RegionHello, RegionInfo, RegionList,
+    RegionWelcome, Restored, RestoredItem, RestoredPart, RestoredPiece, SplitPart, StoreHello,
+    StoreReply, StoreRequest, StoreWelcome, TickState, ToCoordinator, Uncoupling, Vouch, Welcome,
+    WorkerToEdge, held_bytes, held_from_bytes, in_use_bytes, in_use_from_bytes,
 };

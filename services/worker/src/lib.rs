@@ -1047,6 +1047,7 @@ impl RegionRunner {
             handshakes: mem::take(&mut restored.handshakes),
             held: Vec::new(),
             pinned: Vec::new(),
+            lends: mem::take(&mut restored.lends),
             ..restored
         };
         let state = restored_state(restored)?;
@@ -1412,6 +1413,14 @@ impl RegionRunner {
     fn take_replies(&mut self) -> bool {
         while let Some(reply) = self.store.try_reply() {
             match reply {
+                // No region asks for a lend before step L3 of
+                // `docs/adr/0027-lending-at-a-line.md`, and the store sends none of these
+                // to one that has not.
+                StoreReply::LendAsked { .. }
+                | StoreReply::NotLent { .. }
+                | StoreReply::LendCalledOff { .. }
+                | StoreReply::Lent { .. }
+                | StoreReply::PinnedBack { .. } => {}
                 StoreReply::Loaded { position, chunk } => {
                     self.generating.remove(&position);
                     if self.answers_the_latest_load(position) {
@@ -1966,6 +1975,7 @@ impl RegionRunner {
                     chunks,
                     pinned,
                     in_use,
+                    lends: _,
                 },
                 Plan::Absorb {
                     state: Some(state), ..
@@ -4584,7 +4594,10 @@ mod tests {
                 | StoreRequest::Beside { .. }
                 | StoreRequest::Dropped { .. }
                 | StoreRequest::JoinsAt { .. }
-                | StoreRequest::EndCouplings => return None,
+                | StoreRequest::EndCouplings
+                | StoreRequest::Lend { .. }
+                | StoreRequest::LendRefused { .. }
+                | StoreRequest::Lending { .. } => return None,
             })
         }
     }
@@ -7327,6 +7340,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: clustine_rpc::Lends::default(),
         };
         // Of this build by its first two bytes, and nothing postcard can read behind.
         let unreadable = |tick| clustine_rpc::TickState {
@@ -7685,6 +7699,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: clustine_rpc::Lends::default(),
         };
         let (state, delta) = a_state_and_a_delta();
         let item = |tick, state| clustine_rpc::TickState { tick, state };

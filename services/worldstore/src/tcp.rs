@@ -327,6 +327,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         handshakes,
         held_tick,
         given_up,
+        lends,
     } = restored;
     stream.set_write_timeout(Some(patience))?;
     let accepted = StoreWelcome::Accepted {
@@ -340,6 +341,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         handshakes,
         held_tick,
         given_up,
+        lends,
     };
     wire::blocking::write(&mut &*stream, &accepted)?;
     for part in Parts::new(state, deltas, &held, &in_use, PART_BYTES) {
@@ -506,6 +508,7 @@ impl Arriving {
                 handshakes: Vec::new(),
                 held_tick: None,
                 given_up: false,
+                lends: clustine_rpc::Lends::default(),
             },
             cut: None,
             held: false,
@@ -730,6 +733,7 @@ fn welcomed(
             handshakes,
             held_tick,
             given_up,
+            lends,
         }) => {
             let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, world);
             let restored = &mut arriving.restored;
@@ -738,6 +742,7 @@ fn welcomed(
             restored.handshakes = handshakes;
             restored.held_tick = held_tick;
             restored.given_up = given_up;
+            restored.lends = lends;
             arriving
         }
         Some(StoreWelcome::EpochRefused { seen }) => {
@@ -1021,6 +1026,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: clustine_rpc::Lends::default(),
         };
         let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
         assert_eq!(restored, expected);
@@ -1559,6 +1565,7 @@ mod tests {
                 handshakes: Vec::new(),
                 held_tick: None,
                 given_up: false,
+                lends: clustine_rpc::Lends::default(),
             };
             wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
@@ -1769,6 +1776,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: clustine_rpc::Lends::default(),
         };
         // Next to nothing thousands of times over, with and without bytes at all.
         let tiny: Vec<usize> = (0..3000).map(|index| index % 5).collect();
@@ -1988,6 +1996,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: clustine_rpc::Lends::default(),
         };
         assert_eq!(together(entity_ids, parts).unwrap(), expected);
     }
@@ -2181,6 +2190,7 @@ mod tests {
                     handshakes: Vec::new(),
                     held_tick: None,
                     given_up: false,
+                    lends: clustine_rpc::Lends::default(),
                 };
                 assert_eq!(welcome, Some(accepted));
                 for _ in 0..parts {
@@ -2229,6 +2239,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: clustine_rpc::Lends::default(),
         };
         let error = welcome(&stream, Duration::from_millis(300), restored).unwrap_err();
         // Which of the two a write that ran out of time reports depends on the system.
@@ -2325,6 +2336,7 @@ mod tests {
             handshakes: vec![RegionId(8)],
             held_tick: Some(4_001),
             given_up: true,
+            lends: clustine_rpc::Lends::default(),
         };
         let sent = restored.clone();
         let store = std::thread::spawn(move || {

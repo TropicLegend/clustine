@@ -216,12 +216,14 @@ mod tests {
                 chunks: chunks.clone(),
                 pinned: areas.clone(),
                 in_use: Vec::new(),
+                lends: crate::Lends::default(),
             },
             StoreReply::Absorbed {
                 absorbed: region,
                 chunks: Vec::new(),
                 pinned: Vec::new(),
                 in_use: Vec::new(),
+                lends: crate::Lends::default(),
             },
             StoreReply::Split { region },
             StoreReply::Declined {
@@ -511,6 +513,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: crate::Lends::default(),
         };
         assert_eq!(restored.tick(), 9);
         let welcomes = [
@@ -525,6 +528,7 @@ mod tests {
                 handshakes: Vec::new(),
                 held_tick: None,
                 given_up: false,
+                lends: crate::Lends::default(),
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Absorbed {
@@ -630,6 +634,7 @@ mod tests {
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: crate::Lends::default(),
         };
         assert_eq!(fresh.tick(), 0);
         fresh.state = Some(TickState {
@@ -739,6 +744,7 @@ mod tests {
                 handshakes: Vec::new(),
                 held_tick: None,
                 given_up: false,
+                lends: crate::Lends::default(),
             });
             round_trip(Restored {
                 held: Vec::new(),
@@ -755,6 +761,7 @@ mod tests {
                 handshakes: Vec::new(),
                 held_tick: None,
                 given_up: false,
+                lends: crate::Lends::default(),
             });
         }
     }
@@ -956,6 +963,7 @@ mod tests {
                 chunks: vec![one],
                 pinned: Vec::new(),
                 in_use: vec![one, two],
+                lends: crate::Lends::default(),
             },
         ] {
             round_trip(reply);

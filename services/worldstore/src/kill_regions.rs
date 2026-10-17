@@ -439,7 +439,7 @@ fn scenario(store: &Store, seen: &mut dyn FnMut(&Told, u32)) -> Told {
     });
     for reply in one.settle(&mut told) {
         match reply {
-            StoreReply::Split { region } => {
+            StoreReply::Split { region, .. } => {
                 told.split.as_mut().unwrap().answered = Some(region.0);
                 one.tick = tick;
             }

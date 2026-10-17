@@ -651,7 +651,7 @@ fn a_split_moves_the_use_of_the_parts_chunks_and_their_effects_to_the_part() {
     west.effect(before);
     west.effect(staying);
     match west.split(5, &[parted], 7, 3) {
-        StoreReply::Split { region } => assert_eq!(region, RegionId(3)),
+        StoreReply::Split { region, .. } => assert_eq!(region, RegionId(3)),
         other => panic!("expected the split, got {other:?}"),
     }
     let (mut part, restored) = Played::open(&store, 3, 7);

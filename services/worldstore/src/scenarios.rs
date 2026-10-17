@@ -2228,6 +2228,7 @@ fn a_merge_that_may_not_be_is_declined_with_its_reason_and_changes_nothing() {
             chunks: vec![FREE],
             pinned: vec![east_area()],
             in_use: vec![ChunkPos::new(5, 5)],
+            lends: clustine_rpc::Lends::default(),
         }
     );
 }
@@ -2321,6 +2322,7 @@ fn a_merge_with_several_reasons_against_it_is_declined_for_the_first_of_them() {
             chunks: vec![],
             pinned: vec![east_area()],
             in_use: Vec::new(),
+            lends: clustine_rpc::Lends::default(),
         }
     );
 }
@@ -2358,6 +2360,7 @@ fn a_merge_gives_the_survivor_everything_the_absorbed_region_had() {
             chunks: vec![FREE, FREE_TOO],
             pinned: vec![east_area()],
             in_use: vec![ChunkPos::new(5, 5), ChunkPos::new(6, 5)],
+            lends: clustine_rpc::Lends::default(),
         }
     );
     assert!(east.is_lost());
@@ -2461,6 +2464,7 @@ fn a_hello_for_an_absorbed_region_is_refused_over_a_connection_with_the_survivor
             chunks: vec![FREE],
             pinned: vec![east_area()],
             in_use: vec![ChunkPos::new(5, 5)],
+            lends: clustine_rpc::Lends::default(),
         }
     );
 
@@ -2496,6 +2500,7 @@ fn commits_after_a_merge_are_deltas_on_the_merged_state_until_a_checkpoint() {
             chunks: vec![FREE],
             pinned: vec![east_area()],
             in_use: vec![ChunkPos::new(5, 5)],
+            lends: clustine_rpc::Lends::default(),
         }
     );
     // What came with the merge is held from its tick, or from the beginning: changes
@@ -2591,6 +2596,7 @@ fn a_checkpoint_with_the_tick_of_a_merge_or_a_split_is_not_put_in_place() {
             chunks: vec![],
             pinned: vec![east_area()],
             in_use: Vec::new(),
+            lends: clustine_rpc::Lends::default(),
         }
     );
     checkpoint(&west, 5, "impostor");
@@ -2662,6 +2668,7 @@ fn a_checkpoint_of_the_survivor_under_way_when_the_merge_is_written_is_not_put_i
             chunks: vec![],
             pinned: vec![east_area()],
             in_use: Vec::new(),
+            lends: clustine_rpc::Lends::default(),
         }
     );
     gate.let_go();
@@ -2699,6 +2706,7 @@ fn a_checkpoint_of_the_absorbed_region_under_way_when_the_merge_is_written_is_no
             chunks: vec![],
             pinned: vec![east_area()],
             in_use: Vec::new(),
+            lends: clustine_rpc::Lends::default(),
         }
     );
     assert!(east.is_lost());
@@ -3306,6 +3314,7 @@ fn a_chunk_that_is_being_returned_when_its_region_is_absorbed_goes_to_the_surviv
                 chunks: vec![FREE, FREE_TOO],
                 pinned: vec![east_area()],
                 in_use: vec![ChunkPos::new(6, 5)],
+                lends: clustine_rpc::Lends::default(),
             },
             "{stop:?}"
         );
@@ -3342,6 +3351,8 @@ fn a_part_that_is_returned_chunk_by_chunk_is_the_pinned_regions_again() {
     save(&part, WEST, &built(WEST, &[GLASS]));
     give_back(&part, &[WEST]);
     part.flush();
+    // The pinned region is told it has its chunk back (ADR-0027, section 1).
+    assert_eq!(reply(&west), StoreReply::PinnedBack { chunks: vec![WEST] });
     assert_eq!(load(&west, WEST), built(WEST, &[GLASS]));
     assert_eq!(holder(&part, 3, WEST), Some(RegionId(0)));
     assert_eq!(holder(&west, 0, WEST_TOO), Some(RegionId(3)));
@@ -3361,6 +3372,12 @@ fn a_part_that_is_returned_chunk_by_chunk_is_the_pinned_regions_again() {
     save(&part, WEST_TOO, &built(WEST_TOO, &[STONE]));
     give_back(&part, &[WEST_TOO]);
     part.flush();
+    assert_eq!(
+        reply(&west),
+        StoreReply::PinnedBack {
+            chunks: vec![WEST_TOO]
+        }
+    );
     assert_eq!(load(&west, WEST_TOO), built(WEST_TOO, &[STONE]));
     let returned = |store: &Store, epoch: u64, case: &str| {
         // The part is a region still, with nothing.
@@ -3401,6 +3418,7 @@ fn a_part_absorbed_by_the_pinned_region_it_was_split_off_is_among_what_that_was_
             chunks: vec![WEST, WEST_TOO],
             pinned: vec![],
             in_use: Vec::new(),
+            lends: clustine_rpc::Lends::default(),
         }
     );
     assert!(part.is_lost());
@@ -3456,6 +3474,7 @@ fn the_id_of_an_absorbed_region_is_not_given_to_the_next_part() {
                 chunks: vec![WEST],
                 pinned: vec![],
                 in_use: Vec::new(),
+                lends: clustine_rpc::Lends::default(),
             }
         );
         if checkpointed {
@@ -3496,6 +3515,7 @@ fn the_id_of_an_absorbed_pinned_region_is_not_given_to_the_next_part() {
             chunks: vec![],
             pinned: vec![east_area()],
             in_use: Vec::new(),
+            lends: clustine_rpc::Lends::default(),
         }
     );
     west.flush();
@@ -3621,6 +3641,11 @@ fn merged_and_split() -> (Arc<MemoryDisk>, [Restored; 2]) {
             chunks: vec![FREE_TOO],
             pinned: vec![east_area()],
             in_use: vec![ChunkPos::new(6, 5)],
+            // The part holds a chunk of the west's own area (ADR-0027, section 1).
+            lends: clustine_rpc::Lends {
+                lent: Vec::new(),
+                lent_away: vec![(WEST, RegionId(3))],
+            },
         }
     );
     log(
@@ -4106,6 +4131,7 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
             chunks: vec![WEST, FREE],
             pinned: vec![],
             in_use: vec![ChunkPos::new(5, 5)],
+            lends: clustine_rpc::Lends::default(),
         }
     );
     // The home region, which is pinned to nothing, absorbs the western one.
@@ -4116,6 +4142,7 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
             chunks: vec![WEST, FREE],
             pinned: vec![west_area()],
             in_use: vec![FREE],
+            lends: clustine_rpc::Lends::default(),
         }
     );
     assert!(west.is_lost() && part.is_lost());
@@ -4185,6 +4212,7 @@ fn the_entity_ids_of_an_absorbed_region_are_not_issued_again() {
             chunks: vec![],
             pinned: vec![east_area()],
             in_use: Vec::new(),
+            lends: clustine_rpc::Lends::default(),
         }
     );
     west.flush();
@@ -4390,6 +4418,7 @@ fn what_was_claimed_just_before_a_merge_or_a_split_is_part_of_it() {
             chunks: vec![FREE],
             pinned: vec![east_area()],
             in_use: vec![ChunkPos::new(5, 5)],
+            lends: clustine_rpc::Lends::default(),
         }
     );
     assert_eq!(answers_until_lost(&east), [claimed(FREE)]);
@@ -4557,6 +4586,7 @@ fn the_store_forgets_all_but_the_latest_4096_absorbed_regions() {
                 chunks: vec![WEST],
                 pinned: vec![],
                 in_use: Vec::new(),
+                lends: clustine_rpc::Lends::default(),
             }
         );
     }
@@ -4856,6 +4886,7 @@ fn a_merge_or_a_split_whose_record_was_cut_off_has_not_happened() {
                 chunks: vec![FREE],
                 pinned: vec![east_area()],
                 in_use: vec![FREE],
+                lends: clustine_rpc::Lends::default(),
             };
             assert_eq!(merge(&west, 1, 50, 1), absorbed, "{case}");
             assert_eq!(split(&west, 2, &[FREE], 1, 3), parted(3), "{case}");

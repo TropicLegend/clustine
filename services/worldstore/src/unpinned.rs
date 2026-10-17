@@ -662,6 +662,7 @@ fn life(store: &Store) -> Built {
         chunks: vec![LEFT, GROWN, EAST, EAST_TOO],
         pinned: Vec::new(),
         in_use: vec![LEFT, GROWN, EAST, EAST_TOO],
+        lends: clustine_rpc::Lends::default(),
     };
     assert_eq!(absorb(&home, 1, 4, 4), merged);
     assert!(part.is_lost());

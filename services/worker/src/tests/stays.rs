@@ -1788,6 +1788,7 @@ fn restored_with(
         handshakes: Vec::new(),
         held_tick: None,
         given_up: false,
+        lends: clustine_rpc::Lends::default(),
     }
 }
 

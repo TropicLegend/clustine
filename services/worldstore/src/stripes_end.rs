@@ -827,6 +827,12 @@ fn lives_on_stripes(store: &Store) -> Before {
         chunks: vec![MERGED],
         pinned: Vec::new(),
         in_use: Vec::new(),
+        // The part split off before holds chunks of the west's own area (ADR-0027,
+        // section 1).
+        lends: clustine_rpc::Lends {
+            lent: Vec::new(),
+            lent_away: PART.iter().map(|chunk| (*chunk, RegionId(2))).collect(),
+        },
     };
     assert_eq!(absorb(&west, 3, 6, 5), absorbed);
 
@@ -947,6 +953,11 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            // The part split off it holds chunks of its own area (ADR-0027, section 1).
+            lends: clustine_rpc::Lends {
+                lent: Vec::new(),
+                lent_away: PART.iter().map(|chunk| (*chunk, RegionId(2))).collect(),
+            },
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -963,6 +974,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            lends: clustine_rpc::Lends::default(),
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -979,6 +991,11 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             handshakes: Vec::new(),
             held_tick: None,
             given_up: false,
+            // Its grants lie in the west's area.
+            lends: clustine_rpc::Lends {
+                lent: PART.to_vec(),
+                lent_away: Vec::new(),
+            },
         },
     ];
     let mut handles = Vec::new();

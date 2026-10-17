@@ -303,7 +303,7 @@ fn a_split_moves_the_use_of_the_parts_chunks_to_the_part() {
     assert_eq!(
         split(&user, 5, &[UNUSED], 1, 3),
         StoreReply::Split {
-            region: RegionId(3)
+            region: RegionId(3),
         }
     );
     let (part, restored) = opened(&store, 3, 1);

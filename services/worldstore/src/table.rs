@@ -344,6 +344,38 @@ impl Table {
         })
     }
 
+    /// The region whose pinned area `chunk` is in, if there is one, whoever holds it.
+    pub(crate) fn pinned_holder(&self, chunk: ChunkPos) -> Option<RegionId> {
+        self.areas()
+            .find(|(_, area)| area.contains(chunk))
+            .map(|(region, _)| region)
+    }
+
+    /// What `region` holds by a lend and has lent away: its grants in another region's
+    /// pinned area, and the grants of others in its own, each ascending
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 1).
+    pub(crate) fn lends(&self, region: RegionId) -> (Vec<ChunkPos>, Vec<(ChunkPos, RegionId)>) {
+        let lent = self
+            .grants(region)
+            .into_iter()
+            .map(|(chunk, _)| chunk)
+            .filter(|chunk| {
+                self.pinned_holder(*chunk)
+                    .is_some_and(|area| area != region)
+            })
+            .collect();
+        let pinned = self.pinned(region);
+        let lent_away = self
+            .granted
+            .iter()
+            .filter(|(chunk, holder)| {
+                **holder != region && pinned.iter().any(|area| area.contains(**chunk))
+            })
+            .map(|(chunk, holder)| (*chunk, *holder))
+            .collect();
+        (lent, lent_away)
+    }
+
     /// The tick of `region` from which it holds `chunk`, if it holds it: that of its
     /// grant, or 0 for a chunk it holds by being pinned.
     pub(crate) fn held_from(&self, region: RegionId, chunk: ChunkPos) -> Option<u64> {

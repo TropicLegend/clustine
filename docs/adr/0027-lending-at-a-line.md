@@ -59,9 +59,10 @@ neighbour, or of its own, has neither lending nor merging at once; a line betwee
 regions that follow players has merging at once (section 7).
 
 The store tells each region which of its chunks are lent to it and which of its pinned
-chunks are lent away, with what it is restored with (`Holdings::lent` and `Holdings::lent_away`, worked out from the table and carried in the
-store's answers to a hello, a merge and a split, since the simulation's own holdings at a
-reshape forget what a region believed of others), so that both survive a restore. And it tells a pinned region whenever any grant inside its
+chunks are lent away, with what it is restored with (`Holdings::lent` and `Holdings::lent_away`, worked out from the table and carried in the store's answers to a hello and a merge
+(`Restored::lends`, `StoreReply::Absorbed::lends`), since the survivor of a merge forgets
+what it believed of others; at a split the region works out its own, as it chooses what
+goes), so that both survive a restore. And it tells a pinned region whenever any grant inside its
 area ends (`StoreReply::PinnedBack { chunks }`), whoever had it: a lend given back, a
 lent chunk that went to a split part and was given back by it, or a part's own grant.
 
@@ -104,7 +105,8 @@ under way is passed over.
 A lend under way is marked **under lend** in the store from step 1 of section 3 until its
 grant, a call-off or the lender's answer, whichever comes first.
 
-The store answers **not lendable** where the asker is not pinned or not beside the area's
+The store answers the borrower `StoreReply::NotLent { chunks, again }`, `again` for
+wait. It answers **not lendable** where the asker is not pinned or not beside the area's
 region, the chunk is the home chunk, is held by a grant, is in no living region's pinned area or in the asker's own, or the stretch's way is the
 other by the table's lends (section 1), or the lender says so (section 3, step 2). Where
 only a lend under way the other way stands in the stretch, the store answers **wait**,
@@ -276,14 +278,33 @@ or the home chunk), which the coordinator works out from the crowds it has, not
 L1 this record, reviewed; L2 the store's lends (the requests and answers, the pending
 lends and their calls off, the return behind the save, use passed with its effects, the
 stretches' ways, `Holdings` and `PinnedBack`) by me; L3a the simulation's requests and
-their keeping, the land's states and their durability (`take_absorbed` and `take_split`
-taking `lent` and `lent_away` from the store's answers), letting go, keeping and giving
+their keeping, the land's states and their durability (`take_absorbed` taking `lent` and `lent_away` from the store's answer, `take_split`
+working them out), letting go, keeping and giving
 back, by me; L3b the worker's part and the edge's (section 5), by me, since they are
 hand-over steps, with tests between L3a and L3b; L4 the coordinator's merge at once and its splits; L5
 tests from this record by someone who did not write the code, a crash at each point of
 section 3 and a merge or a split of either region with a lend under way among them; L6
 a circuit across a pinned line against the same circuit in one region, and what to try
 with a real client.
+
+## Found while building
+
+L2, the store's lends (2026-10-17, by me):
+
+- **A lend needs no new state in the table.** A chunk of a pinned area granted to another
+  region is already held by it, and a release makes it the pinned region's again; a lend
+  is such a grant made by asking the pinned region first. The lend states are worked out
+  from the grants (`Table::lends`), and a split part's grants in a pinned area count as
+  lent too: they are, for the region whose area it is, and it learns of their end by the
+  same `PinnedBack`.
+- **The lender's `Lending` is the chunk thread's return**, unchanged: the commit thread
+  notes its number with the lend, and the return's completion grants the borrower instead
+  of freeing. A lend under way is in memory only, called off at any hello, merge or split
+  of either region; the numbers of lends are never given twice in a store's life.
+- **A split's answer carries no lends**: the region chose what goes, and knows it. The
+  hello's and the merge's do.
+- A chunk the asker holds already is answered as a claim would be; its own pinned land and
+  the home chunk are not lendable, whoever holds them.
 
 ## Review
 

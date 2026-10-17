@@ -432,6 +432,24 @@ pub enum StoreRequest {
     /// End every coupling of the region: it is preparing for a merge or a split, or is
     /// released for a move (the same record, section 8).
     EndCouplings,
+    /// Lend the region these chunks of another region's pinned area, beside its own
+    /// pinned land (`docs/adr/0027-lending-at-a-line.md`, section 2). Answered with
+    /// [`StoreReply::NotLent`], [`StoreReply::LendCalledOff`] or, once lent, with
+    /// [`StoreReply::Claimed`]; a chunk whose lend is under way is passed over.
+    Lend { chunks: Vec<ChunkPos> },
+    /// The lender's answer to [`StoreReply::LendAsked`] for these of its chunks: it does
+    /// not let go of them, now (`again`) or while what stands there stands (the same
+    /// record, section 3, step 2).
+    LendRefused {
+        lend: u64,
+        chunks: Vec<ChunkPos>,
+        again: bool,
+    },
+    /// The lender gives these chunks of the lend back for it: every change it made to
+    /// them is in a save asked for before this, and they are the borrower's once those
+    /// saves are on disk. Their use is not ended by it (the same record, section 3,
+    /// steps 2 to 4).
+    Lending { lend: u64, chunks: Vec<ChunkPos> },
 }
 
 /// What a split makes a new region of.
@@ -495,6 +513,8 @@ pub enum StoreReply {
         /// [`StoreRequest::Dropped`] of those it does not load within `WARM_FOR`
         /// (`docs/adr/0025-effects-between-regions.md`, section 5).
         in_use: Vec<ChunkPos>,
+        /// The region's lends after the merge.
+        lends: Lends,
     },
     /// The split asked for with [`StoreRequest::SplitCommit`] has happened, and
     /// `region` is the new region, the one the request named. It is not opened by the
@@ -602,6 +622,50 @@ pub enum StoreReply {
     Mark {
         through: u64,
     },
+    /// To a pinned region: `to` asks for these chunks of its pinned area, under the
+    /// number `lend`, which its answer names. Until it answers or the lend is called
+    /// off, nobody else is lent them (`docs/adr/0027-lending-at-a-line.md`, section 3).
+    LendAsked {
+        lend: u64,
+        chunks: Vec<ChunkPos>,
+        to: RegionId,
+    },
+    /// To the region that asked for a lend: these chunks are not lent to it, and it
+    /// asks again later if `again`, or not before what it knows of them changes (the
+    /// same record, section 2).
+    NotLent {
+        chunks: Vec<ChunkPos>,
+        again: bool,
+    },
+    /// To both regions of a lend: it is called off. The borrower keeps its ask, and the
+    /// lender takes the chunks up again as its own (the same record, section 3).
+    LendCalledOff {
+        lend: u64,
+        chunks: Vec<ChunkPos>,
+    },
+    /// To a pinned region: these chunks of its pinned area are held by `to`, by a lend
+    /// or by what a merge or a split made of one, until [`StoreReply::PinnedBack`].
+    Lent {
+        chunks: Vec<ChunkPos>,
+        to: RegionId,
+    },
+    /// To a pinned region: whoever held these chunks of its pinned area by a grant has
+    /// given them back, and they are its own again (the same record, sections 1 and 4).
+    PinnedBack {
+        chunks: Vec<ChunkPos>,
+    },
+}
+
+/// What a region holds by a lend and what of its pinned land is lent away, as the store
+/// works it out from the table (`docs/adr/0027-lending-at-a-line.md`, section 1).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lends {
+    /// The chunks the region was granted that lie in another living region's pinned
+    /// area, ascending.
+    pub lent: Vec<ChunkPos>,
+    /// The chunks of the region's pinned areas that another region holds by a grant,
+    /// ascending, each with that region.
+    pub lent_away: Vec<(ChunkPos, RegionId)>,
 }
 
 /// Who uses a chunk another region copies, as far as that region needs to know
@@ -714,6 +778,8 @@ pub struct Restored {
     pub held_tick: Option<u64>,
     /// Whether the region is given up, and must earn its couplings back.
     pub given_up: bool,
+    /// What it holds by a lend and has lent away (`docs/adr/0027-lending-at-a-line.md`).
+    pub lends: Lends,
 }
 
 impl Restored {
@@ -775,6 +841,8 @@ pub enum StoreWelcome {
         held_tick: Option<u64>,
         /// [`Restored::given_up`].
         given_up: bool,
+        /// [`Restored::lends`].
+        lends: Lends,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.

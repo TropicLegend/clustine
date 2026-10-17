@@ -711,6 +711,7 @@ fn a_merge_does_not_wait_for_another_regions_chunk_being_generated() {
         chunks: Vec::new(),
         pinned: gap().pinned[1..].to_vec(),
         in_use: Vec::new(),
+        lends: clustine_rpc::Lends::default(),
     };
     assert_eq!(answer(&survivor), done);
     quiet(&x);

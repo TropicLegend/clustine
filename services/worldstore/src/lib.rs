@@ -31,6 +31,7 @@ mod couplings;
 mod disk;
 mod effects;
 mod lanes;
+mod lends;
 mod local;
 mod players;
 mod table;
@@ -54,6 +55,8 @@ mod kill_entities;
 mod kill_regions;
 #[cfg(test)]
 mod kill_unpinned;
+#[cfg(test)]
+mod lends_tests;
 #[cfg(test)]
 mod r7_redstone_kill;
 #[cfg(test)]

@@ -51,8 +51,8 @@ use clustine_format::{
 };
 use clustine_region::RegionId;
 use clustine_rpc::{
-    CopyUse, Decline, RegionHello, RegionList, Restored, SplitPart, StayNote, StoreReply,
-    StoreRequest, TickState,
+    CopyUse, Decline, Lends as LendsOf, RegionHello, RegionList, Restored, SplitPart, StayNote,
+    StoreReply, StoreRequest, TickState,
 };
 use clustine_world::{
     BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, EntityId, EntityIds,
@@ -65,6 +65,7 @@ use crate::copies::Copies;
 use crate::couplings::{Couplings, Said};
 use crate::disk::{Disk, replace};
 use crate::effects::{self, Filed, Kept, Uses, sequence};
+use crate::lends::{self, Lend, Lends};
 use crate::players::{self, Players, Taken, Undo};
 use crate::table::{Division, Table};
 use crate::{Message, Opened, Peer, Session, StoreError};
@@ -135,6 +136,8 @@ pub(crate) struct Lanes {
     /// Lockstep between regions (the same record, section 8), kept in
     /// `regions/couplings`.
     couplings: Couplings,
+    /// The lends under way (`docs/adr/0027-lending-at-a-line.md`, section 3).
+    lends: Lends,
     clock: Clock,
     group: Group,
 }
@@ -175,6 +178,9 @@ struct Lane {
     /// How many returns the session that opened the region last has asked for, from
     /// which their numbers come.
     returns: u64,
+    /// The returns of that session that give chunks back for a lend, each with the
+    /// lend's number (`docs/adr/0027-lending-at-a-line.md`, section 3, step 3).
+    lending: BTreeMap<u64, u64>,
     /// The highest tick the session that opened the region last has named, in a commit
     /// or in a checkpoint, in place yet or not, or was restored up to. A merge or a
     /// split has to name a tick above it, so that no checkpoint that is still under
@@ -641,6 +647,7 @@ impl Lanes {
             copies: Copies::default(),
             couplings: Couplings::default(),
             clock: real_clock(),
+            lends: Lends::default(),
             group: Group::default(),
         };
         // What is left of the notes, in the order of the log and by the same rules as
@@ -1433,6 +1440,15 @@ impl Lanes {
                 self.group.said(said);
                 return;
             }
+            StoreRequest::Lend { chunks } => return self.lend(session.region, &peer, chunks),
+            StoreRequest::LendRefused {
+                lend,
+                chunks,
+                again,
+            } => return self.lend_refused(session.region, lend, &chunks, again),
+            StoreRequest::Lending { lend, chunks } => {
+                return self.lending(session.region, peer, lend, &chunks);
+            }
         };
         if owner.unsynced.is_empty() && owner.held.is_empty() {
             let _ = self.jobs.send(job);
@@ -1627,6 +1643,8 @@ impl Lanes {
     /// may have rested on what another region wrote in it.
     fn fail_log(&mut self) {
         let failed = self.log.fail();
+        // Nobody is left to be told of a lend called off: every region is opened again.
+        self.lends.clear();
         // What the group did to the table is taken back, last first: its records are
         // cut off the log, and a store that started now would not know of them.
         let group = mem::take(&mut self.group);
@@ -1833,6 +1851,333 @@ impl Lanes {
     /// The thread for chunks has made the saves before the return `number` of `session`
     /// durable: the chunks of it that have not been claimed again since, or returned
     /// once more, or taken elsewhere, are free.
+    /// What `region` holds by a lend and has lent away, as the table has it now.
+    fn lends_of(&self, region: RegionId) -> LendsOf {
+        let (lent, lent_away) = self.table.lends(region);
+        LendsOf { lent, lent_away }
+    }
+
+    /// Answers the owner of `region`, if it has one, once the group is durable.
+    fn answer_in_group(&mut self, region: RegionId, reply: StoreReply) {
+        let Some(owner) = self
+            .regions
+            .get_mut(&region)
+            .and_then(|lane| lane.owner.as_mut())
+        else {
+            return;
+        };
+        owner.unsynced.push(reply);
+        self.group.regions.insert(region);
+    }
+
+    /// Answers the owner of `region` now, if it has one.
+    fn answer_now(&self, region: RegionId, reply: StoreReply) {
+        if let Some(owner) = self
+            .regions
+            .get(&region)
+            .and_then(|lane| lane.owner.as_ref())
+        {
+            owner.peer.answer(reply);
+        }
+    }
+
+    /// Calls off every lend `region` lends or borrows in, and tells both regions of
+    /// each: the borrower keeps its ask, and the lender takes the chunks up again
+    /// (`docs/adr/0027-lending-at-a-line.md`, section 3).
+    fn call_off(&mut self, region: RegionId) {
+        for (lend, of) in self.lends.call_off(region) {
+            let chunks: Vec<ChunkPos> = of.chunks.keys().copied().collect();
+            for party in [of.lender, of.borrower] {
+                let chunks = chunks.clone();
+                self.answer_now(party, StoreReply::LendCalledOff { lend, chunks });
+            }
+        }
+    }
+
+    /// Tells the pinned regions whose chunks among `chunks` `from` held by a grant
+    /// that `to` holds them now, after a merge or a split.
+    fn tell_lenders(&self, from: RegionId, to: RegionId, chunks: &[ChunkPos]) {
+        let mut lenders: BTreeMap<RegionId, Vec<ChunkPos>> = BTreeMap::new();
+        for chunk in chunks {
+            if let Some(lender) = self.table.pinned_holder(*chunk)
+                && lender != from
+                && lender != to
+            {
+                lenders.entry(lender).or_default().push(*chunk);
+            }
+        }
+        for (lender, chunks) in lenders {
+            self.answer_now(lender, StoreReply::Lent { chunks, to });
+        }
+    }
+
+    /// `borrower` asks for a lend of `chunks` (`docs/adr/0027-lending-at-a-line.md`,
+    /// section 2): each is asked of its lender, or answered at once.
+    fn lend(&mut self, borrower: RegionId, peer: &Arc<Peer>, chunks: Vec<ChunkPos>) {
+        let pinned = self.table.pinned(borrower).to_vec();
+        let beside = |chunk: ChunkPos| {
+            [-1, 1].into_iter().any(|dx| {
+                let next = ChunkPos::new(chunk.x + dx, chunk.z);
+                pinned.iter().any(|area| area.contains(next))
+            })
+        };
+        let mut not_lendable = Vec::new();
+        let mut wait = Vec::new();
+        let mut held = Vec::new();
+        let mut asked: BTreeMap<RegionId, Vec<ChunkPos>> = BTreeMap::new();
+        let mut seen = BTreeSet::new();
+        for chunk in chunks {
+            if !seen.insert(chunk) {
+                continue;
+            }
+            // Its own ask under way is passed over; another's waits for that lend,
+            // which may yet be refused.
+            if let Some(lend) = self.lends.of_chunk(chunk) {
+                if self
+                    .lends
+                    .get(lend)
+                    .is_some_and(|lend| lend.borrower != borrower)
+                {
+                    wait.push(chunk);
+                }
+                continue;
+            }
+            // Its own pinned land and the home chunk are no lend's, whoever holds them.
+            let pinned_holder = self.table.pinned_holder(chunk);
+            if pinned_holder == Some(borrower) || chunk == self.table.home_chunk {
+                not_lendable.push(chunk);
+                continue;
+            }
+            let holder = self.table.holder(chunk);
+            if holder == Some(borrower) {
+                held.push(chunk);
+                continue;
+            }
+            // Held by its pin, not by a grant to anyone.
+            let lender = pinned_holder.filter(|lender| holder == Some(*lender));
+            let Some(lender) = lender else {
+                not_lendable.push(chunk);
+                continue;
+            };
+            if pinned.is_empty() || !beside(chunk) {
+                not_lendable.push(chunk);
+                continue;
+            }
+            // One way at a time in a stretch of the line: the table's lends fix it, and
+            // a lend under way the other way may yet be refused (section 1).
+            let stretch = lends::stretch(chunk);
+            let other_way = self.table.grants(lender).iter().any(|(granted, _)| {
+                lends::stretch(*granted) == stretch
+                    && self.table.pinned_holder(*granted) == Some(borrower)
+            });
+            if other_way {
+                not_lendable.push(chunk);
+                continue;
+            }
+            let lender_owned = self
+                .regions
+                .get(&lender)
+                .is_some_and(|lane| lane.owner.is_some());
+            if self.lends.under_way_in(borrower, lender, stretch) || !lender_owned {
+                wait.push(chunk);
+                continue;
+            }
+            asked.entry(lender).or_default().push(chunk);
+        }
+        if !held.is_empty() {
+            self.answer_in_group(
+                borrower,
+                StoreReply::Claimed {
+                    granted: held,
+                    foreign: Vec::new(),
+                },
+            );
+        }
+        for (chunks, again) in [(not_lendable, false), (wait, true)] {
+            if !chunks.is_empty() {
+                peer.answer(StoreReply::NotLent { chunks, again });
+            }
+        }
+        for (lender, chunks) in asked {
+            let lend = self.lends.begin(lender, borrower, &chunks);
+            self.answer_now(
+                lender,
+                StoreReply::LendAsked {
+                    lend,
+                    chunks,
+                    to: borrower,
+                },
+            );
+        }
+    }
+
+    /// The lender does not let go of `chunks` for `lend`: the borrower is told, and
+    /// they are no longer under lend.
+    fn lend_refused(&mut self, lender: RegionId, lend: u64, chunks: &[ChunkPos], again: bool) {
+        let Some(of) = self.lends.get(lend).filter(|of| of.lender == lender) else {
+            return;
+        };
+        let borrower = of.borrower;
+        // Not one it has given back for the lend already.
+        let refused: Vec<ChunkPos> = chunks
+            .iter()
+            .copied()
+            .filter(|chunk| of.chunks.get(chunk) == Some(&None))
+            .collect();
+        let refused = self.lends.take(lend, &refused);
+        if !refused.is_empty() {
+            self.answer_now(
+                borrower,
+                StoreReply::NotLent {
+                    chunks: refused,
+                    again,
+                },
+            );
+        }
+    }
+
+    /// The lender gives `chunks` back for `lend`: passed on like a return, behind the
+    /// saves before it, without its use ending (the same record, section 3, step 3). A
+    /// chunk not under the lend any more is answered as called off at once.
+    fn lending(&mut self, lender: RegionId, peer: Arc<Peer>, lend: u64, chunks: &[ChunkPos]) {
+        let of = self.lends.get(lend).filter(|of| of.lender == lender);
+        let mut given = Vec::new();
+        let mut off = Vec::new();
+        for chunk in chunks.iter().copied().collect::<BTreeSet<_>>() {
+            match of {
+                Some(of) if of.chunks.get(&chunk) == Some(&None) => given.push(chunk),
+                _ => off.push(chunk),
+            }
+        }
+        if !off.is_empty() {
+            peer.answer(StoreReply::LendCalledOff { lend, chunks: off });
+        }
+        if given.is_empty() {
+            return;
+        }
+        let Some(lane) = self.regions.get_mut(&lender) else {
+            return;
+        };
+        lane.returns += 1;
+        let number = lane.returns;
+        lane.lending.insert(number, lend);
+        for chunk in &given {
+            self.lends.returning(lend, *chunk, number);
+        }
+        let Some(owner) = lane.owner.as_mut() else {
+            return;
+        };
+        let job = Job::Return {
+            number,
+            chunks: given,
+            peer,
+        };
+        if owner.unsynced.is_empty() && owner.held.is_empty() {
+            let _ = self.jobs.send(job);
+        } else {
+            owner.held.push(job);
+        }
+    }
+
+    /// The lender's saves before its return `number` for `lend` are durable: the chunks
+    /// of the lend still under it are granted to the borrower, with their use, the
+    /// effects filed for them and their copies (the same record, section 3, step 4).
+    /// The others are answered as called off.
+    fn lent(&mut self, lender: RegionId, lend: u64, number: u64, chunks: Vec<ChunkPos>) {
+        let of: Option<Lend> = self.lends.get(lend).cloned();
+        let borrower = of.as_ref().map(|of| of.borrower);
+        let (good, bad): (Vec<ChunkPos>, Vec<ChunkPos>) = chunks.into_iter().partition(|chunk| {
+            of.as_ref().is_some_and(|of| {
+                of.lender == lender
+                    && of.chunks.get(chunk) == Some(&Some(number))
+                    && self.table.holder(*chunk) == Some(lender)
+                    && self.table.pinned_holder(*chunk) == Some(lender)
+                    && self.table.has(of.borrower)
+            })
+        });
+        if !bad.is_empty() {
+            let taken = self.lends.take(lend, &bad);
+            if let Some(borrower) = borrower
+                && !taken.is_empty()
+            {
+                let chunks = taken;
+                self.answer_now(borrower, StoreReply::LendCalledOff { lend, chunks });
+            }
+            self.answer_now(lender, StoreReply::LendCalledOff { lend, chunks: bad });
+        }
+        let Some(borrower) = borrower else {
+            return;
+        };
+        let granted = self.lends.take(lend, &good);
+        if granted.is_empty() {
+            return;
+        }
+        let tick = self.regions.get(&borrower).map_or(0, |lane| lane.latest);
+        for chunks in granted.chunks(RECORD_CHUNKS) {
+            let record = LogRecord::Granted {
+                region: borrower.0,
+                tick,
+                chunks: chunks.to_vec(),
+            };
+            match self.log.append(&record.encode()) {
+                Ok((segment, _)) => self.table_last = Some(segment),
+                Err(error) => {
+                    error!(%borrower, %error, "a lend could not be written to the log");
+                    self.fail_log();
+                    return;
+                }
+            }
+        }
+        self.table
+            .grant(borrower, tick, &granted)
+            .expect("chunks held by a pin are granted to a living region");
+        self.group.changed.push(Change::Granted {
+            region: borrower,
+            chunks: granted.clone(),
+        });
+        // The borrower uses them from now on and copies them no longer; the lender
+        // copies them instead, from a base made once the grant is durable. What was
+        // filed for them counts its delays from its taking, the borrower's ticks not
+        // being the lender's.
+        for chunk in &granted {
+            self.copies.unregister(borrower, *chunk);
+            self.uses.begin(borrower, *chunk);
+        }
+        self.filed.count_from_taking(&granted);
+        for chunk in &granted {
+            tell_copiers(
+                &self.uses,
+                &self.couplings,
+                &self.copies,
+                &mut self.group,
+                *chunk,
+            );
+            self.group.copies_wanted.push((lender, *chunk));
+        }
+        self.answer_in_group(
+            borrower,
+            StoreReply::Claimed {
+                granted: granted.clone(),
+                foreign: Vec::new(),
+            },
+        );
+        // What the lender was sent and had not taken goes to the borrower, behind a mark.
+        let resent = self.filed.for_chunks(&granted);
+        if !resent.is_empty() {
+            let effects = StoreReply::Effects { effects: resent };
+            self.group
+                .stream(borrower, Streamed::Reply(Box::new(effects)));
+        }
+        info!(%lender, %borrower, chunks = granted.len(), "chunks were lent");
+        self.answer_in_group(
+            lender,
+            StoreReply::Lent {
+                chunks: granted,
+                to: borrower,
+            },
+        );
+    }
+
     fn returned(&mut self, session: Session, number: u64, chunks: Vec<ChunkPos>) {
         let region = session.region;
         let Some(lane) = self.regions.get_mut(&region) else {
@@ -1840,6 +2185,9 @@ impl Lanes {
         };
         if lane.current != Some(session.number) {
             return;
+        }
+        if let Some(lend) = lane.lending.remove(&number) {
+            return self.lent(region, lend, number, chunks);
         }
         // Only what is noted with this very return. A chunk that was claimed again and
         // returned once more is noted with the later one, whose saves are not durable
@@ -1871,6 +2219,20 @@ impl Lanes {
             .into_iter()
             .filter_map(|chunk| Some((chunk, self.table.release(region, chunk)?)))
             .collect();
+        // A chunk of another's pinned area is that region's again, which it is told
+        // once the release is durable, whoever held it by a grant
+        // (`docs/adr/0027-lending-at-a-line.md`, sections 1 and 4).
+        let mut back: BTreeMap<RegionId, Vec<ChunkPos>> = BTreeMap::new();
+        for (chunk, _) in &grants {
+            if let Some(pinned) = self.table.pinned_holder(*chunk)
+                && pinned != region
+            {
+                back.entry(pinned).or_default().push(*chunk);
+            }
+        }
+        for (pinned, chunks) in back {
+            self.answer_in_group(pinned, StoreReply::PinnedBack { chunks });
+        }
         if !grants.is_empty() {
             self.group.changed.push(Change::Returned { region, grants });
         }
@@ -2112,6 +2474,8 @@ impl Lanes {
         let peer = Arc::new(Peer::new(session, sender, Arc::clone(&lost), reply_to));
         // Whoever runs the region asks for its copies again (section 3).
         self.copies.forget(region);
+        // And for its lends (`docs/adr/0027-lending-at-a-line.md`, section 3).
+        self.call_off(region);
         // The effects of the chunks the region uses go on its stream again: the runner
         // drops those it has taken (`docs/adr/0025-effects-between-regions.md`,
         // section 5). Everything the store has written before the record of the
@@ -2135,6 +2499,7 @@ impl Lanes {
         // A return the owner before had asked for frees nothing any more.
         lane.returning.clear();
         lane.returns = 0;
+        lane.lending.clear();
 
         let mut changes = Vec::new();
         let mut deltas = Vec::new();
@@ -2157,6 +2522,7 @@ impl Lanes {
             handshakes: of_region.handshakes,
             held_tick: of_region.held_tick,
             given_up: of_region.given_up,
+            lends: self.lends_of(region),
         };
         let opened = Opened {
             session,
@@ -2204,11 +2570,14 @@ impl Lanes {
         // from its own: the survivor is not opened anew, and nothing else tells it
         // the areas it is pinned to from now on.
         let pinned = self.table.pinned(absorbed).to_vec();
+        self.call_off(region);
+        self.call_off(absorbed);
         let chunks = self
             .table
             .absorb(region, absorbed, tick)
             .expect("two living regions, as was looked at above");
         self.table_last = Some(entry.segment);
+        self.tell_lenders(absorbed, region, &chunks);
         // The use moves with the holding, and the effects not taken with it; a tick
         // counted in the absorbed region's ticks counts from its taking now.
         let in_use = self.uses.moved(absorbed, region, None);
@@ -2260,6 +2629,7 @@ impl Lanes {
             chunks,
             pinned,
             in_use,
+            lends: self.lends_of(region),
         });
         // The survivor begins anew, and has its effects on its stream again.
         let resent = self.filed.for_chunks(&self.uses.of(region));
@@ -2375,10 +2745,15 @@ impl Lanes {
             return;
         };
 
+        self.call_off(region);
         self.table
             .split(region, new, tick, &chunks)
             .expect("the next id and chunks the region holds, as was looked at above");
         self.table_last = Some(entry.segment);
+        // A chunk lent to the region that goes to the part is the part's by a grant, and
+        // its lender is told who holds it now (`docs/adr/0027-lending-at-a-line.md`,
+        // section 4).
+        self.tell_lenders(region, new, &chunks);
         // The part's hello lists the chunks whose use moved to it, and resends their
         // effects.
         let moved = self.uses.moved(region, new, Some(&chunks));
