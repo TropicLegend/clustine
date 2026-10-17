@@ -295,7 +295,10 @@ async fn a_chunk_with_ticks_pending_is_saved_with_its_delays_left_when_the_regio
     assert_eq!(*last, (stop, vec![sand_tick(5, left(LONG, started, stop))]));
     let asked = asked_beside_commits(&gate);
     let save = asked.iter().rposition(|asked| *asked == Asked::Save(K));
-    let checkpoint = asked.iter().position(|a| *a == Asked::Checkpoint(stop));
+    // The stop's checkpoint is the last of its tick: the one the split prepared with
+    // can be of the same tick, where the region did not tick between the two, as
+    // under load.
+    let checkpoint = asked.iter().rposition(|a| *a == Asked::Checkpoint(stop));
     assert!(save.is_some() && save < checkpoint, "{asked:?}");
 }
 
