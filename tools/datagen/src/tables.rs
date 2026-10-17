@@ -718,6 +718,15 @@ mod tests {
             collision: Vec::new(),
             outline: Vec::new(),
             redstone: 0,
+            sound: crate::extract::SoundTypeDump {
+                volume: 1.0f32.to_bits(),
+                pitch: 1.0f32.to_bits(),
+                break_sound: 0,
+                step: 0,
+                place: 0,
+                hit: 0,
+                fall: 0,
+            },
             consulted: Vec::new(),
         }
     }

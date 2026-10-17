@@ -805,6 +805,9 @@ impl RegionEvent {
 /// The game's `SoundSource.BLOCKS`, which a block's sounds are of.
 pub const SOUND_SOURCE_BLOCKS: i32 = 4;
 
+/// The game's `SoundSource.PLAYERS`, which what a player plays as themself is of.
+pub const SOUND_SOURCE_PLAYERS: i32 = 7;
+
 /// The game's `SoundSource.RECORDS`, which a note block's notes are of.
 pub const SOUND_SOURCE_RECORDS: i32 = 2;
 

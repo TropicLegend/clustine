@@ -622,3 +622,25 @@ fn the_beginning_of_block_events_is_said_only_in_a_tick_that_has_them() {
         .collect();
     assert_eq!(begins.len(), 1);
 }
+
+// The sounds of what players do (section 8 of the record, step R6).
+
+/// A block placed is heard by everyone near but its placer, by its sound type: stone
+/// at its volume (1 + 1) / 2 and pitch 1 × 0.8, as the game's `BlockItem.place` plays
+/// it.
+#[test]
+fn a_block_placed_sounds_its_place_sound_to_all_but_its_placer() {
+    use super::redstone::{click, holding, sounds};
+    let mut region = on_ticking_floor_with(&[]);
+    region.tick(&holding(clustine_data::items::STONE));
+    let placed = region.tick(&click(BlockPos::new(2, -61, 3)));
+    assert_eq!(
+        sounds(&placed),
+        [(
+            clustine_data::sounds::BLOCK_STONE_PLACE,
+            1.0,
+            0.8,
+            Some(player(1))
+        )]
+    );
+}

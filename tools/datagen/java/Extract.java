@@ -308,6 +308,19 @@ public final class Extract {
                 | bit(2, state.hasAnalogOutputSignal())
                 | bit(3, destroyTime == -1.0f);
             field(text, Integer.toString(redstone));
+
+            // The sounds of the block: volume and pitch as their bits, then the break,
+            // step, place, hit and fall sounds by their ids (docs/adr/0026-redstone.md,
+            // section 8).
+            net.minecraft.world.level.block.SoundType sound = state.getSoundType();
+            field(text, String.join(",",
+                Integer.toHexString(Float.floatToIntBits(sound.getVolume())),
+                Integer.toHexString(Float.floatToIntBits(sound.getPitch())),
+                Integer.toString(BuiltInRegistries.SOUND_EVENT.getId(sound.getBreakSound())),
+                Integer.toString(BuiltInRegistries.SOUND_EVENT.getId(sound.getStepSound())),
+                Integer.toString(BuiltInRegistries.SOUND_EVENT.getId(sound.getPlaceSound())),
+                Integer.toString(BuiltInRegistries.SOUND_EVENT.getId(sound.getHitSound())),
+                Integer.toString(BuiltInRegistries.SOUND_EVENT.getId(sound.getFallSound()))));
             field(text, consulted.isEmpty() ? "-" : String.join(",", consulted));
             text.append('\n');
         }

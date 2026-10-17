@@ -152,6 +152,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "items",
             "registries",
             "sound_events",
+            "sound_types",
             "tags",
             "version",
         ]),
@@ -163,6 +164,8 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "items.rs", items(data)?);
     add(DATA_DIR, "entity_types.rs", entity_types(data)?);
     add(DATA_DIR, "sound_events.rs", sound_events(data)?);
+    let (types, of_states) = sound_types(data)?;
+    add(DATA_DIR, "sound_types.rs", types);
     add(DATA_DIR, "registries.rs", registries(data));
     add(DATA_DIR, "dimension_types.rs", dimension_types(data));
     add(DATA_DIR, "tags.rs", tags(data));
@@ -170,6 +173,10 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(PROTOCOL_DIR, "mod.rs", modules(&["packet_ids"]));
     add(PROTOCOL_DIR, "packet_ids.rs", packet_ids(data)?);
 
+    outputs.push(Output {
+        path: PathBuf::from(DATA_DIR).join("state_sound_types.bin"),
+        content: of_states,
+    });
     outputs.push(Output {
         path: PathBuf::from(DATA_DIR).join("block_states.bin"),
         content: tables::block_states(
@@ -891,6 +898,46 @@ fn sound_events(data: &GameData) -> Result<String> {
     }
     out.push_str("}\n");
     Ok(out)
+}
+
+/// The distinct `SoundType`s of the block states, in the order a state first has one,
+/// as `(volume bits, pitch bits, break, step, place, hit, fall)`; and for each state
+/// the index of its own, one byte each.
+fn sound_types(data: &GameData) -> Result<(String, Vec<u8>)> {
+    let mut types: Vec<crate::extract::SoundTypeDump> = Vec::new();
+    let mut of_states = Vec::with_capacity(data.extract.states.len());
+    for state in &data.extract.states {
+        let index = match types.iter().position(|known| *known == state.sound) {
+            Some(index) => index,
+            None => {
+                types.push(state.sound);
+                types.len() - 1
+            }
+        };
+        of_states.push(u8::try_from(index).context("more sound types than a byte names")?);
+    }
+    let mut out = String::new();
+    writeln!(
+        out,
+        "/// `(volume bits, pitch bits, break, step, place, hit, fall)` of each sound type.\n\
+         pub static SOUND_TYPES: [(u32, u32, i32, i32, i32, i32, i32); {}] = [",
+        types.len()
+    )?;
+    for known in &types {
+        writeln!(
+            out,
+            "    (0x{:08x}, 0x{:08x}, {}, {}, {}, {}, {}),",
+            known.volume,
+            known.pitch,
+            known.break_sound,
+            known.step,
+            known.place,
+            known.hit,
+            known.fall
+        )?;
+    }
+    writeln!(out, "];")?;
+    Ok((out, of_states))
 }
 
 /// A module of `i32` constants, one per name, numbered by position.

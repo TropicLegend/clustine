@@ -79,6 +79,9 @@ pub struct StateDump {
     /// `isSignalSource`, bit 2 `hasAnalogOutputSignal`, bit 3 that it cannot be broken
     /// (`getDestroySpeed` is -1), which a piston does not move.
     pub redstone: u8,
+    /// The block's `SoundType`: its volume and pitch, and its break, step, place, hit
+    /// and fall sounds by their ids in the sound event registry.
+    pub sound: SoundTypeDump,
     /// The questions whose answer looked at the level or changed with the position,
     /// such as `collision:block_entity`. Empty for a state that answers by itself.
     pub consulted: Vec<String>,
@@ -232,8 +235,8 @@ pub fn states(text: &str) -> Result<Vec<StateDump>> {
 fn state(line: &str, expected_id: usize) -> Result<StateDump> {
     let fields: Vec<&str> = line.split('\t').collect();
     ensure!(
-        fields.len() == 24,
-        "{} fields where 24 are expected",
+        fields.len() == 25,
+        "{} fields where 25 are expected",
         fields.len()
     );
     ensure!(
@@ -294,10 +297,41 @@ fn state(line: &str, expected_id: usize) -> Result<StateDump> {
             ensure!(redstone < 1 << 4, "more redstone flags than the four asked");
             redstone
         },
-        consulted: match fields[23] {
+        sound: sound_type(fields[23])?,
+        consulted: match fields[24] {
             "-" => Vec::new(),
             listed => listed.split(',').map(str::to_owned).collect(),
         },
+    })
+}
+
+/// A block's `SoundType` as the program prints it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SoundTypeDump {
+    /// The bits of the volume and the pitch, floats as the game keeps them.
+    pub volume: u32,
+    pub pitch: u32,
+    pub break_sound: u32,
+    pub step: u32,
+    pub place: u32,
+    pub hit: u32,
+    pub fall: u32,
+}
+
+/// `volume,pitch,break,step,place,hit,fall`: the two floats' bits in hexadecimal, the
+/// sounds' ids in decimal.
+fn sound_type(text: &str) -> Result<SoundTypeDump> {
+    let parts: Vec<&str> = text.split(',').collect();
+    ensure!(parts.len() == 7, "a sound type of {} parts", parts.len());
+    let bits = |part: &str| u32::from_str_radix(part, 16).context("a float's bits");
+    Ok(SoundTypeDump {
+        volume: bits(parts[0])?,
+        pitch: bits(parts[1])?,
+        break_sound: integer(parts[2])?,
+        step: integer(parts[3])?,
+        place: integer(parts[4])?,
+        hit: integer(parts[5])?,
+        fall: integer(parts[6])?,
     })
 }
 
@@ -508,7 +542,7 @@ mod tests {
         let line = format!(
             "0\tminecraft:thing\t7\t1\t2086\t63\t2\t1\tPOPPED\t2\t8\t1\t0\t0,1,0\t\
              -\t{full}\t{lower}\t{lower}\t{lower}\t{lower}\t{lower};{full}\t{lower}\t\
-             5\tcollision:block_entity"
+             5\t3f800000,3f800000,1,2,3,4,5\tcollision:block_entity"
         );
         let read = states(&line).unwrap();
         assert_eq!(read.len(), 1);
@@ -519,6 +553,7 @@ mod tests {
         assert_eq!(state.sturdy, [63, 2, 1]);
         assert_eq!(state.push_reaction, "POPPED");
         assert_eq!(state.redstone, 5, "a conductor with an analog output");
+        assert_eq!((state.sound.place, state.sound.fall), (3, 5));
         assert_eq!(
             state.fluid,
             Some(FluidDump {

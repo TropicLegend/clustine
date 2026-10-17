@@ -1094,3 +1094,50 @@ fn water_takes_the_place_of_lava_only_where_it_is_at_least_four_ninths_high() {
     assert_eq!(level_at_output(&output, beside), None);
     assert_eq!(block_at(&region, beside), Some(lava(5)));
 }
+
+/// A water bucket emptied is heard at the block by everyone near but its user, as the
+/// game's `BucketItem.playEmptySound` plays it (ADR-0026, section 8, step R6).
+#[test]
+fn a_bucket_emptied_is_heard_at_its_block_by_all_but_its_user() {
+    let slab = at(0, -60, 1);
+    let dry = state("minecraft:stone_slab[type=bottom,waterlogged=false]");
+    let (mut region, _) = world_with(&[(slab, dry)], &[]);
+    let bucket = ItemStack {
+        item: items::WATER_BUCKET,
+        count: 1,
+    };
+    let inputs = vec![
+        set_slot(1, 0, Some(bucket)),
+        select(1, 0),
+        numbered(
+            1,
+            PlayerInput::UseItem {
+                rotation: (0.0, 60.0),
+                sneaking: false,
+                sequence: 1,
+            },
+        ),
+    ];
+    let output = checked(&mut region, &moves(inputs));
+    let heard: Vec<(i32, Vec3, Option<PlayerId>)> = output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RegionEvent::Sound {
+                sound,
+                position,
+                except,
+                ..
+            } => Some((*sound, *position, *except)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heard,
+        [(
+            clustine_data::sounds::ITEM_BUCKET_EMPTY,
+            Vec3::new(0.5, -59.5, 1.5),
+            Some(player(1))
+        )]
+    );
+}

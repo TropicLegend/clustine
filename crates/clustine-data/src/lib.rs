@@ -61,6 +61,23 @@ pub mod sounds {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct BlockState(pub u16);
 
+/// The index of each state's sound type in `generated::sound_types::SOUND_TYPES`, one
+/// byte a state, which `cargo datagen` takes from the game.
+static STATE_SOUND_TYPES: &[u8] = include_bytes!("generated/state_sound_types.bin");
+
+/// A block's `SoundType`: the volume and pitch its sounds are played at and its five
+/// sounds, by their ids in [`SOUND_EVENTS`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SoundType {
+    pub volume: f32,
+    pub pitch: f32,
+    pub break_sound: i32,
+    pub step: i32,
+    pub place: i32,
+    pub hit: i32,
+    pub fall: i32,
+}
+
 impl BlockState {
     /// The block this state belongs to, or `None` if the id is not a block state.
     pub fn block(self) -> Option<&'static Block> {
@@ -72,6 +89,24 @@ impl BlockState {
     pub fn block_id(self) -> Option<usize> {
         let index = BLOCKS.partition_point(|block| block.last_state < self);
         (index < BLOCKS.len()).then_some(index)
+    }
+
+    /// The game's `getSoundType` of the state: what it sounds like broken, stepped on,
+    /// placed, hit and fallen on, and at what volume and pitch. `None` if the id is not
+    /// a block state.
+    pub fn sound_type(self) -> Option<SoundType> {
+        let index = *STATE_SOUND_TYPES.get(usize::from(self.0))?;
+        let (volume, pitch, break_sound, step, place, hit, fall) =
+            generated::sound_types::SOUND_TYPES[usize::from(index)];
+        Some(SoundType {
+            volume: f32::from_bits(volume),
+            pitch: f32::from_bits(pitch),
+            break_sound,
+            step,
+            place,
+            hit,
+            fall,
+        })
     }
 
     /// What the game's code says of the block this state belongs to: its class, its

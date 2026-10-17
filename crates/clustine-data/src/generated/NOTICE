@@ -15,5 +15,7 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
   mod.rs
   registries.rs
   sound_events.rs
+  sound_types.rs
+  state_sound_types.bin
   tags.rs
   version.rs

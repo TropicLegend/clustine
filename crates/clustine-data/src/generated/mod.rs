@@ -8,5 +8,6 @@ pub mod entity_types;
 pub mod items;
 pub mod registries;
 pub mod sound_events;
+pub mod sound_types;
 pub mod tags;
 pub mod version;

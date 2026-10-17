@@ -575,6 +575,22 @@ R5, pistons (2026-10-17, by me, ported from SteelMC-26.3 and read against the ja
   moved by a moving block's collision, and the client's slime bounce, which the client
   does. The timing against the official server is R8's.
 
+R6, the sounds of what players and phase B do (2026-10-17, by me; small enough not to
+hand out):
+
+- **Sound types are the game's**: the extract program asks every state its
+  `getSoundType` (volume, pitch and its five sounds), kept as the 130 distinct types
+  (`generated/sound_types.rs`) and one byte a state (`state_sound_types.bin`);
+  `BlockState::sound_type` reads them.
+- **A block placed is heard by all near but its placer**, as `BlockItem.place` plays
+  it: its place sound at half again its volume and four fifths of its pitch. A bucket
+  emptied plays `ITEM_BUCKET_EMPTY` or its lava sound at the block; one filled plays
+  its fluid's fill sound where the player stands, of the players' source; a block
+  placed on water sounds as a block placed.
+- A block broken by another player is heard already, by the level event 2001 that
+  clients play the breaking sound of; lava's hiss is its level event. Fluids make no
+  other sound the server sends.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

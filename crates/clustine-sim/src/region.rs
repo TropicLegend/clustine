@@ -1471,11 +1471,14 @@ impl Region {
                 let used = placement::use_item(&item_use, &Readable(self), &bodies);
                 if let Some(used) = used
                     && self.change_all(&used.changes, output)
-                    && let Some((slot, stack)) = used.hotbar
-                    && let Some(player) = self.players.get_mut(&id)
-                    && let Some(held) = player.hotbar.get_mut(usize::from(slot))
                 {
-                    *held = stack;
+                    self.play_item_use(id, &item_use, &used, output);
+                    if let Some((slot, stack)) = used.hotbar
+                        && let Some(player) = self.players.get_mut(&id)
+                        && let Some(held) = player.hotbar.get_mut(usize::from(slot))
+                    {
+                        *held = stack;
+                    }
                 }
                 if let Some(player) = self.players.get_mut(&id) {
                     player.acknowledge(sequence);
@@ -1621,9 +1624,83 @@ impl Region {
             if (!reads || self.ticks_chunk(target.chunk())) && self.change_all(&changes, output) {
                 // `Block.setPlacedBy`: a hook placed looks along its line.
                 self.placed_by_player(target, output);
+                self.play_placed(target, action.player, output);
             }
         }
         None
+    }
+
+    /// `BlockItem.place`'s sound of the block placed at `pos` by `player`: its place
+    /// sound at half again its volume and four fifths of its pitch, heard by all near
+    /// but the player, whose own client plays it (`docs/adr/0026-redstone.md`, section
+    /// 8).
+    fn play_placed(&mut self, pos: BlockPos, player: PlayerId, output: &mut TickOutput) {
+        let Some(sound) = self.own_block(pos).and_then(BlockState::sound_type) else {
+            return;
+        };
+        output.events.push(RegionEvent::Sound {
+            sound: sound.place,
+            source: crate::api::SOUND_SOURCE_BLOCKS,
+            position: block_centre(pos),
+            volume: (sound.volume + 1.0) / 2.0,
+            pitch: sound.pitch * 0.8,
+            except: Some(player),
+        });
+    }
+
+    /// The sound of a bucket used by `player`, or of a block placed on water: a
+    /// bucket that fills is heard where the player stands (`Player.playSound` of its
+    /// fluid's pickup sound), one that empties at the block (`playEmptySound`), and a
+    /// block placed as a block's is; all near hear it but the player.
+    fn play_item_use(
+        &mut self,
+        player: PlayerId,
+        item_use: &ItemUse,
+        used: &placement::UsedItem,
+        output: &mut TickOutput,
+    ) {
+        use clustine_data::{items, sounds};
+        let Some(&(pos, _)) = used.changes.first() else {
+            return;
+        };
+        let at_block = block_centre(pos);
+        let (sound, position, source) = match item_use.held {
+            Some(items::BUCKET) => {
+                let filled = used
+                    .hotbar
+                    .and_then(|(_, stack)| stack)
+                    .map(|stack| stack.item);
+                let sound = match filled {
+                    Some(items::LAVA_BUCKET) => sounds::ITEM_BUCKET_FILL_LAVA,
+                    Some(items::POWDER_SNOW_BUCKET) => sounds::ITEM_BUCKET_FILL_POWDER_SNOW,
+                    _ => sounds::ITEM_BUCKET_FILL,
+                };
+                // A player's own sound is of the players' source.
+                (sound, item_use.feet, crate::api::SOUND_SOURCE_PLAYERS)
+            }
+            Some(items::WATER_BUCKET) => (
+                sounds::ITEM_BUCKET_EMPTY,
+                at_block,
+                crate::api::SOUND_SOURCE_BLOCKS,
+            ),
+            Some(items::LAVA_BUCKET) => (
+                sounds::ITEM_BUCKET_EMPTY_LAVA,
+                at_block,
+                crate::api::SOUND_SOURCE_BLOCKS,
+            ),
+            _ => {
+                self.play_placed(pos, player, output);
+                return;
+            }
+        };
+        output.events.push(RegionEvent::Sound {
+            sound,
+            source,
+            position,
+            volume: 1.0,
+            pitch: 1.0,
+            except: Some(player),
+        });
     }
 
     /// `RedStoneOreBlock.useItemOn`: a click on redstone ore lights it, and the click
@@ -2278,6 +2355,15 @@ impl Player {
             self.pose = pose;
         }
     }
+}
+
+/// The middle of the block at `pos`, where the game plays a block's sounds.
+fn block_centre(pos: BlockPos) -> Vec3 {
+    Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y) + 0.5,
+        f64::from(pos.z) + 0.5,
+    )
 }
 
 #[cfg(test)]
@@ -3534,12 +3620,17 @@ mod tests {
     }
 
     /// The changes of blocks a tick reports, without what clients show of a block
-    /// breaking, for the tests about what changed.
+    /// breaking and without sounds, for the tests about what changed.
     fn block_changes(output: &TickOutput) -> Vec<RegionEvent> {
         output
             .events
             .iter()
-            .filter(|event| !matches!(event, RegionEvent::BlockDestroyed { .. }))
+            .filter(|event| {
+                !matches!(
+                    event,
+                    RegionEvent::BlockDestroyed { .. } | RegionEvent::Sound { .. }
+                )
+            })
             .cloned()
             .collect()
     }
@@ -3906,12 +3997,12 @@ mod tests {
         let mut region = on_floor(&[1]);
         // On top of the floor, two blocks from the player.
         let output = region.tick(&moves(vec![place(1, 2, -61, 0, Face::Top)]));
-        assert_eq!(output.events, [changed(2, -60, 0, blocks::STONE)]);
+        assert_eq!(block_changes(&output), [changed(2, -60, 0, blocks::STONE)]);
         assert_eq!(told(&output), [acknowledged(1, 1)]);
 
         // Against the side of the block just placed, with the next hotbar slot.
         let output = region.tick(&moves(vec![select(1, 1), place(1, 2, -60, 0, Face::South)]));
-        assert_eq!(output.events, [changed(2, -60, 1, blocks::DIRT)]);
+        assert_eq!(block_changes(&output), [changed(2, -60, 1, blocks::DIRT)]);
 
         let chunk = region.chunk(ChunkPos::new(0, 0)).unwrap();
         assert_eq!(chunk.get(2, -60, 0), Some(blocks::STONE));
@@ -3961,7 +4052,7 @@ mod tests {
         // A click on thin air places into it, as the official server does with a block
         // the client still showed (docs/groundwork/w6-plan.md, 4.1).
         let output = region.tick(&moves(vec![place(1, 2, -55, 0, Face::Top)]));
-        assert_eq!(output.events, [changed(2, -55, 0, blocks::STONE)]);
+        assert_eq!(block_changes(&output), [changed(2, -55, 0, blocks::STONE)]);
         assert_eq!(told(&output), [acknowledged(1, 1)]);
     }
 
@@ -3983,7 +4074,7 @@ mod tests {
             select(1, 9),
             place(1, 2, -61, 0, Face::Top),
         ]));
-        assert_eq!(output.events, [changed(2, -60, 0, blocks::STONE)]);
+        assert_eq!(block_changes(&output), [changed(2, -60, 0, blocks::STONE)]);
     }
 
     #[test]
@@ -3999,7 +4090,7 @@ mod tests {
             select(1, 4),
             place(1, 2, -61, 0, Face::Top),
         ]));
-        assert_eq!(output.events, [changed(2, -60, 0, blocks::GLASS)]);
+        assert_eq!(block_changes(&output), [changed(2, -60, 0, blocks::GLASS)]);
 
         // Emptying the slot again leaves nothing to place.
         let output = region.tick(&moves(vec![set(4, None), place(1, 3, -61, 0, Face::Top)]));
@@ -5719,7 +5810,7 @@ mod tests {
         let click = sequenced(2, place(1, 0, -60, 2, Face::West));
         let output = region.tick(&moves(vec![click]));
         assert!(requests(&output).is_empty());
-        assert_eq!(output.events, [changed(0, -60, 2, blocks::STONE)]);
+        assert_eq!(block_changes(&output), [changed(0, -60, 2, blocks::STONE)]);
         assert_eq!(told(&output), [acknowledged(1, 2)]);
 
         // Nor against a chunk that is not loaded. The player walks to the end of the
@@ -6156,7 +6247,7 @@ mod tests {
         // the one that was asked for.
         let step = place_against(-2, -61, 2, Face::Top, blocks::DIRT, FEET);
         let output = region.tick(&remotely(vec![remote(1, 1, step)]));
-        assert_eq!(output.events, [changed(-2, -60, 2, blocks::DIRT)]);
+        assert_eq!(block_changes(&output), [changed(-2, -60, 2, blocks::DIRT)]);
         assert_eq!(outcomes(&output), [done(1, 1)]);
 
         // Each of these would go into a free spot of this region, if only this region
@@ -6199,7 +6290,7 @@ mod tests {
         for step in onto_floor(-2, 2, FEET) {
             let mut region = region.clone();
             let output = region.tick(&remotely(vec![remote(1, 1, step.clone())]));
-            assert_eq!(output.events, [changed(-2, -60, 2, blocks::STONE)]);
+            assert_eq!(block_changes(&output), [changed(-2, -60, 2, blocks::STONE)]);
             assert_eq!(outcomes(&output), [done(1, 1)]);
 
             // A second block does not go where the first is, and does not replace it.
@@ -6248,14 +6339,14 @@ mod tests {
             remote(1, 3, place_at(-4, -59, 0, blocks::STONE, FEET)),
             remote(1, 4, place_at(-4, -58, 0, blocks::STONE, FEET)),
         ]));
-        assert_eq!(output.events, [changed(-4, -58, 0, blocks::STONE)]);
+        assert_eq!(block_changes(&output), [changed(-4, -58, 0, blocks::STONE)]);
         assert_eq!(outcomes(&output), [done(1, 3), done(1, 4)]);
 
         // When the player has gone, the spot is free.
         region.tick(&changes(vec![leave_as(2, 77)]));
         let [step, _] = onto_floor(-4, 0, FEET);
         let output = region.tick(&remotely(vec![remote(1, 5, step)]));
-        assert_eq!(output.events, [changed(-4, -60, 0, blocks::STONE)]);
+        assert_eq!(block_changes(&output), [changed(-4, -60, 0, blocks::STONE)]);
     }
 
     #[test]

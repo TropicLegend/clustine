@@ -500,4 +500,20 @@ mod redstone_tests {
         assert!(!unbreakable(blocks::OBSIDIAN));
         assert!(!unbreakable(blocks::STONE));
     }
+
+    /// What blocks sound like, as the game's `SoundType`s give it: stone's and wood's
+    /// place sounds, wool's softer volume, glass breaking.
+    #[test]
+    fn sound_types_are_the_games() {
+        use crate::sounds as s;
+        let of = |state: crate::BlockState| state.sound_type().expect("a state");
+        assert_eq!(of(blocks::STONE).place, s::BLOCK_STONE_PLACE);
+        assert_eq!(of(blocks::OAK_PLANKS).place, s::BLOCK_WOOD_PLACE);
+        assert_eq!(of(blocks::GLASS).break_sound, s::BLOCK_GLASS_BREAK);
+        assert_eq!(of(blocks::WHITE_WOOL).place, s::BLOCK_WOOL_PLACE);
+        assert_eq!(
+            (of(blocks::STONE).volume, of(blocks::STONE).pitch),
+            (1.0, 1.0)
+        );
+    }
 }
