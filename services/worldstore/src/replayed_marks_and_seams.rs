@@ -91,7 +91,11 @@ fn commit(
 ) {
     handle.request(StoreRequest::Commit {
         tick,
-        changes: changes.to_vec(),
+        changes: changes
+            .iter()
+            .copied()
+            .map(clustine_world::Change::from)
+            .collect(),
         state: format!("delta {tick}").into_bytes(),
         stays: Vec::new(),
         ticks: Vec::new(),

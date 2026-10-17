@@ -1,13 +1,12 @@
 //! The messages services exchange.
 
-use clustine_data::BlockState;
 use clustine_region::{RegionId, RoutingTable};
 use clustine_sim::api::{
     Durable, EntityState, HOTBAR_SLOTS, ItemStack, Place, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote,
 };
 use clustine_world::{
-    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityId, EntityIds,
+    BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityId, EntityIds,
     FiledEffect, PlayerId, ScheduledTick, Seam,
 };
 use serde::{Deserialize, Serialize};
@@ -326,7 +325,9 @@ pub enum StoreRequest {
     /// not at all if it could not be put there: the handle is lost then.
     Commit {
         tick: u64,
-        changes: Vec<(BlockPos, BlockState)>,
+        /// What the tick changed in blocks and in their block entities, in the order it
+        /// made the changes (`docs/adr/0026-redstone.md`, section 6).
+        changes: Vec<Change>,
         state: Vec<u8>,
         /// What the region says of stays in this tick; see ADR-0020, section 3. No
         /// runner sends any yet, and the store does not look at them: steps R1.1 and
@@ -545,14 +546,14 @@ pub enum StoreReply {
         chunk: Option<Chunk>,
         used: CopyUse,
     },
-    /// On the stream: the block changes of a commit in a chunk the region copies, made
+    /// On the stream: the changes of a commit in a chunk the region copies, made
     /// durable in the group of `sequence`. `previous` is the sequence of the chunk's
     /// change before, so that a gap shows.
     CopyUpdate {
         position: ChunkPos,
         sequence: u64,
         previous: u64,
-        changes: Vec<(BlockPos, BlockState)>,
+        changes: Vec<Change>,
     },
     /// On the stream: who uses a chunk the region copies now (section 8 of the same
     /// record: a copy whose chunk comes to be used by a region not coupled to this one

@@ -5,8 +5,8 @@
 
 use clustine_data::BlockState;
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, EdgeId, Effect, EffectId, EntityId, FiledEffect, PlayerId, RegionId,
-    Vec3,
+    BlockPos, Change, Chunk, ChunkPos, EdgeId, Effect, EffectId, EntityId, FiledEffect, PlayerId,
+    RegionId, Vec3,
 };
 use serde::{Deserialize, Serialize};
 
@@ -568,9 +568,9 @@ pub struct TickInputs {
     /// (section 8 of the same record). Applied with the chunks, before the region
     /// works out which chunks tick.
     pub copy_bases: Vec<(ChunkPos, Chunk)>,
-    /// The block changes of later commits in copied chunks, in the order the store
-    /// sent them, applied after the bases.
-    pub copy_updates: Vec<(ChunkPos, Vec<(BlockPos, BlockState)>)>,
+    /// The changes of later commits in copied chunks, blocks and block entities' data,
+    /// in the order the store sent them, applied after the bases.
+    pub copy_updates: Vec<(ChunkPos, Vec<Change>)>,
     /// Copies the region no longer has: gone from its tickets' reach, withdrawn
     /// because their chunk came to be used by a region not coupled to this one, or
     /// loaded as the region's own.
@@ -714,6 +714,11 @@ pub enum RegionEvent {
         position: BlockPos,
         state: BlockState,
     },
+    /// The block entity at the position has new data, the bytes of one NBT compound as
+    /// [`clustine_world::BlockEntity`] keeps them; empty where the game makes a fresh
+    /// one for a block of the same kind (`docs/adr/0026-redstone.md`, section 6). It
+    /// comes in its place among the tick's [`Self::BlockChanged`].
+    BlockEntityChanged { position: BlockPos, data: Vec<u8> },
     /// A block broke, which clients show with its sound and bits (the game's level
     /// event 2001). The block itself changes by a [`Self::BlockChanged`] beside it.
     /// `breaker` is the player who broke it, whose client shows it already.
@@ -742,6 +747,7 @@ impl RegionEvent {
             Self::EntitySpawned(state) => [state.chunk(); 2],
             Self::EntityRemoved { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
+            | Self::BlockEntityChanged { position, .. }
             | Self::BlockDestroyed { position, .. }
             | Self::Fizzed { position } => [position.chunk(); 2],
             Self::EntityMoved {

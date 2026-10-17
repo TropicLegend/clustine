@@ -165,15 +165,15 @@ fn inputs(sequence: &mut u64, coupled: bool, to: &Region, mail: Mail) -> TickInp
             }
         })
         .collect();
-    let mut copy_updates: Vec<(ChunkPos, Vec<(BlockPos, BlockState)>)> = Vec::new();
+    let mut copy_updates: Vec<(ChunkPos, Vec<clustine_world::Change>)> = Vec::new();
     for (position, state) in mail.changes {
         let chunk = position.chunk();
         if to.copy(chunk).is_none() {
             continue;
         }
         match copy_updates.last_mut() {
-            Some((last, changes)) if *last == chunk => changes.push((position, state)),
-            _ => copy_updates.push((chunk, vec![(position, state)])),
+            Some((last, changes)) if *last == chunk => changes.push((position, state).into()),
+            _ => copy_updates.push((chunk, vec![(position, state).into()])),
         }
     }
     TickInputs {

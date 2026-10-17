@@ -540,7 +540,7 @@ mod tests {
         }
         let request = StoreRequest::Commit {
             tick: 9,
-            changes: vec![(BlockPos::new(-1, -64, 3), blocks::GLASS)],
+            changes: vec![(BlockPos::new(-1, -64, 3), blocks::GLASS).into()],
             state: vec![4, 5],
             stays: Vec::new(),
             ticks: Vec::new(),
@@ -916,7 +916,7 @@ mod tests {
                 position: one,
                 sequence: 41,
                 previous: 31,
-                changes: vec![(at, blocks::STONE)],
+                changes: vec![(at, blocks::STONE).into()],
             },
             StoreReply::CopyUsed {
                 position: two,

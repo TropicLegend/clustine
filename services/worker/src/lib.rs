@@ -62,7 +62,9 @@ use clustine_sim::{
     Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting, StateDelta, TickInputs,
     Ticket,
 };
-use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3};
+use clustine_world::{
+    BlockPos, Change, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3,
+};
 use clustine_worldstore::StoreHandle;
 use tracing::{error, info, warn};
 
@@ -2481,11 +2483,18 @@ impl RegionRunner {
         if !begins.is_empty() || !ends.is_empty() {
             self.store.request(StoreRequest::Beside { begins, ends });
         }
-        let changes: Vec<_> = output
+        // Blocks and block entities' data, in the order the tick changed them
+        // (`docs/adr/0026-redstone.md`, section 6).
+        let changes: Vec<Change> = output
             .events
             .iter()
             .filter_map(|event| match event {
-                RegionEvent::BlockChanged { position, state } => Some((*position, *state)),
+                RegionEvent::BlockChanged { position, state } => {
+                    Some(Change::Block(*position, *state))
+                }
+                RegionEvent::BlockEntityChanged { position, data } => {
+                    Some(Change::BlockEntity(*position, data.clone()))
+                }
                 _ => None,
             })
             .collect();
@@ -2532,7 +2541,7 @@ impl RegionRunner {
             || self.border.commits_every_tick();
         if needs_commit {
             self.unsaved
-                .extend(changes.iter().map(|(position, _)| position.chunk()));
+                .extend(changes.iter().map(|change| change.position().chunk()));
             self.unsaved
                 .extend(ticks.iter().map(|(position, _)| *position));
             self.unsaved.extend(marks_taken.iter().copied());

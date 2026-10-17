@@ -90,7 +90,7 @@ fn commit(effects: Vec<(Effect, Due)>, taken: Vec<EffectId>) -> LogRecord {
         region: 3,
         tick: 4_000,
         epoch: 9,
-        changes: vec![(BlockPos::new(1, 2, 3), blocks::STONE)],
+        changes: vec![(BlockPos::new(1, 2, 3), blocks::STONE).into()],
         state: vec![1, 2, 3],
         stays: Vec::new(),
         ticks: Vec::new(),

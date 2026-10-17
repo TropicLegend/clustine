@@ -1851,10 +1851,10 @@ impl Region {
             let Some(copy) = self.copies.get_mut(position) else {
                 continue;
             };
-            for (at, state) in changes {
-                if at.chunk() == *position {
-                    let (x, z) = at.in_chunk();
-                    copy.set(x, at.y, z, *state);
+            for change in changes {
+                if change.position().chunk() == *position {
+                    // Data the copy refuses was refused to the holder's chunk too.
+                    let _ = copy.apply(change);
                 }
             }
         }

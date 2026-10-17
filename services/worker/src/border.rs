@@ -11,12 +11,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use clustine_data::BlockState;
 use clustine_region::RegionId;
 use clustine_rpc::{CopyUse, Coupling, StoreReply, Uncoupling};
 use clustine_sim::api::TickInputs;
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, FiledEffect,
+    Change, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, FiledEffect,
 };
 
 /// At most this many ready effects go to one tick, the rest to the next (section 5).
@@ -39,7 +38,7 @@ struct Copy {
     /// Whether the sim has it.
     handed: bool,
     /// Changes the sim has not had of a copy it has.
-    unsent: Vec<(BlockPos, BlockState)>,
+    unsent: Vec<Change>,
 }
 
 struct Based {
@@ -51,7 +50,7 @@ struct Based {
 struct Update {
     sequence: u64,
     previous: u64,
-    changes: Vec<(BlockPos, BlockState)>,
+    changes: Vec<Change>,
 }
 
 /// What the runner asks the store for, from what came in.
@@ -274,10 +273,10 @@ impl Border {
         }
         base.last = update.sequence;
         if let Some(chunk) = &mut base.chunk {
-            for (at, state) in &update.changes {
-                if at.chunk() == position {
-                    let (x, z) = at.in_chunk();
-                    chunk.set(x, at.y, z, *state);
+            for change in &update.changes {
+                if change.position().chunk() == position {
+                    // Data the copy refuses was refused to the holder's chunk too.
+                    let _ = chunk.apply(change);
                 }
             }
         }
@@ -555,6 +554,7 @@ impl Border {
 #[cfg(test)]
 mod tests {
     use clustine_data::blocks;
+    use clustine_world::BlockPos;
 
     use super::*;
 
@@ -581,7 +581,7 @@ mod tests {
             position: C,
             sequence,
             previous,
-            changes: vec![(BlockPos::new(16, 100, 0), blocks::STONE)],
+            changes: vec![(BlockPos::new(16, 100, 0), blocks::STONE).into()],
         }
     }
 

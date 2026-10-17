@@ -909,7 +909,9 @@ impl Witness {
                         }
                         // What a client shows of a block breaking or lava hissing; the
                         // block itself comes as a change.
-                        RegionEvent::BlockDestroyed { .. } | RegionEvent::Fizzed { .. } => {}
+                        RegionEvent::BlockDestroyed { .. }
+                        | RegionEvent::Fizzed { .. }
+                        | RegionEvent::BlockEntityChanged { .. } => {}
                         RegionEvent::EntityMoved { entity, pose, .. } => {
                             self.entities.insert(*entity, *pose);
                         }

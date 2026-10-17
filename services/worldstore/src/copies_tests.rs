@@ -43,7 +43,11 @@ fn block(chunk: ChunkPos, n: i32) -> BlockPos {
 fn commit(handle: &StoreHandle, tick: u64, changes: &[(BlockPos, BlockState)]) {
     handle.request(StoreRequest::Commit {
         tick,
-        changes: changes.to_vec(),
+        changes: changes
+            .iter()
+            .copied()
+            .map(clustine_world::Change::from)
+            .collect(),
         state: format!("tick {tick}").into_bytes(),
         stays: Vec::new(),
         ticks: Vec::new(),
@@ -167,9 +171,9 @@ fn a_copy_is_based_on_its_chunk_with_the_holders_commits_and_kept_up_to_date() {
     assert_eq!(*at_second, WEST);
     assert_eq!(*before_second, based);
     assert!(*second_sequence > based);
-    assert_eq!(second_changes, &[second]);
+    assert_eq!(second_changes, &[second.into()]);
     assert_eq!(before_third, second_sequence);
-    assert_eq!(third_changes, &[third]);
+    assert_eq!(third_changes, &[third.into()]);
 
     // Its use is told as it changes.
     load(&holder, WEST);
@@ -343,4 +347,84 @@ fn a_copy_is_what_its_holder_restores_with_after_saves_and_a_checkpoint() {
         matches!(&streamed[..], [StoreReply::CopyBase { chunk: Some(chunk), .. }] if *chunk == loaded),
         "{streamed:?}"
     );
+}
+
+/// A commit with its changes in their order, block entities' data among them
+/// (`docs/adr/0026-redstone.md`, section 6).
+fn commit_changes(handle: &StoreHandle, tick: u64, changes: Vec<clustine_world::Change>) {
+    handle.request(StoreRequest::Commit {
+        tick,
+        changes,
+        state: format!("tick {tick}").into_bytes(),
+        stays: Vec::new(),
+        ticks: Vec::new(),
+        marks_taken: Vec::new(),
+        seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
+    });
+}
+
+/// A copy is kept up to date with block entities' data as with blocks: the update
+/// carries the changes in the tick's order, a change of data alone is an update of
+/// its own in the chain, and a base made afterwards has the data.
+#[test]
+fn a_copy_follows_a_block_entitys_data_in_its_place_among_the_blocks() {
+    use clustine_world::Change;
+
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let holder = opened(&store, 0);
+    let copier = opened(&store, 1);
+    copies(&copier, &[WEST], &[]);
+    let StoreReply::CopyBase {
+        sequence: based, ..
+    } = up_to_mark(&copier).remove(0)
+    else {
+        panic!("expected a base");
+    };
+
+    let chest = block(WEST, 2);
+    let placed = vec![
+        Change::Block(chest, blocks::CHEST),
+        Change::BlockEntity(chest, b"items".to_vec()),
+        Change::Block(block(WEST, 3), blocks::STONE),
+    ];
+    commit_changes(&holder, 1, placed.clone());
+    let emptied = vec![Change::BlockEntity(chest, b"none".to_vec())];
+    commit_changes(&holder, 2, emptied.clone());
+    streamed_before_flush(&holder);
+    let streamed = streamed_before_flush(&copier);
+    let [
+        StoreReply::CopyUpdate {
+            sequence: first,
+            previous: before_first,
+            changes: first_changes,
+            ..
+        },
+        StoreReply::CopyUpdate {
+            previous: before_second,
+            changes: second_changes,
+            ..
+        },
+    ] = &streamed[..]
+    else {
+        panic!("expected two updates, got {streamed:?}");
+    };
+    assert_eq!(*before_first, based);
+    assert_eq!(first_changes, &placed);
+    assert_eq!(before_second, first);
+    assert_eq!(second_changes, &emptied);
+
+    // A copier that comes now is based on the chunk with the data in it.
+    let late = store.open_region(hello(2, 1)).unwrap().0;
+    copies(&late, &[WEST], &[]);
+    let [StoreReply::CopyBase { chunk, .. }] = &up_to_mark(&late)[..] else {
+        panic!("expected a base");
+    };
+    let mut expected = generator().generate(WEST);
+    for change in placed.iter().chain(&emptied) {
+        expected.apply(change).unwrap();
+    }
+    assert_eq!(chunk.as_ref(), Some(&expected));
 }

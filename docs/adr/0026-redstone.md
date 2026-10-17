@@ -330,6 +330,24 @@ try with a real client.
 
 ## Found while building
 
+R2a, the ordered list of changes (2026-10-17):
+
+- **The list is `clustine_world::Change`**, `Block` or `BlockEntity`, carried by
+  commits, copies' updates, the log and the store's replay (`Replayed::BlockEntity`)
+  in the order a tick made the changes; `Chunk::apply` applies one as the chunk's own
+  `set` and `set_block_entity_data` do.
+- **The log writes it as kind 13**, only for a commit with a block entity's data
+  among its changes: the fields of kind 10, then each block entity's change with the
+  number of block changes before it. Commits of blocks alone are written as before,
+  so older logs and older readers of such commits are untouched.
+- **The simulation says a block entity's new data as
+  `RegionEvent::BlockEntityChanged`**, in its place among the tick's
+  `BlockChanged`; the worker commits both in that order, and the edge keeps the data
+  in its replica. Nothing emits it before R2b.
+- Data a chunk refuses (more than `MAX_BLOCK_ENTITY_DATA` or the chunk's whole) is
+  refused alike in the region's chunk, a copy, the edge's replica and a replay, so
+  all keep the block entity without it.
+
 ## Review
 
 **First review of this record (2026-10-17): ready after named changes**, which are

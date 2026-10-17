@@ -423,7 +423,7 @@ fn what_a_restore_costs_a_coupled_region_after_a_crash_beside_its_checkpoint() {
                     };
                     handle.request(StoreRequest::Commit {
                         tick,
-                        changes: vec![(block, state)],
+                        changes: vec![(block, state).into()],
                         state: format!("the state of the region at tick {tick:>8}").into_bytes(),
                         stays: Vec::new(),
                         ticks: Vec::new(),

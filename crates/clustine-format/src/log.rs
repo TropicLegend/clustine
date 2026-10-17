@@ -26,6 +26,7 @@
 //! | 10 | [`LogRecord::Commit`] with effects | the fields of kind 9, whose counts may all be 0, effects, taken |
 //! | 11 | [`LogRecord::EffectsDropped`] | numbers |
 //! | 12 | [`LogRecord::EffectsForward`] | filed effects |
+//! | 13 | [`LogRecord::Commit`] with block entities | the fields of kind 10, whose counts may all be 0, block entities |
 //!
 //! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
 //! u16 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z;
@@ -44,7 +45,12 @@
 //! (`docs/adr/0025-effects-between-regions.md`, sections 4 and 5), whatever else it
 //! carries: `effects` are those the store keeps of what the tick made, each with when it
 //! is due, numbered by the record's sequence and their place in it, and `taken` the
-//! numbers of the effects the tick took. Kind 11 says that effects untaken were dropped,
+//! numbers of the effects the tick took. A commit is written as kind 13 if any of its
+//! changes is to a block entity's data (`docs/adr/0026-redstone.md`, section 6): its
+//! `changes` then hold the blocks alone, and `block entities` is a count (u32)
+//! followed, per change, by the number of block changes before it (u32), i32 x, i32 y,
+//! i32 z and its data as `bytes`, ascending by that number, so that the two together
+//! are the tick's changes in the order it made them. Kind 11 says that effects untaken were dropped,
 //! and kind 12 carries untaken effects forward out of a segment that is let go, with
 //! their numbers. `effects`, `numbers` and `filed effects` are as `effects.rs` writes
 //! them.
@@ -83,7 +89,8 @@
 
 use clustine_data::BlockState;
 use clustine_world::{
-    BlockPos, ChunkPos, Due, Effect, EffectId, FiledEffect, InChunk, ScheduledTick, Seam, Ticked,
+    BlockPos, Change, ChunkPos, Due, Effect, EffectId, FiledEffect, InChunk, ScheduledTick, Seam,
+    Ticked,
 };
 
 use crate::bytes::Input;
@@ -101,6 +108,7 @@ const KIND_COMMIT_WITH_TICKS: u8 = 9;
 const KIND_COMMIT_WITH_EFFECTS: u8 = 10;
 const KIND_EFFECTS_DROPPED: u8 = 11;
 const KIND_EFFECTS_FORWARD: u8 = 12;
+const KIND_COMMIT_WITH_ENTITIES: u8 = 13;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -201,7 +209,7 @@ pub enum LogRecord {
         tick: u64,
         /// The epoch of the owner that committed it.
         epoch: u64,
-        changes: Vec<(BlockPos, BlockState)>,
+        changes: Vec<Change>,
         state: Vec<u8>,
         /// The stay notes of the tick. A commit without any is written as it was
         /// before there were notes.
@@ -304,10 +312,14 @@ impl LogRecord {
                 effects,
                 taken,
             } => {
-                let effected = !effects.is_empty() || !taken.is_empty();
+                let (blocks, entities) = split_changes(changes);
+                let with_entities = !entities.is_empty();
+                let effected = with_entities || !effects.is_empty() || !taken.is_empty();
                 let records =
                     effected || !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
-                payload.push(if effected {
+                payload.push(if with_entities {
+                    KIND_COMMIT_WITH_ENTITIES
+                } else if effected {
                     KIND_COMMIT_WITH_EFFECTS
                 } else if records {
                     KIND_COMMIT_WITH_TICKS
@@ -319,7 +331,7 @@ impl LogRecord {
                 payload.extend_from_slice(&region.to_be_bytes());
                 payload.extend_from_slice(&tick.to_be_bytes());
                 payload.extend_from_slice(&epoch.to_be_bytes());
-                put_changes(&mut payload, changes);
+                put_changes(&mut payload, &blocks);
                 put_bytes(&mut payload, state);
                 if records {
                     put_stays(&mut payload, stays);
@@ -334,6 +346,9 @@ impl LogRecord {
                     if effected {
                         crate::effects::put_effects(&mut payload, effects);
                         crate::effects::put_ids(&mut payload, taken);
+                    }
+                    if with_entities {
+                        put_entities(&mut payload, &entities);
                     }
                 } else if !stays.is_empty() {
                     put_stays(&mut payload, stays);
@@ -426,7 +441,7 @@ impl LogRecord {
                 region: input.u32()?,
                 tick: input.u64()?,
                 epoch: input.u64()?,
-                changes: take_changes(&mut input)?,
+                changes: blocks_only(take_changes(&mut input)?),
                 state: take_bytes(&mut input)?,
                 stays: Vec::new(),
                 ticks: Vec::new(),
@@ -439,7 +454,7 @@ impl LogRecord {
                 region: input.u32()?,
                 tick: input.u64()?,
                 epoch: input.u64()?,
-                changes: take_changes(&mut input)?,
+                changes: blocks_only(take_changes(&mut input)?),
                 state: take_bytes(&mut input)?,
                 stays: take_stays(&mut input)?,
                 ticks: Vec::new(),
@@ -448,9 +463,11 @@ impl LogRecord {
                 effects: Vec::new(),
                 taken: Vec::new(),
             },
-            kind @ (KIND_COMMIT_WITH_TICKS | KIND_COMMIT_WITH_EFFECTS) => {
+            kind @ (KIND_COMMIT_WITH_TICKS
+            | KIND_COMMIT_WITH_EFFECTS
+            | KIND_COMMIT_WITH_ENTITIES) => {
                 let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
-                let changes = take_changes(&mut input)?;
+                let blocks = take_changes(&mut input)?;
                 let state = take_bytes(&mut input)?;
                 let stays = if input.peek_u32()? == 0 {
                     input.u32()?;
@@ -467,11 +484,22 @@ impl LogRecord {
                     let chunk = ChunkPos::new(input.i32()?, input.i32()?);
                     seams.push((chunk, crate::seams::take_seams(&mut input)?));
                 }
-                let (effects, taken) = if kind == KIND_COMMIT_WITH_EFFECTS {
+                let (effects, taken) = if kind == KIND_COMMIT_WITH_TICKS {
+                    (Vec::new(), Vec::new())
+                } else {
                     let effects = crate::effects::take_effects(&mut input)?;
                     (effects, crate::effects::take_ids(&mut input)?)
+                };
+                let changes = if kind == KIND_COMMIT_WITH_ENTITIES {
+                    let entities = take_entities(&mut input)?;
+                    if entities.is_empty() {
+                        return Err(FormatError::Corrupt(
+                            "a commit with block entities that has none",
+                        ));
+                    }
+                    join_changes(blocks, entities)?
                 } else {
-                    (Vec::new(), Vec::new())
+                    blocks_only(blocks)
                 };
                 // A commit is written in one form only: without effects as kind 9, and
                 // without records of chunks as kind 2 or 8.
@@ -573,6 +601,79 @@ fn take_changes(input: &mut Input<'_>) -> Result<Vec<(BlockPos, BlockState)>, Fo
         changes.push((position, BlockState(input.u16()?)));
     }
     Ok(changes)
+}
+
+/// A commit's changes as kind 13 writes them: the blocks alone, and each change of a
+/// block entity with the number of block changes before it.
+#[allow(clippy::type_complexity)]
+fn split_changes(changes: &[Change]) -> (Vec<(BlockPos, BlockState)>, Vec<(u32, BlockPos, &[u8])>) {
+    let mut blocks = Vec::with_capacity(changes.len());
+    let mut entities = Vec::new();
+    for change in changes {
+        match change {
+            Change::Block(position, state) => blocks.push((*position, *state)),
+            Change::BlockEntity(position, data) => {
+                entities.push((blocks.len() as u32, *position, data.as_slice()));
+            }
+        }
+    }
+    (blocks, entities)
+}
+
+/// The changes of a commit written before block entities were.
+fn blocks_only(blocks: Vec<(BlockPos, BlockState)>) -> Vec<Change> {
+    blocks.into_iter().map(Change::from).collect()
+}
+
+/// The changes of a commit of kind 13, in the order its tick made them.
+fn join_changes(
+    blocks: Vec<(BlockPos, BlockState)>,
+    entities: Vec<(u32, BlockPos, Vec<u8>)>,
+) -> Result<Vec<Change>, FormatError> {
+    let mut changes = Vec::with_capacity(blocks.len() + entities.len());
+    let mut blocks = blocks.into_iter();
+    let mut before = 0;
+    for (place, position, data) in entities {
+        if place < before || place as usize > before as usize + blocks.len() {
+            return Err(FormatError::Corrupt(
+                "a block entity's place among a commit's blocks is out of order",
+            ));
+        }
+        changes.extend(
+            blocks
+                .by_ref()
+                .take((place - before) as usize)
+                .map(Change::from),
+        );
+        before = place;
+        changes.push(Change::BlockEntity(position, data));
+    }
+    changes.extend(blocks.map(Change::from));
+    Ok(changes)
+}
+
+fn put_entities(payload: &mut Vec<u8>, entities: &[(u32, BlockPos, &[u8])]) {
+    payload.extend_from_slice(&(entities.len() as u32).to_be_bytes());
+    for (place, position, data) in entities {
+        payload.extend_from_slice(&place.to_be_bytes());
+        payload.extend_from_slice(&position.x.to_be_bytes());
+        payload.extend_from_slice(&position.y.to_be_bytes());
+        payload.extend_from_slice(&position.z.to_be_bytes());
+        put_bytes(payload, data);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn take_entities(input: &mut Input<'_>) -> Result<Vec<(u32, BlockPos, Vec<u8>)>, FormatError> {
+    let count = input.u32()? as usize;
+    // Each is twenty bytes at least: a forged count must not reserve more.
+    let mut entities = Vec::with_capacity(count.min(input.0.len() / 20));
+    for _ in 0..count {
+        let place = input.u32()?;
+        let position = BlockPos::new(input.i32()?, input.i32()?, input.i32()?);
+        entities.push((place, position, take_bytes(input)?));
+    }
+    Ok(entities)
 }
 
 fn put_chunks(payload: &mut Vec<u8>, chunks: &[ChunkPos]) {
@@ -827,7 +928,7 @@ mod tests {
             tick,
             epoch: 1,
             changes: (0..count)
-                .map(|index| (BlockPos::new(index, -61, -index), blocks::STONE))
+                .map(|index| (BlockPos::new(index, -61, -index), blocks::STONE).into())
                 .collect(),
             state: vec![tick as u8; count as usize],
             stays: Vec::new(),
@@ -845,7 +946,7 @@ mod tests {
             region: 4,
             tick: 2,
             epoch: 1,
-            changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+            changes: vec![(BlockPos::new(1, -1, 3), BlockState(9)).into()],
             state: vec![7, 8],
             stays: Vec::new(),
             ticks: Vec::new(),
@@ -1098,10 +1199,11 @@ mod tests {
 
     #[test]
     fn a_record_of_regions_that_checks_out_but_makes_no_sense_is_an_error() {
-        // Kinds there are none of. 8 to 12 were among them until a commit with stay
-        // notes, one with the ticks of chunks, one with effects and the store's
-        // records of effects became kinds of their own; 13 stands in for them.
-        for kind in [0, 13, 255] {
+        // Kinds there are none of. 8 to 13 were among them until a commit with stay
+        // notes, one with the ticks of chunks, one with effects, the store's records
+        // of effects and a commit with block entities became kinds of their own; 14
+        // stands in for them.
+        for kind in [0, 14, 255] {
             assert_eq!(
                 read_log(&frame(&[2, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -1171,7 +1273,7 @@ mod tests {
                 region: 2,
                 tick: 40,
                 epoch: 3,
-                changes: vec![(BlockPos::new(1, 2, 3), BlockState(5))],
+                changes: vec![(BlockPos::new(1, 2, 3), BlockState(5)).into()],
                 state: b"delta".to_vec(),
                 stays,
                 ticks: ticks.clone(),
@@ -1227,8 +1329,8 @@ mod tests {
             tick,
             epoch: 2,
             changes: vec![
-                (BlockPos::new(-60, -61, 40), blocks::AIR),
-                (BlockPos::new(-60, -60, 40), blocks::SAND),
+                (BlockPos::new(-60, -61, 40), blocks::AIR).into(),
+                (BlockPos::new(-60, -60, 40), blocks::SAND).into(),
             ],
             state: b"a delta".to_vec(),
             stays: Vec::new(),
@@ -1350,7 +1452,7 @@ mod tests {
             region: 4,
             tick: 2,
             epoch: 1,
-            changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+            changes: vec![(BlockPos::new(1, -1, 3), BlockState(9)).into()],
             state: vec![7, 8],
             stays: Vec::new(),
             ticks: Vec::new(),
@@ -1419,7 +1521,7 @@ mod tests {
                 region: 4,
                 tick: 2,
                 epoch: 1,
-                changes: vec![(BlockPos::new(1, -1, 3), BlockState(9))],
+                changes: vec![(BlockPos::new(1, -1, 3), BlockState(9)).into()],
                 state: vec![7, 8],
                 stays: Vec::new(),
                 ticks: Vec::new(),
@@ -1470,6 +1572,123 @@ mod tests {
             );
         }
         assert_eq!(read_log(&log), Ok((vec![first, with_ticks], log.len())));
+    }
+
+    /// A commit whose changes are blocks and block entities' data, interleaved.
+    fn commit_with_entities(changes: Vec<Change>) -> LogRecord {
+        LogRecord::Commit {
+            region: 2,
+            tick: 7,
+            epoch: 3,
+            changes,
+            state: vec![1, 2, 3],
+            stays: Vec::new(),
+            ticks: Vec::new(),
+            marks_taken: Vec::new(),
+            seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
+        }
+    }
+
+    /// `docs/adr/0026-redstone.md`, section 6: the tick's changes are read back in the
+    /// order it made them, with a block entity's data before every block, between
+    /// them, after them all, twice at one place, or with no blocks at all.
+    #[test]
+    fn a_commit_with_block_entities_is_read_back_in_the_order_of_its_changes() {
+        let at = |x| BlockPos::new(x, -60, 4);
+        let entity = |x, data: &[u8]| Change::BlockEntity(at(x), data.to_vec());
+        let block = |x| Change::Block(at(x), BlockState(5544));
+        for changes in [
+            vec![entity(0, b"first"), block(1), block(2)],
+            vec![block(1), entity(1, b"between"), block(2)],
+            vec![block(1), block(2), entity(2, b"last")],
+            vec![block(1), entity(1, b""), entity(1, b"again"), block(2)],
+            vec![entity(3, b"alone")],
+        ] {
+            let record = commit_with_entities(changes.clone());
+            let bytes = record.encode();
+            assert_eq!(
+                bytes[FRAME_HEADER_LENGTH + 1],
+                KIND_COMMIT_WITH_ENTITIES,
+                "{changes:?}"
+            );
+            assert_eq!(
+                read_log(&bytes),
+                Ok((vec![record], bytes.len())),
+                "{changes:?}"
+            );
+        }
+    }
+
+    /// A commit of blocks alone is written as it was before block entities were.
+    #[test]
+    fn a_commit_of_blocks_alone_is_not_written_with_block_entities() {
+        let record =
+            commit_with_entities(vec![Change::Block(BlockPos::new(1, 2, 3), BlockState(9))]);
+        assert_eq!(record.encode()[FRAME_HEADER_LENGTH + 1], KIND_COMMIT);
+    }
+
+    /// A block entity's place that runs backwards or past the blocks is corrupt, and
+    /// so is a commit of kind 13 with none: neither is ever written.
+    #[test]
+    fn a_commit_with_block_entities_out_of_place_is_an_error() {
+        let blocks = vec![
+            (BlockPos::new(1, 2, 3), BlockState(9)),
+            (BlockPos::new(1, 2, 4), BlockState(9)),
+        ];
+        let entity = |place: u32| (place, BlockPos::new(1, 2, 3), b"data".to_vec());
+        assert!(join_changes(blocks.clone(), vec![entity(1), entity(0)]).is_err());
+        assert!(join_changes(blocks.clone(), vec![entity(3)]).is_err());
+        assert_eq!(
+            join_changes(blocks.clone(), vec![entity(2), entity(2)]).map(|changes| changes.len()),
+            Ok(4)
+        );
+        // Kind 13 with no block entities: the fields of kind 10 with every count 0,
+        // and a count of 0 for the block entities.
+        let mut payload = vec![FORMAT_VERSION, KIND_COMMIT_WITH_ENTITIES];
+        payload.extend_from_slice(&2u32.to_be_bytes());
+        payload.extend_from_slice(&7u64.to_be_bytes());
+        payload.extend_from_slice(&3u64.to_be_bytes());
+        put_changes(&mut payload, &blocks);
+        put_bytes(&mut payload, &[1]);
+        for _ in 0..4 {
+            payload.extend_from_slice(&0u32.to_be_bytes());
+        }
+        crate::effects::put_effects(&mut payload, &[]);
+        crate::effects::put_ids(&mut payload, &[]);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        assert!(LogRecord::decode(&payload).is_err());
+    }
+
+    /// Cut off or damaged anywhere, a commit with block entities ends the log there.
+    #[test]
+    fn a_commit_with_block_entities_cut_off_or_damaged_anywhere_ends_the_log() {
+        let first = record(1, 2);
+        let mut log = first.encode();
+        let start = log.len();
+        let with_entities = commit_with_entities(vec![
+            Change::Block(BlockPos::new(1, 2, 3), BlockState(5544)),
+            Change::BlockEntity(BlockPos::new(1, 2, 3), b"chest".to_vec()),
+        ]);
+        log.extend_from_slice(&with_entities.encode());
+        for length in start..log.len() {
+            assert_eq!(
+                read_log(&log[..length]),
+                Ok((vec![first.clone()], start)),
+                "cut at {length}"
+            );
+        }
+        for index in start..log.len() {
+            let mut damaged = log.clone();
+            damaged[index] ^= 0x10;
+            assert_eq!(
+                read_log(&damaged),
+                Ok((vec![first.clone()], start)),
+                "byte {index}"
+            );
+        }
+        assert_eq!(read_log(&log), Ok((vec![first, with_entities], log.len())));
     }
 
     /// What the store compares a record with before it writes it.
@@ -1855,7 +2074,7 @@ mod tests {
                 epoch,
                 changes: changes
                     .into_iter()
-                    .map(|(x, y, z, state)| (BlockPos::new(x, y, z), BlockState(state)))
+                    .map(|(x, y, z, state)| (BlockPos::new(x, y, z), BlockState(state)).into())
                     .collect(),
                 state,
                 stays,

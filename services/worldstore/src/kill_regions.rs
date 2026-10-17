@@ -234,7 +234,7 @@ impl Actor {
         commit.apply(self.chunks.get_mut(&chunk).expect("loaded above"));
         self.handle.request(StoreRequest::Commit {
             tick: self.tick,
-            changes: vec![(commit.block(), blocks::STONE), commit.flag()],
+            changes: vec![(commit.block(), blocks::STONE).into(), commit.flag().into()],
             state: commit.encode().into_bytes(),
             stays: Vec::new(),
             ticks: Vec::new(),

@@ -39,7 +39,7 @@ use clustine_sim::api::{
     PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, EntityId, Light, PlayerId, SectionLight, light_tells_apart,
+    BlockPos, Chunk, ChunkPos, EntityId, InChunk, Light, PlayerId, SectionLight, light_tells_apart,
     sky_light,
 };
 use tokio::sync::mpsc;
@@ -2548,6 +2548,9 @@ impl Fanout {
                     self.show_changes(changed).await;
                 }
             }
+            RegionEvent::BlockEntityChanged { position, data } => {
+                self.change_block_entity(position, data);
+            }
             RegionEvent::BlockDestroyed {
                 position,
                 state,
@@ -3569,6 +3572,25 @@ impl Fanout {
     }
 
     /// Applies a block change to the replica and tells everyone who has the chunk.
+    /// Keeps a block entity's new data in the replica, so that the chunk's packet
+    /// carries it from now on (`docs/adr/0026-redstone.md`, section 6). Whether a
+    /// client is told of it at once is the game's to say, block by block.
+    fn change_block_entity(&mut self, position: BlockPos, data: Vec<u8>) {
+        let Some(entry) = self.replica.get_mut(&position.chunk()) else {
+            return;
+        };
+        let Some(chunk) = &mut entry.chunk else {
+            // The chunk itself is still on its way and will include the change.
+            return;
+        };
+        let (x, z) = position.in_chunk();
+        let at = InChunk::new(x, position.y, z);
+        // Data the chunk refuses was refused to the region's own chunk too.
+        if Arc::make_mut(chunk).set_block_entity_data(at, data).is_ok() {
+            entry.packet = None;
+        }
+    }
+
     fn change_block(&mut self, position: BlockPos, state: BlockState) -> bool {
         let chunk_position = position.chunk();
         let Some(entry) = self.replica.get_mut(&chunk_position) else {

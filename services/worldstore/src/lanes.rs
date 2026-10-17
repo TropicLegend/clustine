@@ -45,7 +45,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use clustine_data::BlockState;
 use clustine_format::{
     CouplingsFile, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, PlayersFile,
     RegionFile, StateFile, TableFile, read_log, read_log_with_offsets,
@@ -56,7 +55,8 @@ use clustine_rpc::{
     StoreRequest, TickState,
 };
 use clustine_world::{
-    BlockPos, ChunkPos, Due, Effect, EffectId, EntityId, EntityIds, FiledEffect, PlayerId,
+    BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, EntityId, EntityIds,
+    FiledEffect, PlayerId,
 };
 use tracing::{error, info, warn};
 
@@ -1062,17 +1062,18 @@ impl Lanes {
                     .collect();
                 taken.sort_unstable();
                 taken.dedup();
-                // The block changes of chunks that others copy, by chunk: those the region
-                // holds from before the tick, as a replay puts in (section 3).
-                let mut updates: BTreeMap<ChunkPos, Vec<(BlockPos, BlockState)>> = BTreeMap::new();
-                for (position, block) in &changes {
-                    let chunk = position.chunk();
+                // The changes of chunks that others copy, by chunk and in their order:
+                // those the region holds from before the tick, as a replay puts in
+                // (section 3), block entities' data among them.
+                let mut updates: BTreeMap<ChunkPos, Vec<BlockChange>> = BTreeMap::new();
+                for change in &changes {
+                    let chunk = change.position().chunk();
                     let held = self
                         .table
                         .held_from(region, chunk)
                         .is_some_and(|from| tick > from);
                     if held && !self.copies.copiers(chunk).is_empty() {
-                        updates.entry(chunk).or_default().push((*position, *block));
+                        updates.entry(chunk).or_default().push(change.clone());
                     }
                 }
                 // The notes are in the commit's own record, so that the two are on
@@ -2963,7 +2964,8 @@ impl Log {
     }
 }
 
-/// Of a commit's record: its tick, what it changed in chunks (its blocks, then the
+/// Of a commit's record: its tick, what it changed in chunks (its blocks and their block
+/// entities' data in the order the tick changed them, then the
 /// ticks of its chunks, then whose marks it took, then their seams) and its state.
 #[allow(clippy::type_complexity)]
 pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, Vec<u8>)> {
@@ -2979,9 +2981,10 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
     else {
         return None;
     };
-    let blocks = changes
-        .into_iter()
-        .map(|(position, block)| Replayed::Block(position, block));
+    let blocks = changes.into_iter().map(|change| match change {
+        BlockChange::Block(position, block) => Replayed::Block(position, block),
+        BlockChange::BlockEntity(position, data) => Replayed::BlockEntity(position, data),
+    });
     let ticks = ticks
         .into_iter()
         .map(|(chunk, ticks)| Replayed::Ticks(chunk, ticks));

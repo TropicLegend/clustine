@@ -138,7 +138,7 @@ impl Actor {
             let loaded = self.chunks.get_mut(chunk).expect("loaded above");
             loaded.set(x, y, z, blocks::STONE);
             let block = BlockPos::new(chunk.x * 16 + x as i32, y, chunk.z * 16 + z as i32);
-            changes.push((block, blocks::STONE));
+            changes.push((block, blocks::STONE).into());
         }
         let blocks = chunks.iter().map(|chunk| (*chunk, x, y, z)).collect();
         self.unanswered.insert(self.tick, blocks);

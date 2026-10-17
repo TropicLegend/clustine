@@ -24,7 +24,7 @@ use clustine_data::BlockState;
 use clustine_format::{ChunkFile, FormatError, StateFile, read_log};
 use clustine_rpc::{Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
-use clustine_world::{BlockPos, Chunk, ChunkGenerator, ChunkPos, ScheduledTick, Seam};
+use clustine_world::{BlockPos, Change, Chunk, ChunkGenerator, ChunkPos, ScheduledTick, Seam};
 use tracing::{error, info, warn};
 
 use crate::disk::{Disk, parent, temporary};
@@ -1391,6 +1391,9 @@ impl ChunkService {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Replayed {
     Block(BlockPos, BlockState),
+    /// The data of the block entity at the position, in its place among the blocks
+    /// (`docs/adr/0026-redstone.md`, section 6).
+    BlockEntity(BlockPos, Vec<u8>),
     Ticks(ChunkPos, Vec<ScheduledTick>),
     /// The chunk's marks for post-processing were taken: it was post-processed.
     MarksTaken(ChunkPos),
@@ -1401,7 +1404,7 @@ pub(crate) enum Replayed {
 impl Replayed {
     pub(crate) fn chunk(&self) -> ChunkPos {
         match self {
-            Self::Block(position, _) => position.chunk(),
+            Self::Block(position, _) | Self::BlockEntity(position, _) => position.chunk(),
             Self::Ticks(chunk, _) | Self::MarksTaken(chunk) | Self::Seams(chunk, _) => *chunk,
         }
     }
@@ -1476,6 +1479,12 @@ fn put(chunk: &mut Chunk, change: &Replayed) {
         Replayed::Block(position, state) => {
             let (x, z) = position.in_chunk();
             chunk.set(x, position.y, z, *state);
+        }
+        // Applied after the blocks before it, as the tick made it: a block of another
+        // kind set later drops it, as it did then. Data the chunk refuses was refused
+        // to the region's own chunk too, which kept the block entity without it.
+        Replayed::BlockEntity(position, data) => {
+            let _ = chunk.apply(&Change::BlockEntity(*position, data.clone()));
         }
         // The last list of a chunk wins, as the last change of a block does. A chunk
         // whose ticks changed is no longer as generated, so that remaking one whose

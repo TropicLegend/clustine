@@ -521,7 +521,7 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
         region,
         tick,
         epoch,
-        changes: vec![(BlockPos::new(x, y, 4), block)],
+        changes: vec![(BlockPos::new(x, y, 4), block).into()],
         state: crate::tests::delta(tick),
         stays: Vec::new(),
         ticks: Vec::new(),

@@ -4,6 +4,7 @@
 //! and to these types.
 
 mod bytes;
+mod change;
 mod chunk;
 mod effects;
 pub mod generation;
@@ -12,6 +13,7 @@ mod position;
 mod section;
 pub mod spawn;
 
+pub use change::Change;
 pub use chunk::{
     BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, MAX_BLOCK_ENTITY_DATA,
     MAX_CHUNK_ENTITY_DATA, ScheduledTick, Seam, SeamKind, Ticked, light_tells_apart,

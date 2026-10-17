@@ -181,7 +181,7 @@ fn commit(marks_taken: Vec<ChunkPos>, seams: Vec<(ChunkPos, Vec<Seam>)>) -> LogR
         region: 3,
         tick: 77,
         epoch: 5,
-        changes: vec![(BlockPos::new(1, -60, 2), blocks::OAK_FENCE)],
+        changes: vec![(BlockPos::new(1, -60, 2), blocks::OAK_FENCE).into()],
         state: b"a delta".to_vec(),
         stays: Vec::new(),
         ticks: Vec::new(),

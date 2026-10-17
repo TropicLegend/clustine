@@ -264,7 +264,11 @@ fn commit_of(
 ) -> StoreRequest {
     StoreRequest::Commit {
         tick,
-        changes: changes.to_vec(),
+        changes: changes
+            .iter()
+            .copied()
+            .map(clustine_world::Change::from)
+            .collect(),
         state: format!("delta {tick}").into_bytes(),
         stays: Vec::new(),
         ticks: Vec::new(),
@@ -767,7 +771,7 @@ fn a_copy_is_based_on_the_committed_form_and_kept_up_by_a_chain_of_updates() {
                 changes,
             } => {
                 assert_eq!(position, ORIGIN);
-                assert_eq!(changes, [(at, state)]);
+                assert_eq!(changes, [(at, state).into()]);
                 assert_eq!(before, previous, "update {n} names the change before it");
                 assert!(sequence > last, "update {n} is later than what it follows");
                 previous = sequence;
