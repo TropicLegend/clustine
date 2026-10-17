@@ -606,6 +606,7 @@ impl Region {
         if is_class(state, BlockClass::TripWireHookBlock) {
             self.hook_calculate_state(pos, state, false, false, -1, None, output);
         }
+        self.diode_placed_by_player(pos, state);
     }
 }
 

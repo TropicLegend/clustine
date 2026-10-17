@@ -69,8 +69,9 @@ pub fn use_reads_signal(state: BlockState) -> bool {
 /// trapdoor and a gate take their state from the power beside them
 /// (`getStateForPlacement`), wire works out its power as it is placed
 /// (`RedstoneWireBlock.onPlace`), a rail chooses its curve and a powered rail its
-/// power by it (`BaseRailBlock.onPlace`), and a copper bulb lights
-/// (`CopperBulbBlock.onPlace`).
+/// power by it (`BaseRailBlock.onPlace`), a copper bulb lights
+/// (`CopperBulbBlock.onPlace`), and a repeater or a comparator beside power schedules
+/// its tick (`DiodeBlock.setPlacedBy`).
 pub fn placing_reads_signal(state: BlockState) -> bool {
     use BlockClass as C;
     [
@@ -81,6 +82,7 @@ pub fn placing_reads_signal(state: BlockState) -> bool {
         C::RedstoneWireBlock,
         C::BaseRailBlock,
         C::CopperBulbBlock,
+        C::DiodeBlock,
     ]
     .into_iter()
     .any(|class| is_class(state, class))
@@ -119,9 +121,9 @@ pub fn is_signal_source(state: BlockState, query: Query) -> bool {
     state.props().is_signal_source()
 }
 
-/// The game's `ownSignal`: the signal a block gives of itself, whatever the side. The
-/// blocks of later steps (torches, diodes, observers, targets) come in here and in
-/// [`block_signal`] and [`block_direct_signal`], and the queries stay as they are.
+/// The game's `ownSignal`: the signal a block gives of itself, whatever the side, as
+/// far as its state says it. A comparator's is kept in its block entity, which
+/// [`own_signal_at`] reads; here it is 0.
 pub fn own_signal(state: BlockState) -> u8 {
     if is_class(state, BlockClass::PoweredBlock) {
         return MAX_SIGNAL;
@@ -142,7 +144,37 @@ pub fn own_signal(state: BlockState) -> u8 {
     if is_class(state, BlockClass::TripWireHookBlock) && flag(state, "powered") {
         return MAX_SIGNAL;
     }
+    // `RedstoneTorchBlock.ownSignal`, the wall torch's too.
+    if crate::diode::is_torch(state) {
+        return if flag(state, "lit") { MAX_SIGNAL } else { 0 };
+    }
+    // `DiodeBlock.ownSignal` with a repeater's `getOutputSignal`, and
+    // `ObserverBlock.ownSignal`: all while powered.
+    if is_class(state, BlockClass::RepeaterBlock) || is_class(state, BlockClass::ObserverBlock) {
+        return if flag(state, "powered") {
+            MAX_SIGNAL
+        } else {
+            0
+        };
+    }
+    // `TargetBlock.ownSignal`: the power an arrow last gave it, which falls back to 0.
+    if is_class(state, BlockClass::TargetBlock) {
+        return crate::data::number(state, "power").unwrap_or(0);
+    }
     0
+}
+
+/// `ownSignal` of the block `state` at `pos`: as [`own_signal`], and a powered
+/// comparator's the output its block entity keeps (`ComparatorBlock.getOutputSignal`).
+pub fn own_signal_at<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos: BlockPos) -> u8 {
+    if is_class(state, BlockClass::ComparatorBlock) {
+        return if flag(state, "powered") {
+            view.comparator_output(pos).min(MAX_SIGNAL)
+        } else {
+            0
+        };
+    }
+    own_signal(state)
 }
 
 /// `BasePressurePlateBlock.getSignalForState`: a plate's power, all or nothing for
@@ -163,12 +195,53 @@ pub fn plate_signal(state: BlockState) -> Option<u8> {
 }
 
 /// `getAnalogOutputSignal` of a block whose output is a function of its state alone,
-/// which a comparator reads behind it (R4): a copper bulb's 15 while lit and 0 while
-/// dark (`CopperBulbBlock`). `None` for the blocks whose output R4 brings in, and for
-/// those without one.
+/// which a comparator reads behind it, as the jar's classes give it: a copper bulb's 15
+/// while lit (`CopperBulbBlock`), a cake's two for each slice left
+/// (`CakeBlock.getOutputSignal`) and a candle cake's 14, a composter's and a cauldron's
+/// level (`ComposterBlock`, `LayeredCauldronBlock`), lava in a cauldron 3, a portal
+/// frame's 15 with an eye in it, a respawn anchor's charges scaled to 15
+/// (`RespawnAnchorBlock.getScaledChargeLevel`), a hive's honey, a copper golem
+/// statue's pose (1 to 4). `None` for a block
+/// without an output, and for those whose output is kept in an inventory or a block
+/// entity (containers, a jukebox's disc, a lectern's book, a creaking heart), which
+/// wait for their phase.
 pub fn analog_output(state: BlockState) -> Option<u8> {
-    if is_class(state, BlockClass::CopperBulbBlock) {
+    use BlockClass as C;
+    let level = |name| crate::data::number(state, name).unwrap_or(0);
+    if is_class(state, C::CopperBulbBlock) {
         return Some(if flag(state, "lit") { MAX_SIGNAL } else { 0 });
+    }
+    if is_class(state, C::CandleCakeBlock) {
+        return Some(14);
+    }
+    if is_class(state, C::CakeBlock) {
+        return Some(7u8.saturating_sub(level("bites")) * 2);
+    }
+    if is_class(state, C::ComposterBlock) || is_class(state, C::LayeredCauldronBlock) {
+        return Some(level("level"));
+    }
+    if is_class(state, C::LavaCauldronBlock) {
+        return Some(3);
+    }
+    if is_class(state, C::EndPortalFrameBlock) {
+        return Some(if flag(state, "eye") { MAX_SIGNAL } else { 0 });
+    }
+    if is_class(state, C::RespawnAnchorBlock) {
+        // `Mth.floor(charge / 4.0f * 15)`.
+        return Some((f32::from(level("charges")) / 4.0 * 15.0).floor() as u8);
+    }
+    if is_class(state, C::BeehiveBlock) {
+        return Some(level("honey_level"));
+    }
+    // `CopperGolemStatueBlock`: one more than the ordinal of its pose.
+    if is_class(state, C::CopperGolemStatueBlock) {
+        let poses = ["standing", "sitting", "running", "star"];
+        let pose = state.property("copper_golem_pose");
+        let index = poses
+            .iter()
+            .position(|name| Some(*name) == pose)
+            .unwrap_or(0);
+        return Some(u8::try_from(index + 1).expect("one of four"));
     }
     None
 }
@@ -186,7 +259,33 @@ pub fn block_signal<V: BlockView + ?Sized>(
     if is_wire(state) {
         return wire_signal(view, state, pos, direction, query);
     }
-    own_signal(state)
+    // `RedstoneWallTorchBlock.getSignal`: every side but the wall it hangs on, which
+    // asks it the way it faces; `RedstoneTorchBlock.getSignal`: every side but the
+    // block below, which asks it upwards.
+    if is_class(state, BlockClass::RedstoneWallTorchBlock) {
+        return if facing(state) == Some(direction) {
+            0
+        } else {
+            own_signal(state)
+        };
+    }
+    if crate::diode::is_torch(state) {
+        return if direction == Face::Up {
+            0
+        } else {
+            own_signal(state)
+        };
+    }
+    // `DiodeBlock.getSignal` and `ObserverBlock.getSignal`: only the block in front,
+    // behind for an observer, which asks it the way it faces.
+    if is_class(state, BlockClass::DiodeBlock) || is_class(state, BlockClass::ObserverBlock) {
+        return if facing(state) == Some(direction) {
+            own_signal_at(view, state, pos)
+        } else {
+            0
+        };
+    }
+    own_signal_at(view, state, pos)
 }
 
 /// A block's `getDirectSignal`: the signal `state` at `pos` gives directly, through a
@@ -219,6 +318,19 @@ pub fn block_direct_signal<V: BlockView + ?Sized>(
         } else {
             0
         };
+    }
+    // `RedstoneTorchBlock.getDirectSignal`: the block above, which asks it downwards.
+    if crate::diode::is_torch(state) {
+        return if direction == Face::Down {
+            block_signal(view, state, pos, direction, query)
+        } else {
+            0
+        };
+    }
+    // A diode and an observer power directly what they power (`getDirectSignal` is
+    // their `getSignal`).
+    if is_class(state, BlockClass::DiodeBlock) || is_class(state, BlockClass::ObserverBlock) {
+        return block_signal(view, state, pos, direction, query);
     }
     0
 }
@@ -320,7 +432,7 @@ pub fn best_own_or_neighbour_signal<V: BlockView + ?Sized>(
 ) -> u8 {
     let state = view.block(pos);
     let own = if is_signal_source(state, query) {
-        own_signal(state)
+        own_signal_at(view, state, pos)
     } else {
         0
     };

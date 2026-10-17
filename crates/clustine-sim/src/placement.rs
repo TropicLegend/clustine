@@ -33,6 +33,13 @@ pub trait Blocks {
     /// change or stand on there is not placed (section 4.3), and what it only looks at
     /// beside it is taken as air (section 4.5).
     fn block(&self, at: BlockPos) -> Option<BlockState>;
+
+    /// The output the comparator's block entity at `at` keeps, which a powered
+    /// comparator gives as its signal; 0 where there is none or the caller keeps no
+    /// block entities.
+    fn comparator_output(&self, _at: BlockPos) -> u8 {
+        0
+    }
 }
 
 /// A click on a block with the use button.
@@ -210,7 +217,12 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     // A lever, a button and wire use themselves by rules that tell their neighbours,
     // which the region runs.
     let face = geometry::from_api(click.face);
-    if data::is(state, BlockClass::LeverBlock) || data::is(state, BlockClass::ButtonBlock) {
+    // A repeater's delay and a comparator's mode, which every Clustine player may
+    // change, as creative players may build (`Abilities.mayBuild`).
+    if data::is(state, BlockClass::LeverBlock)
+        || data::is(state, BlockClass::ButtonBlock)
+        || data::is(state, BlockClass::DiodeBlock)
+    {
         return Clicked::ByRule { position, face };
     }
     // `NoteBlock.useItemOn`: a head clicked onto the top is placed there; anything

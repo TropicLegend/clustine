@@ -57,6 +57,9 @@ impl clustine_blocks::BlockView for ReadOnly<'_> {
     fn next_int(&mut self, _bound: u32) -> u32 {
         0
     }
+    fn comparator_output(&mut self, at: BlockPos) -> u8 {
+        self.0.comparator_output(at)
+    }
 }
 
 /// `RailShape`.

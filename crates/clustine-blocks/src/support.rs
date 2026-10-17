@@ -13,8 +13,9 @@
 //! - the direction it hangs or stands by: buttons, levers (`getConnectedDirection` of
 //!   `FaceAttachedHorizontalDirectionalBlock`) and lanterns.
 //!
-//! Candles, rails and repeaters have no such check in their `updateShape`: rails and
-//! repeaters go by `neighborChanged`, and candles stay. A wall hanging sign checks the
+//! Candles and rails have no such check in their `updateShape`: rails go by
+//! `neighborChanged`, and candles stay. Repeaters and comparators check below in their
+//! own `updateShape`, with the rest of it (`diode.rs`). A wall hanging sign checks the
 //! sides along its board, by a `canSurvive` that is not ported, and stays.
 
 use clustine_data::{BlockClass, BlockState, Face, blocks};

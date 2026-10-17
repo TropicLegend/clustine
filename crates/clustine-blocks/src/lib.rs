@@ -10,6 +10,7 @@
 
 pub mod connect;
 pub mod data;
+pub mod diode;
 pub mod fluid;
 pub mod growth;
 pub mod note;
@@ -49,6 +50,22 @@ pub trait BlockView {
     /// of water). Generation's views draw nothing and answer 0: the rules that draw are
     /// the simulation's.
     fn next_int(&mut self, bound: u32) -> u32;
+
+    /// `LevelTickAccess.hasScheduledTick` of the block `block` (its id) at `at`: a tick
+    /// of it pending there, not one already drawn to run in this tick. An observer
+    /// asks it as its shape is asked again (`ObserverBlock.startSignal`). A view that
+    /// keeps no ticks answers that none is pending.
+    fn has_scheduled_block_tick(&mut self, _at: BlockPos, _block: u16) -> bool {
+        false
+    }
+
+    /// The output a comparator's block entity at `at` keeps
+    /// (`ComparatorBlockEntity.getOutputSignal`), which is the signal a powered
+    /// comparator gives; 0 where there is none, or for a view that keeps no block
+    /// entities.
+    fn comparator_output(&mut self, _at: BlockPos) -> u8 {
+        0
+    }
 }
 
 /// The callers whose copies of these rules disagreed before they were made one, each

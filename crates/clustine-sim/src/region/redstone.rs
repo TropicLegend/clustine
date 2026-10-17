@@ -17,7 +17,9 @@
 //!   trapdoors and fence gates opened and closed by power, with their sounds;
 //! - from R3b, a copper bulb flipped by each rise of its power, big dripleaf laid flat
 //!   by power, and the dispatch to note blocks and bells (`instruments.rs`), plates,
-//!   tripwire and hooks (`pressed.rs`) and rails (`rails.rs`).
+//!   tripwire and hooks (`pressed.rs`) and rails (`rails.rs`);
+//! - from R4, the dispatch to torches, repeaters, comparators, observers and target
+//!   blocks (`diodes.rs`).
 //!
 //! The signals themselves are pure functions of the blocks, read through the region's
 //! view (`clustine_blocks::signal`); the rules here run only where the updater lets
@@ -45,6 +47,10 @@ impl Region {
         block: BlockState,
         output: &mut TickOutput,
     ) -> bool {
+        // Torches, repeaters and comparators (`diodes.rs`).
+        if self.diode_neighbour_changed(pos, state, output) {
+            return true;
+        }
         if signal::is_wire(state) {
             // `RedStoneWireBlock.neighborChanged`: its source is not read without the
             // experiments.
@@ -250,6 +256,9 @@ impl Region {
         old: BlockState,
         output: &mut TickOutput,
     ) {
+        // Torches and diodes tell their neighbours whenever their state changes
+        // (`diodes.rs`).
+        self.diode_on_place(pos, state, old, output);
         if same_block(state, old) {
             return;
         }
@@ -287,6 +296,8 @@ impl Region {
         moved_by_piston: bool,
         output: &mut TickOutput,
     ) {
+        // An observer tells what is behind it even when a piston moved it.
+        self.diode_after_removal(pos, old, moved_by_piston, output);
         if moved_by_piston {
             return;
         }
@@ -363,6 +374,9 @@ impl Region {
         if self.pressed_tick(pos, state, output) {
             return true;
         }
+        if self.diode_tick(pos, state, output) {
+            return true;
+        }
         if is_class(state, BlockClass::ButtonBlock) {
             // `ButtonBlock.checkPressed`: nothing but an arrow keeps a button pressed,
             // and there are no arrows before the phase of entities.
@@ -435,6 +449,8 @@ impl Region {
         } else if is_class(state, BlockClass::BellBlock) {
             // `BellBlock.onHit`: the bell swings away from the side it was hit on.
             self.ring_bell(pos, Some(face), output);
+        } else {
+            self.diode_used(pos, state, player, output);
         }
     }
 
@@ -558,7 +574,7 @@ fn button_sound(state: BlockState, on: bool) -> i32 {
 
 /// `Level.playSound(entity, pos, …)` of a block's sound, at the middle of the block,
 /// from the blocks; `except` is the player whose own client plays it.
-fn play(
+pub(super) fn play(
     pos: BlockPos,
     sound: i32,
     volume: f32,

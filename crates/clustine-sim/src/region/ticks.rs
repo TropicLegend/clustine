@@ -365,8 +365,6 @@ impl Region {
     /// run in this tick is not (`docs/adr/0026-redstone.md`, section 3). Only a chunk
     /// that ticks has its ticks in the queues, and only there do redstone's rules,
     /// which ask, run (section 1 of the same record).
-    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn has_scheduled_tick(&self, pos: BlockPos, of: Ticked) -> bool {
         let queue = match of {
             Ticked::Block(_) => &self.ticks.blocks,
@@ -377,8 +375,6 @@ impl Region {
 
     /// `LevelTicks.willTickThisTick`: a tick of `of` at `pos` is drawn to run in this
     /// tick and has not run yet.
-    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn will_tick_this_tick(&self, pos: BlockPos, of: Ticked) -> bool {
         self.ticks.running.contains(&(pos, of))
     }

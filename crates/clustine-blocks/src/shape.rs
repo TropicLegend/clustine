@@ -74,8 +74,9 @@ pub fn update_shape<V: BlockView + ?Sized>(
         return updated;
     }
     // Redstone's blocks that take their shape from a neighbour
-    // (`docs/adr/0026-redstone.md`, step R3b): a note block its instrument from the
-    // blocks above and below, tripwire its strings, a bell its walls.
+    // (`docs/adr/0026-redstone.md`, steps R3b and R4): a note block its instrument from
+    // the blocks above and below, tripwire its strings, a bell its walls, a repeater
+    // its lock; an observer watches.
     if let Some(shaped) = redstone_shape(view, state, pos, direction, neighbour) {
         return shaped;
     }
@@ -672,6 +673,14 @@ fn redstone_shape<V: BlockView + ?Sized>(
     direction: Face,
     neighbour: BlockState,
 ) -> Option<BlockState> {
+    // R4's: an observer starts its pulse when the side it watches changes, a diode
+    // goes with its support, and a repeater is locked from a side.
+    if crate::diode::observer_shape(view, state, pos, direction) {
+        return Some(state);
+    }
+    if let Some(shaped) = crate::diode::diode_shape(view, state, pos, direction) {
+        return Some(shaped);
+    }
     if crate::note::is_note_block(state) {
         // `NoteBlock.updateShape`: above or below, the instrument again.
         let vertical = matches!(direction, Face::Up | Face::Down);

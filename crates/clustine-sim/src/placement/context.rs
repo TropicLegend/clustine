@@ -72,6 +72,10 @@ impl clustine_blocks::BlockView for View<'_, '_> {
     fn rules(&self) -> clustine_blocks::Rules {
         clustine_blocks::Rules::Placing
     }
+
+    fn comparator_output(&mut self, at: BlockPos) -> u8 {
+        self.0.blocks.comparator_output(at)
+    }
 }
 
 /// One placement as vanilla's `BlockPlaceContext` sees it.

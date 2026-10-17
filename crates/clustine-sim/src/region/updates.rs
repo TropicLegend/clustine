@@ -17,16 +17,16 @@
 //!
 //! `neighborChanged` removes what can no longer stay (rails, repeaters and
 //! comparators), has a liquid look again, and runs redstone's rules (wire, lamps,
-//! doors, trapdoors and gates, in `redstone.rs`); it is told the block that changed
-//! and whether a piston moved it (`docs/adr/0026-redstone.md`, section 2). A change of
-//! block tells its neighbours of the block that was there, as the game's
-//! `Level.setBlock` does, and runs what the old block does as it goes
-//! (`affectNeighborsAfterRemoval`) and the new one as it is placed (`onPlace`).
+//! doors, trapdoors and gates, in `redstone.rs`; torches and diodes, in `diodes.rs`);
+//! it is told the block that changed and whether a piston moved it
+//! (`docs/adr/0026-redstone.md`, section 2). A change of block tells its neighbours of
+//! the block that was there, as the game's `Level.setBlock` does, and runs what the
+//! old block does as it goes (`affectNeighborsAfterRemoval`) and the new one as it is
+//! placed (`onPlace`).
 
 use clustine_blocks::BlockView;
 use clustine_blocks::data::{is_class, same_block};
 use clustine_blocks::shape::update_shape;
-use clustine_blocks::survive::can_survive;
 use clustine_data::{BlockClass, BlockState, Face, blocks};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -239,8 +239,6 @@ impl Region {
     /// them (`docs/adr/0026-redstone.md`, section 6). Returns whether it took it: there
     /// is no block entity there, or the chunk refuses that much data, which it keeps
     /// without, as the game keeps a block entity it could not save whole.
-    // Redstone's rules (R3 to R5 of `docs/adr/0026-redstone.md`) are its callers.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_block_entity_data(
         &mut self,
         pos: BlockPos,
@@ -650,7 +648,8 @@ impl Region {
     /// `neighborChanged` of the block at `pos`: a liquid looks again; rails, repeaters
     /// and comparators go when they can no longer stay (`removeBlock`, without the bits
     /// of a broken block); wire goes or works out its power again; lamps, doors,
-    /// trapdoors and gates follow the power beside them (`redstone.rs`).
+    /// trapdoors and gates follow the power beside them (`redstone.rs`); torches and
+    /// diodes schedule their ticks (`diodes.rs`).
     ///
     /// `block` is the block that changed and `moved_by_piston` whether a piston moved
     /// it, as the game's `neighborChanged` is given them (`docs/adr/0026-redstone.md`,
@@ -679,15 +678,9 @@ impl Region {
             self.rail_neighbour_changed(pos, block, output);
             return;
         }
-        // Wire, lamps, doors, trapdoors and gates (`redstone.rs`).
-        if self.redstone_neighbour_changed(pos, state, block, output) {
-            return;
-        }
-        if is_class(state, BlockClass::DiodeBlock)
-            && !can_survive(state, pos, &mut RegionView(self))
-        {
-            self.set_block(pos, fluid_block(state), output);
-        }
+        // Wire, lamps, doors, trapdoors, gates, torches and diodes (`redstone.rs`,
+        // `diodes.rs`).
+        self.redstone_neighbour_changed(pos, state, block, output);
     }
 
     /// What a liquid block does when it is placed or its neighbour changes
@@ -979,6 +972,14 @@ impl BlockView for RegionView<'_> {
 
     fn rules(&self) -> clustine_blocks::Rules {
         self.0.rules()
+    }
+
+    fn has_scheduled_block_tick(&mut self, at: BlockPos, block: u16) -> bool {
+        self.0.has_scheduled_tick(at, Ticked::Block(block))
+    }
+
+    fn comparator_output(&mut self, at: BlockPos) -> u8 {
+        self.0.comparator_output(at)
     }
 }
 

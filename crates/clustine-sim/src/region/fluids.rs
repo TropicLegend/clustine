@@ -340,6 +340,14 @@ impl BlockView for Carried<'_> {
     fn rules(&self) -> clustine_blocks::Rules {
         self.region.rules()
     }
+
+    fn has_scheduled_block_tick(&mut self, at: BlockPos, block: u16) -> bool {
+        RegionView(self.region).has_scheduled_block_tick(at, block)
+    }
+
+    fn comparator_output(&mut self, at: BlockPos) -> u8 {
+        RegionView(self.region).comparator_output(at)
+    }
 }
 
 /// A number drawn from the position and the tick (SplitMix64's finaliser), for what

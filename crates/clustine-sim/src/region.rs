@@ -19,6 +19,7 @@ use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState
 
 mod block_entities;
 mod block_events;
+mod diodes;
 mod fluids;
 mod instruments;
 mod pressed;
@@ -300,6 +301,10 @@ pub struct Region {
     /// (`block_entities.rs`); rebuilt from the chunks as they load, so no part of the
     /// region's own state.
     block_entities: block_entities::BlockEntities,
+    /// When torches went out (`diodes.rs`), for their burnout: by the region's tick
+    /// numbers, in memory only as in the game, and empty in a region restored, merged
+    /// or split (`docs/adr/0026-redstone.md`, section 12); no part of the state.
+    torch_toggles: diodes::TorchToggles,
     /// The block events that reached their block's rule, for the tests to see.
     #[cfg(test)]
     events_run: Vec<block_events::QueuedEvent>,
@@ -357,6 +362,7 @@ impl Region {
             handling_tick: false,
             block_events: Vec::new(),
             block_entities: block_entities::BlockEntities::default(),
+            torch_toggles: Vec::new(),
             #[cfg(test)]
             events_run: Vec::new(),
             tickets: BTreeMap::new(),
@@ -2100,6 +2106,10 @@ impl placement::Blocks for Readable<'_> {
     fn block(&self, at: BlockPos) -> Option<BlockState> {
         self.0.block(at)
     }
+
+    fn comparator_output(&self, at: BlockPos) -> u8 {
+        self.0.comparator_output(at)
+    }
 }
 
 /// Whether the body of a player whose feet are at `feet` overlaps the block at `position`.
@@ -2273,6 +2283,7 @@ mod tests {
     use crate::api::{Face, PlayerJoin};
 
     mod block_updates;
+    mod diodes;
     mod effects;
     mod fluids;
     mod instruments;

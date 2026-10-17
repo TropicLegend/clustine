@@ -4,9 +4,12 @@
 //! `Level.tickBlockEntities` runs after the block events and the entities.
 //!
 //! The first is the bell, whose ring and shaking live in memory only, as in the game
-//! (its NBT keeps neither): a bell placed or loaded starts still. R4's comparator and
-//! R5's moving piston come in as further kinds of [`Typed`], the piston with a ticker
-//! as the bell has, and the list stays as it is:
+//! (its NBT keeps neither): a bell placed or loaded starts still. The second is the
+//! comparator's (R4), which is durable: its output is written into the chunk's data as
+//! the game saves it, `{components: {}, OutputSignal: n}`, whenever it changes, and
+//! read back from that data when the chunk is loaded. R5's moving piston comes in as a
+//! further kind of [`Typed`], with a ticker as the bell has, and the list stays as it
+//! is:
 //!
 //! - tickers run in the order they were made; one made while the phase runs waits
 //!   for the next tick (the game's `pendingBlockEntityTickers`);
@@ -19,7 +22,7 @@
 
 use clustine_blocks::data::{is_class, same_block};
 use clustine_data::{BlockClass, BlockState, Face};
-use clustine_world::{BlockPos, ChunkPos};
+use clustine_world::{BlockPos, ChunkPos, InChunk};
 use std::collections::BTreeMap;
 
 use super::Region;
@@ -32,19 +35,132 @@ pub(crate) const BELL_SHAKING_TICKS: i32 = 50;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Typed {
     Bell(Bell),
+    /// `ComparatorBlockEntity`: the output it keeps.
+    Comparator(u8),
 }
 
 impl Typed {
-    /// A new block entity of the kind `state` keeps, if it is a typed one.
-    fn of(state: BlockState) -> Option<Typed> {
-        is_class(state, BlockClass::BellBlock).then(|| Typed::Bell(Bell::default()))
+    /// The block entity of the kind `state` keeps, if it is a typed one, as `data`
+    /// describes it: a new one's data is empty.
+    fn of(state: BlockState, data: &[u8]) -> Option<Typed> {
+        if is_class(state, BlockClass::BellBlock) {
+            return Some(Typed::Bell(Bell::default()));
+        }
+        if is_class(state, BlockClass::ComparatorBlock) {
+            return Some(Typed::Comparator(read_output_signal(data)));
+        }
+        None
     }
 
     /// Whether the kind has a ticker (`EntityBlock.getTicker` on the server).
     fn ticks(self) -> bool {
         match self {
             Typed::Bell(_) => true,
+            Typed::Comparator(_) => false,
         }
+    }
+}
+
+const TAG_END: u8 = 0;
+const TAG_INT: u8 = 3;
+const TAG_COMPOUND: u8 = 10;
+
+/// A comparator's block entity as the game saves it (`saveWithoutMetadata`) and in
+/// NBT's network form, one nameless compound with its type byte first: its
+/// `OutputSignal` and the empty compound of components every block entity saves, in
+/// the order of the game's `HashMap` of the two names (the bucket of `components` is
+/// 2 and that of `OutputSignal` 15, in a table of 16).
+pub(crate) fn comparator_data(output: u8) -> Vec<u8> {
+    let name = |data: &mut Vec<u8>, tag: u8, name: &str| {
+        data.push(tag);
+        let length = u16::try_from(name.len()).expect("a short name");
+        data.extend_from_slice(&length.to_be_bytes());
+        data.extend_from_slice(name.as_bytes());
+    };
+    let mut data = vec![TAG_COMPOUND];
+    name(&mut data, TAG_COMPOUND, "components");
+    data.push(TAG_END);
+    name(&mut data, TAG_INT, "OutputSignal");
+    data.extend_from_slice(&i32::from(output).to_be_bytes());
+    data.push(TAG_END);
+    data
+}
+
+/// `ComparatorBlockEntity.loadAdditional`: the `OutputSignal` of the data, 0 where it
+/// has none or is not a compound as the game writes one (`getIntOr`), held to what a
+/// signal can be.
+fn read_output_signal(data: &[u8]) -> u8 {
+    let Some((&TAG_COMPOUND, mut rest)) = data.split_first() else {
+        return 0;
+    };
+    while let Some((&tag, after)) = rest.split_first() {
+        if tag == TAG_END {
+            break;
+        }
+        let Some((name, after)) = nbt_string(after) else {
+            return 0;
+        };
+        if tag == TAG_INT && name == b"OutputSignal" {
+            let Some(value) = after.get(..4) else {
+                return 0;
+            };
+            let value = i32::from_be_bytes(value.try_into().expect("four bytes"));
+            return u8::try_from(value.clamp(0, 15)).expect("held to a signal");
+        }
+        let Some(after) = skip_nbt(tag, after, 0) else {
+            return 0;
+        };
+        rest = after;
+    }
+    0
+}
+
+/// A string as NBT writes one, its length first, and what follows it.
+fn nbt_string(data: &[u8]) -> Option<(&[u8], &[u8])> {
+    let length = usize::from(u16::from_be_bytes(data.get(..2)?.try_into().ok()?));
+    let string = data.get(2..2 + length)?;
+    Some((string, &data[2 + length..]))
+}
+
+/// What follows the payload of a tag of type `tag` at the start of `data`; `None` for
+/// data cut short, a type NBT does not have, or nesting deeper than the game allows.
+fn skip_nbt(tag: u8, data: &[u8], depth: u32) -> Option<&[u8]> {
+    if depth > 512 {
+        return None;
+    }
+    let length = |data: &[u8]| -> Option<usize> {
+        usize::try_from(i32::from_be_bytes(data.get(..4)?.try_into().ok()?)).ok()
+    };
+    match tag {
+        1 => data.get(1..),
+        2 => data.get(2..),
+        3 | 5 => data.get(4..),
+        4 | 6 => data.get(8..),
+        7 => data.get(4 + length(data)?..),
+        8 => nbt_string(data).map(|(_, rest)| rest),
+        9 => {
+            let (&element, after) = data.split_first()?;
+            let count = length(after)?;
+            let mut rest = after.get(4..)?;
+            for _ in 0..count {
+                rest = skip_nbt(element, rest, depth + 1)?;
+            }
+            Some(rest)
+        }
+        10 => {
+            let mut rest = data;
+            loop {
+                let (&inner, after) = rest.split_first()?;
+                if inner == TAG_END {
+                    return Some(after);
+                }
+                let (_, after) = nbt_string(after)?;
+                rest = skip_nbt(inner, after, depth + 1)?;
+            }
+        }
+        11 => data.get(4 + length(data)?.checked_mul(4)?..),
+        12 => data.get(4 + length(data)?.checked_mul(8)?..),
+        _ => None,
     }
 }
 
@@ -145,7 +261,7 @@ impl Region {
             return;
         }
         self.block_entities.remove(pos);
-        if let Some(typed) = Typed::of(new) {
+        if let Some(typed) = Typed::of(new, &[]) {
             self.block_entities.add(pos, typed);
         }
     }
@@ -158,15 +274,15 @@ impl Region {
         };
         let made: Vec<(BlockPos, Typed)> = chunk
             .block_entities()
-            .keys()
-            .filter_map(|at| {
+            .iter()
+            .filter_map(|(at, entity)| {
                 let state = chunk.get(usize::from(at.x), i32::from(at.y), usize::from(at.z))?;
                 let pos = BlockPos::new(
                     position.x * 16 + i32::from(at.x),
                     i32::from(at.y),
                     position.z * 16 + i32::from(at.z),
                 );
-                Some((pos, Typed::of(state)?))
+                Some((pos, Typed::of(state, &entity.data)?))
             })
             .collect();
         for (pos, typed) in made {
@@ -205,9 +321,10 @@ impl Region {
             let Some(state) = self.own_block(pos) else {
                 continue;
             };
-            match self.block_entities.typed.get_mut(&pos) {
-                Some(Typed::Bell(bell)) if is_class(state, BlockClass::BellBlock) => bell.tick(),
-                _ => {}
+            if let Some(Typed::Bell(bell)) = self.block_entities.typed.get_mut(&pos)
+                && is_class(state, BlockClass::BellBlock)
+            {
+                bell.tick();
             }
         }
         self.block_entities.ticking = false;
@@ -218,7 +335,57 @@ impl Region {
     pub(crate) fn bell(&self, pos: BlockPos) -> Option<Bell> {
         match self.block_entities.typed.get(&pos)? {
             Typed::Bell(bell) => Some(*bell),
+            Typed::Comparator(_) => None,
         }
+    }
+
+    /// The output the comparator's block entity at `pos` keeps
+    /// (`ComparatorBlockEntity.getOutputSignal`): of a loaded chunk, the typed block
+    /// entity's; of a copy, read from the copy's data, which the region never writes.
+    /// 0 where there is none.
+    pub(crate) fn comparator_output(&self, pos: BlockPos) -> u8 {
+        if let Some(typed) = self.block_entities.typed.get(&pos) {
+            return match typed {
+                Typed::Comparator(output) => *output,
+                Typed::Bell(_) => 0,
+            };
+        }
+        if self.chunks.contains_key(&pos.chunk()) {
+            return 0;
+        }
+        let Some(copy) = self.copies.get(&pos.chunk()) else {
+            return 0;
+        };
+        let (x, z) = pos.in_chunk();
+        let is_comparator = copy
+            .get(x, pos.y, z)
+            .is_some_and(|state| is_class(state, BlockClass::ComparatorBlock));
+        match copy.block_entities().get(&InChunk::new(x, pos.y, z)) {
+            Some(entity) if is_comparator => read_output_signal(&entity.data),
+            _ => 0,
+        }
+    }
+
+    /// `ComparatorBlockEntity.setOutputSignal` of the comparator at `pos`, written into
+    /// its chunk's data and said among the tick's changes when it changes, so that it
+    /// is committed with them (`docs/adr/0026-redstone.md`, sections 5 and 6). Returns
+    /// the output it kept before, 0 where there is no comparator's block entity.
+    pub(crate) fn set_comparator_output(
+        &mut self,
+        pos: BlockPos,
+        output: u8,
+        events: &mut TickOutput,
+    ) -> u8 {
+        let Some(Typed::Comparator(kept)) = self.block_entities.typed.get_mut(&pos) else {
+            return 0;
+        };
+        let before = *kept;
+        if before == output {
+            return before;
+        }
+        *kept = output;
+        self.set_block_entity_data(pos, comparator_data(output), events);
+        before
     }
 
     /// `BellBlockEntity.onHit` of the bell at `pos`. Returns whether there was one.
@@ -228,7 +395,7 @@ impl Region {
                 bell.hit(direction);
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
@@ -240,7 +407,7 @@ impl Region {
                 bell.rung(direction);
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
