@@ -20,6 +20,9 @@ pub const MAGIC: [u8; 4] = *b"CLT1";
 pub const KIND_BLOCK_STATES: u16 = 1;
 /// The kind of [`crate::biome_parameters`]' table.
 pub const KIND_BIOME_PARAMETERS: u16 = 2;
+/// The kind of [`crate::collisions`]' table. Kind 3 is the templates of
+/// `clustine-worldgen-data`.
+pub const KIND_COLLISIONS: u16 = 4;
 
 /// The bytes of the head before the list of sections.
 const FIXED_HEAD: usize = 30;

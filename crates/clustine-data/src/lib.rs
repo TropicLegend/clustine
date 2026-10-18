@@ -11,18 +11,24 @@
 mod generated;
 
 pub mod biome_parameters;
+pub mod block_physics;
 pub mod block_states;
+pub mod collisions;
 pub mod faces;
+pub mod loot;
 pub mod packed;
 
 use serde::{Deserialize, Serialize};
 
 pub use biome_parameters::{BiomeParameterList, BiomeParameters};
+pub use block_physics::{BlockPhysics, OffsetType, block_physics};
 pub use block_states::{Face, FaceShape, FluidProps, PushReaction, Shape, StateProps, SupportType};
+pub use collisions::{Axis, EntityInsideShape, VoxelShape};
 pub use generated::block_classes::{BLOCK_ENTITY_TYPES, BLOCK_INFO, BlockClass, FLUIDS};
 pub use generated::blocks::{BLOCK_STATE_COUNT, BLOCKS};
 pub use generated::dimension_types::DIMENSION_TYPES;
-pub use generated::entity_types::ENTITY_TYPES;
+pub use generated::entity_types::{ENTITY_TYPE_INFO, ENTITY_TYPES};
+pub use generated::item_components::ITEM_COMPONENTS;
 pub use generated::items::{ITEMS, ItemClass};
 pub use generated::registries::SYNCED_REGISTRIES;
 pub use generated::sound_events::SOUND_EVENTS;
@@ -289,6 +295,78 @@ pub struct Item {
     pub wall: Option<(u16, Face)>,
 }
 
+/// What the default components of an item say that the game's items read
+/// (`docs/groundwork/n4-brief.md`, section 11, item 7). Indexed by item id in
+/// [`ITEM_COMPONENTS`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct ItemComponents {
+    /// `minecraft:max_stack_size`: how many make a full stack. Merging, picking up and
+    /// splitting a drop read it.
+    pub max_stack_size: u8,
+    /// `minecraft:max_damage`, for an item that wears: such an item is stackable only
+    /// undamaged (`isStackable`, `isDamaged`).
+    pub max_damage: Option<u16>,
+    /// The tag of damage types that `minecraft:damage_resistant` names, such as
+    /// `minecraft:is_fire` for netherite: an item entity of the item is not hurt by
+    /// them.
+    pub damage_resistant: Option<&'static str>,
+}
+
+impl ItemComponents {
+    /// The components of the item of this id. Panics if there is no such item.
+    pub fn of(item: i32) -> &'static ItemComponents {
+        &ITEM_COMPONENTS[usize::try_from(item).expect("an item id is not negative")]
+    }
+
+    /// Whether the item is not hurt by fire and lava, as netherite is.
+    pub fn is_fire_resistant(&self) -> bool {
+        self.damage_resistant == Some("minecraft:is_fire")
+    }
+}
+
+/// The game's `MobCategory`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum MobCategory {
+    Monster,
+    Creature,
+    Ambient,
+    Axolotls,
+    UndergroundWaterCreature,
+    WaterCreature,
+    WaterAmbient,
+    /// Everything that is not a mob: items, falling blocks, projectiles, players.
+    Misc,
+}
+
+/// What the game's `EntityType` says of a type. Indexed by entity type id in
+/// [`ENTITY_TYPE_INFO`].
+#[derive(Debug, PartialEq)]
+pub struct EntityTypeInfo {
+    /// The bounding box's width and height (`EntityDimensions`).
+    pub width: f32,
+    pub height: f32,
+    pub eye_height: f32,
+    /// Whether the size does not scale (`EntityDimensions.fixed`).
+    pub fixed: bool,
+    /// `clientTrackingRange`, in chunks: how far away a player is sent the entity.
+    pub client_tracking_range: i32,
+    /// `updateInterval`, in ticks: how often its position is sent when it moves.
+    pub update_interval: i32,
+    /// `trackDeltas`: whether its motion is sent with it.
+    pub track_deltas: bool,
+    /// `fireImmune`.
+    pub fire_immune: bool,
+    pub category: MobCategory,
+}
+
+impl EntityTypeInfo {
+    /// What the game says of the entity type of this id. Panics if there is no such
+    /// type.
+    pub fn of(entity_type: i32) -> &'static EntityTypeInfo {
+        &ENTITY_TYPE_INFO[usize::try_from(entity_type).expect("an entity type id is not negative")]
+    }
+}
+
 /// A registry the server sends to the client during configuration.
 ///
 /// The position of an entry is its numeric id. Clustine lists entries in sorted order,
@@ -482,6 +560,50 @@ mod tests {
         assert!(outline[0][4] > 0.5 && outline[0][0] > 0.0, "{outline:?}");
         assert_eq!(blocks::STONE.props().outline_shape(), Shape::FULL_BLOCK);
         assert_eq!(blocks::AIR.props().outline_shape(), Shape::EMPTY);
+    }
+
+    /// The stack sizes the step of items needs (`bin/clustine/tests/items.rs` throws a
+    /// stack of ender pearls), what wears and what fire does not hurt.
+    #[test]
+    fn items_know_their_stack_size_damage_and_resistance() {
+        assert_eq!(ItemComponents::of(items::STONE).max_stack_size, 64);
+        assert_eq!(ItemComponents::of(items::ENDER_PEARL).max_stack_size, 16);
+        assert_eq!(ItemComponents::of(items::WATER_BUCKET).max_stack_size, 1);
+        let sword = ItemComponents::of(items::DIAMOND_SWORD);
+        assert_eq!((sword.max_stack_size, sword.max_damage), (1, Some(1561)));
+        assert_eq!(
+            ItemComponents::of(items::NETHERITE_SWORD).max_damage,
+            Some(2031)
+        );
+        assert_eq!(ItemComponents::of(items::STONE).max_damage, None);
+        assert!(ItemComponents::of(items::NETHERITE_INGOT).is_fire_resistant());
+        assert!(!ItemComponents::of(items::DIAMOND).is_fire_resistant());
+        assert_eq!(ITEM_COMPONENTS.len(), ITEMS.len());
+    }
+
+    /// The brief's numbers for the two entities of the step (section 11, item 5).
+    #[test]
+    fn entity_types_know_their_size_and_how_they_are_tracked() {
+        let item = EntityTypeInfo::of(entity_types::ITEM);
+        assert_eq!(
+            (item.width, item.height, item.eye_height),
+            (0.25, 0.25, 0.2125)
+        );
+        assert_eq!((item.client_tracking_range, item.update_interval), (6, 20));
+        assert!(item.track_deltas && !item.fire_immune);
+        assert_eq!(item.category, MobCategory::Misc);
+        let falling = EntityTypeInfo::of(entity_types::FALLING_BLOCK);
+        assert_eq!((falling.width, falling.height), (0.98, 0.98));
+        assert_eq!(
+            (falling.client_tracking_range, falling.update_interval),
+            (10, 20)
+        );
+        assert!(falling.track_deltas && !falling.fire_immune);
+        let player = EntityTypeInfo::of(entity_types::PLAYER);
+        assert_eq!((player.width, player.height), (0.6, 1.8));
+        assert_eq!(player.update_interval, 2);
+        assert!(EntityTypeInfo::of(entity_types::BLAZE).fire_immune);
+        assert_eq!(ENTITY_TYPE_INFO.len(), ENTITY_TYPES.len());
     }
 
     #[test]

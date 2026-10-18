@@ -145,11 +145,14 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         "mod.rs",
         modules(&[
             "block_classes",
+            "block_physics",
             "block_properties",
             "blocks",
             "dimension_types",
             "entity_types",
+            "item_components",
             "items",
+            "loot_tables",
             "registries",
             "sound_events",
             "sound_types",
@@ -163,6 +166,9 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "block_classes.rs", block_classes(data)?);
     add(DATA_DIR, "items.rs", items(data)?);
     add(DATA_DIR, "entity_types.rs", entity_types(data)?);
+    add(DATA_DIR, "block_physics.rs", block_physics(data)?);
+    add(DATA_DIR, "item_components.rs", item_components(data)?);
+    add(DATA_DIR, "loot_tables.rs", loot_tables(data)?);
     add(DATA_DIR, "sound_events.rs", sound_events(data)?);
     let (types, of_states) = sound_types(data)?;
     add(DATA_DIR, "sound_types.rs", types);
@@ -188,6 +194,16 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             SERVER_JAR.sha1,
         )
         .context("packing block_states.bin")?,
+    });
+    outputs.push(Output {
+        path: PathBuf::from(DATA_DIR).join("collisions.bin"),
+        content: tables::collisions(
+            &data.extract.voxel_shapes,
+            &data.extract.state_collisions,
+            data.blocks.last().map_or(0, |block| block.last_state + 1),
+            SERVER_JAR.sha1,
+        )
+        .context("packing collisions.bin")?,
     });
     outputs.push(Output {
         // ADR-0019 puts this table into the crate of world-generation data. It is
@@ -858,7 +874,15 @@ fn items(data: &GameData) -> Result<String> {
 }
 
 fn entity_types(data: &GameData) -> Result<String> {
+    let dumped = &data.extract.entity_types;
+    ensure!(
+        dumped.len() == data.entity_types.len(),
+        "the extract program wrote {} entity types, the report has {}",
+        dumped.len(),
+        data.entity_types.len()
+    );
     let mut out = String::new();
+    writeln!(out, "use crate::{{EntityTypeInfo, MobCategory}};\n")?;
     writeln!(
         out,
         "pub static ENTITY_TYPES: [&str; {}] = [",
@@ -868,8 +892,183 @@ fn entity_types(data: &GameData) -> Result<String> {
         writeln!(out, "    {name:?},")?;
     }
     writeln!(out, "];\n")?;
+    writeln!(
+        out,
+        "/// What the game's `EntityType` says of each type, by its id; the floats as their bits."
+    )?;
+    writeln!(
+        out,
+        "pub static ENTITY_TYPE_INFO: [EntityTypeInfo; {}] = [",
+        dumped.len()
+    )?;
+    for (name, dumped) in data.entity_types.iter().zip(dumped) {
+        ensure!(
+            *name == dumped.name,
+            "the extract program has the entity type {} where the report has {name}",
+            dumped.name
+        );
+        let category = match dumped.category.as_str() {
+            "monster" => "Monster",
+            "creature" => "Creature",
+            "ambient" => "Ambient",
+            "axolotls" => "Axolotls",
+            "underground_water_creature" => "UndergroundWaterCreature",
+            "water_creature" => "WaterCreature",
+            "water_ambient" => "WaterAmbient",
+            "misc" => "Misc",
+            other => bail!("{name} is of the mob category {other}, which is not known"),
+        };
+        writeln!(
+            out,
+            "    EntityTypeInfo {{ width: f32::from_bits({:#010x}), height: f32::from_bits({:#010x}), \
+             eye_height: f32::from_bits({:#010x}), fixed: {}, client_tracking_range: {}, \
+             update_interval: {}, track_deltas: {}, fire_immune: {}, category: MobCategory::{category} }}, \
+             // {}",
+            dumped.width,
+            dumped.height,
+            dumped.eye_height,
+            dumped.fixed,
+            dumped.client_tracking_range,
+            dumped.update_interval,
+            dumped.track_deltas,
+            dumped.fire_immune,
+            name.strip_prefix("minecraft:").unwrap_or(name)
+        )?;
+    }
+    writeln!(out, "];\n")?;
     out.push_str(&id_constants(data.entity_types.iter().map(String::as_str))?);
     Ok(out)
+}
+
+/// `block_physics.rs`: what an entity meets on a block (`docs/groundwork/n4-brief.md`,
+/// section 1.8), as the distinct rows and each block's row.
+fn block_physics(data: &GameData) -> Result<String> {
+    let dumped = &data.extract.block_physics;
+    ensure!(
+        dumped.len() == data.blocks.len(),
+        "the extract program wrote the physics of {} blocks, the report has {}",
+        dumped.len(),
+        data.blocks.len()
+    );
+    let mut rows: Vec<String> = Vec::new();
+    let mut numbers: BTreeMap<String, usize> = BTreeMap::new();
+    let mut of_blocks = Vec::new();
+    for (block, dumped) in data.blocks.iter().zip(dumped) {
+        ensure!(
+            block.name == dumped.name,
+            "the extract program has {} where the report has {}",
+            dumped.name,
+            block.name
+        );
+        let offset_type = match dumped.offset_type.as_str() {
+            "NONE" => "None",
+            "XZ" => "Xz",
+            "XYZ" => "Xyz",
+            other => bail!("{} has the offset type {other}", block.name),
+        };
+        let row = format!(
+            "BlockPhysics {{ friction: f32::from_bits({:#010x}), speed_factor: f32::from_bits({:#010x}), \
+             jump_factor: f32::from_bits({:#010x}), bounce_restitution: f32::from_bits({:#010x}), \
+             fall_distance_reduction: f32::from_bits({:#010x}), offset_type: OffsetType::{offset_type}, \
+             max_horizontal_offset: f32::from_bits({:#010x}), max_vertical_offset: f32::from_bits({:#010x}) }}",
+            dumped.friction,
+            dumped.speed_factor,
+            dumped.jump_factor,
+            dumped.bounce_restitution,
+            dumped.fall_distance_reduction,
+            dumped.max_horizontal_offset,
+            dumped.max_vertical_offset,
+        );
+        let number = match numbers.get(&row) {
+            Some(&number) => number,
+            None => {
+                numbers.insert(row.clone(), rows.len());
+                rows.push(row);
+                rows.len() - 1
+            }
+        };
+        ensure!(
+            number <= usize::from(u8::MAX),
+            "more distinct block physics than a byte numbers"
+        );
+        of_blocks.push(number);
+    }
+    let mut out = String::new();
+    writeln!(out, "use crate::{{BlockPhysics, OffsetType}};\n")?;
+    writeln!(
+        out,
+        "/// The distinct rows, in the order the blocks first have them."
+    )?;
+    writeln!(
+        out,
+        "pub static PHYSICS: [BlockPhysics; {}] = [",
+        rows.len()
+    )?;
+    for (number, row) in rows.iter().enumerate() {
+        writeln!(out, "    {row}, // {number}")?;
+    }
+    writeln!(out, "];\n")?;
+    writeln!(out, "/// The row of each block in `PHYSICS`, by block id.")?;
+    writeln!(
+        out,
+        "pub static BLOCK_PHYSICS: [u8; {}] = [",
+        of_blocks.len()
+    )?;
+    out.push_str(&wrapped(&of_blocks, "    "));
+    writeln!(out, "];")?;
+    Ok(out)
+}
+
+/// `item_components.rs`: the components of each item that Clustine reads.
+fn item_components(data: &GameData) -> Result<String> {
+    ensure!(
+        data.item_components.len() == data.items.len(),
+        "the components of {} items for {} items",
+        data.item_components.len(),
+        data.items.len()
+    );
+    let mut out = String::new();
+    writeln!(out, "use crate::ItemComponents;\n")?;
+    writeln!(out, "/// By item id.")?;
+    writeln!(
+        out,
+        "pub static ITEM_COMPONENTS: [ItemComponents; {}] = [",
+        data.items.len()
+    )?;
+    for (item, components) in data.items.iter().zip(&data.item_components) {
+        let max_damage = match components.max_damage {
+            Some(damage) => format!("Some({damage})"),
+            None => "None".to_owned(),
+        };
+        let resistant = match &components.damage_resistant {
+            Some(tag) => format!("Some({tag:?})"),
+            None => "None".to_owned(),
+        };
+        writeln!(
+            out,
+            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant} }}, // {}",
+            components.max_stack_size,
+            item.name.strip_prefix("minecraft:").unwrap_or(&item.name)
+        )?;
+    }
+    writeln!(out, "];")?;
+    Ok(out)
+}
+
+/// `loot_tables.rs`: the block loot tables, and each block's.
+fn loot_tables(data: &GameData) -> Result<String> {
+    let dumped = &data.extract.block_physics;
+    ensure!(
+        dumped.len() == data.blocks.len(),
+        "the extract program named the loot tables of {} blocks, the report has {}",
+        dumped.len(),
+        data.blocks.len()
+    );
+    let names: Vec<Option<&str>> = dumped
+        .iter()
+        .map(|block| block.loot_table.as_deref())
+        .collect();
+    crate::loot::emit(&data.loot, &names)
 }
 
 /// The sound events, by id, and a constant for each, named as the game's
@@ -1067,7 +1266,7 @@ fn constant_name(identifier: &str) -> Result<String> {
 }
 
 /// Comma-separated numbers, wrapped to the line width, each line starting with `indent`.
-fn wrapped(numbers: &[usize], indent: &str) -> String {
+pub(crate) fn wrapped(numbers: &[usize], indent: &str) -> String {
     let mut out = String::new();
     let mut line = String::new();
     for number in numbers {

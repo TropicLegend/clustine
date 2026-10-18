@@ -35,6 +35,83 @@ pub struct Extract {
     pub spawn_rings: Vec<SpawnPass>,
     /// The order in which the game's generators place features.
     pub feature_order: FeatureOrder,
+    /// What an entity meets on each block, by block id.
+    pub block_physics: Vec<BlockPhysicsDump>,
+    /// The distinct collision shapes in the game's voxel form; a shape's index is its
+    /// place here.
+    pub voxel_shapes: Vec<VoxelShapeDump>,
+    /// The collision shapes of each state, by state id.
+    pub state_collisions: Vec<StateCollisionDump>,
+    /// One for each entity type, by its id.
+    pub entity_types: Vec<EntityTypeDump>,
+}
+
+/// What an entity meets on a block: the floats the block holds, as their bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockPhysicsDump {
+    pub name: String,
+    pub friction: u32,
+    pub speed_factor: u32,
+    pub jump_factor: u32,
+    pub bounce_restitution: u32,
+    pub fall_distance_reduction: u32,
+    /// The game's `OffsetType`: `NONE`, `XZ` or `XYZ`.
+    pub offset_type: String,
+    pub max_horizontal_offset: u32,
+    pub max_vertical_offset: u32,
+    /// The name of the block's loot table, which may be another block's.
+    pub loot_table: Option<String>,
+}
+
+/// A collision shape as the game holds it: the boundaries of its cells along each
+/// axis and which cells are filled.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VoxelShapeDump {
+    /// Whether it is the instance `Shapes.block()`, which the game tests by identity.
+    pub is_block: bool,
+    /// The bits of the coordinates along x, y and z, one more than the cells.
+    pub coords: [Vec<u64>; 3],
+    /// The numbers of cells along x, y and z.
+    pub sizes: [u32; 3],
+    /// The filled cells as a bit set: bit `(x * y_size + y) * z_size + z`.
+    pub cells: Vec<u8>,
+}
+
+impl VoxelShapeDump {
+    pub fn is_full(&self, x: u32, y: u32, z: u32) -> bool {
+        let index = ((x * self.sizes[1] + y) * self.sizes[2] + z) as usize;
+        self.cells
+            .get(index / 8)
+            .is_some_and(|byte| byte & (1 << (index % 8)) != 0)
+    }
+}
+
+/// The collision shapes of a state, by their indices among the voxel shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StateCollisionDump {
+    pub collision: usize,
+    /// The game's `hasLargeCollisionShape`.
+    pub large: bool,
+    /// The entity-inside shape; `None` where it is the entity's own collision shape,
+    /// or the whole block where that is empty (powder snow).
+    pub inside: Option<usize>,
+}
+
+/// What the game's `EntityType` says of one type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityTypeDump {
+    pub name: String,
+    /// Float bits.
+    pub width: u32,
+    pub height: u32,
+    pub eye_height: u32,
+    pub fixed: bool,
+    pub client_tracking_range: i32,
+    pub update_interval: i32,
+    pub track_deltas: bool,
+    pub fire_immune: bool,
+    /// The serialised name of its `MobCategory`, such as `misc`.
+    pub category: String,
 }
 
 /// The order in which the game places the features of each dimension: by dimension,
@@ -200,6 +277,14 @@ impl Extract {
                 .context("reading spawn_rings.txt")?,
             feature_order: feature_order(&read("feature_order.txt")?)
                 .context("reading feature_order.txt")?,
+            block_physics: block_physics(&read("block_physics.txt")?)
+                .context("reading block_physics.txt")?,
+            voxel_shapes: voxel_shapes(&read("voxel_shapes.txt")?)
+                .context("reading voxel_shapes.txt")?,
+            state_collisions: state_collisions(&read("state_collisions.txt")?)
+                .context("reading state_collisions.txt")?,
+            entity_types: entity_types(&read("entity_types.txt")?)
+                .context("reading entity_types.txt")?,
         })
     }
 }
@@ -515,6 +600,151 @@ pub fn spawn_rings(text: &str) -> Result<Vec<SpawnPass>> {
     Ok(passes)
 }
 
+/// The fields of a line separated by tabs, `count` of them, the first being the id
+/// that `expected_id` has to be.
+fn numbered_fields(line: &str, count: usize, expected_id: usize) -> Result<Vec<&str>> {
+    let fields: Vec<&str> = line.split('\t').collect();
+    ensure!(
+        fields.len() == count,
+        "a line has {} fields where {count} are expected",
+        fields.len()
+    );
+    ensure!(
+        integer::<usize>(fields[0])? == expected_id,
+        "the ids have a gap at {}",
+        fields[0]
+    );
+    Ok(fields)
+}
+
+/// The bits of a float, in hexadecimal.
+fn float_bits(text: &str) -> Result<u32> {
+    u32::from_str_radix(text, 16).with_context(|| format!("{text:?} is not a float's bits"))
+}
+
+/// The lines of `block_physics.txt`.
+pub fn block_physics(text: &str) -> Result<Vec<BlockPhysicsDump>> {
+    let mut blocks = Vec::new();
+    for line in text.lines() {
+        let fields = numbered_fields(line, 11, blocks.len())?;
+        ensure!(
+            ["NONE", "XZ", "XYZ"].contains(&fields[7]),
+            "{:?} is no offset type",
+            fields[7]
+        );
+        blocks.push(BlockPhysicsDump {
+            name: fields[1].to_owned(),
+            friction: float_bits(fields[2])?,
+            speed_factor: float_bits(fields[3])?,
+            jump_factor: float_bits(fields[4])?,
+            bounce_restitution: float_bits(fields[5])?,
+            fall_distance_reduction: float_bits(fields[6])?,
+            offset_type: fields[7].to_owned(),
+            max_horizontal_offset: float_bits(fields[8])?,
+            max_vertical_offset: float_bits(fields[9])?,
+            loot_table: match fields[10] {
+                "-" => None,
+                name => Some(name.to_owned()),
+            },
+        });
+    }
+    Ok(blocks)
+}
+
+/// The lines of `voxel_shapes.txt`.
+pub fn voxel_shapes(text: &str) -> Result<Vec<VoxelShapeDump>> {
+    let mut shapes = Vec::new();
+    for line in text.lines() {
+        let shape = voxel_shape(line).with_context(|| format!("in shape {}", shapes.len()))?;
+        shapes.push(shape);
+    }
+    Ok(shapes)
+}
+
+fn voxel_shape(line: &str) -> Result<VoxelShapeDump> {
+    let fields: Vec<&str> = line.split('\t').collect();
+    let [is_block, xs, ys, zs, sizes, cells] = fields[..] else {
+        bail!("a line has {} fields where 6 are expected", fields.len());
+    };
+    let coords = |text: &str| -> Result<Vec<u64>> {
+        text.split(',')
+            .map(|bits| u64::from_str_radix(bits, 16).with_context(|| format!("{bits:?}")))
+            .collect()
+    };
+    let sizes: Vec<u32> = sizes.split(',').map(integer).collect::<Result<_>>()?;
+    let sizes: [u32; 3] = sizes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("a shape has no three sizes"))?;
+    let coords = [coords(xs)?, coords(ys)?, coords(zs)?];
+    for (axis, list) in coords.iter().enumerate() {
+        ensure!(
+            list.len() == sizes[axis] as usize + 1,
+            "{} coordinates along axis {axis} for {} cells",
+            list.len(),
+            sizes[axis]
+        );
+    }
+    let count = sizes.iter().map(|&size| size as usize).product::<usize>();
+    let cells = if cells == "-" {
+        vec![0; count.div_ceil(8)]
+    } else {
+        ensure!(cells.len() % 2 == 0, "the cells are not whole bytes");
+        (0..cells.len() / 2)
+            .map(|at| u8::from_str_radix(&cells[2 * at..2 * at + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .context("the cells are not hexadecimal")?
+    };
+    ensure!(
+        cells.len() == count.div_ceil(8),
+        "{} bytes of cells for {count} cells",
+        cells.len()
+    );
+    Ok(VoxelShapeDump {
+        is_block: boolean(is_block)?,
+        coords,
+        sizes,
+        cells,
+    })
+}
+
+/// The lines of `state_collisions.txt`.
+pub fn state_collisions(text: &str) -> Result<Vec<StateCollisionDump>> {
+    let mut states = Vec::new();
+    for line in text.lines() {
+        let fields = numbered_fields(line, 4, states.len())?;
+        states.push(StateCollisionDump {
+            collision: integer(fields[1])?,
+            large: boolean(fields[2])?,
+            inside: match fields[3] {
+                "entity" => None,
+                index => Some(integer(index)?),
+            },
+        });
+    }
+    Ok(states)
+}
+
+/// The lines of `entity_types.txt`.
+pub fn entity_types(text: &str) -> Result<Vec<EntityTypeDump>> {
+    let mut types = Vec::new();
+    for line in text.lines() {
+        let fields = numbered_fields(line, 11, types.len())?;
+        types.push(EntityTypeDump {
+            name: fields[1].to_owned(),
+            width: float_bits(fields[2])?,
+            height: float_bits(fields[3])?,
+            eye_height: float_bits(fields[4])?,
+            fixed: boolean(fields[5])?,
+            client_tracking_range: integer(fields[6])?,
+            update_interval: integer(fields[7])?,
+            track_deltas: boolean(fields[8])?,
+            fire_immune: boolean(fields[9])?,
+            category: fields[10].to_owned(),
+        });
+    }
+    Ok(types)
+}
+
 fn integer<T: std::str::FromStr>(text: &str) -> Result<T> {
     text.parse()
         .map_err(|_| anyhow::anyhow!("{text:?} is not a number that fits"))
@@ -655,5 +885,78 @@ mod tests {
         assert!(feature_order("overworld\t3\ta\noverworld\t1\tb\n").is_err());
         assert!(feature_order("overworld\t1\n").is_err());
         assert!(feature_order("").is_err());
+    }
+
+    #[test]
+    fn lines_of_block_physics_are_read_with_their_floats_as_bits() {
+        let read = block_physics(
+            "0\tminecraft:stone\t3f19999a\t3f800000\t3f800000\t0\t0\tNONE\t0\t0\tminecraft:blocks/stone\n\
+             1\tminecraft:bamboo\t3f19999a\t3f800000\t3f800000\t0\t0\tXZ\t3e800000\t0\t-\n",
+        )
+        .unwrap();
+        assert_eq!(f32::from_bits(read[0].friction), 0.6);
+        assert_eq!(f32::from_bits(read[0].speed_factor), 1.0);
+        assert_eq!(
+            read[0].loot_table.as_deref(),
+            Some("minecraft:blocks/stone")
+        );
+        assert_eq!(read[1].offset_type, "XZ");
+        assert_eq!(f32::from_bits(read[1].max_horizontal_offset), 0.25);
+        assert_eq!(read[1].loot_table, None);
+        assert!(block_physics("0\tminecraft:stone\t0\t0\t0\t0\t0\tSIDEWAYS\t0\t0\t-\n").is_err());
+        assert!(block_physics("1\tminecraft:stone\t0\t0\t0\t0\t0\tNONE\t0\t0\t-\n").is_err());
+    }
+
+    #[test]
+    fn a_voxel_shape_is_read_with_its_coordinates_and_cells() {
+        let half = "3fe0000000000000";
+        // A slab: one cell along x and z, two along y of which the lower is filled.
+        let line = format!(
+            "0\t0,{ONE}\t0,{half},{ONE}\t0,{ONE}\t1,2,1\t01\n1\t0,{ONE}\t0,{ONE}\t0,{ONE}\t1,1,1\t01\n0\t0\t0\t0\t0,0,0\t-"
+        );
+        let read = voxel_shapes(&line).unwrap();
+        assert_eq!(read.len(), 3);
+        assert!(!read[0].is_block && read[1].is_block);
+        assert_eq!(read[0].sizes, [1, 2, 1]);
+        assert_eq!(read[0].coords[1][1], 0.5f64.to_bits());
+        assert!(read[0].is_full(0, 0, 0) && !read[0].is_full(0, 1, 0));
+        assert!(read[2].cells.is_empty());
+        // Coordinates that do not match the cells are refused.
+        assert!(voxel_shapes(&format!("0\t0,{ONE}\t0,{ONE}\t0,{ONE}\t1,2,1\t01")).is_err());
+        assert!(voxel_shapes(&format!("0\t0,{ONE}\t0,{ONE}\t0,{ONE}\t1,1,1\t0102")).is_err());
+    }
+
+    #[test]
+    fn lines_of_state_collisions_and_entity_types_are_read() {
+        let read = state_collisions("0\t0\t0\t1\n1\t2\t1\tentity\n").unwrap();
+        assert_eq!(
+            read,
+            [
+                StateCollisionDump {
+                    collision: 0,
+                    large: false,
+                    inside: Some(1)
+                },
+                StateCollisionDump {
+                    collision: 2,
+                    large: true,
+                    inside: None
+                },
+            ]
+        );
+        assert!(state_collisions("0\t0\t2\t1\n").is_err());
+
+        let read =
+            entity_types("0\tminecraft:item\t3e800000\t3e800000\t3e59999a\t0\t6\t20\t1\t0\tmisc\n")
+                .unwrap();
+        assert_eq!(read[0].name, "minecraft:item");
+        assert_eq!(f32::from_bits(read[0].width), 0.25);
+        assert_eq!(f32::from_bits(read[0].eye_height), 0.2125);
+        assert_eq!(
+            (read[0].client_tracking_range, read[0].update_interval),
+            (6, 20)
+        );
+        assert!(read[0].track_deltas && !read[0].fire_immune && !read[0].fixed);
+        assert_eq!(read[0].category, "misc");
     }
 }

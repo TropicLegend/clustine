@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 
 use crate::extract::Extract;
+use crate::loot;
 use crate::worldgen::Worldgen;
 
 /// Registries the server sends to the client during configuration, in the order the
@@ -85,6 +86,80 @@ pub struct GameData {
     pub extract: Extract,
     /// The world-generation data, from the entries of the game's own jar.
     pub worldgen: Worldgen,
+    /// The components of each item that the step of items reads, by item id.
+    pub item_components: Vec<ItemComponents>,
+    /// The block loot tables, compiled.
+    pub loot: loot::Compiled,
+}
+
+/// What the default components of an item say that Clustine reads
+/// (`docs/groundwork/n4-brief.md`, section 11, item 7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemComponents {
+    /// `minecraft:max_stack_size`.
+    pub max_stack_size: u8,
+    /// `minecraft:max_damage`, for an item that can be damaged.
+    pub max_damage: Option<u16>,
+    /// The damage type tag of `minecraft:damage_resistant`, without its `#`.
+    pub damage_resistant: Option<String>,
+}
+
+/// Reads the default components of an item from the report of its components.
+pub fn item_components_of(report: &Value) -> Result<ItemComponents> {
+    let components = report["components"]
+        .as_object()
+        .context("the report has no components")?;
+    let max_stack_size = components
+        .get("minecraft:max_stack_size")
+        .and_then(Value::as_u64)
+        .context("no maximum stack size")?;
+    ensure!(
+        (1..=99).contains(&max_stack_size),
+        "a maximum stack size of {max_stack_size}"
+    );
+    let max_damage = match components.get("minecraft:max_damage") {
+        None => None,
+        Some(value) => {
+            let damage = value
+                .as_u64()
+                .context("the maximum damage is not a number")?;
+            ensure!(
+                (1..=u64::from(u16::MAX)).contains(&damage),
+                "a maximum damage of {damage}"
+            );
+            // A stack of a damageable item starts undamaged; the step reads no other.
+            ensure!(
+                components.get("minecraft:damage").and_then(Value::as_u64) == Some(0),
+                "a damageable item whose default damage is not 0"
+            );
+            Some(damage as u16)
+        }
+    };
+    let damage_resistant = match components.get("minecraft:damage_resistant") {
+        None => None,
+        Some(value) => {
+            let object = value
+                .as_object()
+                .context("the damage resistance is not an object")?;
+            ensure!(
+                object.len() == 1,
+                "a damage resistance of more than its types is not understood"
+            );
+            let types = object
+                .get("types")
+                .and_then(Value::as_str)
+                .context("a damage resistance without one tag of types")?;
+            let tag = types
+                .strip_prefix('#')
+                .context("a damage resistance to other than a tag is not understood")?;
+            Some(tag.to_owned())
+        }
+    };
+    Ok(ItemComponents {
+        max_stack_size: max_stack_size as u8,
+        max_damage,
+        damage_resistant,
+    })
 }
 
 /// One parameter list as the data generator reports it: numbers as decimals.
@@ -182,7 +257,27 @@ impl GameData {
             .iter()
             .map(|block| (block.name.as_str(), block.default_state))
             .collect();
-        let items = static_registry(&registries, "item")?
+        let item_names = static_registry(&registries, "item")?;
+        let mut item_components = Vec::new();
+        for name in &item_names {
+            let path = reports.join(format!(
+                "minecraft/components/item/{}.json",
+                local_name(name)
+            ));
+            item_components.push(
+                item_components_of(&read_json(&path)?)
+                    .with_context(|| format!("reading {}", path.display()))?,
+            );
+        }
+        let loot = loot::load(
+            &data.join("loot_table/blocks"),
+            &loot::PredicateDirectory(&data.join("predicate")),
+            &loot::Names {
+                blocks: &blocks,
+                items: &item_names,
+            },
+        )?;
+        let items = item_names
             .into_iter()
             .map(|name| Item {
                 block: default_states.get(name.as_str()).copied(),
@@ -268,6 +363,8 @@ impl GameData {
             biome_reports,
             extract,
             worldgen: Worldgen::load(jar, generated)?,
+            item_components,
+            loot,
         })
     }
 
@@ -380,7 +477,7 @@ fn load_packets(reports: &Path) -> Result<Vec<PacketSet>> {
     Ok(sets)
 }
 
-fn load_blocks(reports: &Path, names: &[String]) -> Result<Vec<Block>> {
+pub(crate) fn load_blocks(reports: &Path, names: &[String]) -> Result<Vec<Block>> {
     let path = reports.join("blocks.json");
     let report = read_json(&path)?;
     let mut blocks = Vec::new();
@@ -559,7 +656,7 @@ fn resolve_tag<'a>(
 }
 
 /// The entries of a built-in registry from `registries.json`, indexed by protocol id.
-fn static_registry(registries: &Value, name: &str) -> Result<Vec<String>> {
+pub(crate) fn static_registry(registries: &Value, name: &str) -> Result<Vec<String>> {
     let entries = registries[format!("minecraft:{name}")]["entries"]
         .as_object()
         .with_context(|| format!("registries.json has no registry {name}"))?;
@@ -613,7 +710,7 @@ fn local_name(identifier: &str) -> &str {
     identifier.strip_prefix("minecraft:").unwrap_or(identifier)
 }
 
-fn read_json(path: &Path) -> Result<Value> {
+pub(crate) fn read_json(path: &Path) -> Result<Value> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }

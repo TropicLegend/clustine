@@ -20,11 +20,13 @@
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -32,6 +34,8 @@ import java.util.TreeSet;
 import java.util.function.Supplier;
 
 import com.mojang.datafixers.util.Pair;
+
+import it.unimi.dsi.fastutil.doubles.DoubleList;
 
 import net.minecraft.SharedConstants;
 import net.minecraft.commands.Commands;
@@ -51,6 +55,8 @@ import net.minecraft.server.packs.repository.PackRepository;
 import net.minecraft.server.packs.repository.ServerPacksSource;
 import net.minecraft.server.permissions.PermissionSet;
 import net.minecraft.util.Util;
+import net.minecraft.world.entity.EntityDimensions;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
@@ -88,6 +94,9 @@ import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.DiscreteVoxelShape;
+import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
 public final class Extract {
@@ -158,6 +167,11 @@ public final class Extract {
         write(out, "block_states.txt", blockStates());
         write(out, "blocks.txt", blocks());
         write(out, "items.txt", items());
+        write(out, "block_physics.txt", blockPhysics());
+        Collisions collisions = collisions();
+        write(out, "voxel_shapes.txt", collisions.shapes.toString());
+        write(out, "state_collisions.txt", collisions.states.toString());
+        write(out, "entity_types.txt", entityTypes());
         for (Map.Entry<String, String> list : biomeParameters().entrySet()) {
             write(out, "biome_parameters_" + list.getKey() + ".txt", list.getValue());
         }
@@ -506,6 +520,278 @@ public final class Extract {
             field(text, Integer.toString(block));
             field(text, Integer.toString(wall));
             field(text, direction);
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line a block, in id order: id, name, then what an entity meets on it
+    /// (docs/groundwork/n4-brief.md, sections 1.8 and 11): friction, speed factor, jump
+    /// factor, bounce restitution and fall-distance reduction as the bits of the floats
+    /// the block holds; the offset type its properties gave it (`NONE`, `XZ` or `XYZ`)
+    /// and the largest horizontal and vertical offsets as float bits; and the name of
+    /// its loot table, or `-` for a block without one. A block that drops like another
+    /// (a wall torch, a potted plant's pot) names the other's table.
+    private static String blockPhysics() throws ReflectiveOperationException {
+        Method horizontal = BlockBehaviour.class.getDeclaredMethod("getMaxHorizontalOffset");
+        Method vertical = BlockBehaviour.class.getDeclaredMethod("getMaxVerticalOffset");
+        horizontal.setAccessible(true);
+        vertical.setAccessible(true);
+        // The offset type is not kept; what is kept is the function `offsetType` chose,
+        // one shared instance a type, which a fresh set of properties shows.
+        Field function = BlockBehaviour.Properties.class.getDeclaredField("offsetFunction");
+        function.setAccessible(true);
+        Object xz = function.get(BlockBehaviour.Properties.of()
+            .offsetType(BlockBehaviour.OffsetType.XZ));
+        Object xyz = function.get(BlockBehaviour.Properties.of()
+            .offsetType(BlockBehaviour.OffsetType.XYZ));
+        if (xz == null || xyz == null || xz == xyz
+            || xz != function.get(BlockBehaviour.Properties.of()
+                .offsetType(BlockBehaviour.OffsetType.XZ))) {
+            throw new IllegalStateException("the offset functions are not one instance a type");
+        }
+
+        StringBuilder text = new StringBuilder();
+        for (int id = 0; id < BuiltInRegistries.BLOCK.size(); id++) {
+            Block block = BuiltInRegistries.BLOCK.byId(id);
+            Object own = function.get(block.properties());
+            String offsetType;
+            if (own == null) {
+                offsetType = "NONE";
+            } else if (own == xz) {
+                offsetType = "XZ";
+            } else if (own == xyz) {
+                offsetType = "XYZ";
+            } else {
+                throw new IllegalStateException(
+                    "the offset function of " + BuiltInRegistries.BLOCK.getKey(block)
+                        + " is of no offset type");
+            }
+            for (BlockState state : block.getStateDefinition().getPossibleStates()) {
+                if (state.hasOffsetFunction() != (own != null)) {
+                    throw new IllegalStateException(
+                        "a state of " + BuiltInRegistries.BLOCK.getKey(block)
+                            + " has another offset function than its block");
+                }
+                if (offsetType.equals("XZ") && state.getOffset(SECOND).y != 0.0) {
+                    throw new IllegalStateException(
+                        "an offset of the type XZ moves "
+                            + BuiltInRegistries.BLOCK.getKey(block) + " up or down");
+                }
+            }
+
+            text.append(Integer.toString(id));
+            field(text, BuiltInRegistries.BLOCK.getKey(block).toString());
+            field(text, floatBits(block.getFriction()));
+            field(text, floatBits(block.getSpeedFactor()));
+            field(text, floatBits(block.getJumpFactor()));
+            field(text, floatBits(block.getBounceRestitution()));
+            field(text, floatBits(block.getFallDistanceReduction()));
+            field(text, offsetType);
+            field(text, floatBits((Float) horizontal.invoke(block)));
+            field(text, floatBits((Float) vertical.invoke(block)));
+            field(text, block.getLootTable()
+                .map(key -> key.identifier().toString()).orElse("-"));
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    private static String floatBits(float value) {
+        return Integer.toHexString(Float.floatToRawIntBits(value));
+    }
+
+    /// The classes that override `getEntityInsideCollisionShape`
+    /// (docs/groundwork/n4-brief.md, section 11, item 4). Powder snow's answer is the
+    /// entity's own collision shape, or the whole block where that is empty, and is
+    /// written as `entity`; the others answer from the state and are asked with no
+    /// entity.
+    private static final String[] INSIDE_SHAPE_CLASSES = {
+        "EndPortalBlock", "LavaCauldronBlock", "LayeredCauldronBlock", "PowderSnowBlock",
+        "TripWireBlock",
+    };
+
+    /// The two files of collision shapes in the game's own voxel form.
+    private static final class Collisions {
+        /// `voxel_shapes.txt`: one line a distinct shape, in the order the states first
+        /// name them, its line number being its index: whether it is the instance
+        /// `Shapes.block()` (1 or 0), the coordinates of its cells' boundaries along x,
+        /// y and z (each a list of double bits separated by commas), the numbers of
+        /// cells along x, y and z, and the filled cells as a bit set in hexadecimal,
+        /// two digits a byte, bit `(x * ySize + y) * zSize + z` being cell (x, y, z),
+        /// or `-` if none is filled.
+        final StringBuilder shapes = new StringBuilder();
+        /// `state_collisions.txt`: one line a state, in id order: its id, the index of
+        /// its collision shape (with the empty context, and without the sideways
+        /// offset of a block whose collision shape is shifted by its position),
+        /// `hasLargeCollisionShape` (1 or 0), and the index of its entity-inside
+        /// collision shape or `entity`.
+        final StringBuilder states = new StringBuilder();
+        final Map<String, Integer> numbers = new LinkedHashMap<>();
+
+        int number(VoxelShape shape) throws ReflectiveOperationException {
+            String line = voxels(shape);
+            Integer known = numbers.get(line);
+            if (known != null) {
+                return known;
+            }
+            int number = numbers.size();
+            numbers.put(line, number);
+            shapes.append(line).append('\n');
+            return number;
+        }
+    }
+
+    private static Collisions collisions() throws ReflectiveOperationException {
+        Collisions collisions = new Collisions();
+        Recorder level = new Recorder();
+        for (int id = 0; id < Block.BLOCK_STATE_REGISTRY.size(); id++) {
+            BlockState state = Block.BLOCK_STATE_REGISTRY.byId(id);
+            level.reset();
+            VoxelShape collision = state.getCollisionShape(level, FIRST);
+            String atSecond = voxels(state.getCollisionShape(level, SECOND));
+            if (!voxels(collision).equals(atSecond)) {
+                // Bamboo and the dripstones: the shape is shifted by the offset of its
+                // position. The table keeps it unshifted, which has to be the shape at
+                // the second position shifted back by that position's offset.
+                Vec3 first = state.getOffset(FIRST);
+                Vec3 second = state.getOffset(SECOND);
+                collision = collision.move(-first.x, -first.y, -first.z);
+                VoxelShape moved = state.getCollisionShape(level, SECOND)
+                    .move(-second.x, -second.y, -second.z);
+                if (!voxels(collision).equals(voxels(moved))) {
+                    throw new IllegalStateException(
+                        "the collision shape of state " + id
+                            + " changes with its position by more than its offset");
+                }
+            }
+
+            int collisionNumber = collisions.number(collision);
+
+            // The entity-inside shape has to be the state's alone.
+            level.reset();
+            String inside;
+            Class<?> overrides = insideShapeClass(state.getBlock().getClass());
+            if (overrides == null) {
+                VoxelShape shape = state.getEntityInsideCollisionShape(level, FIRST, null);
+                if (shape != Shapes.block()) {
+                    throw new IllegalStateException(
+                        "state " + id + " has an entity-inside shape of its own");
+                }
+                inside = Integer.toString(collisions.number(shape));
+            } else if (overrides.getSimpleName().equals("PowderSnowBlock")) {
+                inside = "entity";
+            } else if (List.of(INSIDE_SHAPE_CLASSES).contains(overrides.getSimpleName())) {
+                inside = Integer.toString(collisions.number(
+                    state.getEntityInsideCollisionShape(level, FIRST, null)));
+            } else {
+                throw new IllegalStateException(
+                    overrides.getSimpleName() + " has an entity-inside shape of its own");
+            }
+            if (!level.asked.isEmpty()) {
+                throw new IllegalStateException(
+                    "the entity-inside shape of state " + id + " looked at the level");
+            }
+
+            collisions.states.append(Integer.toString(id)).append('\t')
+                .append(Integer.toString(collisionNumber)).append('\t')
+                .append(state.hasLargeCollisionShape() ? '1' : '0').append('\t')
+                .append(inside).append('\n');
+        }
+        return collisions;
+    }
+
+    /// The class, at or above `start` and below the base of all blocks, that overrides
+    /// `getEntityInsideCollisionShape`; `null` if none does.
+    private static Class<?> insideShapeClass(Class<?> start) {
+        for (Class<?> c = start; c != BlockBehaviour.class && c != null; c = c.getSuperclass()) {
+            try {
+                c.getDeclaredMethod(
+                    "getEntityInsideCollisionShape",
+                    BlockState.class, BlockGetter.class, BlockPos.class,
+                    net.minecraft.world.entity.Entity.class);
+                return c;
+            } catch (NoSuchMethodException none) {
+                // Look further up.
+            }
+        }
+        return null;
+    }
+
+    /// A shape in its voxel form, as a line of `voxel_shapes.txt`.
+    private static String voxels(VoxelShape shape) throws ReflectiveOperationException {
+        Field field = VoxelShape.class.getDeclaredField("shape");
+        field.setAccessible(true);
+        DiscreteVoxelShape cells = (DiscreteVoxelShape) field.get(shape);
+        StringBuilder line = new StringBuilder();
+        line.append(shape == Shapes.block() ? '1' : '0');
+        Direction.Axis[] axes = {Direction.Axis.X, Direction.Axis.Y, Direction.Axis.Z};
+        for (Direction.Axis axis : axes) {
+            DoubleList coords = shape.getCoords(axis);
+            if (coords.size() != cells.getSize(axis) + 1) {
+                throw new IllegalStateException(
+                    "a shape has " + coords.size() + " coordinates along " + axis
+                        + " for " + cells.getSize(axis) + " cells");
+            }
+            List<String> parts = new ArrayList<>();
+            for (int i = 0; i < coords.size(); i++) {
+                parts.add(bits(coords.getDouble(i)));
+            }
+            line.append('\t').append(String.join(",", parts));
+        }
+        int xs = cells.getXSize();
+        int ys = cells.getYSize();
+        int zs = cells.getZSize();
+        line.append('\t').append(Integer.toString(xs)).append(',')
+            .append(Integer.toString(ys)).append(',').append(Integer.toString(zs));
+        byte[] bitSet = new byte[(xs * ys * zs + 7) / 8];
+        boolean any = false;
+        for (int x = 0; x < xs; x++) {
+            for (int y = 0; y < ys; y++) {
+                for (int z = 0; z < zs; z++) {
+                    if (cells.isFull(x, y, z)) {
+                        int index = (x * ys + y) * zs + z;
+                        bitSet[index / 8] |= (byte) (1 << (index % 8));
+                        any = true;
+                    }
+                }
+            }
+        }
+        line.append('\t');
+        if (!any) {
+            line.append('-');
+        } else {
+            for (byte b : bitSet) {
+                String hex = Integer.toHexString(b & 0xff);
+                line.append(hex.length() == 1 ? "0" + hex : hex);
+            }
+        }
+        return line.toString();
+    }
+
+    /// One line an entity type, in id order: id, name, width, height and eye height as
+    /// float bits, whether its size is fixed, its client tracking range in chunks, its
+    /// update interval in ticks, whether its motion is sent (`trackDeltas`), whether it
+    /// is immune to fire, and its mob category by the game's name for it.
+    private static String entityTypes() {
+        StringBuilder text = new StringBuilder();
+        for (int id = 0; id < BuiltInRegistries.ENTITY_TYPE.size(); id++) {
+            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.byId(id);
+            EntityDimensions dimensions = type.getDimensions();
+            if (dimensions.width() != type.getWidth() || dimensions.height() != type.getHeight()) {
+                throw new IllegalStateException("an entity type's size is two sizes");
+            }
+            text.append(Integer.toString(id));
+            field(text, BuiltInRegistries.ENTITY_TYPE.getKey(type).toString());
+            field(text, floatBits(dimensions.width()));
+            field(text, floatBits(dimensions.height()));
+            field(text, floatBits(dimensions.eyeHeight()));
+            field(text, dimensions.fixed() ? "1" : "0");
+            field(text, Integer.toString(type.clientTrackingRange()));
+            field(text, Integer.toString(type.updateInterval()));
+            field(text, type.trackDeltas() ? "1" : "0");
+            field(text, type.fireImmune() ? "1" : "0");
+            field(text, type.getCategory().getSerializedName());
             text.append('\n');
         }
         return text.toString();

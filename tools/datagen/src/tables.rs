@@ -8,12 +8,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use crate::extract::{ParameterList, ShapeBox, StateDump};
+use crate::extract::{ParameterList, ShapeBox, StateCollisionDump, StateDump, VoxelShapeDump};
 use crate::model::{BiomeReport, Block};
 use crate::packed::{self, Section};
 
 /// The layout of `block_states.bin`; the reader in `clustine-data` names the same.
 pub const BLOCK_STATES_LAYOUT: u16 = 3;
+/// The layout of `collisions.bin`; the reader in `clustine-data` names the same.
+pub const COLLISIONS_LAYOUT: u16 = 1;
 /// The layout of `biome_parameters.bin`.
 pub const BIOME_PARAMETERS_LAYOUT: u16 = 1;
 
@@ -564,6 +566,121 @@ fn state_row(
     Ok(row)
 }
 
+/// What a state's row in `collisions.bin` holds for an entity-inside shape that is
+/// the entity's own collision shape, or the whole block where that is empty.
+pub const INSIDE_SHAPE_OF_THE_ENTITY: u16 = u16::MAX;
+
+/// `collisions.bin`: the collision shapes in the game's voxel form
+/// (`docs/groundwork/n4-brief.md`, sections 1.4 and 11), for the collider.
+///
+/// Four sections: a row of 5 bytes for each state (its collision shape's index, its
+/// entity-inside shape's index or [`INSIDE_SHAPE_OF_THE_ENTITY`], both `u16`, and a
+/// byte of flags, bit 0 `hasLargeCollisionShape`); a row of 12 bytes for each distinct
+/// shape (a byte of flags, bit 0 that it is the instance `Shapes.block()`; the numbers
+/// of cells along x, y and z, a byte each; where its coordinates start in the third
+/// section, x's then y's then z's, one more than the cells along each; where its cells
+/// start in the fourth, as `u32`); the coordinates as `f64` bits; and the cells as a
+/// bit set, bit `(x * y_size + y) * z_size + z` of the shape's bytes.
+pub fn collisions(
+    shapes: &[VoxelShapeDump],
+    states: &[StateCollisionDump],
+    state_count: u64,
+    sha1: &str,
+) -> Result<Vec<u8>> {
+    ensure!(
+        states.len() as u64 == state_count,
+        "the extract program wrote the collisions of {} states, the report has {state_count}",
+        states.len()
+    );
+    let mut rows = Section::new(5);
+    for (id, state) in states.iter().enumerate() {
+        ensure!(
+            state.collision < shapes.len(),
+            "state {id} names the shape {}, of which there is none",
+            state.collision
+        );
+        let shape = &shapes[state.collision];
+        // A shape whose filled cells reach out of the block is large; the game says
+        // so also of a state whose shape it does not cache (a moving piston).
+        ensure!(
+            !reaches_out_of_the_block(shape) || state.large,
+            "state {id} has a shape beyond its block and is not said to be large"
+        );
+        let inside = match state.inside {
+            Some(index) => {
+                ensure!(
+                    index < shapes.len(),
+                    "state {id} names the inside shape {index}, of which there is none"
+                );
+                u16::try_from(index)
+                    .ok()
+                    .filter(|&index| index != INSIDE_SHAPE_OF_THE_ENTITY)
+                    .context("more shapes than 16 bits can number")?
+            }
+            None => INSIDE_SHAPE_OF_THE_ENTITY,
+        };
+        let mut row = [0u8; 5];
+        row[0..2].copy_from_slice(&u16::try_from(state.collision)?.to_le_bytes());
+        row[2..4].copy_from_slice(&inside.to_le_bytes());
+        row[4] = u8::from(state.large);
+        rows.push(&row);
+    }
+
+    let mut heads = Section::new(12);
+    let mut coords = Section::new(8);
+    let mut cells = Section::new(1);
+    for (index, shape) in shapes.iter().enumerate() {
+        if shape.is_block {
+            let one = 1.0f64.to_bits();
+            ensure!(
+                shape.sizes == [1, 1, 1]
+                    && shape.coords.iter().all(|axis| axis[..] == [0, one])
+                    && shape.cells == [1],
+                "shape {index} is said to be the full block and is not"
+            );
+        }
+        let mut head = [0u8; 12];
+        head[0] = u8::from(shape.is_block);
+        for (slot, &size) in head[1..4].iter_mut().zip(&shape.sizes) {
+            *slot = u8::try_from(size)
+                .ok()
+                .context("a shape has more cells along an axis than a byte counts")?;
+        }
+        head[4..8].copy_from_slice(&u32::try_from(coords.rows())?.to_le_bytes());
+        head[8..12].copy_from_slice(&u32::try_from(cells.rows())?.to_le_bytes());
+        heads.push(&head);
+        for bits in shape.coords.iter().flatten() {
+            coords.push(&bits.to_le_bytes());
+        }
+        for byte in &shape.cells {
+            cells.push(&[*byte]);
+        }
+    }
+    packed::file(
+        packed::KIND_COLLISIONS,
+        COLLISIONS_LAYOUT,
+        sha1,
+        &[rows, heads, coords, cells],
+    )
+}
+
+/// Whether a filled cell of `shape` reaches below 0 or above 1 on an axis.
+fn reaches_out_of_the_block(shape: &VoxelShapeDump) -> bool {
+    let [xs, ys, zs] = shape.sizes;
+    let outside = |axis: usize, cell: u32| {
+        let low = f64::from_bits(shape.coords[axis][cell as usize]);
+        let high = f64::from_bits(shape.coords[axis][cell as usize + 1]);
+        low < 0.0 || high > 1.0
+    };
+    (0..xs).any(|x| {
+        (0..ys).any(|y| {
+            (0..zs).any(|z| {
+                shape.is_full(x, y, z) && (outside(0, x) || outside(1, y) || outside(2, z))
+            })
+        })
+    })
+}
+
 /// Lists of rows as two sections: where each list starts in the second, with one more
 /// entry for the end, and the rows of all lists one after the other.
 fn flattened<const N: usize>(
@@ -1102,5 +1219,67 @@ mod tests {
             assert!(!listed.consulted.is_empty(), "{}", listed.block);
             assert!(listed.done.contains("The flag says so"), "{}", listed.block);
         }
+    }
+
+    fn voxel(is_block: bool, ys: &[f64], cells: u8) -> VoxelShapeDump {
+        VoxelShapeDump {
+            is_block,
+            coords: [
+                vec![ZERO, ONE],
+                ys.iter().map(|y| y.to_bits()).collect(),
+                vec![ZERO, ONE],
+            ],
+            sizes: [1, ys.len() as u32 - 1, 1],
+            cells: if ys.len() > 1 {
+                vec![cells]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    #[test]
+    fn collisions_are_packed_and_a_shape_beyond_its_block_has_to_be_large() {
+        let shapes = [
+            voxel(false, &[0.0], 0),
+            voxel(true, &[0.0, 1.0], 1),
+            // A fence's post, one cell from 0 to 1.5.
+            voxel(false, &[0.0, 1.5], 1),
+        ];
+        let states = [
+            StateCollisionDump {
+                collision: 0,
+                large: false,
+                inside: Some(1),
+            },
+            StateCollisionDump {
+                collision: 2,
+                large: true,
+                inside: None,
+            },
+        ];
+        let bytes = collisions(&shapes, &states, 2, SHA1).unwrap();
+        let table = packed::parse(&bytes).unwrap();
+        assert_eq!(table.kind, packed::KIND_COLLISIONS);
+        let rows: Vec<&[u8]> = table.sections[0].rows().collect();
+        assert_eq!(rows[0], [0, 0, 1, 0, 0]);
+        assert_eq!(rows[1], [2, 0, 0xff, 0xff, 1]);
+        let heads: Vec<&[u8]> = table.sections[1].rows().collect();
+        // The empty shape has five coordinates and no byte of cells before it.
+        assert_eq!(heads[1], [1, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(table.sections[2].rows().len(), 5 + 6 + 6);
+        assert_eq!(table.sections[3].rows().len(), 2);
+
+        let mut not_large = states;
+        not_large[1].large = false;
+        assert!(collisions(&shapes, &not_large, 2, SHA1).is_err());
+        // Cells beyond the block that are empty do not make it large.
+        let mut hollow = shapes.clone();
+        hollow[2].cells = vec![0];
+        assert!(collisions(&hollow, &not_large, 2, SHA1).is_ok());
+        let mut false_block = shapes.clone();
+        false_block[2].is_block = true;
+        assert!(collisions(&false_block, &states, 2, SHA1).is_err());
+        assert!(collisions(&shapes, &states, 3, SHA1).is_err());
     }
 }

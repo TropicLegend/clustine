@@ -27,7 +27,9 @@ const WORLDGEN_TABLES: &str = "crates/clustine-worldgen-data/src/generated/table
 /// (`router_overworld_13579`) or the path of a file of either kind.
 pub fn run(root: &Path, table: &str) -> Result<String> {
     let path = match table {
-        "block_states" | "biome_parameters" => root.join(DATA_DIR).join(format!("{table}.bin")),
+        "block_states" | "biome_parameters" | "collisions" => {
+            root.join(DATA_DIR).join(format!("{table}.bin"))
+        }
         "templates" => root.join(WORLDGEN_TABLES).join("templates.bin"),
         name if name.starts_with("router_") && !name.contains(['/', '\\', '.']) => {
             root.join(REFERENCE_DIR).join(format!("{name}.txt"))
@@ -70,9 +72,80 @@ pub fn render(bytes: &[u8], blocks: &[(String, u32, u32)], biomes: &[String]) ->
         packed::KIND_BLOCK_STATES => block_states(&table, blocks, &mut out)?,
         packed::KIND_BIOME_PARAMETERS => biome_parameters(&table, biomes, &mut out)?,
         packed::KIND_TEMPLATES => crate::structure::dump(&table, &mut out)?,
+        packed::KIND_COLLISIONS => collisions(&table, blocks, &mut out)?,
         other => bail!("this datagen does not know tables of kind {other}"),
     }
     Ok(out)
+}
+
+/// `collisions.bin`: a line a state with its shapes, then a line a shape with its
+/// coordinates as numbers and its cells in hexadecimal.
+fn collisions(table: &Parsed<'_>, blocks: &[(String, u32, u32)], out: &mut String) -> Result<()> {
+    expect_rows(table, &[5, 12, 8, 1])?;
+    let [states, shapes, coords, cells] = &table.sections[..] else {
+        bail!("the table does not have four sections");
+    };
+    writeln!(out, "[states: {} rows]", states.rows().len())?;
+    let mut block = 0;
+    for (id, row) in states.rows().enumerate() {
+        while blocks
+            .get(block)
+            .is_some_and(|(_, _, last)| (*last as usize) < id)
+        {
+            block += 1;
+        }
+        let name = match blocks.get(block) {
+            Some((name, first, _)) => format!("{name}+{}", id - *first as usize),
+            None => "?".to_owned(),
+        };
+        let inside = match u16::from_le_bytes([row[2], row[3]]) {
+            crate::tables::INSIDE_SHAPE_OF_THE_ENTITY => "entity".to_owned(),
+            index => index.to_string(),
+        };
+        writeln!(
+            out,
+            "{id} {name} collision {} inside {inside}{}",
+            u16::from_le_bytes([row[0], row[1]]),
+            if row[4] & 1 != 0 { " large" } else { "" }
+        )?;
+    }
+    writeln!(out, "[shapes: {} rows]", shapes.rows().len())?;
+    for (index, row) in shapes.rows().enumerate() {
+        let sizes = [row[1], row[2], row[3]];
+        let mut at = u32::from_le_bytes([row[4], row[5], row[6], row[7]]) as usize;
+        let mut axes = Vec::new();
+        for size in sizes {
+            let mut values = Vec::new();
+            for _ in 0..=size {
+                let bytes: [u8; 8] = coords.row(at)?.try_into()?;
+                values.push(format!("{}", f64::from_bits(u64::from_le_bytes(bytes))));
+                at += 1;
+            }
+            axes.push(values.join(","));
+        }
+        let first = u32::from_le_bytes([row[8], row[9], row[10], row[11]]) as usize;
+        let count = sizes
+            .iter()
+            .map(|&size| usize::from(size))
+            .product::<usize>();
+        let mut bits = String::new();
+        for byte in first..first + count.div_ceil(8) {
+            write!(bits, "{:02x}", cells.row(byte)?[0])?;
+        }
+        writeln!(
+            out,
+            "{index}{} {}x{}x{} x {} y {} z {} cells {}",
+            if row[0] & 1 != 0 { " block" } else { "" },
+            sizes[0],
+            sizes[1],
+            sizes[2],
+            axes[0],
+            axes[1],
+            axes[2],
+            if bits.is_empty() { "-" } else { &bits }
+        )?;
+    }
+    Ok(())
 }
 
 fn expect_rows(table: &Parsed<'_>, row_bytes: &[usize]) -> Result<()> {

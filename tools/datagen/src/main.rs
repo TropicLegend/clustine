@@ -15,6 +15,7 @@ mod extract;
 mod feature;
 mod jar;
 mod json;
+mod loot;
 mod material;
 mod model;
 mod nbt;

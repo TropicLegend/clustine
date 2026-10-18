@@ -13,6 +13,7 @@ pub const MAGIC: [u8; 4] = *b"CLT1";
 pub const KIND_BLOCK_STATES: u16 = 1;
 pub const KIND_BIOME_PARAMETERS: u16 = 2;
 pub const KIND_TEMPLATES: u16 = 3;
+pub const KIND_COLLISIONS: u16 = 4;
 
 /// The bytes of the head before the list of sections.
 const FIXED_HEAD: usize = 30;
