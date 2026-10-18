@@ -155,7 +155,7 @@ pub(crate) fn block_collisions<W: World + ?Sized>(
                 if edges == 1 && !state.has_large_collision_shape() {
                     continue;
                 }
-                if edges == 2 && state != blocks::MOVING_PISTON {
+                if edges == 2 && !is_class(state, BlockClass::MovingPistonBlock) {
                     continue;
                 }
                 let Some((shape, is_block)) = collision_shape(state, pos, context) else {

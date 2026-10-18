@@ -292,7 +292,9 @@ impl Body {
     pub(crate) fn speed_factor<W: World + ?Sized>(&self, world: &W) -> f32 {
         let here = world.state(self.block_position());
         let factor = physics_of(here).map_or(1.0, |physics| physics.speed_factor);
-        if here == blocks::WATER || is_class(here, BlockClass::BubbleColumnBlock) {
+        if clustine_blocks::data::is_block(here, blocks::WATER)
+            || is_class(here, BlockClass::BubbleColumnBlock)
+        {
             return factor;
         }
         if f64::from(factor) != 1.0 {

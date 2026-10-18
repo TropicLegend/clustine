@@ -975,3 +975,28 @@ fn a_cobweb_holds_an_item_back_on_its_next_move() {
     );
     assert_eq!(held.motion, [0.0; 3]);
 }
+
+#[test]
+fn soul_sand_slows_an_item_by_its_speed_factor_as_well_as_its_friction() {
+    // Soul sand is fourteen sixteenths high: an item on it lies at y = -61 + 0.875,
+    // whose block is the soul sand, whose speed factor 0.4 takes from the motion after
+    // each move; the friction is of the block a whole block below the item's feet
+    // (`ItemEntity`'s 0.999999), the air under the floor, 0.6.
+    let state = BlockState::parse("minecraft:soul_sand").unwrap();
+    let row: Vec<(BlockPos, BlockState)> =
+        (0..16).map(|x| (BlockPos::new(x, -61, 8), state)).collect();
+    let mut region = on_ticking_floor_with(&row);
+    let top = -61.0 + 0.875;
+    let sliding = item(1, [3.5, top, 8.5], [0.2, 0.0, 0.0], true, DIRT);
+    lay(&mut region, &sliding);
+    let (mut x, mut motion) = (3.5_f64, 0.2_f64);
+    for _ in 0..3 {
+        idle(&mut region);
+        x += motion;
+        motion = motion * f64::from(0.4_f32) * f64::from(0.98_f32 * 0.6);
+    }
+    let after = record(&region, sliding.key).unwrap();
+    assert_eq!(after.position[0].to_bits(), x.to_bits());
+    assert_eq!(after.motion[0].to_bits(), motion.to_bits());
+    assert_eq!(after.position[1], top);
+}
