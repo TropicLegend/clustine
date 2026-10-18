@@ -22,12 +22,13 @@ use clustine_protocol::packets::login::{
     ClientboundLogin, LoginAcknowledged, LoginStart, LoginSuccess,
 };
 use clustine_protocol::packets::play::{
-    ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, Interact,
-    LevelChunkWithLight, LightUpdate, Login, PlayerAbilities, PlayerAction, PlayerLoaded,
-    ServerboundKeepAlive, ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem,
-    SetCreativeModeSlot, SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition,
-    SetPlayerPositionAndRotation, SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta,
-    face, inventory, movement_flags, player_action, player_input,
+    ChunkBatchReceived, ClientTickEnd, ClientboundMoveVehicle, ClientboundPlay,
+    ConfirmTeleportation, Interact, LevelChunkWithLight, LightUpdate, Login, PaddleBoat,
+    PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive, ServerboundMoveVehicle,
+    ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
+    SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation,
+    SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta, face, inventory,
+    movement_flags, player_action, player_input,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -346,6 +347,15 @@ pub struct Bot {
     pub arrivals: Vec<(&'static str, u32)>,
     /// How the connection ended, once it has.
     pub ended: Option<Ending>,
+    /// Who rides each vehicle the bot shows, by the vehicle's id, as the server last
+    /// said (`set_passengers`); a client forgets a vehicle's passengers when the
+    /// vehicle or a passenger is removed, and so does the bot.
+    pub passengers: BTreeMap<i32, Vec<i32>>,
+    /// Every `set_passengers` that came, in order: the vehicle's id and its passengers.
+    pub passenger_log: Vec<(i32, Vec<i32>)>,
+    /// Every clientbound `move_vehicle` that came, in order: where the server put back
+    /// the vehicle the bot drives.
+    pub vehicle_corrections: Vec<ClientboundMoveVehicle>,
 }
 
 impl Bot {
@@ -546,6 +556,9 @@ impl Bot {
             flying: false,
             arrivals: vec![("minecraft:login", 1)],
             ended: None,
+            passengers: BTreeMap::new(),
+            passenger_log: Vec::new(),
+            vehicle_corrections: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1082,6 +1095,46 @@ impl Bot {
         Ok(())
     }
 
+    /// Says where the bot has moved the vehicle it drives, and ends its tick, as a client
+    /// does every tick while it steers a boat.
+    pub async fn move_vehicle(
+        &mut self,
+        position: (f64, f64, f64),
+        yaw: f32,
+        pitch: f32,
+        on_ground: bool,
+    ) -> Result<()> {
+        self.connection
+            .write(&ServerboundMoveVehicle {
+                x: position.0,
+                y: position.1,
+                z: position.2,
+                yaw,
+                pitch,
+                on_ground,
+            })
+            .await?;
+        self.has_sent();
+        self.connection.write(&ClientTickEnd).await
+    }
+
+    /// Says which of a driven boat's paddles move.
+    pub async fn paddle_boat(&mut self, left: bool, right: bool) -> Result<()> {
+        self.connection.write(&PaddleBoat { left, right }).await?;
+        self.has_sent();
+        Ok(())
+    }
+
+    /// The vehicle the bot rides as the server last said, if any: the one whose
+    /// passengers name the bot's own entity.
+    pub fn riding(&self) -> Option<i32> {
+        let own = self.info.login.entity_id;
+        self.passengers
+            .iter()
+            .find(|(_, riders)| riders.contains(&own))
+            .map(|(vehicle, _)| *vehicle)
+    }
+
     /// The block state at `x`, `y`, `z` as far as the server has told the bot: from the
     /// chunk it sent and the changes it reported since. `None` if the bot does not hold
     /// the chunk or the height is outside the world.
@@ -1462,6 +1515,14 @@ impl Bot {
                 }
             }
             ClientboundPlay::TakeItemEntity(packet) => self.taken.push(packet),
+            ClientboundPlay::SetPassengers(packet) => {
+                self.passenger_log
+                    .push((packet.vehicle_id, packet.passengers.clone()));
+                self.passengers.insert(packet.vehicle_id, packet.passengers);
+            }
+            ClientboundPlay::ClientboundMoveVehicle(packet) => {
+                self.vehicle_corrections.push(packet);
+            }
             ClientboundPlay::AddTransientBlock(packet) => {
                 let at = packet.position;
                 self.transient_blocks
@@ -1479,6 +1540,10 @@ impl Bot {
                     self.info.login.entity_id
                 );
                 for entity in packet.entity_ids {
+                    self.passengers.remove(&entity);
+                    for riders in self.passengers.values_mut() {
+                        riders.retain(|rider| *rider != entity);
+                    }
                     if let Some(gone) = self.entities.remove(&entity) {
                         self.stats.entities_removed += 1;
                         self.vanished.push(gone);
@@ -1636,10 +1701,8 @@ impl Bot {
             // What an armour stand wears is nothing a bot keeps.
             | ClientboundPlay::SetEquipment(_)
             | ClientboundPlay::Animate(_)
-            // The bots neither ride nor lead anything yet, so what is said about riding,
-            // leads and swings is not theirs to keep.
-            | ClientboundPlay::ClientboundMoveVehicle(_)
-            | ClientboundPlay::SetPassengers(_)
+            // The bots lead nothing yet, so what is said about leads and swings is not
+            // theirs to keep.
             | ClientboundPlay::SetEntityLink(_)
             | ClientboundPlay::SoundEntity(_)
             | ClientboundPlay::SwingAnimation(_)

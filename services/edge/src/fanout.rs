@@ -7879,6 +7879,7 @@ mod scenarios {
     mod physics_specification;
     mod redstone;
     mod riding;
+    mod riding_specification;
     mod tracking;
 
     /// The flat world's spawn, which these tests' edges tell their clients.
