@@ -6866,6 +6866,7 @@ mod scenarios {
 
     mod block_destroyed;
     mod items;
+    mod items_specification;
     mod redstone;
 
     /// The flat world's spawn, which these tests' edges tell their clients.
