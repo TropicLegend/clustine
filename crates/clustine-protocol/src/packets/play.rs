@@ -1884,6 +1884,118 @@ packet_set! {
     }
 }
 
+/// A value of an entity's synchronised data (the game's `SynchedEntityData`), by the
+/// serializer that writes it. Only those Clustine sends so far.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntityDataValue {
+    /// `EntityDataSerializers.ITEM_STACK`: a slot, empty or not.
+    ItemStack(Option<ItemStack>),
+}
+
+/// The serializer ids of the game's `EntityDataSerializers`, in the order it registers
+/// them.
+pub mod entity_data_serializer {
+    pub const ITEM_STACK: i32 = 7;
+}
+
+/// The indices of entity data fields, as the game's classes define them one after the
+/// other from `Entity`'s eight.
+pub mod entity_data {
+    /// `ItemEntity.DATA_ITEM`, the stack an item entity is.
+    pub const ITEM_STACK: u8 = 8;
+}
+
+/// The byte that ends a list of entity data values.
+const ENTITY_DATA_END: u8 = 0xFF;
+
+/// Sets fields of an entity's synchronised data (the game's
+/// `ClientboundSetEntityDataPacket`): each an index, the serializer's id and the value,
+/// the list ended by `0xFF`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetEntityData {
+    pub entity_id: i32,
+    pub values: Vec<(u8, EntityDataValue)>,
+}
+
+impl Packet for SetEntityData {
+    const ID: i32 = clientbound::SET_ENTITY_DATA;
+}
+
+impl Encode for SetEntityData {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        for (index, value) in &self.values {
+            w.put_u8(*index);
+            match value {
+                EntityDataValue::ItemStack(stack) => {
+                    w.put_var_int(entity_data_serializer::ITEM_STACK);
+                    w.put_item_stack(*stack);
+                }
+            }
+        }
+        w.put_u8(ENTITY_DATA_END);
+    }
+}
+
+impl Decode for SetEntityData {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let mut values = Vec::new();
+        loop {
+            let index = r.u8()?;
+            if index == ENTITY_DATA_END {
+                break;
+            }
+            let value = match r.var_int()? {
+                entity_data_serializer::ITEM_STACK => EntityDataValue::ItemStack(r.item_stack()?),
+                other => {
+                    return Err(DecodeError::InvalidValue {
+                        what: "entity data serializer",
+                        value: i64::from(other),
+                    });
+                }
+            };
+            values.push((index, value));
+        }
+        Ok(Self { entity_id, values })
+    }
+}
+
+/// The actions of [`Animate`], as the game's `ClientboundAnimatePacket` numbers them.
+pub mod animation {
+    pub const SWING_MAIN_HAND: u8 = 0;
+    pub const SWING_OFF_HAND: u8 = 3;
+}
+
+/// Shows an entity doing something brief: a player's arm swinging (the game's
+/// `ClientboundAnimatePacket`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Animate {
+    pub entity_id: i32,
+    /// One of the [`animation`] values.
+    pub action: u8,
+}
+
+impl Packet for Animate {
+    const ID: i32 = clientbound::ANIMATE;
+}
+
+impl Encode for Animate {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_u8(self.action);
+    }
+}
+
+impl Decode for Animate {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            action: r.u8()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a server can send in the play state.
     pub enum ClientboundPlay in crate::packet_ids::play::clientbound {
@@ -1915,6 +2027,8 @@ packet_set! {
         SetContainerContent,
         SetHeldSlot,
         SetPlayerInventory,
+        SetEntityData,
+        Animate,
     }
 }
 
@@ -1961,6 +2075,73 @@ mod tests {
             online_mode: false,
             enforces_secure_chat: false,
         }
+    }
+
+    #[test]
+    fn an_item_entity_s_spawn_and_its_stack_round_trip() {
+        use ClientboundPlay as Set;
+        // With a velocity at the protocol's steps, which reads back as it was written.
+        assert_round_trip(
+            SpawnEntity {
+                entity_id: 7,
+                uuid: Uuid::from_u128(0x1234),
+                kind: 72,
+                x: 0.5,
+                y: -58.680_000_007_152_56,
+                z: 0.5,
+                velocity: [1.0, 0.0, -1.0],
+                pitch: 0,
+                yaw: angle(200.0),
+                head_yaw: 0,
+                data: 0,
+            },
+            Set::decode,
+            Set::SpawnEntity,
+        );
+        let stack = ItemStack { item: 1, count: 64 };
+        assert_round_trip(
+            SetEntityData {
+                entity_id: 7,
+                values: vec![(
+                    entity_data::ITEM_STACK,
+                    EntityDataValue::ItemStack(Some(stack)),
+                )],
+            },
+            Set::decode,
+            Set::SetEntityData,
+        );
+        assert_round_trip(
+            Animate {
+                entity_id: 3,
+                action: animation::SWING_MAIN_HAND,
+            },
+            Set::decode,
+            Set::Animate,
+        );
+    }
+
+    /// The bytes of the item's data as the game writes them: the entity's id, the index
+    /// of `ItemEntity.DATA_ITEM` (8), the id of the serializer `ITEM_STACK` (7), the
+    /// stack as count, item and two empty lists of components, and the end of the list.
+    #[test]
+    fn an_item_s_stack_is_written_as_the_game_writes_its_entity_data() {
+        let packet = SetEntityData {
+            entity_id: 300,
+            values: vec![(
+                entity_data::ITEM_STACK,
+                EntityDataValue::ItemStack(Some(ItemStack { item: 5, count: 2 })),
+            )],
+        };
+        let bytes = crate::packets::encode(&packet);
+        let id = u8::try_from(clientbound::SET_ENTITY_DATA).unwrap();
+        assert_eq!(bytes, [id, 0xAC, 0x02, 8, 7, 2, 5, 0, 0, 0xFF]);
+        // A list of none is the end alone; and a serializer not known is refused.
+        let none = SetEntityData {
+            entity_id: 1,
+            values: Vec::new(),
+        };
+        assert_eq!(crate::packets::encode(&none), [id, 1, 0xFF]);
+        assert!(ClientboundPlay::decode(&[id, 1, 8, 2, 0, 0xFF]).is_err());
     }
 
     #[test]

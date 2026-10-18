@@ -196,16 +196,50 @@ impl Writer {
         }
     }
 
-    /// Writes a velocity in the compact form the protocol uses for it.
-    ///
-    /// Only a velocity of zero can be written so far, which takes a single byte.
-    ///
-    /// # Panics
-    ///
-    /// If `velocity` is not zero.
+    /// Writes a velocity in the compact form the protocol uses for it, as the game's
+    /// `LpVec3.write` does: a single zero byte for a velocity whose largest component
+    /// is below about 3e-5, and otherwise the three components as 15-bit fractions of a
+    /// shared whole scale, the largest component rounded up, packed into six bytes with
+    /// the scale's low two bits, and the rest of the scale in a VarInt where it does not
+    /// fit them. A component that is not a number is written as zero, and one beyond
+    /// about 1.7e10 as that.
     pub fn put_velocity(&mut self, velocity: [f64; 3]) {
-        assert_eq!(velocity, [0.0; 3], "only a zero velocity is supported");
-        self.put_u8(0);
+        /// `LpVec3.ABS_MAX_VALUE` and `LpVec3.ABS_MIN_VALUE`.
+        const LARGEST: f64 = 1.717_986_918_3e10;
+        const SMALLEST: f64 = 3.051_944_088_384_301e-5;
+        let [x, y, z] = velocity.map(|component| {
+            if component.is_nan() {
+                0.0
+            } else {
+                component.clamp(-LARGEST, LARGEST)
+            }
+        });
+        // `Mth.absMax`, twice.
+        let largest = x.abs().max(y.abs().max(z.abs()));
+        if largest < SMALLEST {
+            self.put_u8(0);
+            return;
+        }
+        // `Mth.ceilLong`.
+        let truncated = largest as i64;
+        let scale = if largest > truncated as f64 {
+            truncated + 1
+        } else {
+            truncated
+        };
+        let continued = scale & 3 != scale;
+        let low = if continued { scale & 3 | 4 } else { scale };
+        // `LpVec3.pack`: the fraction from -1 to 1 as 0 to 32766. The value rounded is
+        // never negative, where `f64::round` and `Math.round` agree.
+        let pack =
+            |component: f64| ((component / scale as f64 * 0.5 + 0.5) * 32766.0).round() as i64;
+        let packed = low | pack(x) << 3 | pack(y) << 18 | pack(z) << 33;
+        self.put_u8(packed as u8);
+        self.put_u8((packed >> 8) as u8);
+        self.put_i32((packed >> 16) as i32);
+        if continued {
+            self.put_var_int((scale >> 2) as i32);
+        }
     }
 
     /// Writes a bit set, given as 64-bit words with bit 0 of the first word first.
@@ -626,6 +660,67 @@ mod tests {
         let mut reader = Reader::new(&bytes);
         assert!(reader.velocity().is_ok());
         assert_eq!(reader.finish(), Ok(()));
+    }
+
+    /// The bytes the game's `LpVec3.write` gives for a velocity, worked out here from
+    /// its steps by hand: a scale of 1, each component as a fraction of it from 0 to
+    /// 32766, in bits 3, 18 and 33.
+    #[test]
+    fn a_velocity_is_written_as_the_game_packs_it() {
+        // Every component exactly at a step: -1 is 0, 0 is 16383 and 1 is 32766.
+        let packed: u64 = 1 | 32_766 << 3 | 16_383 << 18;
+        let mut expected = vec![packed as u8, (packed >> 8) as u8];
+        expected.extend_from_slice(&((packed >> 16) as u32).to_be_bytes());
+        let bytes = written(|w| w.put_velocity([1.0, 0.0, -1.0]));
+        assert_eq!(bytes, expected);
+        assert_eq!(Reader::new(&bytes).velocity(), Ok([1.0, 0.0, -1.0]));
+
+        // An item's throw: the largest component 0.3, so a scale of 1, and 0.1 as
+        // round((0.1 * 0.5 + 0.5) * 32766) = round(18021.3) = 18021.
+        let bytes = written(|w| w.put_velocity([0.1, 0.3, -0.05]));
+        let step = |q: u64| q as f64 * 2.0 / 32766.0 - 1.0;
+        let read = Reader::new(&bytes).velocity().unwrap();
+        assert_eq!(read, [step(18_021), step(21_298), step(15_564)]);
+        for (read, written) in read.iter().zip([0.1, 0.3, -0.05]) {
+            assert!(
+                (read - written).abs() <= 1.0 / 32766.0,
+                "{read} for {written}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_large_velocity_carries_its_scale_on_in_a_var_int_and_reads_back_near_itself() {
+        for velocity in [
+            [3.5, -2.0, 0.25],
+            [-40.0, 0.0, 17.0],
+            [0.0, 1.0e6, 0.0],
+            [1.0e-4, 0.0, -2.0e-4],
+        ] {
+            let bytes = written(|w| w.put_velocity(velocity));
+            let largest = velocity.iter().fold(0.0_f64, |most, v| most.max(v.abs()));
+            let scale = largest.ceil();
+            // Bit 2 says whether the scale goes on beyond its two bits.
+            assert_eq!(bytes[0] & 4 != 0, scale > 3.0, "{velocity:?}");
+            let mut reader = Reader::new(&bytes);
+            let read = reader.velocity().unwrap();
+            assert_eq!(reader.finish(), Ok(()));
+            for (read, written) in read.iter().zip(velocity) {
+                assert!(
+                    (read - written).abs() <= scale / 32766.0,
+                    "{read} for {written} of {velocity:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_velocity_too_small_to_tell_or_not_a_number_is_written_as_none() {
+        assert_eq!(written(|w| w.put_velocity([1.0e-5, -2.0e-5, 0.0])), [0]);
+        assert_eq!(written(|w| w.put_velocity([f64::NAN; 3])), [0]);
+        // A component that is no number is zero beside one that is.
+        let bytes = written(|w| w.put_velocity([f64::NAN, 1.0, 0.0]));
+        assert_eq!(Reader::new(&bytes).velocity(), Ok([0.0, 1.0, 0.0]));
     }
 
     #[test]

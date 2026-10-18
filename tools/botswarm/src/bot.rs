@@ -1543,6 +1543,8 @@ impl Bot {
             }
             ClientboundPlay::ChunkBatchStart(_)
             | ClientboundPlay::GameEvent(_)
+            | ClientboundPlay::SetEntityData(_)
+            | ClientboundPlay::Animate(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)
