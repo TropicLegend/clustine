@@ -7370,6 +7370,7 @@ mod scenarios {
     use crate::Relinks;
 
     mod block_destroyed;
+    mod crossing_specification;
     mod items;
     mod items_specification;
     mod physics_specification;

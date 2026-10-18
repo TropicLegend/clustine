@@ -39,6 +39,8 @@ mod table;
 mod tcp;
 
 #[cfg(test)]
+mod arrivals_specification;
+#[cfg(test)]
 mod copies_tests;
 #[cfg(test)]
 mod couplings_tests;
