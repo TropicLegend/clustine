@@ -558,6 +558,19 @@ impl Region {
         self.land.is_pinned(position)
     }
 
+    /// Whether the region holds `position` for an arrival to be taken in it, or is about
+    /// to: it holds it, it is granted it by `granted` (the claims' answers not given to a
+    /// tick yet), or it is pinned there and has not lent it away nor is lending it
+    /// (`docs/groundwork/n3-plan.md`, section 6).
+    pub fn holds_for_arrivals(&self, position: ChunkPos, granted: &[ChunkPos]) -> bool {
+        if self.land.lending.contains_key(&position) {
+            return false;
+        }
+        self.land.holds(position)
+            || granted.contains(&position)
+            || (self.land.is_pinned(position) && !self.land.lent_away.contains_key(&position))
+    }
+
     /// The number of chunks the store has granted the region and it has not given back.
     pub fn held_chunk_count(&self) -> usize {
         let held = |known: &&Known| matches!(known, Known::Held { .. });

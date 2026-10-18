@@ -1483,8 +1483,9 @@ impl RegionRunner {
                 // What the lender was sent for them and has not run is the borrower's
                 // now, which the store sends it (the same record, section 3, step 4).
                 StoreReply::Lent { chunks, to } => {
-                    self.border
-                        .drop_effects_of(&chunks.iter().copied().collect());
+                    let lent = chunks.iter().copied().collect();
+                    self.border.drop_effects_of(&lent);
+                    self.border.drop_arrivals_of(&lent);
                     self.inputs.lent.push((chunks, to));
                 }
                 StoreReply::PinnedBack { chunks } => self.inputs.pinned_back.extend(chunks),
@@ -1558,7 +1559,10 @@ impl RegionRunner {
                     self.give_up();
                     return false;
                 }
-                StoreReply::Committed { tick } => self.committed = self.committed.max(tick),
+                StoreReply::Committed { tick } => {
+                    self.committed = self.committed.max(tick);
+                    self.border.committed_through(self.committed);
+                }
                 StoreReply::Flushed => self.flushes_answered += 1,
                 // The store's answer to a stay the region named as entering, behind the
                 // answer to the commit that named it. Like a claim's answer it goes
@@ -2240,6 +2244,18 @@ impl RegionRunner {
         let region = &self.region;
         self.warm
             .retain(|position, _| region.knowledge(*position) == Knowledge::Held);
+        // What the merge or the split durably took of the arrivals is the store's to
+        // forget; those kept for chunks the region holds no longer (a split's part's) are
+        // the part's, which the store sends it (`docs/groundwork/n3-plan.md`, section 5,
+        // G5).
+        self.border.committed_through(state.tick);
+        let lost: BTreeSet<ChunkPos> = self
+            .border
+            .arrivals_waiting(|_| true, |_| false)
+            .into_iter()
+            .filter(|chunk| !region.holds_for_arrivals(*chunk, &[]))
+            .collect();
+        self.border.drop_arrivals_of(&lost);
         // The sim has no copies now and is handed them again; its warm chunks count as
         // loaded until they go.
         self.border.began_anew(self.region.loaded_chunks());
@@ -2480,6 +2496,15 @@ impl RegionRunner {
         self.inputs.copies_withdrawn.extend(withdrawn);
         let region = &self.region;
         let next = region.tick_number() + 1;
+        // The chunks arrivals wait for that the region holds or is about to hold, not
+        // loaded: the sim tickets them, and claims them where it must
+        // (`docs/groundwork/n3-plan.md`, section 5, D3).
+        let granted = &self.inputs.granted;
+        let unreadable = &self.unreadable;
+        self.inputs.arrivals_waiting = self.border.arrivals_waiting(
+            |chunk| region.holds_for_arrivals(chunk, granted) && !unreadable.contains(&chunk),
+            |chunk| region.chunk(chunk).is_some(),
+        );
         self.border.inputs(&mut self.inputs, next, |chunk| {
             region.chunk(chunk).is_some()
         });
@@ -2501,6 +2526,11 @@ impl RegionRunner {
             output.entity_changes.extend(injected);
             output
         };
+        // The arrivals the tick took are kept as taken until its commit is durable, the
+        // others kept again: before the tick's returns and lends drop what they drop
+        // (`docs/groundwork/n3-plan.md`, section 6).
+        self.border
+            .took_arrivals(inputs.arrivals.clone(), &output.arrivals_taken, output.tick);
         for edge in self.edges.values_mut() {
             edge.settled = true;
         }
@@ -2662,8 +2692,12 @@ impl RegionRunner {
         // A tick that takes effects commits, so that the store drops them; one that made
         // some commits them; and a coupled region commits every tick (section 8).
         let taken = output.taken;
+        let arrivals = output.arrivals;
+        let arrivals_taken = output.arrivals_taken;
         let needs_commit = !(unchanged && output.stays.is_empty())
             || !taken.is_empty()
+            || !arrivals.is_empty()
+            || !arrivals_taken.is_empty()
             || self.border.has_made()
             || self.border.commits_every_tick();
         if needs_commit {
@@ -2703,8 +2737,8 @@ impl RegionRunner {
                 taken,
                 events,
                 entity_changes,
-                arrivals: Vec::new(),
-                arrivals_taken: Vec::new(),
+                arrivals,
+                arrivals_taken,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -2729,9 +2763,19 @@ impl RegionRunner {
             }
         }
         if !output.returns.is_empty() {
+            // What arrived for them is the store's to send again where they are not
+            // given back, or to their next holder.
+            self.border
+                .drop_arrivals_of(&output.returns.iter().copied().collect());
+            let unreadable = output
+                .returns
+                .iter()
+                .copied()
+                .filter(|chunk| self.unreadable.contains(chunk))
+                .collect();
             self.store.request(StoreRequest::Return {
                 chunks: output.returns,
-                unreadable: Vec::new(),
+                unreadable,
             });
         }
         for answer in output.lend_answers {
@@ -2745,7 +2789,11 @@ impl RegionRunner {
                     chunks,
                     again,
                 },
-                LendAnswer::Lending { lend, chunks } => StoreRequest::Lending { lend, chunks },
+                LendAnswer::Lending { lend, chunks } => {
+                    self.border
+                        .drop_arrivals_of(&chunks.iter().copied().collect());
+                    StoreRequest::Lending { lend, chunks }
+                }
             };
             self.store.request(request);
         }

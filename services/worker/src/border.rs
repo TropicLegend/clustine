@@ -15,7 +15,8 @@ use clustine_region::RegionId;
 use clustine_rpc::{CopyUse, Coupling, StoreReply, Uncoupling};
 use clustine_sim::api::TickInputs;
 use clustine_world::{
-    Change, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, EntityChange, FiledEffect,
+    Arrival, Change, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, EntityChange,
+    FiledEffect,
 };
 
 /// At most this many ready effects go to one tick, the rest to the next (section 5).
@@ -69,6 +70,12 @@ pub(crate) struct Asks {
 #[derive(Default)]
 pub(crate) struct Border {
     received: BTreeMap<EffectId, FiledEffect>,
+    /// The arrivals received and not taken, by number (`docs/groundwork/n3-plan.md`).
+    arrivals: BTreeMap<EffectId, Arrival>,
+    /// The arrivals taken, with the tick that took them, until the store has that tick's
+    /// commit: one sent again meanwhile (a call-off, a return's `Claimed`, a lend called
+    /// off) is passed over (the plan, section 2, N3c).
+    arrivals_taken: BTreeMap<EffectId, u64>,
     /// The stream's last mark.
     mark: u64,
     /// What the ticks made and no commit has carried yet, deduplicated by key.
@@ -155,6 +162,13 @@ impl Border {
             StoreReply::Effects { effects } => {
                 for filed in effects {
                     self.received.insert(filed.id, filed);
+                }
+            }
+            StoreReply::Arrivals { arrivals } => {
+                for arrival in arrivals {
+                    if !self.arrivals_taken.contains_key(&arrival.id) {
+                        self.arrivals.insert(arrival.id, arrival);
+                    }
                 }
             }
             StoreReply::Mark { through } => self.mark = self.mark.max(through),
@@ -420,6 +434,69 @@ impl Border {
                 inputs.effects.push(filed);
             }
         }
+        // Arrivals are ready once their chunk is loaded, with no copies about them, and at
+        // their due tick where coupled, so that a crossing ticks the entity once in the
+        // tick it was sent in (the plan, sections 5 and 6, D4). Taken out while the tick
+        // has them, and put back if it does not take them.
+        let ready: Vec<EffectId> = self
+            .arrivals
+            .values()
+            .filter(|arrival| arrival.id.sequence <= mark)
+            .filter(|arrival| match arrival.due {
+                Due::FromTaking => true,
+                Due::At { tick } => next > tick,
+            })
+            .filter(|arrival| loaded(arrival.chunk))
+            .map(|arrival| arrival.id)
+            .collect();
+        for id in ready {
+            if let Some(arrival) = self.arrivals.remove(&id) {
+                inputs.arrivals.push(arrival);
+            }
+        }
+    }
+
+    /// What a tick did with the arrivals it was handed: those it took are kept as taken
+    /// until the store has the tick's commit, the others are kept again (the plan,
+    /// section 5, D5).
+    pub(crate) fn took_arrivals(&mut self, handed: Vec<Arrival>, taken: &[EffectId], tick: u64) {
+        for arrival in handed {
+            if taken.contains(&arrival.id) {
+                self.arrivals_taken.insert(arrival.id, tick);
+            } else {
+                self.arrivals.insert(arrival.id, arrival);
+            }
+        }
+    }
+
+    /// The store has the region's commits through `tick`: what they took of the arrivals
+    /// is dropped there, and is not sent again.
+    pub(crate) fn committed_through(&mut self, tick: u64) {
+        self.arrivals_taken.retain(|_, taken| *taken > tick);
+    }
+
+    /// The chunks that arrivals kept wait for and that `holds` says the region holds or
+    /// is about to hold, not loaded: the sim tickets them (the plan, section 5, D3).
+    pub(crate) fn arrivals_waiting(
+        &self,
+        holds: impl Fn(ChunkPos) -> bool,
+        loaded: impl Fn(ChunkPos) -> bool,
+    ) -> Vec<ChunkPos> {
+        let chunks: BTreeSet<ChunkPos> = self
+            .arrivals
+            .values()
+            .map(|arrival| arrival.chunk)
+            .filter(|chunk| holds(*chunk) && !loaded(*chunk))
+            .collect();
+        chunks.into_iter().collect()
+    }
+
+    /// Arrivals kept for chunks the region stops holding (a return, a lend, a split's
+    /// part) are dropped: the store sends them to whoever holds them, or again to this
+    /// region where it takes them up again.
+    pub(crate) fn drop_arrivals_of(&mut self, chunks: &BTreeSet<ChunkPos>) {
+        self.arrivals
+            .retain(|_, arrival| !chunks.contains(&arrival.chunk));
     }
 
     /// The region that uses the chunk the region copies at `position`, as the store
