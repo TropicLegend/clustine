@@ -7,8 +7,10 @@
 //! being on the ground, its stack or health, or its burning; its counters (age, pick-up
 //! delay, the fire's countdown) never make a commit, and its chunk is named among those
 //! whose entities age (`TickOutput::entities_ageing`), which the worker saves at its
-//! checkpoints. An item that moves into another chunk of the region is `Gone` in the
-//! one and `Whole` in the other. The physics keep it in the chunks the region ticks.
+//! checkpoints. An item that moves into another loaded chunk of the region is `Gone`
+//! in the one and `Whole` in the other; one that moves into a chunk the region does not
+//! have loaded is sent there (`arrivals.rs`). The physics hold it back only from a
+//! loaded chunk of the region's that is full.
 //!
 //! What the game keeps of an item in memory only and not in its record (the block it
 //! stands on, the moves of its last tick, a cobweb's hold) the region keeps by key,
@@ -77,13 +79,14 @@ impl World for View<'_> {
 
 impl item::Region for View<'_> {
     fn may_hold(&self, chunk: ChunkPos) -> bool {
-        self.region.ticks_chunk(chunk)
-            && (chunk == self.home
-                || self
-                    .region
-                    .chunks
-                    .get(&chunk)
-                    .is_some_and(|loaded| loaded.entities().len() < MAX_CHUNK_ENTITIES))
+        // A chunk not loaded is where the entity is sent (`arrivals.rs`): an arrival is
+        // never refused, so only the region's own full chunks hold it back.
+        chunk == self.home
+            || self
+                .region
+                .chunks
+                .get(&chunk)
+                .is_none_or(|loaded| loaded.entities().len() < MAX_CHUNK_ENTITIES)
     }
 
     fn min_y(&self) -> i32 {
@@ -356,6 +359,10 @@ impl Region {
             || item_parts(&after.data) != item_parts(&before.data)
             || burning(&after) != burning(before);
         let to = after.chunk();
+        if to != position && !self.chunks.contains_key(&to) {
+            self.send_entity(position, after, output);
+            return;
+        }
         if to != position {
             let gone = EntityChange::Gone(key);
             if let Some(chunk) = self.chunks.get_mut(&position) {

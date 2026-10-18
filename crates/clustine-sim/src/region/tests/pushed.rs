@@ -388,20 +388,25 @@ fn a_falling_block_in_the_path_of_a_head_is_pushed_and_lands_beyond_it() {
     );
 }
 
-/// Only chunk (0, 0) ticks. A piston at (13, -60, 2) facing east pushes stone from
-/// x = 14 to 15, and an item lying at x = 15.5 before it: the first half block takes it
-/// to 15.635, the second would take it over the line at 16 into chunk (1, 0), and the
-/// guard keeps it in its chunk: it keeps its x and loses its motion along x.
+/// Chunk (0, 0) ticks at a line, with nothing loaded east of it. A piston at
+/// (13, -60, 2) facing east pushes stone from x = 14 to 15, and an item lying at
+/// x = 15.5 before it: the first half block takes it to 15.635, the second over the
+/// line at 16, into a chunk the region has not loaded, and it is sent there from the
+/// block entities' phase: gone here and in the tick's arrivals whole. (Step N3d, in
+/// place of N4's `an_item_a_piston_would_push_into_a_chunk_not_ticking_is_held_at_the_line`,
+/// whose guard held it at the line.)
 #[test]
-fn an_item_a_piston_would_push_into_a_chunk_not_ticking_is_held_at_the_line() {
-    let mut region = on_ticking_floor_with(&[
-        (
-            BlockPos::new(13, -60, 2),
-            state("minecraft:piston[facing=east]"),
-        ),
-        (BlockPos::new(14, -60, 2), blocks::STONE),
-    ]);
-    assert!(!region.ticks_chunk(ChunkPos::new(1, 0)));
+fn an_item_a_piston_pushes_across_a_line_is_sent_from_the_block_entities_phase() {
+    let mut region = super::arrivals::at_a_line(
+        ChunkArea::EVERYWHERE,
+        &[
+            (
+                BlockPos::new(13, -60, 2),
+                state("minecraft:piston[facing=east]"),
+            ),
+            (BlockPos::new(14, -60, 2), blocks::STONE),
+        ],
+    );
     let lying = item(1, [15.5, -60.0, 2.5], true);
     lay(&mut region, &lying);
     idle(&mut region);
@@ -411,16 +416,32 @@ fn an_item_a_piston_would_push_into_a_chunk_not_ticking_is_held_at_the_line() {
     let x1 = 15.5 + (reached.min(0.5) + 0.01);
     let after = record(&region, lying.key).unwrap();
     assert_eq!(after.position[0].to_bits(), x1.to_bits());
-    let held = idle(&mut region);
-    let after = record(&region, lying.key).unwrap();
-    assert_eq!(after.position[0].to_bits(), x1.to_bits(), "{after:?}");
-    assert_eq!(after.motion[0], 0.0);
-    assert_eq!(region.entity_chunks[&lying.key], ORIGIN);
+    let pushed = idle(&mut region);
+    // The second half block reaches as far as the block goes, and a hundredth more.
+    let reached = (15.0 + 1.0) - (x1 - item_half());
+    let x2 = x1 + (reached.min(0.5) + 0.01);
+    assert!(x2 > 16.0);
+    let [(to, sent)] = &pushed.arrivals[..] else {
+        panic!("{:?}", pushed.arrivals);
+    };
+    assert_eq!(*to, ChunkPos::new(1, 0));
+    assert!((sent.position[0] - x2).abs() < 1e-9, "{sent:?}");
+    assert_eq!(sent.hops, 0);
     assert!(
-        held.entity_changes
-            .iter()
-            .all(|(chunk, _)| *chunk == ORIGIN)
+        pushed
+            .entity_changes
+            .contains(&(ORIGIN, EntityChange::Gone(lying.key)))
     );
+    assert!(pushed.events.iter().any(|event| matches!(
+        event,
+        RegionEvent::HandedOn { entity, chunk: ORIGIN, hops: 0, .. } if *entity == lying.key
+    )));
+    assert_eq!(record(&region, lying.key), None);
+    assert!(!region.entity_chunks.contains_key(&lying.key));
+    assert!(!region.entity_memory.contains_key(&lying.key));
+    for _ in 0..5 {
+        assert!(idle(&mut region).arrivals.is_empty());
+    }
 }
 
 /// A region and its restore push and launch the same item tick for tick: one restored

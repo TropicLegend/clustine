@@ -10,8 +10,9 @@
 //!
 //! The entities are the items and falling blocks of the region's chunks; a push commits
 //! as their own moves do (a change of place, of being on the ground, commits the record
-//! with its motion), the region's guard keeps them in the chunks it ticks, and a push
-//! after their tick is reported to the edges as their moves are. Players are pushed by
+//! with its motion), one pushed into a chunk the region has not loaded is sent there
+//! (`arrivals.rs`), and a push after their tick is reported to the edges as their moves
+//! are. Players are pushed by
 //! their own clients, which run the same moves on the moving pistons they are sent
 //! (`pistons.rs`); the region leaves them alone.
 //!

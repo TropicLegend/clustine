@@ -435,10 +435,6 @@ fn a_refused_throw_puts_the_slot_back() {
         );
     };
 
-    // A chunk that does not tick: the one of the player alone, with none around it.
-    let mut lonely = on_floor(&[1]);
-    refused(&mut lonely);
-
     // No key left in the region's block.
     let mut used_up = on_ticking_floor_with(&[]);
     used_up.next_entity_id = used_up.entity_ids.end;
@@ -458,6 +454,29 @@ fn a_refused_throw_puts_the_slot_back() {
         PlayerInput::Throw { stack: DIRT },
     )]));
     assert!(output.entity_changes.is_empty() && output.player_events.is_empty());
+}
+
+/// Step N3d (the plan, section 5, G2; the finding of N2's tests, which refused it and
+/// put the slot back): a throw from a chunk the region has loaded but does not tick, as
+/// a player's chunk is right after they crossed a line, goes as an arrival into that
+/// chunk, with no `hops`, and appears where it is taken.
+#[test]
+fn a_throw_from_a_chunk_that_does_not_tick_is_sent_as_an_arrival() {
+    let mut lonely = on_floor(&[1]);
+    assert!(!lonely.ticks_chunk(ORIGIN) && lonely.chunks.contains_key(&ORIGIN));
+    let output = lonely.tick(&moves(vec![throw_held(false)]));
+    let [(chunk, thrown)] = &output.arrivals[..] else {
+        panic!("{:?}", output.arrivals);
+    };
+    assert_eq!((*chunk, thrown.key, thrown.hops), (ORIGIN, FIRST_ITEM, 0));
+    assert!(output.entity_changes.is_empty());
+    assert!(
+        output.player_events.is_empty(),
+        "{:?}",
+        output.player_events
+    );
+    assert_eq!(held(&lonely, 0), None);
+    assert!(entities_in(&lonely, ORIGIN).is_empty());
 }
 
 /// A resting item of `key` at `position` with `hops` changes of holder behind it.

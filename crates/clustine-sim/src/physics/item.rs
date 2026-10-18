@@ -1,8 +1,9 @@
 //! The item's tick (`ItemEntity.tick`, with `Entity.baseTick` and
 //! `applyEffectsFromBlocks` as items meet them, `docs/groundwork/n4-brief.md`, sections
 //! 1.9, 3 and 4), as far as it reads only the item and the blocks: the region does its
-//! merging between the two halves, and keeps it in the chunks it ticks
-//! ([`World::may_hold`]).
+//! merging between the two halves, and holds it back only from a loaded chunk of its
+//! own that is full ([`Region::may_hold`]); a move into a chunk it has not loaded the
+//! region sends on (`region/arrivals.rs`).
 
 use clustine_blocks::data::is_class;
 use clustine_data::{BlockClass, BlockState, EntityInsideShape, Face, sounds};
@@ -161,7 +162,8 @@ pub(crate) trait Draws {
 
 /// What the item's tick asks of the region beyond its blocks.
 pub(crate) trait Region: World {
-    /// Whether the item may be in the chunk: one the region ticks, with room for it.
+    /// Whether a move may end in the chunk: anywhere but a loaded chunk of the region's
+    /// own, other than the entity's, that is full.
     fn may_hold(&self, chunk: ChunkPos) -> bool;
 
     /// The bottom of the world.
@@ -754,8 +756,9 @@ fn inside_shape(body: &Body, state: BlockState, pos: BlockPos) -> Option<Vec<Aab
 }
 
 /// `move(SELF, vector)`, and the region's guard after it: where the move would take
-/// the entity into a chunk the region may not hold it in, it keeps its coordinate along
-/// that axis and loses its motion along it (`docs/groundwork/n4-plan.md`, section 7).
+/// the entity into a chunk the region may not hold it in (one of its own, loaded and
+/// full), it keeps its coordinate along that axis and loses its motion along it
+/// (`docs/groundwork/n4-plan.md`, section 7, as step N3d narrows it).
 pub(crate) fn move_guarded<R: Region + ?Sized>(
     body: &mut Body,
     world: &R,

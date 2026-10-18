@@ -516,18 +516,33 @@ fn the_creative_screen_throws_the_stack_named_and_leaves_the_inventory_as_it_was
     }
 }
 
-/// The plan, section 11: a throw from a chunk the region has loaded but does not tick
-/// (its ring is not loaded) throws nothing and puts the slot back on the client.
+/// Step N3d (`docs/groundwork/n3-plan.md`, section 5, G2), in place of the plan of N2's
+/// section 11, which refused it: a throw from a chunk the region has loaded but does not
+/// tick (its ring is not loaded) goes as an arrival into that chunk, with no hops, and
+/// is neither committed nor shown here; the slot is emptied as for any throw.
 #[test]
-fn a_throw_from_a_chunk_that_does_not_tick_is_refused_and_the_slot_put_back() {
+fn a_throw_from_a_chunk_that_does_not_tick_is_sent_as_an_arrival() {
     let mut region = region_with(EntityIds::block(1).expect("block 1"));
     joined(&mut region);
     load(&mut region, &[ORIGIN], floor());
     assert!(region.chunk(ORIGIN).is_some());
     let output = with_inputs(&mut region, 1, vec![q()]);
     assert!(made(&output).is_empty(), "{:?}", output.entity_changes);
-    assert_eq!(put_back(&output), [(0, Some(HELD))]);
-    assert_eq!(held(&region, 0), Some(HELD));
+    let [(chunk, thrown)] = &output.arrivals[..] else {
+        panic!("one arrival: {:?}", output.arrivals);
+    };
+    assert_eq!((*chunk, thrown.chunk(), thrown.hops), (ORIGIN, ORIGIN, 0));
+    assert_eq!(stack_of(thrown), ItemStack { count: 1, ..HELD });
+    assert!(
+        !output.events.iter().any(|event| matches!(
+            event,
+            RegionEvent::EntitySpawned(_) | RegionEvent::HandedOn { .. }
+        )),
+        "{:?}",
+        output.events
+    );
+    assert!(put_back(&output).is_empty());
+    assert_eq!(held(&region, 0), Some(ItemStack { count: 63, ..HELD }));
 }
 
 /// The same where the chunk holds as many entities as a chunk may.

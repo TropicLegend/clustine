@@ -409,6 +409,28 @@ impl Region {
         // `applyEffectsFromBlocks`.
         let movements = tick_movements(&mut body);
         self.falling_effects(&mut body, &movements, position, output);
+        // A move into a chunk the region does not have loaded ends the tick here: the
+        // block is sent, and lands, where it lands, in the region it went to
+        // (`arrivals.rs`).
+        let to = ChunkPos::containing(body.position[0], body.position[2]);
+        if to != position && !self.chunks.contains_key(&to) {
+            let after = Entity {
+                position: body.position,
+                motion: physics::scale(body.motion, f64::from(AIR_DRAG)),
+                on_ground: body.on_ground,
+                fall_distance: body.fall_distance,
+                age: entity.age.saturating_add(1),
+                data: EntityData::FallingBlock {
+                    state: block_state.0,
+                    time,
+                    drop_item,
+                    cancel_drop,
+                },
+                ..entity.clone()
+            };
+            self.write_falling_block(&entity, after, 0, position, output);
+            return;
+        }
 
         let end = self.after_move(
             &entity,
@@ -664,6 +686,10 @@ impl Region {
             || after.on_ground != before.on_ground
             || block_of(&after.data) != block_of(&before.data);
         let to = after.chunk();
+        if to != position && !self.chunks.contains_key(&to) {
+            self.send_entity(position, after, output);
+            return;
+        }
         if to != position {
             let gone = EntityChange::Gone(key);
             if let Some(chunk) = self.chunks.get_mut(&position) {

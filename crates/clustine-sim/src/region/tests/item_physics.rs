@@ -731,35 +731,6 @@ fn a_region_and_its_restore_move_the_same_items_tick_for_tick() {
 }
 
 #[test]
-fn an_item_stops_at_the_edge_of_the_chunks_the_region_ticks() {
-    // Only chunk (0, 0) ticks: an item sliding east at x = 15.95 would cross into
-    // chunk (1, 0); it keeps its x and loses its motion along x, and goes on along z.
-    let mut region = on_ticking_floor_with(&[]);
-    let sliding = item(1, [15.95, -60.0, 8.5], [0.2, 0.0, 0.1], true, DIRT);
-    lay(&mut region, &sliding);
-    let output = idle(&mut region);
-    let stopped = record(&region, sliding.key).unwrap();
-    assert_eq!(stopped.position[0], 15.95);
-    assert_eq!(stopped.motion[0], 0.0);
-    // Along z it moved by its motion, and the ground's friction took from it.
-    let ground = f64::from(0.98_f32 * 0.6);
-    assert_eq!(stopped.position[2].to_bits(), (8.5 + 0.1_f64).to_bits());
-    assert_eq!(stopped.motion[2].to_bits(), (0.1 * ground).to_bits());
-    assert_eq!(region.entity_chunks[&sliding.key], ORIGIN);
-    assert!(
-        output
-            .entity_changes
-            .iter()
-            .all(|(chunk, _)| *chunk == ORIGIN)
-    );
-    // Thrown at the line, it stays there for good.
-    for _ in 0..20 {
-        idle(&mut region);
-    }
-    assert_eq!(record(&region, sliding.key).unwrap().position[0], 15.95);
-}
-
-#[test]
 fn an_item_that_moves_into_another_chunk_of_the_region_is_gone_from_one_and_whole_in_the_other() {
     // A region whose chunks from x = -1 to 2 are loaded, so that (0, 0) and (1, 0) tick.
     let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
@@ -860,7 +831,7 @@ fn at_a_pinned_line(copy: Chunk) -> Region {
 }
 
 #[test]
-fn at_a_pinned_line_an_item_meets_the_copy_s_blocks_and_stops_at_the_line() {
+fn at_a_pinned_line_an_item_meets_the_copy_s_blocks_and_with_none_in_the_way_is_sent_across() {
     // A wall across the line, in the copy at x = 16: an item sliding east meets it as
     // it would a block of its own region, its box's east side stopping at 16.
     let mut walled = floor();
@@ -888,16 +859,29 @@ fn at_a_pinned_line_an_item_meets_the_copy_s_blocks_and_stops_at_the_line() {
         .unwrap();
     assert_ne!(tracked.flags & Tracked::HORIZONTAL_COLLISION, 0);
 
-    // With nothing in the way, the line stops it: it keeps its x.
+    // With nothing in the way it goes on across the line, into a chunk the region has
+    // not loaded: it is sent there (step N3d; N4's guard held it at the line).
     let mut region = at_a_pinned_line(floor());
     let sliding = item(1, [15.95, -60.0, 8.5], [0.2, 0.0, 0.0], true, DIRT);
     lay(&mut region, &sliding);
-    for _ in 0..10 {
-        idle(&mut region);
-    }
-    let held = record(&region, sliding.key).unwrap();
-    assert_eq!(held.position[0], 15.95);
-    assert_eq!(region.entity_chunks[&sliding.key], ORIGIN);
+    let output = idle(&mut region);
+    let [(to, sent)] = &output.arrivals[..] else {
+        panic!("{:?}", output.arrivals);
+    };
+    assert_eq!(*to, ChunkPos::new(1, 0));
+    assert_eq!(sent.position[0].to_bits(), (15.95 + 0.2_f64).to_bits());
+    assert_eq!(
+        output.entity_changes,
+        [(ORIGIN, EntityChange::Gone(sliding.key))]
+    );
+    assert_eq!(record(&region, sliding.key), None);
+    assert!(
+        region
+            .copy(ChunkPos::new(1, 0))
+            .unwrap()
+            .entities()
+            .is_empty()
+    );
 }
 
 #[test]

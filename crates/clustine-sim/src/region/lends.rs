@@ -451,8 +451,9 @@ impl Region {
         self.land.lent_away.contains_key(&position)
     }
 
-    /// The loaded chunks the region let go of at the end of its last tick, for a lend or
-    /// as a lent chunk given back, ascending: still loaded, so that they can be saved as
+    /// The loaded chunks the region let go of at the end of its last tick, for a lend, as
+    /// a lent chunk given back or as a chunk whose arrival ticket ended (`arrivals.rs`),
+    /// ascending: still loaded, so that they can be saved as
     /// they are, and dropped at the start of the next tick (section 3, step 2, and
     /// section 4).
     pub fn letting_go(&self) -> Vec<ChunkPos> {

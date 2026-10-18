@@ -281,8 +281,18 @@ impl Region {
             .chunks
             .get(&chunk)
             .is_some_and(|loaded| loaded.entities().len() < MAX_CHUNK_ENTITIES);
+        if !room {
+            return None;
+        }
+        self.take_key()
+    }
+
+    /// The region's next key, taken; `None`, and nothing taken, where it has none left.
+    /// An entity sent as it is made needs no room where it goes: an arrival is never
+    /// refused.
+    fn take_key(&mut self) -> Option<EntityId> {
         let key = self.next_entity_id;
-        if !room || !self.entity_ids.contains(key) {
+        if !self.entity_ids.contains(key) {
             return None;
         }
         self.next_entity_id = EntityId(key.0 + 1);
@@ -310,10 +320,12 @@ impl Region {
     /// `createItemStackToDrop` do: an item at their x and z and a little below their
     /// eyes, with the motion of [`throw_motion`], the pick-up delay of a throw and the
     /// player as its thrower, under the region's next key; and their arm swings for
-    /// everyone else. False, and nothing made, where the region cannot keep the item:
-    /// its chunk is not loaded or does not tick (as when it is being handed over or
-    /// lent), it is full ([`MAX_CHUNK_ENTITIES`]), or the region has no key left
-    /// (ADR-0028, section 1).
+    /// everyone else. Into a chunk the region does not have loaded and ticking (one
+    /// across a line the player has just crossed, or one being lent), the item is sent
+    /// there as an arrival as it is made, with no `hops` and no room asked for, and
+    /// appears where it is taken (`docs/groundwork/n3-plan.md`, section 5, G2). False,
+    /// and nothing made, where its chunk ticks and is full ([`MAX_CHUNK_ENTITIES`]), or
+    /// the region has no key left (ADR-0028, section 1).
     pub(crate) fn throw(&mut self, thrown: Thrown, output: &mut TickOutput) -> bool {
         let Thrown {
             player,
@@ -344,10 +356,13 @@ impl Region {
             pose.position.z,
         ];
         let chunk = ChunkPos::containing(position[0], position[2]);
-        if !self.ticks_chunk(chunk) {
-            return false;
-        }
-        let Some(key) = self.take_entity_key(chunk) else {
+        let here = self.ticks_chunk(chunk);
+        let key = if here {
+            self.take_entity_key(chunk)
+        } else {
+            self.take_key()
+        };
+        let Some(key) = key else {
             return false;
         };
 
@@ -359,7 +374,6 @@ impl Region {
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _bob = own.next_float();
         let yaw = own.next_float() * 360.0;
-        self.entity_draws.insert(key, 4);
         let entity = Entity {
             key,
             kind: u16::try_from(entity_types::ITEM).expect("entity type ids fit 16 bits"),
@@ -385,7 +399,12 @@ impl Region {
             entity: thrower_key,
             chunk: thrower_chunk,
         });
-        self.add_fresh_entity(entity, output);
+        if here {
+            self.entity_draws.insert(key, 4);
+            self.add_fresh_entity(entity, output);
+        } else {
+            self.send_made(entity, output);
+        }
         true
     }
 }

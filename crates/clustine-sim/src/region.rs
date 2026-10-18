@@ -18,6 +18,7 @@ use crate::api::{
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
+mod arrivals;
 mod block_entities;
 mod block_events;
 mod diodes;
@@ -350,9 +351,9 @@ pub struct Region {
     /// Chunks loaded for a lend asked, to be seen before it is decided, each until the
     /// tick it is kept to; no part of the state.
     lend_tickets: BTreeMap<ChunkPos, u64>,
-    /// Chunks let go of at the end of the last tick, for a lend or as a lent chunk given
-    /// back, which the region drops at the start of this one, once the runner has saved
-    /// them as they were; no part of the state.
+    /// Chunks let go of at the end of the last tick, for a lend, as a lent chunk given
+    /// back or as one whose arrival ticket ended, which the region drops at the start
+    /// of this one, once the runner has saved them as they were; no part of the state.
     letting_go: BTreeSet<ChunkPos>,
     /// Lent chunks to look at for giving back: near which a circuit's part went, or all
     /// of them after a restore, a merge or a split; no part of the state.
@@ -380,6 +381,14 @@ pub struct Region {
     /// The stream of each block that has dropped something in this tick, on from what
     /// it has drawn (`drops.rs`); empty between ticks.
     block_streams: BTreeMap<BlockPos, random_ticks::Random>,
+    /// Chunks loaded for arrivals that wait for them, each until the tick it is kept to
+    /// (`arrivals.rs`); no part of the state, as the runner names the chunks again in
+    /// every tick an arrival waits.
+    arrival_tickets: BTreeMap<ChunkPos, u64>,
+    /// The chunks about the places where entities were sent across a line, by the
+    /// region they went to where the region knows it, each with the last tick one was
+    /// (`arrivals.rs`); no part of the state.
+    lines_crossed: BTreeMap<(ChunkPos, Option<RegionId>), u64>,
 }
 
 impl Region {
@@ -480,6 +489,8 @@ impl Region {
             entity_memory: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
+            arrival_tickets: BTreeMap::new(),
+            lines_crossed: BTreeMap::new(),
         }
     }
 
@@ -831,6 +842,9 @@ impl Region {
         self.pistons_may_retry |= !inputs.granted.is_empty() || self.chunks_started_ticking();
         self.run_seams(&inputs.effects, &mut output);
         self.pistons_may_retry = false;
+        // The entities sent into the region's chunks, with the effects of their group and
+        // before the entities tick (`arrivals.rs`).
+        self.take_arrivals(&inputs.arrivals, &mut output);
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
@@ -2256,6 +2270,7 @@ impl Region {
         });
         ticketed
             || self.lend_ticketed(position)
+            || self.arrival_ticketed(position)
             || self
                 .players
                 .values()
@@ -2320,6 +2335,7 @@ impl Region {
             }
         }
         self.take_lend_answers(inputs);
+        self.take_arrivals_waiting(&inputs.arrivals_waiting);
 
         // Tickets are counted on every chunk, whatever the region knows of it: one on a
         // chunk it does not hold is its reason to ask, or to go on knowing who does.
@@ -2343,6 +2359,7 @@ impl Region {
                 if *position != self.land.home
                     && !self.is_lent(*position)
                     && !self.lend_ticketed(*position)
+                    && !self.arrival_ticketed(*position)
                 {
                     self.chunks.remove(position);
                     self.let_go_events(*position);
@@ -2360,7 +2377,8 @@ impl Region {
                 && (self.tickets.contains_key(position)
                     || *position == home
                     || self.is_lent(*position)
-                    || self.lend_ticketed(*position))
+                    || self.lend_ticketed(*position)
+                    || self.arrival_ticketed(*position))
                 && self.land.holds(*position)
             {
                 self.chunks.insert(*position, chunk.clone());
@@ -2411,6 +2429,7 @@ impl Region {
             .chain([home])
             .chain(self.land.lent.iter().copied())
             .chain(self.lend_ticket_chunks())
+            .chain(self.arrival_ticket_chunks())
             .collect();
         for position in wanted {
             if self.land.holds(position)
@@ -2429,7 +2448,13 @@ impl Region {
     fn settle_chunks(&mut self, output: &mut TickOutput) {
         // Lends first: what the region lets go of or gives back is not settled below.
         self.settle_lends(output);
-        let lend_ticketed: BTreeSet<ChunkPos> = self.lend_ticket_chunks().into_iter().collect();
+        self.settle_arrivals(output);
+        // Chunks loaded for a lend asked or for an arrival are used and wanted alike.
+        let lend_ticketed: BTreeSet<ChunkPos> = self
+            .lend_ticket_chunks()
+            .into_iter()
+            .chain(self.arrival_ticket_chunks())
+            .collect();
         let (tick, return_after) = (self.tick, self.config.return_after);
         let (land, tickets) = (&mut self.land, &self.tickets);
         let standing: BTreeSet<ChunkPos> = self.players.values().map(Player::chunk).collect();
@@ -2454,6 +2479,8 @@ impl Region {
                 output.returns.push(*position);
             }
         }
+        output.returns.sort_unstable();
+        output.returns.dedup();
         output
             .returns
             .retain(|position| !land.keeps(*position) || land.lent.contains(position));
@@ -2711,6 +2738,7 @@ mod tests {
 
     use crate::api::{Face, INVENTORY_SLOTS, PlayerJoin};
 
+    mod arrivals;
     mod block_updates;
     mod diodes;
     mod effects;
@@ -3049,7 +3077,8 @@ mod tests {
                 region.tickets.contains_key(position)
                     || *position == region.land.home
                     || region.is_lent(*position)
-                    || region.lend_ticketed(*position),
+                    || region.lend_ticketed(*position)
+                    || region.arrival_ticketed(*position),
                 "tick {tick}"
             );
         }

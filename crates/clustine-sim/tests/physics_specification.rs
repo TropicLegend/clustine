@@ -2136,12 +2136,26 @@ fn at_a_line(origin: Chunk) -> (Region, TickOutput) {
     (region, output)
 }
 
-/// The plan, section 1 and D2: an item that would move into a chunk the region does
-/// not tick keeps its coordinate on that axis and loses that part of its motion: at a
-/// pinned line it stops at x = 15.95, is neither lost nor doubled, nor sent across, and
-/// lies there.
+/// The arrivals of `outputs` of the entity `key`, each with its tick.
+fn sent(outputs: &[TickOutput], key: EntityId) -> Vec<(u64, ChunkPos, Entity)> {
+    outputs
+        .iter()
+        .flat_map(|output| {
+            output
+                .arrivals
+                .iter()
+                .filter(|(_, entity)| entity.key == key)
+                .map(|(chunk, entity)| (output.tick, *chunk, entity.clone()))
+        })
+        .collect()
+}
+
+/// Step N3d (`docs/groundwork/n3-plan.md`, section 5), in place of N4's guard, which held
+/// the item at the line: an item that slides across a pinned line is sent once, in the
+/// tick it crosses, whole with the hops it had, and is gone from the region's chunk in
+/// that very tick: neither lost nor doubled, and never in the copy.
 #[test]
-fn an_item_stops_at_a_pinned_line_and_is_neither_lost_nor_doubled() {
+fn an_item_that_slides_across_a_pinned_line_is_sent_once_and_neither_lost_nor_doubled() {
     let mut origin = floor();
     let thrown = item(80, [15.95, FLOOR, 8.5], [0.3, 0.0, 0.0], true);
     origin.set_entities(vec![thrown.clone()]);
@@ -2150,38 +2164,41 @@ fn an_item_stops_at_a_pinned_line_and_is_neither_lost_nor_doubled() {
     for _ in 0..100 {
         outputs.push(idle(&mut region));
     }
-    let found = records(&region, thrown.key);
-    let [(chunk, lying)] = &found[..] else {
-        panic!("once: {found:?}");
+    let arrivals = sent(&outputs, thrown.key);
+    let [(tick, chunk, whole)] = &arrivals[..] else {
+        panic!("once: {arrivals:?}");
     };
-    assert_eq!(*chunk, ORIGIN);
-    assert_eq!(lying.position, [15.95, FLOOR, 8.5], "it kept its x");
-    assert_eq!(lying.motion[0], 0.0, "it lost its motion along x");
+    assert_eq!(*chunk, ChunkPos::new(1, 0));
+    assert_eq!(whole.chunk(), *chunk);
+    assert!(whole.position[0] >= 16.0, "{whole:?}");
+    let crossing = outputs
+        .iter()
+        .find(|output| output.tick == *tick)
+        .expect("ticked");
+    assert!(
+        crossing
+            .entity_changes
+            .contains(&(ORIGIN, EntityChange::Gone(thrown.key))),
+        "{:?}",
+        crossing.entity_changes
+    );
+    assert!(crossing.events.iter().any(|event| matches!(
+        event,
+        RegionEvent::HandedOn { entity, chunk: ORIGIN, .. } if *entity == thrown.key
+    )));
+    assert!(records(&region, thrown.key).is_empty());
     for output in &outputs {
         assert!(!gone_in(output, thrown.key), "tick {}", output.tick);
-        assert!(
-            !output
-                .entity_changes
-                .iter()
-                .any(|(_, change)| *change == EntityChange::Gone(thrown.key)),
-            "tick {}: {:?}",
-            output.tick,
-            output.entity_changes
-        );
-        assert!(
-            output.effects.is_empty(),
-            "nothing is sent across: {:?}",
-            output.effects
-        );
+        assert!(output.effects.is_empty(), "{:?}", output.effects);
     }
     let copy = region.copy(ChunkPos::new(1, 0)).expect("copied");
     assert!(copy.entities().is_empty());
 }
 
-/// The plan, D2: water that carries an item to a pinned line pushes it against it,
-/// and it stays in the region's last chunk, once, however long the water pushes.
+/// The same with water that carries an item to a pinned line: until it crosses it is
+/// in the region's last chunk, once, and then it is sent, once.
 #[test]
-fn water_carries_an_item_to_a_pinned_line_and_it_stays_on_this_side() {
+fn water_carries_an_item_across_a_pinned_line_and_it_is_sent_once() {
     let placed: Vec<Placed> = (9..=15)
         .map(|x| {
             let level = (x - 9).min(6);
@@ -2192,18 +2209,25 @@ fn water_carries_an_item_to_a_pinned_line_and_it_stays_on_this_side() {
     let carried = item(81, [10.5, FLOOR, 8.5], [0.0; 3], true);
     origin.set_entities(vec![carried.clone()]);
     let (mut region, _) = at_a_line(origin);
-    let mut furthest: f64 = 0.0;
+    let mut outputs = Vec::new();
     for tick in 0..200 {
-        idle(&mut region);
+        let output = idle(&mut region);
+        let gone = !sent(std::slice::from_ref(&output), carried.key).is_empty();
+        outputs.push(output);
         let found = records(&region, carried.key);
+        if gone || sent(&outputs, carried.key).len() == 1 {
+            assert!(found.is_empty(), "tick {tick}: {found:?}");
+            continue;
+        }
         let [(chunk, now)] = &found[..] else {
             panic!("tick {tick}: once: {found:?}");
         };
         assert_eq!(*chunk, ORIGIN, "tick {tick}");
         assert!(now.position[0] < 16.0, "tick {tick}: {now:?}");
-        furthest = furthest.max(now.position[0]);
     }
-    assert!(furthest > 15.0, "it was carried to the line: {furthest}");
+    let arrivals = sent(&outputs, carried.key);
+    assert_eq!(arrivals.len(), 1, "{arrivals:?}");
+    assert_eq!(arrivals[0].1, ChunkPos::new(1, 0));
 }
 
 // ------------------------------------------------------------------------------------
@@ -2348,11 +2372,11 @@ fn an_item_inside_a_block_is_pushed_out_to_the_nearest_open_side_and_lands_on_it
     assert!(rested.on_ground);
 }
 
-/// The plan, D2: an item pushed out of a block towards a pinned line, the only open
-/// side, stops at the line however often it is pushed: it is never in the chunk
-/// beyond, and is there once.
+/// Step N3d, in place of N4's guard: an item pushed out of a block towards a pinned
+/// line, the only open side, goes across it and is sent, once; until then it is in the
+/// region's chunk, once.
 #[test]
-fn an_item_pushed_out_of_a_block_towards_a_pinned_line_stops_at_it() {
+fn an_item_pushed_out_of_a_block_towards_a_pinned_line_is_sent_across_it_once() {
     let mut origin = floor_with(&[
         (15, -60, 8, blocks::STONE),
         (15, -60, 7, blocks::STONE),
@@ -2363,18 +2387,26 @@ fn an_item_pushed_out_of_a_block_towards_a_pinned_line_stops_at_it() {
     let inside = item(93, [15.5, -59.8, 8.5], [0.0; 3], false);
     origin.set_entities(vec![inside.clone()]);
     let (mut region, _) = at_a_line(origin);
-    let mut furthest = 0.0_f64;
+    let mut outputs = Vec::new();
     for tick in 0..100 {
-        idle(&mut region);
+        outputs.push(idle(&mut region));
         let found = records(&region, inside.key);
+        if !sent(&outputs, inside.key).is_empty() {
+            assert!(found.is_empty(), "tick {tick}: {found:?}");
+            continue;
+        }
         let [(chunk, now)] = &found[..] else {
             panic!("tick {tick}: once: {found:?}");
         };
         assert_eq!(*chunk, ORIGIN, "tick {tick}");
         assert!(now.position[0] < 16.0, "tick {tick}: {now:?}");
-        furthest = furthest.max(now.position[0]);
     }
-    assert!(furthest > 15.6, "pushed east: {furthest}");
+    let arrivals = sent(&outputs, inside.key);
+    let [(_, chunk, whole)] = &arrivals[..] else {
+        panic!("once: {arrivals:?}");
+    };
+    assert_eq!(*chunk, ChunkPos::new(1, 0));
+    assert!(whole.position[0] >= 16.0, "{whole:?}");
 }
 
 /// ADR-0028, section 3: an item that slides into another chunk of the region is gone
