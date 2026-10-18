@@ -2184,9 +2184,10 @@ impl Decode for Attack {
 /// The player used a hand on an entity (`ServerboundInteractPacket`): to get into a
 /// boat or a cart, to put an item into a frame, to take armour from a stand.
 ///
-/// The hand is `InteractionHand.STREAM_CODEC`, a class not dumped; it is written as a
-/// VarInt of the hand's id here, as the hand of [`ServerboundUseItem`] is and as the
-/// reference servers read it. The comparisons with the official server check it.
+/// The hand is `InteractionHand.STREAM_CODEC`: `ByteBufCodecs.idMapper` over the hand's
+/// id (MAIN_HAND 0, OFF_HAND 1) with `ByIdMap`'s `ZERO` strategy (InteractionHand's
+/// static initialiser), so an id out of range is read as the main hand, here as there.
+/// `idMapper`'s body (`ByteBufCodecs$31`) is not dumped; it writes the id as a VarInt.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Interact {
     pub entity_id: i32,
@@ -2216,19 +2217,30 @@ impl Decode for Interact {
     fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             entity_id: r.var_int()?,
-            hand: r.var_int()?,
+            hand: read_hand(r)?,
             location: r.velocity()?,
             using_secondary_action: r.bool()?,
         })
     }
 }
 
+/// The highest hand id, `InteractionHand.OFF_HAND`'s.
+const OFF_HAND: i32 = 1;
+
+/// Reads an `InteractionHand` as its `STREAM_CODEC` does: an id out of range is the main
+/// hand, by `ByIdMap`'s `ZERO` strategy, rather than an error.
+fn read_hand(r: &mut Reader<'_>) -> Result<i32, DecodeError> {
+    let id = r.var_int()?;
+    Ok(if (0..=OFF_HAND).contains(&id) { id } else { 0 })
+}
+
 /// Where the player who steers a vehicle has moved it (`ServerboundMoveVehiclePacket`):
 /// the client moves a boat it controls itself and tells the server so.
 ///
-/// The place and the turn are `PositionAndRotation.STREAM_CODEC`, a class not dumped;
-/// the handler reads its `position()`, `yRot()` and `xRot()`, and the reference servers
-/// write it as three doubles and then the two floats, yaw before pitch, as here.
+/// The place and the turn are `PositionAndRotation.STREAM_CODEC`: `Vec3.STREAM_CODEC`
+/// (three doubles) and then two `FLOAT`s (PositionAndRotation's static initialiser), in
+/// the order of the components of `PositionAndRotation$Immutable`: position, `yRot`,
+/// `xRot`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerboundMoveVehicle {
     pub x: f64,
@@ -2313,9 +2325,8 @@ impl Decode for PaddleBoat {
 /// (`ServerboundPickItemFromEntityPacket`): a minecart, a boat, an armour stand, a
 /// painting or what a frame holds.
 ///
-/// The packet's class is not dumped. The handler reads its `id()` and `includeData()`
-/// (ServerGamePacketListenerImpl), and the reference servers read the id as a VarInt
-/// and then a boolean, as here. The comparisons with the official server check it.
+/// Its codec is the entity's id as a `VAR_INT` and then `includeData` as a `BOOL`
+/// (ServerboundPickItemFromEntityPacket's static initialiser).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PickItemFromEntity {
     pub entity_id: i32,
@@ -2464,9 +2475,11 @@ pub enum EntityDataValue {
     /// how the reference servers write it.
     OptionalBlockState(i32),
     /// `EntityDataSerializers.PAINTING_VARIANT`: a painting's variant, by its id in the
-    /// registry the client was sent. The codec is `ByteBufCodecs.holder`, which writes
-    /// a registered value as its id plus one, 0 being a variant sent whole, which the
-    /// server never sends.
+    /// registry the client was sent. `PaintingVariant.STREAM_CODEC` is
+    /// `ByteBufCodecs.holder` with the direct codec (PaintingVariant's static
+    /// initialiser), which writes a registered value as its id plus one, 0 being a
+    /// variant sent whole, which the server never sends. The body of `holder`
+    /// (`ByteBufCodecs$33`) is not dumped; `Sound` writes its holder the same way.
     PaintingVariant(i32),
     /// `EntityDataSerializers.DYE_COLOR`: a cushion's colour, as a VarInt of the dye's
     /// id (white 0 to black 15).
@@ -2720,7 +2733,8 @@ impl Decode for ClientboundMoveVehicle {
 /// off.
 ///
 /// The list is `writeVarIntArray`, of `FriendlyByteBuf`, which is not dumped: a VarInt
-/// count and then each id as a VarInt, as the reference servers write it.
+/// count and then each id as a VarInt, as `readVarIntArray` reads it back in the
+/// packet's constructor. The comparisons with the official server check it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetPassengers {
     pub vehicle_id: i32,
@@ -2780,11 +2794,10 @@ impl Decode for SetEntityLink {
 /// A sound that follows an entity (`ClientboundSoundEntityPacket`): a minecart rolling,
 /// a frame's item turned. Named, like [`Sound`], by its id in the sound event registry.
 ///
-/// The class is not dumped. The game builds it from a holder, a `SoundSource`, the
-/// entity, volume, pitch and seed (its constructor in ServerGamePacketListenerImpl);
-/// the order on the wire is that of the reference server Pumpkin: the holder as a
-/// VarInt of the id plus one, the source as a VarInt, the entity as a VarInt, then
-/// volume, pitch and seed. The comparisons with the official server check it.
+/// ClientboundSoundEntityPacket's `write`: the sound by `SoundEvent.STREAM_CODEC` (the
+/// holder, its id plus one), the source by `writeEnum` (a VarInt of its ordinal), the
+/// entity by `writeVarInt`, then volume and pitch by `writeFloat` and the seed by
+/// `writeLong`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SoundEntity {
     pub sound: i32,
@@ -2833,7 +2846,8 @@ impl Decode for SoundEntity {
     }
 }
 
-/// The kinds of a swing, as the game's `SwingAnimationType` numbers them.
+/// The kinds of a swing, by the ids of the game's `SwingAnimationType` (its static
+/// initialiser gives each the id of its ordinal).
 pub mod swing_animation {
     pub const NONE: i32 = 0;
     /// The ordinary swing, the game's `SwingAnimation.DEFAULT` with a duration of 6.
@@ -2847,11 +2861,12 @@ pub mod swing_animation {
 /// Shows an entity swing a hand in a given way (`ClientboundSwingAnimationPacket`):
 /// what a player's interaction with an entity shows to the others.
 ///
-/// The class is not dumped; the game builds it from the entity, an `InteractionHand`
-/// and a `SwingAnimation` (`ServerPlayer.swing`). The layout is that of the reference
-/// server SteelMC: the entity as a VarInt, the hand as a VarInt, then the swing's kind
-/// and its duration in ticks as VarInts. The comparisons with the official server
-/// check it.
+/// Its codec (ClientboundSwingAnimationPacket's static initialiser) is the entity as a
+/// `VAR_INT`, the hand by `InteractionHand.STREAM_CODEC` (see [`Interact`]), then
+/// `SwingAnimation.STREAM_CODEC`, the item component: the kind by
+/// `SwingAnimationType.STREAM_CODEC`, an `idMapper` over its id with the `ZERO`
+/// strategy, and the duration in ticks as a `VAR_INT`. So four VarInts, of which an
+/// out-of-range hand or kind is read as id 0.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SwingAnimation {
     pub entity_id: i32,
@@ -2879,8 +2894,11 @@ impl Decode for SwingAnimation {
     fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             entity_id: r.var_int()?,
-            hand: r.var_int()?,
-            kind: r.var_int()?,
+            hand: read_hand(r)?,
+            kind: match r.var_int()? {
+                kind @ swing_animation::NONE..=swing_animation::STAB => kind,
+                _ => swing_animation::NONE,
+            },
             duration: r.var_int()?,
         })
     }
@@ -3982,8 +4000,8 @@ mod tests {
     /// The serverbound packets of riding and of using an entity, byte for byte in the
     /// order of the fields of each class's codec (`ServerboundAttackPacket`,
     /// `ServerboundInteractPacket`, `ServerboundMoveVehiclePacket`,
-    /// `ServerboundPaddleBoatPacket`, `ServerboundPlayerCommandPacket`), and of the pick
-    /// from an entity as the reference servers read it.
+    /// `ServerboundPaddleBoatPacket`, `ServerboundPickItemFromEntityPacket`,
+    /// `ServerboundPlayerCommandPacket`).
     #[test]
     fn the_packets_a_player_sends_about_entities_are_read_as_the_game_writes_them() {
         assert_eq!(
@@ -4022,6 +4040,16 @@ mod tests {
                 entity_id: 5,
                 hand: 0,
                 location: [1.0, 0.0, -1.0],
+                using_secondary_action: false,
+            }))
+        );
+        // A hand out of range is the main hand, by `ByIdMap`'s `ZERO` strategy.
+        assert_eq!(
+            ServerboundPlay::decode(&[0x1A, 42, 2, 0, 0]),
+            Ok(ServerboundPlay::Interact(Interact {
+                entity_id: 42,
+                hand: 0,
+                location: [0.0; 3],
                 using_secondary_action: false,
             }))
         );
@@ -4094,8 +4122,9 @@ mod tests {
 
     /// The clientbound packets of riding, of leads, of an entity's sound and of a swing,
     /// byte for byte in the order of the fields of `ClientboundMoveVehiclePacket`,
-    /// `ClientboundSetPassengersPacket` and `ClientboundSetEntityLinkPacket`, and of the
-    /// sound and the swing as the reference servers write them.
+    /// `ClientboundSetPassengersPacket`, `ClientboundSetEntityLinkPacket`,
+    /// `ClientboundSoundEntityPacket` and `ClientboundSwingAnimationPacket` (whose last
+    /// field is the `SwingAnimation` component: its kind, then its duration).
     #[test]
     fn the_packets_of_riding_leads_sounds_and_swings_are_written_as_the_game_writes_them() {
         assert_eq!(
@@ -4177,6 +4206,16 @@ mod tests {
                 duration: 13,
             }),
             [0x7B, 7, 1, 2, 13]
+        );
+        // A hand or a kind out of range is id 0, by `ByIdMap`'s `ZERO` strategy.
+        assert_eq!(
+            ClientboundPlay::decode(&[0x7B, 7, 2, 3, 13]),
+            Ok(ClientboundPlay::SwingAnimation(SwingAnimation {
+                entity_id: 7,
+                hand: 0,
+                kind: swing_animation::NONE,
+                duration: 13,
+            }))
         );
     }
 
