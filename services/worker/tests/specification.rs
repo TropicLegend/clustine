@@ -940,6 +940,7 @@ impl Witness {
                         | RegionEvent::BlockEvent { .. }
                         | RegionEvent::Sound { .. }
                         | RegionEvent::LevelEvent { .. }
+                        | RegionEvent::ArmSwung { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityMoved { entity, pose, .. } => {
                             self.entities.insert(*entity, *pose);

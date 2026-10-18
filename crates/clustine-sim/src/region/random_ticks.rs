@@ -18,7 +18,7 @@ mod minerals;
 mod plants;
 
 use clustine_data::{BlockState, blocks};
-use clustine_world::{BlockPos, ChunkPos};
+use clustine_world::{BlockPos, ChunkPos, EntityId};
 
 use super::Region;
 use crate::api::TickOutput;
@@ -42,6 +42,20 @@ impl Random {
         random
     }
 
+    /// The stream of the entity `key` in a tick of a world (`docs/adr/0028-entities.md`,
+    /// section 4): what it draws is a function of the world, the key, the tick and the
+    /// draw's place in the entity's tick, with nothing to keep between ticks. Apart
+    /// from the streams of sections by a mark of its own.
+    pub(crate) fn of_entity(world: u64, key: EntityId, tick: u64) -> Self {
+        /// Mixed in first, so that no entity's stream is a section's.
+        const ENTITIES: u64 = 0x656e_7469_7469_6573;
+        let mut random = Self(world);
+        random.mix(ENTITIES);
+        random.mix(key.0);
+        random.mix(tick);
+        random
+    }
+
     fn mix(&mut self, value: u64) {
         self.0 = (self.0 ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         self.next_u64();
@@ -56,7 +70,6 @@ impl Random {
     }
 
     /// `nextFloat`: from 0 up to 1.
-    #[allow(dead_code, reason = "the rules that draw a float use it")]
     pub(crate) fn next_float(&mut self) -> f32 {
         (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
     }

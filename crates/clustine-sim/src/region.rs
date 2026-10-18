@@ -21,6 +21,7 @@ use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState
 mod block_entities;
 mod block_events;
 mod diodes;
+mod entities;
 mod fluids;
 mod instruments;
 mod lends;
@@ -355,6 +356,12 @@ pub struct Region {
     /// The chunks in which a circuit's part changed, each with the last tick it did, as
     /// far back as a second (`lends.rs`); no part of the state.
     circuit_changes: BTreeMap<ChunkPos, u64>,
+    /// The chunk of every entity other than a player in the loaded chunks, by key
+    /// (`entities.rs`): rebuilt as chunks are loaded, so no part of the state.
+    entity_chunks: BTreeMap<EntityId, ChunkPos>,
+    /// How many draws each entity has taken from its stream in this tick
+    /// (`entities.rs`); empty between ticks.
+    entity_draws: BTreeMap<EntityId, u64>,
 }
 
 impl Region {
@@ -449,6 +456,8 @@ impl Region {
             letting_go: BTreeSet::new(),
             lent_to_check,
             circuit_changes: BTreeMap::new(),
+            entity_chunks: BTreeMap::new(),
+            entity_draws: BTreeMap::new(),
         }
     }
 
@@ -489,6 +498,8 @@ impl Region {
         for position in loaded {
             region.take_up_events(position);
             region.take_up_block_entities(position);
+            // Taken as they were a tick before, by this very region: no take-in.
+            region.take_up_entities(position, true, None);
         }
         for (position, copy) in copies {
             if !region.chunks.contains_key(&position) {
@@ -668,16 +679,25 @@ impl Region {
         self.edges.get(&edge)
     }
 
-    /// All entities, in a fixed order.
+    /// All entities, in a fixed order: the players, then the entities of the loaded
+    /// chunks in ascending key.
     pub fn entities(&self) -> impl Iterator<Item = EntityState> + '_ {
         self.players
             .iter()
             .map(|(id, player)| player.entity_state(*id))
+            .chain(self.other_entities())
     }
 
     /// The entity with the given id, if it exists.
     pub fn entity(&self, entity: EntityId) -> Option<EntityState> {
-        self.entities().find(|state| state.entity == entity)
+        let player = self
+            .players
+            .iter()
+            .find(|(_, player)| player.entity_id == entity);
+        match player {
+            Some((id, player)) => Some(player.entity_state(*id)),
+            None => self.other_entity(entity),
+        }
     }
 
     /// The edge whose player the entity with the given id is, if it is a player's.
@@ -783,11 +803,12 @@ impl Region {
         let broadcast = output.events.len();
         self.run_block_events(&mut output);
         self.handling_tick = false;
-        // The entities, of which players are the only ones so far, press and step on
-        // blocks (`pressed.rs`); then the block entities tick
+        // The entities: players press and step on blocks (`pressed.rs`), and the others
+        // tick in ascending key (`entities.rs`); then the block entities tick
         // (`docs/adr/0026-redstone.md`, sections 3 and 5). Then the chunks keep the
         // events still queued.
         self.players_touch_blocks(&mut output);
+        self.run_entities();
         self.run_block_entities(&mut output);
         // The game broadcasts a tick's block changes before its block events, and what
         // changes from then on (in the block events, the entities and the block
@@ -871,6 +892,7 @@ impl Region {
         output.seams_changed = self.seams_changed();
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
+        self.entity_draws.clear();
         output.delta = self.take_delta();
         output
     }
@@ -1608,6 +1630,47 @@ impl Region {
                 }
             }
             PlayerInput::SetFlying { flying } => player.flying = *flying,
+            PlayerInput::Drop { all, crouching } => {
+                // `ServerPlayer.drop`: one of what is held, or all of it, out of the
+                // slot; an empty hand throws nothing.
+                let slot = player.selected_slot;
+                let Some(held) = player.held() else {
+                    return;
+                };
+                let count = if *all { held.count } else { 1 };
+                let left = (held.count > count).then_some(ItemStack {
+                    count: held.count - count,
+                    ..held
+                });
+                let thrown = entities::Thrown {
+                    player: id,
+                    stack: ItemStack { count, ..held },
+                    crouching: *crouching,
+                };
+                if self.throw(thrown, output) {
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.inventory.set(usize::from(slot), left);
+                    }
+                } else {
+                    // The client took it out of the slot as it threw: it is told that
+                    // the slot holds it still.
+                    let event = PlayerEvent::InventorySlot {
+                        slot,
+                        stack: Some(held),
+                    };
+                    output.player_events.push((id, event));
+                }
+            }
+            PlayerInput::Throw { stack } => {
+                // Out of the creative inventory: nothing is taken from the player's,
+                // and a throw refused leaves nothing to put back.
+                let thrown = entities::Thrown {
+                    player: id,
+                    stack: *stack,
+                    crouching: false,
+                };
+                self.throw(thrown, output);
+            }
             PlayerInput::UseItem {
                 rotation,
                 sneaking,
@@ -2244,6 +2307,7 @@ impl Region {
                     self.chunks.remove(position);
                     self.let_go_events(*position);
                     self.let_go_block_entities(*position);
+                    self.let_go_entities(*position);
                     self.requested.remove(position);
                 }
             }
@@ -2269,6 +2333,7 @@ impl Region {
         for position in loaded {
             self.take_up_events(position);
             self.take_up_block_entities(position);
+            self.take_up_entities(position, false, Some(&mut *output));
         }
         // Border copies, with the chunks and before the region works out which chunks
         // tick, so that a chunk beside them ticks in this very tick
@@ -2291,6 +2356,7 @@ impl Region {
                 }
             }
         }
+        self.update_copied_entities(&inputs.copy_entity_updates);
         for position in &inputs.copies_withdrawn {
             self.copies.remove(position);
         }
@@ -2608,6 +2674,7 @@ mod tests {
     mod block_updates;
     mod diodes;
     mod effects;
+    mod entities;
     mod fluids;
     mod instruments;
     mod lends;

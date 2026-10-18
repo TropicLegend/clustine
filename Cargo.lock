@@ -411,6 +411,7 @@ dependencies = [
  "clustine-data",
  "clustine-noise",
  "clustine-world",
+ "libm",
  "postcard",
  "serde",
  "uuid",

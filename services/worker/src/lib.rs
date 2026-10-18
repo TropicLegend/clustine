@@ -3456,7 +3456,9 @@ impl RegionRunner {
                 | PlayerInput::SetInventorySlot { .. }
                 | PlayerInput::SwapHands
                 | PlayerInput::WithOffHand(_)
-                | PlayerInput::SetFlying { .. } => return false,
+                | PlayerInput::SetFlying { .. }
+                | PlayerInput::Drop { .. }
+                | PlayerInput::Throw { .. } => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],

@@ -22,12 +22,13 @@ use clustine_protocol::codec::Position;
 use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    AcknowledgeBlockChange, BlockEvent, BlockUpdate, ChunkBatchFinished, ChunkBatchStart,
-    Disconnect, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
-    SetContainerContent, SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, SetPlayerInventory,
-    Sound, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk, abilities,
-    angle, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
+    AcknowledgeBlockChange, Animate, BlockEvent, BlockUpdate, ChunkBatchFinished, ChunkBatchStart,
+    Disconnect, EntityDataValue, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry,
+    PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate,
+    SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetHeadRotation,
+    SetHeldSlot, SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition,
+    SynchronizePlayerPosition, UnloadChunk, abilities, angle, animation, entity_data, game_event,
+    game_mode, inventory as protocol_inventory, level_event, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -39,8 +40,8 @@ use clustine_sim::api::{
     PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, EntityId, InChunk, Light, PlayerId, SectionLight, light_tells_apart,
-    sky_light,
+    BlockPos, Chunk, ChunkPos, EntityData, EntityId, InChunk, Light, PlayerId, SectionLight,
+    light_tells_apart, sky_light,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -524,8 +525,9 @@ struct PlayerView {
     /// one packet and the updates after it said
     /// (`docs/adr/0023-light-at-the-edge.md`, section 6).
     replace: BTreeSet<ChunkPos>,
-    /// Entities the client has been shown, with the player each of them is.
-    visible: BTreeMap<EntityId, PlayerId>,
+    /// Entities the client has been shown, with the player each of them is, or none for
+    /// an entity other than a player.
+    visible: BTreeMap<EntityId, Option<PlayerId>>,
     /// Players the client has in its player list. A client only shows the entity of a
     /// player it has in that list.
     listed: BTreeSet<PlayerId>,
@@ -2751,6 +2753,7 @@ impl Fanout {
                 self.show_near(position, level_event::LAVA_FIZZ, 0, None)
                     .await;
             }
+            RegionEvent::ArmSwung { entity, .. } => self.swing_arm(entity).await,
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
                     return;
@@ -2790,12 +2793,23 @@ impl Fanout {
         // Of one player only the latest stay the edge has been told of is shown. What
         // two regions say of an earlier and a later stay reaches the edge in no order,
         // and a client must never be shown two entities of one player
-        // (`docs/adr/0020-one-stay-per-player.md`, section 6, rule 6).
-        // Entities other than players are shown from step N2c on.
-        let EntityKind::Player { player, .. } = &state.kind else {
-            return;
+        // (`docs/adr/0020-one-stay-per-player.md`, section 6, rule 6). Any other
+        // entity is shown by its key from the region whose word has the most changes
+        // of holder behind it (`docs/adr/0028-entities.md`, section 6).
+        let player = match &state.kind {
+            EntityKind::Player { player, .. } => *player,
+            EntityKind::Other { hops, .. } => {
+                if !self.takes_word_of(from, entity, *hops) {
+                    return;
+                }
+                let moved = self
+                    .entities
+                    .insert(entity, Shown { state, from })
+                    .is_some_and(|known| known.state.pose != pose);
+                self.refresh_entity(entity, moved).await;
+                return;
+            }
         };
-        let player = *player;
         if self
             .highest
             .get(&player)
@@ -2811,6 +2825,43 @@ impl Fanout {
             .insert(entity, Shown { state, from })
             .is_some_and(|known| known.state.pose != pose);
         self.refresh_entity(entity, moved).await;
+    }
+
+    /// Whether a report of the region `from` about the entity `entity`, other than a
+    /// player, with `hops` changes of holder behind it counts: it has more than the edge
+    /// shows, or as many and is from the region the edge shows the entity from, or one
+    /// that stands for it (`docs/adr/0028-entities.md`, section 6). One the edge does
+    /// not show counts.
+    fn takes_word_of(&self, from: RegionId, entity: EntityId, hops: u32) -> bool {
+        let Some(shown) = self.entities.get(&entity) else {
+            return true;
+        };
+        let shown_hops = match &shown.state.kind {
+            EntityKind::Other { hops, .. } => *hops,
+            // A key is one entity's for the life of the world.
+            EntityKind::Player { .. } => return false,
+        };
+        hops > shown_hops || (hops == shown_hops && self.living(from) == self.living(shown.from))
+    }
+
+    /// Shows the arm of the player `entity` swinging to everyone shown the player.
+    async fn swing_arm(&mut self, entity: EntityId) {
+        let watching: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.visible.contains_key(&entity))
+            .map(|(player, _)| *player)
+            .collect();
+        if watching.is_empty() {
+            return;
+        }
+        let packet = encoded(&Animate {
+            entity_id: self.wire.of(entity),
+            action: animation::SWING_MAIN_HAND,
+        });
+        for player in watching {
+            self.send_to_player(player, [packet.clone()]).await;
+        }
     }
 
     /// Notes `entity` as a stay of `player` the edge has been told of. Returns the
@@ -4385,7 +4436,7 @@ impl Fanout {
         let listing: Vec<_> = self
             .players
             .iter_mut()
-            .filter(|(_, view)| !view.visible.values().any(|shown| *shown == player))
+            .filter(|(_, view)| !view.visible.values().any(|shown| *shown == Some(player)))
             .filter_map(|(other, view)| view.listed.remove(&player).then_some(*other))
             .collect();
         for other in listing {
@@ -4508,25 +4559,25 @@ impl PlayerView {
         match (in_view, shown) {
             (true, false) => {
                 let mut packets = Vec::new();
-                // Entities other than players are shown from step N2c on.
                 let EntityKind::Player { player, name } = &state.kind else {
-                    return Vec::new();
+                    self.visible.insert(state.entity, None);
+                    return spawn_packets(state, wire.of(state.entity)).into();
                 };
                 // A client takes a player to be one entity. Should word of an entity
                 // the player was before still be around, it goes first.
                 let outdated: Vec<_> = self
                     .visible
                     .iter()
-                    .filter(|(_, shown)| *shown == player)
+                    .filter(|(_, shown)| **shown == Some(*player))
                     .map(|(entity, _)| wire.of(*entity))
                     .collect();
                 if !outdated.is_empty() {
-                    self.visible.retain(|_, shown| shown != player);
+                    self.visible.retain(|_, shown| *shown != Some(*player));
                     packets.push(encoded(&RemoveEntities {
                         entity_ids: outdated,
                     }));
                 }
-                self.visible.insert(state.entity, *player);
+                self.visible.insert(state.entity, Some(*player));
                 if self.listed.insert(*player) {
                     let addition = [(*player, name.clone())];
                     packets.push(encoded(&player_list_additions(&addition)));
@@ -4534,7 +4585,7 @@ impl PlayerView {
                 packets.extend(spawn_packets(state, wire.of(state.entity)));
                 packets
             }
-            (true, true) if moved => move_packets(state, wire.of(state.entity)).into(),
+            (true, true) if moved => move_packets(state, wire.of(state.entity)),
             (false, true) => {
                 self.visible.remove(&state.entity);
                 vec![encoded(&RemoveEntities {
@@ -4605,48 +4656,86 @@ fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
     }
 }
 
-/// The packets that make an entity appear on a client.
+/// The packets that make an entity appear on a client: for a player the entity and
+/// where its head looks; for any other the entity, with its motion, its yaw, and its
+/// pitch and head at 0, and then its data (the game's `ServerEntity.sendPairingData`).
 fn spawn_packets(state: &EntityState, id: i32) -> [Bytes; 2] {
-    let (uuid, kind) = match &state.kind {
-        EntityKind::Player { player, .. } => (player.0, entity_types::PLAYER),
-        EntityKind::Other { uuid, kind, .. } => (*uuid, i32::from(*kind)),
-    };
     let position = state.pose.position;
-    [
-        encoded(&SpawnEntity {
-            entity_id: id,
-            uuid,
-            kind,
-            x: position.x,
-            y: position.y,
-            z: position.z,
-            velocity: [0.0; 3],
-            pitch: angle(state.pose.pitch),
-            yaw: angle(state.pose.yaw),
-            head_yaw: angle(state.pose.yaw),
-            data: 0,
-        }),
-        head_rotation(state, id),
-    ]
-}
-
-/// The packets that put an entity a client already shows where it is now.
-fn move_packets(state: &EntityState, id: i32) -> [Bytes; 2] {
-    let position = state.pose.position;
-    [
-        encoded(&SyncEntityPosition {
-            entity_id: id,
-            path: PositionPath::Linear {
+    match &state.kind {
+        EntityKind::Player { player, .. } => [
+            encoded(&SpawnEntity {
+                entity_id: id,
+                uuid: player.0,
+                kind: entity_types::PLAYER,
                 x: position.x,
                 y: position.y,
                 z: position.z,
-            },
-            yaw: state.pose.yaw,
-            pitch: state.pose.pitch,
-            on_ground: state.pose.on_ground,
-        }),
-        head_rotation(state, id),
-    ]
+                velocity: [0.0; 3],
+                pitch: angle(state.pose.pitch),
+                yaw: angle(state.pose.yaw),
+                head_yaw: angle(state.pose.yaw),
+                data: 0,
+            }),
+            head_rotation(state, id),
+        ],
+        EntityKind::Other {
+            kind,
+            uuid,
+            motion,
+            data,
+            ..
+        } => [
+            encoded(&SpawnEntity {
+                entity_id: id,
+                uuid: *uuid,
+                kind: i32::from(*kind),
+                x: position.x,
+                y: position.y,
+                z: position.z,
+                velocity: *motion,
+                pitch: 0,
+                yaw: angle(state.pose.yaw),
+                head_yaw: 0,
+                data: 0,
+            }),
+            encoded(&entity_data_packet(id, data)),
+        ],
+    }
+}
+
+/// The data of an entity other than a player that a client is told with its spawn:
+/// for an item, its stack (`ItemEntity.DATA_ITEM`).
+fn entity_data_packet(id: i32, data: &EntityData) -> SetEntityData {
+    match data {
+        EntityData::Item { stack, .. } => SetEntityData {
+            entity_id: id,
+            values: vec![(
+                entity_data::ITEM_STACK,
+                EntityDataValue::ItemStack(Some(protocol_stack(*stack))),
+            )],
+        },
+    }
+}
+
+/// The packets that put an entity a client already shows where it is now: for a player
+/// with where its head looks.
+fn move_packets(state: &EntityState, id: i32) -> Vec<Bytes> {
+    let position = state.pose.position;
+    let mut packets = vec![encoded(&SyncEntityPosition {
+        entity_id: id,
+        path: PositionPath::Linear {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+        },
+        yaw: state.pose.yaw,
+        pitch: state.pose.pitch,
+        on_ground: state.pose.on_ground,
+    })];
+    if matches!(state.kind, EntityKind::Player { .. }) {
+        packets.push(head_rotation(state, id));
+    }
+    packets
 }
 
 /// The head of a player looks where the player looks; the position packets only turn
@@ -6776,6 +6865,7 @@ mod scenarios {
     use crate::Relinks;
 
     mod block_destroyed;
+    mod items;
     mod redstone;
 
     /// The flat world's spawn, which these tests' edges tell their clients.
@@ -7548,6 +7638,11 @@ mod scenarios {
         /// The blocks it was told changed one at a time, the block events and the
         /// sounds, in the order told.
         heard: Vec<Received>,
+        /// Every entity it was told to spawn, and every entity's data and arm swing
+        /// it was told, in order.
+        spawns: Vec<SpawnEntity>,
+        entity_data: Vec<SetEntityData>,
+        swings: Vec<Animate>,
     }
 
     /// One of what a client was told, in [`Client::heard`].
@@ -7567,6 +7662,8 @@ mod scenarios {
         Position,
         HeadRotation,
         Removal,
+        Data,
+        Swing,
     }
 
     /// Something a client was told that changes whom it shows or lists.
@@ -7609,6 +7706,9 @@ mod scenarios {
                 taken: 0,
                 level_events: Vec::new(),
                 heard: Vec::new(),
+                spawns: Vec::new(),
+                entity_data: Vec::new(),
+                swings: Vec::new(),
             }
         }
 
@@ -7696,6 +7796,15 @@ mod scenarios {
                     let key = self.key(entity.entity_id);
                     self.entities.insert(key);
                     self.told.push(Told::Shown(key));
+                    self.spawns.push(entity);
+                }
+                ClientboundPlay::SetEntityData(data) => {
+                    self.named.push((Naming::Data, data.entity_id));
+                    self.entity_data.push(data);
+                }
+                ClientboundPlay::Animate(swing) => {
+                    self.named.push((Naming::Swing, swing.entity_id));
+                    self.swings.push(swing);
                 }
                 ClientboundPlay::RemoveEntities(removed) => {
                     for entity in removed.entity_ids {

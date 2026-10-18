@@ -301,6 +301,18 @@ pub enum PlayerInput {
     /// the same use with the main hand did nothing. Any other input so wrapped is passed
     /// over.
     WithOffHand(Box<PlayerInput>),
+    /// The player threw what they hold in the main hand (the game's `DROP_ITEM`, Q, and
+    /// `DROP_ALL_ITEMS`, ctrl+Q): one of it, or the whole stack if `all`. `crouching` is
+    /// whether the sneak key is down, which lowers the eyes the item leaves from. The
+    /// client takes it out of the slot itself; a throw the region refuses puts the slot
+    /// back with a [`PlayerEvent::InventorySlot`] (`docs/groundwork/n2-plan.md`, section
+    /// 11). Added at the end, so that what is stored of inputs reads as it did.
+    Drop { all: bool, crouching: bool },
+    /// A creative-mode player threw `stack` out of the inventory screen (the game's
+    /// `SetCreativeModeSlot` with a negative slot), which takes nothing from the
+    /// inventory. The edge passes on only what the game's throttler of such throws lets
+    /// through.
+    Throw { stack: ItemStack },
 }
 
 /// What is left to do of something a player did to blocks that the region the player is
@@ -852,6 +864,10 @@ pub enum RegionEvent {
         /// position when it crossed a chunk border.
         previous_chunk: ChunkPos,
     },
+    /// The entity, a player in `chunk`, swung their main arm, as the game's
+    /// `LivingEntity.swing` shows it to everyone but the player, whose client swings it
+    /// already: when they throw an item.
+    ArmSwung { entity: EntityId, chunk: ChunkPos },
 }
 
 impl RegionEvent {
@@ -859,7 +875,7 @@ impl RegionEvent {
     pub fn chunks(&self) -> [ChunkPos; 2] {
         match self {
             Self::EntitySpawned(state) => [state.chunk(); 2],
-            Self::EntityRemoved { chunk, .. } => [*chunk; 2],
+            Self::EntityRemoved { chunk, .. } | Self::ArmSwung { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }

@@ -178,6 +178,7 @@ impl Region {
             self.chunks.remove(&position);
             self.let_go_events(position);
             self.let_go_block_entities(position);
+            self.let_go_entities(position);
             self.requested.remove(&position);
         }
     }

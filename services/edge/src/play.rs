@@ -6,8 +6,10 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
+use clustine_data::ITEMS;
 use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::Packet;
@@ -21,6 +23,7 @@ use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput};
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
+use tracing::warn;
 
 use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
@@ -95,6 +98,7 @@ async fn pump(
     let mut sneaking = false;
     // The client only understands keep-alives once it has been put into the world.
     let mut in_world = false;
+    let mut drops = DropThrottler::new(Instant::now());
 
     loop {
         tokio::select! {
@@ -157,7 +161,7 @@ async fn pump(
                         moved(shared, client, None, None, packet.flags).await?;
                     }
                     ServerboundPlay::PlayerAction(action) => {
-                        acted(shared, client, action).await?;
+                        acted(shared, client, action, sneaking).await?;
                     }
                     ServerboundPlay::ServerboundPlayerInput(packet) => {
                         sneaking = packet.flags & player_input::SHIFT != 0;
@@ -176,10 +180,14 @@ async fn pump(
                     }
                     ServerboundPlay::SetCreativeModeSlot(packet) => {
                         // A slot of the inventory screen sets that slot of the
-                        // inventory. The crafting grid is the client's own business,
-                        // and what a negative slot throws is for the step that brings
-                        // items (`docs/groundwork/n2-plan.md`, section 2).
-                        if let Some(input) = creative_slot(packet.slot, packet.stack) {
+                        // inventory, and a negative one throws the stack out of the
+                        // screen. The crafting grid is the client's own business.
+                        let input = if packet.slot < 0 {
+                            creative_throw(packet.stack, &mut drops, Instant::now())
+                        } else {
+                            creative_slot(packet.slot, packet.stack)
+                        };
+                        if let Some(input) = input {
                             send_input(shared, client, input).await?;
                         }
                     }
@@ -279,11 +287,13 @@ async fn moved(
     send_input(shared, client, input).await
 }
 
-/// Handles something the player did with their hands.
+/// Handles something the player did with their hands. `sneaking` is whether the sneak
+/// key is down, which lowers the eyes a thrown item leaves from.
 async fn acted(
     shared: &Shared,
     client: &Client,
     action: PlayerAction,
+    sneaking: bool,
 ) -> Result<(), ConnectionError> {
     match action.status {
         // In creative mode, starting to break a block breaks it.
@@ -303,7 +313,11 @@ async fn acted(
         player_action::SWAP_ITEM_WITH_OFFHAND => {
             send_input(shared, client, PlayerInput::SwapHands).await
         }
-        // Dropping and using items does not exist yet.
+        player_action::DROP_ITEM | player_action::DROP_ALL_ITEMS => {
+            let input = thrown_by(action.status, sneaking).expect("a status that throws");
+            send_input(shared, client, input).await
+        }
+        // Using items over time does not exist yet.
         _ => Ok(()),
     }
 }
@@ -430,6 +444,93 @@ fn creative_slot(slot: i16, stack: Option<protocol::ItemStack>) -> Option<Player
     Some(PlayerInput::SetInventorySlot { slot, stack })
 }
 
+/// What a player's action of `status` throws: Q (`DROP_ITEM`) one of what is held,
+/// ctrl+Q (`DROP_ALL_ITEMS`) the stack, from eyes lowered if `sneaking`.
+fn thrown_by(status: i32, sneaking: bool) -> Option<PlayerInput> {
+    let all = match status {
+        player_action::DROP_ITEM => false,
+        player_action::DROP_ALL_ITEMS => true,
+        _ => return None,
+    };
+    Some(PlayerInput::Drop {
+        all,
+        crouching: sneaking,
+    })
+}
+
+/// The most of one item a stack can hold whatever the item (the game's
+/// `Item.ABSOLUTE_MAX_STACK_SIZE`). The game holds a stack to its item's own maximum,
+/// which the data does not have yet; until it does, a stack is held to this.
+const ABSOLUTE_MAX_STACK_SIZE: i32 = 99;
+
+/// The game's `dropSpamThrottler` of a connection: every throw out of the creative
+/// inventory adds 20, every tick of the game takes 1 away, and a throw is let through
+/// only while the count is below 1480. So 74 throws go at once, and then about one a
+/// second.
+#[derive(Debug)]
+struct DropThrottler {
+    count: u32,
+    /// The time of the last tick counted.
+    ticked: Instant,
+}
+
+impl DropThrottler {
+    const STEP: u32 = 20;
+    const THRESHOLD: u32 = 1480;
+    const TICK: Duration = Duration::from_millis(50);
+
+    fn new(now: Instant) -> Self {
+        Self {
+            count: 0,
+            ticked: now,
+        }
+    }
+
+    /// Whether a throw at `now` is let through, which counts it if it is.
+    fn lets_through(&mut self, now: Instant) -> bool {
+        let ticks = now.saturating_duration_since(self.ticked).as_millis() / Self::TICK.as_millis();
+        let ticks = u32::try_from(ticks).unwrap_or(u32::MAX);
+        self.count = self.count.saturating_sub(ticks);
+        self.ticked += Self::TICK * ticks;
+        if self.count < Self::THRESHOLD {
+            self.count += Self::STEP;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// What a creative-mode client's throw of `stack` out of its inventory screen (a
+/// setting of a negative slot) asks of the region, as the game's
+/// `handleSetCreativeModeSlot` takes it: a stack of an item that does not exist, or of
+/// more than a stack holds, is passed over; any other throw, an empty one too, counts
+/// against the throttler, and what it lets through and is not empty is thrown.
+fn creative_throw(
+    stack: Option<protocol::ItemStack>,
+    throttler: &mut DropThrottler,
+    now: Instant,
+) -> Option<PlayerInput> {
+    let valid = stack.is_none_or(|stack| {
+        (1..=ABSOLUTE_MAX_STACK_SIZE).contains(&stack.count)
+            && usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
+    });
+    if !valid {
+        return None;
+    }
+    if !throttler.lets_through(now) {
+        warn!("a player was dropping items too fast in creative mode, ignoring");
+        return None;
+    }
+    let stack = stack?;
+    Some(PlayerInput::Throw {
+        stack: ItemStack {
+            item: stack.item,
+            count: stack.count,
+        },
+    })
+}
+
 /// `slot` as a hotbar slot, if it is one.
 fn hotbar_slot(slot: i32) -> Option<u8> {
     u8::try_from(slot)
@@ -471,8 +572,8 @@ mod tests {
         assert_eq!(set_by(44), Some(8));
         // The off hand.
         assert_eq!(set_by(45), Some(40));
-        // The crafting grid and its result are passed over, and so is a throw out of
-        // the screen, which a later step brings, and what is beyond the screen.
+        // The crafting grid and its result are passed over, and so is what is beyond
+        // the screen; a throw out of it, a negative slot, is no setting of a slot.
         for passed_over in [0, 1, 2, 3, 4, -1, -999, 46, i16::MAX] {
             assert_eq!(set_by(passed_over), None, "slot {passed_over}");
         }
@@ -484,6 +585,101 @@ mod tests {
                 stack: None
             })
         );
+    }
+
+    fn thrown(
+        stack: Option<protocol::ItemStack>,
+        throttler: &mut DropThrottler,
+        now: Instant,
+    ) -> bool {
+        match creative_throw(stack, throttler, now) {
+            Some(PlayerInput::Throw { stack: thrown }) => {
+                let stack = stack.expect("only a stack is thrown");
+                assert_eq!((thrown.item, thrown.count), (stack.item, stack.count));
+                true
+            }
+            None => false,
+            Some(other) => panic!("{other:?} is no throw"),
+        }
+    }
+
+    #[test]
+    fn throws_out_of_the_creative_inventory_go_at_once_up_to_the_game_s_threshold_and_then_one_a_second()
+     {
+        let start = Instant::now();
+        let mut throttler = DropThrottler::new(start);
+        let stone = Some(protocol::ItemStack { item: 1, count: 64 });
+        // 1480 / 20: the 74 throws that keep the count below the threshold before each.
+        for throw in 0..74 {
+            assert!(thrown(stone, &mut throttler, start), "throw {throw}");
+        }
+        assert!(!thrown(stone, &mut throttler, start));
+        // A tick takes one away, which lets one more through; then twenty ticks have
+        // to take its twenty away before the next.
+        let tick = DropThrottler::TICK;
+        assert!(thrown(stone, &mut throttler, start + tick));
+        assert!(!thrown(stone, &mut throttler, start + tick * 2));
+        assert!(!thrown(stone, &mut throttler, start + tick * 20));
+        assert!(thrown(stone, &mut throttler, start + tick * 21));
+        assert!(!thrown(stone, &mut throttler, start + tick * 21));
+        // Time with nobody throwing lets the count down to nothing, and no further.
+        let later = start + tick * 10_000;
+        for throw in 0..74 {
+            assert!(thrown(stone, &mut throttler, later), "throw {throw} later");
+        }
+        assert!(!thrown(stone, &mut throttler, later));
+    }
+
+    #[test]
+    fn an_empty_throw_counts_and_a_stack_that_cannot_be_is_passed_over_without_counting() {
+        let start = Instant::now();
+        let mut throttler = DropThrottler::new(start);
+        // Nothing thrown out of the screen throws nothing, and counts as the game's does.
+        for _ in 0..74 {
+            assert!(!thrown(None, &mut throttler, start));
+        }
+        assert!(!throttler.lets_through(start));
+        let mut throttler = DropThrottler::new(start);
+        let too_many = protocol::ItemStack {
+            item: 1,
+            count: 100,
+        };
+        let unknown = protocol::ItemStack {
+            item: i32::MAX,
+            count: 1,
+        };
+        let negative = protocol::ItemStack { item: -1, count: 1 };
+        for _ in 0..100 {
+            for stack in [too_many, unknown, negative] {
+                assert!(!thrown(Some(stack), &mut throttler, start));
+            }
+        }
+        // None of those counted.
+        assert_eq!(throttler.count, 0);
+        let most = protocol::ItemStack { item: 1, count: 99 };
+        assert!(thrown(Some(most), &mut throttler, start));
+    }
+
+    #[test]
+    fn q_throws_one_ctrl_q_the_stack_and_no_other_action_throws() {
+        // The game's statuses: 5 is `DROP_ITEM`, 4 `DROP_ALL_ITEMS`.
+        assert_eq!(
+            thrown_by(5, false),
+            Some(PlayerInput::Drop {
+                all: false,
+                crouching: false
+            })
+        );
+        assert_eq!(
+            thrown_by(4, true),
+            Some(PlayerInput::Drop {
+                all: true,
+                crouching: true
+            })
+        );
+        for status in [0, 1, 2, 3, 6, 7, 8] {
+            assert_eq!(thrown_by(status, false), None, "status {status}");
+        }
     }
 
     #[test]
