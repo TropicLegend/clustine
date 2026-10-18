@@ -606,6 +606,8 @@ impl Lanes {
                             filed.remove(id);
                         }
                     }
+                    // Filed and dropped from step N3b on.
+                    LogRecord::ArrivalsDropped { .. } | LogRecord::ArrivalsForward { .. } => {}
                     LogRecord::EffectsForward { effects } => {
                         for FiledEffect { id, effect, due } in effects {
                             filed.file(
@@ -1081,6 +1083,9 @@ impl Lanes {
                 taken,
                 events,
                 entity_changes,
+                // Filed and taken from step N3b on.
+                arrivals: _,
+                arrivals_taken: _,
             } => {
                 let region = session.region;
                 // An effect is filed if its chunk is in use, and left out otherwise:
@@ -1154,6 +1159,8 @@ impl Lanes {
                     taken: taken.clone(),
                     events,
                     entity_changes,
+                    arrivals: Vec::new(),
+                    arrivals_taken: Vec::new(),
                 }
                 .encode();
                 self.group.regions.insert(region);
@@ -1400,7 +1407,11 @@ impl Lanes {
                 self.group.regions.insert(region);
                 return;
             }
-            StoreRequest::Return { chunks } => {
+            StoreRequest::Return {
+                chunks,
+                // Kept from step N3b on.
+                unreadable: _,
+            } => {
                 let region = session.region;
                 let mut returned = Vec::new();
                 let mut asked = BTreeSet::new();

@@ -159,6 +159,8 @@ fn commit(handle: &StoreHandle, step: &Step) {
             .iter()
             .map(|change| (A, change.clone()))
             .collect(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     });
 }
 

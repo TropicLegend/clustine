@@ -26,6 +26,8 @@
 //! | 10 | [`LogRecord::Commit`] with effects | the fields of kind 9, whose counts may all be 0, effects, taken |
 //! | 11 | [`LogRecord::EffectsDropped`] | numbers |
 //! | 12 | [`LogRecord::EffectsForward`] | filed effects |
+//! | 17 | [`LogRecord::ArrivalsDropped`] | numbers |
+//! | 18 | [`LogRecord::ArrivalsForward`] | filed arrivals |
 //! | 13 | [`LogRecord::Commit`] with block entities | the fields of kind 10, whose counts may all be 0, block entities |
 //! | 14 | [`LogRecord::Commit`] with block events | the fields of kind 13, whose counts may all be 0, events |
 //! | 15 | [`LogRecord::Commit`] with entity changes | the fields of kind 14, whose counts may all be 0, entity changes |
@@ -98,8 +100,8 @@
 
 use clustine_data::BlockState;
 use clustine_world::{
-    BlockPos, Change, ChunkPos, Due, Effect, EffectId, EntityChange, FiledEffect, InChunk,
-    KeptEvent, ScheduledTick, Seam, Ticked,
+    Arrival, BlockPos, Change, ChunkPos, Due, Effect, EffectId, Entity, EntityChange, FiledEffect,
+    InChunk, KeptEvent, ScheduledTick, Seam, Ticked,
 };
 
 use crate::bytes::Input;
@@ -120,6 +122,9 @@ const KIND_EFFECTS_FORWARD: u8 = 12;
 const KIND_COMMIT_WITH_ENTITIES: u8 = 13;
 const KIND_COMMIT_WITH_EVENTS: u8 = 14;
 const KIND_COMMIT_WITH_ENTITY_CHANGES: u8 = 15;
+const KIND_COMMIT_WITH_ARRIVALS: u8 = 16;
+const KIND_ARRIVALS_DROPPED: u8 = 17;
+const KIND_ARRIVALS_FORWARD: u8 = 18;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -205,6 +210,10 @@ impl PartialEq for LoggedPlace {
 impl Eq for LoggedPlace {}
 
 /// A record of the log.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "records are read and written one at a time, never kept in numbers"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogRecord {
     /// The blocks that changed during one tick of a region, as logged before regions had
@@ -252,7 +261,18 @@ pub enum LogRecord {
         /// did it (`docs/adr/0028-entities.md`, section 3). A commit without any is
         /// written as it was before there were entities.
         entity_changes: Vec<(ChunkPos, EntityChange)>,
+        /// The entities the tick sent across a line, each with the chunk it is in and when
+        /// its holder may take it (`docs/groundwork/n3-plan.md`). A commit without any,
+        /// and without arrivals taken, is written as it was before there were arrivals.
+        arrivals: Vec<(ChunkPos, Entity, Due)>,
+        /// The arrivals the tick took, ascending.
+        arrivals_taken: Vec<EffectId>,
     },
+    /// These arrivals were taken by a fold at a change of division, which wrote them into
+    /// their chunks (the plan, section 6).
+    ArrivalsDropped { ids: Vec<EffectId> },
+    /// These arrivals, untaken, written again ahead of the segment they were in.
+    ArrivalsForward { arrivals: Vec<Arrival> },
     /// The effects of these numbers were dropped untaken: the chunk they act on stopped
     /// being used (`docs/adr/0025-effects-between-regions.md`, section 5).
     EffectsDropped { ids: Vec<EffectId> },
@@ -335,15 +355,20 @@ impl LogRecord {
                 taken,
                 events,
                 entity_changes,
+                arrivals,
+                arrivals_taken,
             } => {
                 let (blocks, entities) = split_changes(changes);
-                let with_entity_changes = !entity_changes.is_empty();
+                let with_arrivals = !arrivals.is_empty() || !arrivals_taken.is_empty();
+                let with_entity_changes = with_arrivals || !entity_changes.is_empty();
                 let with_events = with_entity_changes || !events.is_empty();
                 let with_entities = with_events || !entities.is_empty();
                 let effected = with_entities || !effects.is_empty() || !taken.is_empty();
                 let records =
                     effected || !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
-                payload.push(if with_entity_changes {
+                payload.push(if with_arrivals {
+                    KIND_COMMIT_WITH_ARRIVALS
+                } else if with_entity_changes {
                     KIND_COMMIT_WITH_ENTITY_CHANGES
                 } else if with_events {
                     KIND_COMMIT_WITH_EVENTS
@@ -388,7 +413,15 @@ impl LogRecord {
                             crate::kept_events::put_events(&mut payload, of_chunk);
                         }
                     }
-                    if with_entity_changes {
+                    if with_arrivals {
+                        // Its entity changes may be none: a flag says whether they follow.
+                        payload.push(u8::from(!entity_changes.is_empty()));
+                        if !entity_changes.is_empty() {
+                            crate::entities::put_entity_changes(&mut payload, entity_changes);
+                        }
+                        put_arrivals(&mut payload, arrivals);
+                        crate::effects::put_ids(&mut payload, arrivals_taken);
+                    } else if with_entity_changes {
                         crate::entities::put_entity_changes(&mut payload, entity_changes);
                     }
                 } else if !stays.is_empty() {
@@ -462,6 +495,18 @@ impl LogRecord {
                 payload.push(KIND_EFFECTS_FORWARD);
                 crate::effects::put_filed(&mut payload, effects);
             }
+            Self::ArrivalsDropped { ids } => {
+                payload.push(KIND_ARRIVALS_DROPPED);
+                crate::effects::put_ids(&mut payload, ids);
+            }
+            Self::ArrivalsForward { arrivals } => {
+                payload.push(KIND_ARRIVALS_FORWARD);
+                payload.extend_from_slice(&(arrivals.len() as u32).to_be_bytes());
+                for arrival in arrivals {
+                    crate::effects::put_id(&mut payload, arrival.id);
+                    put_arrival(&mut payload, arrival.chunk, &arrival.entity, arrival.due);
+                }
+            }
         }
         frame(&payload)
     }
@@ -492,6 +537,8 @@ impl LogRecord {
                 taken: Vec::new(),
                 events: Vec::new(),
                 entity_changes: Vec::new(),
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             },
             KIND_COMMIT_WITH_STAYS => Self::Commit {
                 region: input.u32()?,
@@ -507,12 +554,15 @@ impl LogRecord {
                 taken: Vec::new(),
                 events: Vec::new(),
                 entity_changes: Vec::new(),
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             },
             kind @ (KIND_COMMIT_WITH_TICKS
             | KIND_COMMIT_WITH_EFFECTS
             | KIND_COMMIT_WITH_ENTITIES
             | KIND_COMMIT_WITH_EVENTS
-            | KIND_COMMIT_WITH_ENTITY_CHANGES) => {
+            | KIND_COMMIT_WITH_ENTITY_CHANGES
+            | KIND_COMMIT_WITH_ARRIVALS) => {
                 let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
                 let blocks = take_changes(&mut input)?;
                 let state = take_bytes(&mut input)?;
@@ -563,8 +613,22 @@ impl LogRecord {
                         ));
                     }
                 }
+                let mut arrivals = Vec::new();
+                let mut arrivals_taken = Vec::new();
                 let entity_changes = if kind == KIND_COMMIT_WITH_ENTITY_CHANGES {
                     crate::entities::take_entity_changes(&mut input)?
+                } else if kind == KIND_COMMIT_WITH_ARRIVALS {
+                    let changes = if take_bool(&mut input, "whether entity changes follow")? {
+                        crate::entities::take_entity_changes(&mut input)?
+                    } else {
+                        Vec::new()
+                    };
+                    arrivals = take_arrivals(&mut input)?;
+                    arrivals_taken = crate::effects::take_ids(&mut input)?;
+                    if arrivals.is_empty() && arrivals_taken.is_empty() {
+                        return Err(FormatError::Corrupt("a commit with arrivals that has none"));
+                    }
+                    changes
                 } else {
                     Vec::new()
                 };
@@ -596,6 +660,8 @@ impl LogRecord {
                     taken,
                     events,
                     entity_changes,
+                    arrivals,
+                    arrivals_taken,
                 }
             }
             KIND_OPENED => Self::Opened {
@@ -635,6 +701,25 @@ impl LogRecord {
             KIND_EFFECTS_FORWARD => Self::EffectsForward {
                 effects: crate::effects::take_filed(&mut input)?,
             },
+            KIND_ARRIVALS_DROPPED => Self::ArrivalsDropped {
+                ids: crate::effects::take_ids(&mut input)?,
+            },
+            KIND_ARRIVALS_FORWARD => {
+                let count = input.u32()? as usize;
+                // Each is far longer than a byte: no forged count reserves more.
+                let mut arrivals = Vec::with_capacity(count.min(input.0.len()));
+                for _ in 0..count {
+                    let id = crate::effects::take_id(&mut input)?;
+                    let (chunk, entity, due) = take_arrival(&mut input)?;
+                    arrivals.push(Arrival {
+                        id,
+                        chunk,
+                        entity,
+                        due,
+                    });
+                }
+                Self::ArrivalsForward { arrivals }
+            }
             _ => return Err(FormatError::Corrupt("record kind")),
         };
         input.finish()?;
@@ -984,6 +1069,48 @@ pub fn read_log_with_offsets(log: &[u8]) -> Result<(Vec<Logged>, usize), FormatE
     Ok((records, valid))
 }
 
+/// Appends an arrival without its number: its chunk, the entity and when it is due.
+fn put_arrival(out: &mut Vec<u8>, chunk: ChunkPos, entity: &Entity, due: Due) {
+    out.extend_from_slice(&chunk.x.to_be_bytes());
+    out.extend_from_slice(&chunk.z.to_be_bytes());
+    crate::entities::put_entity(out, entity);
+    crate::effects::put_due(out, due);
+}
+
+/// Reads what [`put_arrival`] wrote; an entity not in the chunk it is sent to is refused.
+fn take_arrival(input: &mut Input<'_>) -> Result<(ChunkPos, Entity, Due), FormatError> {
+    let chunk = ChunkPos::new(input.i32()?, input.i32()?);
+    let entity = crate::entities::take_entity(input)?;
+    if entity.chunk() != chunk {
+        return Err(FormatError::Corrupt("an arrival outside its chunk"));
+    }
+    Ok((chunk, entity, crate::effects::take_due(input)?))
+}
+
+fn put_arrivals(out: &mut Vec<u8>, arrivals: &[(ChunkPos, Entity, Due)]) {
+    out.extend_from_slice(&(arrivals.len() as u32).to_be_bytes());
+    for (chunk, entity, due) in arrivals {
+        put_arrival(out, *chunk, entity, *due);
+    }
+}
+
+fn take_arrivals(input: &mut Input<'_>) -> Result<Vec<(ChunkPos, Entity, Due)>, FormatError> {
+    let count = input.u32()? as usize;
+    let mut arrivals = Vec::with_capacity(count.min(input.0.len()));
+    for _ in 0..count {
+        arrivals.push(take_arrival(input)?);
+    }
+    Ok(arrivals)
+}
+
+fn take_bool(input: &mut Input<'_>, what: &'static str) -> Result<bool, FormatError> {
+    match input.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(FormatError::Corrupt(what)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clustine_data::blocks;
@@ -1008,6 +1135,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         }
     }
 
@@ -1027,6 +1156,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         let bytes = record.encode();
         let payload = [
@@ -1475,12 +1606,65 @@ mod tests {
     }
 
     #[test]
+    fn an_arrival_outside_the_chunk_it_is_sent_to_and_a_commit_of_arrivals_with_none_are_refused() {
+        let entity = crate::entities::tests::item(1, [20.5, -60.0, 3.5], None);
+        let commit =
+            |arrivals: Vec<(ChunkPos, Entity, Due)>, taken: Vec<EffectId>| LogRecord::Commit {
+                region: 1,
+                tick: 4,
+                epoch: 1,
+                changes: Vec::new(),
+                state: Vec::new(),
+                stays: Vec::new(),
+                ticks: Vec::new(),
+                marks_taken: Vec::new(),
+                seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
+                events: Vec::new(),
+                entity_changes: Vec::new(),
+                arrivals,
+                arrivals_taken: taken,
+            };
+        let elsewhere = commit(
+            vec![(ChunkPos::new(0, 0), entity.clone(), Due::FromTaking)],
+            Vec::new(),
+        );
+        assert_eq!(
+            read_log(&elsewhere.encode()),
+            Err(FormatError::Corrupt("an arrival outside its chunk"))
+        );
+        // One taken arrival makes a commit of kind 16; with both lists emptied in its
+        // bytes it is refused, as a commit has one form.
+        let taken = commit(
+            Vec::new(),
+            vec![EffectId {
+                sequence: 7,
+                index: 0,
+            }],
+        );
+        let mut bytes = taken.encode();
+        assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_ARRIVALS);
+        let end = bytes.len();
+        // The ids' count is the last u32 before the id: written as 1, made 0, and the id cut.
+        let ids_at = end - 12 - 4;
+        bytes[ids_at..ids_at + 4].copy_from_slice(&0u32.to_be_bytes());
+        bytes.truncate(ids_at + 4);
+        let payload = bytes[FRAME_HEADER_LENGTH..].to_vec();
+        assert_eq!(
+            read_log(&frame(&payload)),
+            Err(FormatError::Corrupt("a commit with arrivals that has none"))
+        );
+    }
+
+    #[test]
     fn a_record_of_regions_that_checks_out_but_makes_no_sense_is_an_error() {
         // Kinds there are none of. 8 to 15 were among them until a commit with stay
         // notes, one with the ticks of chunks, one with effects, the store's records
-        // of effects, a commit with block entities, one with block events and one with
-        // entity changes became kinds of their own; 16 stands in for them.
-        for kind in [0, 16, 255] {
+        // of effects, a commit with block entities, one with block events, one with
+        // entity changes, one with arrivals and the store's records of arrivals became
+        // kinds of their own; 19 stands in for them.
+        for kind in [0, 19, 255] {
             assert_eq!(
                 read_log(&frame(&[FORMAT_VERSION, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -1560,6 +1744,8 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 entity_changes: Vec::new(),
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             };
             let bytes = record.encode();
             assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_TICKS);
@@ -1620,6 +1806,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         }
     }
 
@@ -1682,6 +1870,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         let with = with.encode()[FRAME_HEADER_LENGTH..].to_vec();
         let without = without.encode()[FRAME_HEADER_LENGTH..].to_vec();
@@ -1726,6 +1916,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
@@ -1750,6 +1942,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         let payload = [
             FORMAT_VERSION,
@@ -1951,6 +2145,8 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 entity_changes: Vec::new(),
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             },
             commit_with_stays(),
             LogRecord::Opened {
@@ -2012,6 +2208,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         }
     }
 
@@ -2160,6 +2358,8 @@ mod tests {
                 ),
                 (ChunkPos::new(-2, 0), EntityChange::Gone(key)),
             ],
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         let bytes = record.encode();
         let mut payload = vec![FORMAT_VERSION, 15];
@@ -2383,6 +2583,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         }
     }
 
@@ -2584,6 +2786,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         let bytes = without.encode();
         assert_eq!(bytes[8..10], [FORMAT_VERSION, KIND_COMMIT]);
@@ -2709,6 +2913,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
@@ -2850,6 +3056,8 @@ mod tests {
                 effects: Vec::new(),
                 taken: Vec::new(), events: Vec::new(),
                 entity_changes: Vec::new(),
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             };
             let opened = LogRecord::Opened { region, epoch, restored };
             let mut bytes = commit.encode();
@@ -2884,6 +3092,8 @@ mod tests {
                 effects: Vec::new(),
                 taken: Vec::new(), events: Vec::new(),
                 entity_changes: Vec::new(),
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             };
             let bytes = commit.encode();
             prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
@@ -2921,10 +3131,77 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 entity_changes,
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             };
             let bytes = commit.encode();
             prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_ENTITY_CHANGES);
             prop_assert_eq!(read_log(&bytes), Ok((vec![commit], bytes.len())));
+        }
+
+        /// Commits with arrivals sent or taken, with entity changes or none, and the store's
+        /// records of arrivals, are read back as they were written.
+        #[test]
+        fn commits_with_arrivals_and_the_records_of_arrivals_round_trip(
+            tick: u64,
+            entity_changes in prop::option::of(crate::entities::tests::entity_changes()),
+            sent in prop::collection::vec(crate::entities::tests::entities(), 0..3),
+            taken in prop::collection::vec((any::<u64>(), any::<u32>()), 0..3),
+            due in prop::option::of(any::<u64>()),
+        ) {
+            let due = due.map_or(Due::FromTaking, |tick| Due::At { tick });
+            let arrivals: Vec<(ChunkPos, Entity, Due)> =
+                sent.iter().map(|entity| (entity.chunk(), entity.clone(), due)).collect();
+            let mut arrivals_taken: Vec<EffectId> = taken
+                .iter()
+                .map(|(sequence, index)| EffectId {
+                    sequence: *sequence,
+                    index: *index,
+                })
+                .collect();
+            // Ascending, as a commit has them.
+            arrivals_taken.sort();
+            arrivals_taken.dedup();
+            let commit = LogRecord::Commit {
+                region: 1,
+                tick,
+                epoch: 3,
+                changes: Vec::new(),
+                state: vec![1],
+                stays: Vec::new(),
+                ticks: Vec::new(),
+                marks_taken: Vec::new(),
+                seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
+                events: Vec::new(),
+                entity_changes: entity_changes.unwrap_or_default(),
+                arrivals: arrivals.clone(),
+                arrivals_taken: arrivals_taken.clone(),
+            };
+            let bytes = commit.encode();
+            let with_arrivals = !arrivals.is_empty() || !arrivals_taken.is_empty();
+            if with_arrivals {
+                prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_ARRIVALS);
+            }
+            prop_assert_eq!(read_log(&bytes), Ok((vec![commit], bytes.len())));
+            let forward = LogRecord::ArrivalsForward {
+                arrivals: arrivals
+                    .iter()
+                    .zip(&arrivals_taken)
+                    .map(|((chunk, entity, due), id)| Arrival {
+                        id: *id,
+                        chunk: *chunk,
+                        entity: entity.clone(),
+                        due: *due,
+                    })
+                    .collect(),
+            };
+            let dropped = LogRecord::ArrivalsDropped { ids: arrivals_taken };
+            for record in [forward, dropped] {
+                let bytes = record.encode();
+                prop_assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+            }
         }
 
         #[test]

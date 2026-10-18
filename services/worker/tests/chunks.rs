@@ -344,6 +344,7 @@ impl Other {
     fn give_back(&self, chunk: ChunkPos) {
         self.handle.request(StoreRequest::Return {
             chunks: vec![chunk],
+            unreadable: Vec::new(),
         });
         self.handle.request(StoreRequest::Flush);
         match self.reply() {

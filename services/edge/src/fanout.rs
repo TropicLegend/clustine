@@ -2844,6 +2844,8 @@ impl Fanout {
                 count,
                 ..
             } => self.show_taken(from, item, collector, count).await,
+            // Shown as the plan of N3 says from step N3e on.
+            RegionEvent::HandedOn { .. } => {}
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }

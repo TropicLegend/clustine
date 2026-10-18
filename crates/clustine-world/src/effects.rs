@@ -5,7 +5,7 @@
 use clustine_data::BlockState;
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockPos, SeamKind, Ticked};
+use crate::{BlockPos, ChunkPos, Entity, SeamKind, Ticked};
 
 /// What a region's tick would have done to a block in a chunk it does not have loaded,
 /// addressed to that block. The effect carries the call where the target's side decides
@@ -97,6 +97,22 @@ pub enum Due {
     /// Its maker was not coupled to the holder: the delay counts from the tick that
     /// takes it.
     FromTaking,
+}
+
+/// An entity sent across a line, as the store hands it to the region that holds its
+/// chunk (`docs/adr/0028-entities.md`, section 5; `docs/groundwork/n3-plan.md`). Numbered
+/// as effects are, and taken once by number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Arrival {
+    pub id: EffectId,
+    pub chunk: ChunkPos,
+    /// The entity as the sender's tick left it, with the `hops` it had: the taking raises
+    /// them.
+    pub entity: Entity,
+    /// When it may be taken, in the holder's ticks: [`Due::At`] the holder's tick that the
+    /// sender's tick was, taken in the holder's tick after it, so that a coupled crossing
+    /// loses no tick and ticks the entity once; [`Due::FromTaking`] at once.
+    pub due: Due,
 }
 
 /// An effect as the store hands it to the region that uses its chunk.

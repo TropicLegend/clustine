@@ -74,6 +74,8 @@ impl Actor {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         });
     }
 

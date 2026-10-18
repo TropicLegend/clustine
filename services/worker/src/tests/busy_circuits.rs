@@ -229,6 +229,8 @@ fn logged_bytes(request: &StoreRequest) -> usize {
         taken: taken.clone(),
         events: events.clone(),
         entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     }
     .encode()
     .len()

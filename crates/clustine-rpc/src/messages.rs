@@ -6,8 +6,8 @@ use clustine_sim::api::{
     Pose, RegionEvent, RemoteAction, StayNote,
 };
 use clustine_world::{
-    BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityChange, EntityId,
-    EntityIds, FiledEffect, KeptEvent, PlayerId, ScheduledTick, Seam,
+    Arrival, BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, Entity,
+    EntityChange, EntityId, EntityIds, FiledEffect, KeptEvent, PlayerId, ScheduledTick, Seam,
 };
 use serde::{Deserialize, Serialize};
 
@@ -359,6 +359,13 @@ pub enum StoreRequest {
         /// What the tick did to entities other than players, by chunk, in the order it
         /// did it (`docs/adr/0028-entities.md`, section 3).
         entity_changes: Vec<(ChunkPos, EntityChange)>,
+        /// The entities the tick sent across a line, each to the chunk it is in, whole and
+        /// with the `hops` it had (`docs/adr/0028-entities.md`, section 5). Their chunks'
+        /// commits have them `Gone`.
+        arrivals: Vec<(ChunkPos, Entity)>,
+        /// The arrivals the tick took, ascending; each is filed and held by the region,
+        /// or the commit is refused.
+        arrivals_taken: Vec<EffectId>,
     },
     /// `state` is the region's whole state after `tick`, and every change committed up
     /// to `tick` is contained in a chunk saved before this request. Once those saves are
@@ -378,8 +385,13 @@ pub enum StoreRequest {
     /// the region was not granted, and the chunk players enter the world in, are left
     /// out. A claim of a chunk that arrives before the chunk is free keeps it. Not
     /// answered; a [`StoreRequest::Flush`] asked for behind it is answered when the
-    /// return is on disk. See ADR-0011, section 3.3.
-    Return { chunks: Vec<ChunkPos> },
+    /// return is on disk. See ADR-0011, section 3.3. `unreadable` are those of `chunks`
+    /// the store answered `Unreadable`, whose return arrivals filed for them never call off
+    /// (`docs/groundwork/n3-plan.md`, section 6).
+    Return {
+        chunks: Vec<ChunkPos>,
+        unreadable: Vec<ChunkPos>,
+    },
     /// The merge of ADR-0010, section 4: `state` is this region's whole state after
     /// `tick` with the region `absorbed` taken in, whose chunks and pinned areas are
     /// this region's from that tick. The same worker has `absorbed` open, with
@@ -563,6 +575,11 @@ pub enum StoreReply {
     /// effects for chunks it uses, in the order the store filed them.
     Effects {
         effects: Vec<FiledEffect>,
+    },
+    /// On the stream: entities sent into chunks the region holds, ascending by number
+    /// (`docs/groundwork/n3-plan.md`).
+    Arrivals {
+        arrivals: Vec<Arrival>,
     },
     /// On the stream: the committed form of `position`, which the region copies, as of
     /// the group of `sequence`; `last_change` is the sequence of the chunk's last change

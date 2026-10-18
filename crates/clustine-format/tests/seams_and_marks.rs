@@ -205,6 +205,8 @@ fn commit(marks_taken: Vec<ChunkPos>, seams: Vec<(ChunkPos, Vec<Seam>)>) -> LogR
         taken: Vec::new(),
         events: Vec::new(),
         entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     }
 }
 

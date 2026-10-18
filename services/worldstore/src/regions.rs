@@ -707,6 +707,8 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
         taken: Vec::new(),
         events: Vec::new(),
         entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     };
     let opened = |region, epoch| LogRecord::Opened {
         region,
@@ -810,6 +812,7 @@ pub(crate) fn claim(
 pub(crate) fn give_back(handle: &StoreHandle, chunks: &[ChunkPos]) {
     handle.request(StoreRequest::Return {
         chunks: chunks.to_vec(),
+        unreadable: Vec::new(),
     });
 }
 

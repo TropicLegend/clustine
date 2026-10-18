@@ -370,6 +370,7 @@ fn a_lent_chunk_given_back_is_the_lenders_again_and_it_is_told() {
     lent(&lender, &borrower, marked());
     borrower.request(StoreRequest::Return {
         chunks: vec![AT_LINE],
+        unreadable: Vec::new(),
     });
     assert_eq!(
         lend_reply(&lender),
@@ -412,6 +413,8 @@ fn effects_the_lender_had_not_taken_go_to_the_borrower_with_the_lend() {
         taken: Vec::new(),
         events: Vec::new(),
         entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     });
     lent(&lender, &borrower, marked());
     // Behind the grant, on the borrower's stream before a mark.
@@ -438,6 +441,7 @@ fn a_claim_of_a_lent_chunk_on_its_way_back_is_answered_with_its_lender() {
     // another's pinned land, that keeps nothing, whenever the return is done.
     borrower.request(StoreRequest::Return {
         chunks: vec![AT_LINE],
+        unreadable: Vec::new(),
     });
     borrower.request(StoreRequest::Claim {
         chunks: vec![AT_LINE],

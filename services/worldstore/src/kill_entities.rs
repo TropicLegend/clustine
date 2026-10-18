@@ -139,6 +139,8 @@ fn scenario(store: &Store) -> Vec<u64> {
                 .map(|events| vec![(ORIGIN, events)])
                 .unwrap_or_default(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         });
         if tick == SAVED_AS_OF {
             handle.request(StoreRequest::Save {

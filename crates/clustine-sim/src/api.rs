@@ -5,8 +5,8 @@
 
 use clustine_data::BlockState;
 use clustine_world::{
-    BlockPos, Change, Chunk, ChunkPos, EdgeId, Effect, EffectId, EntityChange, EntityData,
-    EntityId, FiledEffect, PlayerId, RegionId, Vec3,
+    Arrival, BlockPos, Change, Chunk, ChunkPos, EdgeId, Effect, EffectId, Entity, EntityChange,
+    EntityData, EntityId, FiledEffect, PlayerId, RegionId, Vec3,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -617,6 +617,13 @@ pub struct TickInputs {
     /// section 5, in the order of their numbers. Run where seam entries run, after the
     /// inputs and the reckoning of which chunks tick.
     pub effects: Vec<FiledEffect>,
+    /// Entities sent into chunks the region holds, ready and of loaded chunks, in the
+    /// order of their numbers (`docs/groundwork/n3-plan.md`): taken after the effects and
+    /// before the entities tick.
+    pub arrivals: Vec<Arrival>,
+    /// Chunks the region holds or is about to hold, not loaded, for which an arrival
+    /// waits: loaded for it with an arrival ticket (the plan, sections 5 and 6).
+    pub arrivals_waiting: Vec<ChunkPos>,
     /// The world store's answers to the region's [`StayNote::Entering`] notes, in the
     /// order they came. An answer is taken only for the very stay the region still
     /// holds as entering for the player, and passed over otherwise. Whatever the case,
@@ -891,6 +898,16 @@ pub enum RegionEvent {
     /// A falling block landed at `position` as `state` (`AddTransientBlock`, sent after
     /// the block's change).
     TransientBlock { position: BlockPos, state: u16 },
+    /// An entity other than a player was sent across a line, from `chunk`, with the
+    /// `hops` it had and where it was: an edge goes on showing it there until the region
+    /// it went to reports it with more `hops` (`docs/adr/0028-entities.md`, section 6).
+    HandedOn {
+        entity: EntityId,
+        chunk: ChunkPos,
+        hops: u32,
+        position: [f64; 3],
+        motion: [f64; 3],
+    },
 }
 
 /// What an edge is told of an entity other than a player in a tick that changed it.
@@ -938,6 +955,7 @@ impl RegionEvent {
             | Self::ItemTaken { chunk, .. } => [*chunk; 2],
             Self::EntityTracked(tracked) => [tracked.chunk; 2],
             Self::TransientBlock { position, .. } => [position.chunk(); 2],
+            Self::HandedOn { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }
@@ -1092,4 +1110,9 @@ pub struct TickOutput {
     /// worker saves their entities at its checkpoints and its stop, so that what the
     /// store has of them is never older than the last checkpoint.
     pub entities_ageing: Vec<ChunkPos>,
+    /// The entities the tick sent across a line, each to the chunk it is in, whole with
+    /// the `hops` it had: their chunks' changes have them `Gone`.
+    pub arrivals: Vec<(ChunkPos, Entity)>,
+    /// The arrivals the tick took, ascending.
+    pub arrivals_taken: Vec<EffectId>,
 }

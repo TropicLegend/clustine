@@ -944,6 +944,7 @@ impl Witness {
                         | RegionEvent::EntityTracked(_)
                         | RegionEvent::ItemTaken { .. }
                         | RegionEvent::TransientBlock { .. }
+                        | RegionEvent::HandedOn { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);
@@ -5323,6 +5324,8 @@ fn store_by_hand(
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         });
     }
     handle.flush();

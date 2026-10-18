@@ -1604,6 +1604,7 @@ impl RegionRunner {
                 // (`docs/adr/0025-effects-between-regions.md`), kept until a tick can
                 // use them. A handshake is answered at once, with the next tick.
                 reply @ (StoreReply::Effects { .. }
+                | StoreReply::Arrivals { .. }
                 | StoreReply::CopyBase { .. }
                 | StoreReply::CopyUpdate { .. }
                 | StoreReply::CopyUsed { .. }
@@ -2702,6 +2703,8 @@ impl RegionRunner {
                 taken,
                 events,
                 entity_changes,
+                arrivals: Vec::new(),
+                arrivals_taken: Vec::new(),
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -2728,6 +2731,7 @@ impl RegionRunner {
         if !output.returns.is_empty() {
             self.store.request(StoreRequest::Return {
                 chunks: output.returns,
+                unreadable: Vec::new(),
             });
         }
         for answer in output.lend_answers {
@@ -4848,7 +4852,7 @@ mod tests {
                 StoreRequest::Load { position } => Self::Load(*position),
                 StoreRequest::Save { position, .. } => Self::Save(*position),
                 StoreRequest::Commit { tick, .. } => Self::Commit(*tick),
-                StoreRequest::Return { chunks } => Self::Return(chunks.clone()),
+                StoreRequest::Return { chunks, .. } => Self::Return(chunks.clone()),
                 StoreRequest::Claim { chunks } => Self::Claim(chunks.clone()),
                 StoreRequest::Checkpoint { tick, .. } => Self::Checkpoint(*tick),
                 StoreRequest::Flush => Self::Flush,
@@ -9142,6 +9146,7 @@ mod tests {
         // The neighbour gives the chunk back, and the store has got to it.
         neighbour.request(StoreRequest::Return {
             chunks: vec![BESIDE],
+            unreadable: Vec::new(),
         });
         neighbour.flush();
         let told = told_until_marked(&mut runner, &mut edge, 15);
@@ -9720,6 +9725,7 @@ mod tests {
         });
         neighbour.request(StoreRequest::Return {
             chunks: vec![BESIDE],
+            unreadable: Vec::new(),
         });
         neighbour.flush();
 

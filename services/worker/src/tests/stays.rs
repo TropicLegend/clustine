@@ -887,7 +887,10 @@ fn a_player_placed_where_the_region_believes_the_chunk_anothers_is_told_they_ent
         |_, seats| departure(seats[0], player()).is_some(),
     );
     // The chunk is given back: nobody holds the place when the player comes again.
-    other.request(StoreRequest::Return { chunks: vec![OUT] });
+    other.request(StoreRequest::Return {
+        chunks: vec![OUT],
+        unreadable: Vec::new(),
+    });
     other.flush();
     assert_eq!(home.region().knowledge(OUT), Knowledge::Foreign(EAST));
 

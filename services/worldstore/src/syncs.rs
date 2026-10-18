@@ -504,7 +504,10 @@ fn a_claim_is_answered_with_its_groups_sync_and_a_return_waits_for_one_with_no_a
     let returned = world.watch(
         "a return of a chunk with nothing saved",
         || {
-            home.request(StoreRequest::Return { chunks: vec![FREE] });
+            home.request(StoreRequest::Return {
+                chunks: vec![FREE],
+                unreadable: Vec::new(),
+            });
         },
         || None::<()>,
     );
@@ -529,7 +532,10 @@ fn a_claim_is_answered_with_its_groups_sync_and_a_return_waits_for_one_with_no_a
                 chunk: changed(FREE, 1, 0),
                 parts: clustine_rpc::Parts::ALL,
             });
-            home.request(StoreRequest::Return { chunks: vec![FREE] });
+            home.request(StoreRequest::Return {
+                chunks: vec![FREE],
+                unreadable: Vec::new(),
+            });
         },
         || None::<()>,
     );

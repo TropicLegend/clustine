@@ -109,6 +109,8 @@ fn commit(handle: &StoreHandle, tick: u64) {
             .into_iter()
             .map(|change| (A, change))
             .collect(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     });
 }
 

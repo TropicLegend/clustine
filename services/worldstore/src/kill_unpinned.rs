@@ -154,6 +154,8 @@ impl Actor {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         });
         self.settle(told).map(|_| ())
     }
@@ -192,6 +194,7 @@ impl Actor {
         self.chunks.remove(&chunk);
         self.handle.request(StoreRequest::Return {
             chunks: vec![chunk],
+            unreadable: Vec::new(),
         });
         told.granted.remove(&chunk);
         self.settle(told).map(|_| ())

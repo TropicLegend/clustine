@@ -57,6 +57,8 @@ fn commit(handle: &StoreHandle, tick: u64, changes: &[(BlockPos, BlockState)]) {
         taken: Vec::new(),
         events: Vec::new(),
         entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     });
 }
 
@@ -368,6 +370,8 @@ fn commit_changes(handle: &StoreHandle, tick: u64, changes: Vec<clustine_world::
         taken: Vec::new(),
         events: Vec::new(),
         entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     });
 }
 

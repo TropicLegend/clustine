@@ -96,6 +96,8 @@ fn commit(
         taken: Vec::new(),
         events: Vec::new(),
         entity_changes,
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
     });
 }
 
@@ -657,6 +659,7 @@ fn a_lend_lends_a_chunks_entities_and_its_return_takes_them_back_as_the_borrower
     save_parts(&borrower, at_line, 9, &left_behind, Parts::ENTITIES);
     borrower.request(StoreRequest::Return {
         chunks: vec![at_line],
+        unreadable: Vec::new(),
     });
     until(&lender, |reply| {
         matches!(reply, StoreReply::PinnedBack { .. })

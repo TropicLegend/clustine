@@ -186,6 +186,7 @@ mod tests {
             },
             StoreRequest::Return {
                 chunks: chunks.clone(),
+                unreadable: Vec::new(),
             },
             StoreRequest::AbsorbCommit {
                 absorbed: region,
@@ -557,6 +558,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -712,6 +715,8 @@ mod tests {
             taken: Vec::new(),
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         });
         for reply in [
             StoreReply::Enter {
@@ -888,6 +893,8 @@ mod tests {
             taken: vec![id(4, 0), id(4, 2)],
             events: Vec::new(),
             entity_changes: Vec::new(),
+            arrivals: Vec::new(),
+            arrivals_taken: Vec::new(),
         });
         let (one, two) = (ChunkPos::new(-2, 2), ChunkPos::new(-1, 2));
         for request in [
