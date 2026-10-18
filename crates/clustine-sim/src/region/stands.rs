@@ -768,6 +768,12 @@ impl Region {
                 *last_hit = Some(now);
             }
             self.commit_entity(chunk, key, vec![EntityField::Data(data)], output);
+            // `broadcastEntityEvent(this, 32)`: clients wobble it and play its hit.
+            output.events.push(RegionEvent::EntityEvent {
+                entity: key,
+                chunk,
+                event: 32,
+            });
             return;
         }
         // `brokenByPlayer`: the stand's item where it stood, then what it wears.

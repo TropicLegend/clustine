@@ -949,6 +949,7 @@ impl Witness {
                         | RegionEvent::Leashed { .. }
                         | RegionEvent::DataChanged { .. }
                         | RegionEvent::EntitySound { .. }
+                        | RegionEvent::EntityEvent { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);

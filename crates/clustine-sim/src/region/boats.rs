@@ -21,10 +21,6 @@
 //! last tick) the region keeps by key ([`super::items::BoatMemory`]).
 //!
 //! Named differences and what could not be settled:
-//! - The entity events 71 and 72 a bubble column's end sends are not sent (the repo
-//!   sends no entity events yet): the client of a player who drives a boat over a
-//!   bubble column does not feel its push, though a downward one still lets the
-//!   passengers off. A boat nobody drives is pushed by the server, which clients see.
 //! - The effects of the blocks a boat is in are applied as a cart's are, in the order
 //!   the walk met the blocks, with fire's and lava's after the others, rather than by
 //!   the game's collector step by step: fire ignites it and hurts it, lava ignites it
@@ -882,6 +878,14 @@ impl Region {
                 if self.boat_chunk(boat).is_none() {
                     return;
                 }
+            }
+            // The push of a driven boat is its driver's client's to make, told by these.
+            if let Some(chunk) = self.boat_chunk(boat) {
+                output.events.push(RegionEvent::EntityEvent {
+                    entity: boat.key,
+                    chunk,
+                    event: if boat.bubble_down { 71 } else { 72 },
+                });
             }
             // `handleBubbleColumnEffect`, where the boat is the server's to move.
             if !self.is_driven(boat.key) {

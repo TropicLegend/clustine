@@ -1643,6 +1643,7 @@ impl Bot {
             | ClientboundPlay::SetEntityLink(_)
             | ClientboundPlay::SoundEntity(_)
             | ClientboundPlay::SwingAnimation(_)
+            | ClientboundPlay::EntityEvent(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)

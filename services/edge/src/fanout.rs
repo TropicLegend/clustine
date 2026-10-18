@@ -24,7 +24,7 @@ use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, AddTransientBlock, Animate, BlockEvent, BlockUpdate,
     ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, Disconnect, EntityDataValue,
-    GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
+    EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
     PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
     SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEquipment, SetHeadRotation,
     SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition,
@@ -2943,6 +2943,11 @@ impl Fanout {
                 passengers,
                 ..
             } => self.show_passengers(vehicle, passengers).await,
+            RegionEvent::EntityEvent { entity, event, .. } => {
+                if self.is_of(entity, from) {
+                    self.show_entity_event(entity, event).await;
+                }
+            }
             // Shown from the steps of N5 that make them.
             RegionEvent::Leashed { .. }
             | RegionEvent::DataChanged { .. }
@@ -3527,6 +3532,28 @@ impl Fanout {
         }
         for (player, packet) in outgoing {
             self.send_to_player(player, [packet]).await;
+        }
+    }
+
+    /// Tells every client that shows `entity` of the event `event`
+    /// (`ClientboundEntityEventPacket`, which the game broadcasts to the entity's
+    /// trackers).
+    async fn show_entity_event(&mut self, entity: EntityId, event: u8) {
+        let watching: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.visible.contains_key(&entity))
+            .map(|(player, _)| *player)
+            .collect();
+        if watching.is_empty() {
+            return;
+        }
+        let packet = encoded(&EntityEvent {
+            entity_id: self.wire.of(entity),
+            event: event as i8,
+        });
+        for player in watching {
+            self.send_to_player(player, [packet.clone()]).await;
         }
     }
 

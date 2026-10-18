@@ -1562,6 +1562,44 @@ impl Decode for TakeItemEntity {
     }
 }
 
+/// Something that happened to an entity, which each client shows its own way
+/// (`ClientboundEntityEventPacket`): its id as a 4-byte int, then the event's byte, as
+/// `write` has them (`writeInt`, `writeByte`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityEvent {
+    pub entity_id: i32,
+    pub event: i8,
+}
+
+impl Packet for EntityEvent {
+    const ID: i32 = clientbound::ENTITY_EVENT;
+}
+
+impl Encode for EntityEvent {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i32(self.entity_id);
+        w.put_i8(self.event);
+    }
+}
+
+impl Decode for EntityEvent {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.i32()?,
+            event: r.i8()?,
+        })
+    }
+}
+
+/// What the game's entity events N5 sends mean (`Entity.handleEntityEvent` and its
+/// kinds'): a boat's bubble column pushing it down or up, and an armour stand's wobble
+/// at a first hit.
+pub mod entity_event {
+    pub const ARMOR_STAND_HIT: i8 = 32;
+    pub const BUBBLE_COLUMN_DOWN: i8 = 71;
+    pub const BUBBLE_COLUMN_UP: i8 = 72;
+}
+
 /// A block the client shows for a moment where a falling block landed, until the
 /// change of the block itself reaches it (`ClientboundAddTransientBlockPacket`).
 #[derive(Debug, Clone, PartialEq)]
@@ -3009,6 +3047,7 @@ packet_set! {
         SetEntityMotion,
         TakeItemEntity,
         AddTransientBlock,
+        EntityEvent,
         ClientboundMoveVehicle,
         SetPassengers,
         SetEntityLink,
@@ -3951,6 +3990,12 @@ mod tests {
             count: 2,
         };
         assert_eq!(crate::packets::encode(&taken), [0x7F, 7, 0xAC, 0x02, 2]);
+        // An entity event: its id as a 4-byte int, then the event's byte.
+        let wobble = EntityEvent {
+            entity_id: 258,
+            event: entity_event::ARMOR_STAND_HIT,
+        };
+        assert_eq!(crate::packets::encode(&wobble), [0x22, 0, 0, 1, 2, 32]);
         let at = Position { x: 1, y: -60, z: 2 };
         let long = [0, 0, 0, 0x40, 0, 0, 0x2F, 0xC4];
         let transient = AddTransientBlock {

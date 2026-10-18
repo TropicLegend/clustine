@@ -997,6 +997,14 @@ pub enum RegionEvent {
         hops: u32,
         data: EntityData,
     },
+    /// Something happened to `entity` that clients show their own way (the game's
+    /// `broadcastEntityEvent`): a bubble column's push to a driven boat, whose driver's
+    /// client moves it, an armour stand's wobble.
+    EntityEvent {
+        entity: EntityId,
+        chunk: ChunkPos,
+        event: u8,
+    },
     /// A sound at an entity (`sound_entity`): the sound's id, its source category, its
     /// volume, its pitch and the seed the level's sound seeds drew.
     EntitySound {
@@ -1059,6 +1067,7 @@ impl RegionEvent {
             | Self::Passengers { chunk, .. }
             | Self::Leashed { chunk, .. }
             | Self::DataChanged { chunk, .. }
+            | Self::EntityEvent { chunk, .. }
             | Self::EntitySound { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }

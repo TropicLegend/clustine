@@ -575,7 +575,11 @@ fn a_survival_hit_is_a_first_hit_unless_one_came_within_five_ticks_and_the_secon
         ..stand(1, [8.5, -60.0, 8.5], vec![(slots::HEAD, HELMET)])
     };
     lay(&mut region, &dressed);
-    checked(&mut region, &hit(&dressed, 1, false));
+    let wobbled = checked(&mut region, &hit(&dressed, 1, false));
+    assert!(wobbled.events.iter().any(|event| matches!(
+        event,
+        RegionEvent::EntityEvent { entity, event: 32, .. } if *entity == dressed.key
+    )));
     let first = record(&region, dressed.key).expect("a first hit only wobbles it");
     let EntityData::ArmorStand { last_hit, .. } = first.data else {
         unreachable!();

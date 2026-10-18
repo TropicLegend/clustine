@@ -727,9 +727,14 @@ fn a_downward_bubble_column_lets_a_boats_passengers_off_and_pulls_it_down() {
             Some(floating.key)
         );
     }
-    idle(&mut region);
+    let output = checked(&mut region, &TickInputs::default());
     assert_eq!(record(&region, rider.key).unwrap().riding.vehicle, None);
     assert!(record(&region, floating.key).unwrap().motion[1] < -0.6);
+    // Its driver's client, which moves a driven boat, is told of the pull.
+    assert!(output.events.iter().any(|event| matches!(
+        event,
+        RegionEvent::EntityEvent { entity, event: 71, .. } if *entity == floating.key
+    )));
 }
 
 /// A boat under water for sixty ticks lets its passengers off; in the fifty-ninth it
